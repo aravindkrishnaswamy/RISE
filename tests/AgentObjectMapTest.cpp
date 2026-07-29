@@ -1633,6 +1633,253 @@ static void RunInlineRenderImageTest()
 	std::remove( scenePath.c_str() );
 }
 
+//----------------------------------------------------------------------
+// render{imageMaxEdge} THROUGH THE GUI DRIVERS' ASYNC DETOUR.
+//
+// THE REGRESSION THIS PINS.  `imageMaxEdge` is refused alongside `async`
+// (see (d) above), and that refusal is right for a raw async caller.  But
+// BOTH GUI chat drivers -- ChatViewModel.executeRenderToolCallAsync (macOS)
+// and ChatPanel::startAsyncRenderToolCall (Windows) -- inject
+// {"async":true} into EVERY render the model makes, transparently; the
+// model is never taught `async` and never asks for it.  So the two
+// collided on a call the model IS taught to make, and the one-call observe
+// form was unreachable from the only transport it was built for.  Measured:
+// in the recorded 2026-07-29 GUI trajectory the model called
+// render{imageMaxEdge:192,samples:32}, got -32602, and reverted to
+// render + read_image for all five of its later looks.
+//
+// THE FIX IS IN THE DRIVERS: strip `imageMaxEdge` before injecting `async`,
+// then re-apply its EFFECT after the render completes by fetching the image
+// at that same bound on the SAME pinned session and folding
+// png_base64/byteLength/imageWidth/imageHeight into the downgraded result.
+//
+// WHAT THIS TEST CAN AND CANNOT PROVE.  The staging/folding code is Swift
+// and Qt and is not compiled here; SourceHygieneTest pins its shape on both
+// platforms.  What IS proved here is the thing that has to be TRUE for that
+// code to be correct -- that the exact call SEQUENCE the drivers perform
+// yields the same model-visible result as the synchronous one-call form:
+//
+//   (g) IDENTITY THROUGH THE DETOUR.  strip -> async submit -> render_wait
+//       -> read_image{maxEdge:N} -> fold produces a result whose key set
+//       and every field (bar the per-job renderJobId) equal the synchronous
+//       render{imageMaxEdge:N}'s.
+//   (h) A PLAIN render through the same detour is unchanged -- no image
+//       fields appear from nowhere.
+//   (i) OBJECTMAP STAYS REFUSED.  The drivers deliberately do NOT stage
+//       imageMaxEdge off an objectmap render, so the RPC still answers it,
+//       and it still answers with the objectmap-specific -32602.
+//   (j) A FAILED render offers nothing to attach: `ok` is false (the
+//       condition the drivers' fold keys off) while the cache still holds
+//       a perfectly good EARLIER frame -- i.e. an unconditional fold would
+//       have handed back the previous render's pixels as this call's.
+//   (k) THE PIXELS ARE CACHE-SCOPED, NOT GLOBAL.  read_image is answered out
+//       of the session's last-render cache, which at the LIBRARY level is
+//       isolated per session by default -- a sibling wrapping the same Job
+//       reads byteLength 0.  Note what this does and does NOT say about the
+//       GUI: the three in-app sessions are deliberately constructed sharing
+//       ONE AgentImageCache (ViewportBridge / RISEViewportBridge, guarded by
+//       SourceHygieneTest), so a fold routed to a sibling there WOULD still
+//       find the pixels.  The drivers pin the session anyway -- for posture
+//       and lifecycle consistency with every other call in the job, and for
+//       render_wait's genuinely per-session `result` -- not because the
+//       pixels would otherwise be unreachable.  What this case pins is the
+//       library default the sharing is an opt-in FROM.
+//----------------------------------------------------------------------
+static void RunDriverAsyncInlineImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} through the drivers' async detour ===\n" );
+	const std::string scenePath = WriteTemp( "rise_driver_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "driver-inline scene loads" ); return; }
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+	if( !owned ) { controller.Stop(); pJob->release(); Check( false, "driver-inline session" ); return; }
+	owned->AttachController( &controller );
+	AgentSession* session = owned.get();
+	AgentRpcDispatcher rpc( std::move( owned ) );
+
+	JsonValue env; std::string err;
+	auto handle = [&rpc, &env, &err]( const std::string& line, const char* what ) -> const JsonValue& {
+		Check( JsonParse( rpc.HandleLine( line ), env, err ), std::string( what ) + " response parses" );
+		return env;
+	};
+
+	// Drive the drivers' exact call sequence for one model-authored render
+	// line, returning the model-visible result they would deliver.
+	auto driveDriverPath = [&]( int idBase, const std::string& stagedParams,
+	                            bool hasInlineMaxEdge, int inlineMaxEdge ) -> JsonValue {
+		// (1) SUBMIT: the staged line (imageMaxEdge already removed) plus the
+		// driver-injected async.
+		const std::string sep = stagedParams.empty() ? "" : ",";
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase ) +
+		        ",\"method\":\"render\",\"params\":{" + stagedParams + sep + "\"async\":true}}",
+		        "driver submit" );
+		if( env.has( "error" ) ) return env;   // caller inspects the refusal
+		const double jobId = env.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+		Check( env.get( "result" ).get( "status" ).asString() == "submitted" && jobId > 0.0,
+		       "driver submit is accepted with a job id" );
+		// (2) POLL: render_wait, exactly the verb both drivers poll with.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 1 ) +
+		        ",\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+		        std::to_string( (long long)jobId ) + ",\"timeoutMs\":60000}}", "driver render_wait" );
+		Check( env.get( "result" ).get( "completed" ).asBool(), "the driver's render completes" );
+		JsonValue inner = env.get( "result" ).get( "result" );
+		Check( inner.isObject(), "render_wait echoes the synchronous-shaped result" );
+		// (3) FOLD: only on a SUCCESSFUL render, and only when the model asked.
+		if( !hasInlineMaxEdge || !inner.get( "ok" ).asBool() ) return inner;
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 2 ) +
+		        ",\"method\":\"read_image\",\"params\":{\"maxEdge\":" +
+		        std::to_string( inlineMaxEdge ) + "}}", "driver read_image" );
+		const JsonValue& ri = env.get( "result" );
+		if( ri.get( "png_base64" ).asString().empty() ) return inner;
+		inner.set( "png_base64", ri.get( "png_base64" ) );
+		inner.set( "byteLength", ri.get( "byteLength" ) );
+		inner.set( "imageWidth",  ri.get( "width" ) );
+		inner.set( "imageHeight", ri.get( "height" ) );
+		return inner;
+	};
+
+	// PRECONDITION for a byte-strict identity claim: this scene renders
+	// DETERMINISTICALLY, so any difference below is the detour's doing and
+	// not Monte-Carlo noise.
+	JsonValue syncResult;
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #1" );
+		const std::string firstB64 = env.get( "result" ).get( "png_base64" ).asString();
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #2" );
+		syncResult = env.get( "result" );
+		Check( !firstB64.empty() && syncResult.get( "png_base64" ).asString() == firstB64,
+		       "PRECONDITION: two identical synchronous renders produce byte-identical pixels "
+		       "(so the comparison below measures the detour, not MC noise)" );
+	}
+
+	// (g) MONEY: the driver detour reproduces the synchronous one-call result.
+	{
+		const JsonValue drv = driveDriverPath( 10, "", /*hasInline*/true, 48 );
+
+		std::set<std::string> syncKeys, drvKeys;
+		for( const auto& kv : syncResult.members() ) syncKeys.insert( kv.first );
+		for( const auto& kv : drv.members() )        drvKeys.insert( kv.first );
+		Check( syncKeys == drvKeys,
+		       "MONEY (g): the driver-path result's KEY SET is exactly the synchronous "
+		       "render{imageMaxEdge:48}'s -- including png_base64/byteLength/imageWidth/imageHeight" );
+
+		// renderJobId is the ONE field that legitimately differs: it names a
+		// call that ran, and these are two different renders.
+		std::vector<std::string> differing;
+		for( const std::string& k : syncKeys ) {
+			if( k == "renderJobId" ) continue;
+			if( JsonSerialize( syncResult.get( k ) ) != JsonSerialize( drv.get( k ) ) )
+				differing.push_back( k );
+		}
+		std::string names;
+		for( const std::string& k : differing ) { names += ' '; names += k; }
+		Check( differing.empty(),
+		       "MONEY (g): every field except renderJobId is IDENTICAL to the synchronous "
+		       "one-call form (differing:" + names + ")" );
+		Check( !drv.get( "png_base64" ).asString().empty() &&
+		       drv.get( "imageWidth" ).asNumber( 0 ) == 48 &&
+		       drv.get( "imageHeight" ).asNumber( 0 ) == 48 &&
+		       drv.get( "byteLength" ).asNumber( 0 ) > 0,
+		       "MONEY (g): ...and the image it carries is a real 48px-bounded PNG payload" );
+	}
+
+	// (h) A PLAIN render through the same detour gains nothing.
+	{
+		const JsonValue drv = driveDriverPath( 20, "", /*hasInline*/false, 0 );
+		Check( !drv.has( "png_base64" ) && !drv.has( "byteLength" ) &&
+		       !drv.has( "imageWidth" ) && !drv.has( "imageHeight" ),
+		       "MONEY (h): a render with NO imageMaxEdge still carries no image fields through "
+		       "the detour -- the fold is opt-in, not always-on" );
+	}
+
+	// (i) OBJECTMAP: the drivers leave the parameter in place, so the RPC
+	// still refuses -- with the objectmap message, not the async one.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"render\",\"params\":"
+		        "{\"mode\":\"objectmap\",\"imageMaxEdge\":48,\"async\":true}}", "objectmap detour" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (i): objectmap + imageMaxEdge is STILL refused when the driver's async "
+		       "rides along -- a downscaled identity map never reaches the model" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos,
+		       "MONEY (i): and the message is the OBJECTMAP one (checked before async), so the "
+		       "model is told the read_image route out rather than about an async it never asked for" );
+	}
+
+	// (j) A FAILED render: `ok` false, cache untouched -- so folding
+	// unconditionally would have shipped the previous frame as this one's.
+	{
+		const JsonValue drv = driveDriverPath( 40, "\"view\":\"no_such_view\"", /*hasInline*/true, 48 );
+		Check( !drv.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render through the detour too" );
+		Check( !drv.has( "png_base64" ) && !drv.has( "imageWidth" ),
+		       "MONEY (j): the failed render carries NO inline image" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}",
+		        "post-failure cache probe" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "MONEY (j): ...even though the cache still holds a perfectly good EARLIER frame, "
+		       "which an unconditional fold would have attached as a lie" );
+	}
+
+	// (l) THE STAGING WINDOW.  `imageMaxEdge` is CLAMPED into [16,1024] only
+	// for values ParseClampedUInt accepts; outside its [-2^31, 2^31-1] window
+	// it is REJECTED.  That distinction is invisible until it bites: a driver
+	// that staged such a value would strip it, run the render, and then get the
+	// same rejection back from its own read_image fetch -- handing the model
+	// ok:true with no image AND no error, the one outcome the fold exists to
+	// prevent.  Both halves of that asymmetry are pinned here, because the
+	// drivers' range guard is written against them.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"render\",\"params\":{\"imageMaxEdge\":1e30}}",
+		        "out-of-window sync render" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): a finite but out-of-int32 imageMaxEdge is REJECTED by the synchronous "
+		       "form, not clamped -- so a driver must not stage it" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"read_image\",\"params\":{\"maxEdge\":1e30}}",
+		        "out-of-window read_image" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): ...and the fold's own read_image rejects it identically, which is why "
+		       "staging it would silently yield a render with no image and no error" );
+		// The window's edge really is a clamp on the inside, so the guard is a
+		// window and not a blanket rejection of large values.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":62,\"method\":\"render\",\"params\":{\"imageMaxEdge\":2000000000}}",
+		        "in-window huge render" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) > 0,
+		       "MONEY (l): a huge but IN-window value is clamped and still returns an image -- the "
+		       "drivers' guard must reproduce the window, not just refuse big numbers" );
+	}
+
+	// (k) The pixels are CACHE-SCOPED: a sibling session over the same Job has
+	// its own last-render cache at the library default, so a fold routed to a
+	// session outside the render's cache group attaches nothing at all.  (The
+	// GUI opts its three in-app sessions into ONE shared cache -- see this
+	// case's heading for why that does not make the pin pointless.)
+	{
+		std::unique_ptr<AgentSession> sibling = AgentSession::WrapJob( pJob );
+		Check( sibling != nullptr, "a sibling session wraps the same Job" );
+		if( sibling ) {
+			AgentRpcDispatcher siblingRpc( std::move( sibling ) );
+			JsonValue sEnv; std::string sErr;
+			Check( JsonParse( siblingRpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}" ),
+				sEnv, sErr ), "sibling read_image response parses" );
+			Check( sEnv.get( "result" ).get( "byteLength" ).asNumber( -1 ) == 0,
+			       "MONEY (k): a DEFAULT-isolated sibling session returns byteLength 0 -- the "
+			       "render's pixels live in a cache the fetch has to reach, not in a global slot" );
+		}
+	}
+
+	session->AttachController( nullptr );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1654,6 +1901,7 @@ int main()
 	RunQueryObjectAtPreservesImageCacheTest();
 	RunVerticalAsymmetryTest();
 	RunInlineRenderImageTest();
+	RunDriverAsyncInlineImageTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -794,10 +794,11 @@ final class ChatViewModel: ObservableObject {
     ///
     /// Why pin at all: renderJobIds themselves are addressable from any
     /// session on the same controller (they are minted BY the controller),
-    /// but two things about a render job are session-scoped — `render_wait`'s
-    /// optional `result` payload, and the last-render PNG cache `read_image`
-    /// serves.  Poll from a sibling session and the job completes with no
-    /// result to report.  Full derivation in
+    /// but ONE thing about a render job is session-scoped — `render_wait`'s
+    /// optional `result` payload.  Poll from a sibling session and the job
+    /// completes with no result to report.  (The last-render PNG cache is
+    /// NOT session-scoped: the three in-app sessions share one
+    /// AgentImageCache, so read_image reaches the pixels from any of them.)  Full derivation in
     /// `-agentHandleToolCall:autonomy:`'s doc in RISEViewportBridge.h.
     ///
     /// Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
@@ -3233,6 +3234,26 @@ final class ChatViewModel: ObservableObject {
     /// param fields (width/height/camera/samples all pass through
     /// unchanged).
     ///
+    /// ONE EXCEPTION, and the reason for it: `imageMaxEdge`. The RPC
+    /// refuses that parameter together with `async` (AgentRpc.cpp), and
+    /// for a raw async caller that refusal is correct — the submit
+    /// returns before any pixels exist. But this driver injects `async`
+    /// behind the model's back on EVERY render, so the pair collided on
+    /// a call the model was explicitly taught to make, and the one-call
+    /// observe form was unreachable from in-app chat: in the recorded
+    /// 2026-07-29 GUI trajectory the model called
+    /// `render{imageMaxEdge:192,samples:32}`, got -32602, and fell back
+    /// to render + read_image for all five later looks. So this method
+    /// STRIPS `imageMaxEdge` before injecting `async` and re-applies its
+    /// EFFECT itself once the render completes, fetching the image at
+    /// that same bound on the SAME pinned session and folding
+    /// png_base64/byteLength/imageWidth/imageHeight into the downgraded
+    /// result — the model sees precisely what the synchronous one-call
+    /// form returns. The RPC-level refusal is left intact for genuine
+    /// async callers, and every case the driver cannot honour itself
+    /// (mode:"objectmap", a non-numeric value) is left in the line so
+    /// the RPC still answers it — see `stageInlineImageMaxEdge`.
+    ///
     /// Returns the JSON-RPC response line to feed into `addToolResult`.
     /// On any refusal/malformed-response/timeout-exhaustion path this
     /// returns an HONEST result (a JSON-RPC success envelope whose
@@ -3252,8 +3273,10 @@ final class ChatViewModel: ObservableObject {
         // drain poll in cancelAnyOutstandingChatRender) reaches the session
         // that actually RAN it.  Not because the job id would otherwise be
         // unresolvable — it resolves on any session attached to the same
-        // controller — but because render_wait's `result` payload and the
-        // read_image PNG cache both live on the running session.
+        // controller — but because render_wait's `result` payload lives on
+        // the running session.  NOT the PNG cache: the three in-app
+        // sessions deliberately share one AgentImageCache, so pixels are
+        // reachable from any of them.
         //
         // This pins WHICH SESSION, not what that session may do: the live
         // autonomy posture still applies to it, so a mid-render drop to
@@ -3263,14 +3286,24 @@ final class ChatViewModel: ObservableObject {
         let pinnedAutonomy = vb.agentAutonomyLevel
         outstandingChatRenderAutonomy = pinnedAutonomy
 
+        // Take the model's `imageMaxEdge` (the one-call observe form) out
+        // of the line the RPC will see, so it does not collide with the
+        // `async` this driver is about to inject, and remember the bound
+        // so the completion path below can honour it itself.  See this
+        // method's doc for why the RPC's own refusal is right and must
+        // stay.  Absent / not-ours-to-honour → nil, line unchanged.
+        let staged = Self.stageInlineImageMaxEdge(fromJsonRpcLine: submitLine)
+
         // Inject {"async":true} into the params object.  A parse failure
         // here (should not happen — toolCallToJsonRpcLine always emits
         // well-formed JSON) falls back to the ORIGINAL synchronous call:
         // still correct, just blocking, which is strictly better than
-        // fabricating a bogus response.  Still routed to the pinned
+        // fabricating a bogus response.  That fallback uses the UNSTAGED
+        // line, so the RPC's own synchronous handler attaches the inline
+        // image exactly as it always did.  Still routed to the pinned
         // session, so the ReadImage cache it populates is the one a
         // following `read_image` tool call will read.
-        guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: submitLine) else {
+        guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: staged.line) else {
             return vb.agentHandleToolCall(submitLine, autonomy: pinnedAutonomy)
         }
 
@@ -3393,7 +3426,14 @@ final class ChatViewModel: ObservableObject {
                 // returned for this same tool call.
                 finishChatRenderOccupancy(jobId: jobId)
                 if let inner = waitResult["result"] as? [String: Any] {
-                    return Self.makeSyntheticResponseLine(result: inner)
+                    // Re-apply the `imageMaxEdge` effect the submit could
+                    // not carry (see this method's doc).  A no-op when the
+                    // model did not ask for it, and when the render did
+                    // not succeed.
+                    return Self.makeSyntheticResponseLine(
+                        result: Self.foldingInlineImage(
+                            into: inner, maxEdge: staged.inlineImageMaxEdge,
+                            vb: vb, autonomy: pinnedAutonomy))
                 }
                 // completed==true but no cached result (shouldn't happen
                 // for a job this method itself submitted — the session
@@ -3428,6 +3468,113 @@ final class ChatViewModel: ObservableObject {
             let outLine = String(data: outData, encoding: .utf8)
         else { return nil }
         return outLine
+    }
+
+    /// Split the model's `imageMaxEdge` out of a `render` request line.
+    ///
+    /// Returns the line to submit and, when the parameter was present AND
+    /// this driver can honour it itself, its value.  The parameter is left
+    /// IN PLACE (and the value reported as nil) in exactly the cases where
+    /// the RPC must remain the one to answer, so the model sees the same
+    /// -32602 the synchronous one-call form would have produced:
+    ///
+    ///   * `mode:"objectmap"` — an objectmap must be read at native size;
+    ///     a box downscale blends the flat identity colours and breaks the
+    ///     exact-byte legend match.  Refused, never folded.  (The RPC
+    ///     checks objectmap BEFORE async, so the model gets the
+    ///     objectmap-specific message with its read_image route out.)
+    ///   * a value the RPC would REJECT rather than clamp — a non-number,
+    ///     a boolean, or a number outside `ParseClampedUInt`'s accepted
+    ///     window.  Its `-32602` is the message to give, not a driver
+    ///     guess.  `imageMaxEdge:null` reads as absent to both sides.
+    ///
+    /// The accepted window is the subtle one, and getting it wrong is
+    /// silent: `ParseClampedUInt` (AgentRpc.cpp) CLAMPS into [16,1024]
+    /// only for values it accepts, and it accepts only finite numbers in
+    /// [-2^31, 2^31-1] — anything else is a `-32602`. So the driver may
+    /// stage exactly the values the RPC would have clamped. Staging a
+    /// value it would have REJECTED (e.g. `1e30`) runs the render, then
+    /// hands the same rejection to the fold's own `read_image`, which
+    /// attaches nothing — and the model gets `ok:true` with no image and
+    /// no error, which is the one outcome this whole path exists to
+    /// prevent. Inside the window the raw value is passed through
+    /// untouched, so the clamp is reproduced rather than re-implemented.
+    private static func stageInlineImageMaxEdge(fromJsonRpcLine line: String)
+        -> (line: String, inlineImageMaxEdge: Double?)
+    {
+        guard
+            let data = line.data(using: .utf8),
+            var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            var params = obj["params"] as? [String: Any],
+            let raw = params["imageMaxEdge"]
+        else { return (line, nil) }
+        if (params["mode"] as? String) == "objectmap" { return (line, nil) }
+        // JSONSerialization bridges JSON `true`/`false` to NSNumber too, and
+        // `as? NSNumber` would happily accept them — but the RPC's
+        // JsonValue::isNumber() does not, so a bool has to reach it.
+        guard
+            CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+            let number = raw as? NSNumber,
+            number.doubleValue.isFinite,
+            // ParseClampedUInt's own bounds, mirrored exactly.
+            number.doubleValue >= -2147483648.0,
+            number.doubleValue <= 2147483647.0
+        else { return (line, nil) }
+        params.removeValue(forKey: "imageMaxEdge")
+        obj["params"] = params
+        guard
+            let outData = try? JSONSerialization.data(withJSONObject: obj),
+            let outLine = String(data: outData, encoding: .utf8)
+        else { return (line, nil) }
+        return (outLine, number.doubleValue)
+    }
+
+    /// Fold the inline render image into a completed async render's
+    /// downgraded result, reproducing what `render{imageMaxEdge:N}` does
+    /// synchronously in AgentRpc.cpp.
+    ///
+    /// Two guards mirror that handler exactly:
+    ///   * `ok` must be true.  On a failed or cancelled render the session
+    ///     cache still holds the PREVIOUS frame, and returning those pixels
+    ///     as this call's image would be a lie.
+    ///   * an empty payload attaches nothing (the handler's `!png.empty()`).
+    ///
+    /// The fetch goes through `agentHandleToolCall(_:autonomy:)` with the
+    /// JOB'S PINNED autonomy, for the same reason every other call in this
+    /// job's lifecycle does — NOT because the pixels would otherwise be
+    /// unreachable.  Since 2026-07 the last-render PNG cache is SHARED by
+    /// the three in-app sessions, so a sibling would find this render's
+    /// pixels either way (see `executeRenderToolCallAsync`'s SESSION
+    /// ROUTING note).  What the pin buys here is that the fold runs under
+    /// the same session and posture as the render it belongs to, instead
+    /// of re-selecting a session mid-job.  `read_image` is on the
+    /// read-safe allowlist, so no posture refuses it.  It is a MainActor-synchronous
+    /// call like every other one in this method, and costs one PNG encode
+    /// of a ≤1024px image — the same encode the model's own follow-up
+    /// `read_image` used to cost, now without the round trip.
+    private static func foldingInlineImage(
+        into result: [String: Any], maxEdge: Double?,
+        vb: RISEViewportBridge, autonomy: RISEAgentAutonomyLevel
+    ) -> [String: Any] {
+        guard let maxEdge = maxEdge else { return result }
+        guard (result["ok"] as? Bool) == true else { return result }
+        let readLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_image\"," +
+            "\"params\":{\"maxEdge\":\(maxEdge)}}"
+        let response = vb.agentHandleToolCall(readLine, autonomy: autonomy)
+        guard
+            let data = response.data(using: .utf8),
+            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let readResult = obj["result"] as? [String: Any],
+            let b64 = readResult["png_base64"] as? String, !b64.isEmpty
+        else { return result }
+        var out = result
+        out["png_base64"] = b64
+        out["byteLength"] = readResult["byteLength"] ?? 0
+        // NOT "width"/"height" — those are the RENDER's dims, already in
+        // `result`.  These are the returned image's, same as the handler.
+        out["imageWidth"] = readResult["width"] ?? 0
+        out["imageHeight"] = readResult["height"] ?? 0
+        return out
     }
 
     /// Build a plain JSON-RPC success envelope {"jsonrpc":"2.0","id":0,

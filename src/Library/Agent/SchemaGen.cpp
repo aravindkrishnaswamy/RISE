@@ -189,8 +189,16 @@ namespace RISE
 		{
 			const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
 			if( !d ) {
+				// `keyword` echoes what was ASKED FOR, so this object is
+				// self-identifying exactly like a successful one.  It matters in
+				// read_schema's batch form: an element that failed to resolve has
+				// no descriptor to name itself from, and without this a caller
+				// would have to count array positions to find out which of its
+				// keywords was the typo.
 				std::string out;
-				out += "{\"error\":";
+				out += "{\"keyword\":";
+				AppendJsonString( out, keyword );
+				out += ",\"error\":";
 				AppendJsonString( out, "unknown chunk type '" + keyword + "'" );
 				out += '}';
 				return out;

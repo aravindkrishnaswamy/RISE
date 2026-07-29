@@ -38,6 +38,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <cstring>   // std::strlen -- read_schema batch-cap parity scan
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -722,22 +723,22 @@ int main()
 		          != std::string::npos
 		       && macRenderSubmitBody.find( "agentHandleLine" ) == std::string::npos,
 		       "macOS chat render submit+poll run on the AUTONOMY-SELECTED session (agentHandleToolCall, pinned), "
-		       "never the administrative agentHandleLine -- read_image's PNG cache is PER-SESSION, so splitting "
-		       "them again makes read_image return 0 bytes or a stale objectmap" );
+		       "never the administrative agentHandleLine -- render_wait's `result` payload is PER-SESSION, so "
+		       "splitting them again makes the poll complete with no result to report" );
 		const std::string macRenderDrainBody = bodyBetween( macChat,
 			"private func waitForChatRenderDrain(", "private func finishChatRenderOccupancy" );
 		Check( !macRenderDrainBody.empty()
 		       && macRenderDrainBody.find( "vb.agentHandleToolCall(waitLine, autonomy:" )
 		          != std::string::npos
 		       && macRenderDrainBody.find( "agentHandleLine" ) == std::string::npos,
-		       "macOS chat render DRAIN poll stays on the pinned tool-call session (same per-session cache reason)" );
+		       "macOS chat render DRAIN poll stays on the pinned tool-call session (same per-session render_wait result reason)" );
 		const std::string macRenderCancelBody = bodyBetween( macChat,
 			"private func cancelAnyOutstandingChatRender()", "private func beginChatRenderDrain" );
 		Check( !macRenderCancelBody.empty()
 		       && macRenderCancelBody.find( "vb.agentHandleToolCall(line, autonomy:" )
 		          != std::string::npos
 		       && macRenderCancelBody.find( "agentHandleLine" ) == std::string::npos,
-		       "macOS chat render CANCEL stays on the pinned tool-call session (same per-session cache reason)" );
+		       "macOS chat render CANCEL stays on the pinned tool-call session (same per-session render_wait result reason)" );
 		const std::string winRenderSubmitBody = bodyBetween( winChat,
 			"void ChatPanel::startAsyncRenderToolCall", "void ChatPanel::pollOutstandingRender()" );
 		Check( !winRenderSubmitBody.empty()
@@ -745,17 +746,20 @@ int main()
 		          != std::string::npos
 		       && winRenderSubmitBody.find( "agentHandleLine" ) == std::string::npos,
 		       "Windows chat render SUBMIT runs on the autonomy-selected session (agentHandleToolCall, pinned), "
-		       "never the administrative agentHandleLine -- read_image's PNG cache is PER-SESSION" );
+		       "never the administrative agentHandleLine -- render_wait's `result` payload is PER-SESSION" );
+		// Ends at foldInlineImageIntoRenderResult, which now sits between the
+		// poll and the cancel -- so this span still means "the poll body".
 		const std::string winRenderPollBody = bodyBetween( winChat,
-			"void ChatPanel::pollOutstandingRender()", "void ChatPanel::cancelOutstandingRender()" );
+			"void ChatPanel::pollOutstandingRender()",
+			"QJsonObject ChatPanel::foldInlineImageIntoRenderResult" );
 		Check( !winRenderPollBody.empty()
 		       && winRenderPollBody.find( "m_bridge->agentHandleToolCall(" ) != std::string::npos
 		       && winRenderPollBody.find( "agentHandleLine" ) == std::string::npos,
-		       "Windows chat render POLL stays on the pinned tool-call session (same per-session cache reason)" );
+		       "Windows chat render POLL stays on the pinned tool-call session (same per-session render_wait result reason)" );
 		Check( !winCancelRender.empty()
 		       && winCancelRender.find( "m_bridge->agentHandleToolCall(" ) != std::string::npos
 		       && winCancelRender.find( "agentHandleLine" ) == std::string::npos,
-		       "Windows chat render CANCEL stays on the pinned tool-call session (same per-session cache reason)" );
+		       "Windows chat render CANCEL stays on the pinned tool-call session (same per-session render_wait result reason)" );
 		// INVERSE regression: the ORDINARY (non-render) tool dispatch site
 		// must keep using agentHandleToolCall too -- "fix" the routing by
 		// moving everything to agentHandleLine and the split reappears from
@@ -809,6 +813,204 @@ int main()
 			Check( winBridgeCode.find( "MakeSharedImageCache()" ) != std::string::npos
 			       && countOccurrences( winBridgeCode, "inAppImageCache" ) >= 4,
 			       "Windows bridge: all THREE in-app sessions share ONE AgentImageCache handle" );
+		}
+
+		// ---- read_schema batch-cap parity ---------------------------------
+		// GROUND TRUTH IS THE CODE.  `read_schema`'s batch cap is one constant
+		// (`kMaxBatch` in AgentRpc.cpp) restated in FIVE places a reader or a
+		// model relies on: the wire doc (AgentRpc.h), the chat tool prose AND
+		// its `keywords` parameter description (AgentChatCodecs.cpp), the MCP
+		// parameter description (AgentMcpAdapter.cpp), and the system prompt
+		// (AgentChatLoop.cpp).  Hand-maintaining five copies of a number is
+		// exactly the drift the verb-set parity block above exists to stop, and
+		// a stale copy here is a lie told to the model on every turn -- it would
+		// spend a round trip discovering the real limit.
+		//
+		// So: parse the cap out of the code, then require every "at most <N>"
+		// that sits near the word `keywords` in those files to BE that number.
+		// The anchor is deliberately narrow (a specific phrase, in a window
+		// around the parameter name) so unrelated prose with numbers in it is
+		// invisible -- and the corollary, stated here because it is the
+		// maintenance rule, is that a NEW restatement must use the "at most
+		// <N>" phrasing near `keywords`, CONTIGUOUS within one string literal,
+		// to buy coverage.  (A cap split across a literal boundary -- `"at most
+		// " "24 ..."` -- reads fine to a model but is invisible to this scan;
+		// one of the five was written that way and had to be reflowed.)
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string rpcCppSrc = slurp( agentDir / "AgentRpc.cpp" );
+			const std::string capAnchor = "const std::size_t kMaxBatch = ";
+			const size_t capAt = rpcCppSrc.find( capAnchor );
+			std::string capDigits;
+			if( capAt != std::string::npos ) {
+				size_t d = capAt + capAnchor.size();
+				while( d < rpcCppSrc.size() && isdigit( (unsigned char)rpcCppSrc[d] ) )
+					capDigits += rpcCppSrc[d++];
+			}
+			Check( !capDigits.empty(),
+			       "read_schema cap parity: parsed kMaxBatch out of AgentRpc.cpp (got \"" +
+			       capDigits + "\")" );
+
+			static const char* const kCapSurfaces[] = {
+				"AgentRpc.h", "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp", "AgentChatLoop.cpp" };
+			const char* const kPhrase = "at most ";
+			std::vector<std::string> capProblems;
+			int capMentions = 0;
+			for( const char* fname : kCapSurfaces ) {
+				// Case-folded scan: a doc comment legitimately opens the
+				// sentence with "At most 24 ...".  tolower does not touch the
+				// digits, so offsets and the captured number are unaffected.
+				std::string src = slurp( agentDir / fname );
+				for( char& ch : src ) ch = (char)tolower( (unsigned char)ch );
+				int inThisFile = 0;
+				for( size_t p = src.find( kPhrase ); p != std::string::npos;
+				     p = src.find( kPhrase, p + 1 ) ) {
+					size_t d = p + std::strlen( kPhrase );
+					std::string digits;
+					while( d < src.size() && isdigit( (unsigned char)src[d] ) ) digits += src[d++];
+					if( digits.empty() ) continue;
+					// Only the mentions that are ABOUT this parameter.
+					const size_t lo = p > 400 ? p - 400 : 0;
+					const size_t hi = std::min( src.size(), p + 400 );
+					if( src.substr( lo, hi - lo ).find( "keywords" ) == std::string::npos ) continue;
+					++capMentions;
+					++inThisFile;
+					if( digits != capDigits ) {
+						capProblems.push_back( std::string( fname ) + ": says \"at most " + digits +
+							"\" near `keywords` but AgentRpc.cpp's kMaxBatch is " + capDigits );
+					}
+				}
+				if( inThisFile == 0 ) {
+					capProblems.push_back( std::string( fname ) +
+						": states no \"at most <N>\" cap near `keywords` -- a surface that "
+						"describes the batch form must state the limit, or the reader/model "
+						"has to discover it by being refused" );
+				}
+			}
+			for( const std::string& p : capProblems )
+				std::cout << "  READ_SCHEMA CAP DRIFT: " << p << std::endl;
+			Check( capProblems.empty() && capMentions >= 5,
+			       "read_schema's batch cap is stated identically in every surface that "
+			       "describes it, and equals AgentRpc.cpp's kMaxBatch (mentions checked: " +
+			       std::to_string( capMentions ) + ")" );
+		}
+
+		// ---- render{imageMaxEdge} through the drivers' async detour -------
+		// WHY THIS IS GUARDED IN SOURCE.  `render{imageMaxEdge:N}` returns the
+		// PNG inline so an ordinary look costs ONE turn.  The RPC refuses that
+		// parameter alongside `async` -- right for a raw async caller, since
+		// the submit returns before pixels exist -- but BOTH GUI drivers
+		// transparently inject `{"async":true}` into EVERY render, and the
+		// model is never taught `async`.  So the pair collided on a call the
+		// model IS taught to make and the one-call form was unreachable from
+		// the only transport it was built for: in the recorded 2026-07-29 GUI
+		// trajectory the model called render{imageMaxEdge:192,samples:32}, got
+		// -32602, and reverted to render + read_image for all five later looks.
+		//
+		// The fix is DRIVER-SIDE (strip the parameter before injecting async,
+		// re-apply its effect after completion), and driver source is not
+		// compiled by any test -- so these markers are what pin it.  The
+		// library-level sequence proof lives in AgentObjectMapTest's
+		// "drivers' async detour" case; it would still pass if either driver
+		// dropped the staging entirely.
+		//
+		// Six properties per platform: (1) the line SUBMITTED is the STAGED
+		// one, not the model's raw line -- otherwise the collision is back;
+		// (2) the fold runs on the JOB-PINNED session, never the
+		// administrative agentHandleLine -- NOT because a sibling could not
+		// see the pixels (the three in-app sessions share one AgentImageCache,
+		// asserted below) but so the fold runs under the same session and
+		// posture as the render it belongs to, like every other call in that
+		// job's lifecycle; (3) the fold is guarded on the render having
+		// SUCCEEDED, or a failed render would ship the previous frame's pixels
+		// as its own; (4) objectmap is NOT staged, so the RPC still refuses it
+		// rather than the driver silently downscaling an identity map; (5) the
+		// fold uses the MODEL'S staged bound, not a hardcoded one -- nothing
+		// else would catch `maxEdge: 192` baked in, since the library-level
+		// sequence test takes the bound as a parameter; (6) the completion
+		// path actually CALLS the fold -- an orphaned helper compiles clean on
+		// both platforms (an unused `private static func` draws no Swift
+		// diagnostic), so only a marker catches its removal.
+		{
+			const std::string macStageBody = bodyBetween( macChat,
+				"private static func stageInlineImageMaxEdge",
+				"private static func foldingInlineImage" );
+			const std::string macFoldBody = bodyBetween( macChat,
+				"private static func foldingInlineImage",
+				"private static func makeSyntheticResponseLine" );
+			Check( macRenderSubmitBody.find(
+			           "Self.injectAsyncTrue(intoJsonRpcLine: staged.line)" ) != std::string::npos
+			       && macRenderSubmitBody.find( "Self.stageInlineImageMaxEdge(fromJsonRpcLine: submitLine)" )
+			          != std::string::npos,
+			       "macOS chat render submits the STAGED line (imageMaxEdge removed) to the async "
+			       "wire form -- submitting the model's raw line reinstates the -32602 collision" );
+			Check( !macStageBody.empty()
+			       && macStageBody.find( "objectmap" ) != std::string::npos,
+			       "macOS staging leaves imageMaxEdge in place for mode:\"objectmap\", so the RPC "
+			       "still refuses it (a downscale breaks the identity-colour legend match)" );
+			Check( !macStageBody.empty()
+			       && macStageBody.find( "2147483647" ) != std::string::npos,
+			       "macOS staging mirrors ParseClampedUInt's ACCEPTED WINDOW -- staging a value "
+			       "the RPC would reject (not clamp) yields a render with no image and no error" );
+			Check( !macFoldBody.empty()
+			       && macFoldBody.find( "vb.agentHandleToolCall(readLine, autonomy:" ) != std::string::npos
+			       && macFoldBody.find( "agentHandleLine" ) == std::string::npos,
+			       "macOS inline-image fetch runs on the JOB-PINNED tool-call session, like every "
+			       "other call in that job's lifecycle -- never the administrative agentHandleLine" );
+			Check( !macFoldBody.empty()
+			       && macFoldBody.find( "(result[\"ok\"] as? Bool) == true" ) != std::string::npos,
+			       "macOS inline-image fold is guarded on ok==true -- a failed or cancelled render "
+			       "must attach nothing, not the PREVIOUS frame still in the cache" );
+			Check( !macFoldBody.empty()
+			       && macFoldBody.find( "\\(maxEdge)}}" ) != std::string::npos,
+			       "macOS inline-image fetch uses the MODEL'S staged bound, not a hardcoded one" );
+			Check( macRenderSubmitBody.find( "Self.foldingInlineImage(" ) != std::string::npos
+			       && macRenderSubmitBody.find( "staged.inlineImageMaxEdge" ) != std::string::npos,
+			       "macOS completion path actually CALLS the fold with the staged bound -- an "
+			       "orphaned helper draws no Swift diagnostic, so only this catches its removal" );
+
+			const std::string winStageBody = bodyBetween( winChat,
+				"QString stripInlineImageMaxEdge", "QString makeSyntheticResponseLine" );
+			const std::string winFoldBody = bodyBetween( winChat,
+				"QJsonObject ChatPanel::foldInlineImageIntoRenderResult",
+				"void ChatPanel::cancelOutstandingRender()" );
+			Check( winRenderSubmitBody.find( "injectAsyncTrue(stagedLine)" ) != std::string::npos
+			       && winRenderSubmitBody.find( "stripInlineImageMaxEdge(" ) != std::string::npos,
+			       "Windows chat render submits the STAGED line (imageMaxEdge removed) to the async "
+			       "wire form -- submitting the model's raw line reinstates the -32602 collision" );
+			Check( !winStageBody.empty()
+			       && winStageBody.find( "objectmap" ) != std::string::npos,
+			       "Windows staging leaves imageMaxEdge in place for mode:\"objectmap\", so the RPC "
+			       "still refuses it" );
+			Check( !winStageBody.empty()
+			       && winStageBody.find( "2147483647" ) != std::string::npos,
+			       "Windows staging mirrors ParseClampedUInt's ACCEPTED WINDOW (same reason)" );
+			Check( !winFoldBody.empty()
+			       && winFoldBody.find( "m_bridge->agentHandleToolCall(" ) != std::string::npos
+			       && winFoldBody.find( "m_outstandingRenderAutonomy" ) != std::string::npos
+			       && winFoldBody.find( "agentHandleLine" ) == std::string::npos,
+			       "Windows inline-image fetch runs on the JOB-PINNED tool-call session, like every "
+			       "other call in that job's lifecycle" );
+			Check( !winFoldBody.empty()
+			       && winFoldBody.find( "{ \"maxEdge\", maxEdge }" ) != std::string::npos
+			       && winFoldBody.find( "m_outstandingRenderInlineImageMaxEdge" ) != std::string::npos,
+			       "Windows inline-image fetch uses the MODEL'S staged bound, not a hardcoded one" );
+			Check( !winFoldBody.empty()
+			       && winFoldBody.find( "renderResult.value(\"ok\").toBool(false)" ) != std::string::npos,
+			       "Windows inline-image fold is guarded on ok==true -- a failed or cancelled render "
+			       "must attach nothing" );
+			Check( !winChat.empty()
+			       && winChat.find( "foldInlineImageIntoRenderResult(waitResult.value(\"result\").toObject())" )
+			          != std::string::npos,
+			       "Windows completion path folds the inline image into the downgraded result" );
+
+			// The RPC-level refusal is NOT weakened by any of the above: it is
+			// still right for a genuine async caller (`rise --agent-stdio`, an
+			// MCP client), which has no driver to re-apply the effect.
+			const std::string rpcSrc = slurp( repoRoot / "src" / "Library" / "Agent" / "AgentRpc.cpp" );
+			Check( rpcSrc.find( "'imageMaxEdge' is not supported with 'async'" ) != std::string::npos,
+			       "the RPC still refuses imageMaxEdge+async for RAW async callers -- the drivers "
+			       "work around it by staging, they do not weaken it" );
 		}
 
 		const std::string winOrdinaryToolBody = bodyBetween( winChat,

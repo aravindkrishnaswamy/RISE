@@ -1549,11 +1549,87 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 		       "(the predicate keys on the png_base64 field, not on the verb name alone)" );
 		plain.AddToolResult( st.toolCalls[0], resp );
 		const JsonValue pr = ParseBody( plain.BuildRequest( kApiKey ).body );
-		const JsonValue& pblocks = LastArrayEntry( pr, "messages" ).get( "content" ).at( 0 ).get( "content" );
+		// LastArrayEntry returns BY VALUE -- bind the entry to a named local
+		// before walking into it, or the reference dangles into a destroyed
+		// temporary.  (Pre-existing here; the assertion below is an ABSENCE
+		// check, so the UB read happened to look like a pass.)
+		const JsonValue plast = LastArrayEntry( pr, "messages" );
+		const JsonValue& pblocks = plast.get( "content" ).at( 0 ).get( "content" );
 		bool anyImage = false;
 		for( std::size_t i = 0; i < pblocks.size(); ++i )
 			if( pblocks.at( i ).get( "type" ).asString() == "image" ) anyImage = true;
 		Check( !anyImage, "T3b: ... and packs with no image block at all" );
+	}
+
+	// T3c: THE GUI DRIVERS' SYNTHETIC ENVELOPE also reaches the model as a
+	// real image block.
+	//
+	// In-app chat never delivers the dispatcher's own `render` response line:
+	// both GUI drivers upgrade the call to render{"async":true}, then rebuild
+	// the model-visible result themselves from render_wait's echo, wrapped in
+	// a synthetic {"jsonrpc":"2.0","id":0,"result":...} envelope.  Because the
+	// RPC refuses imageMaxEdge alongside async, the drivers strip the
+	// parameter and re-apply its effect by folding read_image's payload into
+	// that envelope.  IsImageResult keys on the verb name plus the
+	// png_base64 FIELD -- neither of which the synthetic wrapper changes --
+	// so the folded envelope must pack exactly like the synchronous one.
+	// Asserted BOTH ways, so a fold that wrote the wrong field name (or the
+	// right one into the wrong object) cannot pass.
+	{
+		AgentChatLoop drv;
+		drv.SetProvider( ChatProvider::Anthropic );
+		drv.AddUserMessage( "look at it" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_drv\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":32}}]",
+			"tool_use" );
+		ChatStepResult st = drv.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 1 ) { Check( false, "T3c: one render call expected" ); return; }
+
+		// The STAGED submit: imageMaxEdge removed (the drivers' staging step),
+		// so this is the statistics-only result render_wait would echo back.
+		JsonValue staged = ParseBody( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"render\",\"params\":{}}" ) ).get( "result" );
+		Check( staged.get( "ok" ).asBool(), "T3c: the staged (statistics-only) render succeeds" );
+		const std::string unfolded =
+			"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":" + JsonSerialize( staged ) + "}";
+		Check( !ChatToolResultCarriesImage( st.toolCalls[0], unfolded ),
+		       "T3c: PRECONDITION -- the synthetic envelope BEFORE the fold is not an image "
+		       "result (so the assertion below is the fold's doing, not the wrapper's)" );
+
+		// The FOLD: read_image at the model's bound, four fields grafted on.
+		const JsonValue ri = ParseBody( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"read_image\",\"params\":{\"maxEdge\":32}}" ) )
+			.get( "result" );
+		const std::string foldedB64 = ri.get( "png_base64" ).asString();
+		Check( !foldedB64.empty(), "T3c: read_image returns the staged render's pixels" );
+		staged.set( "png_base64", ri.get( "png_base64" ) );
+		staged.set( "byteLength", ri.get( "byteLength" ) );
+		staged.set( "imageWidth",  ri.get( "width" ) );
+		staged.set( "imageHeight", ri.get( "height" ) );
+		const std::string folded =
+			"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":" + JsonSerialize( staged ) + "}";
+		Check( ChatToolResultCarriesImage( st.toolCalls[0], folded ),
+		       "T3c: MONEY -- the drivers' FOLDED synthetic envelope IS an image result" );
+
+		drv.AddToolResult( st.toolCalls[0], folded );
+		const JsonValue body = ParseBody( drv.BuildRequest( kApiKey ).body );
+		// LastArrayEntry returns BY VALUE -- see the note above.
+		const JsonValue last = LastArrayEntry( body, "messages" );
+		const JsonValue& blocks = last.get( "content" ).at( 0 ).get( "content" );
+		std::string blockB64;
+		bool sawMeans = false;
+		for( std::size_t i = 0; i < blocks.size(); ++i ) {
+			const JsonValue& b = blocks.at( i );
+			if( b.get( "type" ).asString() == "image" )
+				blockB64 = b.get( "source" ).get( "data" ).asString();
+			else if( b.get( "type" ).asString() == "text" &&
+			         b.get( "text" ).asString().find( "meanR" ) != std::string::npos )
+				sawMeans = true;
+		}
+		Check( blockB64 == foldedB64,
+		       "T3c: MONEY -- the folded bytes ride to the model as a real image block, "
+		       "byte-identical to what read_image returned" );
+		Check( sawMeans, "T3c: the render statistics survive alongside it" );
 	}
 }
 

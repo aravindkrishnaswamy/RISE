@@ -16,6 +16,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QJsonObject>
 #include <QMap>
 #include <QDateTime>
 #include <QVector>
@@ -312,6 +313,11 @@ private:
     void processNextToolCall();
     void startAsyncRenderToolCall(const RISE::Agent::ChatToolCall& call,
                                    const std::string& submitLine);
+    // Re-apply the `imageMaxEdge` effect that startAsyncRenderToolCall
+    // stripped off the submit, so an async-driven render returns the same
+    // one-call observe result a synchronous render{imageMaxEdge:N} does.
+    // macOS sibling: ChatViewModel.foldingInlineImage.
+    QJsonObject foldInlineImageIntoRenderResult(const QJsonObject& renderResult);
     // FIX 2 (edit-refusal retry): park a WHOLLY-UNAPPLIED retriable edit
     // refusal and re-issue it after a short backoff that RETURNS TO THE
     // EVENT LOOP, instead of spending an LLM round-trip per retry.  Full
@@ -589,16 +595,26 @@ private:
     //
     // Why pin at all: renderJobIds themselves are addressable from any
     // session on the same controller (they are minted BY the controller),
-    // but two things about a render job are session-scoped -- render_wait's
-    // optional `result` payload, and the last-render PNG cache read_image
-    // serves.  Poll from a sibling session and the job completes with no
-    // result to report.  Full derivation in
+    // but ONE thing about a render job is session-scoped -- render_wait's
+    // optional `result` payload.  Poll from a sibling session and the job
+    // completes with no result to report.  (The last-render PNG cache is NOT
+    // session-scoped: the three in-app sessions share one AgentImageCache.)  Full derivation in
     // ViewportBridge::agentHandleToolCall(const QString&, AgentAutonomyLevel).
     //
     // Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
     // safety control, and a user who drops to Read mid-turn must have that
     // bind on the agent's very next tool call.
     AutonomyLevel m_outstandingRenderAutonomy = AutonomyLevel::Apply;
+    // The model's `imageMaxEdge` for the outstanding render, carried from
+    // startAsyncRenderToolCall (which STRIPS it out of the submit, so it
+    // cannot collide with the `async` this driver injects) to
+    // pollOutstandingRender (which re-applies its effect by fetching the
+    // image at that bound and folding it into the downgraded result).  A
+    // separate presence flag rather than a sentinel: 0 and negative values
+    // are legitimate model input, clamped to [16,1024] by the RPC.  Both
+    // are rewritten by every submit before any poll can read them.
+    bool m_outstandingRenderHasInlineImage = false;
+    double m_outstandingRenderInlineImageMaxEdge = 0.0;
     // True after render_cancel has been sent but before render_wait observes
     // actual worker completion.  The outstanding id deliberately remains
     // published during this drain so scene controls stay disabled.

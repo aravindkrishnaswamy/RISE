@@ -45,6 +45,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <cmath>      // std::isfinite -- inline-image maxEdge staging
 #include <utility>
 
 #include <ctime>
@@ -117,6 +118,69 @@ namespace
         QJsonObject params = obj.value("params").toObject();
         params["async"] = true;
         obj["params"] = params;
+        return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+
+    // Split the model's `imageMaxEdge` (the ONE-CALL observe form) out of a
+    // `render` request line.  Returns the line to submit; sets outMaxEdge +
+    // outHas when the parameter was present AND this driver can honour it
+    // itself.
+    //
+    // WHY THIS EXISTS.  The RPC refuses `imageMaxEdge` together with `async`
+    // (AgentRpc.cpp) -- correctly, for a raw async caller: the submit
+    // returns before any pixels exist.  But this driver injects `async`
+    // behind the model's back on EVERY render, so the pair collided on a
+    // call the model was explicitly taught to make and the one-call form was
+    // unreachable from in-app chat.  The parameter is stripped here and its
+    // EFFECT re-applied after completion (pollOutstandingRender), so the
+    // RPC-level refusal stays intact for genuine async callers.
+    //
+    // LEFT IN PLACE (outHas=false) in exactly the cases where the RPC must
+    // remain the one to answer, so the model sees the same -32602 the
+    // synchronous one-call form would have produced:
+    //   * mode:"objectmap" -- an objectmap must be read at native size; a
+    //     box downscale blends the flat identity colours and breaks the
+    //     exact-byte legend match.  (The RPC checks objectmap BEFORE async,
+    //     so the model gets the objectmap-specific message.)
+    //   * a value the RPC would REJECT rather than clamp -- a non-number, or
+    //     a number outside ParseClampedUInt's accepted window.  Its -32602 is
+    //     the message to give, not a driver guess.  QJsonValue::isDouble() is
+    //     false for bools and for null, matching JsonValue::isNumber() on the
+    //     far side.
+    // The accepted window is the subtle one, and getting it wrong is silent:
+    // ParseClampedUInt (AgentRpc.cpp) CLAMPS into [16,1024] only for values it
+    // accepts, and it accepts only finite numbers in [-2^31, 2^31-1] --
+    // anything else is a -32602.  Staging a value it would have REJECTED (e.g.
+    // 1e30) runs the render, then hands the same rejection to the fold's own
+    // read_image, which attaches nothing -- and the model gets ok:true with no
+    // image and no error, the one outcome this path exists to prevent.  Inside
+    // the window the raw value is passed through untouched, so the clamp is
+    // reproduced rather than re-implemented.
+    // std::isfinite (not RISE::IsFiniteDouble) is deliberate here: this file is
+    // the Qt GUI, built /fp:precise (RISE-GUI.vcxproj sets no FloatingPointModel),
+    // so the standard predicate is reliable; FiniteMath.h exists for the
+    // -ffast-math library builds, which this TU is not part of.
+    QString stripInlineImageMaxEdge(const QString& jsonRpcLine,
+                                    bool& outHas, double& outMaxEdge)
+    {
+        outHas = false;
+        outMaxEdge = 0.0;
+        const QJsonDocument doc = QJsonDocument::fromJson(jsonRpcLine.toUtf8());
+        if (!doc.isObject()) return jsonRpcLine;
+        QJsonObject obj = doc.object();
+        QJsonObject params = obj.value("params").toObject();
+        if (!params.contains("imageMaxEdge")) return jsonRpcLine;
+        if (params.value("mode").toString() == "objectmap") return jsonRpcLine;
+        const QJsonValue raw = params.value("imageMaxEdge");
+        if (!raw.isDouble()) return jsonRpcLine;
+        const double value = raw.toDouble();
+        if (!std::isfinite(value)) return jsonRpcLine;
+        // ParseClampedUInt's own bounds, mirrored exactly.
+        if (value < -2147483648.0 || value > 2147483647.0) return jsonRpcLine;
+        params.remove("imageMaxEdge");
+        obj["params"] = params;
+        outHas = true;
+        outMaxEdge = value;
         return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
     }
 
@@ -2365,8 +2429,9 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     // cancelOutstandingRender's render_cancel) reaches the session that
     // actually RAN it.  Not because the job id would otherwise be
     // unresolvable -- it resolves on any session attached to the same
-    // controller -- but because render_wait's `result` payload and the
-    // read_image PNG cache both live on the running session.  This pins
+    // controller -- but because render_wait's `result` payload lives on the
+    // running session.  NOT the PNG cache: the three in-app sessions
+    // deliberately share one AgentImageCache.  This pins
     // WHICH SESSION, not what that session may do: the live autonomy
     // posture still applies to it, so a mid-render drop to Read is not
     // defeated here.  Full derivation in ViewportBridge.h's
@@ -2388,6 +2453,16 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     const ViewportBridge::AgentAutonomyLevel pinnedAutonomy =
         static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy);
 
+    // Take the model's `imageMaxEdge` (the one-call observe form) out of
+    // the line the RPC will see, so it does not collide with the `async`
+    // injected just below, and remember the bound for pollOutstandingRender
+    // to honour on completion.  See stripInlineImageMaxEdge for why the
+    // RPC's own refusal is right and stays.  Both members are rewritten on
+    // EVERY submit, before any poll can read them.
+    const QString stagedLine = stripInlineImageMaxEdge(
+        toQString(submitLine), m_outstandingRenderHasInlineImage,
+        m_outstandingRenderInlineImageMaxEdge);
+
     // Upgrade the already-built synchronous-shaped JSON-RPC line to carry
     // {"async":true} -- the LLM-authored params (width/height/camera/
     // samples/...) pass through unchanged.  A parse failure here should
@@ -2396,7 +2471,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     // would silently re-block the GUI thread for the render's whole
     // duration, the exact failure mode this async path exists to prevent.
     // Refuse honestly instead; the model can retry.
-    const QString asyncLine = injectAsyncTrue(toQString(submitLine));
+    const QString asyncLine = injectAsyncTrue(stagedLine);
     if (asyncLine.isEmpty()) {
         m_activeRenderPending = false;
         const std::string resultLine = toStdString(makeSyntheticRenderResultLine(
@@ -2549,7 +2624,8 @@ void ChatPanel::pollOutstandingRender()
     // that job's stats) carries the EXACT synchronous-render shape.
     QString responseLine;
     if (waitResult.contains("result")) {
-        responseLine = makeSyntheticResponseLine(waitResult.value("result").toObject());
+        responseLine = makeSyntheticResponseLine(
+            foldInlineImageIntoRenderResult(waitResult.value("result").toObject()));
     } else {
         responseLine = makeSyntheticRenderResultLine(
             false, "render completed but no cached result was found");
@@ -2557,6 +2633,62 @@ void ChatPanel::pollOutstandingRender()
     updatePendingToolRow(m_activeRenderCall, toStdString(responseLine));
     m_loop->AddToolResult(m_activeRenderCall, toStdString(responseLine));
     processNextToolCall();
+}
+
+// Fold the inline render image into a completed async render's downgraded
+// result, reproducing what render{imageMaxEdge:N} does synchronously in
+// AgentRpc.cpp.  A no-op when the model did not ask for it.
+//
+// Two guards mirror that handler exactly:
+//   * `ok` must be true.  On a failed or cancelled render the session cache
+//     still holds the PREVIOUS frame, and returning those pixels as this
+//     call's image would be a lie.
+//   * an empty payload attaches nothing (the handler's !png.empty()).
+//
+// The fetch goes through agentHandleToolCall(line, autonomy) with the JOB'S
+// PINNED autonomy, for the same reason every other call in this job's
+// lifecycle does -- NOT because the pixels would otherwise be unreachable.
+// Since 2026-07 the last-render PNG cache is SHARED by the three in-app
+// sessions (ViewportBridge.cpp's MakeSharedImageCache), so a sibling would
+// find this render's pixels either way.  What the pin buys here is that the
+// fold runs under the same session and posture as the render it belongs to,
+// instead of re-selecting a session mid-job.  read_image is on
+// IsReadSafeVerb's allowlist, so no posture refuses it.  It costs one PNG
+// encode of a <=1024px image on the
+// GUI thread: the same encode the model's own follow-up read_image used to
+// cost, now without the round trip.
+QJsonObject ChatPanel::foldInlineImageIntoRenderResult(const QJsonObject& renderResult)
+{
+    if (!m_outstandingRenderHasInlineImage) return renderResult;
+    const double maxEdge = m_outstandingRenderInlineImageMaxEdge;
+    m_outstandingRenderHasInlineImage = false;
+    m_outstandingRenderInlineImageMaxEdge = 0.0;
+    if (!renderResult.value("ok").toBool(false)) return renderResult;
+    if (!m_bridge) return renderResult;
+
+    const QString readLine = buildJsonRpcLine("read_image", QJsonObject{
+        { "maxEdge", maxEdge }
+    });
+    const QString readResponse = m_bridge->agentHandleToolCall(
+        readLine, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
+    const QJsonDocument readDoc = QJsonDocument::fromJson(readResponse.toUtf8());
+    if (!readDoc.isObject()) return renderResult;
+    const QJsonObject readResult = readDoc.object().value("result").toObject();
+    const QString b64 = readResult.value("png_base64").toString();
+    if (b64.isEmpty()) return renderResult;
+
+    QJsonObject out = renderResult;
+    out["png_base64"] = b64;
+    // toDouble() rather than the raw QJsonValue: assigning an Undefined
+    // value REMOVES the key in QJsonObject, and the synchronous handler
+    // always emits all four fields together.  (read_image always sets
+    // them alongside a non-empty payload, so this is belt-and-braces.)
+    out["byteLength"] = readResult.value("byteLength").toDouble(0.0);
+    // NOT "width"/"height" -- those are the RENDER's dims, already in
+    // `renderResult`.  These are the returned image's, same as the handler.
+    out["imageWidth"] = readResult.value("width").toDouble(0.0);
+    out["imageHeight"] = readResult.value("height").toDouble(0.0);
+    return out;
 }
 
 void ChatPanel::cancelOutstandingRender()

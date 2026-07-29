@@ -309,12 +309,17 @@ namespace RISE
 				// read_schema
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "keyword", StringProp( "OPTIONAL chunk keyword (e.g. \"sphere_geometry\"). Omit for the schema of the WHOLE scene-file grammar." ) );
+					props.set( "keywords", StringArrayProp( "PREFERRED when you need more than one: an array of chunk keywords (at most 24, counting 'keyword' if you also send it) fetched in ONE call. 'schema' is then an ARRAY POSITIONALLY ALIGNED with this one -- schema[i] is keywords[i], never reordered, never collapsed -- and each entry also names its own 'keyword'. An unrecognized keyword occupies its own slot as {keyword, error}. Batch the chunk kinds you have DECIDED to use (typically 4-8); a full 24-entry batch runs roughly 30-45 KB depending on which kinds." ) );
+					props.set( "keyword", StringProp( "OPTIONAL single chunk keyword (e.g. \"sphere_geometry\"). Use 'keywords' instead when you want two or more." ) );
+					props.set( "category", StringProp( "OPTIONAL chunk category (e.g. \"material\", \"geometry\", \"painter\", \"light\", \"rasterizer\") to CHEAPLY list that category's keywords + one-line descriptions -- discovery only, no parameters. Follow it with ONE 'keywords' batch. Ignored when 'keyword' or 'keywords' is supplied." ) );
 					tools.push_back( MakeTool( "read_schema",
-						"Read the JSON Schema for one scene-file chunk keyword, or the whole "
-						"grammar when 'keyword' is omitted. STATELESS -- works with no scene loaded. "
-						"The descriptor registry IS the accepted-parameter set, so this schema can "
-						"never drift from what the parser actually accepts.",
+						"Read the JSON Schema for scene-file chunks. Pass 'keywords' (an array) to "
+						"fetch SEVERAL chunk schemas in one call -- the default way to prepare for "
+						"authoring, instead of a round-trip per chunk kind; 'keyword' for exactly "
+						"one; 'category' to cheaply discover which chunk kinds exist; all three "
+						"omitted for the WHOLE grammar (large). STATELESS -- works with no scene "
+						"loaded. The descriptor registry IS the accepted-parameter set, so this "
+						"schema can never drift from what the parser actually accepts.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

@@ -16,7 +16,21 @@
 //
 //    Methods (mapped to AgentSession):
 //      read_document                     -> {document:string, hasDocument:bool, headVersion:{uuid,revision}}
-//      read_schema  {keyword?}           -> the schema JSON (as a nested object)
+//      read_schema  {keyword?,keywords?,
+//                    category?}          -> {schema:...}.  `keywords` (array) is the
+//                                           BATCH form: `schema` is an ARRAY
+//                                           POSITIONALLY ALIGNED with it -- schema[i]
+//                                           is keywords[i], not deduped and not
+//                                           reordered -- with `keyword`, if also
+//                                           given, APPENDED after.  At most 24 chunk
+//                                           keywords across BOTH parameters.  Every
+//                                           entry names its own `keyword`, including
+//                                           an unresolved one, which is
+//                                           {keyword, error} in its own slot.
+//                                           `keyword` alone -> that one chunk's schema
+//                                           object; `category` alone -> the cheap
+//                                           keyword listing; neither -> the whole
+//                                           grammar.
 //      read_skill   {name?}              -> no name: {skills:[{name,title,hook},...], note?:string}
 //                                           (the INDEX; `note` appears only when the
 //                                            skills ROOT directory is missing, telling
@@ -141,7 +155,19 @@
 //                                            (-32602) with mode:"objectmap" --
 //                                            that must be read at NATIVE size --
 //                                            and with async, which returns before
-//                                            any pixels exist.  Still use the
+//                                            any pixels exist.  That async refusal
+//                                            is for RAW async callers only: the two
+//                                            GUI chat drivers inject async into
+//                                            every render behind the model's back,
+//                                            so they STRIP `imageMaxEdge` before
+//                                            submitting and re-apply its effect
+//                                            themselves once the render completes
+//                                            (ChatViewModel.stageInlineImageMaxEdge
+//                                            / foldingInlineImage, ChatPanel's
+//                                            stripInlineImageMaxEdge /
+//                                            foldInlineImageIntoRenderResult) --
+//                                            the one-call form IS reachable from
+//                                            in-app chat.  Still use the
 //                                            separate read_image for a SECOND
 //                                            bound on the same render, and for
 //                                            representation:"perception".)

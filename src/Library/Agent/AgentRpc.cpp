@@ -875,12 +875,46 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// read_schema {keyword?} -> the schema JSON (nested object)
+				// read_schema {keyword?, keywords?, category?} -> the schema JSON
 				//   STATELESS: the schema is a pure descriptor-registry walk
 				//   (SchemaGenAll / SchemaGenForChunk touch NO Job), so it needs
 				//   NO loaded head -- an agent CONSTRUCTING a scene from scratch
 				//   reads the grammar first.  We call SchemaGen directly rather
 				//   than through the session so the no-head path works.
+				//
+				//   FOUR forms, resolved in this order:
+				//     `keywords` (array of strings) -> BATCH: `schema` is an
+				//       ARRAY that is POSITIONALLY ALIGNED with the request --
+				//       `schema[i]` is `keywords[i]`, always.  That is the whole
+				//       contract, and it is why this path does NOT dedupe and
+				//       does NOT reorder: a model that asks for [a,b,c] and
+				//       indexes the reply by position is doing the obvious
+				//       thing, and a silently shorter or reordered array is a
+				//       trap.  A repeated keyword therefore comes back twice
+				//       (the cap bounds the cost).  An unknown keyword occupies
+				//       ITS OWN slot as {keyword, error}, so one typo neither
+				//       fails the batch nor shifts its neighbours.  `keyword`,
+				//       when supplied alongside, is APPENDED after the array --
+				//       never prepended, which would shift every index by one --
+				//       so it lands at `schema[keywords.length]`.  Every entry
+				//       carries its own `keyword` field regardless, so an
+				//       element is attributable without counting at all.
+				//       Measured motivation: a recorded 48-turn GUI scene build
+				//       spent 21 of its 47 tool calls on read_schema -- 16 of
+				//       those one keyword at a time.
+				//     `keyword` (string) -> ONE chunk's full schema (object).
+				//     `category` (string) -> the CHEAP LISTING (discovery-cost
+				//       fix): just that category's keyword list + one-line
+				//       descriptions, NOT the ~286 KB whole-grammar dump.
+				//       Deliberately still names-only, and deliberately NOT
+				//       batchable here: this verb's batching covers the
+				//       per-keyword fetches (16 of the 21 calls above), not the
+				//       5 category listings.  A `categories` array would close
+				//       that remainder and is a known, unimplemented gap -- the
+				//       guidance now steers a model that already knows what it
+				//       wants straight to `keywords`, which is where the bulk of
+				//       the waste was.
+				//     neither -> the whole grammar.
 				//--------------------------------------------------------------
 				if( m == "read_schema" ) {
 					std::string keyword;
@@ -889,17 +923,75 @@ namespace RISE
 						else if( !kw->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'keyword' must be a string" );
 					}
-					// CHEAP LISTING mode (discovery-cost fix): {category:"<name>"}
-					// with NO keyword returns just the keyword list (+ one-line
-					// descriptions) of that category, NOT the ~300KB full dump.
-					// `keyword` takes precedence if BOTH are supplied (a single
-					// chunk is more specific than its category).
+					// Type-checked HERE, above the batch branch, even though the
+					// batch ignores its value: otherwise {"keywords":["x"],
+					// "category":5} would succeed silently while
+					// {"keyword":"x","category":5} is a clean -32602 -- the same
+					// malformed value diagnosed on one form and not the other.
 					std::string category;
 					if( const JsonValue* cat = params.find( "category" ) ) {
 						if( cat->isString() ) category = cat->asString();
 						else if( !cat->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'category' must be a string" );
 					}
+					// BATCH form.  PRESENCE of the array (even empty) selects it,
+					// so `keywords:[]` honestly returns an empty array rather than
+					// silently falling through to the whole-grammar dump.
+					const JsonValue* kws = params.find( "keywords" );
+					if( kws && kws->isNull() ) kws = nullptr;
+					if( kws && !kws->isArray() )
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'keywords' must be an array of strings" );
+					if( kws ) {
+						// The cap bounds ONE result's cost; an unbounded array is
+						// a token bomb.  24 is set from the largest observed real
+						// need with headroom: the recorded build above wanted 16
+						// distinct keywords, which total ~21 KB of schema against
+						// the whole-grammar dump's ~286 KB.  (A previous version
+						// of this comment claimed the bare dump becomes the
+						// cheaper call "well past two dozen".  It does not, at
+						// ANY size: the dump measures 286,275 B while the sum of
+						// all 157 per-chunk schemas is 282,636 B, so the dump is
+						// never cheaper -- not at 24, not at 157.  The cost bound
+						// above is the whole rationale.)
+						//
+						// It counts BOTH parameters, because both produce entries:
+						// with `keyword` appended, {keyword, keywords:[24]} would
+						// otherwise return 25 while every model-facing surface says
+						// 24.  The advertised number has to be the number the code
+						// enforces.  (The five surfaces that restate it are tied to
+						// this constant by SourceHygieneTest's read_schema batch-cap
+						// parity check -- update it here and they go red.)
+						//
+						// REJECTED, not truncated: a silent truncation would leave
+						// the caller believing it had every schema it asked for.
+						const std::size_t kMaxBatch = 24;
+						const std::size_t requested = kws->size() + ( keyword.empty() ? 0u : 1u );
+						if( requested > kMaxBatch )
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'keyword' and 'keywords' together accept at most " +
+								std::to_string( kMaxBatch ) + " chunk keywords (got " +
+								std::to_string( requested ) +
+								"); split the batch, or omit both for the whole grammar" );
+						// POSITIONAL ALIGNMENT (see this verb's doc): one entry per
+						// requested keyword, `keywords` first and in order, then
+						// `keyword`.  No dedupe, no reordering -- `schema[i]` is
+						// `keywords[i]`.
+						JsonValue arr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < kws->size(); ++i ) {
+							const JsonValue& e = kws->at( i );
+							if( !e.isString() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'keywords[" + std::to_string( i ) + "]' must be a string" );
+							arr.push_back( SchemaAsJson( RISE::Agent::SchemaGenForChunk( e.asString() ) ) );
+						}
+						if( !keyword.empty() )
+							arr.push_back( SchemaAsJson( RISE::Agent::SchemaGenForChunk( keyword ) ) );
+						JsonValue result = JsonValue::MakeObject();
+						result.set( "schema", arr );
+						return MakeSuccess( idValue, result );
+					}
+					// `keyword` takes precedence over `category` if BOTH are
+					// supplied (a single chunk is more specific than its category).
 					std::string schemaText;
 					if( !keyword.empty() )       schemaText = RISE::Agent::SchemaGenForChunk( keyword );
 					else if( !category.empty() ) schemaText = RISE::Agent::SchemaGenCategory( category );

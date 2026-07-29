@@ -155,6 +155,256 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	return path;
 }
 
+//----------------------------------------------------------------------
+// read_schema BATCH form -- {keywords:[...]}.
+//
+// MOTIVATION (measured, not guessed).  The recorded 2026-07-29 GUI scene
+// build (48 LLM turns, 47 tool calls) spent 21 of those tool calls on
+// read_schema -- 19 of them before the first edit -- in the index-then-fetch
+// shape: 5 {category:...} listings and 16 single-{keyword:...} fetches.
+// Every one of those fetches is a full LLM round trip that returns a static
+// descriptor dump.  The batch form collapses them into one call.
+//
+// WHAT MUST HOLD, and is proved below:
+//   (a) BATCH == N SINGLES.  Element i of the array is byte-identical to
+//       what {keyword:kw[i]} returns on its own -- one generator, not two.
+//   (b) The single and category forms are UNCHANGED (object result, not an
+//       array), so nothing that already worked moves.
+//   (c) The BOUND is enforced ACROSS BOTH PARAMETERS: over the cap is a
+//       clean -32602, never a silent truncation that would leave the caller
+//       believing it had every schema it asked for, and never a quiet 25th
+//       entry when every surface advertises 24.
+//   (d) An UNKNOWN keyword inside a batch keeps ITS OWN slot as
+//       {keyword, error}, so the good entries still arrive AT THEIR OWN
+//       INDEX and the bad one is attributable without counting.
+//   (e) POSITIONAL ALIGNMENT IS TOTAL: schema[i] is keywords[i] for every i.
+//       Not deduped (a repeated keyword comes back twice) and not reordered;
+//       `keyword`, if also sent, is APPENDED, never prepended -- prepending
+//       would shift every index by one, which is the trap this contract
+//       exists to avoid.
+//   (f) `keywords:[]` honestly returns an EMPTY array; it must NOT fall
+//       through to the ~286 KB whole-grammar dump.
+//----------------------------------------------------------------------
+static void RunReadSchemaBatchTest()
+{
+	std::printf( "[read_schema] batch form {keywords:[...]}\n" );
+
+	// STATELESS: read_schema is a pure descriptor-registry walk, so a
+	// session-less dispatcher is the honest fixture (and proves the batch
+	// works in the no-head bootstrap an authoring agent starts from).
+	std::unique_ptr<AgentSession> none;
+	AgentRpcDispatcher rpc( std::move( none ) );
+	auto call = [&rpc]( int id, const std::string& paramsJson ) {
+		JsonValue env; std::string perr;
+		const std::string line = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( id ) +
+			",\"method\":\"read_schema\",\"params\":" + paramsJson + "}";
+		Check( JsonParse( rpc.HandleLine( line ), env, perr ),
+		       "read_schema response parses as JSON (id " + std::to_string( id ) + ")" );
+		return env;
+	};
+
+	// The sixteen keywords the recorded trajectory fetched one at a time.
+	static const char* const kWanted[] = {
+		"sdf_geometry", "pbr_metallic_roughness_material", "uniformcolor_painter",
+		"directional_light", "omni_light", "standard_object", "dielectric_material",
+		"perfectrefractor_material", "csg_object", "cylinder_geometry", "box_geometry",
+		"infiniteplane_geometry", "torus_geometry", "polished_material",
+		"lambertian_luminaire_material", "circulardisk_geometry" };
+	const std::size_t nWanted = sizeof( kWanted ) / sizeof( kWanted[0] );
+
+	std::string arrJson = "[";
+	for( std::size_t i = 0; i < nWanted; ++i ) {
+		if( i ) arrJson += ',';
+		arrJson += '"'; arrJson += kWanted[i]; arrJson += '"';
+	}
+	arrJson += ']';
+
+	// (a) MONEY: the batch equals the N singles, element for element.
+	{
+		const JsonValue env = call( 1, "{\"keywords\":" + arrJson + "}" );
+		Check( !env.has( "error" ), "the 16-keyword batch is accepted" );
+		const JsonValue& schema = env.get( "result" ).get( "schema" );
+		Check( schema.isArray(), "the batch result's `schema` is an ARRAY (not the single form's object)" );
+		Check( schema.size() == nWanted,
+		       "the array has exactly one entry per requested keyword (" +
+		       std::to_string( nWanted ) + ")" );
+		// Decoupled, not short-circuited: an `allMatch`-gated order check would
+		// pass vacuously the moment the byte comparison failed.
+		bool allMatch = ( schema.size() == nWanted );
+		bool orderKept = ( schema.size() == nWanted );
+		for( std::size_t i = 0; i < nWanted && i < schema.size(); ++i ) {
+			const JsonValue single = call( 100 + (int)i, std::string( "{\"keyword\":\"" ) + kWanted[i] + "\"}" );
+			if( JsonSerialize( schema.at( i ) ) != JsonSerialize( single.get( "result" ).get( "schema" ) ) )
+				allMatch = false;
+			if( schema.at( i ).get( "keyword" ).asString() != kWanted[i] )
+				orderKept = false;
+		}
+		Check( allMatch,
+		       "MONEY (a): every batch element is BYTE-IDENTICAL to the same keyword's single-form "
+		       "result -- one generator, not two" );
+		Check( orderKept, "MONEY (a): the array is in REQUEST order, so a caller can index into it" );
+
+		// The saving this exists for, stated as a fact about this result:
+		// one call carrying what sixteen used to.
+		std::printf( "  [read_schema] 16-keyword batch payload: %zu bytes in ONE call\n",
+		             JsonSerialize( schema ).size() );
+	}
+
+	// (b) The SINGLE and CATEGORY forms are untouched.
+	{
+		const JsonValue one = call( 2, "{\"keyword\":\"sphere_geometry\"}" );
+		Check( one.get( "result" ).get( "schema" ).isObject() &&
+		       one.get( "result" ).get( "schema" ).get( "keyword" ).asString() == "sphere_geometry",
+		       "MONEY (b): the single `keyword` form still returns a schema OBJECT" );
+
+		const JsonValue cat = call( 3, "{\"category\":\"material\"}" );
+		const JsonValue& cs = cat.get( "result" ).get( "schema" );
+		Check( cs.isObject() && cs.get( "category" ).asString() == "material" &&
+		       cs.get( "chunks" ).isArray() && cs.get( "chunks" ).size() > 0,
+		       "MONEY (b): the `category` form still returns the cheap {category,chunks[]} listing" );
+		Check( JsonSerialize( cs ).find( "\"properties\"" ) == std::string::npos,
+		       "MONEY (b): the category listing is still NAMES ONLY -- it did not quietly grow "
+		       "the per-parameter dump the batch form exists to deliver on demand" );
+
+		// keyword still wins over category (the pre-existing precedence).
+		const JsonValue both = call( 4, "{\"keyword\":\"sphere_geometry\",\"category\":\"material\"}" );
+		Check( both.get( "result" ).get( "schema" ).get( "keyword" ).asString() == "sphere_geometry",
+		       "keyword still takes precedence over category" );
+	}
+
+	// (c) The BOUND: 24 accepted, 25 refused, refused CLEANLY -- and counted
+	// across BOTH parameters, since both produce entries.
+	{
+		std::string ok24 = "[", over25 = "[";
+		for( int i = 0; i < 25; ++i ) {
+			const std::string q = std::string( i ? "," : "" ) + "\"sphere_geometry\"";
+			if( i < 24 ) ok24 += q;
+			over25 += q;
+		}
+		ok24 += ']'; over25 += ']';
+
+		const JsonValue at = call( 5, "{\"keywords\":" + ok24 + "}" );
+		Check( !at.has( "error" ) && at.get( "result" ).get( "schema" ).size() == 24,
+		       "MONEY (c): a batch AT the 24-entry cap is accepted and returns 24 entries" );
+
+		const JsonValue over = call( 6, "{\"keywords\":" + over25 + "}" );
+		Check( over.has( "error" ) && over.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (c): a batch OVER the cap is a clean -32602, not a silent truncation" );
+		const std::string msg = over.get( "error" ).get( "message" ).asString();
+		Check( msg.find( "24" ) != std::string::npos && msg.find( "25" ) != std::string::npos,
+		       "the refusal states BOTH the cap and what was supplied" );
+
+		// The off-by-one the cap must not have: 24 in the array PLUS a
+		// `keyword` is 25 keywords, and every model-facing surface says 24.
+		const JsonValue plusOne = call( 7,
+			"{\"keyword\":\"box_geometry\",\"keywords\":" + ok24 + "}" );
+		Check( plusOne.has( "error" ) &&
+		       plusOne.get( "error" ).get( "message" ).asString().find( "25" ) != std::string::npos,
+		       "MONEY (c): the cap counts `keyword` AND `keywords` together -- 24 + 1 is 25 and "
+		       "is refused, so the advertised limit is the enforced limit" );
+		// ...and 23 + 1 still fits, so the cap was not simply tightened.
+		std::string arr23 = "[";
+		for( int i = 0; i < 23; ++i ) { if( i ) arr23 += ','; arr23 += "\"sphere_geometry\""; }
+		arr23 += ']';
+		const JsonValue justFits = call( 8,
+			"{\"keyword\":\"box_geometry\",\"keywords\":" + arr23 + "}" );
+		Check( !justFits.has( "error" ) &&
+		       justFits.get( "result" ).get( "schema" ).size() == 24,
+		       "23 + `keyword` is exactly 24 and is accepted" );
+	}
+
+	// (d) An UNKNOWN keyword inside a batch: a SELF-IDENTIFYING error object in
+	// its own slot, with the good neighbours at their own indices.
+	{
+		const JsonValue env = call( 9,
+			"{\"keywords\":[\"sphere_geometry\",\"not_a_chunk\",\"box_geometry\"]}" );
+		Check( !env.has( "error" ),
+		       "MONEY (d): one unknown keyword does NOT fail the whole batch" );
+		const JsonValue& schema = env.get( "result" ).get( "schema" );
+		Check( schema.size() == 3, "the array still has one slot per request" );
+		Check( schema.at( 0 ).get( "keyword" ).asString() == "sphere_geometry" &&
+		       schema.at( 2 ).get( "keyword" ).asString() == "box_geometry",
+		       "MONEY (d): the good entries keep their REQUEST INDEX around the bad one" );
+		Check( schema.at( 1 ).has( "error" ) &&
+		       schema.at( 1 ).get( "error" ).asString().find( "not_a_chunk" ) != std::string::npos,
+		       "MONEY (d): the unknown entry carries the same {error:...} the single form gives" );
+		Check( schema.at( 1 ).get( "keyword" ).asString() == "not_a_chunk",
+		       "MONEY (d): ...and NAMES ITSELF, so the typo is attributable without counting "
+		       "array positions" );
+	}
+
+	// (e) POSITIONAL ALIGNMENT, total: schema[i] == keywords[i] for every i,
+	// duplicates included; `keyword` is APPENDED, never prepended.
+	{
+		const JsonValue env = call( 10,
+			"{\"keyword\":\"torus_geometry\",\"keywords\":"
+			"[\"box_geometry\",\"sphere_geometry\",\"box_geometry\",\"not_a_chunk\"]}" );
+		Check( !env.has( "error" ), "keyword + keywords together is accepted, not a -32602" );
+		const JsonValue& schema = env.get( "result" ).get( "schema" );
+		static const char* const kExpect[] = {
+			"box_geometry", "sphere_geometry", "box_geometry", "not_a_chunk", "torus_geometry" };
+		Check( schema.size() == 5,
+		       "MONEY (e): one entry per requested keyword -- the DUPLICATE is NOT collapsed "
+		       "(collapsing would silently shift every later index)" );
+		bool aligned = ( schema.size() == 5 );
+		for( std::size_t i = 0; aligned && i < 5; ++i )
+			if( schema.at( i ).get( "keyword" ).asString() != kExpect[i] ) aligned = false;
+		Check( aligned,
+		       "MONEY (e): schema[i] IS keywords[i] for every i, and `keyword` lands LAST at "
+		       "schema[keywords.length] -- prepending it would shift every index by one" );
+	}
+
+	// (f) An EMPTY array is an empty array -- never the whole-grammar dump.
+	{
+		const JsonValue env = call( 11, "{\"keywords\":[]}" );
+		Check( !env.has( "error" ), "keywords:[] is accepted" );
+		const JsonValue& schema = env.get( "result" ).get( "schema" );
+		Check( schema.isArray() && schema.size() == 0,
+		       "MONEY (f): keywords:[] returns an EMPTY array, NOT the ~286 KB whole-grammar dump" );
+		// The trap this guards, made explicit: the bare form IS the huge dump.
+		const JsonValue bare = call( 12, "{}" );
+		Check( JsonSerialize( bare.get( "result" ).get( "schema" ) ).size() > 100000,
+		       "PRECONDITION: the bare form really is the huge dump keywords:[] must not become" );
+	}
+
+	// Malformed shapes are clean -32602s, and they name the offending index.
+	{
+		const JsonValue notArray = call( 13, "{\"keywords\":\"sphere_geometry\"}" );
+		Check( notArray.has( "error" ) &&
+		       notArray.get( "error" ).get( "message" ).asString().find( "array" ) != std::string::npos,
+		       "keywords as a STRING is a clean -32602 naming the expected array" );
+		const JsonValue badElem = call( 14, "{\"keywords\":[\"sphere_geometry\",7]}" );
+		Check( badElem.has( "error" ) &&
+		       badElem.get( "error" ).get( "message" ).asString().find( "keywords[1]" ) != std::string::npos,
+		       "a non-string ELEMENT is a clean -32602 that names its index" );
+		// A malformed `category` must be diagnosed on BOTH forms.  The batch
+		// branch returns before the single form's parse block, so hoisting the
+		// type check above it is the only thing keeping these two identical --
+		// otherwise the same bad value is a clean -32602 on one form and
+		// silently ignored on the other.
+		const JsonValue badCatSingle = call( 16, "{\"keyword\":\"sphere_geometry\",\"category\":5}" );
+		const JsonValue badCatBatch  = call( 17, "{\"keywords\":[\"sphere_geometry\"],\"category\":5}" );
+		Check( badCatSingle.has( "error" ) && badCatBatch.has( "error" ) &&
+		       badCatSingle.get( "error" ).get( "message" ).asString() ==
+		           badCatBatch.get( "error" ).get( "message" ).asString(),
+		       "a non-string `category` is the SAME clean -32602 on the batch form as on the "
+		       "single form -- one malformed value, one diagnosis" );
+		// A well-formed `category` alongside a batch is simply ignored (the
+		// batch is more specific), NOT an error.
+		const JsonValue catWithBatch = call( 18,
+			"{\"keywords\":[\"sphere_geometry\"],\"category\":\"material\"}" );
+		Check( !catWithBatch.has( "error" ) &&
+		       catWithBatch.get( "result" ).get( "schema" ).isArray() &&
+		       catWithBatch.get( "result" ).get( "schema" ).size() == 1,
+		       "a VALID `category` alongside `keywords` is ignored, not an error" );
+		// null reads as absent, matching every other optional param here.
+		const JsonValue nullKws = call( 15, "{\"keywords\":null,\"keyword\":\"sphere_geometry\"}" );
+		Check( !nullKws.has( "error" ) &&
+		       nullKws.get( "result" ).get( "schema" ).isObject(),
+		       "keywords:null reads as ABSENT (the single form still applies)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentReadValidateTest (Facet 5 slice 0a: read + schema + validate) ===\n" );
@@ -769,6 +1019,8 @@ int main()
 		           == "EMPTY_DOCUMENT",
 		       "...and it reports EMPTY_DOCUMENT" );
 	}
+
+	RunReadSchemaBatchTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
