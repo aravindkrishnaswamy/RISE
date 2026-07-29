@@ -197,7 +197,7 @@ namespace RISE
 			{
 				// We have to reallocate the array
 				GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );
-				delete amplitudes;
+				delete [] amplitudes;
 				lambda_begin = s.lambda_begin;
 				lambda_end = s.lambda_end;
 				num_freq = s.num_freq;
@@ -287,12 +287,13 @@ namespace RISE
 			// Get the value at the particular wavelength
 
 			// Outside the frequency range
-			if( nm < lambda_begin || nm > lambda_end ) {
+			if( nm < lambda_begin || nm >= lambda_end ) {
 				return 0;
 			}
 
-			// Find the rigt frequency
-			int idx = int((nm-lambda_begin)/delta);
+			// Find the right frequency bin. lambda_end is the exclusive end
+			// because the packet stores num_freq samples spaced by delta.
+			const unsigned int idx = static_cast<unsigned int>((nm-lambda_begin)/delta);
 			return amplitudes[idx];
 		}
 	};

@@ -4,9 +4,10 @@
 expert review rounds, 20 post-r11 implementation-review rounds, and an r32
 scope restoration; history in
 [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md)). No fire
-*feature* code has landed; one Phase-A prerequisite has (the
-trilinear-accessor repair, commit `2fba2b48`, in master). Phase gating per
-§7.0.
+*feature* code has landed; two Phase-A prerequisites have: the
+trilinear-accessor repair (commit `2fba2b48`, in master) and the shared
+per-nm Planck radiance kernel with its numeric gates (on
+`fire-smoke-design`). Phase gating per §7.0.
 **Companions:** [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md)
 (Phase-C solver implementation contract),
 [RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)
@@ -1502,13 +1503,16 @@ In a hot soot-dominated cell this reduces to
 shifts the emitted spectrum measurably blue/white of a blackbody at the same
 T — a real, photographable effect (it is why optical pyrometry of flames
 needs the soot emissivity correction), and precisely the fidelity a spectral
-renderer captures for free. **The Planck kernel is a new free function with
-pinned quantity and units — the existing
+renderer captures for free. **The Planck kernel is a free function with
+pinned quantity and units —
+[PlanckRadiance.cpp](../src/Library/Utilities/PlanckRadiance.cpp) implements
+it directly, and the existing
 [BlackBodyPainter.cpp](../src/Library/Painters/BlackBodyPainter.cpp)
-evaluator is NOT reusable as-is** (external-review catch: its C1 = 2πhc²
-at line 37 makes it spectral *exitance per metre of wavelength*; consumed
-as the per-nm radiance this design needs, that is a π×10⁹ error). The
-required function is per-nanometre spectral radiance:
+is NOT the fire-path API**. The painter now calls the shared kernel and
+converts at its boundary to its historical spectral *exitance per metre of
+wavelength* convention. Before extraction its inlined 2πhc² evaluator would
+have been a π×10⁹ error if consumed as the per-nm radiance this design needs.
+The required function is per-nanometre spectral radiance:
 
 > B_λ,nm(λ, T) = 10⁻⁹ · 2hc² / ( λ_m⁵ · expm1(hc/(λ_m k T)) )
 
@@ -1726,7 +1730,7 @@ fire media** (per-λ fallback) until the companion-proposal fix lands
 | Medium stack / nesting | [MediumTracking.h](../src/Library/Utilities/MediumTracking.h) via IORStack; shadow-ray boundary walk in `LightSampler.cpp` | |
 | Volume emission (limited) | `MediumCoefficients::emission`, closed-form per-segment integral `Le·(1−Tr)·t/τ` with Le evaluated at a **single point** per segment (scatter point RayCaster.cpp:~1014, midpoint :~1238/:~1821; blocks 1181–1259 RGB, 1792–1833 NM) | **constant per medium** (G1) and **the estimator itself dies with spatially varying Le** (G9) — see §6 |
 | Spectral media (homogeneous only) | `homogeneous_medium` `absorption_spectral`/`scattering_spectral` | heterogeneous collapses to luminance (HeterogeneousMedium.cpp:228–240) — G4 |
-| Planck evaluation | [BlackBodyPainter.cpp](../src/Library/Painters/BlackBodyPainter.cpp) (`blackbody_painter`) | surface painter only, and **its C1 = 2πhc² (line 37) makes it spectral exitance per metre — NOT reusable as the per-nm radiance kernel**; §4.2 defines the new pinned free function and its gates |
+| Planck evaluation | [PlanckRadiance.cpp](../src/Library/Utilities/PlanckRadiance.cpp), called by [BlackBodyPainter.cpp](../src/Library/Painters/BlackBodyPainter.cpp) (`blackbody_painter`) | shared free function returns per-nm spectral radiance; the surface painter converts it to its historical exitance-per-metre convention at its boundary and remains forbidden as the fire-path API; §4.2 defines the pinned quantity and gates |
 | Phase functions | isotropic, HG (`IsotropicPhaseFunction.h`, `HenyeyGreensteinPhaseFunction.*`) | a Rayleigh phase function exists but is buried in `BioSpecSkinSPFHelpers.cpp:79–80`, not reusable |
 | Animation | keyframed parameters ([src/Library/Animation/](../src/Library/Animation/)) + HDR movie pipeline | no time-varying *volume data*; media are not `IKeyframable` — G6 |
 | VDB ingestion (bridge only) | `rise_blender_bridge.cpp:527–650` | transcodes a VDB float grid to raw slices: normalizes by grid max (compensated downstream by folding `density_scale` into σ_a/σ_s, ~1418–1441) **and quantizes to 8-bit** — the quantization, not the normalization, is what's fatal for fire channels (Planck is exponential in T); §8 requires a float path |

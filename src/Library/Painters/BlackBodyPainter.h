@@ -40,16 +40,9 @@ namespace RISE
 			// historical hemispherical-exitance-per-metre convention.
 			static Scalar IntensityForWavelength( const Scalar T, const Scalar lambda );
 
-			// Given tempierature, gives the total radiation output
-			// Uses Stefan-Boltzmann's law
-			static Scalar TotalRadiationOutput( const Scalar T );
-
-			// Given a required wavelength as the peak, computes the temperature for which this is true
-			// Uses Wien's displacement law
-			static Scalar TemperatureFromPeakNM( const Scalar nm );
-
-			// Given a temperature, what is the peak wavelength for it?
-			static Scalar PeakNMFromTemperature( const Scalar T );
+			// Returns the authored scale adjusted for peak normalization without
+			// mutating keyframe state.
+			Scalar EffectiveScale() const;
 
 			virtual ~BlackBodyPainter();
 

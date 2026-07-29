@@ -35,23 +35,21 @@ Scalar BlackBodyPainter::IntensityForWavelength( const Scalar T, const Scalar la
 		PlanckSpectralRadianceNM( lambda / NM_to_M, T );
 }
 
-Scalar BlackBodyPainter::TotalRadiationOutput( const Scalar T )
+Scalar BlackBodyPainter::EffectiveScale() const
 {
-	static const Scalar stefan_boltzmann_constant = 5.6051e-8;
-	
-	return (stefan_boltzmann_constant * pow( T, 4.0 ) );
-}
+	if( !normalize ) {
+		return scale;
+	}
+	if( temperature <= 0.0 ) {
+		return 0.0;
+	}
 
-Scalar BlackBodyPainter::TemperatureFromPeakNM( const Scalar nm )
-{
-	static const Scalar wien_constant = 2.8978e6;
-
-	return (wien_constant/nm);
-}
-
-Scalar BlackBodyPainter::PeakNMFromTemperature( const Scalar T )
-{
-	return (0.0029/T);
+	// Wien displacement constant in nm K. Evaluate the maximum through the
+	// same painter-boundary conversion used for every spectral sample.
+	static const Scalar wienDisplacementNMKelvin = 2.897771955e6;
+	const Scalar peakNM = wienDisplacementNMKelvin / temperature;
+	const Scalar maximum = IntensityForWavelength( temperature, peakNM * NM_to_M );
+	return maximum > 0.0 ? scale / maximum : 0.0;
 }
 
 BlackBodyPainter::BlackBodyPainter( 
@@ -94,7 +92,7 @@ SpectralPacket BlackBodyPainter::GetSpectrum( const RayIntersectionGeometric& ri
 
 Scalar BlackBodyPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return IntensityForWavelength(temperature, nm*NM_to_M) * scale;
+	return IntensityForWavelength(temperature, nm*NM_to_M) * EffectiveScale();
 }
 
 
@@ -143,21 +141,15 @@ void BlackBodyPainter::RegenerateData( )
 
 	const Scalar delta = ( (lambda_end-lambda_begin) / Scalar(numfreq) );
 	Scalar freq = lambda_begin;
+	const Scalar effectiveScale = EffectiveScale();
 
 	for( unsigned int i=0; i<numfreq; i++, freq += delta ) {
-		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * scale ) );
+		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * effectiveScale ) );
 	}
 
 	spectrum = SpectralPacket( lambda_begin, lambda_end, numfreq, pFunc );
 	XYZPel cxyz = spectrum.GetXYZ();
 	color = cxyz;
-
-	// If we are to normalize, rescale the scale
-	if( normalize ) {
-		const Scalar maxima = IntensityForWavelength( temperature, PeakNMFromTemperature( temperature ) );
-		scale /= maxima;
-		ColorMath::Scale(color);
-	}
 
 	safe_release( pFunc );
 }

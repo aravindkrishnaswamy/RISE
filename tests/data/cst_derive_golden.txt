@@ -14,7 +14,7 @@ scenes/FeatureBased/Combined/crystal_lens.RISEscene  a1579749de575d8923bcefdfd9a
 scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene  a0a96438f32125d1920539aa2b5b1c6687716adcaa718da6ef2d971490de69db  9018  70
 scenes/FeatureBased/Combined/gi_spheres.RISEscene  1bc4c7ef8d4b73943298d24fb2f3a6721450911eeafed8c088e570f0a325d5b6  3875  52
 scenes/FeatureBased/Combined/glass_pavilion.RISEscene  b1d0b2c60f363ade4c5afc164b1596a0425ae7fde41906543afeef6b45cd3c2b  7242  65
-scenes/FeatureBased/Combined/planetary_survey.RISEscene  811942c6da18404188076ca208023a80ea5eb4da8605e24351bd888e992ebc7c  3462  72
+scenes/FeatureBased/Combined/planetary_survey.RISEscene  7baa86a7408f531b2eddf814287d4416965249283685a293c6042deedd9a2a21  3484  72
 scenes/FeatureBased/Combined/sculptors_studio.RISEscene  b115195e6839521609efacf9cd516f1d4a6355dd447e52b125d487f8775bf684  5203  59
 scenes/FeatureBased/Combined/showroom.RISEscene  4f29af1cd90f95c8cdf4eb5e7710c494d83defefb4f47d9bec81b82603af05f9  3193  52
 scenes/FeatureBased/Combined/spotlight_drama.RISEscene  01ad84527a0bc47ad181539f366cf07e9453827ebb691b39e19c09c01b733b15  3193  45
@@ -190,8 +190,8 @@ scenes/Tests/Materials/pbr_metallic_roughness.RISEscene  3e5ff78a81eb6f0c91d1cef
 scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene  75a88d80a5d4bcc44ae93b0d98a18df6dad6a10ea2f5b5330b1859fb93064947  5132  111
 scenes/Tests/Materials/sheen.RISEscene  4b443ded5e7ce956924503e31fd70087a7c240f13f59001cae5d5e885e2f8669  1532  31
 scenes/Tests/Materials/spectral_gold_sphere.RISEscene  409f98e62bfdd3d708d5b09c36ce49f06f814f2944b0ec9b2da484cf9065e9f6  906  24
-scenes/Tests/Materials/spectral_skin_fast.RISEscene  ced87555768abd73dfa5abfb52dad1b236206c9e4cbc21e2fc1b3c069f6558ff  1216  26
-scenes/Tests/Materials/spectral_skinmodel.RISEscene  8047bb04cf0bd1a643df1ae27e834af8436d18867e20f19c2926a04135e031b6  2190  37
+scenes/Tests/Materials/spectral_skin_fast.RISEscene  e04053742ab9e0d59deee5f115e47e5ec98546467964f9a77b1cfbbfa2540da2  1232  26
+scenes/Tests/Materials/spectral_skinmodel.RISEscene  1c60001cf34ff955d9a3683c07f6eff73cbd48d25381c8c8df4b654d1294b02b  2207  37
 scenes/Tests/Materials/texture_dispersion.RISEscene  fbed8bbafd80034d4f0ed9f694c04bad8750bea9fef2b756bb75d157b2534780  1524  31
 scenes/Tests/Materials/thinfilm_ladder.RISEscene  b3c6d91fb66b8a0e23aacc2a6e9922e52c326ca299fec17379fd632de98b51fc  2254  40
 scenes/Tests/Materials/transmission.RISEscene  6441e017379ce2e1d0d7a73ccc9b072ccb8144be0a69fc8e3de375208a255694  2221  38
