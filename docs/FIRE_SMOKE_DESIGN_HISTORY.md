@@ -602,3 +602,31 @@ it was already tried and refuted here.
   wavelength-valued radiance; what coincides is the Pel target and the
   *projection of* the spectral target.
 
+- **r34 (2026-07-29):** corrected r33's own code claim, again found by the
+  implementation agent refusing to improvise. r33 defined
+  R_c = XYZtoRec709RGB ∘ XYZFromNM and required "negative lobes intact" — but
+  `ColorUtils::XYZtoRec709RGB` calls `MoveXYZIntoRec709RGBGamut` **before**
+  the matrix (`Color.cpp:218`), so it never exposes the signed response
+  (at 500 nm the raw matrix gives ≈(−0.63, 0.62, 0.22); the shipped function
+  gamut-maps that away). The disqualifying reason is stronger than the lost
+  lobes: gamut mapping is **nonlinear**, so composing it per wavelength does
+  not yield a linear functional, and ∫R_c f dλ would not be a projection of
+  anything. The film's use of the same function is sound only because it is
+  applied once to an already-accumulated XYZ (`FilteredFilm.cpp:93`).
+  **Fix:** R_c uses a new matrix-only entry point
+  (`XYZtoRec709RGBMatrixOnly`, a thin wrapper over the existing file-local
+  `XYZtoRGBMatrixMultiply<Rec709RGBPel>`); the gamut-mapped function keeps
+  every current caller. Changing `XYZtoRec709RGB` itself was considered and
+  rejected as an unmotivated renderer-wide colour-pipeline change.
+  **Also added, from a check r33 should have made:** a signed R_c integrated
+  against a *narrowband* σ could produce a negative channel coefficient, and
+  negative extinction breaks tracking outright. It does not arise for the
+  broadband power-law extinction this design admits (a 1/λ absorber projects
+  to ≈(0.20, 0.19, 0.22), all positive), so σ̄_a,c ≥ 0 and σ̄_s,c ≥ 0 are now
+  asserted at medium construction rather than assumed. ε_c is exempt —
+  emission is accumulated, never exponentiated, so a negative channel there
+  is ordinary out-of-gamut colour. Softened r33's claim that the Pel path
+  "agrees with" the spectral image: it is the closest linear analogue, and
+  exact agreement is impossible while one path gamut-maps a final XYZ and the
+  other has only coefficients — which is why RGB stays preview-only.
+

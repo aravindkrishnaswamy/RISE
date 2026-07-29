@@ -1524,9 +1524,10 @@ reach Planck through `IPainter::GetColorNM` (§10.1).
 
 **The Pel (RGB) projection of this source is the projected PRODUCT, not the
 product of projections.** Using the same per-channel response functions R_c(λ) as the §4.3 phase
-closure — the renderer's existing film response, CMF→XYZ→Rec.709 normalized
-by `CIE_Y_Integral` (§4.3 pins it; there is no separate preset asset), and
-used here with its negative lobes intact:
+closure — CMF→XYZ→Rec.709 via the **matrix-only** transform, normalized by
+`CIE_Y_Integral` (§4.3 pins it; there is no separate preset asset, and the
+gamut-mapped `XYZtoRec709RGB` is explicitly not it), used here with its
+negative lobes intact:
 
 > σ̄_a,c(x) = ∫ R_c(λ) σ_a(x,λ) dλ,
 > σ̄_s,c(x) = ∫ R_c(λ) σ_s(x,λ) dλ,
@@ -1618,13 +1619,26 @@ different λ after construction. Its mean cosine is
 `MakePhaseClosurePel(x)` takes no preset argument. The three spectral-to-Pel
 response functions are
 
-> R_c(λ) = XYZtoRec709RGB( XYZFromNM(λ) )_c / CIE_Y_Integral(380, 780),
+> R_c(λ) = XYZtoRec709RGBMatrixOnly( XYZFromNM(λ) )_c / CIE_Y_Integral(380, 780),
 
 i.e. the CIE 1931 2° standard observer (`ColorUtils::XYZFromNM`) composed
-with the XYZ→`RISEPel` matrix (`ColorUtils::XYZtoRec709RGB`) under the same
-normalization the spectral rasterizers already use (`CIE_Y_Integral`) — the
-path `FilteredFilm`/`ProgressiveFilm` take to turn spectral samples into
-pixels today. **A separate versioned `band_preset` is deliberately NOT
+with the **matrix-only** XYZ→`RISEPel` transform, under the same
+normalization the spectral rasterizers already use (`CIE_Y_Integral`).
+
+**Use the matrix, not `ColorUtils::XYZtoRec709RGB`** (r34 — the r33 text
+named that function and was wrong about it). `XYZtoRec709RGB` calls
+`MoveXYZIntoRec709RGBGamut` *before* the matrix (`Color.cpp:218`), and that
+disqualifies it here for a reason stronger than losing the negative lobes:
+gamut mapping is **nonlinear**, so a per-wavelength composition of it is not
+a linear functional at all, and `∫R_c f dλ` would not be a projection of `f`
+onto anything. The film's use is sound precisely because it is applied
+**once, to an already-accumulated XYZ** (`FilteredFilm.cpp:93`), not per
+sample. Phase A therefore exposes a matrix-only entry point
+(`XYZtoRec709RGBMatrixOnly`, wrapping the existing file-local
+`XYZtoRGBMatrixMultiply<Rec709RGBPel>` with `mxXYZtoRec709`); the existing
+gamut-mapped function keeps every current caller and every output path
+unchanged. Changing `XYZtoRec709RGB` itself is explicitly **not** in scope —
+that is a renderer-wide colour-pipeline change with no fire motivation. **A separate versioned `band_preset` is deliberately NOT
 introduced** (r33): a spectral-to-Pel response is a *camera* property, not a
 medium property, so a per-medium preset would admit a scene whose two fire
 media disagree about what camera is looking at them, and a second response
@@ -1640,10 +1654,27 @@ has negative lobes (the XYZ→RGB matrix does), which is correct colour
 science but invalid as a probability. The roles separate cleanly:
 
 - **Projection** — σ̄_a,c, σ̄_s,c (§4.3) and ε_c (§4.2) use R_c *as is*,
-  negative lobes included. This is what makes a Pel image agree with the
-  spectral image of the same scene; out-of-gamut Pel values are handled
-  downstream by the existing gamut mapping, exactly as for every other
-  spectral render.
+  negative lobes included. This is the closest *linear* analogue of the
+  spectral path; exact agreement with a spectral render is **not** claimed
+  and cannot be, since the spectral path gamut-maps its final XYZ once while
+  a Pel transport has only coefficients to work with — which is why the RGB
+  path stays explicitly approximate and preview-only (§12). Out-of-gamut Pel
+  values are handled downstream by the existing gamut mapping, exactly as for
+  every other render.
+
+  **Coefficient positivity is a required invariant, asserted not assumed.**
+  A signed R_c integrated against a *narrowband* σ could yield a negative
+  channel coefficient, and a negative extinction breaks tracking outright
+  (transmittance grows without bound; majorants and delta tracking are
+  undefined). It does not arise for the extinction this design admits: σ_a
+  and σ_s are broadband power laws (§4.1's 1/λ soot, §4.3's λ^−n smoke), so
+  the integral spans the band and the positive lobes dominate — for a 1/λ
+  absorber the per-channel σ̄_a,c are ≈ (0.20, 0.19, 0.22) of their grey
+  reference, all positive. Phase A asserts σ̄_a,c ≥ 0 and σ̄_s,c ≥ 0 at
+  medium construction and fails loudly rather than tracking a negative
+  coefficient. ε_c carries no such constraint: emission is *accumulated*,
+  never exponentiated, so a negative channel there is ordinary out-of-gamut
+  colour.
 - **Sampling** — the closure computes
 
   > S_jc=∫W(λ)σ_s,j(x,λ)dλ,  S_c=Σ_jS_jc,
@@ -2085,7 +2116,9 @@ engineering task waits on this list.**
    optical depth and radiance) as the gate. Mechanical surface (the honest
    checklist): `Volume.h`/accessors, `HeterogeneousMedium`,
    `IJob::AddHeterogeneousMedium` (IJob.h:1516) / `Job.cpp`, `RISE_API.h`
-   factory signatures, chunk parser + registry, the five build projects
+   factory signatures, the **`XYZtoRec709RGBMatrixOnly` entry point** (§4.3 —
+   a thin wrapper over the existing file-local matrix multiply; no existing
+   caller changes), chunk parser + registry, the five build projects
    (CLAUDE.md checklist), tests. **Scene-editor surfaces, concretely**: an
    `EntityTemplates.cpp` add-entity template (none exists even for
    `heterogeneous_medium` today), and a `MediaIntrospection` stance —
@@ -3930,9 +3963,11 @@ medium in Phase C.
   rejected — soot emission depends on the joint (T, f_v) distribution and
   covariance; a joint model is Phase D, and only if the measured error
   justifies it.
-- **Pel response R_c** (r33) → **the renderer's existing film response**
-  (CMF→XYZ→Rec.709, `CIE_Y_Integral`-normalized), not a new versioned
-  `band_preset` asset: a spectral-to-Pel response is a camera property, and a
+- **Pel response R_c** (r33, corrected r34) → **the renderer's own CMF and
+  colour matrix** — `XYZFromNM` composed with a **matrix-only** XYZ→Rec.709
+  transform, `CIE_Y_Integral`-normalized — not a new versioned `band_preset`
+  asset, and not the gamut-mapped `XYZtoRec709RGB` (nonlinear, so
+  per-wavelength composition is not a projection): a spectral-to-Pel response is a camera property, and a
   second one could silently diverge from the response actually forming the
   image. Projection uses R_c with its negative lobes; sampling importance
   uses the nonnegative CMF sum W = x̄+ȳ+z̄, which affects variance only
