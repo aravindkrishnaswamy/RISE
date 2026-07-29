@@ -3195,91 +3195,29 @@ carry indistinguishable metadata. Each sequence stores:
   `sequence_id` is a content-integrity digest that transitively covers the frame
   digests and verbatim record blobs above; it is **not authentication**.
 
-Producer qualification is authenticated only by a detached
-`qualification_attestation_v1={algorithm,key_id,signed_payload,signature}` in
-the envelope. `algorithm` is `ed25519`; `signed_payload` is the exact
-RISE-CBOR64-v1 byte string for
-`{schema_version=1,sequence_id,producer_build_id,source_kind,physical_mapping,
-source_qualification,producer_reason_codes,gate_evidence_ids}` with the reason
-and evidence arrays sorted and duplicate-free. The signature preimage is
-`ASCII("RISE-QUAL-ATTEST-v1\0") || signed_payload`; no parsed-map re-encoding or
-bare digest is accepted. `key_id` is a 32-byte CBOR byte string and `signature`
-the raw 64-byte Ed25519 signature;
-`qualification_attestation_id=SHA-256(exact canonical attestation map bytes)`.
-The loader requires every
-signed value to equal the decoded payload, verifies the signature against an
-operator-configured trusted qualification-key registry, and records its exact
-signed registry-record ID and key ID. Missing, unknown, revoked by that registry,
-or invalid attestations are unconditional `producer_untrusted` for fidelity:
-the sequence may remain integrity-valid and usable only in explicitly requested
-preview. Predictive mode accepts `rise_simulation` or `qualified_external` only
-from a registry entry authorized for that source kind and producer-build ID;
-`heuristic_import` can never be promoted by a signature.
+Producer qualification is a **declared, integrity-checked manifest field, not
+an authenticated one.** The envelope carries `source_kind`
+(`rise_simulation` | `qualified_external` | `heuristic_import`),
+`physical_mapping` (`absolute_si` | `heuristic:<profile_id>`), the producer
+build ID, the producer's own gate-evidence record IDs, and `sequence_id` — a
+content-integrity digest transitively covering the frame digests and verbatim
+record blobs. **Predictive fidelity requires `source_kind` ∈ {`rise_simulation`,
+`qualified_external`} together with `physical_mapping=absolute_si`;
+`heuristic_import` or any heuristic mapping is preview-only and stamps
+`producer_unqualified`.** A digest mismatch anywhere is a load error
+(`integrity_digest_mismatch`), never a silent downgrade.
 
-The registry is operator-owned state, never selected by a scene/manifest. Its
-wire object is exactly
-`{payload,registry_record_id,root_signature,next_root_signature}` where `payload`
-is an exact RISE-CBOR64-v1 byte string encoding `registry_payload_v1` and
-`registry_record_id=SHA-256(payload)`. The payload fields are exactly
-`{schema_version=1,registry_epoch,issued_at,not_after,root_key_id,
-authorized_qualification_keys,revocations,next_root}`. Times are unsigned Unix
-seconds and validity intervals are closed-open. `key_id`/`root_key_id` are
-SHA-256 of the raw 32-byte Ed25519 public key. Each authorization is exactly
-`{key_id,public_key,source_kinds,producer_build_ids,not_before,not_after}`;
-source kinds and exact 32-byte build IDs are sorted, duplicate-free lists with
-no wildcard/prefix semantics. Each revocation is exactly
-`{key_id,producer_build_id,effective_epoch}`, where `producer_build_id` is an
-exact ID or null for the whole key; a matching effective revocation overrides
-authorization. Authorization/revocation arrays sort lexicographically by their
-encoded key/build tuple and reject duplicates. Semantic validation requires
-`issued_at<not_after`, `not_before<not_after`, trusted time inside both registry
-and selected authorization intervals, every key ID to match its public key,
-`root_key_id` to match the verifier root (the currently pinned root normally;
-the persisted previous root only for the exact rotation-certificate replay
-below), and every effective revocation
-epoch ≤ the containing registry epoch.
-
-`root_signature` signs
-`ASCII("RISE-QUAL-REGISTRY-v1\0") || payload` with the currently pinned root.
-`root_signature` is always a raw 64-byte CBOR byte string;
-`next_root_signature` is null or raw 64 bytes as permitted below, and public
-keys are raw 32-byte strings.
-Normally `next_root` and `next_root_signature` are null. Rotation is one
-higher-epoch record with `next_root={key_id,public_key}` and a non-null new-root
-signature over `ASCII("RISE-QUAL-REGISTRY-ROTATE-v1\0") || payload`; acceptance
-requires both old-root and new-root signatures, then atomically pins the new
-root with that record. Any other envelope field set or signature preimage is
-invalid.
-
-Durable state also stores the exact accepted rotation envelope and previous
-root as an immutable transition certificate. A later candidate at the same
-stored epoch/record ID is reusable only if its bytes exactly equal that
-certificate: verify the old-root signature with the certificate's previous root,
-the new-root signature and `next_root` against the now-pinned root, and accept
-without reinterpreting payload `root_key_id` as the new root. Any higher-epoch
-successor must instead name and be signed by the currently pinned new root (and
-may carry the next dual-signed rotation). This makes the rotation record usable
-for repeated renders while forbidding a same-ID byte substitution.
-
-The operator profile durably stores `(root key,registry_epoch,
-registry_record_id,optional transition certificate)`. Every predictive preflight calls one
-`TrustStore::AuthorizePredictive` interprocess transaction: acquire its exclusive
-lock/CAS, re-read durable state, validate the candidate registry/root/time and
-attestation entirely against that state, reject a lower epoch or same epoch with
-a different ID, persist any higher epoch/root transition, and issue a
-single-render immutable authorization token containing the exact registry bytes
-and IDs before releasing the lock. Token issuance is the authorization
-linearization point; a revocation transaction ordered later is not retroactive,
-while one ordered earlier makes the stale candidate fail. Workers accept only
-the token bound to their sequence/render generation. If atomic durable state or
-a trustworthy clock is unavailable, predictive mode fails closed; preview
-records `producer_untrusted`. Two-process barrier tests cover N racing N+1 in
-both lock orders, along with signature/key substitution, self-hashed forged
-qualification, accept-N/revoke-at-N+1/replay-N, expiry,
-same-epoch-different-record, scope mismatch, first/repeated use of a rotation
-record, and a higher successor signed by the new root. Output
-provenance records the token's epoch, registry record ID, qualification key ID,
-and authorization time.
+This is deliberately an **integrity** contract, not an authentication one. It
+solves the failure this arc actually has — a normalized Mantaflow or otherwise
+heuristically-scaled grid being rendered as if it were absolute SI — and it
+solves it with a declared field plus a hash. Cryptographic producer
+attestation (signed qualification records, an operator-owned trusted-key
+registry, key rotation, revocation epochs, anti-rollback transactions) assumes
+an adversary who forges provenance; nothing in §1 posits one, and adding that
+machinery here would make a fire-rendering design own a repo-wide trust
+system. If RISE later needs authenticated provenance it belongs in its own
+design, and this contract's `source_kind`/`physical_mapping`/digest fields are
+exactly the fields such a scheme would sign.
 
 Every tabulated/polynomial record has a **closed certified domain** over all of
 its arguments. Predictive simulation rejects the stage before accepting any
@@ -3399,481 +3337,41 @@ artifact-local for a derivative.
 A fully valid explicitly preview-requested
 render carries only `requested_preview`; codes are never free-form log text.
 
-**Output provenance is a Phase-C data product.** Every still, animation frame,
-AOV artifact, and finalized movie writes a sibling RISE-CBOR64-v1 sidecar with
-media type `application/vnd.rise.render-provenance+cbor` and exact envelope
-`{payload,provenance_id,artifact_sha256}`. `payload` has `schema_version=1` and
-contains neither digest field. `provenance_id` is SHA-256 over the exact
-canonical RISE-CBOR64-v1 encoding of `payload`; `artifact_sha256` is SHA-256
-over the exact finalized artifact bytes. Every digest is a 32-byte CBOR byte
-string, never implementation-formatted hex.
-The CSPRNG-transaction artifact/group marker defined in the lifecycle below is the
-publication/validity record for this artifact+sidecar pair; consumers and
-recovery never accept an unmarked or digest-mismatched pair.
+**Output provenance: a manifest, not a transaction.** Every predictive still,
+animation frame, and AOV artifact writes a sibling provenance sidecar (and
+repeats the same fields as EXR attributes where supported) recording: the
+`render_fidelity_status` with its reason codes; the `active_fire_media` array
+keyed by `(manager_name, binding_kind, binding_owner)` carrying each medium's
+sequence ID, selected base-frame index, whole-file digest, `source_kind`,
+`physical_mapping`, and effective blur state; the effective render
+configuration after default resolution (film/camera/integrator/sampler/depth/
+clamp/filter/AOV/output settings — a render-affecting parameter added without a
+schema update is a test failure); the renderer build identity (source revision,
+dirty flag, feature and dependency versions); and the artifact's own SHA-256,
+which lives in the sidecar only, since embedding it in the artifact would
+change the bytes being hashed. MOV outputs are always `display_derivative`
+linked to their EXR primaries — the encoders in scope are lossy and
+display-referred — and carry the `derived_from_frames` digest array. A
+predictive primary fails if its sidecar cannot be written.
 
-The payload enumerates requested/derived `render_fidelity_status`, separate
-`render_reason_codes` and `artifact_reason_codes`,
-`artifact_fidelity=predictive_primary|display_derivative|preview_primary`, and
-contains a canonical `active_fire_media` array and the tagged derivative fields
-above (null/empty for primaries). Each medium entry is keyed
-by stable `(manager_name,binding_kind,binding_owner)`—global binding uses owner
-`scene`, bounded binding uses the closed object's stable name—and contains
-sequence ID, selected base-frame index and whole-OpenVDB-file digest, exact
-record and producer-build IDs, exact `qualification_attestation_id`, trusted
-registry epoch/record/key IDs (or explicit unattested nulls), effective blur
-state/fallback, and medium-local reasons. Sort entries
-lexicographically by the encoded key tuple and reject duplicate binding keys;
-there is no singular sequence slot and no undefined extra “channel hash.”
+The purpose is *reproducibility and honest labeling*: given a sidecar you can
+tell exactly which grids, build, and settings produced an image, and whether
+its fidelity claim was predictive or preview. It is deliberately not a
+distributed-transaction or attestation system (see the integrity-vs-authenticity
+note above). Round-trip tests cover each output route and verify the artifact
+digest, sequence hash, and fidelity reasons.
 
-The payload also embeds the exact bytes and ID of a versioned
-`render_config_v1` RISE-CBOR64-v1 record containing **every effective
-post-override value, including defaults**: final film dimensions/pixel aspect/
-crop/field; camera model and all camera/time/exposure settings; rasterizer,
-integrator, wavelength sampler and every accepted descriptor parameter;
-sampler/RNG layout, spp/seed, adaptive/progressive controls; depth, RR,
-branching, guiding, RIS and MIS settings; medium/shadow flags; all clamps and
-path regularization; reconstruction filter; OIDN model/options; AOV schema;
-and separately labeled primary and secondary output containers, channel layouts,
-bit depths, linear/color spaces, encoders, compression, white balance and display
-transforms. A secondary configuration is never folded into the primary route.
-Descriptor bags are serialized after
-default resolution, not as authored sparse text. Adding a render-affecting
-parameter requires a `render_config` schema update/test; a free-form “other”
-map is forbidden.
-
-The payload additionally embeds exact canonical RISE-CBOR64-v1 bytes and ID for
-`renderer_build_v1`: RISE source revision, dirty flag plus deterministic
-dirty-diff hash, executable/module SHA-256,
-integrator/medium/CDF/provenance schema versions, compile-time
-features, compiler and floating-point/fast-math/contraction settings, target
-platform/architecture, and exact OpenVDB/image-I/O/encoder dependency versions
-plus loaded-binary hashes. Define
-**renderer_build_id=SHA-256(exact renderer_build_v1 bytes)** and recompute it
-before provenance emission.
-It also carries each selected medium's `producer_build_v1` ID; that producer ID
-must be the one signed by its qualification attestation. Renderer build identity
-is provenance, not a new unspecified trust gate: clean and dirty builds are both
-distinguishable, while the existing numeric gates decide qualification. Two artifacts from different binaries therefore cannot
-have indistinguishable provenance even when scene and render settings match.
-
-Scene identity for a file-loaded job is a sorted array of
-`{role,logical_locator,sha256}` for the top-level scene and every external asset
-byte stream actually opened, where each digest covers the exact opened bytes.
-Locators are UTF-8 NFC with `/` separators and the array is lexicographic by
-encoded `(role,logical_locator)` bytes; duplicate pairs with the same digest
-collapse and a duplicate pair with different bytes is an error. This arc does
-not permit the initially opened bytes to stand in for later state. Phase C adds
-one `IRenderMutationSink` owned by Job/Scene and installs it into **every built-in
-render-affecting manager item/asset on insertion and the active rasterizer,
-sampler/config override, FrameStore, rasterizer-output, and encoder graph**. All built-in mutators—including
-objects obtained as mutable pointers through `IManager::GetItem`, every
-`IBasicTransform` path, painters/materials/lights/cameras/geometries, manager
-replace/remove, `RegenerateData`, IJob, editor, parser-finalization, and asset
-rebind, `IJobPriv::GetRasterizer()` mutations, SPP/sample overrides,
-`AddRasterizerOutput`/`FreeRasterizerOutputs`, callbacks, output routing and
-encoder options—must enter the sink before changing state and name their domain.
-Scene/entity/asset mutations increment `author_generation` and set sticky
-`unrepresented_scene_mutation` unless the editor
-atomically commits the matching retained-CST edit and marks that exact generation
-represented. Rasterizer/sampling/output/encoder configuration mutations instead
-increment `config_generation`; they are allowed before freeze and are represented
-by the captured `render_config_v1`, never by clearing scene sticky state. The
-animator alone receives a private, unforgeable
-`DerivedAnimationUpdate` token: its deterministic nominal evaluation increments
-a separate runtime generation/rebuild mask but cannot dirty authored identity.
-`Animator::EvaluateAtTime` opens an internal RAII sink scope with that token, so
-nested timeline setters and `RegenerateData()` inherit the derived classification
-without changing every mutator signature; no other call site can construct the
-scope/token. Public callers cannot obtain it.
-
-The actual `RISE_CreateJob → Job::Job/InitializeContainers →
-LoadAsciiSceneAuto|ViaCst` lifecycle, including reuse of one Job through
-`Job::ClearAll()`, is supported by four private transaction types.
-The Job-owned sink exists before the Scene. The constructor opens a
-`JobBootstrapTransaction` around `InitializeContainers()`, commits the exact
-default-asset/config baseline, records `bootstrap_author_generation`, and marks
-the new Job `load_eligible`. It does not claim a file scene identity.
-Each public `LoadAsciiSceneAuto` or `LoadAsciiSceneViaCst` first takes a strong
-reference to the current `MutationOwnerState` epoch and acquires **that exact
-state's** exclusive lease, before any open, classification, parser work, or
-`load_attempted` CAS. Under the lease it verifies that Job still points to that
-same state and that the state is neither `epoch_revoked` nor `owner_gone`; a
-stale waiter returns `mutation_epoch_stale` and never reads or writes the new
-epoch. Only then does it atomically CAS that state's `load_attempted` false→true,
-compare current author generation with `bootstrap_author_generation`, inspect
-sticky state, and establish the `SceneLoadTransaction` starting
-generation/scope. A losing CAS returns `load_already_attempted`. Thus CAS,
-epoch identity, and eligibility admission are one under-lease critical section;
-`ClearAll()` cannot move a paused admission into its replacement epoch. A failed
-eligibility check leaves the Job preview-only and the transaction cannot clear
-it. The lease is held before the first file open and forbids render or external
-mutation entry while open. The transaction opens and reads the top-level scene
-exactly once into an immutable transaction-owned
-`SceneSourceBlob{logical_locator,bytes,sha256}`. Auto classification consumes
-that blob and calls a private `LoadAsciiSceneViaCstImpl(blob,transaction)`;
-direct ViaCst reads one blob and calls the same private implementation. Neither
-path calls the other public entry, nests a load transaction, reopens the
-top-level file, or classifies bytes different from those parsed, retained, and
-digested. Failure to open, classify, or parse consumes the attempt and requires
-`ClearAll()` for another load. Load-time mutations remain authored and increment author generation, but
-sticky-state publication is deferred. Only after the entire CST derives
-successfully, all external assets are opened/enumerated, and the current
-`RISE-CST-CANON-v1` plus asset identity is built does one atomic commit set
-`represented_author_generation=author_generation`, install that identity, and
-leave the sticky bit clear. A failed/partial load is discarded or remains
-unrepresented preview state; the transaction can never clear a sticky bit that
-predated its starting generation. IJob calls outside this private transaction
-remain ordinary unrepresented author mutations. Gate the repository's existing
-`RISE_CreateJob → LoadAsciiSceneAuto` and `ViaCst` routes, plus pre-load mutation,
-second-load, parse-failure, failed-open attempt, mid-load render attempt, and
-mutate-after-commit. A replace-at-classification test hook atomically swaps the
-path after the blob read and proves Auto still derives and hashes the original
-bytes; direct ViaCst and Auto must produce identical retained-CST identity from
-the same blob. A second barrier test pauses the loader before exclusive-lease
-acquisition while a manager/item mutator enters; after the mutator completes,
-the under-lease eligibility check must reject the load as unrepresented. A third
-pauses after capturing epoch E, runs `ClearAll()` to install E+1, and proves the
-stale loader rejects without setting E+1's `load_attempted` while one legitimate
-E+1 loader may proceed.
-
-`ClearAll()` must open a private **JobResetTransaction** before destroying any
-tracked container. It acquires the sink's exclusive lease, increments a
-monotonic `job_epoch` (generation counters are never reset), revokes every old
-capability/freeze token and scene identity, detaches the old graph, and rejects
-subsequent sink entry from stale externally retained object pointers. The sink
-core is a reference-counted `MutationOwnerState`, not a raw Job pointer: every
-tracked object holds a strong reference to its epoch state. `ClearAll()` marks
-the old state `epoch_revoked`; Job destruction first takes its exclusive lock
-and atomically marks it `owner_gone`, then may release Job/Scene storage. The
-tombstone remains alive until the last retained object releases it, and later
-mutation returns `mutation_epoch_stale` or `mutation_owner_gone` without
-dereferencing freed storage. Destruction waits for any mutator that already
-entered the state, so revocation and mutation are race-free. It then
-creates the new Scene/managers under a fresh epoch-bound sink scope and runs the
-same `JobBootstrapTransaction` to establish a fresh default baseline and
-per-epoch `load_eligible`/`load_attempted=false`. A new file may therefore load
-predictively after a clean reset, but no generation, sticky bit, identity, or
-tracked object from the discarded epoch can qualify the new graph.
-
-The editor's `ClearAll()`-then-rederive path is not treated as an unrelated new
-file. It opens an **EditorRederiveTransaction** carrying the exact already
-represented retained-CST snapshot across the epoch change, reopens and hashes
-every asset byte stream actually consumed, then atomically derives and commits
-the resulting current canonical identity in the fresh graph. Stale prior asset
-digests may not be copied forward. Entry is forbidden if the old epoch had an unrepresented authored
-mutation or if the retained snapshot/generation does not match; failure leaves
-the new epoch preview-only. Tests cover GUI clear/open/clear/open, variant/full
-rederive, stale-pointer mutation after reset, retain-object → destroy-Job →
-mutate, reset after failed load, and an
-attempt to use reset/rederive to clear pre-existing sticky state.
-
-Predictive preflight recursively enumerates every render-reachable manager item/
-asset **and the complete active rasterizer/config/output graph** and requires the
-`IMutationTracked` capability bound to this exact sink;
-legacy/plugin types lacking it cause `untracked_scene_mutability` and are
-preview-only. Prepared entry points also replace the legacy raw
-`IProgressCallback*` with a reference-counted `IRequestProgressCallback` and
-accept a fixed ordered vector of reference-counted
-`IPreparedArtifactFinalizer`s. Under one pre-freeze exclusive lease, Job
-validates the complete prepared-request input, recursively mutation-tracks each
-finalizer/encoder graph, snapshots its effective output-configuration fragment,
-and `addref()`s the callback and every finalizer.
-The exclusive-to-freeze handoff is atomic; add/remove/replace after it returns
-`mutation_frozen`. Those references are held through artifact finalization and
-released exactly once on every exit, so concurrent bridge destruction or caller
-unregister cannot dangle either callback class. The existing non-owning `SetProgress`
-pointer is admitted only by legacy nonprepared preview entry points—if non-null
-on a prepared request, entry fails with `unsafe_progress_callback` before
-workers launch. Freezing a raw pointer is not lifetime ownership.
-
-The request issues one refcounted `IRequestControlHandle` bound to
-`(job_epoch,request_generation,freeze_token)` and gives that same handle to
-callbacks/finalizers. `RequestCancel(handle)` is the only external
-request-control operation permitted while frozen; it atomically sets the token
-only if all three fields still name the active request. A stale/foreign handle
-is a no-op with `request_not_active`, so a late cancel from request N cannot
-cancel N+1. Cancellation after publication commit reports `already_committed`.
-Cancellation after the publication CAS but before durable group commit reports
-`already_committing` and recovery owns the outcome.
-It does not enter the mutation sink and cannot change pixels already committed
-or any captured configuration. Callback unregister/destruction,
-replacement, SPP changes, and every other control mutation remain fail-fast.
-Before acquiring the freeze, every prepared entry point also takes a strong
-self-reference to Job/`MutationOwnerState` and releases it only after all
-finalizers and the freeze have unwound. Releasing the caller's last Job
-reference from a callback therefore cannot run the destructor or attempt a
-same-thread exclusive upgrade mid-request.
-At request start, preparation acquires a sink freeze lease; under
-that lease it performs the private-token nominal animation, then re-reads
-generations, capabilities, sticky state, and the
-current CST/asset identity, captures `render_config_v1` (including the frozen
-finalizer fragment) and config generation
-only then, and completes
-final fidelity preflight. The lease covers the whole user-visible rasterize
-request through every still/AOV sidecar or final movie finalization—not merely
-worker completion. One animation lease spans all frames/fields; later nominal
-animator evaluations use the private derived token under the lease. Built-in mutators require
-the exclusive side of that lease. **Every external mutation entry while frozen
-fails immediately with `mutation_frozen`; it never blocks and a shared-to-exclusive
-upgrade is forbidden.** This includes re-entry from progress, output, encoder,
-and finalization callbacks running on the lease-owning thread, eliminating the
-otherwise deterministic self-deadlock. Concurrent/direct mutations therefore
-cannot race or silently change a predictive render. The provenance records author/config/runtime
-generations and the prepared freeze token. Tests mutate a transform through the
-const-manager→mutable-item→`IBasicTransform` route, mutate each other built-in
-asset family, attempt a concurrent mutation under the freeze, and inject an
-untracked plugin object; none may preserve predictive eligibility unnoticed.
-The lease owner receives a private main-thread `RenderPreparationUpdate`
-capability used only for the named cache/control-plane operations in §10.3
-(spatial/light invalidation, media-state swap, TLAS, prepared safe-cache, and guide
-rebuild); it cannot invoke authored-value setters and therefore does not deadlock
-on its own freeze or alter scene identity.
-Worker/frame accumulation uses a separate private `RenderExecutionUpdate`
-capability; post-worker FrameStore/encoder/sidecar/movie completion uses
-`ArtifactFinalizationUpdate`. Both are bound to the freeze token and permit only
-data accumulation/finalization under the already captured configuration—never
-SPP, callback, route, container, channel, compression, transform, or encoder-
-option mutation. Finalization ownership is concrete: every platform bridge
-constructs and registers its `IPreparedArtifactFinalizer` in the prepared input
-before the exclusive-to-freeze handoff above; there is no later registration
-seam. After workers join, Job invokes the captured finalizers synchronously under an
-`ArtifactFinalizationUpdate`, and `Rasterize*` may not return request completion
-until they have all succeeded, failed, or acknowledged cancellation. Detached
-or post-return movie/sidecar finalization is forbidden. RAII releases every
-finalization capability and then the freeze exactly once on success, encoder
-error, callback exception, and cancellation; finalizer failure makes the request
-follow the required/optional state machine below and cannot leak the lease. The macOS and Windows movie-finalization code
-currently after `RasterizeAnimationUsingOptions()` returns moves behind this
-owned seam.
-
-Publication has explicit artifact and request state. Every prepared finalizer
-descriptor labels its outputs `required_primary` or `optional_derivative`; the
-classification and canonical target are captured in `render_config_v1`.
-All required outputs (primary plus any configured required AOV/frame products)
-form one **required cohort** and receive one group marker. They all stage and
-validate before any is published; failure rolls back the whole cohort. Optional
-movies/display derivatives run only after that cohort commits, each with its own
-artifact marker/state. Their failure returns
-`primary_committed_with_derivative_failures` plus the failed labels and never
-invalidates the primary cohort. The request state is
-
-> ACTIVE → CANCELLED|FAILED_PRECOMMIT|COMMITTING,
-> COMMITTING → COMMITTED|FAILED_RECOVERABLE.
-
-**FAILED_PRECOMMIT** covers worker/callback/required-encoder
-failure or staging/validation failure before the publication CAS. Failure and
-cancellation race by CAS on the same state: whichever wins is the terminal
-result (`failed_precommit` with the captured reason, or `cancelled`); the loser
-observes `request_not_active`. FAILED_PRECOMMIT removes staging, restores no
-canonical path because publication has not begun, releases handles/lease, and
-is distinct from FAILED_RECOVERABLE after COMMITTING.
-
-`RequestCancel(handle)` and the final pre-publication check use one atomic CAS:
-cancel wins ACTIVE→CANCELLED, or the finalizer wins ACTIVE→COMMITTING before any
-irreversible rename. Once COMMITTING, cancel returns `already_committing`; only
-the **durably synced required-cohort group marker** transitions to COMMITTED.
-The first of several artifact markers never commits the request. Optional
-artifact states are independently PENDING→COMMITTING→COMMITTED|FAILED after the
-request is COMMITTED.
-
-Canonical-path authority belongs only to Job. For each captured descriptor Job
-exclusive-creates and retains the **sole native seekable handle** inside the
-target directory (the later commit takes its interprocess lock). It passes only
-a call-scoped, reference-safe `IStagingWriteFacade` plus immutable
-execution/encoding inputs to
-`IPreparedArtifactFinalizer::EncodeToStaging`; canonical/staging paths, native
-handles, duplication/export, sidecar/marker creation, and rename capability are
-not exposed. The facade serializes seek/write, tracks every operation already
-admitted, and offers no detached/asynchronous-write API. Immediately when
-`EncodeToStaging` returns or throws, Job atomically seals the facade, rejects all
-new or retained-facade operations with `staging_sealed`, joins every admitted
-operation, propagates any write failure as FAILED_PRECOMMIT, flushes, and closes
-the sole native handle. Only after that close does Job hash the immutable staged
-artifact, construct the provenance sidecar into its own exclusive-created handle, and
-alone performs every sync, recovery, canonical rename, and marker operation.
-Built-in file/movie encoders are adapted to handle-based I/O. A legacy/plugin
-finalizer is default-deny; only audited built-in implementation IDs in the
-renderer-build manifest may expose `IManagedStagingFinalizer`. Any finalizer
-that owns an output path or lacks that capability hard-errors prepared entry
-with `unmanaged_finalizer_io`; it remains available only to legacy nonprepared
-preview.
-
-The filesystem transaction is fail-closed and process-safe. Job generates a
-256-bit CSPRNG `request_id` when the render request enters ACTIVE, and a fresh
-256-bit CSPRNG `tx_id` for each required-cohort or optional transaction (neither
-is a Job-local generation). For every transaction, **`cohort_id=tx_id` byte for
-byte**. Create every staging/journal
-path with exclusive-create, canonicalize parent directory + leaf identity, and
-reject duplicate/alias targets across finalizers. Acquire interprocess locks for
-all target directories in canonical sorted order and hold them through recovery,
-commit, and cleanup. A versioned durable journal records the transaction/request
-ID, complete target set, new digests, prior marker bytes/digests, and every
-staging/final/rollback and recovery-intent name before relocating anything. The lexicographically
-first locked directory is the cohort coordinator and owns the journal and group
-marker; that marker references every cohort member across all locked directories.
-For canonical artifact locator P, the stable discovery locator for its head
-marker is exactly `P + ".rise-artifact-marker-v1"`; the provenance sidecar is
-exactly `P + ".riseprov.cbor"`, and its stable recovery-intent locator is exactly
-`P + ".rise-recovery-intent-v1"`. The required group-marker locator is exactly
-`coordinator_directory + "/.rise-required-cohort-" +
-lowercase_hex(cohort_id) + ".v1"`. All components are NFC-normalized before joining. These suffixes,
-the recovery-intent suffix, and the `.rise-required-cohort-*.v1` namespace are
-reserved: predictive preflight
-rejects any configured artifact whose canonical/file identity aliases any
-other artifact or any derived sidecar, head-marker, recovery-intent,
-group-marker, journal, or rollback locator.
-
-Cross-directory recovery is discoverable from every member. Under the complete
-sorted lock set, Job first writes and syncs the immutable coordinator journal,
-then exclusive-creates and durably syncs one canonical-CBOR recovery intent at
-every member's stable intent locator:
-`{schema:1,tx_id,coordinator_journal_locator,coordinator_journal_sha256,
-lock_directories:[...]}`, with the directory array sorted canonically. Every
-intent must be durable and every containing directory synced **before any
-artifact, sidecar, or head marker is relocated**. A reader/writer probes the
-stable intent beside each target before locking, unions any recorded lock sets,
-acquires the union in canonical order, and re-probes/revalidates after acquiring
-locks; this second probe closes the race with an intent installed after the
-first probe. It resolves journal recovery to a terminal generation before
-touching the target. Intents are removed and their directories synced only
-after COMMITTED/FAILED recovery and terminal cleanup. Thus a later transaction
-targeting only a non-coordinator directory must discover and finish an earlier
-cross-directory transaction first.
-
-Marker linkage is an exact canonical-CBOR tagged union; fields not listed for a
-variant are forbidden. A required-member `artifact_marker_v1` is
-`{schema:1,kind:"required_member",tx_id,request_id,cohort_id,member_index,
-artifact_locator,artifact_sha256,sidecar_locator,sidecar_sha256,provenance_id,
-required_group_locator}`. An optional marker is
-`{schema:1,kind:"optional_singleton",tx_id,request_id,cohort_id,member_index:0,
-artifact_locator,artifact_sha256,sidecar_locator,sidecar_sha256,provenance_id,
-primary_required_group_locator,primary_required_group_sha256}`. The canonical
-`required_cohort_marker_v1` is
-`{schema:1,kind:"required_group",tx_id,request_id,cohort_id,members:[...]}`,
-where `members` is the complete lexicographically sorted array of
-`{artifact_marker_locator,artifact_marker_sha256}`. Every locator is the
-canonical locator defined above, not an implementation-relative path.
-`schema` and `member_index` are canonical minimally encoded unsigned CBOR
-integers (`member_index<2^64`); every ID and SHA-256 field, including
-`request_id`, `tx_id`, `cohort_id`, `provenance_id`, and all digest fields, is
-an exact 32-byte CBOR byte string. A required group marker is immutable:
-installation uses exclusive-create/no-replace at its tx-derived locator, and it
-is retained for the lifetime of every artifact generation that references it
-(this baseline performs no group-marker garbage collection).
-A reader starting from any required member acquires shared versions of the same
-directory locks (or retries if the generation changes), validates artifact +
-sidecar against its artifact marker, follows `required_group_locator`, validates
-the durable group marker, and proves exact marker-digest membership. Until all
-steps pass, the member is unpublished even if its individual marker has already
-been renamed. Optional derivatives follow their primary group locator and
-digest and are explicitly valid without membership in a new group. Locator
-comparison uses the same canonical path/file-identity rules as alias detection.
-Canonical-CBOR byte fixtures for all three variants, stale/overwritten
-head-marker races, reserved-name collisions, and artifact→head→group discovery
-are required gates.
-
-Each artifact, sidecar, staged marker, and journal is closed and durably synced
-(`fsync`/`fdatasync`, Windows `FlushFileBuffers`, or a tested platform-equivalent)
-before rename. Relocate prior components and install new data; sync every target
-directory; rename each artifact marker and finally the required-cohort group
-marker; sync directories **again**, which is the publication linearization
-point. Only then transition COMMITTING→COMMITTED and perform cleanup in two
-durably ordered phases under the full lock set: (1) unlink **all** recovery
-intents and sync every intent directory while the coordinator journal and every
-rollback component remain durable; only then (2) unlink journal/rollback files
-and sync their directories again. A crash during phase 1 leaves any surviving
-intent pointing to a still-valid journal; a crash after its directory sync
-cannot leave a durable intent whose digest-pinned journal has been removed. The
-same intent-first ordering applies after rollback/FAILED recovery. If the platform cannot provide the
-required file/directory durability semantics, predictive publication hard-errors
-`durable_publication_unavailable` before rendering rather than weakening them.
-
-Recovery does not assume the three old components moved together. Under the
-same interprocess locks, startup/pre-output reads the durable journal and old
-marker digest set, gathers candidates across final, rollback, and staging names,
-and reconstructs a generation only when artifact+sidecar digests match one
-marker. If the new group marker is durably valid, keep the new cohort; otherwise
-restore every old digest-matching cohort member, or quarantine incomplete files
-when no generation validates. This also resolves a caught failure in COMMITTING
-to COMMITTED or FAILED_RECOVERABLE. Neither a lone artifact nor an unmarked pair
-is valid. The protocol applies to stills, AOVs, frames, and movies.
-
-Public `GetRasterizer()` callers cannot obtain either token and receive
-`mutation_frozen` from the exclusive side while frozen. Tests directly mutate live sample
-count, callback, add/free outputs, FrameStore route, and encoder settings before
-capture and concurrently after capture; provenance must reflect the former and
-the latter must not race or change pixels/artifacts. Separate progress,
-final-output, and encoder callbacks attempt transform, output-route, and SPP
-mutations and must fail immediately rather than hang. Finalization tests inject
-success, error, exception, and cancellation and require exactly-one release and
-no `Rasterize*` return while a finalizer remains live. They also destroy or
-unregister the platform bridge after capture, attempt late finalizer
-registration, and verify the owned snapshot/config does not change. Callback tests retain the
-owned snapshot while another thread unregisters/releases its caller reference;
-the callback stays live through finalization. A raw prepared callback is
-rejected, and atomic cancellation remains usable from inside the callback. A
-callback that releases the caller's last Job reference must not destroy Job
-until request/finalization teardown completes. Request N's retained handle is
-fired during N+1 and must be a no-op. Cancellation/error/crash is injected after
-each artifact/sidecar/marker/journal sync, each of the three old-component
-relocations, every new data/marker rename, and every directory sync; recovery
-must expose either the complete prior pair or the complete new marked pair,
-never an unmarked partial artifact. A barrier races cancellation against the
-ACTIVE→COMMITTING CAS. Two required finalizers exercise first-ready/second-fail
-rollback; two optional movie encoders exercise first-commit/second-fail without
-invalidating primary. Two Jobs/processes target aliased paths concurrently and
-must serialize without cross-pairing transaction data. Required staging,
-validation, encoder, and callback failures cover ACTIVE→FAILED_PRECOMMIT and
-race cancellation. A malicious/legacy finalizer that writes a canonical path or
-substitutes/reopens the staging path must be rejected before dispatch. A
-finalizer retains its facade and races a write across return: an operation
-admitted before sealing is joined, while every post-seal write returns
-`staging_sealed` and the hashed bytes cannot change. A two-directory crash after
-relocating only the non-coordinator member leaves an intent there; a later Job
-targeting only that member must discover the coordinator journal, recover, and
-only then commit. Cleanup crash injection after each individual intent unlink,
-each intent-directory sync, and before journal unlink must never leave a durable
-intent whose pinned journal is absent. Two disjoint cohorts in one directory prove their random
-tx/cohort IDs produce distinct immutable group markers and neither head is
-invalidated by the other. A
-concurrent reader probes after every individual marker rename/sync, including a
-cross-directory member: it may accept only after matching required-group
-membership, while an optional singleton validates only through its committed
-primary linkage.
-
-For an unmodified file-loaded job, the exact opened-byte array above is the
-identity. An editor mutation is predictive-capable only when it updates the
-retained CST and the payload additionally embeds the exact deterministic `RISE-CST-CANON-v1`
-serialization and SHA-256 of that **current** CST; that versioned serializer
-is a RISE-CBOR64-v1 syntax tree preserving top-level/chunk source order while
-putting parameters in descriptor order; it uses NFC text, explicit resolved
-defaults, binary64 numbers, and the sorted external-asset identity array.
-Any author mutation not representable in/currently mirrored to retained CST has
-already set the sticky bit; predictive
-preflight then fails until the scene is saved and reloaded or a future canonical
-programmatic-build record is implemented. Clearing the bit without rebuilding
-identity is forbidden and a mutate-after-load fixture is RED. The provenance
-stores both final generations, freeze token, and chosen identity form.
-
-This arc does not define a canonical serialization of a wholly programmatically
-built scene graph, so **programmatic jobs are preview-only** and carry
-`programmatic_scene_unqualified` plus a per-job 128-bit UUID and optional caller
-label for disambiguation. Caller-supplied opaque bytes are not accepted as a
-predictive build manifest. EXR
-repeats the same fields as attributes where supported,
-**except its own artifact digest** (which cannot be embedded without changing
-the bytes being hashed); it embeds the sidecar provenance ID instead. Artifact
-SHA-256 exists only in the sibling sidecar. EXR attributes are not the portable source of truth; MOV carries one sidecar
-with the exact `derived_from_frames` ID+digest array and finalized movie digest. Because
-the MOV encoders in scope are lossy/display-referred, MOV is always a
-`display_derivative` linked to the lossless EXR-frame primaries; it is never the
-predictive primary. A
-predictive primary fails if its sidecar cannot be written atomically. The work
-item explicitly extends `FrameStore::Metadata`, file rasterizer output, legacy
-encoders, EXR, animation/MOV finalization, and AOV fallback propagation—the
-current free-form encoder attributes are ignored and cannot satisfy this
-contract. Round-trip tests cover each output route and verify artifact digest,
-sequence hash, and fidelity reasons.
+**Render-preparation dependency.** Phase C's per-frame grid/majorant/CDF swaps
+require that scene and render-configuration state be *frozen* for the duration
+of a render, with mutations tracked and rejected under the freeze
+(§10.3). That mechanism — mutation sinks, prepared inputs, freeze tokens,
+generation counters, and the artifact-finalization seam — is a renderer-wide
+concern well beyond fire, and is specified in
+[RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md). This arc
+depends only on: (a) the freeze seam existing on the render entry points, (b)
+grid/majorant/CDF swaps occurring strictly between renders, and (c) a scene
+mutation during a render being detected rather than silently producing a
+mixed-state image.
 
 **Validation probes:** alongside frame grids, the sim writes **sim-rate
 centerline probe time series** (T, q̇‴_step, u at fixed stations) for the §3.8
@@ -4214,59 +3712,20 @@ registry).
    Animator. It **must not call the legacy `Scene::SetSceneTime` photon-map
    regeneration path**: that path invokes `TracePhotons(..., time, true, ...)`,
    which performs repeated animator evaluations after TLAS/light preparation
-   and can leave the scene at an arbitrary photon time. Append the same const
-   `ClassifyPreparedTransportDependencies(DependencyTraversal&)` virtual to
-   `IRasterizer`, `IShader`, `IShaderOp`, and `IObject`. It returns a
-   **tri-state per dependency bit**
-   (`no|yes|unknown`) for Scene photon maps, SMS, irradiance cache, and nonlocal
-   SSS; unknown is never coerced to no and hard-errors prepared entry with
-   `transport_dependency_unknown`. The componentwise join is explicitly
-   **unknown-dominates-yes-dominates-no** (equivalently retain separate
-   `has_unknown` and `known_yes` bits); any reachable unknown in any component
-   rejects before a known yes is interpreted or an execution policy is built.
-   Ordinary/Kleene boolean OR is forbidden because `yes OR unknown` could mask
-   an ungoverned plugin. `StandardShader`/`AdvancedShader` join the
-   results of every child op, nested shader-owning ops forward recursively, and
-   plugin defaults return unknown. Every built-in leaf-object override joins
-   its own shader; every built-in container recursively joins all children that
-   can supply a hit/shader, whether or not the child is independently world-
-   visible. In particular, `CSGObject` joins its own shader and both operand
-   object subgraphs: `SetWorldVisible(false)` on an operand never removes it
-   from dependency reachability. `DependencyTraversal` owns an identity visited
-   set and recursion stack; repeated DAG nodes are joined once, and a cycle
-   rejects with `transport_dependency_cycle` rather than recursing or returning
-   no. An unoverridden/plugin object returns unknown. Job/RayCaster combines the
-   active rasterizer's dedicated-integrator flags with the default shader and
-   the classifier result of every TLAS root. The SMS bit therefore includes pure PT,
-   integrated `PathTracingShaderOp`, and standalone `SMSShaderOp`; the SSS bit
-   includes the two named §7.2.2 shader ops. Dependency preflight runs this walk
-   before any TLAS/cache mutation. Active Scene-photon-map
-   consumption hard-errors `photon_transport_unprepared`; a configured but
-   unreachable map is skipped and never regenerated. Predictive SMS is already
-   rejected by §8. In prepared preview, Job derives an immutable
-   `PreparedExecutionPolicy{requested_sms=true,effective_sms=false}` before
-   `render_config_v1` capture, without mutating authored/constructor state under
-   the freeze. One immutable request policy is carried by the existing
-   per-ray/request `RuntimeContext`, including nested shader calls. That policy
-   is passed through **both transport surfaces**:
-   rasterizer `PreRenderSetup` must skip SMS caster enumeration/map build, and
-   pure/integrated PT plus standalone `SMSShaderOp` must skip every SMS
-   evaluation and SMS-specific emission-suppression branch. Every Pel, NM, and
-   HWSS evaluation/suppression sibling reads the same effective bit (even though
-   predictive fire selects NM). The requested and
-   effective states plus `sms_unqualified` are recorded.
-   Active irradiance-cache consumption hard-errors
-   `irradiance_transport_unprepared`; a dormant configured cache skips the
-   helper's current scene-wide prepass and remains bitwise unmodified. All
-   classifier bits are reachability properties, not tests for whether a cache
-   object merely exists. The appended virtuals follow the public ABI and
-   all-build-project checklist and have recursive default/object/nested-op,
-   unknown-plugin, mixed known-yes+unknown sibling/nested, mock-graph
-   forwarding, hidden CSG-operand photon/irradiance/SSS, derived/plugin object,
-   shared-DAG, and cycle tests.
-   Preview use of an active photon/irradiance consumer remains possible only on
-   a legacy nonprepared static-scene path and cannot claim this arc's
+   and can leave the scene at an arbitrary photon time. The
+   `ClassifyPreparedTransportDependencies` recursive tri-state classifier
+   (fail-closed, unknown-dominates, covering nested ops, CSG operands, shared
+   DAGs, and cycles) decides whether any render-reachable shader/op consumes a
+   Scene photon map, irradiance cache, or SMS — its specification lives in
+   [RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md). What
+   this arc requires from it: an **active** photon-map or irradiance-cache
+   consumer hard-errors (`photon_transport_unprepared` /
+   `irradiance_transport_unprepared`) rather than silently rendering with a
+   cache built at some other time, while a **dormant** configured cache is
+   left bitwise untouched and does not block. Preview use of an active
+   consumer stays on the legacy nonprepared path and cannot claim this arc's
    immutable-time guarantee.
+
 
    Tests combine a configured dormant Scene photon map and moving occluder,
    recording zero photon traces and exactly one main-thread nominal animator
@@ -4559,537 +4018,41 @@ registry).
 - Wilkie et al., hero-wavelength spectral sampling, SIGGRAPH Asia 2014.
 - Villemin & Hery, *Practical Illumination from Flames*, JCGT 2013 (emissive-volume light sampling in production).
 - Fedkiw, Stam, Jensen, *Visual Simulation of Smoke*, SIGGRAPH 2001; Zehnder, Narain, Thomaszewski, *An Advection–Reflection Solver*, SIGGRAPH 2018 (rejected for variable density, §3.7); Kim et al., *Wavelet Turbulence*, SIGGRAPH 2008 (excluded, §3.7).
-
 ## 14. Revision history
 
-- **r1 (2026-07-27):** initial draft.
-- **r2 (2026-07-27):** after internal review round 1 (4 parallel reviewers:
-  combustion, transport, CFD, codebase). Committed to the FDS-style
-  transported formulation; replaced LLJ soot with fixed yield; two-channel
-  radiative loss; BC/domain and numerics specs added; E(m) sign, soot-albedo
-  regimes, smoke spectral laws, chemiluminescence bands corrected; embers
-  added; stale BDPT claim fixed; auto-rasterizer routing gap (G10) and
-  emission-estimator gap (G9) added; Phase B expanded to a full design;
-  Blender/Mantaflow made first-class; per-block majorant contract;
-  OIDN/firefly policies.
-- **r3 (2026-07-27):** after internal review round 2 (4 fresh reviewers).
-  Sim: mixing time corrected to the FDS min-of-timescales form (r2's form
-  could not burn the DNS candle — P0); W̄ composition term restored to the
-  divergence constraint; Y_O relation written with joint realizability
-  clamp; critical-flame-temperature ignition criterion adopted (closes the
-  third-scalar question); soot reworked as a product species (production
-  T-window removed — it contradicted sheet temperatures); χ_r/Planck-mean
-  loss changed from region-switched sum to max-blend (double-count + seam);
-  C₀ defined and tied to E(m), Planck-mean coefficient corrected 3.72→3.83
-  for internal consistency; momentum advection specified; conservation
-  budgets added; D*/δx band corrected to [4,16]; plume-row domain, bed
-  thermal BC, seeded symmetry-breaking, determinism phrasing, probe
-  time-series export. Transport: emission estimator unified to
-  real-collision (σ_a/σ_t)·B_λ scoring with mixture-pdf division (r2 stated
-  three inconsistent versions); receiver terms aligned with in-tree
-  throughput factoring (+|cosθ|, no σ_s double-count); weight-1 rule added
-  (volumetric considerEmission analog — r2's "no flag needed" was wrong);
-  flame-through-glass scoped march-only; pivot-before-coin-flip conditioning
-  and three-strategy selection specified; multiple/nested emissive media
-  added; two-level cell→voxel emission CDF (majorant cells too coarse);
-  fp32/fp16 channel table (fp16 f_v was subnormal-broken); smoke channel
-  given physical units via Mulholland k_m; VDB min/max wording corrected;
-  scene-editor surfaces and Phase C build wiring named; aromatic soot-yield
-  tier; spark char-oxidation term; §12 renumbered.
-- **r4 (2026-07-27):** after internal review round 3 (4 fresh reviewers;
-  the codebase reviewer reported zero P0/P1 — all sampled cites accurate).
-  Sim: ignition and extinction split into two criteria (r3's CFT-only test
-  is an extinction model and cannot block cold fresh mixtures — an AIT /
-  flame-connected gate added); τ_adv replaced by the subgrid-velocity
-  τ_u = Δ/√(2k_sgs) (Galilean invariance; closure relabeled "FDS-style"
-  with deviations stated, τ_chem given a value); radiative sink gains the
-  −T∞⁴ ambient-equilibrium term; smoke Ångström exponent corrected to
-  n ≈ 1–1.5 for flaming smoke (r3's 2–4 was self-contradictory), §9
-  default updated. Transport: emission scoring unified to the single rule
-  σ_a·B_λ·T_det/p at the sampled distance (r3's "real collision ÷ mixture
-  pdf" phrasing double-compensated Tr on the DT branch and was undefined
-  on the equiangular branch; the pure-DT (σ_a/σ_t)·B_λ form is now derived
-  as its special case); **chemiluminescence given a transport estimator**
-  (deterministic line integral along segments — r3 defined the source but
-  no estimator, so a zero-soot methanol flame would have rendered black —
-  and explicitly excluded from NEE/Φ with the 10⁻⁴-power justification);
-  §7.2.3/§8 CDF-build contradiction resolved (blocks serve majorants only;
-  the CDF keeps its O(N) per-frame pass); equiangular activation gate
-  widened for flame-only scenes; family-weight pivot conditioning stated;
-  Φ units corrected to W/sr; c_smk stored in g/m³ (fp16 subnormals);
-  flame-height gate rethresholded on the luminosity proxy; open-boundary
-  inflow/outflow H treatment, ε_abs guidance, T_ox value, c_p/sink-iterate
-  neglect statements; memory row recounted (velocity = 3 scalars).
-- **r5 (2026-07-27):** after internal review round 4 (3 fresh reviewers:
-  merged fire-physics, transport, full-document consistency). No P0s;
-  round-4 transport review independently verified the §7.1 step 2 rule's
-  exact unbiasedness against the code's actual sampler normalizations
-  (equiangular density on the segment, delta tracking defective with a
-  no-scatter atom — the expectation still lands on the segment emission
-  target). Fixes: stale §12 bullet still calling CFT an ignition criterion;
-  pivot draw moved to once-per-vertex before volume NEE (the NEE-side
-  family weight needs the pivot in shared state); chem line-integral
-  segment semantics pinned (full segment regardless of scatter outcome;
-  early-outs still score); no-scatter branch explicitly deleted (its role
-  is absorbed by the scatter-sample expectation — keeping it would
-  double-count); smoke units unified to g/m³ across §3.3/§4.3/§8 with the
-  c_soot→f_v conversion owner (sim, ρ_soot ≈ 1800 kg/m³ in metadata);
-  extinction channels constrained to one grid resolution (preserves
-  quadrature exactness); τ_buoy g′ deviation + k_sgs provenance + DNS
-  disabling of subgrid timescales stated; flame-connectedness pinned to
-  previous-step adjacency; χ_r global-budget residual admitted; motion-blur
-  × frame-built CDF note; §7.1.4 notation normalized; §9 velocity channel.
-  A final exit round (2 fresh reviewers, physics and transport+consistency)
-  then reported **no remaining P0/P1** — both independently re-derived the
-  load-bearing formulas (divergence constraint, 3.83 Planck mean, Y_O
-  inversion, §7.1 step 2 unbiasedness against the code's actual sampler
-  normalizations) — and their cosmetic P2s (deviation count, C_ν = 0.1
-  pinned, AIT range note, throughput-pattern wording, one cite offset,
-  early-out note in step 0) are folded in. **Internal review loop closed;
-  sent to external expert review.**
-- **r6 (2026-07-28):** after **external expert review** (1 P0, 12 P1,
-  1 P2 — every code claim spot-verified against the tree before adoption;
-  all confirmed). The headline misses of the internal rounds, now fixed:
-  **(P0)** the divergence constraint lacked the composition-*enthalpy*
-  term that transported-h_s→T inversion requires — full
-  (W̄/W_k − h_{s,k}/(c_pT))·S_k form adopted, with discrete-update-derived
-  S_div and mixing-box/manufactured-solution gates (§3.2). **(scoping)**
-  the internal audit covered RayCaster while the PT rasterizers actually
-  run `PathTracingIntegrator` — a second transport surface with
-  guiding-aware pdfs, a zero-σ_s early-out that eats emission, and a
-  *biased HWSS companion division*; new gap G11, dual-surface work items,
-  HWSS hard-disabled for fire media (§5.1/§6/§7.1). **(radiometry)** the
-  BlackBodyPainter kernel is exitance-per-metre (2πhc²), a π×10⁹ mismatch
-  if consumed as per-nm radiance — new pinned kernel + numeric anchors
-  (§4.2); chemiluminescence dimensionally normalized (η_chem/4π,
-  unit-normalized SPD, metadata-pinned) with honest composite-quadrature
-  bias control (§4.4/§7.1); scene-unit scale connected to SI radiometry
-  with an invariance gate (§8); soot inventory reworked to gross-formation
-  calibrated to NET published yields with a conserved, disjoint soot/smoke
-  partition and σ_s-from-albedo definition (§3.4/§4.3). **(sim)** the
-  max-blend radiative sink was numerically refuted in-flame at the
-  design's own f_v — replaced by the budget-partitioned escape-factor
-  model with integrated-χ_r and optical-thickness gates (§3.5); the
-  reaction closure gained the exact exponential-relaxation discrete update
-  and a Δt-convergent two-route ignition gate; g′ clamped nonnegative
-  (§3.3); a verification tier (V1–V6) and absolute empirical/renderer
-  gates added (§3.8/§7.1). **(transport)** volume NEE gained explicit
-  geometric visibility + a pinned transparent-shadows policy (§7.2.1);
-  p_march gained boundary-survival factors, guiding-aware p_ω, and a
-  surface-terminated support rule (§7.2.2); the pivot scheme was
-  Rao–Blackwellized — unconditional per-vertex pivot draw — replacing r5's
-  incoherent marginal/conditional hybrid (§7.2.4); multi-medium selection
-  pmf and innermost-exclusive zero-without-renormalize rule (§7.2.5);
-  motion blur gained the path-time carrier, frame-indexing pins, AABB
-  expansion, and the trilinear-default/tricubic-overshoot-bound rule (§8).
-  RGB path reframed as deterministic projection bias / preview-only
-  (§7.1 step 4). External answers to Q1/Q2/Q4/Q5/Q6/Q7 adopted into §12;
-  §7.0 phase gating records the reviewer's minimum-changes verdict.
-- **r7 (2026-07-28):** after **external review round 2** (0 P0, 13 P1,
-  2 P2 — code claims re-verified: NEE-before-guiding ordering in
-  `PathTracingIntegrator` confirmed, tricubic signed-weight bound (20/16)³
-  recomputed and confirmed). Sim: radiative budget renormalized over the
-  **total** radiating support with the γ post-fire blend and a frozen-β
-  discrete closure (r6's reacting-only split leaked the plume term and
-  its ≤900 K rationale contradicted the doc's own plume temperatures);
-  soot burnout bookkeeping carried **in full** (r6's neglect was
-  arithmetically wrong — ~3 % of wood HRR, ~15 % aromatic — and
-  contradicted V4), with a stated oxidation ODE, the condensable-vapor
-  precursor scalar Y_cv, and a **smooth φ(T) mass partition** replacing
-  the hard T_switch (whose 1.8× opacity step would have rendered as a
-  temperature shell); two named heat-release rates (q̇‴_inst closure-only
-  vs q̇‴_step for every consumer); piloted ignition moved to same-step
-  flood fill over T_pilot-eligible cells (previous-step adjacency was
-  still Δt-dependent); g′₊ fixed in the §3.7 timestep limit; V3
-  strengthened, dataset/tolerance pinning rule and end-to-end
-  spectral-radiance + smoke-transmittance gates added. Transport:
-  equiangular pivots u_m and NEE endpoint Y made **separate independent
-  draws** (r6's shared name permitted a biased single-draw reading);
-  shared-guide-state-before-NEE ordering + RIS-disabled-at-competing-
-  vertices rule; **identity medium boundary** defined, direction-bending
-  dielectrics block NEE regardless of shadow flags; visibility added to
-  the displayed §7.2.1 integral; §7.2.7 configuration matrix. Pipeline:
-  scene-time→sim-time map (t₀, α, Δt_frame) serialized; velocity locked
-  to trilinear (signed Catmull–Rom bound is 1.953, not 1.477); metadata
-  completeness rule + versioned optical preset record + chem
-  normalization interval; chem quadrature moved to
-  reaction∪extinction-knot panels with an embedded error estimate,
-  "controlled bias" wording throughout; h_{s,k} defined as temperature
-  integrals (no Dc_p/Dt term exists to neglect). §7.0 gating and §12
-  qualifications updated to the round-2 verdict. A post-incorporation
-  consistency pass then closed three seams the surgical edits left: the
-  φ(T) partition made explicitly **two-way** (state relation with
-  rebalancing — reheated aerosol glows again; a one-way transfer would
-  be history-dependent), the realized rate split into
-  **q̇‴_gas + q̇‴_sox = q̇‴_step** with chemiluminescence and the exported
-  `reaction` channel pinned to q̇‴_gas (soot-burnout heat must not drive
-  the blue sheet), and the stale Dc_p/Dt twin in the projection bullet
-  removed; ε_Q defined, T_cond/Q̇_ref added to metadata.
-- **r8 (2026-07-28):** after **external review round 3** (1 P0, 9 P1,
-  1 P2 — all four new code claims verified in-tree before adoption: the
-  shadow walk's documented 4-media/16-crossing caps and Tr hard-zero, the
-  ratio tracker's step-cap partial return, the tricubic accessor's
-  missing clamp, and the direction-dependent post-NEE lobe selection).
-  **(P0)** r7's soot burnout was incompatible with the committed chemical
-  state — Y_O was algebraically slaved to (Z, Y_F), leaving no DOF for a
-  local burnout O₂ sink, and the primary step double-counted the withheld
-  soot's heat: fixed by **transporting Y_O** (algebraic relation demoted
-  to diagnostic) and **atom/energy-balanced gross primary coefficients**
-  (Δh_c,eff = Δh_c − y_form·Δh_soot, s_st,eff = s_st − 2.667·y_form; V4
-  gates total heat against the fuel LHV). **(aerosol)** the merged smoke
-  channel was unrecoverable on reheating and contradicted the
-  constituent presets: replaced by two transported inventories
-  (c_carbon, c_condensed) with the hot/cool split **derived** via φ(T) at
-  evaluation time — no transfer operators at all — constituent-summed
-  optics with σ_s-weighted phase mixture, and a cool→reheat→cool
-  conservation gate. **(transport)** the inherited shadow walk declared
-  not-usable-as-is (silent caps → biased); Phase B specifies the
-  segment-wise active-medium replacement walk with no-silent-caps and
-  >4-media/>16-crossing tests; direction-independent lobe preselection at
-  volume-NEE-competing surface vertices (disabling RIS was insufficient —
-  post-NEE direction-dependent lobe selection also breaks the
-  counterfactual pdf); the identity boundary tightened to a strict
-  **null-boundary class** (unit deterministic transmission, no
-  reflection/tint/emission/shading/depth/roulette — IOR-matched-but-
-  tinted/coated interfaces either carry identical factors in both
-  strategies or block). **(pipeline)** physical channels locked to
-  trilinear (tricubic undershoot ⇒ negative extinction; clamping would
-  break quadrature exactness); frame indexing corrected
-  (i = i₀ + ⌊(t_sim − t₀)/Δt_frame⌋) with the single-immutable-base-grid
-  residency model pinned; velocity halo export required (AABB expansion
-  alone cannot recover outward-moving density). **(validation)** candle
-  row pinned to Hamins–Bundy–Dillon 2005; intermittency observable
-  concretized; absolute L_λ gate added to the pyrometry check; stochastic
-  gates restated as 95 % CIs; the chem quadrature acceptance test pinned
-  (|I_h−I_l| ≤ a_λ,panel + 10⁻³|I_h|, a_λ,panel = 10⁻⁴·Î_seg/N_panels);
-  the frozen-β radiative closure named split-first-order with a
-  ≤2 %-and-halving convergence gate. §7.0/§12 updated to the round-3
-  verdict, including constituent-specific optical presets.
-- **r9 (2026-07-28):** after **external review round 4** (0 P0, 11 P1,
-  3 P2 — both new in-tree claims verified before adoption: the trilinear
-  accessor's reversed z blend + modf negative fractions, and the λ-blind
-  `IPhaseFunction`; the accessor defect is a *pre-existing shipping bug*
-  now also tracked as standalone work). Sim: **phase-transfer/EOS
-  closure** — ρ defined as gas density, aerosols pressureless with
-  phase-transfer mass sources in continuity/S_div, momentum/enthalpy
-  neglects bounded, closed-box gas↔soot and vapor↔condensate gates;
-  condensable stream given real thermochemistry (pseudo-species
-  formula/W/enthalpies, latent heat, saturation-rate rule) and **withheld
-  from the primary coefficients like soot** (r8 had recreated the
-  double-count class for y_cond); element/W̄ closure extended over the
-  full state with gas-only pressure; realizability upgraded to a joint
-  elemental feasible-set projection; y_form given a pinned calibration
-  state + cross-prediction gate. Renderer: 10⁻³ g/m³→SI factor fixed with
-  a unit gate; φ(T) recognized as extinction-relevant — T joins the
-  shared lattice, panels split at φ-clamp roots, quadrature upgraded to
-  7-point GL (degree-12 integrand exceeded degree-9 exactness);
-  medium-level wavelength-aware phase interface added (λ-dependent
-  mixture weights are inexpressible through `IPhaseFunction`); trilinear
-  accessor repair pulled into Phase A step 0 with
-  ramp/continuity/hull gates; march directional pdf corrected to the
-  full marginal Σs_ℓp_ℓ with total-BSDF evaluation; the equal-transfer
-  option for non-null straight interfaces **removed** (structural double
-  count — all non-null interfaces block, transparent-chain exception
-  recorded as future work); η_chem pinned to the effective-HRR
-  denominator with dataset-conversion rule. Pipeline: t_scene,0 fixed as
-  a sequence epoch (render-mode-independent frame selection test); halo
-  sized for the full frame interval with serialized width/policy and a
-  blur-disable diagnostic; probe samples timestamped; β-vs-γ branch
-  conditioning on the radiative gate; §7.2.5 stale walk citation fixed;
-  shadow-walk tests extended (wrong-origin, step-cap continuation); RIS
-  config-matrix wording corrected. §7.0/§12 updated to the round-4
-  verdict.
-- **r10 (2026-07-28):** after **external review round 5** (0 P0, 13 P1,
-  2 P2 — the two new code claims verified in-tree: lobe-dependent
-  guiding eligibility/α/transform at PathTracingIntegrator ~:2961, and
-  `PathTracingRayType` classifying non-delta glossy as `eRaySpecular`
-  at ~:531; commit `2fba2b48` confirmed as a master ancestor). Round 5
-  also exposed that an r9 editing-script failure had silently dropped
-  five intended fixes (V4 wording, the named-rates LHV parenthetical,
-  the metadata condensable set, the Q1 denominator note, an S_div
-  cross-reference) — all now applied in their r10 forms. Sim: the
-  ṁ‴_gas/ρ term REMOVED from S_div (with conservative S_k the
-  coefficient-sum constraint already carries it — r9 double-counted) and
-  ṁ‴_gas pinned with the corrected +Δc_ox burnout gain (not 3.667×);
-  the aerosol-loading neglect's false 10⁻³ bound replaced by a
-  monitored χ_load ≤ 1 % supported regime with aerosol sensible enthalpy
-  carried in the accounting; V4 restated as released heat + residual
-  condensable potential = LHV; the saturation law, latent-heat sign, and
-  coupling policy pinned quantitatively; the feasibility projection
-  replaced by an element-matrix invariant-domain FCT limiter (globally
-  conservative by flux form); the calibration protocol pinned to the
-  0.30 m heptane reference with a 0.60 m ±25 % cross-prediction, and
-  y_cond given its own OC/EC-based protocol. Transport/renderer: the
-  §4.3 hot-carbon formula's surviving 1000× unit error fixed; velocity
-  blur now disables deterministic-distance-MIS competitors (the warp
-  drives integrand degree to ~36, breaking `EvalDistancePdf`'s match to
-  the tracking proposal) — blur-on runs pure DT; surface guiding
-  disabled at competing vertices (the actual proposal is a lobe×guide
-  marginal with per-lobe α and init fallbacks); the weight-1 rule
-  expanded to the two-bit (competitionAvailable, continuationSingular)
-  state (eRaySpecular includes non-delta glossy; delta lobes from mixed
-  materials need weight 1; competition set on NEE attempt, not
-  visibility); the phase interface upgraded to a per-collision closure
-  carrying local constituent weights + mean cosine; the extinction-
-  majorant bound pinned as the φ-sup form (the "T-independent majorants"
-  claim was false under φ(T); corner-composed bounds underbound
-  anticorrelated fields); nominal vs shutter time separated (base frame
-  from nominal time; paths advect by SI-seconds offsets; α ≠ 1 safe);
-  the chem quadrature budget re-allocated by initial panel length under
-  a Gauss–Kronrod 7/15 pair (current-N division was traversal-order-
-  dependent). Status header corrected: the trilinear-accessor
-  prerequisite has landed (`2fba2b48`); no fire *feature* code has.
-  §12 Q1/Q2 updated with the round-5 dataset candidates (Lai 2025;
-  Chang–Charalampopoulos as leading E(m) table, Mulholland–Croarkin as
-  total-anchor-only) and their adoption criteria.
-- **r11 (2026-07-28):** after **external review round 6** (0 P0, 10 P1
-  families, 2 P2; every cited transport surface rechecked against the branch).
-  Sim: resolved the FCT/MacCormack contradiction by pinning conservative
-  finite-volume coupled FCT and making MacCormack debug-only; defined Z as a
-  conservative total-mixture scalar ρ_totZ with the gas-normalized
-  (1+χ_load)b(Z) element constraint; replaced diagnostic-only aerosol
-  enthalpy with dynamic total sensible energy ℋ_s, C_T, and the corresponding
-  complete divergence identity; made χ_load>1 % a hard predictive-scope
-  error; made condensable transfer mass-conservative, capped saturation
-  pressure, and inserted accepted latent power into energy/S_div; corrected
-  the primary+burnout LHV/O₂ wording and expanded V4 to carry both soot and
-  condensable chemical potential at intermediate states; strengthened
-  y_form/y_cond scale+resolution calibration and pinned OC-to-surrogate mass
-  conversion/sampling requirements; corrected non-gray ambient exchange to
-  separate κ_P(T) and κ_P(T∞) means and made V5 independently spectral.
-  Renderer: pinned one immutable MakePhaseClosure(x,λ) API including
-  wavelength-bound g; made velocity blur disable volume NEE/equiangular
-  render-globally with explicit weight state, restricted Pel to nominal
-  unblurred preview, and added an unbiased ratio-tracked chem blur estimator;
-  corrected every blur displacement to mapped simulation seconds; replaced
-  loose smoke parameters with whole-record constituent preset overrides.
-  Scope/contract: dry aerosol is explicit, wet/hygroscopic smoke is deferred;
-  metadata carries that boundary, calibration provenance, and distinct
-  constituent optics; Chang's 6.4 µm endpoint now requires a named long-wave
-  extension before low-temperature Planck means are predictive.
-- **r12 (2026-07-28):** after the first independent implementation-review
-  pass over r11 (three fresh axes: CFD/energy, transport/MIS, and
-  radiometry/fidelity; 13 P1, 2 P2, 0 P0). Sim: constituent diffusion moved to
-  total-mixture fractions so the Z/element affine invariant survives loading
-  gradients; FCT gained aggregate nodal correction budgets rather than
-  face-local admissibility; conservative state moved to fp64 to make its
-  gates achievable; V3 gained deforming-flow and pure-diffusion negative
-  controls; gas-band opacity now uses transported CO₂/H₂O history. Radiometry:
-  φ now blends hot/cool carbon optical models while **all** absorption emits
-  by Kirchhoff; sim and renderer use the same hot+cool+organic spectrum and
-  require IR preset coverage. Transport: the emission CDF gained a strict
-  upper-bound support component; collision emission moved before bounce/depth
-  gates; Pel/NM distance tracking and blur-chem ratio tracking must continue
-  past the current 1024-candidate watchdogs. Fidelity/pipeline: normalized
-  Mantaflow imports are preview-only; numerical constituent/chem values are
-  explicitly non-predictive fixtures until Q1/Q2 close; predictive gates now
-  require frozen records; the scene sketch gained a medium name and explicit
-  global/bounded binding semantics; metadata was normalized into a complete
-  record list.
-- **r13 (2026-07-28):** after the second fresh three-axis implementation
-  review of committed r12. Sim: made Σq_k the sole gas-density owner with an
-  EOS-residual rejection gate; restored sensible enthalpy carried by every
-  constituent diffusion flux; moved MUSCL reconstruction into the affine
-  invariant nullspace and added limiter nondegeneracy/second-order gates;
-  renamed the saturation reference separately from derived dew point. Scoped
-  CO₂/H₂O bands honestly as a frozen simulator-only cooling model with absolute
-  validation and full provenance, leaving renderer prediction to visible
-  aerosol+chem until gas channels land. Transport: removed PDF floors through
-  a log-domain density contract, repaired near-collinear equiangular sampling,
-  separated always-attempted volume selection q_m^V from equiangular pivot
-  weights a, and fully specified Pel phase projection/compensation. Pipeline:
-  added a canonical digested frame manifest, one pre-worker immutable-medium
-  preparation hook, an enforceable predictive/preview state machine, native-v7
-  comments in the scene sketch, and explicit open blockers for y_cond and
-  absolute raw-NM flame radiance. Missing chem data no longer masquerades as a
-  predictive `chem_model=none`.
-- **r14 (2026-07-28):** after the third fresh convergence review of committed
-  r13. Sim: added an exhaustive hashed gas-species/thermochemistry schema,
-  made ignition a memoryless CFT-qualified connected-component problem, gated
-  effective fuel coefficients for positivity/atom balance, and made β>1 or
-  zero emissivity during burning a predictive error. Transport: scoped
-  collision pickup to support-compatible Kirchhoff emission, gave independent
-  additive medium emission a full-segment estimator, corrected mixed light/
-  medium pivot weights to physical band power including scene-unit area, and
-  fixed the chem-importance rationale. Pipeline: made the sequence manifest an
-  explicit deterministic-CBOR/SHA-256 wire contract with exact end semantics,
-  added scene-owned nominal time and rolling-scan-aware preparation bounds,
-  specified portable per-artifact provenance, and reconciled override hashes.
-  §12 now tracks the gas-opacity and thermochemistry records as explicit
-  predictive blockers.
-- **r15 (2026-07-28):** after the fourth fresh convergence review of committed
-  r14. CFD: pinned the conservative momentum/stress equation, molecular and
-  Vreman transport laws/records, immutable-stage two-stage schedule, separate
-  high-order ℋ_s reconstruction, and nonzero momentum/SGS/velocity validation.
-  Transport: made unbounded segments take pure DT instead of a DBL_MAX uniform
-  fallback, stopped calling the support-inflated emission weight physical
-  power, and made insufficient blur halo fail predictive preflight. Pipeline:
-  injected preparation through explicit prepared `IRasterizer` overloads,
-  restored the codebase-required attach/realize/TLAS order with per-frame CDF
-  guide refresh, completed manifest index/lattice/domain invariants, removed
-  the EXR self-digest cycle, standardized CBOR overrides and reason codes, and
-  added the transport record as §12 Q7.
-- **r16 (2026-07-28):** after the fifth fresh convergence review of committed
-  r15. CFD: separated the Heun transport integrator from one finite-step local
-  source map, added a stiff exponential-decay gate, coupled primary combustion
-  and soot oxidation through one proportional O₂ allocator, and added the
-  missing aerosol-thermochemistry record. Transport: replaced the
-  error-estimated adaptive chem quadrature with an explicitly unbiased
-  support-mixture line estimator. Pipeline: made rasterizers—not callers—own
-  post-animation shutter-support computation; required `AutoRasterizer` and all
-  entry surfaces to forward the prepared controller path; pinned axis-aligned
-  voxel/placement/vector-transform semantics; separated unconditional
-  loadability from preview fidelity; attempted source authentication through
-  the content-digest envelope (superseded by r19's detached attestation);
-  defined non-self-referential manifest and output-provenance envelopes; pinned
-  the RISE-CBOR64-v1 wire profile and independent record preimages; required
-  pre-worker table-domain checks; and separated mandatory time-varying sequence
-  preparation from optional velocity blur.
-- **r17 (2026-07-28):** after the sixth fresh convergence review of committed
-  r16 (one P0, nine P1, two P2 across the three axes). CFD: replaced the
-  impossible fixed-volume source-then-project schedule with one provisional
-  finite-step source packet consumed inside a coupled projected conservative
-  expansion/remap; split algebraic and constant-pressure validation; pinned the
-  CFT trial, backward-Euler radiation root, full pressure-open/scalar boundary
-  map, and reversing-face gates. Radiometry/transport: replaced the single
-  HRR×SPD chem approximation with three state-derived absolute CH*/C₂*/CO₂*
-  source channels and band/spatial gates; excluded ε_add explicitly from
-  thermal NEE/MIS and gave it the blur-mode ratio estimator; fixed the
-  scene-unit convention for medium importance. Pipeline: separated producer
-  source qualification from renderer-derived fidelity, scoped frames to an
-  exact OpenVDB-only desktop capability, pinned every output-provenance hash
-  preimage, made blur-off sequence bounds nominal-only, and corrected heuristic
-  profile ownership.
-- **r18 (2026-07-28):** after the seventh fresh convergence review of committed
-  r17 (twelve P1, no P0/P2). CFD: replaced the ambiguous projected-Heun prose
-  with a named Q/M three-projection tableau, combined-flux FCT solves, pressure
-  multiplier ownership, and ordering-specific manufactured gate; made open
-  faces a converged projected-sign active set with full-speed total head; and
-  required a certified F′>0 enclosure before the radiation root. Transport:
-  defined exact center-bin CDF support/lookup/background rules; restricted
-  velocity warping to producer-qualified material channels and rejected/
-  disabled blur for nonzero chem or arbitrary additive sources; pinned chem
-  yields to pre-reaction state. Pipeline: separated fatal integrity failures
-  from valid qualified-record overrides; required unprocessed unclamped output
-  for predictive mode; made provenance per-medium and render-config-complete;
-  scoped programmatic jobs to preview; hardened CBOR against non-text/duplicate
-  keys and noncanonical input; and restored explicit animator-driven TLAS
-  invalidation.
-- **r19 (2026-07-28):** after the eighth fresh convergence review of committed
-  r18 (eleven P1; P2 intentionally excluded from this closeout). CFD: restored
-  common-velocity phase-transfer momentum, closed the separate R0/R1 projected
-  stage iterations and final accepted endpoint projection, specified the
-  nonlinear total-head boundary solve, and certified a unique bracketed
-  gas+aerosol enthalpy inverse. Transport: removed the stale chem-blur estimator
-  contradiction and defined channel-specific sparse-grid backgrounds.
-  Pipeline: disabled worker-time Animator mutation for prepared fire renders;
-  restricted predictive primaries to lossless floating scene-linear output;
-  replaced self-hash “authentication” with detached trusted qualification;
-  added producer/renderer build identity and post-load scene-mutation identity;
-  and made display derivatives explicitly non-predictive.
-- **r20 (2026-07-28):** after the ninth fresh P1-only review of committed r19
-  (four P1; transport/radiometry clean). CFD: classified the final projection
-  multiplier as step-average pressure rather than endpoint pressure, changed
-  pressure validation accordingly, and replaced the incompatible uniform
-  periodic phase-change gate with a zero-mean Galilean manufactured case.
-  Pipeline: made qualification-registry revocation anti-rollback and
-  time-validity fail-closed, and forced the complete existing light/environment/
-  luminary sampler rebuild after nominal animation independently of the volume
-  emission guide rebuild.
-- **r21 (2026-07-28):** after the tenth fresh P1-only review of committed r20
-  (nine P1). CFD: removed retained π₀ from the Heun momentum bases, paired
-  step-average π₂ with trapezoidal kinetic head, and corrected the Galilean
-  gate to compare shifted solutions plus a local packet invariant. Transport:
-  added unconditional decoded-VDB finite/sign/domain scans. Pipeline: fully
-  specified domain-separated attestation/build/registry preimages, dual-signed
-  root rotation and linearizable anti-rollback authorization; made direct
-  manager/item mutations enforceably tracked/frozen; exposed light-sampler
-  invalidation through `IRayCaster` with separate spatial/light skip proofs; and
-  separated primary predictive preflight from non-predictive secondary artifact
-  reasons/status.
-- **r22 (2026-07-28):** after the eleventh fresh P1-only review of committed
-  r21 (four P1; transport clean). CFD: made π₂'s integrated open-face head use
-  the actual R0/R1 inflow indicators across class switches. Pipeline: made an
-  accepted dual-signed root-rotation certificate reusable after the new root is
-  pinned; added an atomic private parser-load baseline transaction; and replaced
-  singular derivative linkage with exact single-primary versus ordered
-  frame-sequence provenance variants carrying every primary artifact digest.
-- **r23 (2026-07-28):** after the twelfth fresh P1-only review of committed r22
-  (seven P1). CFD: added the gas constituent-diffusion momentum flux with the
-  same combined FCT acceptance, restricted S_div,commit to nonadvective terms,
-  and made active-set sign agreement explicitly deadband-aware. Transport:
-  rejected non-background value-off VDB payloads with topology-aware sampling,
-  and gated derived source blur by semantics/presence rather than nominal value.
-  Pipeline: aligned parser baselining with the real constructor-initializes-first
-  lifecycle and extended mutation tracking/freeze through the live rasterizer,
-  configuration, FrameStore, output, and encoder graph.
-- **r24 (2026-07-28):** after the thirteenth fresh P1-only review of committed
-  r23 (seven P1). CFD: paired limiter-active gas advective mass and momentum
-  fluxes with a discrete kinetic-energy/free-stream identity, and added an R2
-  diagnostic endpoint-divergence solve without feeding it back into the Heun
-  commit. Transport: made march MIS use the exact cap- and roulette-aware
-  continuation subdensity and split capped direct-only lobes into a weight-1
-  NEE term. Pipeline: defined epoch-safe `ClearAll()`/editor rederive,
-  prohibited photon-map tracing from prepared time updates, moved platform
-  artifact finalization inside the request-wide lease, and made every external
-  mutation during freeze fail fast to prevent callback self-deadlock.
-- **r25 (2026-07-28):** after the fourteenth fresh P1-only review of committed
-  r24 (nine P1). CFD: defined accepted-primal-to-dual MAC flux/density operators
-  with an exact commuting identity and pinned the virtual flux-only FCT budgets
-  for R1/R2. Transport: made cap-aware MIS implementable through an immutable
-  Pel/NM per-lobe continuation closure and contained unsupported BSSRDF-entry
-  paths. Pipeline: excluded unqualified SMS, owned callback lifetime and safe
-  cancellation, made mutation epochs survive Job destruction as revoked
-  tombstones, gated irradiance-cache reachability, and keyed media preparation
-  on every preparation-affecting input.
-- **r26 (2026-07-28):** after the fifteenth fresh P1-only review of committed
-  r25 (seven P1). CFD: made the scalar finite-volume incidence/area/volume
-  operator explicit and restricted phase-transfer momentum sources with the
-  same MAC density operator. Transport: extended immutable continuation
-  closures to medium vertices while disabling competing volume guiding, and
-  replaced blanket built-in support with an exact allowlist that excludes
-  stochastic `CompositeSPF`. Pipeline: classified/suppressed SMS across both
-  transport surfaces, made finalizers owned pre-freeze inputs, bound cancellation
-  to one request identity, and made artifact+sidecar publication a staged,
-  marked, crash-recoverable transaction.
-- **r27 (2026-07-28):** after the sixteenth fresh P1-only review of committed
-  r26 (eight P1). CFD: pinned one centered physical nonadvective flux shared by
-  both FCT candidates and made the MAC projection use the stored face density
-  exactly. Transport: replaced the nominal adapter allowlist with a closed
-  default-deny Pel/NM type table and extended SSS containment through nonlocal
-  shader ops. Pipeline: added tri-state recursive shader/op dependency queries
-  with one RuntimeContext execution policy, and replaced per-finalizer
-  publication with a durable, interprocess-locked, journaled required-cohort
-  state machine plus separately reported optional derivatives.
-- **r28 (2026-07-28):** after the seventeenth fresh P1-only review of committed
-  r27 (eight P1). CFD: added explicit 0≤Z≤1 FCT rows and pinned exact hashed
-  nullspace-basis bytes/rank/order. Transport: made closure construction
-  material-owned, represented geometric-horizon rejection as an explicit null
-  atom, and audited luminaire/clay delegation and mismatch rejection. Pipeline:
-  made unknown dominate dependency joins, added FAILED_PRECOMMIT, gave Job sole
-  opaque-handle staging/canonical-rename authority, and required consumer
-  validation through exact artifact-to-required-cohort marker membership.
-- **r29 (2026-07-28):** after the eighteenth fresh P1-only review of committed
-  r28 (nine P1). CFD: certified nullspace-basis completeness and made the common
-  nonadvective flux include a full mass/Z-tangent diffusion projection.
-  Transport: made exact material types independently enforceable, rejected
-  invalid closure parameters, and added a closed medium/phase continuation
-  capability table. Pipeline: made dependency traversal include hidden CSG
-  operands, sealed Job-owned staging before hashing, specified discoverable
-  canonical marker variants, and made Auto/ViaCst share one transaction-owned
-  immutable source blob.
-- **r30 (2026-07-28):** after the nineteenth fresh high-threshold P1-only review
-  of committed r29 (six P1). CFD: replaced the invalid approximate-null-column
-  rank argument with exact upper/lower rank certificates and corrected the
-  loaded-mixture diffusion coefficient from ρ_gD to ρ_totD. Transport: required
-  per-segment no-event proposal compensation, eliminating the explicit 2^-k
-  null-boundary bias. Pipeline: installed per-target cross-directory recovery
-  intents, made cohort IDs CSPRNG transaction IDs with immutable group markers,
-  and moved scene-load eligibility admission under the exclusive mutation
-  lease.
-- **r31 (2026-07-28):** after the twentieth fresh high-threshold P1-only review
-  of committed r30 (three P1; transport/radiometry clean). CFD: certified the
-  pinned fp64 projector against an exact rational nullspace projector, closing
-  a correct-rank/wrong-subspace counterexample. Pipeline: made intent cleanup
-  durably precede journal deletion and bound scene-load CAS/admission to one
-  retained, still-current mutation epoch under its exclusive lease.
+The full per-revision log — 31 revisions across 4 internal and 20+ external
+review rounds — lives in
+[FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md). **Consult it
+before reverting anything here**; many current forms are corrections of
+plausible-looking earlier ones.
+
+Arc summary:
+
+- **r1–r5** established the shape: FDS-style transported formulation over
+  level-set/state-relation alternatives; soot as a calibrated product species;
+  PT-only integrator scope; the collision-based emission estimator; Phase B's
+  emissive-volume NEE promoted from a paragraph to a full estimator/MIS design.
+- **r6–r10** hardened the physics and the code grounding: two P0 corrections
+  (a divergence constraint missing its composition-enthalpy term; a soot
+  burnout scheme with no transported oxidizer DOF), the Planck kernel's
+  quantity/unit pinning, scene-unit propagation, the dual transport-surface
+  discovery (`PathTracingIntegrator` alongside `RayCaster`), and the
+  φ(T)-derived constituent aerosol optics.
+- **r11–r31** were a long automated convergence loop. It produced real gains —
+  band-resolved chemiluminescence, an unbiased chem line estimator, the
+  log-domain density contract, FCT-limited conservative transport, and much
+  sharper transport-closure rules — but its finding rate never decayed, and it
+  drifted into renderer-wide and infrastructure concerns. The r32 restructuring
+  removed that drift (see below).
+- **r32 (2026-07-28)** — scope restoration. Fixed two self-blocking defects
+  introduced by the loop (the continuation-closure allowlist default-denied the
+  arc's own fire medium; §3.3 and §3.7 gave incompatible diffusive-flux
+  constructions). Replaced ~90 lines of cryptographic producer attestation,
+  trusted-key registry, and root-rotation machinery with a declared-field +
+  digest **integrity** contract, and ~460 lines of artifact publication
+  transaction with a provenance **manifest**. Split the render-preparation
+  lifecycle and transport-dependency classifier into
+  [RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md) and this
+  history into its own file. Compressed §3.7 to decisions and invariants, and
+  rewrote §7.0 so phase gates list engineering deliverables while
+  measurement-dependent claims gate *output labeling* rather than phase entry.
