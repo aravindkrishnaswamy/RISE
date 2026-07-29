@@ -4,9 +4,10 @@
 //
 //  Gates the collision estimator against the absolute isothermal-slab
 //  solution, proves metre/centimetre invariance, keeps thermal scoring ahead
-//  of the volume-bounce continuation cap, verifies optically thick densities
-//  are not floored, and forces a real event after more than 1024 null
-//  proposals.  Pel is deliberately rejected until the ordered preview step.
+//  of continuation roulette and the volume-bounce cap, verifies optically
+//  thick densities are not floored, and forces a real event after more than
+//  1024 null proposals.  Pel is deliberately rejected until the ordered
+//  preview step.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -73,6 +74,15 @@ namespace
 	Scalar HotAbsorptionMass633()
 	{
 		return 6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+	}
+
+	unsigned int SeedForFirstRouletteDraw( const bool survives )
+	{
+		for( unsigned int seed = 1; seed < 100000; ++seed ) {
+			RandomNumberGenerator probe( seed );
+			if( ( probe.CanonicalRandom() < 0.5 ) == survives ) return seed;
+		}
+		return 0;
 	}
 
 	std::string SceneText(
@@ -261,6 +271,45 @@ namespace
 			"tau=99 log density remains representable" );
 	}
 
+	void TestThermalScorePrecedesContinuationRoulette()
+	{
+		std::cout << "TestThermalScorePrecedesContinuationRoulette" << std::endl;
+		Fixture thick;
+		Check( thick.Initialize( "roulette", 1.0, 1.0, 1000.0 ),
+			"roulette fire slab initializes" );
+		if( !thick.caster ) return;
+
+		const unsigned int rejectedSeed = SeedForFirstRouletteDraw( false );
+		const unsigned int survivedSeed = SeedForFirstRouletteDraw( true );
+		Check( rejectedSeed != 0 && survivedSeed != 0,
+			"deterministic seeds cover both continuation-roulette outcomes" );
+		if( rejectedSeed == 0 || survivedSeed == 0 ) return;
+
+		const unsigned int seeds[] = { rejectedSeed, survivedSeed };
+		const char* labels[] = {
+			"rejected continuation retains the unweighted thermal collision score",
+			"surviving continuation does not roulette-weight the thermal collision score"
+		};
+		for( unsigned int i = 0; i < 2; ++i ) {
+			RandomNumberGenerator rng( seeds[i] );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			const RasterizerState rast = { 0, 0 };
+			IRayCaster::RAY_STATE state;
+			state.importance = 0.005;
+			state.volumeBounces = 64;
+			Scalar value = 0.0;
+			Scalar distance = 0.0;
+			const bool hasSource = thick.caster->CastRayNM(
+				rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+				value, state, kWavelengthNM, &distance, nullptr );
+			Check( hasSource && distance > 0.0,
+				"thermal collision is sampled before continuation roulette terminates" );
+			Check( NearRelative( value,
+				PlanckSpectralRadianceNM( kWavelengthNM, kTemperatureK ), 1e-13 ),
+				labels[i] );
+		}
+	}
+
 	class DelayedDensityAccessor :
 		public virtual IVolumeAccessor,
 		public virtual Reference
@@ -437,6 +486,7 @@ int main()
 {
 	TestAbsoluteSlabAndSceneUnits();
 	TestOpticallyThickDensityIsNotFloored();
+	TestThermalScorePrecedesContinuationRoulette();
 	TestDistanceSamplingContinuesPast1024Nulls();
 	TestSpatialAdditiveSourceSurvivesEscape();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;

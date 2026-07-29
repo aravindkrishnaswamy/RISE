@@ -1514,22 +1514,23 @@ bool RayCaster::CastRayNM(
 	}
 #endif
 
-	// Unbiased Russian roulette: decide before the expensive
-	// intersection work, compensate the returned radiance after.
-	Scalar rrCompensation = 1.0;
-	bool rrGateDeferredForEmission = false;
+	// Decide continuation roulette before the expensive intersection work,
+	// but keep any medium-source score outside that estimator.  A rejected
+	// continuation still samples and scores a finite emission event.
+	Scalar rrContinuationCompensation = 1.0;
+	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
 	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
 			if( carriesMediumSource ) {
-				rrGateDeferredForEmission = true;
+				rrContinuationRejected = true;
 			} else {
 				return false;
 			}
 		} else {
-			rrCompensation = 1.0 / pSurvive;
+			rrContinuationCompensation = 1.0 / pSurvive;
 		}
 	}
 #endif
@@ -1767,9 +1768,8 @@ bool RayCaster::CastRayNM(
 
 		if( equiangularZeroContrib_NM )
 		{
-			c = rrGateDeferredForEmission ? 0.0 : additiveEmissionNM;
+			c = additiveEmissionNM;
 			if( distance ) *distance = 0;
-			if( rrCompensation != 1.0 ) c = c * rrCompensation;
 			return c != 0.0;
 		}
 
@@ -1803,16 +1803,15 @@ bool RayCaster::CastRayNM(
 			// Score medium sources before recursion-depth and RR termination.
 			// Those gates suppress surface/scattering continuation, not the
 			// existence of this finite-event source sample.
-			if( rrGateDeferredForEmission ) {
-				c = 0.0;
+			if( rrContinuationRejected ) {
+				c = additiveEmissionNM + thermalEmission;
 				if( distance ) *distance = t_m;
-				return false;
+				return c != 0.0;
 			}
 			if( depthGateDeferredForEmission ) {
 				c = additiveEmissionNM + thermalEmission;
-				if( rrCompensation != 1.0 ) c = c * rrCompensation;
 				if( distance ) *distance = t_m;
-				return true;
+				return c != 0.0;
 			}
 
 			if( useExplicitThroughput_NM && combinedPdf_NM > 0 )
@@ -1952,28 +1951,24 @@ bool RayCaster::CastRayNM(
 				Li = Li * guidingMISWeight;
 			}
 
-			c = additiveEmissionNM + thermalEmission + throughput * (Ld + Li);
+			c = additiveEmissionNM + thermalEmission +
+				rrContinuationCompensation * throughput * (Ld + Li);
 
 			if( distance ) {
 				*distance = t_m;
-			}
-
-			if( rrCompensation != 1.0 ) {
-				c = c * rrCompensation;
 			}
 
 			return true;
 		}
 	}
 
-	if( rrGateDeferredForEmission ) {
-		c = 0.0;
+	if( rrContinuationRejected ) {
+		c = additiveEmissionNM;
 		if( distance ) *distance = 0.0;
-		return false;
+		return additiveEmissionNM != 0.0;
 	}
 	if( depthGateDeferredForEmission ) {
 		c = additiveEmissionNM;
-		if( rrCompensation != 1.0 ) c = c * rrCompensation;
 		if( distance ) *distance = 0.0;
 		return additiveEmissionNM != 0.0;
 	}
@@ -2089,16 +2084,13 @@ bool RayCaster::CastRayNM(
 		bReturn = bConsiderRMapAsBackground;
 	}
 
-	// The arbitrary additive source is estimated independently over the full
-	// marched segment, so collision/no-collision and equiangular strategy
-	// selection cannot gate or reweight it.
-	c += additiveEmissionNM;
-
-	// Apply RR compensation to the returned radiance so the caller's
-	// estimator (throughput * c) remains unbiased.
-	if( rrCompensation != 1.0 ) {
-		c = c * rrCompensation;
+	// Roulette applies only to surface/background continuation.  The arbitrary
+	// additive source is an independent full-segment estimate and is neither
+	// gated nor reweighted by the continuation decision.
+	if( rrContinuationCompensation != 1.0 ) {
+		c = c * rrContinuationCompensation;
 	}
+	c += additiveEmissionNM;
 
 	return bReturn || additiveEmissionNM != 0.0;
 }
