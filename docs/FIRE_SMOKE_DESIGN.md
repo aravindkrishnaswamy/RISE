@@ -408,10 +408,18 @@ not E_gY + E_a(c/ρ_g) = b(Z). This convention keeps Z unchanged through a
 closed gas↔aerosol cycle and removes phase-transfer source ambiguity. The
 production one-fluid closure uses **J_j=−ρ_totD∇X_j for every constituent**
 (SGS mixing dominates; differential and Brownian diffusion are neglected).
-Because b(Z) is affine, the discrete elemental flux assembled from the same
-face gradients is exactly J_b=−ρ_totD∇b(Z); J_Z is not evaluated by an
-independent stencil. This is what makes the summed elemental and Z fluxes
-identical when aerosol loading varies.
+Because b(Z) is affine, the elemental flux assembled from the same face
+gradients is **in exact arithmetic** J_b=−ρ_totD∇b(Z); J_Z is not evaluated by
+an independent stencil. This is what makes the summed elemental and Z fluxes
+identical when aerosol loading varies. **Exactness is structural, not
+numerical**: it holds only insofar as the cell-centre states satisfy
+Σ_jX_j=1 and E X=b(Z), which fp64 rounding and the limiter's acceptance
+tolerance perturb at the ulp level. §3.7's `nonadvective_flux_projection_v1`
+is what enforces the identity against that residual — it is a
+rounding/consistency projection onto the same subspace this paragraph
+defines, **not an independent flux model**, and it is a no-op in exact
+arithmetic. Its RED gate is meaningful because the unprojected residual
+accumulates over a run.
 
 **The gas state is an exhaustive versioned schema, not the illustrative rows
 below.** A `gas_thermochemistry` record enumerates every q_k, including the
@@ -1246,7 +1254,10 @@ The most notorious practical trap in fire LES; specified accordingly:
      factorization, exact rational nullspace/projector certificate, pivot-minor,
      null-residual, and orthonormality checks as N_A. Set
      `J=N_C N_C^T J_tilde`; no sequential species correction or
-     implementation-chosen constrained solve is permitted. Consequently every
+     implementation-chosen constrained solve is permitted. **This projection
+     realizes §3.3's structural identity under fp64** — with exact
+     cell-centre states it is a no-op (§3.3), so it corrects rounding and
+     limiter-tolerance residual only, never the flux model. Consequently every
      primal face satisfies, within the same checked fp64 forward-error envelope,
      both Σ_jJ_j=0 and the full affine tangent identity
 
@@ -2419,14 +2430,19 @@ families reach emission at a point y from vertex x:
     separate. This is an explicit capability, not an adaptation of legacy
     `GetPhaseFunction()`: append default-unsupported
     `IMedium::MakeContinuationPhaseClosurePel/NM(...)`. Before calling it, a
-    central preflight requires an exact built-in dynamic-type pair. The initial
-    closed table permits exact `HomogeneousMedium` and exact
-    `HeterogeneousMedium` only when their phase object is exact
-    `IsotropicPhaseFunction` or exact `HenyeyGreensteinPhaseFunction`; the
-    latter additionally requires finite -1<g<1. The arc's new chromatic grid
-    medium is default-deny until its exact type is added to this reviewed table.
-    Every subclass, plugin medium, plugin phase, and unlisted future type is no,
-    even if it inherits or overrides a yes factory. Predictive preflight of
+    central preflight requires an exact built-in dynamic-type pair. The closed
+    table permits exact `HomogeneousMedium` and exact `HeterogeneousMedium`
+    when their phase object is exact `IsotropicPhaseFunction` or exact
+    `HenyeyGreensteinPhaseFunction` (the latter requiring finite -1<g<1), **and
+    the arc's own multi-channel fire medium with its §4.3 σ_s-weighted
+    constituent HG-mixture closure** (each constituent lobe requiring finite
+    -1<g_j<1; the mixture weights are the local σ_s,j of §4.3, so the closure
+    is exactly the object §7.1 step 4 constructs). **Adding that row is a
+    Phase-A deliverable, not a later amendment** — the fire medium is the only
+    medium volume NEE exists to light, so leaving it default-denied would
+    disable Phase B inside its sole use case; §7.0's Phase-B gate lists the
+    row explicitly. Every subclass, plugin medium, plugin phase, and unlisted
+    future type is no, even if it inherits or overrides a yes factory. Predictive preflight of
     every render-reachable medium rejects
     `medium_continuation_closure_unsupported`; preview sets
     `competitionAvailable=false`, disables volume NEE at that vertex, and uses
