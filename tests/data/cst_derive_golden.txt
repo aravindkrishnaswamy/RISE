@@ -345,6 +345,7 @@ scenes/Tests/Volumes/pt_chromatic_fog.RISEscene  28b5ebd9c7d46334a046f3cf961a5e8
 scenes/Tests/Volumes/pt_env_through_fog.RISEscene  becf6ffb4657a63b09d7c3224fa2d2ce508bc54a1191941a7c3c8ca37ca1525f  1655  32
 scenes/Tests/Volumes/pt_equiangular_fog.RISEscene  c44e9ac4a3baee01040e567643631b818e41e97e117e27f0018dad2b52bd028b  2680  38
 scenes/Tests/Volumes/pt_equiangular_hetero.RISEscene  2a361cd9688ef82cce3b752522ce48a89b7d7b089948404f93689f1c612726ae  2293  34
+scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene  dfa076fe06dec5ddd976c9dc4ad08ef3cf2789628b45d06d3a91b69e159982a4  833  18
 scenes/Tests/Volumes/pt_fog_sphere.RISEscene  ce5b6b67cfd50bc4cfdac225749b6289becfb5992abc0167bdcfbc6a2cd05fe4  1922  37
 scenes/Tests/Volumes/pt_forward_scatter_fog.RISEscene  cb42eb69e4ea7b4831464e0df0b189417fbe4c64c3c0a39c780ca6c2728516d8  2497  35
 scenes/Tests/Volumes/pt_heterogeneous_sphere.RISEscene  f186cf77500766e78732c96036bfe5940ad8325fca484f893dfd7d52e36b11d0  2371  37
