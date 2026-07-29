@@ -1529,9 +1529,25 @@ closure — CMF→XYZ→Rec.709 via the **matrix-only** transform, normalized by
 gamut-mapped `XYZtoRec709RGB` is explicitly not it), used here with its
 negative lobes intact:
 
-> σ̄_a,c(x) = ∫ R_c(λ) σ_a(x,λ) dλ,
-> σ̄_s,c(x) = ∫ R_c(λ) σ_s(x,λ) dλ,
-> **ε_c(x)  = ∫ R_c(λ) σ_a(x,λ) B_λ(T(x)) dλ.**
+> **K_c = ∫ R_c(λ) dλ**  (channel response mass — a fixed constant),
+> **σ̄_a,c(x) = ∫ R_c(λ) σ_a(x,λ) dλ / K_c**   ← response-weighted **mean**,
+> **σ̄_s,c(x) = ∫ R_c(λ) σ_s(x,λ) dλ / K_c**   ← response-weighted **mean**,
+> **ε_c(x)  = ∫ R_c(λ) σ_a(x,λ) B_λ(T(x)) dλ**  ← response-weighted **integral**.
+
+**Coefficients are averaged; emission is integrated — and the asymmetry is
+forced, not stylistic** (r35). σ is an *intensive* per-length rate that
+enters an exponent: for a grey medium every wavelength transmits exp(−σL),
+so channel c must also transmit exp(−σL), which requires σ̄_a,c = σ — a
+mean. ε is an *extensive* radiance density that is accumulated along a
+segment, so its channel value is the amount of radiance added, an integral.
+Using an integral for σ̄ makes a grey medium transmit exp(−σK_cL) with
+K_c ≠ 1: since equal-energy XYZ is not Rec.709's D65 white, K_c ≈
+(1.20, 0.95, 0.91) here, and the grey slab misses the projected spectral
+target by −7.9 %, +2.1 %, +4.0 % per channel at σL = 1 — a *grey* medium
+acquiring a spurious colour cast, from a projection with nothing chromatic
+to project. With the mean, K_c cancels identically and §7.1 step 2's grey
+relation L_c = ∫R_c L_λ dλ holds **exactly, by construction rather than
+coincidence**.
 
 ε_c is *not* σ̄_a,c · ∫R_c B_λ dλ. The two differ whenever extinction is
 chromatic, and for fire they differ a lot: with σ_a ∝ 1/λ (§4.1) at
@@ -1668,11 +1684,11 @@ science but invalid as a probability. The roles separate cleanly:
   (transmittance grows without bound; majorants and delta tracking are
   undefined). It does not arise for the extinction this design admits: σ_a
   and σ_s are broadband power laws (§4.1's 1/λ soot, §4.3's λ^−n smoke), so
-  the integral spans the band and the positive lobes dominate — for a 1/λ
-  absorber the per-channel σ̄_a,c are ≈ (0.20, 0.19, 0.22) of their grey
-  reference, all positive. Phase A asserts σ̄_a,c ≥ 0 and σ̄_s,c ≥ 0 at
-  medium construction and fails loudly rather than tracking a negative
-  coefficient. ε_c carries no such constraint: emission is *accumulated*,
+  the integral spans the band and the positive lobes dominate. The
+  normalizer is safe too: K_c ≈ (1.20, 0.95, 0.91) is bounded away from
+  zero, so the mean is well conditioned. Phase A asserts K_c > 0 once at
+  startup and σ̄_a,c ≥ 0, σ̄_s,c ≥ 0 at medium construction, failing loudly
+  rather than tracking a negative coefficient. ε_c carries no such constraint: emission is *accumulated*,
   never exponentiated, so a negative channel there is ordinary out-of-gamut
   colour.
 - **Sampling** — the closure computes
@@ -1681,9 +1697,10 @@ science but invalid as a probability. The roles separate cleanly:
   > p_c(ω)=Σ_j(S_jc/S_c)p_j(ω),
   > q_Pel(ω)=Σ_c[S_c/Σ_dS_d]p_c(ω),
 
-  with **W(λ) = x̄(λ)+ȳ(λ)+z̄(λ)**, the nonnegative CMF sum. Mixture weights
-  and the proposal density must be nonnegative, and their choice affects
-  *variance only* — any W positive wherever σ_s is nonzero leaves the
+  with **W(λ) = x̄(λ)+ȳ(λ)+z̄(λ)**, the nonnegative CMF sum. These weights
+  need no K-style normalizer: S_jc/S_c and S_c/Σ_dS_d are ratios, so any
+  common factor cancels. Mixture weights and the proposal density must be
+  nonnegative, and their choice affects *variance only* — any W positive wherever σ_s is nonzero leaves the
   estimator unbiased, because the per-channel value returned by `Evaluate`
   is still the R_c-projected one and continuation divides by the density
   actually sampled.
@@ -2234,10 +2251,15 @@ engineering task waits on this list.**
    analytic value rather than against L_λ. **The two targets are different
    numbers in different measures and are never compared to each other**;
    what holds for a **grey** medium is that the Pel target equals the
-   *projection of* the spectral one, L_c = ∫R_c(λ)·L_λ dλ (verified to
-   1e-12), so a single grey reference field can be checked twice — once
-   per measure against its own target — during the execution order's step-4
-   increment. Earlier phrasing ("the two coincide") was ambiguous and read
+   *projection of* the spectral one, L_c = ∫R_c(λ)·L_λ dλ — **exactly, and
+   structurally**: the response mass K_c cancels between ε_c's integral and
+   σ̄_a,c's mean (§4.2), so the identity is a consequence of the projection
+   definitions rather than a numerical coincidence. A single grey reference
+   field is therefore checked twice — once per measure against its own
+   target — during the execution order's step-4 increment. **This gate is
+   load-bearing**: it is what would have caught defining σ̄ as an
+   unnormalized integral, which gives a grey medium a per-channel colour
+   cast of −7.9 %/+2.1 %/+4.0 % at σL = 1. Earlier phrasing ("the two coincide") was ambiguous and read
    as if a Pel triple could be compared to a wavelength-valued radiance;
    it cannot.
    Both run through both entry routes with

@@ -630,3 +630,31 @@ it was already tried and refuted here.
   exact agreement is impossible while one path gamut-maps a final XYZ and the
   other has only coefficients — which is why RGB stays preview-only.
 
+- **r35 (2026-07-29):** third consecutive Pel-path stop, third real defect —
+  and this one was in a claim r32 said it had *verified*. The Pel
+  coefficients were defined as unnormalized response-weighted integrals,
+  σ̄_a,c = ∫R_c σ_a dλ. For a grey medium that transmits exp(−σK_cL) instead
+  of exp(−σL), where K_c = ∫R_c dλ ≈ (1.20, 0.95, 0.91) — not (1,1,1),
+  because equal-energy XYZ is not Rec.709's D65 white. The grey slab
+  therefore missed the projected spectral target by −7.9 %, +2.1 %, +4.0 %
+  per channel at σL = 1: a *grey* medium acquiring a colour cast from a
+  projection with nothing chromatic to project. **Why r32's "verified to
+  1e-12" missed it:** that check used a normalized box response with
+  ∫R dλ = 1 — exactly the special case in which K_c cancels and the bug is
+  invisible. A verification that assumes away the property under test proves
+  nothing; the real response was never substituted in.
+  **Fix — the two quantities project differently, and the asymmetry is
+  forced by what they are:** σ is an *intensive* per-length rate that enters
+  an exponent, so its channel value is a response-weighted **mean**
+  (÷K_c); ε is an *extensive* radiance density that is accumulated, so its
+  channel value is a response-weighted **integral**. K_c then cancels
+  identically and §7.1 step 2's grey identity holds by construction. This
+  was preferred over the three options offered (drop the grey gate; defer
+  projected coefficients to the chromatic closure; renormalize R_c per
+  channel): the first discards a gate that had just proved its worth by
+  catching this, the second leaves step 4 not exercising the coefficient
+  path it exists to prove, and the third would corrupt ε_c, which correctly
+  wants the unnormalized integral. The positivity assertion now also covers
+  the normalizer (K_c > 0, checked once at startup); the §4.3 sampling
+  weights need no normalizer since S_jc/S_c and S_c/Σ_dS_d are ratios.
+
