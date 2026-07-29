@@ -241,7 +241,7 @@ namespace RISE
 			// Get the value at the particular wavelength
 
 			// Outside the frequency range
-			if( nm < lambda_begin || nm > lambda_end ) {
+			if( nm < lambda_begin || nm >= lambda_end ) {
 				return 0;
 			}
 

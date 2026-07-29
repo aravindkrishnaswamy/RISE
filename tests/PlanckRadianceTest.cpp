@@ -228,6 +228,8 @@ static void TestSpectralPacketAssignmentUpdatesRange()
 		"fixed spectral packet self-assignment returns the original packet" );
 	Check( fixedPacket.ValueAtNM( 380 ) == 7.0,
 		"fixed spectral packet self-assignment preserves amplitudes" );
+	Check( fixedPacket.ValueAtNM( 780 ) == 0.0,
+		"fixed spectral packet upper endpoint is outside its stored bins" );
 }
 
 int main()
