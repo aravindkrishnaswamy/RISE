@@ -9,7 +9,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -52,7 +54,11 @@ namespace
 	class GuardedSpectralPacket : public SpectralPacket
 	{
 	public:
-		GuardedSpectralPacket() : SpectralPacket( 400.0, 700.0, 3 )
+		GuardedSpectralPacket(
+			const Scalar wavelengthBegin,
+			const Scalar wavelengthEnd,
+			const unsigned int frequencyCount ) :
+			SpectralPacket( wavelengthBegin, wavelengthEnd, frequencyCount )
 		{
 			GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );
 			delete [] amplitudes;
@@ -180,18 +186,42 @@ static void TestBlackBodyPainterBoundaryAndNormalization()
 		normalizedPainter->release();
 	}
 
-	const GuardedSpectralPacket guardedSpectrum;
+	const GuardedSpectralPacket guardedSpectrum( 400.0, 700.0, 3 );
 	Check( guardedSpectrum.ValueAtNM( 700.0 ) == 0.0,
 		"spectral packet upper endpoint is outside its stored bins" );
+
+	const GuardedSpectralPacket roundoffSpectrum( 0.0, 0.1, 3 );
+	const Scalar lastInteriorWavelength = std::nextafter( 0.1, 0.0 );
+	Check( roundoffSpectrum.ValueAtNM( lastInteriorWavelength ) == 3.0,
+		"spectral packet clamps a rounded last-bin index" );
+}
+
+static void TestSpectralPacketAssignmentUpdatesRange()
+{
+	SpectralPacket destination( 0.0, 10.0, 2 );
+	SpectralPacket source( 0.0, 20.0, 2 );
+	source.SetAtIndex( 0, 1.0 );
+	source.SetAtIndex( 1, 2.0 );
+	destination = source;
+
+	const bool spacingUpdated = destination.deltaLambda() == 10.0;
+	Check( spacingUpdated,
+		"spectral packet assignment updates spacing when the range changes" );
+	if( spacingUpdated ) {
+		Check( destination.ValueAtNM( 15.0 ) == 2.0,
+			"assigned spectral packet indexes the copied range" );
+	}
 }
 
 int main()
 {
+	std::cout << std::setprecision( std::numeric_limits<Scalar>::max_digits10 );
 	TestPinnedPointAnchor();
 	TestStefanBoltzmannIntegralIdentity();
 	TestNonPositivePhysicalInputs();
 	TestNonFiniteComparisonCannotPass();
 	TestBlackBodyPainterBoundaryAndNormalization();
+	TestSpectralPacketAssignmentUpdatesRange();
 	if( failures == 0 ) {
 		std::cout << "All Planck radiance tests passed." << std::endl;
 	}

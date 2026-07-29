@@ -191,6 +191,8 @@ namespace RISE
 				// reallocate
 				lambda_begin = s.lambda_begin;
 				lambda_end = s.lambda_end;
+				delta = s.delta;
+				OVnumfreq = s.OVnumfreq;
 				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
 			}
 			else
@@ -201,8 +203,8 @@ namespace RISE
 				lambda_begin = s.lambda_begin;
 				lambda_end = s.lambda_end;
 				num_freq = s.num_freq;
-				delta = (lambda_end-lambda_begin) / Scalar(num_freq);
-				OVnumfreq = 1.0 / Scalar(num_freq);
+				delta = s.delta;
+				OVnumfreq = s.OVnumfreq;
 				amplitudes = new Scalar[num_freq];
 				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
 
@@ -286,14 +288,20 @@ namespace RISE
 		{
 			// Get the value at the particular wavelength
 
-			// Outside the frequency range
-			if( nm < lambda_begin || nm >= lambda_end ) {
+			// Outside the half-open frequency range, or an invalid/empty packet.
+			// Written as !(nm < lambda_end) so NaN is rejected under fast-math.
+			if( num_freq == 0 || !(lambda_begin < lambda_end) ||
+				nm < lambda_begin || !(nm < lambda_end) ) {
 				return 0;
 			}
 
 			// Find the right frequency bin. lambda_end is the exclusive end
-			// because the packet stores num_freq samples spaced by delta.
-			const unsigned int idx = static_cast<unsigned int>((nm-lambda_begin)/delta);
+			// because the packet stores num_freq samples spaced by delta. Clamp
+			// roundoff that maps a representable interior wavelength to num_freq.
+			unsigned int idx = static_cast<unsigned int>((nm-lambda_begin)/delta);
+			if( idx >= num_freq ) {
+				idx = num_freq - 1;
+			}
 			return amplitudes[idx];
 		}
 	};

@@ -27,8 +27,8 @@ namespace RISE
 		{
 		protected:
 			RISEPel					color;					///< Color in RISEPel terms
-			SpectralPacket			spectrum;				///< The actual spectrum (no scale)
-			Scalar					temperature;			///< Temporature in Kelvins
+			SpectralPacket			spectrum;				///< Spectrum with authored scale and optional peak normalization applied
+			Scalar					temperature;			///< Temperature in Kelvins
 			Scalar					scale;					///< A scale factor
 
 			const Scalar			lambda_begin; 
@@ -50,9 +50,6 @@ namespace RISE
 			// Constructor based on temperature of blackbody
 			BlackBodyPainter( const Scalar temp, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const bool normalize, const Scalar scale );
 
-			// Constructor based on the peak wavelength
-	//		BlackBodyPainter( const Scalar peak_lambda, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const Scalar scale=1.0 );
-			
 			RISEPel							GetColor( const RayIntersectionGeometric& ri  ) const;
 			SpectralPacket					GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar							GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;

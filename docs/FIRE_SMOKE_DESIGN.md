@@ -1854,7 +1854,9 @@ preview while those datasets are open.
 
 **Already landed:** the trilinear-accessor repair (commit `2fba2b48` — the
 reversed z-blend and negative-coordinate fractions), which was a Phase-A
-prerequisite and a pre-existing bug affecting every heterogeneous volume.
+prerequisite and a pre-existing bug affecting every heterogeneous volume; and
+the shared per-nm Planck radiance kernel with its two numeric gates (§4.2), on
+`fire-smoke-design`.
 
 #### Phase A gates (all engineering)
 

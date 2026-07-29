@@ -80,11 +80,11 @@ writing to a painter chunk the parser already accepts, with a **live spectral sw
 
 ### 2.3 The math
 
-**Kelvin → spectrum.** `BlackBodyPainter` already evaluates Planck's law per wavelength
-(`IntensityForWavelength`, [BlackBodyPainter.cpp:26](../../src/Library/Painters/BlackBodyPainter.cpp)) and
-exposes the inverse helpers the UI needs for free: `TemperatureFromPeakNM` / `PeakNMFromTemperature` (Wien's
-law) for a "peak wavelength" read-out beside the Kelvin slider. The slider value is the chunk's `temperature`
-verbatim — no UI-side baked ramp.
+**Kelvin → spectrum.** `BlackBodyPainter` calls the shared per-nm Planck kernel
+([PlanckRadiance.cpp](../../src/Library/Utilities/PlanckRadiance.cpp)) and converts it to the painter's historical
+exitance-per-metre convention at its boundary. For a "peak wavelength" read-out beside the Kelvin slider, the UI
+computes Wien's law directly (`lambda_max_nm = 2.897771955e6 / temperature_K`); this display-only calculation is
+not a painter API. The slider value is the chunk's `temperature` verbatim — no UI-side baked ramp.
 
 **Monochromatic → spectrum.** One `cp "<nm> 1.0"` sample (or a narrow triangular bump across ±Δnm so the 4-hero
 sampler reliably catches it — a near-delta spike can fall between hero wavelengths; the UI should author a small

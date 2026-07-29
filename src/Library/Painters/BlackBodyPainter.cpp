@@ -69,13 +69,6 @@ BlackBodyPainter::BlackBodyPainter(
 	RegenerateData();
 }
 
-/*
-BlackBodyPainter::BlackBodyPainter( const Scalar peak_lambda, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const Scalar scale=1.0 )
-{
-	BlackBodyPainter::BlackBodyPainter( TemperatureFromPeakNM(peak_lambda), lambda_begin, lambda_end, num_freq, scale );
-}
-*/
-
 BlackBodyPainter::~BlackBodyPainter( )
 {
 }
