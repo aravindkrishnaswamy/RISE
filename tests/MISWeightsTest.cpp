@@ -207,6 +207,36 @@ static void TestExtremeRatios()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 7: one-sample guiding mixture support and null-sample semantics
+//////////////////////////////////////////////////////////////////////
+static void TestGuidingSelectedMixturePdf()
+{
+	std::cout << "Test 7: GuidingSelectedMixturePdf" << std::endl;
+
+	using PathTransportUtilities::GuidingSelectedMixturePdf;
+
+	Check( ApproxEqual(
+		GuidingSelectedMixturePdf( 0.25, 0.0, 0.2, false ), 0.15, TOL ),
+		"phase-selected direction retains phase support when guide PDF is zero" );
+	Check( GuidingSelectedMixturePdf( 0.25, 0.0, 0.2, true ) == 0,
+		"guide-selected zero-density result is an explicit null sample" );
+	Check( ApproxEqual(
+		GuidingSelectedMixturePdf( 0.25, 0.4, 0.2, true ), 0.25, TOL ),
+		"guide-selected valid result uses the actual mixture density" );
+	Check( GuidingSelectedMixturePdf( 0.25, -0.1, 0.2, false ) == 0,
+		"negative guide density fails closed" );
+
+	const Scalar tinyDensity = GuidingSelectedMixturePdf(
+		1.0 - 5.0e-12, 0.0, 0.1, false );
+	Check( tinyDensity > 0 && tinyDensity < NEARZERO,
+		"near-unit guide mixture produces legal sub-NEARZERO phase support" );
+	Check( PathTransportUtilities::IsPositiveFiniteDensity( tinyDensity ),
+		"every finite positive density remains in estimator support" );
+	Check( !PathTransportUtilities::IsPositiveFiniteDensity( 0.0 ),
+		"exact zero density is outside support" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
 int main()
@@ -219,6 +249,7 @@ int main()
 	TestWeightSum();
 	TestPowerHeuristic();
 	TestExtremeRatios();
+	TestGuidingSelectedMixturePdf();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

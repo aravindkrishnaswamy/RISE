@@ -1195,10 +1195,6 @@ bool RayCaster::CastRay(
 						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							// Sample from guiding distribution.
-							// Save phase-sampled state in case guide fails.
-							const Vector3 wi_phase = wi;
-							const Scalar phasePdf_phase = phasePdf;
-
 							Scalar guidePdf = 0;
 							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
 							wi = rc.pGuidingField->SampleVolume( volGuideHandle, xi2D, guidePdf );
@@ -1206,76 +1202,68 @@ bool RayCaster::CastRay(
 							if( guidePdf > 0 )
 							{
 								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
 							}
-							else
-							{
-								// Degenerate guide sample — restore phase direction
-								wi = wi_phase;
-								phasePdf = phasePdf_phase;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, true );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 						else
 						{
 							// Keep phase-sampled direction, but reweight for combined PDF
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandle, wi );
-							if( guidePdf > 0 && phasePdf > 0 )
-							{
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, false );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 					}
 				}
 #endif // RISE_ENABLE_OPENPGL
 
-				const Ray scatterRay( scatterPt, wi );
+				if( PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) )
+				{
+					const Ray scatterRay( scatterPt, wi );
 
-				RAY_STATE rs2;
-				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * ColorMath::MaxValue( throughput ) * guidingMISWeight;
-				rs2.considerEmission = true;
-				rs2.type = rs.type;
-				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = effectivePdf;
+					RAY_STATE rs2;
+					rs2.depth = rs.depth + 1;
+					rs2.importance = rs.importance * ColorMath::MaxValue( throughput ) * guidingMISWeight;
+					rs2.considerEmission = true;
+					rs2.type = rs.type;
+					rs2.volumeBounces = rs.volumeBounces + 1;
+					rs2.bsdfPdf = effectivePdf;
 
-				Scalar hitDist = 0;
-				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
-					pRadianceMap, ior_stack );
+					Scalar hitDist = 0;
+					CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
+						pRadianceMap, ior_stack );
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Record volume training sample for the guiding field.
 				// Use effectivePdf (= combinedPdf when guiding was applied)
 				// so that weight = luminance / pdf matches the actual
 				// sampling distribution used to generate the direction.
-				if( rc.pGuidingField &&
-					rc.pGuidingField->IsCollectingTrainingSamples() &&
-					effectivePdf > NEARZERO )
-				{
-					const Scalar lum = ColorMath::MaxValue( Li );
-					if( lum > 0 )
+					if( rc.pGuidingField &&
+						rc.pGuidingField->IsCollectingTrainingSamples() &&
+						effectivePdf > NEARZERO )
 					{
-						rc.pGuidingField->AddVolumeSample(
-							scatterPt, wi,
-							hitDist > 0 ? hitDist : 1.0,
-							effectivePdf,
-							lum,
-							false );
+						const Scalar lum = ColorMath::MaxValue( Li );
+						if( lum > 0 )
+						{
+							rc.pGuidingField->AddVolumeSample(
+								scatterPt, wi,
+								hitDist > 0 ? hitDist : 1.0,
+								effectivePdf,
+								lum,
+								false );
+						}
+						else
+						{
+							rc.pGuidingField->AddZeroValueVolumeSample(
+								scatterPt, wi );
+						}
 					}
-					else
-					{
-						rc.pGuidingField->AddZeroValueVolumeSample(
-							scatterPt, wi );
-					}
-				}
 #endif // RISE_ENABLE_OPENPGL
 
-				Li = Li * guidingMISWeight;
+					Li = Li * guidingMISWeight;
+				}
 			}
 
 			// Combine: throughput * (Ld + Li) + emission
@@ -1882,10 +1870,6 @@ bool RayCaster::CastRayNM(
 						const Scalar xiG = mediumSampler.Get1D();
 						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
-							// Save phase-sampled state in case guide fails
-							const Vector3 wi_phase = wi;
-							const Scalar phasePdf_phase = phasePdf;
-
 							Scalar guidePdf = 0;
 							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
 							wi = rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
@@ -1893,74 +1877,66 @@ bool RayCaster::CastRayNM(
 							if( guidePdf > 0 )
 							{
 								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
 							}
-							else
-							{
-								// Degenerate guide sample — restore phase direction
-								wi = wi_phase;
-								phasePdf = phasePdf_phase;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, true );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 						else
 						{
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
-							if( guidePdf > 0 && phasePdf > 0 )
-							{
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, false );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 					}
 				}
 #endif // RISE_ENABLE_OPENPGL
 
-				const Ray scatterRay( scatterPt, wi );
+				if( PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) )
+				{
+					const Ray scatterRay( scatterPt, wi );
 
-				RAY_STATE rs2;
-				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * throughput * guidingMISWeight;
-				rs2.considerEmission = true;
-				rs2.type = rs.type;
-				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = effectivePdf;
+					RAY_STATE rs2;
+					rs2.depth = rs.depth + 1;
+					rs2.importance = rs.importance * throughput * guidingMISWeight;
+					rs2.considerEmission = true;
+					rs2.type = rs.type;
+					rs2.volumeBounces = rs.volumeBounces + 1;
+					rs2.bsdfPdf = effectivePdf;
 
-				Scalar hitDist = 0;
-				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
-					pRadianceMap, ior_stack );
+					Scalar hitDist = 0;
+					CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
+						pRadianceMap, ior_stack );
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Record volume training sample (spectral path).
 				// Use effectivePdf (= combinedPdf when guiding was applied)
 				// so that weight = luminance / pdf matches the actual
 				// sampling distribution.
-				if( rc.pGuidingField &&
-					rc.pGuidingField->IsCollectingTrainingSamples() &&
-					effectivePdf > NEARZERO )
-				{
-					if( Li > 0 )
+					if( rc.pGuidingField &&
+						rc.pGuidingField->IsCollectingTrainingSamples() &&
+						effectivePdf > NEARZERO )
 					{
-						rc.pGuidingField->AddVolumeSample(
-							scatterPt, wi,
-							hitDist > 0 ? hitDist : 1.0,
-							effectivePdf,
-							Li,
-							false );
+						if( Li > 0 )
+						{
+							rc.pGuidingField->AddVolumeSample(
+								scatterPt, wi,
+								hitDist > 0 ? hitDist : 1.0,
+								effectivePdf,
+								Li,
+								false );
+						}
+						else
+						{
+							rc.pGuidingField->AddZeroValueVolumeSample(
+								scatterPt, wi );
+						}
 					}
-					else
-					{
-						rc.pGuidingField->AddZeroValueVolumeSample(
-							scatterPt, wi );
-					}
-				}
 #endif // RISE_ENABLE_OPENPGL
 
-				Li = Li * guidingMISWeight;
+					Li = Li * guidingMISWeight;
+				}
 			}
 
 			c = additiveEmissionNM + thermalEmission +

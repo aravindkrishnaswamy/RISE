@@ -50,6 +50,7 @@
 
 #include "Math3D/Math3D.h"
 #include "Color/ColorMath.h"
+#include "FiniteMath.h"
 #include "StabilityConfig.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ISPF.h"
@@ -58,6 +59,14 @@ namespace RISE
 {
 	namespace PathTransportUtilities
 	{
+		inline bool IsPositiveFiniteDensity( const Scalar density )
+		{
+			// Density support is exact: every finite positive value is legal.
+			// An epsilon cutoff would discard rare events and their compensating
+			// weights, biasing the estimator.
+			return RISE::IsFiniteDouble( density ) && density > 0;
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// Russian Roulette
 		//////////////////////////////////////////////////////////////////////
@@ -286,6 +295,29 @@ namespace RISE
 			)
 		{
 			return alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
+		}
+
+		/// Actual one-sample guiding-mixture density for a selected technique.
+		/// A zero guide density is valid on a phase/BSDF-selected direction and
+		/// still leaves (1-alpha)*p_phase support.  A guide-selected sample with
+		/// zero density is instead an explicit null sample; silently falling back
+		/// to a pre-drawn phase direction would add an unevaluable failure mass.
+		inline Scalar GuidingSelectedMixturePdf(
+			const Scalar alpha,
+			const Scalar guidePdf,
+			const Scalar phasePdf,
+			const bool guideTechniqueSelected
+			)
+		{
+			if( !RISE::IsFiniteDouble( alpha ) || alpha < 0 || alpha > 1 ||
+				!RISE::IsFiniteDouble( guidePdf ) || guidePdf < 0 ||
+				!RISE::IsFiniteDouble( phasePdf ) || phasePdf < 0 ||
+				( guideTechniqueSelected && guidePdf == 0 ) ) {
+				return 0;
+			}
+			const Scalar mixturePdf = GuidingCombinedPdf( alpha, guidePdf, phasePdf );
+			return IsPositiveFiniteDensity( mixturePdf )
+				? mixturePdf : 0;
 		}
 
 		/// Determines whether to sample from the guiding distribution

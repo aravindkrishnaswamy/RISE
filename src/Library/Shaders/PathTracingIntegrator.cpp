@@ -1980,9 +1980,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					Vector3 wi = pPhase->Sample( wo, sampler );
 					Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf <= NEARZERO ) {
-						break;
-					}
 					Scalar effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2015,24 +2012,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									wi = guidedDir;
 									phasePdf = pPhase->Pdf( wo, wi );
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
 								}
+								effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+									alpha, guidePdf, phasePdf, true );
 							}
 							else
 							{
 								const Scalar guidePdf =
 									rc.pGuidingField->PdfVolume( volGuideHandle, wi );
-								if( guidePdf > 0 ) {
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
-								}
+								effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+									alpha, guidePdf, phasePdf, false );
 							}
 						}
 					}
 #endif
 
-					if( effectivePdf <= NEARZERO ) {
+					if( !PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) ) {
 						break;
 					}
 
@@ -3891,9 +3886,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 			Vector3 wi = pPhase->Sample( wo, sampler );
 			Scalar phasePdf = pPhase->Pdf( wo, wi );
-			if( phasePdf <= NEARZERO ) {
-				return result;
-			}
 			Scalar effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -3928,23 +3920,21 @@ PathTracingIntegrator::IntegrateRayTemplated(
 							if( guidePdf > 0 ) {
 								wi = guidedDir;
 								phasePdf = pPhase->Pdf( wo, wi );
-								effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-									alpha, guidePdf, phasePdf );
 							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, true );
 						} else {
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume(
 								cameraVolumeGuideHandle, wi );
-							if( guidePdf > 0 ) {
-								effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-									alpha, guidePdf, phasePdf );
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, false );
 						}
 					}
 				}
 			}
 #endif
 
-			if( effectivePdf <= NEARZERO ) {
+			if( !PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) ) {
 				return result;
 			}
 

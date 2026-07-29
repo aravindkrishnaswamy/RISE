@@ -869,7 +869,7 @@ namespace
 			"RISE ASCII SCENE 7\n\n"
 			"scene_options\n{\nscene_unit 0.01\n}\n\n"
 			"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
-			"scalar_painter\n{\nname temperature\nvalue 1000\n}\n\n"
+			"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
 			"multichannel_heterogeneous_medium\n{\n"
 			"name fire\n"
 			"channel_carbon painter carbon\n"
@@ -880,11 +880,11 @@ namespace
 			"soot_em 0.26\n"
 			"soot_density 1800\n"
 			"soot_albedo_hot 0.10\n"
-			"soot_g_hot 0.5\n"
+			"soot_g_hot 0.8\n"
 			"smoke_km_carbon 8.7\n"
 			"smoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\n"
-			"smoke_g_carbon 0.6\n"
+			"smoke_g_carbon -0.4\n"
 			"}\n";
 	}
 
@@ -913,10 +913,28 @@ namespace
 			if( fire ) {
 				const Scalar hotAbsorptionMass =
 					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
-				const Scalar expectedSigmaT = 0.01 * hotAbsorptionMass / 0.90;
+				const Scalar expectedSigmaT = 0.01 * 0.5 *
+					(hotAbsorptionMass / 0.90 + 8.7);
 				Check( Near( fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t[0],
 					expectedSigmaT, 1e-12 ),
 					"scene_options.scene_unit reaches medium construction" );
+
+				const Scalar wavelengths[] = { 450.0, 750.0 };
+				for( const Scalar nm : wavelengths ) {
+					const Scalar wavelengthScale = 633.0 / nm;
+					const Scalar hotScattering = 0.5 * hotAbsorptionMass * wavelengthScale *
+						0.10 / 0.90;
+					const Scalar coolScattering = 0.5 * 8.7 *
+						pow( wavelengthScale, 1.2 ) * 0.60;
+					const Scalar expectedMean =
+						(hotScattering * 0.8 + coolScattering * -0.4) /
+						(hotScattering + coolScattering);
+					const IPhaseFunction* closure = fire->MakePhaseClosure(
+						Point3( 50, 50, 50 ), nm );
+					Check( closure && Near( closure->GetMeanCosine(), expectedMean, 1e-12 ),
+						"CST wiring preserves both authored g values in wavelength-bound mixtures" );
+					if( closure ) closure->release();
+				}
 			}
 		}
 
