@@ -1,11 +1,17 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 31 — after internal review rounds 1–4,
-**six external expert review rounds**, and twenty post-r11 implementation-review
-rounds; see §14). No fire *feature* code has
-landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
-`2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r31; r1–r5 were 2026-07-27).
+**Status:** DRAFT (revision 32 — after 4 internal and 6 external expert
+review rounds, 20 post-r11 implementation-review rounds, and an r32 scope
+restoration; history in
+[FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md)). No fire
+*feature* code has landed; one Phase-A prerequisite has (the
+trilinear-accessor repair, commit `2fba2b48`, in master). Phase gating per
+§7.0.
+**Companions:** [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md)
+(Phase-C solver implementation contract),
+[RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)
+(repo-wide mutation/freeze/publication lifecycle this arc depends on).
+**Date:** 2026-07-28 (r6–r32; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1202,268 +1208,64 @@ The most notorious practical trap in fire LES; specified accordingly:
   accounting for boundary fluxes, reaction heat, latent exchange, radiation,
   and resident chemical potential. It is not permission for scalar-advection
   drift.
-- **Time stepping and exact operator schedule:** a local finite-step map is
-  evaluated once, but its result is consumed as a frozen average source inside
-  the same conservative projected advance that supplies expansion. A
-  fixed-volume accepted source update followed by projection is RED.
+- **Time stepping — source-packet freezing plus projected Heun.** The design
+  decision, and the reason for it: chemistry, phase change, and radiation are
+  *finite-step local maps* (exponential relaxation, saturation relaxation,
+  backward-Euler radiation), while transport is a *conservative flux advance*.
+  Evaluating a local map as if it were an RK derivative destroys its stiff
+  limit — an analytic y′=−y/τ map at Δt/τ≫1 must yield y·e^{−Δt/τ}, but
+  re-evaluating it at RK stages leaves ½y. So the local maps run **once** per
+  step on a provisional scratch trajectory; their net effect is differenced
+  into one conservative **source packet** ΔU_src (every Δq_k, Δc_i, Δℋ_s, with
+  its own mass/element/chemical-potential/energy ledgers); and the frozen
+  average S̄_src = ΔU_src/Δt is consumed *inside* the same coupled
+  conservative advance that supplies expansion. Applying an accepted source
+  update at fixed volume and projecting afterwards is a RED failure, as is
+  re-running a finite-step map at an RK stage.
 
-  1. From accepted Uⁿ, build one **provisional scratch trajectory** over Δt.
-     Run the timestep-independent ignition/CFT trial, form the exponential
-     primary and pre-existing-soot oxidation candidates, allocate their shared
-     O₂, and update products/inventories/ℋ_s in scratch. Newly formed soot is
-     not an oxidation candidate. Invert ℋ_s→T in scratch (no EOS gate is
-     applied to this deliberately unexpanded local trajectory), then apply the
-     finite-step phase map and invert T, then the exact §3.5 radiation map.
-  2. Difference the final scratch state from Uⁿ to obtain one conservative
-     source packet ΔU_src: every Δq_k, Δc_i, Δℋ_s, and the diagnostic accepted
-     q̇‴_gas/q̇‴_sox/q̇‴_lat/q̇‴_rad. The packet must pass the algebraic mass,
-     element, chemical-potential, and energy ledgers. Define the frozen average
-     S̄_src=ΔU_src/Δt; never rerun a finite-step map at an RK stage and never
-     apply ΔU_src outside the coupled advance.
-  3. Advance the scalar/energy vector Q=(ρ_totZ,{q_k},{c_i},ℋ_s) and conservative
-     momentum M with this exact projected-Heun tableau. Let f^{L/H}(Q,u) be the
-     paired low/high **oriented physical face-flux vectors** for conservative
-     advection+diffusion/J_h+conduction (no local source). For cell c, outward
-     incidence σ_cf, face area A_f, and cell volume V_c, define once
+  The transport advance is **projected Heun** (predictor R0, corrector sample
+  R1, commit) over the scalar/energy vector and conservative momentum, with:
+  low/high face-flux candidates that **differ only in advection** (donor vs
+  MC-MUSCL) sharing one centered physical nonadvective flux, so the FCT
+  blending factor multiplies only the advective difference and diffusion is
+  never limited away; **one shared limiter** over the combined update, so mass,
+  elements, and momentum cannot be limited inconsistently; elemental closure
+  enforced by **projection onto the constraint nullspace**, never by sequential
+  species correction (§3.3 — structural in exact arithmetic, this projection
+  realizes it under fp64); and a MAC projection using **the same staggered
+  density as momentum storage** (not I_ρ(1/ρ), not a harmonic mean — a
+  discontinuous-density fixture distinguishes them). The accepted multiplier
+  π₂ approximates the **step-average** dynamic pressure over the step, not
+  endpoint pressure; the predictor/corrector multipliers are auxiliary and
+  discarded.
 
-     > L_c(f)=−V_c⁻¹Σ_{f∈∂c}σ_cf A_f f_f.
+  Source freezing is explicitly **first-order** in the noncommuting
+  local/transport split. That is accepted, not hidden: the Δt-halving gates
+  must show first-order source-split convergence while transport-only
+  manufactured cases retain Heun's second order.
 
-     Every scalar update below uses L(f); bare addition of a face flux to a
-     cell state is dimensionally invalid. The pair differs **only in
-     advection**. Define one centered physical nonadvective face flux f_N(Q)
-     containing the ρ_totZ diffusion flux J_Z, every constituent diffusion flux
-     J_j, J_h, and conduction, and
-     set
+  **Invariants an implementation must satisfy** (full fixtures in the solver
+  spec): the stiff source-packet limit above; a constant-pressure heated
+  control-volume case conserving packet plus face fluxes *and* closing the EOS;
+  a multielement pure-diffusion case with nonzero aerosol loading requiring
+  both C·J=0 and nonzero J_Z at every face (a ΣJ-only correction not tangent to
+  the element matrix is RED, as is substituting ρ_gD for ρ_totD); and rejection
+  of spatially uniform nonzero S_div on a periodic domain, which is
+  unrealizable since ∫∇·u dV = 0 — it must be rejected, never used as a
+  preservation test.
 
-     > f^L=f_adv^donor+f_N,
-     > f^H=f_adv^MC-MUSCL+f_N.
+  **The exact operator schedule, Heun tableau, face-averaging and stencil
+  rules, nullspace-basis qualification format with its rank certificates, and
+  the complete RED fixture list are pinned in
+  [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md).**
 
-     On the uniform orthogonal baseline, every diffusive/conductive normal flux
-     uses the centered two-cell difference divided by center spacing and the
-     harmonic mean of its positive cell transport coefficient (ρ_totD for
-     constituent diffusion, k_eff for conduction); prescribed boundary fluxes
-     use the same one-sided ledger value in both candidates. Form the raw
-     mass/Z diffusion vector `J_tilde=(J_Z_tilde,{J_j_tilde})` with those same
-     centered stencils, then apply the pinned
-     `nonadvective_flux_projection_v1`: the qualified record carries a complete,
-     rank-certified orthonormal basis N_C for
-
-     > C=[A; (0,1,...,1)],
-
-     in the same canonical format and with the same dimension, exact-rank-
-     factorization, exact rational nullspace/projector certificate, pivot-minor,
-     null-residual, and orthonormality checks as N_A. Set
-     `J=N_C N_C^T J_tilde`; no sequential species correction or
-     implementation-chosen constrained solve is permitted. **This projection
-     realizes §3.3's structural identity under fp64** — with exact
-     cell-centre states it is a no-op (§3.3), so it corrects rounding and
-     limiter-tolerance residual only, never the flux model. Consequently every
-     primal face satisfies, within the same checked fp64 forward-error envelope,
-     both Σ_jJ_j=0 and the full affine tangent identity
-
-     > E J_j - b(0)Σ_jJ_j - [b(1)-b(0)]J_Z = 0.
-
-     (Here `E J_j` denotes E applied to the ordered constituent-flux vector.)
-     T_f is the arithmetic face temperature, and
-     J_h,f=Σ_j h_s,j(T_f)J_j,f. These are the complete
-     face averaging/stencil rules; no alternative low/high diffusion stencil is
-     permitted. The explicit diffusion CFL must make the resulting donor+
-     physical-flux low-order state feasible, otherwise Δt is rejected/reduced.
-
-     Thus α multiplies only f_adv^H−f_adv^L; J_j^L=J_j^H=J_j and the accepted
-     nonadvective flux is exactly f_N for every α. Preserve the gas advective
-     subflux Φ_g^{L/H}=Σ_{k∈gas}f_adv,k^{L/H} and the single physical
-     J_g=Σ_{k∈gas}J_k. After the scalar limiter accepts Φ_g, the pinned I_i
-     operator forms K; it forms G directly from J_g. Let A_hat(Q,u) be the remaining nonpressure
-     momentum RHS including stress, buoyancy, and the packet-derived common-velocity phase
-     source **u S̄_ρ,phase** required by §3.2 (boundary injection momentum remains
-     a boundary flux and uses the same prescribed gas mass flux and velocity
-     in K). On the MAC grid this source has the mandatory componentwise form
-     **(A_phase,r)_i=u_r,i I_ρ,i(S̄_ρ,phase)** using the same boundary-aware
-     density restriction as stored momentum; an unstaggered interpolation is
-     forbidden. Momentum advection is not also present in A_hat. Every projection
-     below uses the same staggered density as momentum storage—never
-     I_ρ(1/ρ), a harmonic density, or another coefficient placement. With
-     ρ_g,i=I_ρ,iρ_g, boundary-aware MAC gradient G_π and its conservative
-     divergence D,
-
-     > u_i†=M_i†/ρ_g,i,
-     > D diag_i(1/ρ_g,i) G_ππ=(D u†−S_div)/Δt,
-     > M_i=M_i†−Δt(G_ππ)_i,
-     > u_i=M_i/ρ_g,i.
-
-     D/G_π use §3.6's pinned ghost/open-face boundary classes and are the
-     adjoint finite-volume pair used by the multigrid operator. A
-     discontinuous-density test distinguishes inverse-of-I_ρρ from
-     I_ρ(1/ρ) and harmonic alternatives.
-
-     with §3.6's converged open-face active set for R0/R1 and its fixed
-     indicator-averaged boundary plus endpoint-class rule for π₂. π₀ and π₁ are auxiliary stage
-     multipliers and discarded. π₂ is the pressure impulse divided by Δt for
-     the accepted Heun advance: a second-order approximation to the
-     **step-average dynamic pressure**
-     p̃_bar^{n+1/2}=Δt⁻¹∫_{t_n}^{t_{n+1}}p̃(t)dt, not endpoint p̃ⁿ⁺¹.
-
-     - **R0/predictor:** coupled-project Mⁿ to u₀ at Qⁿ; assemble
-       f₀ with its Φ_g,0/J_g,0 subfluxes and A_hat,0. Apply the shared FCT limiter to the full Euler face flux
-       over Δt with S̄_src and form
-       Q*=Qⁿ+Δt[L(f₀,accepted)+S̄_src]. Form the unprojected momentum
-       **M*†=Mⁿ+Δt[A_hat,0−D_i(K₀+G₀)]** componentwise (not a
-       ρ_g(Qⁿ)u₀ base), where K₀/G₀ are built by applying α₀ to their primal
-       advective Φ_g correction for K₀, using the physical J_g,0 directly for
-       G₀, then I_i and the u₀ arithmetic factor. Invert Q*→T/EOS and reject
-       infeasibility.
-     - **R1/corrector sample:** coupled-project M*† at Q* to u₁; assemble
-       f₁ with its Φ_g,1/J_g,1 subfluxes and A_hat,1=A_hat(Q*,u₁).
-     - **Heun commit:** form the combined low/high face-flux pair
-       (f₀+f₁)/2 and run a **new** shared FCT solve on that combined flux—not
-       the predictor α values—to commit
-
-       > Qⁿ⁺¹=Qⁿ+Δt[L(((f₀+f₁)/2)_accepted)+S̄_src],
-       Apply that same primal α_H separately to each stage subflux, e.g.
-
-       > Φ̂_g,r(α_H)=Φ_g,r^L+α_H(Φ_g,r^H−Φ_g,r^L), r∈{0,1},
-
-       Only then define the accepted Heun dual fluxes
-
-       > K_H,i=½Σ_{r=0}¹ ū_r,i I_i[Φ̂_g,r(α_H)],
-       > G_H,i=½Σ_{r=0}¹ ū_r,i I_i[J_g,r].
-
-       Thus scalar and momentum Heun fluxes share the exact accepted primal
-       gas-mass correction even when α_H varies across the interpolation
-       stencil. Then
-
-       > Mⁿ⁺¹†=Mⁿ+(Δt/2)(A_hat,0+A_hat,1)−Δt D_i(K_H+G_H).
-
-       Finally coupled-project Mⁿ⁺¹† at Qⁿ⁺¹ to u₂ and store componentwise
-       M_iⁿ⁺¹=I_ρ,i[ρ_g(Qⁿ⁺¹)]u₂,i and p̃_bar^{n+1/2}=π₂. Thus π₀/π₁ affect only their
-       stage velocities and are not retained in the committed momentum; π₂ is
-       the sole committed pressure impulse. No endpoint pressure is stored
-       or inferred from this multiplier. This final projection targets the
-       endpoint S_div,2 defined by the R2 solve below; the next step's R0
-       reprojects against its newly built packet. Q* and Qⁿ⁺¹ are separately
-       T/EOS-inverted and gated. The source appears once in each scalar formula,
-       so its net scalar increment is exactly ΔU_src. Momentum receives the
-       Heun average ½Δt(u₀+u₁)I_ρ(S̄_ρ,phase) in A_hat plus the exact accepted K and
-       diffusive G fluxes above. Omitting any one changes velocity under gas
-       advection, gas/aerosol transfer, or constituent diffusion.
-
-     “Coupled-project” is a specific Picard solve because the physical
-     diffusion/enthalpy/conduction flux f_N affects S_div while S_div affects
-     velocity-dependent SGS coefficients and the advecting velocity. **R0
-     loop:** project u₀, build the predictor (f₀,A_hat,0)
-     pair/RHS, solve its Euler α₀, recompute S_div,0 from exactly the physical
-     f_N plus packet increments, and repeat all four; α₀ still affects
-     the predictor's accepted advection but never f_N. **R1 loop:** at fixed
-     converged Q*, project u₁, build f_N,1 and A_hat,1, recompute S_div,1 directly
-     from f_N,1 plus S̄_src, and repeat. No α₁ exists: the corrector-stage
-     advective candidate is needed later by the combined Heun FCT solve, but it
-     is irrelevant to the instantaneous divergence target. R0 converges when
-     cellwise S_div, every projected face mass flux, and α₀ change below the
-     projection/EOS tolerances; R1 uses the same criteria without α.
-
-     After both stage loops converge, the Heun commit performs the new combined
-     (f₀+f₁)/2 FCT solve once, forms Qⁿ⁺¹, and derives **S_div,Heun only from
-     the Heun-averaged physical nonadvective f_N components (which are identical
-     in the low/high pair and independent of α_H), plus S̄_src**. Advective constituent
-     or enthalpy flux is never inserted into S_k or H. S_div,Heun closes the
-     integrated scalar/EOS ledger but is **not** an endpoint projection target.
-
-     The final projection is an **R2 endpoint diagnostic Picard solve** at fixed
-     committed Qⁿ⁺¹ and fixed Mⁿ⁺¹†. For each candidate u₂ it assembles a fresh
-     endpoint physical nonadvective flux f_N,2(Qⁿ⁺¹,u₂) and derives S_div,2
-     directly from that flux plus S̄_src. No α₂ or virtual FCT update exists.
-     The source term is necessarily
-     the frozen step-average packet—the declared first-order source-split
-     approximation—but transport coefficients and fluxes are endpoint values.
-     Project Mⁿ⁺¹† against S_div,2 with §3.6's π₂ boundary rule and repeat until
-     S_div,2, every projected face mass flux, and the open-face active set
-     converge. f_N,2 is diagnostic: it never alters Qⁿ⁺¹, K_H, G_H, or
-     Mⁿ⁺¹†. Thus u₂ is the constrained accepted endpoint and starting momentum
-     for the next step, while π₂ remains the accepted step-average pressure
-     impulse; neither quantity is mislabelled as the other. Feeding f_N,2 back
-     into the Heun commit would define a different tableau and is forbidden.
-     A fixed iteration count with an unconverged R0/R1/R2 or open-boundary solve is
-     forbidden; failure rejects/reduces Δt. If the frozen packet makes either
-     low-order state infeasible after fluxing, likewise reject/recompute rather
-     than clamp.
-
-     V2's reacting manufactured case records every Picard residual and includes
-     a limiter-active, varying-S_div nonzero heat/species source whose analytic expansion
-     distinguishes R0 advection by u₀ from advection by the unprojected Uⁿ or
-     M*† velocities. It separately asserts R0 and R1 residual convergence and
-     formal order, then verifies S_div,Heun against the combined accepted
-     flux. Transport-only cases retain Heun's order; swapping the
-     named velocities, using ρ_gu₀ rather than Mⁿ as either unprojected momentum
-     base, or omitting π₂ is RED. Its analytic pressure comparison
-     uses the exact interval average, including a linearly time-varying gradient
-     whose endpoint differs by 2× from its average; interpreting π₂ as endpoint
-     is RED. A periodic Galilean phase-transfer fixture uses smooth zero-mean
-     condensation/evaporation, constructs a compatible zero-mean S_div and
-     analytic expansion velocity (for example S_div=S₀sin(kx),
-     u_exp=−(S₀/k)cos(kx)e_x), then runs a Galilean-transformed copy with
-     S_U(x,t)=S(x−Ut,t). Compare at corresponding coordinates:
-     u_U(x,t)−U against u(x−Ut,t), and every scalar likewise, requiring the
-     difference to converge at the scheme's stated order under Δx/Δt
-     refinement—not pointwise equality on the unshifted grid. A separate local
-     packet unit fixture, with no advection/projection, applies Δq and momentum
-     uΔq to M=qu and requires (M+uΔq)/(q+Δq)=u to roundoff; omitting
-     uS̄_ρ,phase is its RED control. Its multidimensional staggered companion
-     uses spatially nonuniform phase transfer and verifies every component of
-     M_i−U I_ρ,iρ_g remains roundoff-zero; restricting the packet with any
-     operator other than I_ρ,i is RED. A second periodic fixture starts with
-     uniform velocity and a nonuniform gas/aerosol loading gradient under pure
-     constituent diffusion; M/ρ_g must remain uniform, and its Galilean-shifted
-     copy must converge at the same order. A limiter-active multidimensional
-     periodic free-stream fixture advects a nonuniform gas density/composition
-     blob at uniform U and requires M−Uρ_g to remain roundoff-zero regardless
-     of α; its Galilean-boosted copy must converge identically. An independent
-     central momentum flux is its RED control. Omitting u⊗J_g or accepting it
-     from any J_g other than the single physical constituent flux is also RED.
-     A limiter-active mixed advection/diffusion case varies α spatially while
-     requiring f_N, J_g, S_div, and G to remain identical to the pinned centered
-     physical flux; inventing distinct low/high diffusion stencils is RED. A time-varying
-     pure-diffusion manufactured case makes endpoint S_div,2 differ from
-     S_div,Heun and requires second-order endpoint divergence; projecting
-     against S_div,Heun is RED. A stiff exact source-packet case proves R1/R2
-     do not apply any scalar update or consume ΔU_src a second time.
-     The free-stream case exercises all three staggered velocity components,
-     boundary-adjacent stencils, and spatially varying α, and directly checks
-     D_iI_i=I_ρ,iD. A limiter-active record whose fuel/ambient elemental vectors
-     overlap separately forces the lower and upper ρ_totZ rows; accepting Z<0
-     or Z>1 is RED even when every q_j and element equality passes. Basis tests
-     load the exact recorded bytes/hash/rank/order, verify the exact upper-rank
-     factorization, pivot-minor lower-rank certificate, and both residual bounds,
-     and show a rotated valid nullspace would produce a different MC slope; the
-     near-rank-deficient `diag(1,δ)`/declared-rank-1 counterexample and the
-     correct-rank wrong-subspace fixture
-     `A=[[1,0,-δ,-1],[0,0,δ,0],[-1,0,0,1]]`, `δ=2^-60`, `r=2`,
-     `N=[e_2,e_3]`; both must reject, as must deleting one valid basis column,
-     recomputation, or accepting a changed hash is RED. A multielement
-     pure-diffusion fixture requires both C J=0 and nonzero J_Z at every face;
-     omitting J_Z or applying a ΣJ-only correction that is not tangent to A is
-     RED. The same fixture uses nonzero aerosol loading and checks the analytic
-     flux magnitude, so substituting ρ_gD for the required ρ_totD is RED even
-     if a later projection makes C J=0. Spatially uniform
-     nonzero S_div on a periodic domain is explicitly invalid because
-     ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
-
-  This source freezing is explicitly first-order in noncommuting local/transport
-  operators; the existing Δt-halving gates must show first-order source-split
-  convergence while transport-only manufactured cases retain Heun's order. An
-  analytic homogeneous y′=−y/τ **source-packet** fixture at Δt/τ≫1 must produce
-  ye^{−Δt/τ}, not the ½y stiff-limit left by reevaluating an exponential map as
-  an RK derivative. A constant-pressure heated control-volume fixture must
-  simultaneously conserve the packet plus face fluxes and close the EOS.
-  Step size: min of advective CFL, the
-  buoyant-acceleration limit Δt ≲ √(2δx/g′₊) (g′₊ = max(g′, 0) per §3.3 —
-  the signed form goes non-real over cold dense fuel; the limit is simply
-  inactive where g′₊ = 0), and
-  the explicit diffusion limit Δt ∝ δx²/ν. All molecular/SGS diffusion and
-  conduction are explicit in this arc; subcycling or an IMEX replacement is a
-  separately designed optimization, not an implementation choice hidden under
-  “Heun.” Radiative cooling alone uses §3.5's local backward-Euler source map.
-  Sim Δt is
+  Step size: min of advective CFL, the buoyant-acceleration limit
+  Δt ≲ √(2δx/g′₊) (g′₊ = max(g′,0) per §3.3 — the signed form goes non-real
+  over cold dense fuel and is simply inactive where g′₊ = 0), and the explicit
+  diffusion limit Δt ∝ δx²/ν. All molecular/SGS diffusion and conduction are
+  explicit in this arc; subcycling or an IMEX replacement is a separately
+  designed optimization, not an implementation choice hidden under "Heun."
+  Radiative cooling alone uses §3.5's local backward-Euler map. Sim Δt is
   decoupled from frame write cadence (§8).
 - **Turbulence:** LES with **Vreman as the default SGS model**
   (constant-C_s Smagorinsky is known over-dissipative in transitional
@@ -2014,93 +1816,92 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r31)
+### 7.0 Phase gating
 
-Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
-the collision-estimator work may start any time. **Predictive radiometry
-(Phase A proper) starts only after** the implementation matches: the
-Planck kernel + E(m) dataset pinning (§4.2), a frozen constituent optical
-preset v1 satisfying §12 Q2 (the numerical values currently listed there are
-non-predictive fixtures), scene-unit propagation and
-the g/m³→SI conversion gates **in both §8 and the §4.3 optics formulas**
-(round 5 caught a surviving 1000× line), the repaired trilinear accessor
-(**landed**, commit `2fba2b48`; §7.1 step 0 verifies the fire path uses
-it), the **constituent aerosol inventories with derived φ(T) optics, the
-φ-aware 7-point optical-depth quadrature/panel-splitting rule, the exact per-collision
-**`MakePhaseClosure(x,λ)` / Pel-band closure API** carrying local constituent
-weights and wavelength-bound g, **and the pinned φ-sup extinction-majorant bound**
-(§3.4/§4.3, §7.1 steps 1/4, §7.2.3), the chem spectral contract with the
-support-safe randomized line estimator and the effective-HRR, band-resolved η_b
-convention (§4.4, §7.1 step 3), **plus a frozen absolutely-calibrated per-fuel
-chem record and absolute band/spatial chem gates whenever chem is enabled**. Until
-§12 Q1 closes for a declared fuel, `chem_model=none` is predictive **only**
-when a pinned measurement reports a 95 %-confidence upper bound below both
-1 % of that fuel/case's measured 380–780 nm radiant power and the absolute
-radiance gate's uncertainty at every gated wavelength. Otherwise a missing
-calibrated chem record is a predictive hard error; synthetic η_b/S_b records are
-estimator tests and preview assets only. Also required: the no-silent-cap Pel/NM
-distance-sampler repair, removal of all density floors via the log-domain
-contract, the separate full-support additive-emission estimator, and
-forced-cap/tail/zero-extinction gates in §7.1 step 2, the trilinear-only rule for physical
-channels (§8), the completed versioned optical/metadata contract with
-constituent-specific presets and the condensable record (§8/§12),
-dual-surface coverage with correct event ordering + HWSS hard-disable
-(G11), and the absolute slab/unit-invariance tests (§7.1 gates). **Phase B** additionally
-requires: the replacement segment-wise shadow walk with no silent caps
-(§7.2.1, incl. the wrong-origin and step-cap-continuation tests),
-direction-independent lobe preselection with the marginal Σs_ℓp_ℓ
-directional pdf **and both the RIS and surface-guiding disables at
-competing vertices** (§7.2.2, round 5), the strict null-boundary class
-with all non-null interfaces blocking (§7.2.2), the **two-bit weight-1
-state (competitionAvailable, continuationSingular)** (§7.2.2, round 5),
-independent pivot/endpoint draws (u_m vs Y), surface and medium direction-guiding disables at competing vertices,
-the immutable Pel/NM continuation-closure capability with its closed
-default-deny SPF table and pre-NEE
-continuation-availability view, capped-lobe f_A/f_D split, exact
-p_march bounce/roulette support and survival, distinct q_m^V versus equiangular a coefficients,
-physical-band-power/scene-unit weighting, the near-collinear equiangular
-repair, labeled medium selection — plus the §7.2.7
-configuration matrix, plus predictive material/shader-op SSS rejection and
-BSSRDF/nested-shade containment.
-**Phase C simulation and mandatory time-varying-sequence
-ingestion/preparation** additionally require: the r8 P0 correction (transported Y_O +
-withheld-stream primary coefficients — extended r9 to condensables),
-the **r11 phase-transfer/EOS/energy closure** (gas-density definition,
-total-mixture ρ_totZ, conservative phase-transfer masses, latent power,
-aerosol heat capacity in ℋ_s/C_T and S_div, closed-box gas↔aerosol tests), the
-condensable pseudo-species thermochemistry and joint elemental feasible
-set (§3.3/§3.4), the y_form/y_cond multi-resolution calibration protocols
-with their scale cross-prediction gates (§3.4), §3.2's discrete S_div derivation, the §3.3
-two-rate/flood-fill/exponential-update specs, §3.5's total-support budget
-closure with the branch-conditioned split-first-order gate, §3.8's
-executable verification tier and absolute/CI-based end-to-end gates —
-including: the corrected ṁ‴_gas (no S_div double-count), the χ_load≤1 %
-hard predictive boundary, the all-intermediate-state chemical-potential V4
-gate, the mass-conservative saturation law and condensable record, the
-conservative finite-volume coupled FCT scheme, and the calibration cases —
-including r13's conservative-density owner, constituent sensible-enthalpy
-diffusion, invariant-coordinate FCT reconstruction and nondegeneracy/order
-gates with explicit Z rows and the exact hashed reconstruction-basis record,
-plus the exhaustive gas-thermochemistry schema and admissible fuel
-record, and the versioned simulator gas-opacity record. Predictive simulation
-waits for §12 Q5–Q7's actual frozen records, not merely their schemas. Every
-Phase-C sequence must implement §8's fixed epoch, deterministic manifest,
-time-varying frame selection, immutable frame preparation/swap, timestamped
-probes, residency model, and trilinear rules even when motion blur is disabled.
-**Velocity-grid motion blur is an optional Phase-C subfeature, not a Phase-C
-entry requirement.** If enabled, it additionally requires §8's nominal/shutter
-separation, halo serialization and preflight, render-global NEE/equiangular
-disable, uncapped NM pure DT, Pel nominal-only behavior, per-channel temporal
-semantics with nonadvected-source rejection, and every corresponding gate; an implementation
-may instead ship time-varying still/frame rendering with blur explicitly off.
-The §8 fidelity state machine, complete digested sequence manifest, and
-single pre-worker `PrepareMediaForRender` lifecycle hook are also Phase-C
-entry gates rather than integration details left to implementers. So are the
-epoch-tombstoned mutation owner, owned request callback/cancellation contract,
-complete `prepared_input_id`, explicit Scene-photon/SMS/irradiance-cache
-reachability gates, and the request-wide preparation/finalization lease.
-The recursive dependency walk is tri-state/fail-closed through shaders/ops, and
-predictive outputs additionally require the durable cohort publication protocol.
+Two different things were being conflated by earlier revisions of this
+section: **what engineering must exist before a phase's work is sound**, and
+**what measured data must exist before its output may be called predictive.**
+They are separated here. A phase gate is a list of code deliverables and can
+always be satisfied by engineering. A predictive-label gate depends on
+laboratory data this project does not produce, and blocks *the claim*, not the
+work — everything can be built, tested, and shipped as explicitly-labelled
+preview while those datasets are open.
+
+**Already landed:** the trilinear-accessor repair (commit `2fba2b48` — the
+reversed z-blend and negative-coordinate fractions), which was a Phase-A
+prerequisite and a pre-existing bug affecting every heterogeneous volume.
+
+#### Phase A gates (all engineering)
+
+1. **Radiometric kernels pinned** — the per-nm Planck free function with its
+   two numeric anchors (§4.2), the E(m) dataset record, and the g/m³→SI
+   conversion applied at *every* f_v site (§4.1, §4.3, §8).
+2. **Multi-channel media with derived φ(T) optics** — the constituent
+   inventories, the shared extinction lattice including temperature, the
+   φ-aware quadrature with panel splitting at the φ-thresholds, and the φ-sup
+   extinction-majorant bound (§3.4, §4.3, §7.1 steps 1/4, §7.2.3).
+3. **Emission estimator on both transport surfaces** — the σ_a·B_λ·T_det/p
+   rule with correct event ordering in `PathTracingIntegrator` *and*
+   `RayCaster`, the no-scatter deletion, HWSS hard-disabled for fire media,
+   and the no-silent-cap distance-sampler repair (§7.1 steps 2/5, G11).
+4. **Chem transport** — the band-resolved source fields and the support-safe
+   randomized line estimator (§4.4, §7.1 step 3).
+5. **Auto-rasterizer media routing** (G10) and the scene/metadata contract for
+   fire media (§8, §9).
+6. **Gates green** — the isothermal-slab absolute radiance test, the
+   metre-vs-centimetre scene-unit invariance test, and the Phase-A step-0
+   emission-bias characterization (§7.1).
+
+#### Phase B gates (all engineering)
+
+1. The replacement segment-wise shadow walk with no silent caps, including the
+   wrong-origin and step-cap-continuation cases (§7.2.1).
+2. Volume NEE's estimator, the labeled multi-medium densities, and the
+   two-level emission CDF (§7.2.1, §7.2.3, §7.2.5).
+3. The MIS partition as specified: independent pivot/endpoint draws, the
+   two-bit weight-1 state, boundary survival and the no-event compensation,
+   direction-independent lobe preselection, and the RIS/guiding/SMS disables
+   at competing vertices (§7.2.2, §7.2.4).
+4. **The fire medium's row in the continuation-closure table** — its
+   σ_s-weighted constituent HG-mixture closure (§7.2.2). Without this the
+   feature is default-denied inside the only medium it exists to light.
+5. The §7.2.7 equality gates and configuration matrix.
+
+#### Phase C gates (all engineering)
+
+1. The §3.2 phase-transfer/EOS closure and discrete S_div derivation; §3.3's
+   two-rate scheme, flood-fill ignition, and exponential updates; §3.4's
+   withheld-stream coefficients and conserved inventories; §3.5's budgeted
+   escape-factor sink.
+2. The §3.7 numerics as decided, conforming to
+   [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md).
+3. The §3.8 verification tier (V1–V6) green — these are executable and
+   dataset-independent.
+4. §8's grid contract: channel semantics, time mapping, residency, velocity
+   halo, and the trilinear-only rule for physical channels.
+5. The freeze/prepared-input seam this arc depends on
+   ([RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)) —
+   grid/majorant/CDF swaps strictly between renders, mid-render mutation
+   detected.
+
+#### Predictive-label gates (data, not code)
+
+Output may be **labelled predictive** only when, in addition to the phase
+gates above:
+
+- **Optics** — §12 Q2's separate constituent datasets are frozen as preset v1
+  and the total-mixture 8.7 m²/g anchor passes. The values currently in §12
+  are explicitly non-predictive regression fixtures.
+- **Chemiluminescence** — §12 Q1's absolutely-calibrated per-fuel record
+  exists for the declared fuel, or `chem_model=none` is justified for that
+  fuel by a pinned measurement bounding its visible-band contribution below
+  the absolute radiance gate's uncertainty.
+- **Soot/condensable yields** — §3.4's calibration and cross-prediction gates
+  pass for the fuel in question.
+
+Until then the same builds run and the same tests pass; output carries
+`preview` with the specific reason code, and §8's manifest records why. **No
+engineering task waits on this list.**
 
 ### 7.1 Phase A — "a fire renders at all" (renderer-only; no sim)
 
