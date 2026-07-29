@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 30 — after internal review rounds 1–4,
-**six external expert review rounds**, and nineteen post-r11 implementation-review
+**Status:** DRAFT (revision 31 — after internal review rounds 1–4,
+**six external expert review rounds**, and twenty post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r30; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r31; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1087,8 +1087,21 @@ The most notorious practical trap in fire LES; specified accordingly:
   integer arithmetic, proving rank(A)≤r. Recorded pivot-row/pivot-column
   indices additionally select an r×r minor B of A; its exact fraction-free
   elimination certificate has nonzero final pivots and proves rank(A)≥r.
-  Thus rank(A)=r independently of the approximate N_A columns. Runtime then
-  verifies
+  Thus rank(A)=r independently of the approximate N_A columns. The record also
+  carries an exact rational nullspace basis B_A with `cols(B_A)=n-r`, encoded
+  as canonical reduced numerator/positive-denominator pairs inside the same
+  hashed record;
+  exact arithmetic verifies A B_A=0 and a nonzero (n-r)×(n-r) pivot minor of
+  B_A. Those facts prove `range(B_A)=ker(A)`. Let
+
+  > P_A=B_A(B_AᵀB_A)⁻¹B_Aᵀ
+
+  be evaluated as an exact rational matrix. Outward-rounded interval arithmetic
+  evaluates the fp64 projector N_A N_Aᵀ and must prove
+  `‖N_A N_Aᵀ-P_A‖∞≤1024ε_64`; otherwise the record is rejected. This projector
+  certificate, not column count or a small A N_A residual, proves that the
+  pinned numerical basis spans the intended nullspace to the declared fp64
+  error. Runtime additionally verifies
   ‖AN_A‖_∞≤128ε_64‖A‖_∞ and
   ‖N_AᵀN_A−I‖_∞≤128ε_64, then uses those bytes or rejects. The residual bound
   is the explicitly accepted fp64 tangent error; it is not used as a rank
@@ -1230,8 +1243,8 @@ The most notorious practical trap in fire LES; specified accordingly:
      > C=[A; (0,1,...,1)],
 
      in the same canonical format and with the same dimension, exact-rank-
-     factorization, pivot-minor, null-residual, and orthonormality checks as
-     N_A. Set
+     factorization, exact rational nullspace/projector certificate, pivot-minor,
+     null-residual, and orthonormality checks as N_A. Set
      `J=N_C N_C^T J_tilde`; no sequential species correction or
      implementation-chosen constrained solve is permitted. Consequently every
      primal face satisfies, within the same checked fp64 forward-error envelope,
@@ -1411,8 +1424,10 @@ The most notorious practical trap in fire LES; specified accordingly:
      load the exact recorded bytes/hash/rank/order, verify the exact upper-rank
      factorization, pivot-minor lower-rank certificate, and both residual bounds,
      and show a rotated valid nullspace would produce a different MC slope; the
-     near-rank-deficient `diag(1,δ)`/declared-rank-1 counterexample and deleting
-     one valid basis column,
+     near-rank-deficient `diag(1,δ)`/declared-rank-1 counterexample and the
+     correct-rank wrong-subspace fixture
+     `A=[[1,0,-δ,-1],[0,0,δ,0],[-1,0,0,1]]`, `δ=2^-60`, `r=2`,
+     `N=[e_2,e_3]`; both must reject, as must deleting one valid basis column,
      recomputation, or accepting a changed hash is RED. A multielement
      pure-diffusion fixture requires both C J=0 and nonzero J_Z at every face;
      omitting J_Z or applying a ΣJ-only correction that is not tangent to A is
@@ -1988,7 +2003,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r30)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r31)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -3462,14 +3477,18 @@ The Job-owned sink exists before the Scene. The constructor opens a
 `JobBootstrapTransaction` around `InitializeContainers()`, commits the exact
 default-asset/config baseline, records `bootstrap_author_generation`, and marks
 the new Job `load_eligible`. It does not claim a file scene identity.
-Each public `LoadAsciiSceneAuto` or `LoadAsciiSceneViaCst` first performs one
-atomic `load_attempted` false→true CAS for the current epoch, before any open,
-classification, or parser work. A losing CAS returns `load_already_attempted`.
-The winner next acquires the sink's exclusive lease; **only while holding that
-lease** does it atomically compare current author generation with
-`bootstrap_author_generation`, inspect sticky state, and establish the
-`SceneLoadTransaction` starting generation/scope. No eligibility snapshot or
-transaction start is permitted between the CAS and that lease. A failed
+Each public `LoadAsciiSceneAuto` or `LoadAsciiSceneViaCst` first takes a strong
+reference to the current `MutationOwnerState` epoch and acquires **that exact
+state's** exclusive lease, before any open, classification, parser work, or
+`load_attempted` CAS. Under the lease it verifies that Job still points to that
+same state and that the state is neither `epoch_revoked` nor `owner_gone`; a
+stale waiter returns `mutation_epoch_stale` and never reads or writes the new
+epoch. Only then does it atomically CAS that state's `load_attempted` false→true,
+compare current author generation with `bootstrap_author_generation`, inspect
+sticky state, and establish the `SceneLoadTransaction` starting
+generation/scope. A losing CAS returns `load_already_attempted`. Thus CAS,
+epoch identity, and eligibility admission are one under-lease critical section;
+`ClearAll()` cannot move a paused admission into its replacement epoch. A failed
 eligibility check leaves the Job preview-only and the transaction cannot clear
 it. The lease is held before the first file open and forbids render or external
 mutation entry while open. The transaction opens and reads the top-level scene
@@ -3494,9 +3513,12 @@ second-load, parse-failure, failed-open attempt, mid-load render attempt, and
 mutate-after-commit. A replace-at-classification test hook atomically swaps the
 path after the blob read and proves Auto still derives and hashes the original
 bytes; direct ViaCst and Auto must produce identical retained-CST identity from
-the same blob. A second barrier test pauses the winner after its CAS while a
-manager/item mutator enters; after the mutator completes, lease acquisition and
-the under-lease eligibility check must reject the load as unrepresented.
+the same blob. A second barrier test pauses the loader before exclusive-lease
+acquisition while a manager/item mutator enters; after the mutator completes,
+the under-lease eligibility check must reject the load as unrepresented. A third
+pauses after capturing epoch E, runs `ClearAll()` to install E+1, and proves the
+stale loader rejects without setting E+1's `load_attempted` while one legitimate
+E+1 loader may proceed.
 
 `ClearAll()` must open a private **JobResetTransaction** before destroying any
 tracked container. It acquires the sink's exclusive lease, increments a
@@ -3739,8 +3761,14 @@ Each artifact, sidecar, staged marker, and journal is closed and durably synced
 before rename. Relocate prior components and install new data; sync every target
 directory; rename each artifact marker and finally the required-cohort group
 marker; sync directories **again**, which is the publication linearization
-point. Only then transition COMMITTING→COMMITTED, delete rollback/journal and
-recovery-intent files, and sync the directories a third time. If the platform cannot provide the
+point. Only then transition COMMITTING→COMMITTED and perform cleanup in two
+durably ordered phases under the full lock set: (1) unlink **all** recovery
+intents and sync every intent directory while the coordinator journal and every
+rollback component remain durable; only then (2) unlink journal/rollback files
+and sync their directories again. A crash during phase 1 leaves any surviving
+intent pointing to a still-valid journal; a crash after its directory sync
+cannot leave a durable intent whose digest-pinned journal has been removed. The
+same intent-first ordering applies after rollback/FAILED recovery. If the platform cannot provide the
 required file/directory durability semantics, predictive publication hard-errors
 `durable_publication_unavailable` before rendering rather than weakening them.
 
@@ -3787,7 +3815,9 @@ admitted before sealing is joined, while every post-seal write returns
 `staging_sealed` and the hashed bytes cannot change. A two-directory crash after
 relocating only the non-coordinator member leaves an intent there; a later Job
 targeting only that member must discover the coordinator journal, recover, and
-only then commit. Two disjoint cohorts in one directory prove their random
+only then commit. Cleanup crash injection after each individual intent unlink,
+each intent-directory sync, and before journal unlink must never leave a durable
+intent whose pinned journal is absent. Two disjoint cohorts in one directory prove their random
 tx/cohort IDs produce distinct immutable group markers and neither head is
 invalidated by the other. A
 concurrent reader probes after every individual marker rename/sync, including a
@@ -5041,3 +5071,9 @@ registry).
   intents, made cohort IDs CSPRNG transaction IDs with immutable group markers,
   and moved scene-load eligibility admission under the exclusive mutation
   lease.
+- **r31 (2026-07-28):** after the twentieth fresh high-threshold P1-only review
+  of committed r30 (three P1; transport/radiometry clean). CFD: certified the
+  pinned fp64 projector against an exact rational nullspace projector, closing
+  a correct-rank/wrong-subspace counterexample. Pipeline: made intent cleanup
+  durably precede journal deletion and bound scene-load CAS/admission to one
+  retained, still-current mutation epoch under its exclusive lease.
