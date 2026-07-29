@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 22 — after internal review rounds 1–4,
-**six external expert review rounds**, and eleven post-r11 implementation-review
+**Status:** DRAFT (revision 23 — after internal review rounds 1–4,
+**six external expert review rounds**, and twelve post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r22; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r23; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -236,12 +236,16 @@ row depends on it:
   momentum equation.
 - **Momentum and transport closure.** The conservative gas-momentum equation is
 
-  > ∂(ρ_gu)/∂t + ∇·(ρ_gu⊗u)
+  > ∂(ρ_gu)/∂t + ∇·(ρ_gu⊗u + u⊗J_g)
   > = −∇p̃ + ∇·τ_eff + (ρ_g−ρ∞)g + u S_ρ,phase,
   > τ_eff=μ_eff[∇u+(∇u)ᵀ−(2/3)(∇·u)I],
   > μ_eff=μ_mol+ρ_gν_sgs.
 
-  The phase source S_ρ,phase=ṁ̇‴_gas from below carries the common velocity,
+  where J_g=Σ_{k∈gas}J_k=−Σ_{i∈aerosol}J_i. The u⊗J_g flux is required because
+  constituent diffusion changes gas mass even though the all-constituent flux
+  sums to zero; omitting it changes M/ρ_g for a uniform translating loading
+  gradient and breaks Galilean invariance. The phase source
+  S_ρ,phase=ṁ̇‴_gas from below carries the common velocity,
   so phase transfer alone cannot accelerate the one-velocity mixture; boundary
   injection carries its prescribed momentum separately. Buoyancy is relative
   to the ambient hydrostatic state, so the unignited far field is quiescent.
@@ -992,7 +996,8 @@ The most notorious practical trap in fire LES; specified accordingly:
   linearizes both p̃_face and the projected ‖u_face‖² term, solves the resulting
   variable-coefficient system, and line-searches on the combined interior
   divergence and boundary-head residual. Select the incoming physical branch
-  u_n<0; a converged positive-normal root invalidates the class and returns to
+  modulo the deadband below: an inflow class is invalid only for converged
+  u_n>u_bc,tol, and an outflow class only for u_n<−u_bc,tol; either returns to
   the active-set solve. Require both the normal projection residual and
   max_inflow|p̃+½ρ∞‖u‖²| ≤ p_bc,tol with
   p_bc,tol=ρ∞u_ref u_bc,tol. Lagging ‖u‖ from a prior iterate is forbidden.
@@ -1015,8 +1020,10 @@ The most notorious practical trap in fire LES; specified accordingly:
   distinguishes endpoint, exact continuous average, Heun quadrature, and every
   (I₀,I₁) class-switch combination.
   For each R0/R1 active-set iteration use u_bc,tol=ε_absL, the already-defined
-  projection velocity tolerance: |u_n|≤u_bc,tol retains that face's previous
-  accepted class, preventing a
+  projection velocity tolerance. R0 seeds from the preceding accepted endpoint
+  class (all pressure-open faces seed outflow at the quiescent initial state);
+  R1 seeds from converged R0. In either solve |u_n|≤u_bc,tol retains its
+  seeded/current class, preventing a
   roundoff toggle; a repeated active-set state outside that band is a cycle and
   rejects/reduces Δt rather than choosing first/last wins. Only after this
   convergence is that stage's scalar upwinding selected. The endpoint u₂ class
@@ -1141,8 +1148,10 @@ The most notorious practical trap in fire LES; specified accordingly:
   3. Advance the scalar/energy vector Q=(ρ_totZ,{q_k},{c_i},ℋ_s) and conservative
      momentum M with this exact projected-Heun tableau. Let F(Q,u) return the
      paired low/high conservative advection+diffusion/J_h+conduction face
-     fluxes (no local source), and A(Q,u) the nonpressure momentum RHS including
-     advection, stress, buoyancy, and the packet-derived common-velocity phase
+     fluxes (no local source). Preserve the gas-diffusion subflux
+     J_g^{L/H}=Σ_{k∈gas}J_k^{L/H} inside that pair and form the paired momentum
+     face flux G^{L/H}=u_face⊗J_g^{L/H}. Let A_bar(Q,u) be the remaining
+     nonpressure momentum RHS including advection, stress, buoyancy, and the packet-derived common-velocity phase
      source **u S̄_ρ,phase** required by §3.2 (boundary injection momentum remains
      a boundary flux). Every projection below uses
 
@@ -1157,19 +1166,24 @@ The most notorious practical trap in fire LES; specified accordingly:
      **step-average dynamic pressure**
      p̃_bar^{n+1/2}=Δt⁻¹∫_{t_n}^{t_{n+1}}p̃(t)dt, not endpoint p̃ⁿ⁺¹.
 
-     - **R0/predictor:** coupled-project Mⁿ to u₀ at Qⁿ; assemble F₀=F(Qⁿ,u₀)
-       and A₀=A(Qⁿ,u₀). Apply the shared FCT limiter to the full Euler face flux
+     - **R0/predictor:** coupled-project Mⁿ to u₀ at Qⁿ; assemble
+       (F₀,G₀) and A_bar,0. Apply the shared FCT limiter to the full Euler face flux
        over Δt with S̄_src and form
        Q*=Qⁿ+Δt[F₀,accepted+S̄_src]. Form the unprojected momentum
-       **M*†=Mⁿ+ΔtA₀** (not ρ_g(Qⁿ)u₀+ΔtA₀), invert Q*→T/EOS, and reject infeasibility.
+       **M*†=Mⁿ+Δt[A_bar,0−∇·G₀,accepted(α₀)]** (not a ρ_g(Qⁿ)u₀ base),
+       using the exact same α₀ that accepted F₀; invert Q*→T/EOS and reject
+       infeasibility.
      - **R1/corrector sample:** coupled-project M*† at Q* to u₁; assemble
-       F₁=F(Q*,u₁) and A₁=A(Q*,u₁).
+       (F₁,G₁) and A_bar,1=A_bar(Q*,u₁).
      - **Heun commit:** form the combined low/high face-flux pair
        (F₀+F₁)/2 and run a **new** shared FCT solve on that combined flux—not
        the predictor α values—to commit
 
        > Qⁿ⁺¹=Qⁿ+Δt[((F₀+F₁)/2)_accepted+S̄_src],
-       > Mⁿ⁺¹†=Mⁿ+(Δt/2)(A₀+A₁).
+       Define G_H^{L/H}=(G₀^{L/H}+G₁^{L/H})/2 and accept it with the **same new
+       combined α_H** used for (F₀+F₁)/2. Then
+
+       > Mⁿ⁺¹†=Mⁿ+(Δt/2)(A_bar,0+A_bar,1)−Δt∇·G_H,accepted(α_H).
 
        Finally coupled-project Mⁿ⁺¹† at Qⁿ⁺¹ to u₂ and store
        Mⁿ⁺¹=ρ_g(Qⁿ⁺¹)u₂ and p̃_bar^{n+1/2}=π₂. Thus π₀/π₁ affect only their
@@ -1179,16 +1193,17 @@ The most notorious practical trap in fire LES; specified accordingly:
        evaluated at Qⁿ⁺¹ with the same frozen average packet; the next step's R0
        reprojects against its newly built packet. Q* and Qⁿ⁺¹ are separately
        T/EOS-inverted and gated. The source appears once in each scalar formula,
-       so its net scalar increment is exactly ΔU_src. Momentum receives only
-       the Heun average ½Δt(u₀+u₁)S̄_ρ,phase already contained in A₀/A₁; omitting
-       it would spuriously change velocity when gas/aerosol mass transfers.
+       so its net scalar increment is exactly ΔU_src. Momentum receives the
+       Heun average ½Δt(u₀+u₁)S̄_ρ,phase in A_bar plus the exact accepted
+       u⊗J_g flux above. Omitting either changes velocity when gas/aerosol mass
+       transfers locally or diffuses between phases.
 
      “Coupled-project” is a specific Picard solve because accepted FCT
      diffusion/enthalpy fluxes affect S_div while S_div affects the advecting
-     velocity. **R0 loop:** project u₀, build the predictor F₀ low/high pair,
-     solve its Euler α₀, recompute S_div,0 from exactly the α₀-accepted
+     velocity. **R0 loop:** project u₀, build the predictor (F₀,G₀,A_bar,0)
+     pair/RHS, solve its Euler α₀, recompute S_div,0 from exactly the α₀-accepted
      diffusion/J_h/conduction plus packet increments, and repeat all four.
-     **R1 loop:** at fixed converged Q*, project u₁, build F₁, solve a
+     **R1 loop:** at fixed converged Q*, project u₁, build (F₁,G₁,A_bar,1), solve a
      stage-local Euler α₁ solely to identify its accepted diffusion/enthalpy
      increments, recompute S_div,1 from those increments plus S̄_src, and
      repeat; α₁ is diagnostic and is not
@@ -1197,8 +1212,10 @@ The most notorious practical trap in fire LES; specified accordingly:
      the projection/EOS tolerances.
 
      After both stage loops converge, the Heun commit performs the new combined
-     (F₀+F₁)/2 FCT solve once, forms Qⁿ⁺¹, derives **S_div,commit from that exact
-     combined accepted flux plus S̄_src**, and then performs the final u₂/π₂
+     (F₀+F₁)/2 FCT solve once, forms Qⁿ⁺¹, and derives **S_div,commit only from
+     the nonadvective diffusion/J_h/conduction components after applying that
+     new combined α_H, plus S̄_src, evaluated with Qⁿ⁺¹**. Advective constituent
+     or enthalpy flux is never inserted into S_k or H. It then performs the final u₂/π₂
      projection. This last projection intentionally has no feedback into the
      already integrated Heun flux; u₂ is the constrained accepted endpoint and
      the starting momentum for the next step. Calling it a flux Picard loop or
@@ -1228,7 +1245,11 @@ The most notorious practical trap in fire LES; specified accordingly:
      refinement—not pointwise equality on the unshifted grid. A separate local
      packet unit fixture, with no advection/projection, applies Δq and momentum
      uΔq to M=qu and requires (M+uΔq)/(q+Δq)=u to roundoff; omitting
-     uS̄_ρ,phase is its RED control. Spatially uniform
+     uS̄_ρ,phase is its RED control. A second periodic fixture starts with
+     uniform velocity and a nonuniform gas/aerosol loading gradient under pure
+     constituent diffusion; M/ρ_g must remain uniform, and its Galilean-shifted
+     copy must converge at the same order. Omitting u⊗J_g or accepting it with a
+     different α than the constituent flux is RED. Spatially uniform
      nonzero S_div on a periodic domain is explicitly invalid because
      ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
 
@@ -1798,7 +1819,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r22)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r23)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1991,7 +2012,7 @@ entry gates rather than integration details left to implementers.
    excluded from the Phase-B emission CDF/volume NEE exactly like chem, and
    this full-segment estimator always has MIS weight 1**; the thermal
    p_march/p_V weight never touches it. §8 does **not** advect arbitrary ε_add:
-   requested velocity blur with nonzero ε_add disables that medium's blur in
+   requested velocity blur with configured/render-consumed ε_add disables that medium's blur in
    preview and rejects predictive blur until a source-evolution contract exists.
    Zero-extinction
    homogeneous emitters, heterogeneous zero-density holes, mixed thermal+
@@ -2076,7 +2097,8 @@ entry gates rather than integration details left to implementers.
    biases exactly the zero-soot showcase this step exists for. It is collected
    for every path with a segment through the medium; no collisions required.
    This reaction-importance construction is **nominal/static only**. Requested
-   blur with nonzero chem is a predictive preflight error; preview disables
+   blur with render-consumed chem channels is a predictive preflight error even
+   when the nominal grid is zero; preview disables
    blur for the whole medium and retains this same estimator (§8). No advected-
    chem ratio estimator exists. Estimator tests may use a clearly marked synthetic
    SPD, but predictive enablement requires the §7.0 per-fuel record and an
@@ -2302,8 +2324,10 @@ B_ijk is the Cartesian center cube
 > × [o+(k−½)Δz,o+(k+½)Δz),
 
 with only the global upper faces closed. These N_xN_yN_z disjoint bins exactly
-tile the core face bbox. An inactive VDB voxel inside that bbox samples the
-channel's declared background: T_inf kelvin for temperature and exact zero for
+tile the core face bbox. Sampling is explicitly topology-aware: before reading a
+stored value, test its active bit; an inactive VDB voxel/tile inside that bbox
+samples the channel's declared background regardless of its stored payload:
+T_inf kelvin for temperature and exact zero for
 carbon, condensed mass, reaction, and every chem-source channel. The exterior
 of the medium face bbox is **not** another background voxel: traversal ends and
 the medium is absent. Point lookup is componentwise
@@ -2675,18 +2699,22 @@ carry indistinguishable metadata. Each sequence stores:
   exporter) is the only place deterministic resampling may occur;
 - every OpenVDB grid's stored background must bit-match the manifest descriptor
   after deterministic decode: temperature uses the sequence's T_inf in kelvin;
-  carbon, condensed, reaction, and chem sources use +0. Inactive voxels inside
+  carbon, condensed, reaction, and chem sources use +0. **Every stored value-off
+  tile/leaf voxel must bit-equal that declared background**; ordinary OpenVDB
+  value lookup without an activity test is forbidden. Inactive voxels inside
   the velocity halo use (0,0,0) m/s for this quiescent-ambient arc before the
   separately declared outside-halo policy applies. Inactive voxels inside
-  the core bbox take their channel value, while points outside the medium face bbox are
+  the core bbox take their declared background, while points outside the medium face bbox are
   outside the medium. Backgrounds participate in channel extrema/domain checks,
   U_v construction, and the frame digest; a zero temperature background or an
   active-only extrema scan is a load error. Boundary-bin fixtures exercise an
   inactive T_inf corner, zero material corners, and traversal immediately
   outside every face;
 - before trusting any per-node extrema or building a majorant/CDF, preflight
-  scans **every active voxel and active tile value plus every declared
-  background** after decode. All scalar/vector components must be finite;
+  scans **every active voxel/tile value, every stored value-off voxel/tile, plus
+  every declared background** after decode. A value-off payload unequal to
+  background is an unconditional load error even if ordinary topology iteration
+  would skip it. All scalar/vector components must be finite;
   carbon, condensed, reaction, and all `chem_*` values must be ≥0; temperature
   must be >0 and inside the common certified Planck/optical/thermochemistry
   domain; velocity components may have either sign but must be finite. These are
@@ -2695,7 +2723,8 @@ carry indistinguishable metadata. Each sequence stores:
   trusted extrema used by subsequent domain/majorant work; file hashes and VDB
   metadata statistics are not substitutes. RED fixtures isolate active voxels
   and constant active tiles containing a negative value, NaN, +Inf, −Inf, zero/
-  out-of-domain T, and a nonfinite velocity component;
+  out-of-domain T, and a nonfinite velocity component, plus value-off leaf/tile
+  payloads containing hot, negative, or NaN data;
 - per-fuel y_form, y_s, y_cond, χ_r, T_pilot/T_AIT, Q̇_ref, ρ_soot,
   oxidation constants (T_ox, 2.667 kg-O₂/kg, 3.667 kg-CO₂/kg, 32.8 MJ/kg),
   channel scales, calibration dataset/protocol IDs, and scale/resolution
@@ -3006,14 +3035,21 @@ encoded `(role,logical_locator)` bytes; duplicate pairs with the same digest
 collapse and a duplicate pair with different bytes is an error. This arc does
 not permit the initially opened bytes to stand in for later state. Phase C adds
 one `IRenderMutationSink` owned by Job/Scene and installs it into **every built-in
-render-affecting manager item and asset on insertion**. All built-in mutators—including
+render-affecting manager item/asset on insertion and the active rasterizer,
+sampler/config override, FrameStore, rasterizer-output, and encoder graph**. All built-in mutators—including
 objects obtained as mutable pointers through `IManager::GetItem`, every
 `IBasicTransform` path, painters/materials/lights/cameras/geometries, manager
 replace/remove, `RegenerateData`, IJob, editor, parser-finalization, and asset
-rebind—must enter the sink before changing state. The sink increments an author
-generation and sets sticky `unrepresented_scene_mutation` unless the editor
+rebind, `IJobPriv::GetRasterizer()` mutations, SPP/sample overrides,
+`AddRasterizerOutput`/`FreeRasterizerOutputs`, callbacks, output routing and
+encoder options—must enter the sink before changing state and name their domain.
+Scene/entity/asset mutations increment `author_generation` and set sticky
+`unrepresented_scene_mutation` unless the editor
 atomically commits the matching retained-CST edit and marks that exact generation
-represented. The animator alone receives a private, unforgeable
+represented. Rasterizer/sampling/output/encoder configuration mutations instead
+increment `config_generation`; they are allowed before freeze and are represented
+by the captured `render_config_v1`, never by clearing scene sticky state. The
+animator alone receives a private, unforgeable
 `DerivedAnimationUpdate` token: its deterministic nominal evaluation increments
 a separate runtime generation/rebuild mask but cannot dirty authored identity.
 `Animator::EvaluateAtTime` opens an internal RAII sink scope with that token, so
@@ -3021,12 +3057,17 @@ nested timeline setters and `RegenerateData()` inherit the derived classificatio
 without changing every mutator signature; no other call site can construct the
 scope/token. Public callers cannot obtain it.
 
-Normal file loading uses a second private `SceneLoadTransaction` token on a
-fresh Job. It begins **before `Job::InitializeContainers()` installs default
-assets** (the Job-owned sink exists before the Scene and is handed to it during
-initialization) and spans initialization plus the complete parse/derive path; an
-already initialized or externally exposed Job cannot enter it. It takes the
-sink's exclusive lease before the first manager/IJob action and forbids render
+The actual `RISE_CreateJob → Job::Job/InitializeContainers →
+LoadAsciiSceneAuto|ViaCst` lifecycle is supported by two private transactions.
+The Job-owned sink exists before the Scene. The constructor opens a
+`JobBootstrapTransaction` around `InitializeContainers()`, commits the exact
+default-asset/config baseline, records `bootstrap_author_generation`, and marks
+the new Job `load_eligible`. It does not claim a file scene identity.
+`LoadAsciiSceneAuto|ViaCst` may then open `SceneLoadTransaction` only if the
+current author generation still equals that bootstrap generation, sticky state
+is clear, and no earlier load was attempted; otherwise the resulting job is
+preview-only and the transaction cannot clear it. The load transaction takes
+the sink's exclusive lease before the first parser mutation and forbids render
 or external mutation entry while open. Load-time mutations remain authored and increment author generation, but
 sticky-state publication is deferred. Only after the entire CST derives
 successfully, all external assets are opened/enumerated, and the current
@@ -3035,18 +3076,25 @@ successfully, all external assets are opened/enumerated, and the current
 leave the sticky bit clear. A failed/partial load is discarded or remains
 unrepresented preview state; the transaction can never clear a sticky bit that
 predated its starting generation. IJob calls outside this private transaction
-remain ordinary unrepresented author mutations. Load-success, parse-failure,
-mid-load render attempt, and mutate-after-commit fixtures gate the baseline.
+remain ordinary unrepresented author mutations. Gate the repository's existing
+`RISE_CreateJob → LoadAsciiSceneAuto` and `ViaCst` routes, plus pre-load mutation,
+second-load, parse-failure, mid-load render attempt, and mutate-after-commit.
 
 Predictive preflight recursively enumerates every render-reachable manager item/
-asset and requires the `IMutationTracked` capability bound to this exact sink;
+asset **and the complete active rasterizer/config/output graph** and requires the
+`IMutationTracked` capability bound to this exact sink;
 legacy/plugin types lacking it cause `untracked_scene_mutability` and are
-preview-only. After nominal animation, preparation acquires a sink freeze lease,
-then under that lease re-reads generations, capabilities, sticky state, and the
-current CST/asset identity and completes final fidelity preflight; it retains
-the lease through worker completion. Built-in mutators require
+preview-only. At request start, preparation acquires a sink freeze lease; under
+that lease it performs the private-token nominal animation, then re-reads
+generations, capabilities, sticky state, and the
+current CST/asset identity, captures `render_config_v1` and config generation
+only then, and completes
+final fidelity preflight. The lease covers the whole user-visible rasterize
+request through every still/AOV sidecar or final movie finalization—not merely
+worker completion. One animation lease spans all frames/fields; later nominal
+animator evaluations use the private derived token under the lease. Built-in mutators require
 the exclusive side of that lease, so concurrent/direct mutations cannot race or
-silently change a predictive render. The provenance records author/runtime
+silently change a predictive render. The provenance records author/config/runtime
 generations and the prepared freeze token. Tests mutate a transform through the
 const-manager→mutable-item→`IBasicTransform` route, mutate each other built-in
 asset family, attempt a concurrent mutation under the freeze, and inject an
@@ -3056,6 +3104,16 @@ capability used only for the named cache/control-plane operations in §10.3
 (spatial/light invalidation, media-state swap, TLAS, photon/cache, and guide
 rebuild); it cannot invoke authored-value setters and therefore does not deadlock
 on its own freeze or alter scene identity.
+Worker/frame accumulation uses a separate private `RenderExecutionUpdate`
+capability; post-worker FrameStore/encoder/sidecar/movie completion uses
+`ArtifactFinalizationUpdate`. Both are bound to the freeze token and permit only
+data accumulation/finalization under the already captured configuration—never
+SPP, callback, route, container, channel, compression, transform, or encoder-
+option mutation. Public `GetRasterizer()` callers cannot obtain either token and
+block/fail on the exclusive side while frozen. Tests directly mutate live sample
+count, callback, add/free outputs, FrameStore route, and encoder settings before
+capture and concurrently after capture; provenance must reflect the former and
+the latter must not race or change pixels/artifacts.
 
 For an unmodified file-loaded job, the exact opened-byte array above is the
 identity. An editor mutation is predictive-capable only when it updates the
@@ -3231,9 +3289,12 @@ The simulator may qualify carbon, condensed organics, and temperature for the
 stated first-order frozen-material approximation; it marks `reaction` and all
 `chem_*` channels as `derived_eulerian_source`. Arbitrary
 `MediumCoefficients::emission` is likewise a source, not a material scalar.
-Velocity warping is predictive only if every render-consumed nonzero channel in
-that medium is `frozen_material_advection` (or `static`). Therefore any nonzero
-chem channel or ε_add with requested blur is a predictive preflight error;
+Velocity warping is predictive only if every render-consumed channel in that
+medium is `frozen_material_advection` (or `static`). Gate on declared semantics/
+presence, **not nominal voxel values**: a render-consumed
+`derived_eulerian_source` channel or configured ε_add with requested blur is a
+predictive preflight error even when its base grid is identically zero. This arc
+defines no producer zero-over-shutter certificate exception;
 preview disables blur for the **whole medium**, records
 `nonadvected_source_blur_unsupported`, and evaluates every channel at nominal
 time. Warping some coefficients but leaving a source nominal is forbidden.
@@ -3241,7 +3302,8 @@ A future bracketed-frame/source-evolution model can add another qualified
 semantic; this arc does not infer Dq/Dt=0 from the presence of velocity. RED
 gates include a stationary reaction sheet embedded in moving gas (must not
 translate) and a time-resolved moving sheet (must trigger the unsupported path,
-not pass a self-fulfilling advected-slab reference).
+not pass a self-fulfilling advected-slab reference), plus a zero base chem grid
+whose next frame ignites during shutter support (must still reject/disable).
 
 One hard, render-global interaction rule removes every ambiguous MIS state:
 **if any active fire medium uses velocity blur, the renderer disables the
@@ -3266,7 +3328,8 @@ does not share that reduction; fire-medium Pel preview consequently evaluates
 the nominal frame without velocity blur and logs that limitation. Predictive
 blurred output is spectral-only.
 
-Because preflight removes blur from every medium with nonzero chem or ε_add,
+Because preflight removes blur from every medium with render-consumed chem or
+configured ε_add,
 their §7.1 static full-segment estimators remain unchanged and weight 1; no
 ratio-tracked “advected source” estimator exists in this arc. Gates: chromatic
 Pel must prove it stayed nominal/unblurred; spectral thermal velocity-shear
@@ -3400,10 +3463,11 @@ registry).
    the reject/nominal-hold rule in §8 and records those identities in output
    provenance. As an appended virtual, the normal API/build-project checklist
    and an old-caller ABI test apply.
-   The shared `PixelBasedRasterizerHelper` per-render/field order is fixed to:
-   one main-thread nominal animator evaluation → prove/reject/nominal-hold every
-   animator over the full path-time support → acquire the mutation-sink freeze
-   and complete the under-lease identity/fidelity preflight → object-manager
+   The shared `PixelBasedRasterizerHelper` request/frame order is fixed to:
+   acquire (or for later animation frames retain) the request-wide mutation-sink
+   freeze → one main-thread nominal animator evaluation under its private token →
+   prove/reject/nominal-hold every animator over the full path-time support →
+   complete the under-lease identity/fidelity preflight → object-manager
    `InvalidateSpatialStructure()` **and** `IRayCaster::InvalidateLightSamplers()` →
    controller media preparation/CDF swap →
    `RayCaster::AttachScene` geometry realization → object
@@ -3496,7 +3560,7 @@ registry).
 | Multi-channel grid memory (dense 512³: seven scalar channels plus three velocity components at §8 precisions ≈ 3.8 GB/frame) | fp16 where §8 permits; candle is small-domain DNS; OpenVDB sparsity is required for production plumes |
 | Quantization/normalization destroying physical units (the bridge's 8-bit lesson, §5.1) | §8 units + precision table; ingestion round-trip test asserting known values |
 | RGB-path fire looks different from spectral-path fire | §7.1 step 4 declares spectral-first; RGB is an approximate preview path with a logged diagnostic (deterministic projection bias, §12 RGB-path decision) |
-| Velocity blur silently moves nonmaterial sources or mixes incompatible estimators | §8 requires per-channel temporal semantics, rejects predictive blur with nonzero chem/ε_add, disables the whole medium's blur in preview, and uses render-global NM pure DT only for qualified material fields |
+| Velocity blur silently moves nonmaterial sources or mixes incompatible estimators | §8 requires per-channel temporal semantics, rejects predictive blur whenever render-consumed chem/configured ε_add is present regardless of nominal values, disables the whole medium's blur in preview, and uses render-global NM pure DT only for qualified material fields |
 | Existing 1024-step tracker watchdog becomes an estimator cap | Phase A/blur distance sampling uses state-preserving continuation to segment end; forced-cap RED tests cover Pel/NM and both transport surfaces |
 | Heavy or wet smoke exceeds the one-fluid dry-aerosol model | χ_load>1 % is a hard predictive error; water/hygroscopic aerosol is explicitly out of scope and recorded in metadata (§1/§3.2/§8) |
 | Phase-A procedural flame looks wrong and stalls review | it is a *radiometry* target, not a beauty target; beauty ships with Phase C sims |
@@ -4145,3 +4209,12 @@ registry).
   pinned; added an atomic private parser-load baseline transaction; and replaced
   singular derivative linkage with exact single-primary versus ordered
   frame-sequence provenance variants carrying every primary artifact digest.
+- **r23 (2026-07-28):** after the twelfth fresh P1-only review of committed r22
+  (seven P1). CFD: added the gas constituent-diffusion momentum flux with the
+  same combined FCT acceptance, restricted S_div,commit to nonadvective terms,
+  and made active-set sign agreement explicitly deadband-aware. Transport:
+  rejected non-background value-off VDB payloads with topology-aware sampling,
+  and gated derived source blur by semantics/presence rather than nominal value.
+  Pipeline: aligned parser baselining with the real constructor-initializes-first
+  lifecycle and extended mutation tracking/freeze through the live rasterizer,
+  configuration, FrameStore, output, and encoder graph.
