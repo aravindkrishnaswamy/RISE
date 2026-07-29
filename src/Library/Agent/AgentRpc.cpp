@@ -1035,9 +1035,11 @@ namespace RISE
 							arr.push_back( e );
 						}
 						result.set( "skills", arr );
-						// Index-only advisory: a missing skills ROOT (vs a
-						// present-but-empty one) -- surfaced so an agent can tell
-						// a miswired install from "no skills shipped".
+						// Index-only advisory, set whenever the index is EMPTY:
+						// says plainly that no skills are available and names the
+						// root tried, so a miswired install is never a silent
+						// degradation (and a MISSING root stays distinguishable
+						// from a present-but-empty one).
 						if( !sr.note.empty() )
 							result.set( "note", JsonValue::MakeString( sr.note ) );
 					}

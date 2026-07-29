@@ -491,6 +491,77 @@ int main()
 		       "starter-template copies are byte-identical (edit the canonical, re-copy to Resources)" );
 	}
 
+	// ---- Agent skills are bound to the INSTALL, not to the open scene ----
+	// THE BUG THIS PINS.  AgentSession::SkillsRoot() resolves
+	// $RISE_SKILLS_PATH -> $RISE_MEDIA_PATH + "skills/agent/" ->
+	// "./skills/agent/".  Both GUIs re-point RISE_MEDIA_PATH on EVERY scene
+	// load (walking up from the scene to the nearest global.options), so
+	// before this fix the agent's skills were a property of whichever scene
+	// was open: build one from scratch, or open one outside a RISE project
+	// tree, and all seven skills vanished -- silently, because an empty
+	// index also omits the entire skills section of the system prompt.
+	// Each shell now sets tier 1 ONCE at startup from its OWN location.
+	// This is a source-wiring guard (neither GUI compiles in this suite);
+	// the resolution ladder itself is covered portably by AgentSkillsTest.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		const std::string macApp = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "RISEApp.swift" );
+		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
+		const std::string macProj = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "rise.xcodeproj" / "project.pbxproj" );
+		const std::string winMain = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "main.cpp" );
+		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.cpp" );
+
+		// macOS: resolved from the app's own location, installed before
+		// anything can load a scene, and NEVER derived from the media path.
+		const size_t macInstallDecl = macApp.find( "enum SkillsRootBootstrap" );
+		const size_t macInstallCall = macApp.find( "SkillsRootBootstrap.install()" );
+		Check( macInstallDecl != std::string::npos
+		       && macInstallCall != std::string::npos
+		       && macInstallDecl < macInstallCall
+		       && macApp.find( "setenv(\"RISE_SKILLS_PATH\", root, 1)" ) != std::string::npos
+		       && macApp.find( "Bundle.main.resourceURL" ) != std::string::npos
+		       && macApp.find( "Bundle.main.bundleURL" ) != std::string::npos,
+		       "macOS resolves RISE_SKILLS_PATH from the app itself (bundle resource, "
+		       "then a walk-up) and installs it at launch" );
+		// The bundle-resource tier only exists if the skills are actually
+		// COPIED into the .app -- a folder reference, so there is no second
+		// copy of the markdown to drift out of sync.
+		Check( macProj.find( "lastKnownFileType = folder; name = skills; path = ../../../skills;" )
+		       != std::string::npos
+		       && macProj.find( "/* skills in Resources */" ) != std::string::npos,
+		       "the Xcode RISE-GUI target copies the repo's skills/ into the app bundle" );
+
+		// Windows: the same anchor, from applicationDirPath (no bundle).
+		// UNVERIFIED -- the Qt GUI does not compile in this environment.
+		Check( winMain.find( "void installSkillsRoot()" ) != std::string::npos
+		       && winMain.find( "installSkillsRoot();" ) != std::string::npos
+		       && winMain.find( "RISE_SKILLS_PATH" ) != std::string::npos
+		       && winMain.find( "QCoreApplication::applicationDirPath()" ) != std::string::npos,
+		       "Windows resolves RISE_SKILLS_PATH from the executable and installs it at launch" );
+
+		// AND AN EMPTY INDEX IS LOUD TO THE USER on both shells -- a
+		// skill-less agent is a degraded product, not a neutral state.
+		Check( macChat.find( "if indexText.isEmpty {" ) != std::string::npos
+		       && macChat.find( "No scene-authoring skills are loaded" ) != std::string::npos
+		       && macChat.find( "skillIndexNote(fromRpcResponse:" ) != std::string::npos,
+		       "macOS surfaces an empty skill index to the user as a transcript notice" );
+		Check( winChat.find( "m_skillIndexEmpty = index.isEmpty();" ) != std::string::npos
+		       && winChat.find( "auto* noSkills = new QLabel(text);" ) != std::string::npos
+		       && winChat.find( "m_transcriptLayout->addWidget(noSkills);" ) != std::string::npos
+		       && winChat.find( "No scene-authoring skills are loaded" ) != std::string::npos,
+		       "Windows surfaces an empty skill index to the user in the transcript" );
+	}
+
 	// ---- N-up shell preset parity (docs/gui/RENDER_MODES.md §7.2) ----
 	// The preset is intentionally shell-owned, but it must not drift between
 	// macOS and Windows: a typo is accepted only as a failed setter and then

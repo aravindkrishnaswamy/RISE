@@ -32,10 +32,12 @@
 //                                           keyword listing; neither -> the whole
 //                                           grammar.
 //      read_skill   {name?}              -> no name: {skills:[{name,title,hook},...], note?:string}
-//                                           (the INDEX; `note` appears only when the
-//                                            skills ROOT directory is missing, telling
-//                                            a miswired root from a present-but-empty
-//                                            one); a name: {name, markdown}
+//                                           (the INDEX; `note` appears whenever the
+//                                            index is EMPTY -- it says no skills are
+//                                            available and names the root tried,
+//                                            distinguishing a MISSING root from a
+//                                            present-but-empty one); a name:
+//                                            {name, markdown}
 //                                           (Facet 5 slice S1: progressive-disclosure
 //                                            scene-authoring skills; STATELESS like
 //                                            read_schema.  Name must be BARE -- '/',

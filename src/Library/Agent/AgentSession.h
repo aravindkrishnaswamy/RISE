@@ -1143,7 +1143,7 @@ namespace RISE
 			std::string                  name;       //!< the requested name (named fetch)
 			std::string                  markdown;   //!< the full skill markdown (named fetch)
 			std::vector<AgentSkillEntry> index;      //!< the index (empty-name fetch)
-			std::string                  note;       //!< index-only advisory: set when the skills ROOT DIRECTORY itself was not found (distinguishing a miswired root from a present-but-empty one; both give an empty index)
+			std::string                  note;       //!< index-only advisory: set whenever the index comes back EMPTY (never silent -- an empty index means a miswired install), and worded to distinguish a MISSING skills root from a present-but-empty one
 		};
 
 		//! THE LAST-RENDER IMAGE CACHE -- the pair `read_image` serves.
@@ -1521,6 +1521,22 @@ namespace RISE
 			//!   3. "./skills/agent/"               (cwd fallback -- the repo
 			//!      root when run from a checkout, matching run_all_tests.sh)
 			//! Reads are READ-ONLY; nothing is ever written under the root.
+			//!
+			//! TIER 2 IS A TRAP FOR A GUI HOST, WHICH IS WHY BOTH DESKTOP
+			//! SHELLS SET TIER 1 AT STARTUP.  $RISE_MEDIA_PATH follows the
+			//! OPEN SCENE (each GUI re-points it at the scene's project root
+			//! on every load), so binding skills to it made the agent's
+			//! skills a property of whichever scene happened to be open --
+			//! open one outside a RISE project and all skills vanished.
+			//! Skills belong to the INSTALLATION.  See RISEApp.swift
+			//! (macOS) / main.cpp (Windows), which resolve tier 1 from the
+			//! app's OWN location once at launch.
+			//!
+			//! AN EMPTY INDEX IS ALWAYS ANNOTATED.  A zero-skill index sets
+			//! AgentSkillResult::note saying so plainly (and which root was
+			//! tried) rather than returning a bare empty list -- an empty
+			//! index means a miswired install, and it used to be silent at
+			//! every layer.
 			//!
 			//! PATH SAFETY: `name` must be a BARE filename component -- any
 			//! '/', '\\', or ".." is REJECTED (no traversal), and only files

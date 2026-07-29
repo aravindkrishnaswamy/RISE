@@ -4,9 +4,16 @@
 //    read_skill verb, the seed skills, and THE SNIPPET CONTRACT.
 //
 //  What is covered:
-//    S0  Skills-root resolution: the ./skills/agent cwd fallback (the
-//        suite runs from the repo root with no RISE_MEDIA_PATH), and
-//        the RISE_SKILLS_PATH override taking precedence.
+//    S0  Skills-root resolution, THE WHOLE PRECEDENCE LADDER:
+//        $RISE_SKILLS_PATH > $RISE_MEDIA_PATH + "skills/agent/" >
+//        "./skills/agent/" (the cwd fallback -- the suite runs from
+//        the repo root).  The middle tier is why both desktop GUIs
+//        set tier 1 at startup: RISE_MEDIA_PATH follows the OPEN
+//        SCENE, so binding skills to it made them vanish for any
+//        scene outside a RISE project root.  Also: an EMPTY index is
+//        never silent -- it always carries the advisory note, for a
+//        MISSING root and a present-but-empty one alike, while a
+//        healthy index carries none.
 //    S1  The verb, STATELESS (dispatcher built with a NULL session):
 //        the no-arg index lists exactly the seed skills, each
 //        with a non-empty title + hook; a named fetch returns the
@@ -98,6 +105,16 @@ static void SetEnvVar( const char* name, const char* value )
 	if( value ) setenv( name, value, 1 );
 	else        unsetenv( name );
 #endif
+}
+
+// The platform temp directory, WITH a trailing slash.
+static std::string TempDirBase()
+{
+	const char* base = std::getenv( "TMPDIR" );
+	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+	return dir;
 }
 
 // The seed skills (sorted byte-wise -- the index order contract).
@@ -206,15 +223,71 @@ static void TestRootResolution()
 		Check( r.ok, "fallback root: index read ok" );
 		Check( r.index.size() == kSeedSkillCount,
 		       "fallback root (./skills/agent) serves the seed skills" );
+		// A HEALTHY index carries NO advisory -- the note below is the
+		// empty-index signal, not a permanent decoration.
+		Check( r.note.empty(), "healthy index carries no advisory note" );
+	}
+
+	// Tier 2: $RISE_MEDIA_PATH + "skills/agent/".  This tier is the
+	// DEFECT the GUI fix routes around -- a GUI re-points RISE_MEDIA_PATH
+	// at the open scene's project root on every load, so skills bound to
+	// it disappear for any scene outside such a root.  Pinned here both
+	// ways: it resolves when it is the only variable set, and it LOSES to
+	// RISE_SKILLS_PATH (which is what each GUI now sets at startup).
+	//
+	// The media root used here holds ONE skill under skills/agent, so a
+	// tier-2 hit is distinguishable from the cwd fallback (which serves
+	// kSeedSkillCount) -- otherwise "tier 2 resolved" and "tier 2 was
+	// skipped" look identical from the repo root.
+	{
+		const std::string mediaRoot = TempDirBase() + "rise_agent_media_root";
+		const std::string mediaSkills = mediaRoot + "/skills/agent";
+#ifdef _WIN32
+		system( ( "mkdir \"" + mediaSkills + "\" 2>NUL" ).c_str() );
+#else
+		system( ( "mkdir -p '" + mediaSkills + "'" ).c_str() );
+#endif
+		{
+			std::ofstream f( ( mediaSkills + "/media-tier-skill.md" ).c_str(), std::ios::binary );
+			f << "# Media Tier Skill\n> hook: Reached only through RISE_MEDIA_PATH.\n";
+		}
+
+		SetEnvVar( "RISE_MEDIA_PATH", ( mediaRoot + "/" ).c_str() );
+		const AgentSkillResult viaMedia = AgentSession::ReadSkill();
+		Check( viaMedia.ok && viaMedia.index.size() == 1
+		       && viaMedia.index[0].name == "media-tier-skill",
+		       "tier 2: $RISE_MEDIA_PATH + skills/agent/ resolves when RISE_SKILLS_PATH is unset" );
+
+		// A media path with NO skills/agent under it: exactly the GUI
+		// failure mode (scene opened outside a RISE project tree) --
+		// zero skills, and NOT silent.
+		SetEnvVar( "RISE_MEDIA_PATH", ( mediaRoot + "/no_skills_here/" ).c_str() );
+		const AgentSkillResult stranded = AgentSession::ReadSkill();
+		Check( stranded.ok && stranded.index.empty(),
+		       "tier 2 pointed at a tree with no skills/agent yields an EMPTY index" );
+		Check( stranded.note.find( "NO SKILLS ARE AVAILABLE" ) != std::string::npos,
+		       "that empty index is NOT silent -- it carries the loud no-skills advisory" );
+
+		// Tier 1 beats tier 2 -- this is exactly what each GUI now sets at
+		// startup, over a media path that follows the open scene.
+		SetEnvVar( "RISE_SKILLS_PATH", "./skills/agent" );
+		const AgentSkillResult viaSkills = AgentSession::ReadSkill();
+		Check( viaSkills.ok && viaSkills.index.size() == kSeedSkillCount,
+		       "tier 1 ($RISE_SKILLS_PATH) WINS over a tier-2 media path with no skills" );
+
+		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
+		SetEnvVar( "RISE_MEDIA_PATH", nullptr );
+		std::remove( ( mediaSkills + "/media-tier-skill.md" ).c_str() );
+#ifdef _WIN32
+		system( ( "rmdir /s /q \"" + mediaRoot + "\" 2>NUL" ).c_str() );
+#else
+		system( ( "rm -rf '" + mediaRoot + "'" ).c_str() );
+#endif
 	}
 
 	// RISE_SKILLS_PATH override wins: a temp root with ONE fake skill.
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-		std::string dir = base ? base : "/tmp";
-		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
-		dir += "rise_agent_skills_test";
+		std::string dir = TempDirBase() + "rise_agent_skills_test";
 #ifdef _WIN32
 		system( ( "mkdir \"" + dir + "\" 2>NUL" ).c_str() );
 #else
@@ -252,7 +325,7 @@ static void TestRootResolution()
 			Check( r.index[0].title == "Fake Skill", "title parsed from the '# ' first line" );
 			Check( r.index[0].hook == "A test-only skill.", "hook parsed from the '> hook:' second line" );
 		}
-		Check( r.note.empty(), "present-but-sparse root carries NO missing-root note" );
+		Check( r.note.empty(), "present-but-sparse root: a NON-empty index carries no note" );
 
 		// Membership gate: unlisted names are NOT fetchable even though
 		// a same-named filesystem entry exists under the root.
@@ -263,18 +336,50 @@ static void TestRootResolution()
 #endif
 		Check( AgentSession::ReadSkill( "fake-skill" ).ok, "the listed skill still fetches through the membership gate" );
 
-		// Missing-root vs empty-root: a nonexistent root returns an
-		// EMPTY index WITH the advisory note; the sparse-but-present
-		// root above returned no note.
+		// EVERY empty index carries the advisory -- an agent with no
+		// skills must never look like an agent with skills.  The two
+		// CAUSES stay distinguishable in the wording (the note names the
+		// root and says whether it exists), which is what tells a
+		// miswired root from "nothing installed here".
 		const std::string missing = dir + "/no_such_subdir";
 		SetEnvVar( "RISE_SKILLS_PATH", missing.c_str() );
 		{
 			const AgentSkillResult m = AgentSession::ReadSkill();
 			Check( m.ok && m.index.empty(), "missing root: index call still ok + empty" );
 			Check( !m.note.empty(), "missing root: the index result carries the advisory note" );
+			Check( m.note.find( "NO SKILLS ARE AVAILABLE" ) != std::string::npos,
+			       "missing root: the note says plainly that no skills are available" );
+			Check( m.note.find( "does not exist" ) != std::string::npos,
+			       "missing root: the note reports the root as ABSENT" );
+			Check( m.note.find( missing ) != std::string::npos,
+			       "missing root: the note names the root that was tried" );
+		}
+
+		// A root that EXISTS but holds no skills: same loud advisory,
+		// different diagnosis.  (Before this, an existing-but-empty root
+		// returned a bare empty list -- indistinguishable from healthy.)
+		const std::string emptyRoot = dir + "/empty_root";
+#ifdef _WIN32
+		system( ( "mkdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
+#else
+		system( ( "mkdir -p '" + emptyRoot + "'" ).c_str() );
+#endif
+		SetEnvVar( "RISE_SKILLS_PATH", emptyRoot.c_str() );
+		{
+			const AgentSkillResult e = AgentSession::ReadSkill();
+			Check( e.ok && e.index.empty(), "empty root: index call still ok + empty" );
+			Check( e.note.find( "NO SKILLS ARE AVAILABLE" ) != std::string::npos,
+			       "empty root: the note says plainly that no skills are available" );
+			Check( e.note.find( "exists but holds no readable" ) != std::string::npos,
+			       "empty root: the note reports the root as PRESENT but skill-less" );
 		}
 
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
+#ifdef _WIN32
+		system( ( "rmdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
+#else
+		system( ( "rmdir '" + emptyRoot + "'" ).c_str() );
+#endif
 		std::remove( fake.c_str() );
 		std::remove( dotfile.c_str() );
 #ifdef _WIN32
@@ -299,6 +404,10 @@ static void TestVerbIndexAndFetch( AgentRpcDispatcher& rpc )
 	const JsonValue& skills = env.get( "result" ).get( "skills" );
 	Check( skills.isArray() && skills.size() == kSeedSkillCount,
 	       "index lists exactly the seed skills" );
+	// A HEALTHY index carries no `note` on the wire -- the field is the
+	// empty-index signal, so its presence must MEAN something.
+	Check( env.get( "result" ).find( "note" ) == nullptr,
+	       "healthy index: the RPC result has NO note field" );
 	for( std::size_t i = 0; i < kSeedSkillCount && i < skills.size(); ++i ) {
 		const JsonValue& e = skills.at( i );
 		Check( e.get( "name" ).asString() == kSeedSkills[i],
@@ -320,6 +429,22 @@ static void TestVerbIndexAndFetch( AgentRpcDispatcher& rpc )
 		const std::string md = res.get( "markdown" ).asString();
 		Check( !md.empty() && md.find( title ) != std::string::npos,
 		       std::string( kSeedSkills[i] ) + " markdown contains its indexed title" );
+	}
+
+	// THE EMPTY INDEX REACHES THE AGENT AS AN ADVISORY, not a bare empty
+	// list.  Same shape the in-app chat drivers read (both GUIs surface
+	// this note to the user); this is the wire-level half of that.
+	{
+		SetEnvVar( "RISE_SKILLS_PATH", "./no_such_skills_root_for_test" );
+		const JsonValue empty = ParseLine( rpc.HandleLine( SkillRequest( 5, nullptr ) ) );
+		const JsonValue& res = empty.get( "result" );
+		Check( res.get( "skills" ).isArray() && res.get( "skills" ).size() == 0,
+		       "empty-index RPC: skills is an empty array (still a success, not an error)" );
+		const JsonValue* note = res.find( "note" );
+		Check( note != nullptr && note->isString()
+		       && note->asString().find( "NO SKILLS ARE AVAILABLE" ) != std::string::npos,
+		       "empty-index RPC: the result carries the loud no-skills advisory" );
+		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
 	}
 }
 

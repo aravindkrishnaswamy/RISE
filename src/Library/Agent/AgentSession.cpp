@@ -493,11 +493,6 @@ namespace RISE
 			if( name.empty() ) {
 				bool rootFound = false;
 				const std::vector<std::string> names = ListSkillNames( root, &rootFound );
-				// An empty index is AMBIGUOUS without this: distinguish a
-				// missing skills root (miswired install / wrong cwd) from a
-				// present-but-empty directory (legitimately no skills).
-				if( !rootFound )
-					r.note = "skills root not found at '" + root + "' (set RISE_SKILLS_PATH or run from the repo root)";
 				for( std::size_t i = 0; i < names.size(); ++i ) {
 					std::string text;
 					if( !ReadFileText( root + names[i] + ".md", text ) ) continue;
@@ -506,6 +501,25 @@ namespace RISE
 					ParseSkillHeader( text, e.title, e.hook );
 					if( e.title.empty() ) e.title = e.name;   // lenient: never a blank index row
 					r.index.push_back( e );
+				}
+				// AN EMPTY INDEX IS NEVER SILENT.  A zero-skill result used
+				// to be indistinguishable from a healthy one at every layer
+				// (bare empty list here, no skills section in the system
+				// prompt), so a miswired skills root degraded the agent with
+				// no signal to anyone.  Say plainly that no skills are
+				// available, that it is abnormal, and which root was tried.
+				// The two causes stay distinguishable: a MISSING root
+				// (miswired install / wrong cwd) vs a present-but-empty one.
+				if( r.index.empty() ) {
+					r.note = std::string( "NO SKILLS ARE AVAILABLE. RISE ships scene-authoring "
+					                      "skills, so an empty index means this installation is "
+					                      "miswired, not that there is nothing to read: " ) +
+					         ( rootFound
+					           ? "the skills root '" + root + "' exists but holds no readable *.md skill."
+					           : "the skills root '" + root + "' does not exist." ) +
+					         " Tell the user their RISE install cannot find its agent skills "
+					         "(RISE_SKILLS_PATH overrides the location), and continue WITHOUT "
+					         "skill guidance -- do not keep re-listing.";
 				}
 				r.ok = true;
 				return r;

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
+		F2586B1100000000A0000002 /* skills in Resources */ = {isa = PBXBuildFile; fileRef = F2586B1100000000A0000001 /* skills */; };
 		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
 		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
@@ -1902,6 +1903,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F2586B1100000000A0000001 /* skills */ = {isa = PBXFileReference; lastKnownFileType = folder; name = skills; path = ../../../skills; sourceTree = SOURCE_ROOT; };
 		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
 		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
@@ -2949,6 +2951,7 @@
 				F2C0EE05069C42900069C9E5 /* extlib */,
 				0249A662FF388D9811CA2CEA /* External Frameworks and Libraries */,
 				F24B71C72F52A211008304C4 /* RISE-GUI */,
+				F2586B1100000000A0000001 /* skills */,
 				1AB674ADFE9D54B511CA2CBB /* Products */,
 				F24C3E022F54FB56005DA46B /* Frameworks */,
 			);
@@ -5019,6 +5022,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F2586B1100000000A0000002 /* skills in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -294,6 +294,12 @@ private:
     // is nondeterministic for a GUI app and unwritable under Program Files).
     QString trajectoryDirectory() const;
     QString renderSkillIndex(const QString& rpcResponse) const;
+    // Latched by fetchSkillIndex(): the last index fetch came back EMPTY
+    // (the agent has NO scene-authoring skills), plus the RPC's advisory
+    // naming the skills root it tried.  Rendered as a dim centered notice
+    // by refreshTranscript() -- see the comment there.
+    bool m_skillIndexEmpty = false;
+    QString m_skillIndexNote;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
     void handleProviderError(const RISE::Agent::ChatStepResult& step);

@@ -1222,6 +1222,10 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         m_proposalsPollTimer->stop();
         m_resolvedProposalObservedAt.clear();
         rebuildProposalsUI({});
+        // No scene, no skill fetch -- clear the latch so the notice does
+        // not outlive the scene it was reported for.
+        m_skillIndexEmpty = false;
+        m_skillIndexNote.clear();
         m_loop->Reset();
         // Detach so no file lingers between scenes.
         startTrajectory();
@@ -1884,6 +1888,24 @@ void ChatPanel::rebuildTranscriptWidgets()
     // changes on screen and it keeps showing turns the model can no longer
     // see -- amnesia indistinguishable from a model defect, which is
     // arguably the worse of the two.  SourceHygieneTest guards both.
+    // NO-SKILLS NOTICE (Mac parity: ChatViewModel.sceneOpened's .notice
+    // row).  A skill-less agent is a degraded product, and it used to be
+    // invisible everywhere -- the empty index just omits the system
+    // prompt's skills section.  Same dim centered affordance this panel
+    // already uses for "the harness is speaking".
+    if (m_skillIndexEmpty) {
+        QString text = tr("No scene-authoring skills are loaded \xE2\x80\x94 the agent is "
+                          "running without RISE's scene conventions. This is an "
+                          "installation problem, not a normal state.");
+        if (!m_skillIndexNote.isEmpty()) text += QStringLiteral("\n") + m_skillIndexNote;
+        auto* noSkills = new QLabel(text);
+        noSkills->setFont(Theme::sans(11));
+        noSkills->setWordWrap(true);
+        noSkills->setAlignment(Qt::AlignCenter);
+        noSkills->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_transcriptLayout->addWidget(noSkills);
+    }
+
     if (m_loop->CompactedEntryCount() > 0) {
         auto* dropped = new QLabel(
             tr("\xE2\x8B\xAF %1 earlier transcript row(s) \xE2\x80\x94 messages and their "
@@ -2088,7 +2110,22 @@ void ChatPanel::fetchSkillIndex()
     if (!m_bridge) return;
     const QString line =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_skill\",\"params\":{}}";
-    m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
+    const QString response = m_bridge->agentHandleLine(line);
+    const QString index = renderSkillIndex(response);
+    m_loop->SetSkillIndex(toStdString(index));
+    // AN AGENT WITH NO SKILLS IS A DEGRADED PRODUCT, NOT A NEUTRAL STATE
+    // (Mac parity: ChatViewModel.sceneOpened).  An empty index omits the
+    // whole skills section of the system prompt and told nobody -- not
+    // the user, not the model.  Latched here and rendered by
+    // refreshTranscript(); the RPC's own advisory (which names the root
+    // it tried) rides along as the detail line.
+    m_skillIndexEmpty = index.isEmpty();
+    m_skillIndexNote.clear();
+    if (m_skillIndexEmpty) {
+        const QJsonObject result =
+            QJsonDocument::fromJson(response.toUtf8()).object().value("result").toObject();
+        m_skillIndexNote = result.value("note").toString();
+    }
 }
 
 QString ChatPanel::trajectoryDirectory() const

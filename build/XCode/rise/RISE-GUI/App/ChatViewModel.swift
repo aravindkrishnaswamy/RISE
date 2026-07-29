@@ -1119,8 +1119,24 @@ final class ChatViewModel: ObservableObject {
         resolvedProposalObservedAt = [:]
 
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
-        chatBridge.setSkillIndex(
-            Self.renderSkillIndex(fromRpcResponse: vb.agentHandleLine(indexLine)))
+        let indexResponse = vb.agentHandleLine(indexLine)
+        let indexText = Self.renderSkillIndex(fromRpcResponse: indexResponse)
+        chatBridge.setSkillIndex(indexText)
+        // AN AGENT WITH NO SKILLS IS A DEGRADED PRODUCT, NOT A NEUTRAL
+        // STATE — say so.  This app SHIPS the skills (bundle resource, see
+        // SkillsRootBootstrap), so an empty index here always means a
+        // broken install or a miswired root; there is no legitimate
+        // empty-install case to over-warn about.  It used to be invisible
+        // at every layer: an empty index omits the whole skills section of
+        // the system prompt, and the model was told nothing.
+        if indexText.isEmpty {
+            transcript.append(Entry(
+                kind: .notice,
+                text: "No scene-authoring skills are loaded — the agent is running without "
+                    + "RISE's scene conventions. This is an installation problem, not a "
+                    + "normal state.",
+                detailText: Self.skillIndexNote(fromRpcResponse: indexResponse)))
+        }
 
         // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
         // file (the skill index is set above, so the session record captures
@@ -1193,6 +1209,20 @@ final class ChatViewModel: ObservableObject {
             return hook.isEmpty ? name : "\(name) -- \(hook)"
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The read_skill index result's `note` — the RPC's advisory, set
+    /// whenever the index came back empty (it names the skills root that
+    /// was tried).  nil when absent or unparseable, which leaves the
+    /// empty-skills notice without a detail disclosure rather than
+    /// inventing one.
+    private static func skillIndexNote(fromRpcResponse line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let note = result["note"] as? String,
+              !note.isEmpty else { return nil }
+        return note
     }
 
     // MARK: Provider / model / key settings
