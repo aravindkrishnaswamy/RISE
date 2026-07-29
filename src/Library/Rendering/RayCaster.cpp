@@ -113,6 +113,87 @@ namespace
 		}
 		return RISE::RISEPel( 1, 1, 1 );
 	}
+
+	inline RISE::Scalar LogBalancedDistanceMixture(
+		const RISE::Scalar logPdfDt,
+		const RISE::Scalar pdfEq )
+	{
+		const RISE::Scalar logHalf = log( RISE::Scalar( 0.5 ) );
+		if( pdfEq <= 0.0 ) return logHalf + logPdfDt;
+		const RISE::Scalar logPdfEq = log( pdfEq );
+		const RISE::Scalar common = fmax( logPdfDt, logPdfEq );
+		return logHalf + common + log(
+			exp( logPdfDt - common ) + exp( logPdfEq - common ) );
+	}
+
+	inline RISE::Scalar FullSegmentAdditiveEmissionNM(
+		const RISE::IMedium& medium,
+		const RISE::Ray& ray,
+		const RISE::Scalar segmentStart,
+		const RISE::Scalar segmentEnd,
+		const RISE::Scalar nm,
+		const RISE::Scalar uniformXi )
+	{
+		const RISE::Scalar segmentLength = segmentEnd - segmentStart;
+		if( segmentLength <= 0.0 ) return 0.0;
+		if( medium.IsHomogeneous() ) {
+			const RISE::MediumCoefficientsNM coeff = medium.GetCoefficientsNM( ray.origin, nm );
+			if( coeff.emission == 0.0 ) return 0.0;
+			if( coeff.sigma_t > 0.0 ) {
+				const RISE::Scalar transmittanceToStart = exp( -coeff.sigma_t * segmentStart );
+				return transmittanceToStart * coeff.emission *
+					( -expm1( -coeff.sigma_t * segmentLength ) ) / coeff.sigma_t;
+			}
+			return coeff.emission * segmentLength;
+		}
+
+		const RISE::Scalar t = segmentStart + uniformXi * segmentLength;
+		const RISE::MediumCoefficientsNM coeff = medium.GetCoefficientsNM(
+			ray.PointAtLength( t ), nm );
+		if( coeff.emission == 0.0 ) return 0.0;
+		const RISE::Scalar logTr = medium.EvalLogDistancePdfNM(
+			ray, t, false, t, nm );
+		return segmentLength * exp( logTr ) * coeff.emission;
+	}
+
+	inline bool MediumSegmentInterval(
+		const RISE::IMedium& medium,
+		const RISE::Ray& ray,
+		const RISE::Scalar maxDist,
+		RISE::Scalar& segmentStart,
+		RISE::Scalar& segmentEnd )
+	{
+		RISE::Point3 bbMin;
+		RISE::Point3 bbMax;
+		if( !medium.GetBoundingBox( bbMin, bbMax ) ) {
+			segmentStart = 0.0;
+			segmentEnd = maxDist;
+			return segmentEnd > segmentStart;
+		}
+
+		segmentStart = 0.0;
+		segmentEnd = maxDist;
+		for( unsigned int axis = 0; axis < 3; ++axis ) {
+			const RISE::Scalar origin = ray.origin[axis];
+			const RISE::Scalar direction = ray.Dir()[axis];
+			if( fabs( direction ) <= 1e-20 ) {
+				if( origin < bbMin[axis] || origin > bbMax[axis] ) return false;
+				continue;
+			}
+			const RISE::Scalar inverseDirection = 1.0 / direction;
+			RISE::Scalar t0 = (bbMin[axis] - origin) * inverseDirection;
+			RISE::Scalar t1 = (bbMax[axis] - origin) * inverseDirection;
+			if( t0 > t1 ) {
+				const RISE::Scalar temporary = t0;
+				t0 = t1;
+				t1 = temporary;
+			}
+			segmentStart = fmax( segmentStart, t0 );
+			segmentEnd = fmin( segmentEnd, t1 );
+			if( segmentStart >= segmentEnd ) return false;
+		}
+		return segmentEnd > segmentStart;
+	}
 }
 
 RayCaster::RayCaster(
@@ -137,6 +218,7 @@ RayCaster::RayCaster(
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
   bXrayViewResolve( false ),
+	bFirePelDiagnosticEmitted( false ),
   iPendingSoloKind( 0 ),
   pendingSoloLight( 0 ),
   pendingSoloLuminary( 0 )
@@ -679,6 +761,20 @@ bool RayCaster::CastRay(
 			const IORStack& ior_stack							///< [in/out] Index of refraction stack
 			) const
 {
+	// Fire has no Pel transport until Phase-A step 7.  Diagnose before
+	// recursion/RR gates so every RGB entry route fails loudly.
+	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	if( entryMedium && entryMedium->IsFireMedium() ) {
+		bool expected = false;
+		if( bFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyError(
+				"RayCaster::CastRay:: fire media require spectral rendering until the Phase-A Pel preview lands" );
+		}
+		c = RISEPel( 0, 0, 0 );
+		if( distance ) *distance = 0.0;
+		return false;
+	}
+
 #ifdef ENABLE_MAX_RECURSION
 	if( rs.depth > nMaxRecursions )
 	{
@@ -1398,27 +1494,43 @@ bool RayCaster::CastRayNM(
 	const IORStack& ior_stack							///< [in/out] Index of refraction stack
 	) const
 {
+	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	const bool carriesMediumSource = entryMedium &&
+		( entryMedium->IsFireMedium() ||
+			!entryMedium->IsHomogeneous() ||
+			entryMedium->GetCoefficientsNM( ray.origin, nm ).emission != 0.0 );
+	bool depthGateDeferredForEmission = false;
 #ifdef ENABLE_MAX_RECURSION
 	if( rs.depth > nMaxRecursions )
 	{
+		if( carriesMediumSource ) {
+			depthGateDeferredForEmission = true;
+		} else {
 #ifdef ENABLE_TERMINATION_MESSAGES
-		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
+			GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
 #endif
-		return false;
+			return false;
+		}
 	}
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
 	// intersection work, compensate the returned radiance after.
 	Scalar rrCompensation = 1.0;
+	bool rrGateDeferredForEmission = false;
 #ifdef ENABLE_RAYCASTER_RR
 	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
-			return false;
+			if( carriesMediumSource ) {
+				rrGateDeferredForEmission = true;
+			} else {
+				return false;
+			}
+		} else {
+			rrCompensation = 1.0 / pSurvive;
 		}
-		rrCompensation = 1.0 / pSurvive;
 	}
 #endif
 
@@ -1472,12 +1584,25 @@ bool RayCaster::CastRayNM(
 	// consume it (surface-hit / escape) live outside the if(pMedium) block.
 	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
 	Scalar noScatterPdfScale_NM = 1.0;
+	Scalar additiveEmissionNM = 0.0;
 
 	if( pMedium )
 	{
 		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
 
 		IndependentSampler mediumSampler( rc.random );
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( MediumSegmentInterval(
+			*pMedium, ray, maxDist, segmentStart, segmentEnd ) ) {
+			// Homogeneous integration is exact and consumes no random number.
+			// A heterogeneous source can start anywhere on the segment, so its
+			// independent uniform draw must never be gated by one point query.
+			const Scalar additiveXi = pMedium->IsHomogeneous()
+				? 0.0 : rc.random.CanonicalRandom();
+			additiveEmissionNM = FullSegmentAdditiveEmissionNM(
+				*pMedium, ray, segmentStart, segmentEnd, nm, additiveXi );
+		}
 		bool scattered = false;
 		Scalar t_m = 0;
 
@@ -1487,6 +1612,7 @@ bool RayCaster::CastRayNM(
 		Scalar combinedPdf_NM = 0;
 		bool useExplicitThroughput_NM = false;
 		bool equiangularZeroContrib_NM = false;
+		Scalar logCombinedPdf_NM = 0.0;
 
 		if( useEquiangularMIS_NM )
 		{
@@ -1575,6 +1701,9 @@ bool RayCaster::CastRayNM(
 								eqTNear, eqTFar, t_m );
 						}
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+						logCombinedPdf_NM = LogBalancedDistanceMixture(
+							pMedium->EvalLogDistancePdfNM(
+								ray, t_m, true, maxDist, nm ), pdf_eq );
 						useExplicitThroughput_NM = true;
 					}
 					else
@@ -1614,6 +1743,9 @@ bool RayCaster::CastRayNM(
 							}
 
 							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+							logCombinedPdf_NM = LogBalancedDistanceMixture(
+								pMedium->EvalLogDistancePdfNM(
+									ray, t_m, true, maxDist, nm ), pdf_eq );
 							useExplicitThroughput_NM = true;
 						}
 						else
@@ -1635,9 +1767,10 @@ bool RayCaster::CastRayNM(
 
 		if( equiangularZeroContrib_NM )
 		{
+			c = rrGateDeferredForEmission ? 0.0 : additiveEmissionNM;
 			if( distance ) *distance = 0;
 			if( rrCompensation != 1.0 ) c = c * rrCompensation;
-			return false;
+			return c != 0.0;
 		}
 
 		if( scattered )
@@ -1649,6 +1782,38 @@ bool RayCaster::CastRayNM(
 			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( scatterPt, nm );
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, t_m, nm );
 			Scalar throughput = 0;
+			Scalar thermalEmission = 0.0;
+			if( pMedium->IsFireMedium() && coeff.sigma_t > 0.0 ) {
+				const Scalar epsilonThermal = pMedium->GetThermalEmissionNM( scatterPt, nm );
+				if( epsilonThermal != 0.0 ) {
+					if( useExplicitThroughput_NM ) {
+						const Scalar logPdfDt = pMedium->EvalLogDistancePdfNM(
+							ray, t_m, true, maxDist, nm );
+						const Scalar logTrDet = logPdfDt - log( coeff.sigma_t );
+						thermalEmission = epsilonThermal *
+							exp( logTrDet - logCombinedPdf_NM );
+					} else {
+						// Pure per-wavelength delta tracking: p=sigma_t*T,
+						// so epsilon*T/p cancels analytically before division.
+						thermalEmission = epsilonThermal / coeff.sigma_t;
+					}
+				}
+			}
+
+			// Score medium sources before recursion-depth and RR termination.
+			// Those gates suppress surface/scattering continuation, not the
+			// existence of this finite-event source sample.
+			if( rrGateDeferredForEmission ) {
+				c = 0.0;
+				if( distance ) *distance = t_m;
+				return false;
+			}
+			if( depthGateDeferredForEmission ) {
+				c = additiveEmissionNM + thermalEmission;
+				if( rrCompensation != 1.0 ) c = c * rrCompensation;
+				if( distance ) *distance = t_m;
+				return true;
+			}
 
 			if( useExplicitThroughput_NM && combinedPdf_NM > 0 )
 			{
@@ -1787,21 +1952,7 @@ bool RayCaster::CastRayNM(
 				Li = Li * guidingMISWeight;
 			}
 
-			c = throughput * (Ld + Li);
-
-			// Volumetric emission: use effective optical depth
-			if( coeff.emission > 0 )
-			{
-				if( Tr < 1.0 - 1e-10 )
-				{
-					const Scalar tau = -log( fmax( Tr, 1e-30 ) );
-					c += coeff.emission * (1.0 - Tr) * t_m / tau;
-				}
-				else
-				{
-					c += coeff.emission * t_m;
-				}
-			}
+			c = additiveEmissionNM + thermalEmission + throughput * (Ld + Li);
 
 			if( distance ) {
 				*distance = t_m;
@@ -1813,26 +1964,18 @@ bool RayCaster::CastRayNM(
 
 			return true;
 		}
-		// Non-scatter path: accumulate volumetric emission along segment
-		if( !scattered )
-		{
-			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
-			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
-			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( midPt, nm );
-			if( coeff.emission > 0 )
-			{
-				const Scalar Tr_seg = pMedium->EvalTransmittanceNM( ray, segDist, nm );
-				if( Tr_seg < 1.0 - 1e-10 )
-				{
-					const Scalar tau = -log( fmax( Tr_seg, 1e-30 ) );
-					c += coeff.emission * (1.0 - Tr_seg) * segDist / tau;
-				}
-				else
-				{
-					c += coeff.emission * segDist;
-				}
-			}
-		}
+	}
+
+	if( rrGateDeferredForEmission ) {
+		c = 0.0;
+		if( distance ) *distance = 0.0;
+		return false;
+	}
+	if( depthGateDeferredForEmission ) {
+		c = additiveEmissionNM;
+		if( rrCompensation != 1.0 ) c = c * rrCompensation;
+		if( distance ) *distance = 0.0;
+		return additiveEmissionNM != 0.0;
 	}
 
 	if( bHit ) {
@@ -1946,13 +2089,18 @@ bool RayCaster::CastRayNM(
 		bReturn = bConsiderRMapAsBackground;
 	}
 
+	// The arbitrary additive source is estimated independently over the full
+	// marched segment, so collision/no-collision and equiangular strategy
+	// selection cannot gate or reweight it.
+	c += additiveEmissionNM;
+
 	// Apply RR compensation to the returned radiance so the caller's
 	// estimator (throughput * c) remains unbiased.
 	if( rrCompensation != 1.0 ) {
 		c = c * rrCompensation;
 	}
 
-	return bReturn;
+	return bReturn || additiveEmissionNM != 0.0;
 }
 
 bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const

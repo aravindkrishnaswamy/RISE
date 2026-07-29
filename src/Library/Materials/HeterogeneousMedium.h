@@ -187,21 +187,21 @@ namespace RISE
 
 		MediumCoefficients GetCoefficients(
 			const Point3& pt
-			) const;
+			) const override;
 
 		MediumCoefficientsNM GetCoefficientsNM(
 			const Point3& pt,
 			const Scalar nm
-			) const;
+			) const override;
 
-		const IPhaseFunction* GetPhaseFunction() const;
+		const IPhaseFunction* GetPhaseFunction() const override;
 
 		Scalar SampleDistance(
 			const Ray& ray,
 			const Scalar maxDist,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		Scalar SampleDistanceNM(
 			const Ray& ray,
@@ -209,45 +209,45 @@ namespace RISE
 			const Scalar nm,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		RISEPel EvalTransmittance(
 			const Ray& ray,
 			const Scalar dist
-			) const;
+			) const override;
 
 		Scalar EvalTransmittanceNM(
 			const Ray& ray,
 			const Scalar dist,
 			const Scalar nm
-			) const;
+			) const override;
 
-		bool IsHomogeneous() const;
+		bool IsHomogeneous() const override;
 
 		Scalar ClipDistanceToBounds(
 			const Ray& ray,
 			const Scalar dist
-			) const;
+			) const override;
 
 		DistanceSample SampleDistanceWithPdf(
 			const Ray& ray,
 			const Scalar maxDist,
 			ISampler& sampler
-			) const;
+			) const override;
 
 		DistanceSample SampleDistanceWithPdfNM(
 			const Ray& ray,
 			const Scalar maxDist,
 			const Scalar nm,
 			ISampler& sampler
-			) const;
+			) const override;
 
 		Scalar EvalDistancePdf(
 			const Ray& ray,
 			const Scalar t,
 			const bool scattered,
 			const Scalar maxDist
-			) const;
+			) const override;
 
 		Scalar EvalDistancePdfNM(
 			const Ray& ray,
@@ -255,12 +255,20 @@ namespace RISE
 			const bool scattered,
 			const Scalar maxDist,
 			const Scalar nm
-			) const;
+			) const override;
+
+		Scalar EvalLogDistancePdfNM(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist,
+			const Scalar nm
+			) const override;
 
 		bool GetBoundingBox(
 			Point3& bbMin,
 			Point3& bbMax
-			) const;
+			) const override;
 	};
 
 	/// Painter-baked Phase-A fire/smoke medium carrying carbon concentration
@@ -333,6 +341,12 @@ namespace RISE
 
 		MediumCoefficients GetCoefficients( const Point3& pt ) const override;
 		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
+
+		bool IsFireMedium() const override { return true; }
+		Scalar GetThermalEmissionNM(
 			const Point3& pt,
 			const Scalar nm
 			) const override;

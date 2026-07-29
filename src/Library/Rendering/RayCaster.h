@@ -18,6 +18,7 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRadianceMap.h"
 #include "../Utilities/Reference.h"
+#include <atomic>
 #include <string>
 
 namespace RISE
@@ -121,6 +122,7 @@ namespace RISE
 			//! false; production casters never set it (cost when off is
 			//! one bool test).  Set via SetXrayViewResolve.
 			bool						bXrayViewResolve;
+			mutable std::atomic<bool>	bFirePelDiagnosticEmitted;
 
 			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
 			//! pending solo-target identity, retained across a same-

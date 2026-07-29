@@ -16,6 +16,7 @@
 #include "HeterogeneousMedium.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/PlanckRadiance.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
@@ -512,7 +513,6 @@ Scalar HeterogeneousMedium::SampleDistance(
 	const Scalar sigma_t_max_channel = ColorMath::MaxValue( m_max_sigma_t );
 	Scalar scatterDist = 0;
 	bool didScatter = false;
-	unsigned int totalSteps = 0;
 
 	struct DeltaTrackingVisitor
 	{
@@ -522,7 +522,6 @@ Scalar HeterogeneousMedium::SampleDistance(
 		Scalar sigma_t_max_channel;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
-		unsigned int* pTotalSteps;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -533,10 +532,8 @@ Scalar HeterogeneousMedium::SampleDistance(
 			const Scalar invCellMaj = 1.0 / cellMajorant;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
 				// Sample exponential free-flight distance with local majorant
 				const Scalar xi = pSampler->Get1D();
 				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
@@ -563,7 +560,6 @@ Scalar HeterogeneousMedium::SampleDistance(
 				}
 				// Null collision — continue
 			}
-			return false;  // Exceeded max steps, stop
 		}
 	};
 
@@ -574,7 +570,6 @@ Scalar HeterogeneousMedium::SampleDistance(
 	visitor.sigma_t_max_channel = sigma_t_max_channel;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
-	visitor.pTotalSteps = &totalSteps;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
 
@@ -617,7 +612,6 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	ISampler& samplerRef = sampler;
 	Scalar scatterDist = 0;
 	bool didScatter = false;
-	unsigned int totalSteps = 0;
 
 	struct DeltaTrackingVisitorNM
 	{
@@ -628,7 +622,6 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 		Scalar majorantRatio;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
-		unsigned int* pTotalSteps;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -640,10 +633,8 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 			const Scalar invCellMaj = 1.0 / cellMajNM;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
 				const Scalar xi = pSampler->Get1D();
 				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
 				t += dt;
@@ -664,7 +655,6 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 					return false;
 				}
 			}
-			return false;
 		}
 	};
 
@@ -676,7 +666,6 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	visitor.majorantRatio = majorantRatio;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
-	visitor.pTotalSteps = &totalSteps;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
 
@@ -928,7 +917,6 @@ IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdf(
 	DistanceSample ds;
 	ds.t = SampleDistance( ray, maxDist, sampler, ds.scattered );
 	ds.pdf = EvalDistancePdf( ray, ds.t, ds.scattered, maxDist );
-	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 	return ds;
 }
 
@@ -942,7 +930,6 @@ IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdfNM(
 	DistanceSample ds;
 	ds.t = SampleDistanceNM( ray, maxDist, nm, sampler, ds.scattered );
 	ds.pdf = EvalDistancePdfNM( ray, ds.t, ds.scattered, maxDist, nm );
-	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 	return ds;
 }
 
@@ -1186,12 +1173,30 @@ Scalar HeterogeneousMedium::EvalDistancePdf(
 	{
 		const Point3 pt = ray.PointAtLength( t );
 		const Scalar density = LookupDensity( pt );
-		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+		return sigma_t_eff * density * T_real;
 	}
 	else
 	{
-		return fmax( T_real, 1e-30 );
+		return T_real;
 	}
+}
+
+Scalar HeterogeneousMedium::EvalLogDistancePdfNM(
+	const Ray& ray,
+	const Scalar t,
+	const bool scattered,
+	const Scalar maxDist,
+	const Scalar nm
+	) const
+{
+	(void)nm;
+	const Scalar sigma_t_eff = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar targetDist = scattered ? t : maxDist;
+	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	if( !scattered ) return -tau;
+
+	const Scalar localSigmaT = sigma_t_eff * LookupDensity( ray.PointAtLength( t ) );
+	return localSigmaT > 0.0 ? log( localSigmaT ) - tau : -RISE_INFINITY;
 }
 
 Scalar HeterogeneousMedium::EvalDistancePdfNM(
@@ -1214,11 +1219,11 @@ Scalar HeterogeneousMedium::EvalDistancePdfNM(
 	{
 		const Point3 pt = ray.PointAtLength( t );
 		const Scalar density = LookupDensity( pt );
-		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+		return sigma_t_eff * density * T_real;
 	}
 	else
 	{
-		return fmax( T_real, 1e-30 );
+		return T_real;
 	}
 }
 
@@ -1423,4 +1428,17 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 	c.sigma_s = pel.sigma_s[0];
 	c.emission = 0.0;
 	return c;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid ) return 0.0;
+	const MediumCoefficientsNM coeff = GetCoefficientsNM( pt, nm );
+	const Scalar sigmaA = coeff.sigma_t - coeff.sigma_s;
+	return sigmaA > 0.0
+		? sigmaA * PlanckSpectralRadianceNM( nm, LookupTemperature( pt ) )
+		: 0.0;
 }

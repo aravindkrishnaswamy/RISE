@@ -181,7 +181,6 @@ namespace RISE
 				ds.pdf = sigma_t_max * exp( -sigma_t_max * ds.t );
 			else
 				ds.pdf = exp( -sigma_t_max * maxDist );
-			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 			return ds;
 		}
 
@@ -201,7 +200,6 @@ namespace RISE
 				ds.pdf = coeff.sigma_t * exp( -coeff.sigma_t * ds.t );
 			else
 				ds.pdf = exp( -coeff.sigma_t * maxDist );
-			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 			return ds;
 		}
 
@@ -228,7 +226,7 @@ namespace RISE
 				pdf = sigma_t_max * exp( -sigma_t_max * t );
 			else
 				pdf = exp( -sigma_t_max * maxDist );
-			return fmax( pdf, 1e-30 );
+			return pdf;
 		}
 
 		/// Spectral variant of EvalDistancePdf
@@ -247,7 +245,7 @@ namespace RISE
 				pdf = coeff.sigma_t * exp( -coeff.sigma_t * t );
 			else
 				pdf = exp( -coeff.sigma_t * maxDist );
-			return fmax( pdf, 1e-30 );
+			return pdf;
 		}
 
 		/// Get the medium's world-space bounding box.
@@ -257,6 +255,42 @@ namespace RISE
 			Point3& bbMin,							///< [out] AABB minimum corner
 			Point3& bbMax							///< [out] AABB maximum corner
 			) const { return false; }
+
+		// Phase-A fire/smoke extension.  These default-safe virtuals are
+		// deliberately appended at the absolute vtable tail so existing medium
+		// implementations keep their historical slots.
+
+		/// True only for the fire/smoke medium whose RGB preview is unavailable
+		/// until the ordered Phase-A Pel increment lands.
+		virtual bool IsFireMedium() const { return false; }
+
+		/// Kirchhoff source epsilon_lambda = sigma_a(lambda) B_lambda(T), in
+		/// scene-length units.  Ordinary media have no thermal source.
+		virtual Scalar GetThermalEmissionNM(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0.0; }
+
+		/// Natural logarithm of the deterministic NM distance density.  Unlike
+		/// EvalDistancePdfNM this remains representable for optically thick
+		/// segments and is used by mixed distance proposals.
+		virtual Scalar EvalLogDistancePdfNM(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist,
+			const Scalar nm
+			) const
+		{
+			const MediumCoefficientsNM coeff = GetCoefficientsNM(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * t ), nm );
+			if( coeff.sigma_t <= 0.0 ) {
+				return scattered ? -RISE_INFINITY : 0.0;
+			}
+			return scattered
+				? log( coeff.sigma_t ) - coeff.sigma_t * t
+				: -coeff.sigma_t * maxDist;
+		}
 
 	};
 }

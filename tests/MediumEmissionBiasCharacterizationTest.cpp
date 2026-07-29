@@ -3,7 +3,8 @@
 //  MediumEmissionBiasCharacterizationTest.cpp - Phase-A step-0 numeric
 //    characterization of the EXISTING RayCaster additive-emission path.
 //
-//  This test deliberately records the pre-fire-estimator baseline.  The
+//  This test records the pre-fire-estimator Pel baseline and the repaired NM
+//  additive-source contract.  The
 //  current homogeneous-medium pickup integrates an analytic prefix at a
 //  sampled collision and the full segment on the no-collision atom.  Because
 //  branch selection already carries the transmittance probability, its RGB
@@ -15,16 +16,9 @@
 //
 //      L = epsilon * (1 - exp(-sigma_t L)) / sigma_t.
 //
-//  CastRayNM has the same collision-prefix pickup, but its surface shading
-//  assignment replaces the no-collision pickup.  Against a black wall its
-//  current expectation is therefore the collision term alone:
-//
-//      E[L_NM] = epsilon/sigma_t *
-//          ((1-exp(-tau)) - (1-exp(-2 tau))/2).
-//
-//  Phase-A's collision-based thermal estimator is expected to replace these
-//  baselines.  At that increment, this regression gate must be changed to the
-//  physical closed form rather than deleted.
+//  CastRayNM now treats this absorption-independent source separately from
+//  thermal emission and integrates a homogeneous full segment exactly, so its
+//  expectation is the physical source integral on every collision outcome.
 //
 //  The final case characterizes the separate equiangular early return.  In a
 //  zero-extinction additive emitter, the DT half of the mixture reaches the
@@ -268,24 +262,24 @@ namespace
 		const double physical = kEmission * (1.0 - std::exp( -tau )) / sigmaT;
 		const double currentPel = kEmission * (1.0 - std::exp( -2.0 * tau )) /
 			(2.0 * sigmaT);
-		const double currentNM = (kEmission / sigmaT) *
+		const double oldNM = (kEmission / sigmaT) *
 			((1.0 - std::exp( -tau )) - 0.5 * (1.0 - std::exp( -2.0 * tau )));
 
 		std::cout << "    RGB measured=" << measuredPel
 			<< "  current-closed-form=" << currentPel
 			<< "  physical=" << physical << std::endl;
 		std::cout << "    NM  measured=" << measuredNM
-			<< "  current-closed-form=" << currentNM
+			<< "  old-closed-form=" << oldNM
 			<< "  physical=" << physical << std::endl;
 
 		Check( NearRelative( measuredPel, currentPel, 0.01 ),
 			"RGB matches the current double-transmittance closed form" );
-		Check( NearRelative( measuredNM, currentNM, 0.015 ),
-			"NM matches the current collision-prefix-only closed form" );
+		Check( NearRelative( measuredNM, physical, 1e-12 ),
+			"NM additive source matches the exact homogeneous full-segment integral" );
 		Check( !NearRelative( measuredPel, physical, 0.10 ),
 			"RGB baseline is numerically distinct from physical source integration" );
-		Check( !NearRelative( measuredNM, physical, 0.10 ),
-			"NM baseline is numerically distinct from physical source integration" );
+		Check( !NearRelative( measuredNM, oldNM, 0.10 ),
+			"NM no longer matches the collision-prefix-only baseline" );
 	}
 
 	void TestEquiangularZeroContributionEarlyOut()
