@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 21 — after internal review rounds 1–4,
-**six external expert review rounds**, and ten post-r11 implementation-review
+**Status:** DRAFT (revision 22 — after internal review rounds 1–4,
+**six external expert review rounds**, and eleven post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r21; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r22; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1001,19 +1001,27 @@ The most notorious practical trap in fire LES; specified accordingly:
   projection is different: π₂ is step-average pressure and its inflow boundary
   uses the Heun-consistent integrated head
 
-  > π₂,face + (ρ∞/4)(‖u₀,face‖²+‖u₁,face‖²)=0.
+  > π₂,face + (ρ∞/4)(I₀‖u₀,face‖²+I₁‖u₁,face‖²)=0,
 
-  Its converged u₂ sign still owns inflow/outflow classification, but for a fixed
-  class the head value is known from the converged R0/R1 stages, so the π₂ solve
-  is linear rather than Newton-coupled. Outflow remains π₂,face=0. Require its
-  integrated-head residual below p_bc,tol. Pairing π₂ with endpoint ‖u₂‖² or
+  where I_r is exactly 1 when that face's converged Rr active set was inflow and
+  0 when it was outflow (whose stage pressure was zero). This known trapezoidal
+  average is imposed regardless of the separately diagnosed final u₂ sign, so
+  the π₂ solve is linear rather than Newton-coupled; it becomes zero only when
+  both stages were outflow. The converged u₂ sign records the endpoint class and
+  initializes the next step, while the current Heun scalar boundary flux already
+  used I₀/I₁ in F₀/F₁. Require the integrated-head residual below p_bc,tol.
+  Pairing π₂ with endpoint ‖u₂‖², omitting either stage indicator, or
   claiming endpoint pressure is forbidden; a linear-ramp boundary fixture
-  distinguishes endpoint, exact continuous average, and Heun quadrature.
-  Use u_bc,tol=ε_absL, the already-defined projection velocity
-  tolerance: |u_n|≤u_bc,tol retains the previous accepted class, preventing a
+  distinguishes endpoint, exact continuous average, Heun quadrature, and every
+  (I₀,I₁) class-switch combination.
+  For each R0/R1 active-set iteration use u_bc,tol=ε_absL, the already-defined
+  projection velocity tolerance: |u_n|≤u_bc,tol retains that face's previous
+  accepted class, preventing a
   roundoff toggle; a repeated active-set state outside that band is a cycle and
   rejects/reduces Δt rather than choosing first/last wins. Only after this
-  convergence is scalar upwinding selected. On inflow, advective ghost state is the complete frozen ambient
+  convergence is that stage's scalar upwinding selected. The endpoint u₂ class
+  uses its sign with the same band, retaining I₁ inside the band, and seeds the
+  next step; it does not reopen π₂. On inflow, advective ghost state is the complete frozen ambient
   record: Z=0, q_k=ρ∞Y_k,∞, ℋ_s=ℋ_s(T∞,Y∞), and zero carbon/condensed aerosol;
   diffusive/conductive flux uses that Dirichlet state. On outflow, every
   conservative scalar and tangential velocity has zero normal gradient and
@@ -1142,7 +1150,8 @@ The most notorious practical trap in fire LES; specified accordingly:
      > ∇·[(1/ρ_g)∇π]=(∇·(M†/ρ_g)−S_div)/Δt,
      > u=M†/ρ_g−(Δt/ρ_g)∇π,
 
-     with §3.6's converged open-face active set. π₀ and π₁ are auxiliary stage
+     with §3.6's converged open-face active set for R0/R1 and its fixed
+     indicator-averaged boundary plus endpoint-class rule for π₂. π₀ and π₁ are auxiliary stage
      multipliers and discarded. π₂ is the pressure impulse divided by Δt for
      the accepted Heun advance: a second-order approximation to the
      **step-average dynamic pressure**
@@ -1789,7 +1798,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r21)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r22)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -2776,7 +2785,9 @@ authorization. Authorization/revocation arrays sort lexicographically by their
 encoded key/build tuple and reject duplicates. Semantic validation requires
 `issued_at<not_after`, `not_before<not_after`, trusted time inside both registry
 and selected authorization intervals, every key ID to match its public key,
-`root_key_id` to match the currently pinned root, and every effective revocation
+`root_key_id` to match the verifier root (the currently pinned root normally;
+the persisted previous root only for the exact rotation-certificate replay
+below), and every effective revocation
 epoch ≤ the containing registry epoch.
 
 `root_signature` signs
@@ -2791,8 +2802,18 @@ requires both old-root and new-root signatures, then atomically pins the new
 root with that record. Any other envelope field set or signature preimage is
 invalid.
 
+Durable state also stores the exact accepted rotation envelope and previous
+root as an immutable transition certificate. A later candidate at the same
+stored epoch/record ID is reusable only if its bytes exactly equal that
+certificate: verify the old-root signature with the certificate's previous root,
+the new-root signature and `next_root` against the now-pinned root, and accept
+without reinterpreting payload `root_key_id` as the new root. Any higher-epoch
+successor must instead name and be signed by the currently pinned new root (and
+may carry the next dual-signed rotation). This makes the rotation record usable
+for repeated renders while forbidding a same-ID byte substitution.
+
 The operator profile durably stores `(root key,registry_epoch,
-registry_record_id)`. Every predictive preflight calls one
+registry_record_id,optional transition certificate)`. Every predictive preflight calls one
 `TrustStore::AuthorizePredictive` interprocess transaction: acquire its exclusive
 lock/CAS, re-read durable state, validate the candidate registry/root/time and
 attestation entirely against that state, reject a lower epoch or same epoch with
@@ -2806,7 +2827,8 @@ a trustworthy clock is unavailable, predictive mode fails closed; preview
 records `producer_untrusted`. Two-process barrier tests cover N racing N+1 in
 both lock orders, along with signature/key substitution, self-hashed forged
 qualification, accept-N/revoke-at-N+1/replay-N, expiry,
-same-epoch-different-record, scope mismatch, and root rotation. Output
+same-epoch-different-record, scope mismatch, first/repeated use of a rotation
+record, and a higher successor signed by the new root. Output
 provenance records the token's epoch, registry record ID, qualification key ID,
 and authorization time.
 
@@ -2881,8 +2903,7 @@ Secondary display output is a separate postprocessing transaction, not part of
 predictive preflight. It starts only after the lossless primary artifact and
 sidecar are finalized, and may tone map/white-balance/quantize/compress into an
 artifact with `artifact_fidelity=display_derivative`, artifact-local reasons,
-and fields `derived_from_provenance_id=<primary provenance_id>` and
-`derived_from_artifact_sha256=<primary artifact digest>`. Those
+and the tagged linkage below. Those
 secondary reasons neither enter `render_reason_codes`, downgrade, nor invalidate
 the linked primary; derivative failure leaves the primary valid. Conversely no
 derivative is emitted if the primary transaction failed. The derivative may
@@ -2890,6 +2911,16 @@ record `render_fidelity_status=predictive` as the status of the upstream Monte
 Carlo result, but its own artifact fidelity is always explicitly
 non-predictive—never `predictive_primary`. §3.8 radiometric gates read the raw
 linear NM result before exposure.
+
+Derivative linkage is a tagged schema, not singular by assumption. A still/AOV
+uses `derivation_kind=single_primary`,
+`derived_from_primary={provenance_id,artifact_sha256}`, and an empty
+`derived_from_frames`. A movie uses `derivation_kind=frame_sequence`, null
+`derived_from_primary`, and canonical
+`derived_from_frames=[{frame_index,provenance_id,artifact_sha256},…]`, ordered by
+strictly contiguous unique frame index and required to match the encoded movie's
+frame order/count. The whole array is inside the movie provenance-ID preimage;
+mixing the two variants or omitting a frame artifact digest is invalid.
 
 `render_reason_codes` are schema-v1 enum strings, emitted once each in lexicographic
 order: `requested_preview`, `producer_unqualified`, `heuristic_source`, `qualified_record_override`,
@@ -2925,8 +2956,8 @@ string, never implementation-formatted hex.
 The payload enumerates requested/derived `render_fidelity_status`, separate
 `render_reason_codes` and `artifact_reason_codes`,
 `artifact_fidelity=predictive_primary|display_derivative|preview_primary`, and
-contains a canonical `active_fire_media` array. A display derivative also
-contains those two `derived_from_*` fields. Each medium entry is keyed
+contains a canonical `active_fire_media` array and the tagged derivative fields
+above (null/empty for primaries). Each medium entry is keyed
 by stable `(manager_name,binding_kind,binding_owner)`—global binding uses owner
 `scene`, bounded binding uses the closed object's stable name—and contains
 sequence ID, selected base-frame index and whole-OpenVDB-file digest, exact
@@ -2990,6 +3021,23 @@ nested timeline setters and `RegenerateData()` inherit the derived classificatio
 without changing every mutator signature; no other call site can construct the
 scope/token. Public callers cannot obtain it.
 
+Normal file loading uses a second private `SceneLoadTransaction` token on a
+fresh Job. It begins **before `Job::InitializeContainers()` installs default
+assets** (the Job-owned sink exists before the Scene and is handed to it during
+initialization) and spans initialization plus the complete parse/derive path; an
+already initialized or externally exposed Job cannot enter it. It takes the
+sink's exclusive lease before the first manager/IJob action and forbids render
+or external mutation entry while open. Load-time mutations remain authored and increment author generation, but
+sticky-state publication is deferred. Only after the entire CST derives
+successfully, all external assets are opened/enumerated, and the current
+`RISE-CST-CANON-v1` plus asset identity is built does one atomic commit set
+`represented_author_generation=author_generation`, install that identity, and
+leave the sticky bit clear. A failed/partial load is discarded or remains
+unrepresented preview state; the transaction can never clear a sticky bit that
+predated its starting generation. IJob calls outside this private transaction
+remain ordinary unrepresented author mutations. Load-success, parse-failure,
+mid-load render attempt, and mutate-after-commit fixtures gate the baseline.
+
 Predictive preflight recursively enumerates every render-reachable manager item/
 asset and requires the `IMutationTracked` capability bound to this exact sink;
 legacy/plugin types lacking it cause `untracked_scene_mutability` and are
@@ -3032,7 +3080,7 @@ repeats the same fields as attributes where supported,
 **except its own artifact digest** (which cannot be embedded without changing
 the bytes being hashed); it embeds the sidecar provenance ID instead. Artifact
 SHA-256 exists only in the sibling sidecar. EXR attributes are not the portable source of truth; MOV carries one sidecar
-with the ordered per-frame provenance array and finalized movie digest. Because
+with the exact `derived_from_frames` ID+digest array and finalized movie digest. Because
 the MOV encoders in scope are lossy/display-referred, MOV is always a
 `display_derivative` linked to the lossless EXR-frame primaries; it is never the
 predictive primary. A
@@ -4090,3 +4138,10 @@ registry).
   invalidation through `IRayCaster` with separate spatial/light skip proofs; and
   separated primary predictive preflight from non-predictive secondary artifact
   reasons/status.
+- **r22 (2026-07-28):** after the eleventh fresh P1-only review of committed
+  r21 (four P1; transport clean). CFD: made π₂'s integrated open-face head use
+  the actual R0/R1 inflow indicators across class switches. Pipeline: made an
+  accepted dual-signed root-rotation certificate reusable after the new root is
+  pinned; added an atomic private parser-load baseline transaction; and replaced
+  singular derivative linkage with exact single-primary versus ordered
+  frame-sequence provenance variants carrying every primary artifact digest.
