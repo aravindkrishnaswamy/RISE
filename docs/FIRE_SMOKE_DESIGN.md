@@ -1536,7 +1536,7 @@ make smoke magnitude a per-scene tune, violating §1):
 
 > hot carbon:  φ(T)·c_carbon → f_v,hot = φ·10⁻³·c_carbon[g/m³]/ρ_soot[kg/m³]
 >              → §4.1 σ_a (1/λ),
->              σ_s = ω·σ_a/(1−ω), plus §4.2 emission;
+>              σ_s = ω_hot·σ_a/(1−ω_hot), plus §4.2 emission;
 > cool carbon: σ_e,cool=(1−φ)c_carbon k_m,carbon(633 nm/λ)^{n_carbon},
 >              σ_a,cool=(1−ω_carbon)σ_e,cool,
 >              σ_s,cool=ω_carbonσ_e,cool;
@@ -1914,18 +1914,33 @@ green numeric test:
    `multichannel_heterogeneous_medium`**, painter-baked, trilinear, no
    manifest, no chem, no condensed phase. This is the smallest thing that can
    carry a flame field.
-4. **Collision-based emission on `RayCaster`** (§7.1 step 2) with the
-   isothermal-slab absolute gate and the scene-unit invariance test. At this
-   point a procedural candle renders with correct absolute radiance.
-5. **The same estimator on `PathTracingIntegrator`** (G11), with the
+4. **Collision-based emission on `RayCaster`** (§7.1 step 2), gated on the
+   isothermal-slab absolute target L_λ = B_λ(T)·(1−e^{−τ_λ}) and the
+   scene-unit invariance test, in Pel and NM. **Scope this increment to a
+   grey (wavelength-independent σ) medium at constant φ**: with τ_λ constant
+   the slab target is still exact and still checks the estimator against the
+   pinned Planck kernel, which is what this step exists to prove. What it
+   does *not* yet produce is a physically correct flame — soot extinction
+   goes as 1/λ (§4.1), so grey σ gets τ(500 nm)/τ(700 nm) = 1 where the
+   physics requires 1.4.
+5. **Chromatic per-λ coefficients on the NM path** (§7.1 step 4's minimal
+   core: λ-dependent σ_a/σ_s, per-λ majorant, tracking, and transmittance —
+   `GetCoefficientsNM` currently collapses to luminance,
+   `HeterogeneousMedium.cpp:228`). **Only after this does a procedural candle
+   render with physically correct spectral radiance**, and only then does the
+   slab gate exercise chromatic extinction rather than a grey special case.
+6. **The whole estimator on `PathTracingIntegrator`** (G11), with the
    pure-absorber tests through both entry routes. Now the PT rasterizers —
    what users actually run — produce the same numbers.
 
-Everything else in Phase A (the condensed constituent, chem bands, the
-chromatic NM path, the φ-aware quadrature upgrade, the auto-rasterizer rule)
+The rest of Phase A (the condensed constituent, chem bands, the φ-aware
+quadrature upgrade with its φ-root panel splitting, the auto-rasterizer rule)
 extends a pipeline that already renders and already has numeric gates. Steps
-1–5 are the critical path; the rest can be parallelized or deferred within the
-phase.
+1–6 are the critical path; the rest can be parallelized or deferred within
+the phase. Note the ordering constraint that forced step 5 up: §7.1 step 2's
+own gate list requires the NM path, so "defer chromatic" cannot mean "defer
+past the estimator gates" — it means the φ-aware quadrature and the
+constituent split, not per-λ coefficients.
 
 #### Predictive-label gates (data, not code)
 
@@ -3492,15 +3507,43 @@ cannot be the vehicle for renderer-only work. The general chunk therefore
 takes the same named channels bound to **statically authored sources** rather
 than a manifest: per channel either a raw grid (the existing
 `volume_pattern`/bbox idiom, one lattice shared by all extinction-relevant
-channels per §7.1 step 1) or a baked 3D painter, plus the physical parameters that turn those fields into
-optics (their meaning and units are §4.1/§4.3's, and their values come from
-the §12 preset record — hand values here are fixtures, not presets):
-`soot_em` = E(m) for the hot-carbon constituent; `smoke_km_carbon`,
-`smoke_n_carbon`, `smoke_albedo_carbon` and `smoke_km_cond`, `smoke_n_cond`,
-`smoke_albedo_cond` = the cool-carbon and condensed-organic (k_m, n, ω)
-triples; and `phase` = the per-constituent HG asymmetries the §4.3 mixture
-closure combines. Channel values are read in §8's units (`carbon`/`condensed`
-in g/m³, `temperature` in K) — there is no separate scaling here:
+channels per §7.1 step 1) or a baked 3D painter, plus **the complete optical closure as explicit
+parameters**. This chunk has no manifest and therefore no preset record, so
+every constant `fire_medium` would inherit from §12 must be authored here —
+there is no implicit default and no partial specification. Channel values are
+read in §8's units (`carbon`/`condensed` in g/m³, `temperature` in K).
+
+Required whenever `channel_carbon` is present (the carbon channel is *both*
+constituents — it becomes cool carbon wherever φ(T) < 1, so its cool triple
+is never optional):
+
+| parameter | §4 symbol | meaning |
+|---|---|---|
+| `soot_em` | E(m) | hot-carbon absorption function (§4.1) |
+| `soot_density` | ρ_soot | kg/m³, closes f_v = φ·10⁻³·c_carbon/ρ_soot |
+| `soot_albedo_hot` | ω_hot | hot-carbon single-scattering albedo; σ_s = ω_hot·σ_a/(1−ω_hot) |
+| `soot_g_hot` | g_hot | hot-carbon HG asymmetry |
+| `smoke_km_carbon`, `smoke_n_carbon`, `smoke_albedo_carbon`, `smoke_g_carbon` | k_m,carbon, n_carbon, ω_carbon, g_carbon | cool-carbon extinction triple + its HG lobe (§4.3) |
+
+Required only when `channel_condensed` is present:
+`smoke_km_cond`, `smoke_n_cond`, `smoke_albedo_cond`, `smoke_g_cond`.
+
+There is **no composite `phase` parameter** — the §4.3 closure is a
+σ_s-weighted mixture of *per-constituent* HG lobes, so a single `phase hg g`
+would be ambiguous about which constituent it governs and would silently
+produce a different scattering distribution than the mixture. Each
+constituent names its own g; the mixture is derived, never authored.
+Note the deliberate asymmetry with `fire_medium`, which forbids loose
+per-parameter tuning and takes whole versioned preset records instead: that
+chunk *has* a record to point at, and per-parameter overrides there would let
+a predictive render silently mix preset provenance. This chunk has no record,
+cannot be predictive, and so authors the constants directly.
+Omitting any required parameter is a parse error, not a defaulted value —
+these are exactly the constants whose silent substitution §1's fidelity bar
+forbids, and a fixture that renders with the wrong ω is worse than one that
+fails to load. The §12 fixture values (ω_hot = 0.10, g_hot = 0.5; cool
+carbon n = 1.2, ω = 0.6, g = 0.6; condensed n = 0.5, ω = 0.9, g = 0.7) are
+the intended test values — as non-predictive fixtures, per §12:
 
 ```
 multichannel_heterogeneous_medium
@@ -3511,8 +3554,15 @@ multichannel_heterogeneous_medium
 	bake_resolution		96 96 192                  # one lattice, all channels
 	bbox_min		-0.02 0.0  -0.02
 	bbox_max		 0.02 0.08  0.02
-	soot_em			0.26
-	phase			hg 0.5
+
+	soot_em			0.26                       # E(m), Dalzell-Sarofim
+	soot_density		1800                       # kg/m3
+	soot_albedo_hot		0.10
+	soot_g_hot		0.5
+	smoke_km_carbon		8.7                        # m2/g @ 633 nm
+	smoke_n_carbon		1.2
+	smoke_albedo_carbon	0.6
+	smoke_g_carbon		0.6
 }
 ```
 
