@@ -93,9 +93,13 @@ namespace RISE
 		//
 
 		// Assignment
-		inline		SpectralPacket_Template<T, lambda_begin, lambda_end, I>	operator=(
+		inline		SpectralPacket_Template<T, lambda_begin, lambda_end, I>&	operator=(
 			const SpectralPacket_Template<T, lambda_begin, lambda_end, I>& s )
 		{
+			if( this == &s ) {
+				return *this;
+			}
+
 			memcpy( amplitudes, s.amplitudes, sizeof( T ) * I );
 
 			// Return the left hand side

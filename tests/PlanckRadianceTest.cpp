@@ -211,6 +211,23 @@ static void TestSpectralPacketAssignmentUpdatesRange()
 		Check( destination.ValueAtNM( 15.0 ) == 2.0,
 			"assigned spectral packet indexes the copied range" );
 	}
+
+	const SpectralPacket& destinationAlias = destination;
+	const SpectralPacket& selfAssignmentResult = ( destination = destinationAlias );
+	Check( &selfAssignmentResult == &destination,
+		"spectral packet self-assignment returns the original packet" );
+	Check( destination.ValueAtNM( 15.0 ) == 2.0,
+		"spectral packet self-assignment preserves amplitudes" );
+
+	VisibleSpectralPacket fixedPacket;
+	fixedPacket.SetIndex( 0, 7.0 );
+	const VisibleSpectralPacket& fixedPacketAlias = fixedPacket;
+	const VisibleSpectralPacket& fixedSelfAssignmentResult =
+		( fixedPacket = fixedPacketAlias );
+	Check( &fixedSelfAssignmentResult == &fixedPacket,
+		"fixed spectral packet self-assignment returns the original packet" );
+	Check( fixedPacket.ValueAtNM( 380 ) == 7.0,
+		"fixed spectral packet self-assignment preserves amplitudes" );
 }
 
 int main()

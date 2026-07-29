@@ -176,8 +176,12 @@ namespace RISE
 		//
 
 		// Assignment
-		inline		SpectralPacket	operator=( const SpectralPacket& s )
+		inline		SpectralPacket&	operator=( const SpectralPacket& s )
 		{
+			if( this == &s ) {
+				return *this;
+			}
+
 			// Check if the packet we are assigned to has the same frequencies responsible
 			// and same discretization of frequencies
 			if( SameFreqs( *this, s ) )

@@ -133,7 +133,7 @@ fall back to commit-on-release?"). Concrete guidance for the swatch:
 - A flat colour swatch needs **no path tracer** — for the Kelvin/mono/CSV modes the swatch colour is just
   `SpectralPacket::GetXYZ()` → `XYZtoRec709RGB` (the exact path `SpectralColorPainter` and `BlackBodyPainter`
   already run in their constructors — [SpectralColorPainter.cpp:22](../../src/Library/Painters/SpectralColorPainter.cpp),
-  [BlackBodyPainter.cpp:160](../../src/Library/Painters/BlackBodyPainter.cpp)). This is **microseconds**, fully
+  [BlackBodyPainter.cpp:144](../../src/Library/Painters/BlackBodyPainter.cpp)). This is **microseconds**, fully
   live on slider drag, no render. *Decision: the swatch is computed, not rendered, for D1/D2.*
   - **⚠ Evaluate the swatch by deterministic dense-wavelength integration, NOT 4 stochastic hero samples.**
     The renderer carries 4 hero λ per *path* and Monte-Carlo-integrates over many paths; a UI swatch has no path
@@ -1059,7 +1059,7 @@ net-new engine read-back this spec identified.
   ([.cpp:22](../../src/Library/Painters/SpectralColorPainter.cpp) `GetXYZ` swatch path,
   [.cpp:43](../../src/Library/Painters/SpectralColorPainter.cpp) `ValueAtNM`),
   [BlackBodyPainter.h](../../src/Library/Painters/BlackBodyPainter.h)
-  ([.cpp:160](../../src/Library/Painters/BlackBodyPainter.cpp) `GetXYZ`),
+  ([.cpp:144](../../src/Library/Painters/BlackBodyPainter.cpp) `GetXYZ`),
   [SellmeierScalarPainter.h](../../src/Library/Painters/SellmeierScalarPainter.h),
   [PiecewiseLinearScalarPainter.h](../../src/Library/Painters/PiecewiseLinearScalarPainter.h).
 - Material: [GGXMaterial.h](../../src/Library/Materials/GGXMaterial.h) (conductor + thin-film slots).
