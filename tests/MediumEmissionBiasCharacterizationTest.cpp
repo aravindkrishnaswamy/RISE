@@ -36,6 +36,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -131,18 +132,20 @@ namespace
 
 	std::string WriteScene( const bool positionalLight )
 	{
-		char path[512];
-		std::snprintf( path, sizeof(path),
-			"/tmp/rise_medium_emission_step0_%s_%d.RISEscene",
+		char filename[160];
+		std::snprintf( filename, sizeof(filename),
+			"rise_medium_emission_step0_%s_%d.RISEscene",
 			positionalLight ? "equiangular" : "dt",
 			static_cast<int>( ::getpid() ) );
+		const std::string path =
+			(std::filesystem::temp_directory_path() / filename).string();
 
 		std::ofstream output( path );
 		if( !output.is_open() ) {
 			return std::string();
 		}
 		output << SceneText( positionalLight );
-		return std::string( path );
+		return path;
 	}
 
 	struct Fixture
