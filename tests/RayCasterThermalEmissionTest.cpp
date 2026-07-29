@@ -5,9 +5,9 @@
 //  Gates the collision estimator against the absolute isothermal-slab
 //  solution, proves metre/centimetre invariance, keeps thermal scoring ahead
 //  of continuation roulette and the volume-bounce cap, verifies optically
-//  thick densities are not floored, and forces a real event after more than
-//  1024 null proposals.  Pel is deliberately rejected until the ordered
-//  preview step.
+//  thick densities are not floored, and forces both distance sampling and
+//  ratio tracking past more than 1024 null proposals.  Pel is deliberately
+//  rejected until the ordered preview step.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -53,6 +53,7 @@ namespace
 	int passed = 0;
 	int failed = 0;
 	const Scalar kWavelengthNM = 500.0;
+	const Scalar kRedWavelengthNM = 700.0;
 	const Scalar kTemperatureK = 1800.0;
 	const unsigned int kSamples = 80000;
 
@@ -171,7 +172,7 @@ namespace
 			return job ? job->GetScene()->GetGlobalMedium() : nullptr;
 		}
 
-		Scalar MeanNM( const unsigned int seed ) const
+		Scalar MeanNM( const unsigned int seed, const Scalar nm ) const
 		{
 			RandomNumberGenerator rng( seed );
 			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
@@ -184,7 +185,7 @@ namespace
 				Scalar value = 0.0;
 				Scalar distance = 0.0;
 				caster->CastRayNM( rc, rast, ray, value, state,
-					kWavelengthNM, &distance, nullptr );
+					nm, &distance, nullptr );
 				sum += value;
 			}
 			return sum / Scalar( kSamples );
@@ -213,6 +214,8 @@ namespace
 		const Point3 midpointCM( 0, 0, 50.0 );
 		const MediumCoefficientsNM coeffM = mediumM->GetCoefficientsNM(
 			midpointM, kWavelengthNM );
+		const MediumCoefficientsNM coeffMRed = mediumM->GetCoefficientsNM(
+			midpointM, kRedWavelengthNM );
 		const MediumCoefficientsNM coeffCM = mediumCM->GetCoefficientsNM(
 			midpointCM, kWavelengthNM );
 		const MultichannelHeterogeneousMedium* concreteM =
@@ -226,19 +229,33 @@ namespace
 		Check( NearRelative( coeffCM.sigma_t * centimetres.slabLength,
 			coeffM.sigma_t * metres.slabLength, 1e-13 ),
 			"metre and centimetre slabs have equal optical depth" );
+		Check( NearRelative( coeffM.sigma_t / coeffMRed.sigma_t, 1.4, 1e-13 ),
+			"hot-soot slab extinction has the required tau(500)/tau(700)=1.4" );
 
 		const Scalar tau = coeffM.sigma_t * metres.slabLength;
 		const Scalar expected = planck * ( -std::expm1( -tau ) );
-		const Scalar measuredM = metres.MeanNM( 0x5a174u );
-		const Scalar measuredCM = centimetres.MeanNM( 0x5a174u );
+		const Scalar tauRed = coeffMRed.sigma_t * metres.slabLength;
+		const Scalar expectedRed = PlanckSpectralRadianceNM(
+			kRedWavelengthNM, kTemperatureK ) * ( -std::expm1( -tauRed ) );
+		const Scalar measuredM = metres.MeanNM( 0x5a174u, kWavelengthNM );
+		const Scalar measuredCM = centimetres.MeanNM( 0x5a174u, kWavelengthNM );
+		const Scalar measuredMRed = metres.MeanNM( 0x7ed174u, kRedWavelengthNM );
+		const Scalar measuredCMRed = centimetres.MeanNM( 0x7ed174u, kRedWavelengthNM );
 		std::cout << std::setprecision( 12 ) << "  expected=" << expected <<
-			" metres=" << measuredM << " centimetres=" << measuredCM << std::endl;
+			" metres=" << measuredM << " centimetres=" << measuredCM <<
+			" red_expected=" << expectedRed << " red_metres=" << measuredMRed <<
+			" red_centimetres=" << measuredCMRed << std::endl;
 		Check( NearRelative( measuredM, expected, 0.012 ),
 			"RayCaster NM matches the absolute isothermal-slab target" );
 		Check( NearRelative( measuredCM, expected, 0.012 ),
 			"centimetre RayCaster NM matches the same absolute target" );
 		Check( NearRelative( measuredCM, measuredM, 1e-13 ),
 			"RayCaster NM radiance is scene-unit invariant for identical random samples" );
+		Check( NearRelative( measuredMRed, expectedRed, 0.012 ),
+			"RayCaster NM matches the chromatic 700-nm slab target" );
+		Check( NearRelative( measuredCMRed, expectedRed, 0.012 ) &&
+			NearRelative( measuredCMRed, measuredMRed, 1e-13 ),
+			"700-nm RayCaster radiance is scene-unit invariant" );
 
 		RandomNumberGenerator rng( 7u );
 		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
@@ -261,14 +278,17 @@ namespace
 		const IMedium* medium = thick.Medium();
 		if( !medium ) return;
 		const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
-		const Scalar eventDistance = 99.0;
+		const Scalar sigmaT = medium->GetCoefficientsNM(
+			Point3( 0, 0, 50.0 ), kWavelengthNM ).sigma_t;
+		const Scalar eventDistance = 99.0 / sigmaT;
 		const Scalar pdf = medium->EvalDistancePdfNM(
 			ray, eventDistance, true, 100.0, kWavelengthNM );
-		const Scalar expected = std::exp( -eventDistance );
+		const Scalar expected = sigmaT * std::exp( -99.0 );
 		Check( pdf > 0.0 && NearRelative( pdf, expected, 1e-10 ),
 			"tau=99 distance density retains its true sub-1e-30 value" );
 		Check( NearRelative( medium->EvalLogDistancePdfNM(
-			ray, eventDistance, true, 100.0, kWavelengthNM ), -eventDistance, 1e-12 ),
+			ray, eventDistance, true, 100.0, kWavelengthNM ),
+			std::log( sigmaT ) - 99.0, 1e-12 ),
 			"tau=99 log density remains representable" );
 	}
 
@@ -511,6 +531,26 @@ namespace
 		safe_release( phase );
 		safe_release( accessor );
 	}
+
+	void TestTransmittanceContinuesPast1024Nulls()
+	{
+		std::cout << "TestTransmittanceContinuesPast1024Nulls" << std::endl;
+		DelayedDensityAccessor* accessor = new DelayedDensityAccessor();
+		IPhaseFunction* phase = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction( &phase );
+		HeterogeneousMedium* medium = new HeterogeneousMedium(
+			RISEPel( 1000, 1000, 1000 ), RISEPel( 0, 0, 0 ), *phase, *accessor,
+			2, 2, 2, Point3( -1, -1, 0 ), Point3( 1, 1, 2 ) );
+		accessor->tracking = true;
+		const Scalar transmittance = medium->EvalTransmittanceNM(
+			Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			2.0, kWavelengthNM );
+		Check( transmittance < 1e-12,
+			"ratio tracking traverses the dense tail after more than 1024 null proposals" );
+		safe_release( medium );
+		safe_release( phase );
+		safe_release( accessor );
+	}
 }
 
 int main()
@@ -520,6 +560,7 @@ int main()
 	TestThermalScorePrecedesContinuationRoulette();
 	TestHWSSFallbackPrecedesDepthGate();
 	TestDistanceSamplingContinuesPast1024Nulls();
+	TestTransmittanceContinuesPast1024Nulls();
 	TestSpatialAdditiveSourceSurvivesEscape();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;

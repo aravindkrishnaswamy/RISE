@@ -3,8 +3,8 @@
 //  MultichannelHeterogeneousMediumTest.cpp
 //
 //  Phase-A gate for the painter-baked carbon + temperature medium:
-//  shared trilinear lattice, derived phi(T) grey optics, the 10^-3
-//  g/m^3 conversion, scene-unit invariance, and §9 requiredness.
+//  shared trilinear lattice, chromatic phi(T) optics, the 10^-3 g/m^3
+//  conversion, spectral tracking, scene-unit invariance, and §9 requiredness.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -30,6 +30,8 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
@@ -57,6 +59,12 @@ namespace
 	bool Near( const Scalar actual, const Scalar expected, const Scalar tolerance )
 	{
 		return std::fabs( actual - expected ) <= tolerance;
+	}
+
+	bool NearRelative( const Scalar actual, const Scalar expected, const Scalar tolerance )
+	{
+		const Scalar scale = std::fmax( std::fabs( expected ), Scalar( 1e-300 ) );
+		return std::fabs( actual - expected ) <= tolerance * scale;
 	}
 
 	Scalar ScalarFromBits( const std::uint64_t bits )
@@ -201,10 +209,17 @@ namespace
 			"grey 633-nm extinction follows the hot/cool carbon partition" );
 		Check( Near( c.sigma_s[0], expectedSigmaS, 1e-11 ),
 			"grey scattering applies both authored single-scattering albedos" );
+		const Scalar hotScale500 = 633.0 / 500.0;
+		const Scalar coolScale500 = std::pow( hotScale500, 1.2 );
+		const Scalar expectedSigmaS500 =
+			hotScattering * hotScale500 + coolScattering * coolScale500;
+		const Scalar expectedSigmaT500 =
+			(hotAbsorption + hotScattering) * hotScale500 +
+			coolExtinction * coolScale500;
 		const MediumCoefficientsNM cnm = fire->GetCoefficientsNM( p, 500.0 );
-		Check( Near( cnm.sigma_t, expectedSigmaT, 1e-11 ) &&
-			Near( cnm.sigma_s, expectedSigmaS, 1e-11 ),
-			"ordered pre-chromatic NM path matches the grey Pel coefficients" );
+		Check( Near( cnm.sigma_t, expectedSigmaT500, 1e-11 ) &&
+			Near( cnm.sigma_s, expectedSigmaS500, 1e-11 ),
+			"NM coefficients apply the pinned hot 1/lambda and cool lambda^-n laws" );
 
 		carbon->bias = 200.0;
 		temperature->bias = 2000.0;
@@ -215,6 +230,94 @@ namespace
 		safe_release( medium );
 		safe_release( carbon );
 		safe_release( temperature );
+	}
+
+	void TestChromaticNMTrackingAndTransmittance()
+	{
+		std::cout << "TestChromaticNMTrackingAndTransmittance" << std::endl;
+		IScalarPainter* carbon = nullptr;
+		IScalarPainter* hotTemperature = nullptr;
+		IScalarPainter* coolTemperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &carbon, 0.2 );
+		RISE_API_CreateUniformScalarPainter( &hotTemperature, 1000.0 );
+		RISE_API_CreateUniformScalarPainter( &coolTemperature, 600.0 );
+		IMedium* hot = CreateMedium( *carbon, *hotTemperature,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		IMedium* cool = CreateMedium( *carbon, *coolTemperature,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		Check( hot && cool, "uniform hot and cool chromatic fixtures construct" );
+		if( hot && cool ) {
+			const Point3 midpoint( 0.5, 0.5, 0.5 );
+			const MultichannelHeterogeneousMedium* hotFire =
+				dynamic_cast<const MultichannelHeterogeneousMedium*>( hot );
+			const MediumCoefficientsNM hot500 = hot->GetCoefficientsNM( midpoint, 500.0 );
+			const MediumCoefficientsNM hot700 = hot->GetCoefficientsNM( midpoint, 700.0 );
+			Check( NearRelative( hot500.sigma_t / hot700.sigma_t, 1.4, 1e-13 ) &&
+				NearRelative( hot500.sigma_s / hot700.sigma_s, 1.4, 1e-13 ),
+				"hot-soot absorption and scattering both follow 1/lambda" );
+
+			const MediumCoefficientsNM cool500 = cool->GetCoefficientsNM( midpoint, 500.0 );
+			const MediumCoefficientsNM cool700 = cool->GetCoefficientsNM( midpoint, 700.0 );
+			const Scalar coolRatio = std::pow( 700.0 / 500.0, 1.2 );
+			Check( NearRelative( cool500.sigma_t / cool700.sigma_t, coolRatio, 1e-13 ) &&
+				NearRelative( cool500.sigma_s / cool500.sigma_t, 0.6, 1e-13 ),
+				"cool-smoke extinction follows lambda^-n with its authored albedo split" );
+			if( hotFire ) {
+				const Scalar majorant380 = hotFire->TrackingMajorantAtNM( midpoint, 380.0 );
+				const Scalar majorant500 = hotFire->TrackingMajorantAtNM( midpoint, 500.0 );
+				const Scalar majorant780 = hotFire->TrackingMajorantAtNM( midpoint, 780.0 );
+				Check( majorant380 >= hot->GetCoefficientsNM( midpoint, 380.0 ).sigma_t &&
+					majorant500 >= hot500.sigma_t &&
+					majorant780 >= hot->GetCoefficientsNM( midpoint, 780.0 ).sigma_t,
+					"spectral tracking majorant bounds extinction across the visible interval" );
+				Check( majorant380 == majorant500 && majorant500 == majorant780,
+					"Phase-A NM tracking retains the locked max-over-lambda majorant" );
+			}
+
+			const Ray ray( Point3( 0.5, 0.5, 0.125 ), Vector3( 0, 0, 1 ) );
+			const Scalar length = 0.5;
+			const Scalar expectedT500 = std::exp( -hot500.sigma_t * length );
+			const Scalar expectedT700 = std::exp( -hot700.sigma_t * length );
+			Check( NearRelative( hot->EvalDistancePdfNM(
+				ray, length, false, length, 500.0 ), expectedT500, 1e-12 ) &&
+				NearRelative( hot->EvalDistancePdfNM(
+				ray, length, false, length, 700.0 ), expectedT700, 1e-12 ),
+				"deterministic NM distance survival uses chromatic optical depth" );
+
+			const unsigned int samples = 30000;
+			RandomNumberGenerator rng500( 0x500u );
+			RandomNumberGenerator rng700( 0x700u );
+			Implementation::IndependentSampler sampler500( rng500 );
+			Implementation::IndependentSampler sampler700( rng700 );
+			unsigned int events500 = 0;
+			unsigned int events700 = 0;
+			Scalar transmittance500 = 0.0;
+			Scalar transmittance700 = 0.0;
+			for( unsigned int i = 0; i < samples; ++i ) {
+				bool scattered500 = false;
+				bool scattered700 = false;
+				hot->SampleDistanceNM( ray, length, 500.0, sampler500, scattered500 );
+				hot->SampleDistanceNM( ray, length, 700.0, sampler700, scattered700 );
+				if( scattered500 ) ++events500;
+				if( scattered700 ) ++events700;
+				transmittance500 += hot->EvalTransmittanceNM( ray, length, 500.0 );
+				transmittance700 += hot->EvalTransmittanceNM( ray, length, 700.0 );
+			}
+			const Scalar eventRate500 = Scalar(events500) / Scalar(samples);
+			const Scalar eventRate700 = Scalar(events700) / Scalar(samples);
+			Check( Near( eventRate500, 1.0 - expectedT500, 0.012 ) &&
+				Near( eventRate700, 1.0 - expectedT700, 0.012 ),
+				"delta tracking samples each wavelength's extinction law" );
+			Check( Near( transmittance500 / Scalar(samples), expectedT500, 0.012 ) &&
+				Near( transmittance700 / Scalar(samples), expectedT700, 0.012 ),
+				"ratio tracking estimates chromatic NM transmittance" );
+		}
+
+		safe_release( hot );
+		safe_release( cool );
+		safe_release( carbon );
+		safe_release( hotTemperature );
+		safe_release( coolTemperature );
 	}
 
 	void TestPhysicalUnitsAndSceneScale()
@@ -251,6 +354,18 @@ namespace
 				"deterministic optical depth matches the uniform slab" );
 			Check( Near( transCM, transM, 1e-12 ),
 				"the same physical slab is invariant between metre and centimetre scenes" );
+
+			const MediumCoefficientsNM cM500 = m->GetCoefficientsNM(
+				Point3( 0.5, 0.5, 0.5 ), 500.0 );
+			const MediumCoefficientsNM cCM500 = cm->GetCoefficientsNM(
+				Point3( 50, 50, 50 ), 500.0 );
+			const Scalar transM500 = m->EvalDistancePdfNM(
+				rayM, 0.5, false, 0.5, 500.0 );
+			const Scalar transCM500 = cm->EvalDistancePdfNM(
+				rayCM, 50.0, false, 50.0, 500.0 );
+			Check( NearRelative( cCM500.sigma_t, 0.01 * cM500.sigma_t, 1e-13 ) &&
+				NearRelative( transCM500, transM500, 1e-12 ),
+				"chromatic NM coefficients and optical depth are scene-unit invariant" );
 		}
 
 		safe_release( metres );
@@ -288,6 +403,11 @@ namespace
 				"opposing carbon/temperature gradients create the intended interior maximum" );
 			Check( majorant >= sigmaT,
 				"phi-sup carbon majorant bounds the nonlinear interior extinction" );
+			const Scalar spectralMajorant = fire->TrackingMajorantAtNM( interior, 500.0 );
+			Check( spectralMajorant >= fire->GetCoefficientsNM( interior, 380.0 ).sigma_t &&
+				spectralMajorant >= fire->GetCoefficientsNM( interior, 500.0 ).sigma_t &&
+				spectralMajorant >= fire->GetCoefficientsNM( interior, 780.0 ).sigma_t,
+				"max-over-lambda majorant bounds an adversarial nonlinear phi mixture" );
 		}
 		safe_release( medium );
 		safe_release( carbon );
@@ -488,6 +608,7 @@ namespace
 int main()
 {
 	TestBakedTrilinearChannelsAndOptics();
+	TestChromaticNMTrackingAndTransmittance();
 	TestPhysicalUnitsAndSceneScale();
 	TestPhiSupMajorant();
 	TestNonFiniteRejection();

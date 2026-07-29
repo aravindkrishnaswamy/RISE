@@ -115,11 +115,32 @@ namespace RISE
 		/// This is used by EvalDistancePdf to provide a deterministic
 		/// technique density for MIS, avoiding the stochastic ratio
 		/// tracking path through EvalTransmittance.
+		/// The chromatic fire overload evaluates sigma_t(nm) at the same
+		/// nodes.  Phase A's phi-aware root splitting / 7-point upgrade is a
+		/// deliberately later increment.
 		Scalar EvalDeterministicOpticalDepth(
 			const Ray& ray,
 			const Scalar targetDist,
 			const Scalar sigma_t_eff
 			) const;
+
+		Scalar EvalDeterministicOpticalDepthNM(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm
+			) const;
+
+		Scalar EvalDeterministicOpticalDepthImpl(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar sigma_t_eff,
+			const bool spectral,
+			const Scalar nm
+			) const;
+
+		/// Scalar majorant used by the NM tracker.  Fire overrides this with
+		/// the locked conservative max over the visible wavelength interval.
+		virtual Scalar SpectralTrackingMajorant( const Scalar nm ) const;
 
 		/// Construct the tracking substrate without an accessor.  Used by
 		/// derived baked media that must create their channel accessors after
@@ -274,10 +295,8 @@ namespace RISE
 	/// Painter-baked Phase-A fire/smoke medium carrying carbon concentration
 	/// [g/m^3] and temperature [K] on one shared trilinear lattice.
 	///
-	/// This increment deliberately exposes a grey 633-nm transport closure;
-	/// the ordered chromatic-NM increment replaces GetCoefficientsNM with the
-	/// wavelength-dependent §4.1/§4.3 closure.  The full set of §9 carbon
-	/// optical constants is nevertheless required and stored at construction.
+	/// Pel remains a grey 633-nm preview placeholder, while the NM path uses
+	/// the wavelength-dependent §4.1/§4.3 hot-soot and cool-smoke laws.
 	class MultichannelHeterogeneousMedium :
 		public HeterogeneousMedium
 	{
@@ -299,6 +318,7 @@ namespace RISE
 		bool m_valid;
 
 		virtual ~MultichannelHeterogeneousMedium();
+		Scalar SpectralTrackingMajorant( const Scalar nm ) const override;
 
 		Scalar LookupChannel(
 			const IVolumeAccessor& accessor,
@@ -338,6 +358,10 @@ namespace RISE
 		Scalar HotOpticsFraction( const Point3& worldPt ) const;
 		Scalar HotSootVolumeFraction( const Point3& worldPt ) const;
 		Scalar TrackingMajorantAt( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAtNM(
+			const Point3& worldPt,
+			const Scalar nm
+			) const;
 
 		MediumCoefficients GetCoefficients( const Point3& pt ) const override;
 		MediumCoefficientsNM GetCoefficientsNM(

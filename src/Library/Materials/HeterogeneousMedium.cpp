@@ -460,6 +460,11 @@ MediumCoefficientsNM HeterogeneousMedium::GetCoefficientsNM(
 	return c;
 }
 
+Scalar HeterogeneousMedium::SpectralTrackingMajorant( const Scalar ) const
+{
+	return ColorMath::Luminance( m_max_sigma_t );
+}
+
 const IPhaseFunction* HeterogeneousMedium::GetPhaseFunction() const
 {
 	return m_pPhase;
@@ -591,7 +596,7 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	bool& scattered
 	) const
 {
-	const Scalar sigma_t_majorant_nm = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar sigma_t_majorant_nm = SpectralTrackingMajorant( nm );
 
 	if( sigma_t_majorant_nm <= 0.0 )
 	{
@@ -618,8 +623,8 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		ISampler* pSampler;
-		Scalar sigma_t_majorant_nm;
 		Scalar majorantRatio;
+		Scalar nm;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
 
@@ -644,8 +649,7 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_majorant_nm * density;
+				const Scalar sigma_t_local = self->GetCoefficientsNM( samplePt, nm ).sigma_t;
 
 				const Scalar xi2 = pSampler->Get1D();
 				if( xi2 < sigma_t_local * invCellMaj )
@@ -662,8 +666,8 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	visitor.self = self;
 	visitor.pRay = &rayRef;
 	visitor.pSampler = &samplerRef;
-	visitor.sigma_t_majorant_nm = sigma_t_majorant_nm;
 	visitor.majorantRatio = majorantRatio;
+	visitor.nm = nm;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
 
@@ -804,7 +808,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	const Scalar nm
 	) const
 {
-	const Scalar sigma_t_max_nm = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar sigma_t_max_nm = SpectralTrackingMajorant( nm );
 
 	if( sigma_t_max_nm <= 0.0 )
 	{
@@ -820,7 +824,6 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 
 	Scalar w = 1.0;
 	const HeterogeneousMedium* self = this;
-	unsigned int totalSteps = 0;
 
 	struct RatioTrackingVisitorNM
 	{
@@ -828,9 +831,8 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 		const Ray* pRay;
 		RandomNumberGenerator* pRng;
 		Scalar* pW;
-		Scalar sigma_t_max_nm;
 		Scalar majorantRatio;
-		unsigned int* pTotalSteps;
+		Scalar nm;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -841,10 +843,8 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 			const Scalar invCellMaj = 1.0 / cellMajNM;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
 				const Scalar xi = pRng->CanonicalRandom();
 				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
 				t += dt;
@@ -854,8 +854,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_max_nm * density;
+				const Scalar sigma_t_local = self->GetCoefficientsNM( samplePt, nm ).sigma_t;
 
 				*pW *= fmax( 0.0, 1.0 - sigma_t_local * invCellMaj );
 
@@ -880,9 +879,8 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	visitor.pRay = &ray;
 	visitor.pRng = &tl_rng_nm;
 	visitor.pW = &w;
-	visitor.sigma_t_max_nm = sigma_t_max_nm;
 	visitor.majorantRatio = majorantRatio;
-	visitor.pTotalSteps = &totalSteps;
+	visitor.nm = nm;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
 
@@ -937,6 +935,28 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 	const Ray& ray,
 	const Scalar targetDist,
 	const Scalar sigma_t_eff
+	) const
+{
+	return EvalDeterministicOpticalDepthImpl(
+		ray, targetDist, sigma_t_eff, false, 0.0 );
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthNM(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar nm
+	) const
+{
+	return EvalDeterministicOpticalDepthImpl(
+		ray, targetDist, 1.0, true, nm );
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar sigma_t_eff,
+	const bool spectral,
+	const Scalar nm
 	) const
 {
 	// Deterministic optical depth via voxel-lattice DDA + Gauss-
@@ -1103,11 +1123,14 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 			for( int q = 0; q < 5; q++ )
 			{
 				const Scalar tq = midPt + halfLen * glNodes[q];
-				const Scalar dq = LookupDensity(
-					Point3Ops::mkPoint3( ray.origin, ray.Dir() * tq ) );
+				const Point3 samplePt = Point3Ops::mkPoint3(
+					ray.origin, ray.Dir() * tq );
+				const Scalar dq = spectral
+					? GetCoefficientsNM( samplePt, nm ).sigma_t
+					: sigma_t_eff * LookupDensity( samplePt );
 				segIntegral += glWeights[q] * dq;
 			}
-			opticalDepth += sigma_t_eff * halfLen * segIntegral;
+			opticalDepth += halfLen * segIntegral;
 		}
 
 		// Advance DDA: step the axis with the smallest tMax
@@ -1189,13 +1212,12 @@ Scalar HeterogeneousMedium::EvalLogDistancePdfNM(
 	const Scalar nm
 	) const
 {
-	(void)nm;
-	const Scalar sigma_t_eff = ColorMath::Luminance( m_max_sigma_t );
 	const Scalar targetDist = scattered ? t : maxDist;
-	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar tau = EvalDeterministicOpticalDepthNM( ray, targetDist, nm );
 	if( !scattered ) return -tau;
 
-	const Scalar localSigmaT = sigma_t_eff * LookupDensity( ray.PointAtLength( t ) );
+	const Scalar localSigmaT = GetCoefficientsNM(
+		ray.PointAtLength( t ), nm ).sigma_t;
 	return localSigmaT > 0.0 ? log( localSigmaT ) - tau : -RISE_INFINITY;
 }
 
@@ -1208,18 +1230,14 @@ Scalar HeterogeneousMedium::EvalDistancePdfNM(
 	) const
 {
 	// Deterministic technique density — see EvalDistancePdf comment.
-	// sigma_t_eff for NM is Luminance(m_max_sigma_t), matching
-	// the scalar majorant used by SampleDistanceNM.
-	const Scalar sigma_t_eff = ColorMath::Luminance( m_max_sigma_t );
 	const Scalar targetDist = scattered ? t : maxDist;
-	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar tau = EvalDeterministicOpticalDepthNM( ray, targetDist, nm );
 	const Scalar T_real = exp( -tau );
 
 	if( scattered )
 	{
 		const Point3 pt = ray.PointAtLength( t );
-		const Scalar density = LookupDensity( pt );
-		return sigma_t_eff * density * T_real;
+		return GetCoefficientsNM( pt, nm ).sigma_t * T_real;
 	}
 	else
 	{
@@ -1393,6 +1411,30 @@ Scalar MultichannelHeterogeneousMedium::TrackingMajorantAt( const Point3& worldP
 	return m_pMajorantGrid->GetCellMajorant( x, y, z );
 }
 
+Scalar MultichannelHeterogeneousMedium::SpectralTrackingMajorant(
+	const Scalar
+	) const
+{
+	// Locked Phase-A policy: one conservative max over the full visible
+	// interval.  Both admitted extinction laws are monotone toward blue, so
+	// their maxima occur at 380 nm; phi(T) is a convex hot/cool blend.
+	const Scalar visibleBlueScale = 633.0 / 380.0;
+	const Scalar hotMax = m_hotExtinctionMass633 * visibleBlueScale;
+	const Scalar coolMax = m_coolExtinctionMass633 *
+		pow( visibleBlueScale, m_smokeNCarbon );
+	return m_sceneUnitMeters * fmax( hotMax, coolMax );
+}
+
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtNM(
+	const Point3& worldPt,
+	const Scalar nm
+	) const
+{
+	const Scalar majorant633 = TrackingMajorantAt( worldPt );
+	if( majorant633 <= 0.0 || m_sigma_t_majorant <= 0.0 ) return 0.0;
+	return majorant633 * SpectralTrackingMajorant( nm ) / m_sigma_t_majorant;
+}
+
 MediumCoefficients MultichannelHeterogeneousMedium::GetCoefficients(
 	const Point3& pt
 	) const
@@ -1421,12 +1463,27 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 	const Scalar nm
 	) const
 {
-	(void)nm;
-	const MediumCoefficients pel = GetCoefficients( pt );
 	MediumCoefficientsNM c;
-	c.sigma_t = pel.sigma_t[0];
-	c.sigma_s = pel.sigma_s[0];
+	c.sigma_t = 0.0;
+	c.sigma_s = 0.0;
 	c.emission = 0.0;
+	if( !m_valid || !RISE::IsFiniteDouble( nm ) || nm <= 0.0 ) return c;
+
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar wavelengthScale = 633.0 / nm;
+	const Scalar hotAbsorption = carbon * phi * m_hotAbsorptionMass633 * wavelengthScale;
+	const Scalar hotScattering = hotAbsorption *
+		m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
+	const Scalar coolExtinction = carbon * (1.0 - phi) *
+		m_coolExtinctionMass633 * pow( wavelengthScale, m_smokeNCarbon );
+	const Scalar coolScattering = coolExtinction * m_smokeAlbedoCarbon;
+	const Scalar sigmaA = m_sceneUnitMeters *
+		(hotAbsorption + coolExtinction - coolScattering);
+	const Scalar sigmaS = m_sceneUnitMeters *
+		(hotScattering + coolScattering);
+	c.sigma_t = sigmaA + sigmaS;
+	c.sigma_s = sigmaS;
 	return c;
 }
 
