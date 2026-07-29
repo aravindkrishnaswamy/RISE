@@ -104,6 +104,7 @@ AddHomogeneousMedium
 AddHomogeneousMediumSpectral
 AddHeterogeneousMedium
 AddPainterHeterogeneousMedium
+AddMultichannelHeterogeneousMedium
 SetGlobalMedium
 SetObjectInteriorMedium
 GetMedium

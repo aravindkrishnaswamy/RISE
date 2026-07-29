@@ -6016,6 +6016,66 @@ bool Job::AddPainterHeterogeneousMedium(
 	return true;
 }
 
+bool Job::AddMultichannelHeterogeneousMedium(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	if( !carbon || !temperature ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMedium:: scalar painter not found (carbon `%s`, temperature `%s`)",
+			carbon_painter, temperature_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMedium:: carbon and temperature require single-valued scalar painters" );
+		return false;
+	}
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMedium(
+		&medium, *carbon, *temperature,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ) ) || !medium ) {
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

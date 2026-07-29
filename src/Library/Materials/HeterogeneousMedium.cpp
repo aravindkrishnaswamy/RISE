@@ -14,7 +14,10 @@
 
 #include "pch.h"
 #include "HeterogeneousMedium.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Volume/Volume.h"
+#include "../Volume/VolumeAccessor_TRI.h"
 #include <math.h>
 
 using namespace RISE;
@@ -22,6 +25,159 @@ using namespace RISE;
 /// Maximum number of delta tracking steps before giving up.
 /// This prevents infinite loops in degenerate cases.
 static const unsigned int nMaxDeltaTrackingSteps = 1024;
+
+namespace
+{
+	static Scalar SmoothHotFraction( const Scalar temperature )
+	{
+		if( temperature <= 700.0 ) return 0.0;
+		if( temperature >= 900.0 ) return 1.0;
+		const Scalar x = (temperature - 700.0) / 200.0;
+		return x * x * (3.0 - 2.0 * x);
+	}
+
+	static Scalar HotAbsorptionMass633(
+		const Scalar sootEm,
+		const Scalar sootDensity
+		)
+	{
+		if( sootEm < 0.0 || sootDensity <= 0.0 ) return 0.0;
+		const Scalar lambdaMeters = 633.0e-9;
+		return 6.0 * PI * sootEm * 1.0e-3 / (lambdaMeters * sootDensity);
+	}
+
+	static Scalar TrackingSigmaT633(
+		const Scalar sceneUnitMeters,
+		const Scalar sootEm,
+		const Scalar sootDensity,
+		const Scalar sootAlbedoHot,
+		const Scalar smokeKmCarbon
+		)
+	{
+		if( sceneUnitMeters <= 0.0 || sootAlbedoHot < 0.0 ||
+			sootAlbedoHot >= 1.0 || smokeKmCarbon < 0.0 ) {
+			return 0.0;
+		}
+		const Scalar hotExtinction =
+			HotAbsorptionMass633( sootEm, sootDensity ) / (1.0 - sootAlbedoHot);
+		return sceneUnitMeters * fmax( hotExtinction, smokeKmCarbon );
+	}
+
+	class MultichannelExtinctionAccessor :
+		public virtual IVolumeAccessor,
+		public virtual Implementation::Reference
+	{
+	protected:
+		const IVolumeAccessor* m_carbon;
+		const IVolumeAccessor* m_temperature;
+		Scalar m_hotExtinctionMass;
+		Scalar m_coolExtinctionMass;
+		Scalar m_massMajorant;
+
+		virtual ~MultichannelExtinctionAccessor()
+		{
+			safe_release( m_carbon );
+			safe_release( m_temperature );
+		}
+
+		Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
+		{
+			if( m_massMajorant <= 0.0 ) return 0.0;
+			const Scalar carbon = m_carbon->GetValue( x, y, z );
+			const Scalar phi = SmoothHotFraction( m_temperature->GetValue( x, y, z ) );
+			const Scalar massExtinction =
+				phi * m_hotExtinctionMass + (1.0 - phi) * m_coolExtinctionMass;
+			return carbon * massExtinction / m_massMajorant;
+		}
+
+	public:
+		MultichannelExtinctionAccessor(
+			const IVolumeAccessor& carbon,
+			const IVolumeAccessor& temperature,
+			const Scalar hotExtinctionMass,
+			const Scalar coolExtinctionMass
+			) :
+		  m_carbon( &carbon ),
+		  m_temperature( &temperature ),
+		  m_hotExtinctionMass( hotExtinctionMass ),
+		  m_coolExtinctionMass( coolExtinctionMass ),
+		  m_massMajorant( fmax( hotExtinctionMass, coolExtinctionMass ) )
+		{
+			m_carbon->addref();
+			m_temperature->addref();
+		}
+
+		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const override
+		{
+			return Evaluate( x, y, z );
+		}
+
+		Scalar GetValue( int x, int y, int z ) const override
+		{
+			return Evaluate( Scalar(x), Scalar(y), Scalar(z) );
+		}
+
+		void BindVolume( const IVolume* ) override
+		{
+			// Derived from the two immutable baked channel accessors.
+		}
+	};
+
+	static IVolumeAccessor* BakeScalarChannel(
+		const IScalarPainter& painter,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int depth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const char* channelName
+		)
+	{
+		Volume<Scalar>* volume = new Volume<Scalar>( width, height, depth );
+		if( volume->Width() != width || volume->Height() != height || volume->Depth() != depth ) {
+			safe_release( volume );
+			return 0;
+		}
+
+		const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
+		const int halfW = static_cast<int>( width ) / 2;
+		const int halfH = static_cast<int>( height ) / 2;
+		const int halfD = static_cast<int>( depth ) / 2;
+
+		for( int z = -halfD; z < static_cast<int>( depth ) - halfD; ++z ) {
+			const Scalar nz = Scalar(z) / Scalar(depth) + 0.5;
+			for( int y = -halfH; y < static_cast<int>( height ) - halfH; ++y ) {
+				const Scalar ny = Scalar(y) / Scalar(height) + 0.5;
+				for( int x = -halfW; x < static_cast<int>( width ) - halfW; ++x ) {
+					const Scalar nx = Scalar(x) / Scalar(width) + 0.5;
+					const Point3 worldPt(
+						bboxMin.x + nx * extent.x,
+						bboxMin.y + ny * extent.y,
+						bboxMin.z + nz * extent.z );
+					const Ray dummyRay( worldPt, Vector3( 0, 1, 0 ) );
+					RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+					ri.ptIntersection = worldPt;
+					ri.ptObjIntersec = worldPt;
+					ri.ptCoord = Point2( nx, ny );
+					const Scalar value = painter.GetValuesAt( ri ).v[0];
+					if( !( value >= 0.0 ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"MultichannelHeterogeneousMedium:: `%s` painter produced a negative or non-finite value at (%g,%g,%g)",
+							channelName, worldPt.x, worldPt.y, worldPt.z );
+						safe_release( volume );
+						return 0;
+					}
+					volume->SetValue( x, y, z, value );
+				}
+			}
+		}
+
+		IVolumeAccessor* accessor = new VolumeAccessor_TRI();
+		accessor->BindVolume( volume );
+		safe_release( volume );
+		return accessor;
+	}
+}
 
 
 HeterogeneousMedium::HeterogeneousMedium(
@@ -42,6 +198,7 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
+  m_pMajorantGrid( 0 ),
   m_bboxMin( bboxMin ),
   m_bboxMax( bboxMax ),
   m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
@@ -81,6 +238,7 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
+  m_pMajorantGrid( 0 ),
   m_bboxMin( bboxMin ),
   m_bboxMax( bboxMax ),
   m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
@@ -98,6 +256,58 @@ HeterogeneousMedium::HeterogeneousMedium(
 	m_pMajorantGrid = new MajorantGrid(
 		accessor, volWidth, volHeight, volDepth,
 		bboxMin, bboxMax, m_sigma_t_majorant,
+		gridX, gridY, gridZ );
+}
+
+HeterogeneousMedium::HeterogeneousMedium(
+	const Scalar trackingSigmaT,
+	const IPhaseFunction& phase,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax
+	) :
+  m_max_sigma_a( trackingSigmaT, trackingSigmaT, trackingSigmaT ),
+  m_max_sigma_s( 0, 0, 0 ),
+  m_max_sigma_t( trackingSigmaT, trackingSigmaT, trackingSigmaT ),
+  m_emission( 0, 0, 0 ),
+  m_sigma_t_majorant( trackingSigmaT ),
+  m_pPhase( &phase ),
+  m_pAccessor( 0 ),
+  m_pMajorantGrid( 0 ),
+  m_bboxMin( bboxMin ),
+  m_bboxMax( bboxMax ),
+  m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
+  m_volWidth( volWidth ),
+  m_volHeight( volHeight ),
+  m_volDepth( volDepth )
+{
+	m_pPhase->addref();
+}
+
+void HeterogeneousMedium::InitializeTrackingAccessor( IVolumeAccessor& accessor )
+{
+	InitializeTrackingAccessor( accessor, accessor );
+}
+
+void HeterogeneousMedium::InitializeTrackingAccessor(
+	IVolumeAccessor& accessor,
+	IVolumeAccessor& majorantAccessor
+	)
+{
+	delete m_pMajorantGrid;
+	m_pMajorantGrid = 0;
+	safe_release( m_pAccessor );
+	m_pAccessor = &accessor;
+	m_pAccessor->addref();
+
+	unsigned int gridX, gridY, gridZ;
+	MajorantGrid::DefaultGridResolution( m_volWidth, m_volHeight, m_volDepth,
+		gridX, gridY, gridZ );
+	m_pMajorantGrid = new MajorantGrid(
+		majorantAccessor, m_volWidth, m_volHeight, m_volDepth,
+		m_bboxMin, m_bboxMax, m_sigma_t_majorant,
 		gridX, gridY, gridZ );
 }
 
@@ -1010,4 +1220,185 @@ bool HeterogeneousMedium::GetBoundingBox(
 	bbMin = m_bboxMin;
 	bbMax = m_bboxMax;
 	return true;
+}
+
+
+Scalar MultichannelHeterogeneousMedium::ComputeHotAbsorptionMass633(
+	Scalar sootEm,
+	Scalar sootDensity
+	)
+{
+	return HotAbsorptionMass633( sootEm, sootDensity );
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const IPhaseFunction& phase
+	) :
+  HeterogeneousMedium(
+	  TrackingSigmaT633( sceneUnitMeters, sootEm, sootDensity,
+		  sootAlbedoHot, smokeKmCarbon ),
+	  phase, volWidth, volHeight, volDepth, bboxMin, bboxMax ),
+  m_pCarbonAccessor( 0 ),
+  m_pTemperatureAccessor( 0 ),
+  m_sceneUnitMeters( sceneUnitMeters ),
+  m_sootEm( sootEm ),
+  m_sootDensity( sootDensity ),
+  m_sootAlbedoHot( sootAlbedoHot ),
+  m_sootGHot( sootGHot ),
+  m_smokeKmCarbon( smokeKmCarbon ),
+  m_smokeNCarbon( smokeNCarbon ),
+  m_smokeAlbedoCarbon( smokeAlbedoCarbon ),
+  m_smokeGCarbon( smokeGCarbon ),
+  m_hotAbsorptionMass633( ComputeHotAbsorptionMass633( sootEm, sootDensity ) ),
+  m_hotExtinctionMass633(
+	  sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0
+		  ? m_hotAbsorptionMass633 / (1.0 - sootAlbedoHot)
+		  : 0.0 ),
+  m_coolExtinctionMass633( smokeKmCarbon ),
+  m_valid( false )
+{
+	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
+	const bool validDimensions = volWidth >= 2 && volHeight >= 2 && volDepth >= 2 &&
+		volWidth <= 0x7fffffffu && volHeight <= 0x7fffffffu && volDepth <= 0x7fffffffu;
+	const bool validBounds = extent.x > 0.0 && extent.y > 0.0 && extent.z > 0.0;
+	const bool validOptics = sceneUnitMeters > 0.0 && sootEm >= 0.0 && sootDensity > 0.0 &&
+		sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0 &&
+		sootGHot >= -1.0 && sootGHot <= 1.0 &&
+		smokeKmCarbon >= 0.0 && smokeNCarbon >= 0.0 &&
+		smokeAlbedoCarbon >= 0.0 && smokeAlbedoCarbon <= 1.0 &&
+		smokeGCarbon >= -1.0 && smokeGCarbon <= 1.0;
+	if( !validDimensions || !validBounds || !validOptics ||
+		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or carbon optical parameter" );
+		return;
+	}
+
+	m_pCarbonAccessor = BakeScalarChannel(
+		carbonPainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "carbon" );
+	if( !m_pCarbonAccessor ) return;
+
+	m_pTemperatureAccessor = BakeScalarChannel(
+		temperaturePainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "temperature" );
+	if( !m_pTemperatureAccessor ) return;
+
+	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
+		*m_pCarbonAccessor, *m_pTemperatureAccessor,
+		m_hotExtinctionMass633, m_coolExtinctionMass633 );
+	// The local tracking accessor evaluates carbon * k(phi(T)).  Building
+	// a majorant from that nonlinear product's corner samples can miss an
+	// interior maximum when carbon and temperature gradients oppose each
+	// other.  Build the grid from carbon alone and scale it by the global
+	// max of the hot/cool mass extinction (already in m_sigma_t_majorant):
+	// this is the required phi-sup bound.
+	InitializeTrackingAccessor( *trackingAccessor, *m_pCarbonAccessor );
+	safe_release( trackingAccessor );
+	m_valid = true;
+}
+
+MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
+{
+	safe_release( m_pCarbonAccessor );
+	safe_release( m_pTemperatureAccessor );
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupChannel(
+	const IVolumeAccessor& accessor,
+	const Point3& worldPt
+	) const
+{
+	if( worldPt.x < m_bboxMin.x || worldPt.x > m_bboxMax.x ||
+		worldPt.y < m_bboxMin.y || worldPt.y > m_bboxMax.y ||
+		worldPt.z < m_bboxMin.z || worldPt.z > m_bboxMax.z ) {
+		return 0.0;
+	}
+
+	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
+	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
+	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
+	return accessor.GetValue(
+		(nx - 0.5) * Scalar(m_volWidth),
+		(ny - 0.5) * Scalar(m_volHeight),
+		(nz - 0.5) * Scalar(m_volDepth) );
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupCarbon( const Point3& worldPt ) const
+{
+	return m_pCarbonAccessor ? LookupChannel( *m_pCarbonAccessor, worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupTemperature( const Point3& worldPt ) const
+{
+	return m_pTemperatureAccessor ? LookupChannel( *m_pTemperatureAccessor, worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::HotOpticsFraction( const Point3& worldPt ) const
+{
+	return SmoothHotFraction( LookupTemperature( worldPt ) );
+}
+
+Scalar MultichannelHeterogeneousMedium::HotSootVolumeFraction( const Point3& worldPt ) const
+{
+	return HotOpticsFraction( worldPt ) * 1.0e-3 * LookupCarbon( worldPt ) / m_sootDensity;
+}
+
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAt( const Point3& worldPt ) const
+{
+	if( !m_pMajorantGrid ) return 0.0;
+	unsigned int x = 0, y = 0, z = 0;
+	if( !m_pMajorantGrid->WorldToCell( worldPt, x, y, z ) ) return 0.0;
+	return m_pMajorantGrid->GetCellMajorant( x, y, z );
+}
+
+MediumCoefficients MultichannelHeterogeneousMedium::GetCoefficients(
+	const Point3& pt
+	) const
+{
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar hotAbsorption = carbon * phi * m_hotAbsorptionMass633;
+	const Scalar hotScattering = hotAbsorption * m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
+	const Scalar coolExtinction = carbon * (1.0 - phi) * m_coolExtinctionMass633;
+	const Scalar coolScattering = coolExtinction * m_smokeAlbedoCarbon;
+
+	const Scalar sigmaA = m_sceneUnitMeters *
+		(hotAbsorption + coolExtinction - coolScattering);
+	const Scalar sigmaS = m_sceneUnitMeters *
+		(hotScattering + coolScattering);
+
+	MediumCoefficients c;
+	c.sigma_t = RISEPel( sigmaA + sigmaS, sigmaA + sigmaS, sigmaA + sigmaS );
+	c.sigma_s = RISEPel( sigmaS, sigmaS, sigmaS );
+	c.emission = RISEPel( 0, 0, 0 );
+	return c;
+}
+
+MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	(void)nm;
+	const MediumCoefficients pel = GetCoefficients( pt );
+	MediumCoefficientsNM c;
+	c.sigma_t = pel.sigma_t[0];
+	c.sigma_s = pel.sigma_s[0];
+	c.emission = 0.0;
+	return c;
 }

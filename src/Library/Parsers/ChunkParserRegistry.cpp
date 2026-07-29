@@ -379,6 +379,10 @@ namespace RISE
 				// parse time so a misplaced block is caught loudly
 				// rather than producing a 1000×-misscaled render.
 				bool   camera_committed  = false;
+				// Physical-volume coefficients are converted to inverse scene
+				// units when a multichannel medium is constructed, so their
+				// scale is locked for the same declaration-order reason.
+				bool   metric_medium_committed = false;
 			};
 			static thread_local SceneOptionsState s_sceneOptions;
 
@@ -4141,9 +4145,8 @@ namespace RISE
 			// after a camera don't reach back.  Same declaration-order
 			// rule as `standard_shader`, `camera_defaults`, etc.
 			//
-			// Today this only governs camera lens-mm-to-scene-unit
-			// conversion; future phases (volumetric atmosphere,
-			// physical sky, sensor noise) will consume the same scale.
+			// This governs camera lens-mm-to-scene-unit conversion and
+			// SI-to-scene-unit conversion for multichannel physical media.
 			struct SceneOptionsAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
@@ -4163,13 +4166,13 @@ namespace RISE
 						// (its lens math is locked in).  Warn loudly so
 						// the user notices rather than silently rendering
 						// a 1000×-misscaled image.
-						if( s_sceneOptions.camera_committed
+						if( (s_sceneOptions.camera_committed || s_sceneOptions.metric_medium_committed)
 						    && v != s_sceneOptions.scene_unit_meters ) {
 							GlobalLog()->PrintEx( eLog_Warning,
-								"scene_options:: declared AFTER a camera was already finalized. "
-								"The camera locked in scene_unit = %g; this block sets %g but the "
-								"camera's lens math is unchanged. Move `scene_options` to the top "
-								"of the .RISEscene file, before any camera chunk.",
+								"scene_options:: declared AFTER a camera or SI-valued medium was already finalized. "
+								"That entity locked in scene_unit = %g; this block sets %g but the "
+								"constructed entity is unchanged. Move `scene_options` to the top "
+								"of the .RISEscene file, before camera and multichannel-medium chunks.",
 								s_sceneOptions.scene_unit_meters, v );
 						}
 						s_sceneOptions.scene_unit_meters = v;
@@ -4181,12 +4184,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scene_options"; cd.category = ChunkCategory::Camera;
-						cd.description = "Scene-level options. Currently sets the world-unit scale that bridges scene-geometry units to mm-input on cameras. Place near the top of the file (before any camera).";
+						cd.description = "Scene-level options. Sets the world-unit scale used by camera mm input and SI-valued multichannel media. Place before cameras and multichannel media.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{
 							auto& p = P();
 							p.name = "scene_unit"; p.kind = ValueKind::Double;
-							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion (sensor_size / focal_length / shift_x/y are mm in the scene file regardless of this value; the camera converts to scene units via this factor).";
+							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion and SI-valued multichannel-medium coefficients.";
 							p.defaultValueHint = "1.0";
 							p.unitLabel = "m / unit";
 							p.presets = {
@@ -6390,6 +6393,116 @@ namespace RISE
 						{ auto& p = P(); p.name = "color_to_scalar"; p.kind = ValueKind::Enum;       p.enumValues = {"luminance","max","red"}; p.description = "RGB→scalar rule"; p.defaultValueHint = "luminance"; }
 						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
 						{ auto& p = P(); p.name = "bbox_max";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct MultichannelHeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				static bool ParsePainterSource(
+					const std::string& raw,
+					std::string& painterName
+					)
+				{
+					std::istringstream input( raw );
+					std::string kind;
+					std::string extra;
+					if( !(input >> kind >> painterName) || (input >> extra) || kind != "painter" ) {
+						return false;
+					}
+					return !painterName.empty();
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					static const char* required[] = {
+						"name", "channel_carbon", "channel_temperature", "bake_resolution",
+						"bbox_min", "bbox_max", "soot_em", "soot_density",
+						"soot_albedo_hot", "soot_g_hot", "smoke_km_carbon",
+						"smoke_n_carbon", "smoke_albedo_carbon", "smoke_g_carbon"
+					};
+					for( size_t i = 0; i < sizeof(required)/sizeof(required[0]); ++i ) {
+						if( !bag.Has( required[i] ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"MultichannelHeterogeneousMedium:: required parameter `%s` is missing",
+								required[i] );
+							return false;
+						}
+					}
+
+					std::string carbonPainter;
+					std::string temperaturePainter;
+					if( !ParsePainterSource( bag.GetString( "channel_carbon" ), carbonPainter ) ||
+						!ParsePainterSource( bag.GetString( "channel_temperature" ), temperaturePainter ) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: channel sources must be `painter <scalar_painter-name>`" );
+						return false;
+					}
+
+					if( !HasExactNumericArity( bag, "bake_resolution", 3 ) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: bake_resolution requires exactly three integer dimensions" );
+						return false;
+					}
+					double resolution[3] = { 0, 0, 0 };
+					bag.GetVec3( "bake_resolution", resolution );
+					for( unsigned int i = 0; i < 3; ++i ) {
+						if( resolution[i] < 2.0 || resolution[i] > 4294967295.0 ||
+							floor( resolution[i] ) != resolution[i] ) {
+							GlobalLog()->PrintEasyError(
+								"MultichannelHeterogeneousMedium:: bake_resolution dimensions must be integers >= 2" );
+							return false;
+						}
+					}
+
+					double bboxMin[3] = { 0, 0, 0 };
+					double bboxMax[3] = { 0, 0, 0 };
+					bag.GetVec3( "bbox_min", bboxMin );
+					bag.GetVec3( "bbox_max", bboxMax );
+
+					const bool ok = pJob.AddMultichannelHeterogeneousMedium(
+						bag.GetString( "name" ).c_str(),
+						carbonPainter.c_str(), temperaturePainter.c_str(),
+						static_cast<unsigned int>( resolution[0] ),
+						static_cast<unsigned int>( resolution[1] ),
+						static_cast<unsigned int>( resolution[2] ),
+						bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+						bag.GetDouble( "soot_em" ),
+						bag.GetDouble( "soot_density" ),
+						bag.GetDouble( "soot_albedo_hot" ),
+						bag.GetDouble( "soot_g_hot" ),
+						bag.GetDouble( "smoke_km_carbon" ),
+						bag.GetDouble( "smoke_n_carbon" ),
+						bag.GetDouble( "smoke_albedo_carbon" ),
+						bag.GetDouble( "smoke_g_carbon" ) );
+					if( ok ) s_sceneOptions.metric_medium_committed = true;
+					return ok;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "multichannel_heterogeneous_medium";
+						cd.category = ChunkCategory::Medium;
+						cd.description = "Preview-only painter-baked carbon + temperature medium on one trilinear lattice.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true; p.description = "Unique medium name"; }
+						{ auto& p = P(); p.name = "channel_carbon"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Carbon source: `painter <scalar_painter-name>` [g/m^3]"; }
+						{ auto& p = P(); p.name = "channel_temperature"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Temperature source: `painter <scalar_painter-name>` [K]"; }
+						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature lattice resolution (integer X Y Z, each >= 2)"; }
+						{ auto& p = P(); p.name = "bbox_min"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox minimum"; }
+						{ auto& p = P(); p.name = "bbox_max"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox maximum"; }
+						{ auto& p = P(); p.name = "soot_em"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon E(m) absorption function"; }
+						{ auto& p = P(); p.name = "soot_density"; p.kind = ValueKind::Double; p.required = true; p.description = "Soot material density [kg/m^3]"; }
+						{ auto& p = P(); p.name = "soot_albedo_hot"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon single-scattering albedo"; }
+						{ auto& p = P(); p.name = "soot_g_hot"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon HG asymmetry"; }
+						{ auto& p = P(); p.name = "smoke_km_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon mass extinction at 633 nm [m^2/g]"; }
+						{ auto& p = P(); p.name = "smoke_n_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon Angstrom exponent"; }
+						{ auto& p = P(); p.name = "smoke_albedo_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon single-scattering albedo"; }
+						{ auto& p = P(); p.name = "smoke_g_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon HG asymmetry"; }
 						return cd;
 					}();
 					return d;
@@ -10092,6 +10205,7 @@ namespace RISE
 		add( "light_rr_threshold",                   new LightRRThresholdAsciiChunkParser() );
 		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
 		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
+		add( "multichannel_heterogeneous_medium",     new MultichannelHeterogeneousMediumAsciiChunkParser() );
 
 		// Objects
 		add( "standard_object",                       new StandardObjectAsciiChunkParser() );

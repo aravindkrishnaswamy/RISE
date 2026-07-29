@@ -645,6 +645,51 @@ namespace
 		return d;
 	}
 
+	const EntityTemplateDef& MultichannelHeterogeneousMediumTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Medium;
+			t.label = "Carbon + Temperature Volume";
+			t.baseName = "fire_volume";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_carbon\n"
+				"value 0.02\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_temperature\n"
+				"value 1200\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"multichannel_heterogeneous_medium\n"
+				"{\n"
+				"name @NAME@\n"
+				"channel_carbon painter @NAME@_carbon\n"
+				"channel_temperature painter @NAME@_temperature\n"
+				"bake_resolution 32 32 64\n"
+				"bbox_min -0.02 0 -0.02\n"
+				"bbox_max 0.02 0.08 0.02\n"
+				"soot_em 0.26\n"
+				"soot_density 1800\n"
+				"soot_albedo_hot 0.10\n"
+				"soot_g_hot 0.5\n"
+				"smoke_km_carbon 8.7\n"
+				"smoke_n_carbon 1.2\n"
+				"smoke_albedo_carbon 0.6\n"
+				"smoke_g_carbon 0.6\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
 	// -------------------------------------------------------------
 	// Per-category template lists
 	// -------------------------------------------------------------
@@ -665,7 +710,8 @@ namespace
 			&PngPainterTemplate(), &Perlin2DPainterTemplate(), &CheckerPainterTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kMedium = {
-			&HomogeneousMediumTemplate(), &PainterHeterogeneousMediumTemplate()
+			&HomogeneousMediumTemplate(), &PainterHeterogeneousMediumTemplate(),
+			&MultichannelHeterogeneousMediumTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kEmpty;
 

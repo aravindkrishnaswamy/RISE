@@ -129,7 +129,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 22 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `path_instances_geometry` |
 | Modifiers | 3 | `bumpmap_modifier`, `normal_map_modifier`, `glint_modifier` |
-| Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
+| Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
@@ -174,7 +174,10 @@ scene_options
 
 Common values: `1.0` (metres, the default), `0.001` (mm), `0.01` (cm), `0.0254` (inches), `0.3048` (feet). The presets surface in the editor combo-box.
 
-Currently `scene_unit` only governs the camera mm-input → scene-unit conversion, but it's the natural global where future physical-quantity work (volumetric atmosphere, sky models, sensor noise) will read its scale.
+`scene_unit` governs the camera mm-input → scene-unit conversion and the
+SI-coefficient conversion performed when a `multichannel_heterogeneous_medium`
+is constructed.  Declare it before cameras and multichannel media so both
+lock the same scale.
 
 ### Sensor format presets (mm — unit-stable regardless of scene_unit)
 

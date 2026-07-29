@@ -61,6 +61,7 @@ CameraProperty MakeVec3Row( const char* name, const RISEPel& c, const char* desc
 const char* MediumTypeName( const IMedium& m )
 {
 	if( dynamic_cast<const HomogeneousMedium*>( &m ) )   return "Homogeneous";
+	if( dynamic_cast<const MultichannelHeterogeneousMedium*>( &m ) ) return "Multichannel Heterogeneous";
 	if( dynamic_cast<const HeterogeneousMedium*>( &m ) ) return "Heterogeneous";
 	return "(unknown type)";
 }
@@ -126,8 +127,9 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 			"params", String( "baked at construction" ),
 			"Heterogeneous media bake the max-coefficient bounds, volume dataset, accessor, "
 			"and majorant grid at construction time — changing any of those without rebuilding "
-			"the majorant grid would desync delta tracking.  Recreate the medium chunk to "
-			"change these values." ) );
+			"the majorant grid would desync delta tracking.  This also applies to the shared "
+			"carbon/temperature lattice in `multichannel_heterogeneous_medium`.  Recreate the "
+			"medium chunk to change these values." ) );
 	}
 
 	return rows;

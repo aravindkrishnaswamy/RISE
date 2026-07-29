@@ -51,6 +51,7 @@
 #define HETEROGENEOUS_MEDIUM_
 
 #include "../Interfaces/IMedium.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/IVolumeAccessor.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
@@ -119,6 +120,32 @@ namespace RISE
 			const Scalar targetDist,
 			const Scalar sigma_t_eff
 			) const;
+
+		/// Construct the tracking substrate without an accessor.  Used by
+		/// derived baked media that must create their channel accessors after
+		/// base construction, then install a derived extinction accessor.
+		HeterogeneousMedium(
+			const Scalar trackingSigmaT,
+			const IPhaseFunction& phase,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax
+			);
+
+		/// Install the accessor used by the shared delta/ratio-tracking code
+		/// and build its immutable per-cell majorant grid.
+		void InitializeTrackingAccessor( IVolumeAccessor& accessor );
+
+		/// Variant for derived media whose tracking field is nonlinear in
+		/// multiple channels.  The separate majorant accessor supplies a
+		/// conservative phi-sup field while `accessor` remains the exact
+		/// local extinction queried by tracking and quadrature.
+		void InitializeTrackingAccessor(
+			IVolumeAccessor& accessor,
+			IVolumeAccessor& majorantAccessor
+			);
 
 		virtual ~HeterogeneousMedium();
 
@@ -234,6 +261,81 @@ namespace RISE
 			Point3& bbMin,
 			Point3& bbMax
 			) const;
+	};
+
+	/// Painter-baked Phase-A fire/smoke medium carrying carbon concentration
+	/// [g/m^3] and temperature [K] on one shared trilinear lattice.
+	///
+	/// This increment deliberately exposes a grey 633-nm transport closure;
+	/// the ordered chromatic-NM increment replaces GetCoefficientsNM with the
+	/// wavelength-dependent §4.1/§4.3 closure.  The full set of §9 carbon
+	/// optical constants is nevertheless required and stored at construction.
+	class MultichannelHeterogeneousMedium :
+		public HeterogeneousMedium
+	{
+	protected:
+		IVolumeAccessor* m_pCarbonAccessor;
+		IVolumeAccessor* m_pTemperatureAccessor;
+		Scalar m_sceneUnitMeters;
+		Scalar m_sootEm;
+		Scalar m_sootDensity;
+		Scalar m_sootAlbedoHot;
+		Scalar m_sootGHot;
+		Scalar m_smokeKmCarbon;
+		Scalar m_smokeNCarbon;
+		Scalar m_smokeAlbedoCarbon;
+		Scalar m_smokeGCarbon;
+		Scalar m_hotAbsorptionMass633;
+		Scalar m_hotExtinctionMass633;
+		Scalar m_coolExtinctionMass633;
+		bool m_valid;
+
+		virtual ~MultichannelHeterogeneousMedium();
+
+		Scalar LookupChannel(
+			const IVolumeAccessor& accessor,
+			const Point3& worldPt
+			) const;
+
+		static Scalar ComputeHotAbsorptionMass633(
+			Scalar sootEm,
+			Scalar sootDensity
+			);
+
+	public:
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const IPhaseFunction& phase
+			);
+
+		bool IsValid() const { return m_valid; }
+
+		Scalar LookupCarbon( const Point3& worldPt ) const;
+		Scalar LookupTemperature( const Point3& worldPt ) const;
+		Scalar HotOpticsFraction( const Point3& worldPt ) const;
+		Scalar HotSootVolumeFraction( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAt( const Point3& worldPt ) const;
+
+		MediumCoefficients GetCoefficients( const Point3& pt ) const override;
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
 	};
 }
 

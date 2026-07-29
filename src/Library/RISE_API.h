@@ -3391,6 +3391,31 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Point3& bboxMax				///< [in] World-space AABB maximum corner
 								);
 
+	//! Creates the Phase-A painter-baked carbon + temperature medium.
+	//! Both physical scalar painters are sampled once onto the same
+	//! trilinear lattice.  Optical coefficients are authored in SI and
+	//! converted to inverse scene units using sceneUnitMeters.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to receive the medium
+								const IScalarPainter& carbonPainter,	///< [in] Carbon concentration [g/m^3]
+								const IScalarPainter& temperaturePainter,///< [in] Temperature [K]
+								unsigned int volWidth,
+								unsigned int volHeight,
+								unsigned int volDepth,
+								const Point3& bboxMin,
+								const Point3& bboxMax,
+								Scalar sceneUnitMeters,
+								Scalar sootEm,
+								Scalar sootDensity,
+								Scalar sootAlbedoHot,
+								Scalar sootGHot,
+								Scalar smokeKmCarbon,
+								Scalar smokeNCarbon,
+								Scalar smokeAlbedoCarbon,
+								Scalar smokeGCarbon
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Virtual measurement devices
