@@ -1518,6 +1518,25 @@ B(500 nm, 1800 K) = 0.43477836 W·m⁻²·sr⁻¹·nm⁻¹, and the integral ide
 exitance-per-metre convention at its boundary); the fire path must *never*
 reach Planck through `IPainter::GetColorNM` (§10.1).
 
+**The Pel (RGB) projection of this source is the projected PRODUCT, not the
+product of projections.** Using the same pinned per-channel response
+functions R_c(λ) as the §4.3 phase closure (normalized over 380–780 nm — a
+photopic curve or unrecorded camera response is forbidden there and here):
+
+> σ̄_a,c(x) = ∫ R_c(λ) σ_a(x,λ) dλ,
+> σ̄_s,c(x) = ∫ R_c(λ) σ_s(x,λ) dλ,
+> **ε_c(x)  = ∫ R_c(λ) σ_a(x,λ) B_λ(T(x)) dλ.**
+
+ε_c is *not* σ̄_a,c · ∫R_c B_λ dλ. The two differ whenever extinction is
+chromatic, and for fire they differ a lot: with σ_a ∝ 1/λ (§4.1) at
+T = 1800 K under a normalized box response over 380–780 nm, the correct
+projected product is **0.804 of** the product of projections — a 19.6 %
+error, and one that is *systematic*, not noise. It arises because 1/λ falls
+across the visible band while B_λ(1800 K) rises steeply toward it (the Planck
+peak sits near 1.6 µm), so the two factors are anticorrelated and the mean of
+the product is below the product of the means. An implementation that
+projects σ_a and B_λ separately and multiplies is wrong by that factor.
+
 Dynamic range: flame core ∼10⁴–10⁶ × ambient. HDR through the pipe is native
 (EXR); exposure is the only artistic control this design admits. The
 variance/firefly policy this implies is a renderer design item — §7.2 and
@@ -1915,8 +1934,9 @@ green numeric test:
    manifest, no chem, no condensed phase. This is the smallest thing that can
    carry a flame field.
 4. **Collision-based emission on `RayCaster`** (§7.1 step 2), gated on the
-   isothermal-slab absolute target L_λ = B_λ(T)·(1−e^{−τ_λ}) and the
-   scene-unit invariance test, in Pel and NM. **Scope this increment to a
+   isothermal-slab absolute target and the scene-unit invariance test, in
+   Pel and NM — using each measure's own target per §7.1 step 2 (L_λ for NM,
+   the §4.2-projected L_c for Pel; they coincide while the medium is grey). **Scope this increment to a
    grey (wavelength-independent σ) medium at constant φ**: with τ_λ constant
    the slab target is still exact and still checks the estimator against the
    pinned Planck kernel, which is what this step exists to prove. What it
@@ -2128,8 +2148,16 @@ engineering task waits on this list.**
    reference on a varying-T slab, with and without positional lights (both
    regimes above); **pure-absorber emissive slab (σ_s = 0) in Pel, NM, and
    HWSS-requested modes, through both entry routes**; and the
-   **isothermal-slab absolute gate L_λ = B_λ(T)·(1−e^{−τ_λ})** against the
-   pinned Planck kernel; Pel/NM through both entry routes with
+   **isothermal-slab absolute gate**, whose target is *measure-specific*: the
+   exact spectral form **L_λ = B_λ(T)·(1−e^{−τ_λ}) is the NM target** and is
+   not directly comparable to a Pel triple; the **Pel target is the
+   §4.2-projected slab value**, for a pure absorber
+   **L_c = (ε_c/σ̄_a,c)·(1−e^{−σ̄_a,c·L})**, which is approximate by
+   construction (§7.1 step 4's projection bias) and gated against its own
+   analytic value rather than against L_λ. For a **grey** medium the two
+   coincide exactly — L_c = ∫R_c L_λ dλ — which is what makes the execution
+   order's grey step-4 increment checkable in both measures with one target.
+   Both run through both entry routes with
    `maxVolumeBounce=0`; and a forced >1024-null-proposal slab that must match
    an uncapped reference. (CDF normalization is a Phase B gate — §7.2.7.)
 3. **Chemiluminescence estimator** (the §4.4 term — revision 3 defined the
@@ -2188,7 +2216,9 @@ engineering task waits on this list.**
    media. **Spectral-path-first policy**:
    fire scenes target the spectral rasterizers, where per-λ tracking against
    a per-λ majorant is correct today via the G5 fallback. The RGB path gets
-   band-averaged (projected) coefficients so fire scenes still *render*
+   the **§4.2/§4.3 R_c-projected coefficients and emission source**
+   (σ̄_a,c, σ̄_s,c, and ε_c as the projected *product* — never σ̄_a,c times a
+   projected Planck integral) so fire scenes still *render*
    there — but this is **deterministic spectral-projection bias, not merely
    variance** (external-review correction: exp(−σ̄L) ≠ the channel-averaged
    spectral transmittance, so the expected RGB result itself changes). The
