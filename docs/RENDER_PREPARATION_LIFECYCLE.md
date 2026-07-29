@@ -432,6 +432,7 @@ This arc does not define a canonical serialization of a wholly programmatically
 built scene graph, so **programmatic jobs are preview-only** and carry
 `programmatic_scene_unqualified` plus a per-job 128-bit UUID and optional caller
 label for disambiguation. Caller-supplied opaque bytes are not accepted as a
+predictive build manifest.
 
 
 ---

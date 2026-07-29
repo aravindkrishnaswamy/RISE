@@ -1,8 +1,8 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 32 — after 4 internal and 6 external expert
-review rounds, 20 post-r11 implementation-review rounds, and an r32 scope
-restoration; history in
+**Status:** DRAFT (revision 32 — after 4 internal review rounds, 6 external
+expert review rounds, 20 post-r11 implementation-review rounds, and an r32
+scope restoration; history in
 [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md)). No fire
 *feature* code has landed; one Phase-A prerequisite has (the
 trilinear-accessor repair, commit `2fba2b48`, in master). Phase gating per
@@ -84,8 +84,8 @@ point of decision (see §3.4 on soot-yield calibration and §4.3 on smoke
 optical mapping).
 
 **Fidelity state is enforceable, not descriptive prose.** A simulator/importer
-supplies source qualification and producer gate evidence under the detached
-trusted attestation defined in §8; a `fire_medium`
+supplies source qualification and producer gate evidence as the declared,
+digest-covered manifest fields defined in §8; a `fire_medium`
 scene/job independently requests `fidelity_mode=predictive|preview`. Predictive
 is fail-closed: any unmet producer or renderer prerequisite in §7.0/§8 aborts
 before fields are accepted or render workers launch; it never silently
@@ -1821,8 +1821,10 @@ definition-of-done loop
 Two different things were being conflated by earlier revisions of this
 section: **what engineering must exist before a phase's work is sound**, and
 **what measured data must exist before its output may be called predictive.**
-They are separated here. A phase gate is a list of code deliverables and can
-always be satisfied by engineering. A predictive-label gate depends on
+They are separated here. **A phase gate is that phase's own exit criteria** —
+the deliverables that must exist and be green before the phase is done and the
+next may rely on it, not a barrier to starting. Every one can be satisfied by
+engineering. A predictive-label gate depends on
 laboratory data this project does not produce, and blocks *the claim*, not the
 work — everything can be built, tested, and shipped as explicitly-labelled
 preview while those datasets are open.
@@ -1838,12 +1840,17 @@ prerequisite and a pre-existing bug affecting every heterogeneous volume.
    conversion applied at *every* f_v site (§4.1, §4.3, §8).
 2. **Multi-channel media with derived φ(T) optics** — the constituent
    inventories, the shared extinction lattice including temperature, the
-   φ-aware quadrature with panel splitting at the φ-thresholds, and the φ-sup
-   extinction-majorant bound (§3.4, §4.3, §7.1 steps 1/4, §7.2.3).
+   **trilinear-only rule for physical channels** (§8 — tricubic undershoot
+   yields negative extinction, and clamping would break the quadrature
+   exactness step 2 relies on), the φ-aware quadrature with panel splitting
+   at the φ-thresholds, and the φ-sup extinction-majorant bound (§3.4, §4.3,
+   §7.1 steps 1/4, §7.2.3). The **authoring surface is
+   `multichannel_heterogeneous_medium`** (§9) — statically authored,
+   preview-only; `fire_medium` and its manifest are Phase C.
 3. **Emission estimator on both transport surfaces** — the σ_a·B_λ·T_det/p
    rule with correct event ordering in `PathTracingIntegrator` *and*
    `RayCaster`, the no-scatter deletion, HWSS hard-disabled for fire media,
-   and the no-silent-cap distance-sampler repair (§7.1 steps 2/5, G11).
+   and the no-silent-cap distance-sampler repair (§7.1 step 2, G11).
 4. **Chem transport** — the band-resolved source fields and the support-safe
    randomized line estimator (§4.4, §7.1 step 3).
 5. **Auto-rasterizer media routing** (G10) and the scene/metadata contract for
@@ -1877,12 +1884,43 @@ prerequisite and a pre-existing bug affecting every heterogeneous volume.
    [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md).
 3. The §3.8 verification tier (V1–V6) green — these are executable and
    dataset-independent.
-4. §8's grid contract: channel semantics, time mapping, residency, velocity
-   halo, and the trilinear-only rule for physical channels.
+4. §8's *sequence* contract: the manifest, `fire_medium`, time mapping,
+   residency, and velocity halo (the channel/precision and interpolation
+   rules land with Phase A gate 2).
 5. The freeze/prepared-input seam this arc depends on
    ([RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)) —
    grid/majorant/CDF swaps strictly between renders, mid-render mutation
    detected.
+
+#### Phase A execution order — the minimal end-to-end slice
+
+The gates above say *what must be true*; this says *what to build first*. The
+goal of the first increment is *a flame-shaped thing emitting physically
+correct spectral radiance*, reached in the fewest steps that each end in a
+green numeric test:
+
+1. **Planck free function + its two gates** (§4.2). No dependencies; the
+   B(500 nm, 1800 K) anchor and the π∫B dλ = σT⁴ identity are checkable in
+   isolation. Extract from `BlackBodyPainter`, do not reuse it.
+2. **Step-0 emission-bias characterization** (§7.1 step 0) on the *existing*
+   single-channel medium. Settles whether today's pickup is biased before
+   anything is built on it.
+3. **Two-channel medium (carbon + temperature) via
+   `multichannel_heterogeneous_medium`**, painter-baked, trilinear, no
+   manifest, no chem, no condensed phase. This is the smallest thing that can
+   carry a flame field.
+4. **Collision-based emission on `RayCaster`** (§7.1 step 2) with the
+   isothermal-slab absolute gate and the scene-unit invariance test. At this
+   point a procedural candle renders with correct absolute radiance.
+5. **The same estimator on `PathTracingIntegrator`** (G11), with the
+   pure-absorber tests through both entry routes. Now the PT rasterizers —
+   what users actually run — produce the same numbers.
+
+Everything else in Phase A (the condensed constituent, chem bands, the
+chromatic NM path, the φ-aware quadrature upgrade, the auto-rasterizer rule)
+extends a pipeline that already renders and already has numeric gates. Steps
+1–5 are the critical path; the rest can be parallelized or deferred within the
+phase.
 
 #### Predictive-label gates (data, not code)
 
@@ -1893,9 +1931,13 @@ gates above:
   and the total-mixture 8.7 m²/g anchor passes. The values currently in §12
   are explicitly non-predictive regression fixtures.
 - **Chemiluminescence** — §12 Q1's absolutely-calibrated per-fuel record
-  exists for the declared fuel, or `chem_model=none` is justified for that
-  fuel by a pinned measurement bounding its visible-band contribution below
-  the absolute radiance gate's uncertainty.
+  exists for the declared fuel. Otherwise `chem_model=none` is predictive
+  **only** when a pinned measurement reports a 95 %-confidence upper bound
+  below **both** 1 % of that fuel/case's measured 380–780 nm radiant power
+  **and** the absolute radiance gate's uncertainty at every gated wavelength;
+  absent that record, a missing calibrated chem record is a predictive hard
+  error. Synthetic η_b/S_b records are estimator tests and preview assets
+  only.
 - **Soot/condensable yields** — §3.4's calibration and cross-prediction gates
   pass for the fuel in question.
 
@@ -2775,15 +2817,13 @@ per-frame multi-channel grids + probe time series (§8). Renderer side:
 grid-sequence loading + per-frame majorant/CDF rebuild (G6), wired into the
 existing animation render workflow, plus the §8 manifest/preparation lifecycle
 and portable output-provenance plumbing through `FrameStore`, file encoders,
-AOVs, and animation/MOV finalization. This includes an audited Ed25519 verifier,
-CLI/job configuration for an operator-owned signed qualification-key registry,
-durable anti-rollback epoch state, trusted-clock expiry/revocation handling, and
-deterministic build/scene identity emitters; the all-built-in mutation-sink/
-freeze capability and `IRayCaster` light-sampler invalidation seam in §10.3;
-private qualification keys never ship in the renderer or repository (fixture
-keys are marked test-only). Signature verification uses a pinned dependency
-and known-answer, altered-payload, wrong-key, revoked-key, and null-attestation
-tests; its source/build-project/release staging is part of Phase C. Progression: laminar candle (DNS) →
+AOVs, and animation/MOV finalization. This includes deterministic build/scene
+identity emitters and the manifest digest verifier (§8's integrity contract —
+declared fields plus SHA-256, deliberately *not* an authentication system);
+the all-built-in mutation-sink/freeze capability and `IRayCaster`
+light-sampler invalidation seam in §10.3. Digest verification tests cover
+altered payloads, truncated frames, and mismatched declared/actual content.
+Progression: laminar candle (DNS) →
 puffing pool fire → turbulent plume, gating each on §3.8.
 
 **Frontends.** The standalone §3 simulator is the only first-class predictive
@@ -2866,16 +2906,17 @@ carry indistinguishable metadata. Each sequence stores:
   ordering, NFC, numeric width, and all other profile rules **before semantic
   field decoding**; noncanonical bytes are rejected rather than normalized.
   The same rules apply recursively to sequence manifests, every embedded/
-  override record, output provenance, and every build/attestation record. The top-level
-  manifest envelope is exactly `{payload, sequence_id, qualification_attestation}`.
+  override record, output provenance, and every build record. The top-level
+  manifest envelope is exactly `{payload, sequence_id}`.
   `payload` contains
   every semantic field listed in this section, including
   `schema_version=1`, but contains no `sequence_id`; `sequence_id` is SHA-256
   over the exact canonical RISE-CBOR64-v1 byte encoding of `payload` alone.
   This avoids a self-hashing manifest while giving every implementation one
-  preimage. `qualification_attestation` is outside that preimage and is either
-  the versioned map below or CBOR null for an unattested preview source; omission
-  is noncanonical. The complete envelope is then encoded with the same profile and
+  preimage. Producer qualification travels as declared `payload` fields
+  (`source_kind`, `physical_mapping`, producer build ID, gate-evidence IDs) —
+  covered by `sequence_id` and therefore tamper-evident, not tamper-proof; see
+  the integrity-vs-authenticity note below. The complete envelope is then encoded with the same profile and
   media type `application/vnd.rise.fire-sequence+cbor`. Unknown versions are rejected. The scene locates
   this file explicitly with `sequence_manifest`; no frame-pattern discovery is
   performed. For this arc `end_policy` is `hold` or `error`. Let
@@ -2986,7 +3027,7 @@ carry indistinguishable metadata. Each sequence stores:
   settings, target platform/architecture, and exact dependency versions plus
   loaded-binary hashes, with
   **producer_build_id=SHA-256(exact producer_build_v1 bytes)** recomputed by the
-  loader before any attestation or registry-scope comparison; and
+  loader before any manifest-field comparison; and
 - producer-owned `source_qualification=predictive_qualified|preview_only`, a
   stable `producer_reason_codes` list, and the exact producer gate-evidence
   record IDs; claimed `source_kind`, whose enum is `rise_simulation`,
@@ -3053,10 +3094,11 @@ a load error.
 
 **Fidelity ownership and transition table:** the producer alone derives
 `source_qualification` from simulation/import gates, and the renderer verifies
-the detached trusted attestation above. The scene/job
+the manifest's declared fields and digests (§8's integrity contract). The
+scene/job
 alone supplies requested `fidelity_mode`. On every render the renderer ignores
 any producer claim of final render status and derives `render_fidelity_status`
-plus render reason codes afresh from the trusted producer evidence and the
+plus render reason codes afresh from the declared producer evidence and the
 actual integrator, records, overrides, channels, domains, blur fallbacks, and
 **primary** output route. `predictive` is permitted only for the
 `rise_simulation` or validated `qualified_external` with `absolute_si`, spectral NM transport, matching
@@ -3126,7 +3168,6 @@ order: `requested_preview`, `producer_unqualified`, `heuristic_source`, `qualifi
 `nonadvected_source_blur_unsupported`, `keyframed_temporal_sampling_unsupported`,
 `programmatic_scene_unqualified`, `unrepresented_scene_mutation`,
 `untracked_scene_mutability`,
-`producer_untrusted`,
 `oidn_unqualified`, `radiance_clamp_enabled`, `path_regularization_enabled`,
 `sms_unqualified`,
 `continuation_closure_unsupported`, `sss_volume_nee_unsupported`,
@@ -3431,6 +3472,37 @@ mirroring how `blackbody_painter` packages Planck — while the general chunk
 stays available for non-fire uses. New chunks require no scene-version bump
 or migration tooling (version-agnostic CST loader; descriptor-driven
 registry).
+
+**`multichannel_heterogeneous_medium` is the Phase-A authoring surface, and
+lands first.** `fire_medium` above requires a `sequence_manifest` — a Phase-C
+artifact produced by the simulator — and an OpenVDB-enabled build, so it
+cannot be the vehicle for renderer-only work. The general chunk therefore
+takes the same named channels bound to **statically authored sources** rather
+than a manifest: per channel either a raw grid (the existing
+`volume_pattern`/bbox idiom, one lattice shared by all extinction-relevant
+channels per §7.1 step 1) or a baked 3D painter, plus the same
+`soot_em`/`smoke_*`/`phase` physical parameters `fire_medium` exposes:
+
+```
+multichannel_heterogeneous_medium
+{
+	name			candle_test
+	channel_carbon		painter carbon_profile     # or: volume_pattern ...
+	channel_temperature	painter temperature_profile
+	bbox_min		-0.02 0.0  -0.02
+	bbox_max		 0.02 0.08  0.02
+	soot_em			0.26
+	phase			hg 0.5
+}
+```
+
+It is **preview-only by construction** — hand-authored fields carry no
+producer qualification, so §8's predictive gate cannot be met and the medium
+stamps `producer_unqualified`. That is exactly right for Phase A, whose job is
+to make the estimators correct against analytic targets (§7.1 steps 0/2/6),
+not to make predictive claims. `fire_medium` then adds the manifest,
+sequence/time semantics, and fidelity machinery on top of an already-working
+medium in Phase C.
 
 ## 10. Architectural constraints (standing rules this design must respect)
 
@@ -3821,8 +3893,8 @@ registry).
 - Fedkiw, Stam, Jensen, *Visual Simulation of Smoke*, SIGGRAPH 2001; Zehnder, Narain, Thomaszewski, *An Advection–Reflection Solver*, SIGGRAPH 2018 (rejected for variable density, §3.7); Kim et al., *Wavelet Turbulence*, SIGGRAPH 2008 (excluded, §3.7).
 ## 14. Revision history
 
-The full per-revision log — 31 revisions across 4 internal and 20+ external
-review rounds — lives in
+The full per-revision log — 32 revisions across 4 internal review rounds, 6
+external expert rounds, and 20 implementation-review rounds — lives in
 [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md). **Consult it
 before reverting anything here**; many current forms are corrections of
 plausible-looking earlier ones.

@@ -543,3 +543,35 @@ it was already tried and refuted here.
   durably precede journal deletion and bound scene-load CAS/admission to one
   retained, still-current mutation epoch under its exclusive lease.
 
+- **r32 (2026-07-28):** scope restoration after an independent assessment of
+  the r11–r31 loop. That loop's finding rate never decayed (its last twelve
+  rounds reported 4, 9, 4, 7, 7, 9, 7, 8, 8, 9, 6, 3 P1s) and it had drifted
+  ~26 % of the document into material unrelated to fire or smoke. **Two
+  self-blocking defects fixed:** the continuation-closure allowlist
+  default-denied the arc's own fire medium — and its "exact
+  `HenyeyGreensteinPhaseFunction`" condition could never be met by the
+  σ_s-weighted constituent mixture §4.3 pins — so Phase B's emissive-volume
+  NEE would have been disabled inside the only medium it exists to light;
+  and §3.3/§3.7 gave incompatible diffusive-flux constructions (reconciled:
+  §3.3's exactness is structural/exact-arithmetic, the §3.7 projection
+  enforces it against fp64 and limiter-tolerance residual). **Removed:**
+  cryptographic producer attestation, the operator-owned trusted-key
+  registry, dual-signed root rotation, anti-rollback epochs, and the
+  CSPRNG/journaled artifact-publication transaction — replaced by a declared
+  field + digest *integrity* contract, which is what the arc's actual failure
+  mode (a normalized grid rendered as absolute SI) requires. **Split out:**
+  `RENDER_PREPARATION_LIFECYCLE.md` (repo-wide mutation/freeze/publication),
+  `FIRE_SMOKE_SOLVER_SPEC.md` (the §3.7 operator schedule, tableau, and
+  basis certificates), and this history. **Rewrote §7.0**, which had inverted
+  from sequencing the work to blocking it: phase gates are now that phase's
+  own engineering exit criteria, measurement-dependent requirements gate the
+  *predictive label* rather than phase entry, and a Phase-A execution order
+  names the minimal end-to-end slice. Added
+  `multichannel_heterogeneous_medium` as Phase A's authoring surface
+  (`fire_medium` needs a Phase-C manifest and so cannot serve renderer-only
+  work). 5079 → ~3900 lines; no physics, transport, or radiometry removed.
+  A follow-up review pass caught that the attestation removal had been applied
+  at its definition site but not its five consumer sites, and that the
+  quantitative `chem_model=none` criterion had been weakened in the §7.0
+  rewrite; both repaired in the same revision.
+
