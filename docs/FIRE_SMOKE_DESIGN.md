@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 29 — after internal review rounds 1–4,
-**six external expert review rounds**, and eighteen post-r11 implementation-review
+**Status:** DRAFT (revision 30 — after internal review rounds 1–4,
+**six external expert review rounds**, and nineteen post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r29; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r30; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1078,21 +1078,29 @@ The most notorious practical trap in fire LES; specified accordingly:
   **binary64 byte of N_A**, plus SHA-256 over those canonical bytes. The same
   record ID is part of calibration/provenance. Runtime never recomputes QR/SVD,
   chooses column signs/order, or changes a rank tolerance: it verifies the
-  recorded matrix against the exact A. Qualification requires
-  `cols(N_A)=state_dimension-r` and carries an independent rank certificate:
-  recorded pivot-row/pivot-column indices select an r×r minor B of A, and a
-  canonical binary64 approximate inverse R. Outward-rounded interval arithmetic
-  must prove ‖I−BR‖∞<1; this Neumann bound proves B nonsingular and hence
-  rank(A)≥r, while the required orthonormal null columns prove rank(A)≤r.
-  Runtime verifies that certificate and
+  recorded matrix against the exact A. Here “exact A” means its canonical
+  binary64 entries interpreted as dyadic rationals, not a tolerance-ranked
+  floating matrix. Qualification requires
+  `cols(N_A)=state_dimension-r` and carries an exact rank factorization
+  `A=UV`, with U m×r and V r×n encoded as canonical reduced arbitrary-precision
+  rational numerator/positive-denominator pairs. Runtime verifies every entry of A=UV by exact
+  integer arithmetic, proving rank(A)≤r. Recorded pivot-row/pivot-column
+  indices additionally select an r×r minor B of A; its exact fraction-free
+  elimination certificate has nonzero final pivots and proves rank(A)≥r.
+  Thus rank(A)=r independently of the approximate N_A columns. Runtime then
+  verifies
   ‖AN_A‖_∞≤128ε_64‖A‖_∞ and
-  ‖N_AᵀN_A−I‖_∞≤128ε_64, then uses those bytes or rejects. This pin is
+  ‖N_AᵀN_A−I‖_∞≤128ε_64, then uses those bytes or rejects. The residual bound
+  is the explicitly accepted fp64 tangent error; it is not used as a rank
+  proof. This pin is
   load-bearing because componentwise MC is not invariant to a rotation of the
   nullspace basis. With that recorded basis,
   encode each cell as ξ=N_AᵀQ, apply the MC reconstruction to ξ, and decode
   every face state as Q_f=N_Aξ_f. Thus both high- and low-order vector fluxes,
-  and therefore their difference, are tangent to every exact mass/element/Z
-  equality before limiting. Projecting an independently reconstructed vector
+  and therefore their difference, satisfy every mass/element/Z tangent
+  equality within the qualified fp64 forward-error envelope before limiting.
+  Every stage checks that envelope and rejects the step on excess; tolerance is
+  never evidence of a different rank. Projecting an independently reconstructed vector
   after the fact is forbidden because it changes its stencil and can violate
   face conservation. **ℋ_s is not part of this dimensionally-mass-valued
   nullspace basis:** it receives its own scalar MC MUSCL face reconstruction
@@ -1103,8 +1111,9 @@ The most notorious practical trap in fire LES; specified accordingly:
   antidiffusive face flux. The limiter is a
   **multiconstraint Zalesak nodal-budget algorithm, not independent face-local
   clipping**: first compute the complete low-order update and all raw incident
-  antidiffusive corrections A_cf. Exact equalities are already satisfied by
-  construction and are **not** represented as two zero-budget half-spaces.
+  antidiffusive corrections A_cf. Equality residuals are already confined to
+  the verified fp64 forward-error envelope by construction and are **not**
+  represented as two zero-budget half-spaces.
   For every remaining inequality a_r·q≤b_r, only incident corrections with
   a_r·A_cf>0 consume the upper budget Q_cr=b_r−a_r·q_L; its lower bound is
   represented as a separate inequality and treated identically. Accumulate
@@ -1210,7 +1219,7 @@ The most notorious practical trap in fire LES; specified accordingly:
 
      On the uniform orthogonal baseline, every diffusive/conductive normal flux
      uses the centered two-cell difference divided by center spacing and the
-     harmonic mean of its positive cell transport coefficient (ρ_gD for
+     harmonic mean of its positive cell transport coefficient (ρ_totD for
      constituent diffusion, k_eff for conduction); prescribed boundary fluxes
      use the same one-sided ledger value in both candidates. Form the raw
      mass/Z diffusion vector `J_tilde=(J_Z_tilde,{J_j_tilde})` with those same
@@ -1220,11 +1229,13 @@ The most notorious practical trap in fire LES; specified accordingly:
 
      > C=[A; (0,1,...,1)],
 
-     in the same canonical format and with the same dimension, pivot-minor,
-     interval-inverse, null-residual, and orthonormality checks as N_A. Set
+     in the same canonical format and with the same dimension, exact-rank-
+     factorization, pivot-minor, null-residual, and orthonormality checks as
+     N_A. Set
      `J=N_C N_C^T J_tilde`; no sequential species correction or
      implementation-chosen constrained solve is permitted. Consequently every
-     primal face satisfies both Σ_jJ_j=0 and the full affine tangent identity
+     primal face satisfies, within the same checked fp64 forward-error envelope,
+     both Σ_jJ_j=0 and the full affine tangent identity
 
      > E J_j - b(0)Σ_jJ_j - [b(1)-b(0)]J_Z = 0.
 
@@ -1397,13 +1408,17 @@ The most notorious practical trap in fire LES; specified accordingly:
      D_iI_i=I_ρ,iD. A limiter-active record whose fuel/ambient elemental vectors
      overlap separately forces the lower and upper ρ_totZ rows; accepting Z<0
      or Z>1 is RED even when every q_j and element equality passes. Basis tests
-     load the exact recorded bytes/hash/rank/order, verify the pivot-minor
-     certificate and both residual bounds, and show a rotated valid nullspace
-     would produce a different MC slope; deleting one valid basis column,
+     load the exact recorded bytes/hash/rank/order, verify the exact upper-rank
+     factorization, pivot-minor lower-rank certificate, and both residual bounds,
+     and show a rotated valid nullspace would produce a different MC slope; the
+     near-rank-deficient `diag(1,δ)`/declared-rank-1 counterexample and deleting
+     one valid basis column,
      recomputation, or accepting a changed hash is RED. A multielement
      pure-diffusion fixture requires both C J=0 and nonzero J_Z at every face;
      omitting J_Z or applying a ΣJ-only correction that is not tangent to A is
-     RED. Spatially uniform
+     RED. The same fixture uses nonzero aerosol loading and checks the analytic
+     flux magnitude, so substituting ρ_gD for the required ρ_totD is RED even
+     if a later projection makes C J=0. Spatially uniform
      nonzero S_div on a periodic domain is explicitly invalid because
      ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
 
@@ -1973,7 +1988,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r29)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r30)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -2568,7 +2583,17 @@ families reach emission at a point y from vertex x:
     that is 0.5·S_i with **S_i = e^{−τ_i}, segment i's deterministic
     transmittance** (the DT no-scatter atom's mass), since only the
     delta-tracking branch owns the no-scatter atom (the equiangular branch
-    always proposes a scatter).
+    always proposes a scatter). Proposal survival and physical throughput are
+    separate. Immediately after every survived segment and before crossing its
+    null boundary, update the sampled path weight exactly once as
+
+    > W ← W · T_det,i / P_{0,i}.
+
+    Thus the finite 50/50 case multiplies W by 2, while pure DT has
+    P_{0,i}=T_det,i and multiplies by 1. The same P_{0,i} remains in
+    p_march for endpoint MIS; omitting either the throughput compensation or
+    the density factor is forbidden. This update occurs at each segment, not
+    only at a terminal surface/background return.
     This p_march is identically zero when continuation cannot reach y; neither
     a nominal material lobe nor an NEE-before-RR implementation order creates
     proposal support.
@@ -2873,6 +2898,10 @@ agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
 roulette probabilities 0, (0,1), and 1, pdf normalization including its
 survival mass, and recorded-proposal/throughput agreement. Using the uncapped
 full-lobe marginal or omitting roulette survival is RED.
+One- and multi-null-boundary homogeneous fixtures force the 50/50 sampler to
+survive one and k segments before a background and before a downstream emitter;
+both must match pure DT. Retaining T_det without dividing by P_0 is the explicit
+`2^{-k}` RED control.
 An `IsotropicPhong` diffuse+glossy fixture assigns unequal per-type caps and
 requires the immutable closure's enumerated selection masses, subset
 Evaluate/Pdf, sampled frequencies, and IOR/path-state transitions to agree in
@@ -3435,12 +3464,15 @@ default-asset/config baseline, records `bootstrap_author_generation`, and marks
 the new Job `load_eligible`. It does not claim a file scene identity.
 Each public `LoadAsciiSceneAuto` or `LoadAsciiSceneViaCst` first performs one
 atomic `load_attempted` false→true CAS for the current epoch, before any open,
-classification, or parser work, and then may open `SceneLoadTransaction` only if the
-current author generation still equals that bootstrap generation, sticky state
-is clear, and no earlier load was attempted; otherwise the resulting job is
-preview-only and the transaction cannot clear it. The load transaction takes
-the sink's exclusive lease before the first file open and forbids render or
-external mutation entry while open. It opens and reads the top-level scene
+classification, or parser work. A losing CAS returns `load_already_attempted`.
+The winner next acquires the sink's exclusive lease; **only while holding that
+lease** does it atomically compare current author generation with
+`bootstrap_author_generation`, inspect sticky state, and establish the
+`SceneLoadTransaction` starting generation/scope. No eligibility snapshot or
+transaction start is permitted between the CAS and that lease. A failed
+eligibility check leaves the Job preview-only and the transaction cannot clear
+it. The lease is held before the first file open and forbids render or external
+mutation entry while open. The transaction opens and reads the top-level scene
 exactly once into an immutable transaction-owned
 `SceneSourceBlob{logical_locator,bytes,sha256}`. Auto classification consumes
 that blob and calls a private `LoadAsciiSceneViaCstImpl(blob,transaction)`;
@@ -3462,7 +3494,9 @@ second-load, parse-failure, failed-open attempt, mid-load render attempt, and
 mutate-after-commit. A replace-at-classification test hook atomically swaps the
 path after the blob read and proves Auto still derives and hashes the original
 bytes; direct ViaCst and Auto must produce identical retained-CST identity from
-the same blob.
+the same blob. A second barrier test pauses the winner after its CAS while a
+manager/item mutator enters; after the mutator completes, lease acquisition and
+the under-lease eligibility check must reject the load as unrepresented.
 
 `ClearAll()` must open a private **JobResetTransaction** before destroying any
 tracked container. It acquires the sink's exclusive lease, increments a
@@ -3626,25 +3660,47 @@ that owns an output path or lacks that capability hard-errors prepared entry
 with `unmanaged_finalizer_io`; it remains available only to legacy nonprepared
 preview.
 
-The filesystem transaction is fail-closed and process-safe. Generate a 256-bit
-CSPRNG transaction ID (not Job-local generations), create every staging/journal
+The filesystem transaction is fail-closed and process-safe. Job generates a
+256-bit CSPRNG `request_id` when the render request enters ACTIVE, and a fresh
+256-bit CSPRNG `tx_id` for each required-cohort or optional transaction (neither
+is a Job-local generation). For every transaction, **`cohort_id=tx_id` byte for
+byte**. Create every staging/journal
 path with exclusive-create, canonicalize parent directory + leaf identity, and
 reject duplicate/alias targets across finalizers. Acquire interprocess locks for
 all target directories in canonical sorted order and hold them through recovery,
 commit, and cleanup. A versioned durable journal records the transaction/request
 ID, complete target set, new digests, prior marker bytes/digests, and every
-staging/final/rollback name before relocating anything. The lexicographically
+staging/final/rollback and recovery-intent name before relocating anything. The lexicographically
 first locked directory is the cohort coordinator and owns the journal and group
 marker; that marker references every cohort member across all locked directories.
 For canonical artifact locator P, the stable discovery locator for its head
 marker is exactly `P + ".rise-artifact-marker-v1"`; the provenance sidecar is
-exactly `P + ".riseprov.cbor"`. The required group-marker locator is exactly
+exactly `P + ".riseprov.cbor"`, and its stable recovery-intent locator is exactly
+`P + ".rise-recovery-intent-v1"`. The required group-marker locator is exactly
 `coordinator_directory + "/.rise-required-cohort-" +
-lowercase_hex(cohort_id) + ".v1"`. All components are NFC-normalized before joining. These suffixes and
-the `.rise-required-cohort-*.v1` namespace are reserved: predictive preflight
+lowercase_hex(cohort_id) + ".v1"`. All components are NFC-normalized before joining. These suffixes,
+the recovery-intent suffix, and the `.rise-required-cohort-*.v1` namespace are
+reserved: predictive preflight
 rejects any configured artifact whose canonical/file identity aliases any
-other artifact or any derived sidecar, head-marker, group-marker, journal, or
-rollback locator.
+other artifact or any derived sidecar, head-marker, recovery-intent,
+group-marker, journal, or rollback locator.
+
+Cross-directory recovery is discoverable from every member. Under the complete
+sorted lock set, Job first writes and syncs the immutable coordinator journal,
+then exclusive-creates and durably syncs one canonical-CBOR recovery intent at
+every member's stable intent locator:
+`{schema:1,tx_id,coordinator_journal_locator,coordinator_journal_sha256,
+lock_directories:[...]}`, with the directory array sorted canonically. Every
+intent must be durable and every containing directory synced **before any
+artifact, sidecar, or head marker is relocated**. A reader/writer probes the
+stable intent beside each target before locking, unions any recorded lock sets,
+acquires the union in canonical order, and re-probes/revalidates after acquiring
+locks; this second probe closes the race with an intent installed after the
+first probe. It resolves journal recovery to a terminal generation before
+touching the target. Intents are removed and their directories synced only
+after COMMITTED/FAILED recovery and terminal cleanup. Thus a later transaction
+targeting only a non-coordinator directory must discover and finish an earlier
+cross-directory transaction first.
 
 Marker linkage is an exact canonical-CBOR tagged union; fields not listed for a
 variant are forbidden. A required-member `artifact_marker_v1` is
@@ -3659,6 +3715,13 @@ primary_required_group_locator,primary_required_group_sha256}`. The canonical
 where `members` is the complete lexicographically sorted array of
 `{artifact_marker_locator,artifact_marker_sha256}`. Every locator is the
 canonical locator defined above, not an implementation-relative path.
+`schema` and `member_index` are canonical minimally encoded unsigned CBOR
+integers (`member_index<2^64`); every ID and SHA-256 field, including
+`request_id`, `tx_id`, `cohort_id`, `provenance_id`, and all digest fields, is
+an exact 32-byte CBOR byte string. A required group marker is immutable:
+installation uses exclusive-create/no-replace at its tx-derived locator, and it
+is retained for the lifetime of every artifact generation that references it
+(this baseline performs no group-marker garbage collection).
 A reader starting from any required member acquires shared versions of the same
 directory locks (or retries if the generation changes), validates artifact +
 sidecar against its artifact marker, follows `required_group_locator`, validates
@@ -3676,8 +3739,8 @@ Each artifact, sidecar, staged marker, and journal is closed and durably synced
 before rename. Relocate prior components and install new data; sync every target
 directory; rename each artifact marker and finally the required-cohort group
 marker; sync directories **again**, which is the publication linearization
-point. Only then transition COMMITTING→COMMITTED, delete rollback/journal files,
-and sync the directories a third time. If the platform cannot provide the
+point. Only then transition COMMITTING→COMMITTED, delete rollback/journal and
+recovery-intent files, and sync the directories a third time. If the platform cannot provide the
 required file/directory durability semantics, predictive publication hard-errors
 `durable_publication_unavailable` before rendering rather than weakening them.
 
@@ -3719,6 +3782,14 @@ must serialize without cross-pairing transaction data. Required staging,
 validation, encoder, and callback failures cover ACTIVE→FAILED_PRECOMMIT and
 race cancellation. A malicious/legacy finalizer that writes a canonical path or
 substitutes/reopens the staging path must be rejected before dispatch. A
+finalizer retains its facade and races a write across return: an operation
+admitted before sealing is joined, while every post-seal write returns
+`staging_sealed` and the hashed bytes cannot change. A two-directory crash after
+relocating only the non-coordinator member leaves an intent there; a later Job
+targeting only that member must discover the coordinator journal, recover, and
+only then commit. Two disjoint cohorts in one directory prove their random
+tx/cohort IDs produce distinct immutable group markers and neither head is
+invalidated by the other. A
 concurrent reader probes after every individual marker rename/sync, including a
 cross-directory member: it may accept only after matching required-group
 membership, while an optional singleton validates only through its committed
@@ -4961,3 +5032,12 @@ registry).
   operands, sealed Job-owned staging before hashing, specified discoverable
   canonical marker variants, and made Auto/ViaCst share one transaction-owned
   immutable source blob.
+- **r30 (2026-07-28):** after the nineteenth fresh high-threshold P1-only review
+  of committed r29 (six P1). CFD: replaced the invalid approximate-null-column
+  rank argument with exact upper/lower rank certificates and corrected the
+  loaded-mixture diffusion coefficient from ρ_gD to ρ_totD. Transport: required
+  per-segment no-event proposal compensation, eliminating the explicit 2^-k
+  null-boundary bias. Pipeline: installed per-target cross-directory recovery
+  intents, made cohort IDs CSPRNG transaction IDs with immutable group markers,
+  and moved scene-load eligibility admission under the exclusive mutation
+  lease.
