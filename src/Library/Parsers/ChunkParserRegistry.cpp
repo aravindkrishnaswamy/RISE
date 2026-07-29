@@ -926,15 +926,22 @@ namespace RISE
 				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
 				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
 			}
+			//! `persistenceDefault` is passed per chunk because the eight
+			//! chunks sharing this helper do NOT share one Finalize default
+			//! (perlin2d 0.5; perlin3d + turbulence3d 1.0; simplex3d,
+			//! wavelet3d, curlnoise3d, domainwarp3d, perlinworley3d 0.65) --
+			//! a single hardcoded hint here was wrong for seven of them, and
+			//! `defaultValueHint` is MODEL-FACING (read_schema serves it as
+			//! the parameter's `default`).
 			template<typename PushFn>
-			static void AddNoisePainterCommonParams( PushFn P ) {
+			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5" ) {
 				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
-				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
-				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Octave amplitude falloff";   p.defaultValueHint = "0.5"; }
-				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves";    p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";             p.defaultValueHint = "1 1 1"; }
-				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";             p.defaultValueHint = "0 0 0"; }
+				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its LOW end"; }
+				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its HIGH end"; }
+				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Amplitude falloff per octave (lower = smoother, higher = grittier)"; p.defaultValueHint = persistenceDefault; }
+				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves (more = finer detail, more cost)"; p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
+				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
 			}
 			//
 			// AddBaseRasterizerParams — the 7 fields every production
@@ -1034,7 +1041,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "uniformcolor_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Constant RGB painter.";
+						cd.description = "Constant RGB painter -- ZERO spatial variation.  Right for small parts, test scenes, and as an operand of blend_painter; on a LARGE hero surface (table top, wall, floor, ground) one flat colour is the single biggest reason a render reads as amateurish.  Reach for a procedural painter instead -- read_skill {name:\"procedural-textures\"}.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name";                          p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B values";                         p.defaultValueHint = "0 0 0"; }
@@ -1167,7 +1174,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "spectral_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Spectral painter defined by wavelength/amplitude samples.";
+						cd.description = "Spectral painter defined by wavelength/amplitude samples.  This is the COLOUR pipe (spectral reflectance / emission, colorspace-converted); a wavelength-dependent PHYSICAL SCALAR (dispersive IOR, absorption) belongs in scalar_painter { file ... } instead.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
@@ -1461,7 +1468,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Physical-scalar painter (no colorspace).  Used for IOR, scattering, roughness, etc.  Pick exactly one form via the optional fields below.";
+						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  Only the `function2d` and `texture` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { function2d <a UV-domain painter or expression_function2d> } or scalar_painter { texture <image painter> }.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
@@ -1628,7 +1635,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "png_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Texture painter that loads a PNG image.";
+						cd.description = "Texture painter that loads a PNG image, sampled at the surface UV (2D domain).  `color_space` selects how the file's values are interpreted -- Rec709RGB_Linear is the verbatim-store idiom for non-colour data such as normal or mask maps.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "PNG file path"; }
@@ -1683,7 +1690,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "jpg_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Texture painter that loads a JPEG image.";
+						cd.description = "Texture painter that loads a JPEG image, sampled at the surface UV (2D domain).  See png_painter for the `color_space` note.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "JPEG file path"; }
@@ -1725,7 +1732,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "hdr_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Texture painter that loads a Radiance HDR image.";
+						cd.description = "Texture painter that loads a Radiance HDR image, sampled at the surface UV (2D domain).  The usual source for a rasterizer `radiance_map` environment dome.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "HDR file path"; }
@@ -1779,7 +1786,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "exr_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Texture painter that loads an OpenEXR image.";
+						cd.description = "Texture painter that loads an OpenEXR image, sampled at the surface UV (2D domain).  Also the usual high-dynamic-range source for a rasterizer `radiance_map` environment dome.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "EXR file path"; }
@@ -1834,7 +1841,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "tiff_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Texture painter that loads a TIFF image.";
+						cd.description = "Texture painter that loads a TIFF image, sampled at the surface UV (2D domain).  See png_painter for the `color_space` note.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "TIFF file path"; }
@@ -1867,7 +1874,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "checker_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Two-colour checkerboard painter.";
+						cd.description = "Two-colour checkerboard in the surface UV (2D domain).  Deliberately synthetic: right for test / reference surfaces and tiled floors, wrong for material realism -- use a noise painter for that.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
@@ -1896,7 +1903,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "lines_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Two-colour stripe painter.";
+						cd.description = "Two-colour stripe field in the surface UV (2D domain); `vertical` picks the axis.  Synthetic like checker_painter -- for real fabric weave or wood grain use gabor3d_painter / turbulence3d_painter instead.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
@@ -1933,7 +1940,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "mandelbrot_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Procedural Mandelbrot-fractal painter.";
+						cd.description = "Mandelbrot escape-time fractal in the surface UV (2D domain), colora -> colorb by iteration count.  An abstract-art surface, not a material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside-set colour"; }
@@ -1970,7 +1977,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "2D Perlin noise painter.";
+						cd.description = "Perlin fBm noise in the surface UV (2D domain -- follows the UV parameterisation, so it stretches with UV distortion and can show seams).  Smooth cloudy variation from colora (low) to colorb (high).  Prefer perlin3d_painter when the surface should look CARVED OUT of a solid material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddNoisePainterCommonParams( P );
 						return cd;
@@ -2052,21 +2059,21 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gerstnerwave_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Procedural ocean-wave painter (Gerstner waves).";
+						cd.description = "A sum of `num_waves` Gerstner waves in the surface UV (2D domain) -- the water-surface crest/trough field, steered by `wind_dir` / `directional_spread` and animated by `time`.  Most useful as a displaced_geometry displacement (real waves) with colora/colorb reading trough vs crest.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Trough colour"; }
 						{ auto& p = P(); p.name = "colorb";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Crest colour"; }
-						{ auto& p = P(); p.name = "num_waves";           p.kind = ValueKind::UInt;      p.description = "Number of wave components"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "median_wavelength";   p.kind = ValueKind::Double;    p.description = "Median wavelength"; }
-						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Wavelength spread"; }
-						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median amplitude"; }
-						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent"; }
-						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction"; }
-						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread"; }
-						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient"; }
-						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed"; }
-						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double;    p.description = "Time variable"; }
+						{ auto& p = P(); p.name = "num_waves";           p.kind = ValueKind::UInt;      p.description = "Number of wave components (fewer + longer wavelengths reads as a calmer swell)"; p.defaultValueHint = "12"; }
+						{ auto& p = P(); p.name = "median_wavelength";   p.kind = ValueKind::Double;    p.description = "Median wavelength, in UV units"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Ratio spread of wavelengths around the median"; p.defaultValueHint = "3.0"; }
+						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median wave amplitude"; p.defaultValueHint = "0.05"; }
+						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent across the wave set"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction in UV space (only the first two components are used)"; p.defaultValueHint = "1 0 0"; }
+						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread about wind_dir (0 = a single travel direction)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient (only matters when `time` animates)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed for the wave set"; p.defaultValueHint = "42"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double;    p.description = "Animation time (keyframe this for moving water)"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -2267,9 +2274,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlin3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D Perlin noise painter.";
+						cd.description = "Perlin fBm noise sampled at the WORLD-SPACE intersection point (3D solid domain -- needs no UVs and shows no seams; the object slides through a fixed world field, so `shift` re-registers the pattern).  Smooth cloudy variation from colora (low) to colorb (high).  The workhorse under wood, marble and mottled stone -- give `scale` unequal components for grain.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "1.0" );
 						return cd;
 					}();
 					return d;
@@ -2298,9 +2305,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "wavelet3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D wavelet noise painter.";
+						cd.description = "Band-limited wavelet noise at the world-space intersection point (3D solid domain).  Stays crisp under minification where plain Perlin aliases, so use it for fine detail seen at a distance.  colora (low) -> colorb (high).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "0.65" );
 						{ auto& p = P(); p.name = "tile_size"; p.kind = ValueKind::UInt; p.description = "Precomputed tile edge length"; p.defaultValueHint = "32"; }
 						return cd;
 					}();
@@ -2333,17 +2340,17 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "reactiondiffusion3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Reaction-diffusion procedural texture.";
+						cd.description = "Gray-Scott reaction-diffusion, simulated ONCE onto a grid_size^3 volume at construction and then sampled at the world-space intersection point (3D solid domain).  ORGANIC spots / stripes / labyrinths -- `feed` + `kill` select which -- for animal hide, coral, lichen, oxidation blooms.  Setup cost grows as grid_size^3 * iterations, so keep both modest.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
 						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "grid_size";  p.kind = ValueKind::UInt;       p.description = "Simulation grid edge";        p.defaultValueHint = "64"; }
-						{ auto& p = P(); p.name = "da";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of A";          p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "db";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of B";          p.defaultValueHint = "0.5"; }
-						{ auto& p = P(); p.name = "feed";       p.kind = ValueKind::Double;     p.description = "Feed rate";                    p.defaultValueHint = "0.055"; }
-						{ auto& p = P(); p.name = "kill";       p.kind = ValueKind::Double;     p.description = "Kill rate";                    p.defaultValueHint = "0.062"; }
-						{ auto& p = P(); p.name = "iterations"; p.kind = ValueKind::UInt;       p.description = "Simulation iterations";        p.defaultValueHint = "5000"; }
+						{ auto& p = P(); p.name = "grid_size";  p.kind = ValueKind::UInt;       p.description = "Simulation grid edge (cost is grid_size^3)"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "da";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of A";          p.defaultValueHint = "0.2"; }
+						{ auto& p = P(); p.name = "db";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of B";          p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "feed";       p.kind = ValueKind::Double;     p.description = "Feed rate (with `kill`, selects spots vs stripes vs labyrinths)"; p.defaultValueHint = "0.037"; }
+						{ auto& p = P(); p.name = "kill";       p.kind = ValueKind::Double;     p.description = "Kill rate (with `feed`, selects spots vs stripes vs labyrinths)"; p.defaultValueHint = "0.06"; }
+						{ auto& p = P(); p.name = "iterations"; p.kind = ValueKind::UInt;       p.description = "Simulation iterations";        p.defaultValueHint = "2000"; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
 						return cd;
@@ -2376,15 +2383,15 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gabor3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D Gabor noise painter.";
+						cd.description = "Gabor noise (oriented band-limited wavelets) at the world-space intersection point (3D solid domain) -- DIRECTIONAL streaks along `orientation` at `frequency`, unlike the isotropic noises.  Brushed metal, wood fibre, fur flow, scratch fields.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
 						{ auto& p = P(); p.name = "colorb";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency (streak pitch)"; p.defaultValueHint = "4.0"; }
 						{ auto& p = P(); p.name = "bandwidth";       p.kind = ValueKind::Double;     p.description = "Gaussian bandwidth";  p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3; p.description = "Orientation vector"; }
-						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume (higher = denser streaks, more cost)"; p.defaultValueHint = "4.0"; }
 						{ auto& p = P(); p.name = "scale";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";      p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";      p.defaultValueHint = "0 0 0"; }
 						return cd;
@@ -2414,9 +2421,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "simplex3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D simplex noise painter.";
+						cd.description = "Simplex noise (Perlin-like, cheaper, without Perlin's axis-aligned grid artifacts) at the world-space intersection point (3D solid domain).  Same colora-low / colorb-high ramp -- a drop-in when perlin3d shows grid alignment.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "0.65" );
 						return cd;
 					}();
 					return d;
@@ -2458,15 +2465,15 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sdf3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Signed-distance-field procedural painter.";
+						cd.description = "Colours by the signed distance to an analytic primitive (`type`) at the world-space intersection point (3D solid domain): concentric shells / bands / an inlay footprint, optionally noise-perturbed.  This paints COLOUR only -- for actual SDF geometry use sdf_geometry.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside colour"; }
 						{ auto& p = P(); p.name = "colorb";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside colour"; }
-						{ auto& p = P(); p.name = "type";             p.kind = ValueKind::Enum;       p.enumValues = {"sphere","box","torus","cylinder","plane","gyroid","menger"}; p.description = "SDF primitive"; }
-						{ auto& p = P(); p.name = "param1";           p.kind = ValueKind::Double;     p.description = "Shape parameter 1"; }
-						{ auto& p = P(); p.name = "param2";           p.kind = ValueKind::Double;     p.description = "Shape parameter 2"; }
-						{ auto& p = P(); p.name = "param3";           p.kind = ValueKind::Double;     p.description = "Shape parameter 3"; }
+						{ auto& p = P(); p.name = "type";             p.kind = ValueKind::Enum;       p.enumValues = {"sphere","box","torus","cylinder"}; p.description = "SDF primitive (SDFPrimitiveType has exactly these four; an unrecognised spelling falls through to sphere)"; }
+						{ auto& p = P(); p.name = "param1";           p.kind = ValueKind::Double;     p.description = "Shape parameter 1 (sphere/cylinder radius, box half-extent x, torus major radius)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "param2";           p.kind = ValueKind::Double;     p.description = "Shape parameter 2 (box half-extent y, torus minor radius, cylinder half-height)"; p.defaultValueHint = "0.3"; }
+						{ auto& p = P(); p.name = "param3";           p.kind = ValueKind::Double;     p.description = "Shape parameter 3 (box half-extent z; unused by the other primitives)"; p.defaultValueHint = "0.3"; }
 						{ auto& p = P(); p.name = "shell_thickness";  p.kind = ValueKind::Double;     p.description = "Shell/band thickness"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "noise_amplitude";  p.kind = ValueKind::Double;     p.description = "Noise displacement amplitude"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "noise_frequency";  p.kind = ValueKind::Double;     p.description = "Noise displacement frequency"; p.defaultValueHint = "1"; }
@@ -2500,10 +2507,10 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "curlnoise3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D curl-noise painter.";
+						cd.description = "Divergence-free curl noise at the world-space intersection point (3D solid domain) -- swirling flow-like filaments instead of blobs.  Smoke, marbled paper, eddies, whorls.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
-						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Finite-difference step"; p.defaultValueHint = "1e-4"; }
+						AddNoisePainterCommonParams( P, "0.65" );
+						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Finite-difference step used for the curl"; p.defaultValueHint = "0.01"; }
 						return cd;
 					}();
 					return d;
@@ -2533,10 +2540,10 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "domainwarp3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D domain-warped noise painter.";
+						cd.description = "Noise whose INPUT coordinates are themselves noise-displaced (`warp_amplitude`, `warp_levels`), at the world-space intersection point (3D solid domain).  The cheapest way to stop regular fBm reading as `noise`: flowing, organic, marbled distortion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
-						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude"; p.defaultValueHint = "0.5"; }
+						AddNoisePainterCommonParams( P, "0.65" );
+						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude (how far the coordinates are dragged)"; p.defaultValueHint = "4.0"; }
 						{ auto& p = P(); p.name = "warp_levels";    p.kind = ValueKind::UInt;   p.description = "Warp iteration levels"; p.defaultValueHint = "2"; }
 						return cd;
 					}();
@@ -2567,9 +2574,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlinworley3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Hybrid Perlin + Worley noise painter.";
+						cd.description = "Perlin and Worley blended (`blend` weights them) at the world-space intersection point (3D solid domain) -- billowy but clumpy.  The standard cloud / foam / lichen / moss field.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "0.65" );
 						{ auto& p = P(); p.name = "worley_jitter"; p.kind = ValueKind::Double; p.description = "Worley feature jitter amount"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "blend";         p.kind = ValueKind::Double; p.description = "Perlin/Worley blend weight";    p.defaultValueHint = "0.5"; }
 						return cd;
@@ -2615,14 +2622,14 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "worley3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D Worley (cellular / Voronoi) noise painter.";
+						cd.description = "Worley / cellular noise (distance to scattered feature points) at the world-space intersection point (3D solid domain).  `output f1` gives blobby CELLS -- pebbles, hammered metal, leather, wear patches; `output f2-f1` gives the cell BOUNDARIES -- cracks, crazing, dried mud, veins.  colora (near a feature point) -> colorb (far).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
 						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
 						{ auto& p = P(); p.name = "jitter"; p.kind = ValueKind::Double;     p.description = "Feature jitter";               p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "metric"; p.kind = ValueKind::Enum;       p.enumValues = {"euclidean","manhattan","chebyshev","minkowski"}; p.description = "Distance metric"; p.defaultValueHint = "euclidean"; }
-						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::Enum;       p.enumValues = {"f1","f2","f2_minus_f1"};      p.description = "Value function"; p.defaultValueHint = "f1"; }
+						{ auto& p = P(); p.name = "metric"; p.kind = ValueKind::Enum;       p.enumValues = {"euclidean","manhattan","chebyshev"}; p.description = "Distance metric"; p.defaultValueHint = "euclidean"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::Enum;       p.enumValues = {"f1","f2","f2-f1"};            p.description = "Value function: f1 = distance to nearest feature (blobby cells), f2 = second-nearest, f2-f1 = cell boundaries (cracks / veins)"; p.defaultValueHint = "f1"; }
 						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
 						return cd;
@@ -2652,9 +2659,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "turbulence3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D turbulence (absolute-valued Perlin) painter.";
+						cd.description = "Turbulence -- a sum of |Perlin| octaves -- at the world-space intersection point (3D solid domain).  Ridged and veiny where perlin3d is a smooth swell, so it is the first pick for marble veins, wood grain, soot, rust mottle and weathering.  colora (low) -> colorb (high).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "1.0" );
 						return cd;
 					}();
 					return d;
@@ -2723,7 +2730,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi2d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "2D Voronoi painter with per-cell colours.";
+						cd.description = "Explicit Voronoi cells in the surface UV (2D domain): each repeatable `gen <u> <v> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- mosaic, tile, stained glass, hide patches.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y paintername (repeatable)"; }
@@ -2803,7 +2810,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "3D Voronoi painter with per-cell colours.";
+						cd.description = "Explicit Voronoi cells in world space (3D solid domain): each repeatable `gen <x> <y> <z> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- aggregate, terrazzo, crystal grains.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
@@ -2832,12 +2839,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "iridescent_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Angle-dependent iridescent painter.";
+						cd.description = "View-angle-dependent colour: interpolates from colora at GRAZING incidence to colorb at NORMAL incidence, on |dot(view, normal)| + `bias`.  Soap film, beetle shell, oil slick, pearlescent paint.  A cheap look-alike only -- the physical thin-film model is ggx_material with fresnel_mode thinfilm.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour"; }
 						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour"; }
-						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "View-angle bias";               p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "Added to |dot(view, normal)| before the interpolation is clamped to [0,1]: positive pushes the whole surface toward colorb"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -2863,7 +2870,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blackbody_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Planckian blackbody spectrum painter.";
+						cd.description = "Planckian blackbody spectrum at `temperature` Kelvin -- a physically-derived incandescent / flame / hot-metal colour instead of a hand-guessed RGB triple.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "temperature";  p.kind = ValueKind::Double; p.description = "Temperature in Kelvin"; p.defaultValueHint = "5600"; }
@@ -2894,12 +2901,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Blend two painters using a third painter as mask.";
+						cd.description = "Blends colora and colorb per a THIRD painter used as the `mask`: out = colora * mask + colorb * (1 - mask), so mask 1 -> colora and mask 0 -> colorb (NOT the other way round).  The mask is applied PER CHANNEL, so a coloured mask tints as well as blends.  THE composition verb for procedural materials: put a noise painter in `mask` and two colours in colora/colorb, and the surface gets spatially-varying reflectance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
 						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter"; }
+						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter, applied per channel: weight 1 selects colora, weight 0 selects colorb"; }
 						return cd;
 					}();
 					return d;
@@ -3149,7 +3156,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3179,9 +3186,9 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						AddVariantTagParam( cd );
 						return cd;
@@ -3310,9 +3317,9 @@ namespace RISE
 						cd.description = "Diffusion-based subsurface scattering material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
 						// g / roughness are BAKED construction-time scalars (the SPF
 						// holds plain doubles) -- Double kind engages the registry's
 						// finite-numeric string gate; a painter name here previously
@@ -3348,9 +3355,9 @@ namespace RISE
 						cd.description = "Random-walk (path-traced) subsurface scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
-						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
 						// g / roughness / max_bounces are BAKED construction-time
 						// scalars (see the subsurfacescattering_material note).
 						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
@@ -3558,9 +3565,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; }
 						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction"; }
-						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3881,10 +3888,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; }
-						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
-						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
-						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode)"; }
-						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }

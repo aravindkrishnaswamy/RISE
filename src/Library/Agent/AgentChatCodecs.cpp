@@ -86,7 +86,9 @@ namespace RISE
 					"at most 24 keywords, instead of a round-trip per chunk kind. Use the "
 					"single "
 					"`keyword` form only when you genuinely want one. Pass `category` "
-					"(\"material\", \"geometry\", \"painter\", \"light\", \"rasterizer\", "
+					"(\"material\", \"geometry\", \"painter\" -- the TEXTURE system, 36 "
+					"kinds from flat colour through procedural noise -- \"light\", "
+					"\"rasterizer\", "
 					"...) only when you do NOT yet know which chunk kinds exist -- it "
 					"returns just that category's keyword list + one-line descriptions, "
 					"which you then batch-fetch via keywords. Omitting all three returns "
@@ -98,7 +100,7 @@ namespace RISE
 						"\"keyword\":{\"type\":\"string\",\"description\":"
 						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema. Use `keywords` instead when you want two or more.\"},"
 						"\"category\":{\"type\":\"string\",\"description\":"
-						"\"A chunk category (e.g. material, geometry, painter, light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions -- discovery only, no parameters. Do the category listings you need FIRST, then ONE `keywords` batch for everything you picked across all of them -- not one batch per category. Omit all three for the whole grammar.\"}"
+						"\"A chunk category (e.g. material, geometry, painter -- the texture system -- light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions -- discovery only, no parameters. Do the category listings you need FIRST, then ONE `keywords` batch for everything you picked across all of them -- not one batch per category. Omit all three for the whole grammar.\"}"
 					"}}"
 				},
 				{

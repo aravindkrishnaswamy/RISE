@@ -49,6 +49,14 @@
 //        non-```rise fenced block in any skill may contain
 //        "RISE ASCII SCENE" -- scene content cannot dodge the
 //        contract by dropping the fence tag.
+//    S3d THE PROCEDURAL-TEXTURE TEACHING: procedural-textures must
+//        carry the intent -> painter-family decision map, the 2D-UV vs
+//        3D-solid domain rule, and THE ISCALARPAINTER TRAP (including
+//        the empirically-established sub-trap that a 3D solid painter
+//        routed through the function2d bridge derives clean and
+//        evaluates spatially CONSTANT), and materials-and-media-basics
+//        must hand off to it.  Positive assertions only, same
+//        discipline as S3c.
 //    S4  Chat-loop wiring: every provider codec emits the SAME
 //        provider-neutral tool table, at the size TestChatLoopWiring
 //        asserts (read_skill present in all three providers' request
@@ -118,7 +126,10 @@ static std::string TempDirBase()
 }
 
 // The seed skills (sorted byte-wise -- the index order contract).
-// Grew from six to seven with the observe-modes toolkit-slice-4 skill
+// Grew from six to seven with the observe-modes toolkit-slice-4 skill,
+// and to EIGHT with procedural-textures (the spatially-varying-painter
+// skill: models were reaching for uniformcolor_painter on every surface
+// because no skill mentioned any of the other 35 painter kinds)
 // (auto-discovered by ListSkillNames -- production never hardcodes
 // this list; only the test's own assertions do).
 static const char* const kSeedSkills[] = {
@@ -128,6 +139,7 @@ static const char* const kSeedSkills[] = {
 	"modeling-workflow-and-geometry",
 	"object-modeling-recipes",
 	"observe-modes",
+	"procedural-textures",
 	"scene-skeleton-and-conventions",
 };
 static const std::size_t kSeedSkillCount = sizeof( kSeedSkills ) / sizeof( kSeedSkills[0] );
@@ -555,16 +567,19 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	std::printf( "  render contract: %.1f seconds over %d snippets\n",
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
-	// A rot guard for the extraction itself: the seven seed skills ship
-	// FIFTEEN snippets total (lighting-recipes 3, materials-and-media-
+	// A rot guard for the extraction itself: the eight seed skills ship
+	// SEVENTEEN snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
 	// geometry 2, object-modeling-recipes 4, observe-modes 1,
-	// scene-skeleton-and-conventions 1) -- if the fence tag or
-	// extraction regresses, this trips before a snippet silently
-	// escapes checking.  object-modeling-recipes gained Recipe 4 (the
-	// turned-vessel profile: sdf_geometry roundcone/smin chain + a
-	// sweep_geometry neck) with the lathe-forms guidance.
-	Check( totalSnippets == 15, "the seed skills carry the expected 15 ```rise snippets in total (got " +
+	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
+	// fence tag or extraction regresses, this trips before a snippet
+	// silently escapes checking.  object-modeling-recipes gained Recipe 4
+	// (the turned-vessel profile: sdf_geometry roundcone/smin chain + a
+	// sweep_geometry neck) with the lathe-forms guidance; procedural-
+	// textures added the nested-perlin3d wood top and the domainwarp3d
+	// marble slab (whose scalar-pipe roughness is the ISCALARPAINTER-trap
+	// worked example).
+	Check( totalSnippets == 17, "the seed skills carry the expected 17 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -961,6 +976,154 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 }
 
 //----------------------------------------------------------------------
+// S3d: THE PROCEDURAL-TEXTURE TEACHING.  Measured problem: across every
+// recorded from-scratch build, models bound `uniformcolor_painter` to
+// every surface -- wood tables with no grain, benches with no wear --
+// because the ONLY painters any skill mentioned were uniformcolor,
+// checker, scalar and the image loaders, while the parser registry
+// declares THIRTY-SIX painter kinds.  procedural-textures closes that;
+// these assertions pin the parts a model must actually receive.
+//
+// Same discipline as S3c: POSITIVE assertions only (each names something
+// the skill must SAY), each anchored on a term the claim cannot be
+// stated without, so the prose can be rewritten without false failures.
+// The two ```rise snippets are already covered by S3's derive + render
+// contract; what needs pinning here is the PROSE that cannot be checked
+// by rendering -- the decision map's coverage, the IScalarPainter trap,
+// and the two facts that are counter-intuitive enough that a model
+// getting them backwards would silently produce a wrong scene.
+//----------------------------------------------------------------------
+static void TestProceduralTextureTeaching( AgentRpcDispatcher& rpc )
+{
+	std::printf( "S3d: procedural-textures -- decision map, the IScalarPainter trap, domain rules...\n" );
+
+	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
+		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
+		return env.get( "result" ).get( "markdown" ).asString();
+	};
+
+	const std::string pt  = fetch( rpc, 400, "procedural-textures" );
+	const std::string mat = fetch( rpc, 401, "materials-and-media-basics" );
+	Check( !pt.empty() && !mat.empty(), "S3d: procedural-textures + materials-and-media-basics fetched" );
+
+	// ---- The WHEN: the texture cues a model pattern-matches on ----
+	// A decision map is worthless if the request's own noun is missing
+	// from it, so assert the cue vocabulary explicitly.
+	static const char* const kCues[] = {
+		"wood", "stone", "marble", "concrete", "rust", "wear", "grime",
+		"water", "clouds", "fabric", "leather", "weathered", "brushed"
+	};
+	for( size_t i = 0; i < sizeof( kCues ) / sizeof( kCues[0] ); ++i )
+		Check( pt.find( kCues[i] ) != std::string::npos,
+		       ( std::string( "S3d: procedural-textures names the texture cue \"" )
+		         + kCues[i] + "\"" ).c_str() );
+
+	// ---- The DECISION MAP: intent -> painter family ----
+	// Every family the brief's map calls for must be REACHABLE by name;
+	// a model cannot call a chunk it was never shown.
+	static const char* const kFamilies[] = {
+		"perlin3d_painter", "turbulence3d_painter", "worley3d_painter",
+		"reactiondiffusion3d_painter", "iridescent_painter",
+		"gerstnerwave_painter", "domainwarp3d_painter", "blend_painter",
+		"channel_painter", "gabor3d_painter", "voronoi2d_painter",
+		"expression_function2d"
+	};
+	for( size_t i = 0; i < sizeof( kFamilies ) / sizeof( kFamilies[0] ); ++i )
+		Check( pt.find( kFamilies[i] ) != std::string::npos,
+		       ( std::string( "S3d: the decision map reaches \"" )
+		         + kFamilies[i] + "\"" ).c_str() );
+	// And the map is a MAP -- an intent column, not just a name dump.
+	Check( pt.find( "Decision map: surface intent -> painter family" ) != std::string::npos,
+	       "S3d: procedural-textures carries the intent -> family decision map by name" );
+	// The two worley modes are the pair that is easiest to get backwards
+	// (f1 = cells, f2-f1 = boundaries) and the parser's own enum spelling
+	// is `f2-f1`, not `f2_minus_f1`.
+	Check( pt.find( "output f2-f1" ) != std::string::npos && pt.find( "output f1" ) != std::string::npos,
+	       "S3d: both worley output modes are named, in the parser's own spelling" );
+
+	// ---- THE FLAT-COLOUR VERDICT ----
+	// The behaviour being corrected is reflexive uniformcolor_painter, so
+	// the skill has to say plainly that it is wrong on a hero surface.
+	Check( pt.find( "uniformcolor_painter" ) != std::string::npos,
+	       "S3d: procedural-textures names uniformcolor_painter as the thing being replaced" );
+	Check( pt.find( "amateur" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states plainly that a flat hero surface is the amateur look" );
+
+	// ---- 2D (UV) vs 3D (solid) ----
+	// The domain rule, and the non-obvious half of it: the 3D painters
+	// sample the WORLD-SPACE hit point, so a moved object re-samples.
+	Check( pt.find( "WORLD-SPACE intersection point" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states that 3D painters sample the world-space intersection point" );
+	Check( pt.find( "surface UV" ) != std::string::npos,
+	       "S3d: the skill states that the 2D painters sample the surface UV" );
+	Check( pt.find( "CARVED OUT" ) != std::string::npos,
+	       "S3d: the skill gives the reason to prefer a solid painter (carved-from-the-material)" );
+
+	// ---- THE ISCALARPAINTER TRAP (the section that must not be lost) ----
+	Check( pt.find( "THE ISCALARPAINTER TRAP" ) != std::string::npos,
+	       "S3d: MONEY -- procedural-textures carries the IScalarPainter trap as its own section" );
+	// (a) the reason read_schema alone cannot answer it: ONE reference
+	//     category serves two managers.
+	Check( pt.find( "references:[\"painter\"]" ) != std::string::npos,
+	       "S3d: MONEY -- the trap explains that colour and scalar slots report the SAME reference category" );
+	// (b) both slot families named, with real slot names from the
+	//     descriptors (a model binds by name, not by category).
+	Check( pt.find( "base_color" ) != std::string::npos && pt.find( "reflectance" ) != std::string::npos,
+	       "S3d: the trap names real COLOUR slots" );
+	Check( pt.find( "alphax" ) != std::string::npos && pt.find( "roughness" ) != std::string::npos
+	       && pt.find( "scattering" ) != std::string::npos,
+	       "S3d: the trap names real PHYSICAL-SCALAR slots" );
+	// (c) the JH-uplift reason, which is WHY the two pipes exist.
+	Check( pt.find( "spectral uplift" ) != std::string::npos || pt.find( "spectrally" ) != std::string::npos,
+	       "S3d: the trap gives the spectral-uplift reason the two pipes exist" );
+	// (d) the PRESCRIPTION.  A trap with no correct-usage recipe is the
+	//     failure mode this skill exists to fix, and the recipe has to be
+	//     the one the chunk language ACTUALLY expresses today.
+	// Anchored on the PRESCRIPTION's own spelling (the full affine form),
+	// not on the bare "scalar_painter { function2d" prefix: the sub-trap
+	// paragraph below mentions that prefix too, so the loose form stayed
+	// green when the prescription itself was deleted (caught in this
+	// section's red-prove round).
+	Check( pt.find( "scalar_painter { function2d <name> scale <s> bias <b> }" ) != std::string::npos,
+	       "S3d: MONEY -- the trap prescribes scalar_painter { function2d <name> scale <s> bias <b> } for varying roughness" );
+	Check( pt.find( "scalar_painter { texture" ) != std::string::npos,
+	       "S3d: the trap also names the texture form (a roughness map on disk)" );
+	// (e) the trap INSIDE the trap, empirically established: a 3D solid
+	//     painter is ACCEPTED as a function2d source and silently
+	//     evaluates constant (Painter::Evaluate synthesises a hit at the
+	//     origin, which is what a 3D painter reads).  Derives clean,
+	//     renders clean, wrong result -- so it must be taught.
+	Check( pt.find( "spatially CONSTANT" ) != std::string::npos,
+	       "S3d: MONEY -- the skill warns that a 3D painter through the function2d bridge goes CONSTANT" );
+
+	// ---- blend_painter's mask direction ----
+	// BlendPainter is colora*mask + colorb*(1-mask): mask 1 -> colora.
+	// Most readers assume the opposite, and getting it backwards inverts
+	// a material silently, so the skill must state the formula.
+	Check( pt.find( "colora * mask + colorb * (1 - mask)" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states blend_painter's actual formula" );
+	Check( pt.find( "mask 1 selects colora" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states which end of the mask selects colora" );
+
+	// ---- The honest limit: no contrast control on the 3D noises ----
+	// Measured while authoring the recipes; without it a model chases a
+	// washed-out texture with more octaves forever.
+	Check( pt.find( "no contrast, gain, or remap control" ) != std::string::npos,
+	       "S3d: the skill states the missing-contrast-control limit" );
+	Check( pt.find( "further apart" ) != std::string::npos,
+	       "S3d: the skill gives the workaround (separate colora/colorb further than the target look)" );
+
+	// ---- Consistency with materials-and-media-basics ----
+	// The two skills must not diverge: the material skill is where a
+	// model lands for "add a material", so it has to hand off rather than
+	// leave uniformcolor_painter as the only painter it ever mentions.
+	Check( mat.find( "procedural-textures" ) != std::string::npos,
+	       "S3d: MONEY -- materials-and-media-basics cross-links procedural-textures" );
+	Check( pt.find( "materials-and-media-basics" ) != std::string::npos,
+	       "S3d: procedural-textures cross-links back to materials-and-media-basics" );
+}
+
+//----------------------------------------------------------------------
 // S4: chat-loop tool table + SetSkillIndex.
 //----------------------------------------------------------------------
 static JsonValue ParseBody( const std::string& body )
@@ -1167,6 +1330,7 @@ int main()
 	TestSnippetContract( rpc );
 	TestFenceEscapes( rpc );
 	TestOutputQualityRules( rpc );
+	TestProceduralTextureTeaching( rpc );
 	TestObserveModesTeaching( rpc );
 	TestChatLoopWiring();
 	TestToolRound( rpc );

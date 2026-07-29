@@ -311,7 +311,7 @@ namespace RISE
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "keywords", StringArrayProp( "PREFERRED when you need more than one: an array of chunk keywords (at most 24, counting 'keyword' if you also send it) fetched in ONE call. 'schema' is then an ARRAY POSITIONALLY ALIGNED with this one -- schema[i] is keywords[i], never reordered, never collapsed -- and each entry also names its own 'keyword'. An unrecognized keyword occupies its own slot as {keyword, error}. Batch the chunk kinds you have DECIDED to use (typically 4-8); a full 24-entry batch runs roughly 30-45 KB depending on which kinds." ) );
 					props.set( "keyword", StringProp( "OPTIONAL single chunk keyword (e.g. \"sphere_geometry\"). Use 'keywords' instead when you want two or more." ) );
-					props.set( "category", StringProp( "OPTIONAL chunk category (e.g. \"material\", \"geometry\", \"painter\", \"light\", \"rasterizer\") to CHEAPLY list that category's keywords + one-line descriptions -- discovery only, no parameters. Follow it with ONE 'keywords' batch. Ignored when 'keyword' or 'keywords' is supplied." ) );
+					props.set( "category", StringProp( "OPTIONAL chunk category (e.g. \"material\", \"geometry\", \"painter\" -- the texture system -- \"light\", \"rasterizer\") to CHEAPLY list that category's keywords + one-line descriptions -- discovery only, no parameters. Follow it with ONE 'keywords' batch. Ignored when 'keyword' or 'keywords' is supplied." ) );
 					tools.push_back( MakeTool( "read_schema",
 						"Read the JSON Schema for scene-file chunks. Pass 'keywords' (an array) to "
 						"fetch SEVERAL chunk schemas in one call -- the default way to prepare for "

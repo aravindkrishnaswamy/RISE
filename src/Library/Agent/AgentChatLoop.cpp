@@ -49,7 +49,7 @@ namespace RISE
 				"kinds you have DECIDED to use -- one call per chunk kind is "
 				"wasteful, but a padded batch is just a bigger bill. Use "
 				"{category:\"material\"|"
-				"\"geometry\"|...} only when you do not yet know which chunk kinds "
+				"\"geometry\"|\"painter\"|...} only when you do not yet know which chunk kinds "
 				"exist: it is a cheap keyword list. Do ALL the category listings you "
 				"need FIRST, then ONE keywords batch for everything you picked across "
 				"all of them -- a batch per category is most of the waste back. "
