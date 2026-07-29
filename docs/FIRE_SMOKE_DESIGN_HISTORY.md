@@ -575,3 +575,30 @@ it was already tried and refuted here.
   quantitative `chem_model=none` criterion had been weakened in the §7.0
   rewrite; both repaired in the same revision.
 
+- **r33 (2026-07-29):** unblocked Phase-A step 4, which the implementation
+  agent correctly refused to start. §4.2's Pel emission source
+  ε_c = ∫R_c σ_a B_λ dλ (added r32) depended on `R_c(λ)`, which the design
+  sourced from a "versioned `band_preset`" that was **never defined
+  anywhere** — two mentions in the document, both passing it as an argument;
+  no schema, no asset, no default, and no grammar slot in
+  `multichannel_heterogeneous_medium`, whose §9 rule forbids implicit
+  defaults. The Pel gate was therefore uncomputable. **Resolved by deleting
+  the phantom rather than building it**: RISE already has exactly one
+  spectral-to-Pel response — `XYZFromNM` (CIE 1931 2°) composed with
+  `XYZtoRec709RGB`, normalized by `CIE_Y_Integral` — and it is the response
+  that forms every spectral image today. A per-medium preset would have
+  admitted a scene whose two fire media disagree about the camera, and a
+  second asset could silently diverge from the real film response. The
+  §9 no-implicit-defaults rule was clarified to govern a medium's own
+  physical constants, not the shared film response. Also split the two roles
+  R_c was conflating: **projection** (σ̄_a,c, σ̄_s,c, ε_c) uses R_c with its
+  negative lobes, which is correct colour science and matches what the
+  spectral path produces; **sampling** (mixture weights, proposal density)
+  uses the nonnegative CMF sum W = x̄+ȳ+z̄, since a density must be
+  nonnegative and its choice affects variance, not correctness. The
+  luminance/photopic prohibition was clarified to bind projection only.
+  Separately repaired an ambiguous r32 sentence — "for a grey medium the two
+  coincide" read as though a Pel triple could be compared to a
+  wavelength-valued radiance; what coincides is the Pel target and the
+  *projection of* the spectral target.
+

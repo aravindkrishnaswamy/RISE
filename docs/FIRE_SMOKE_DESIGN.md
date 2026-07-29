@@ -1523,9 +1523,10 @@ exitance-per-metre convention at its boundary); the fire path must *never*
 reach Planck through `IPainter::GetColorNM` (§10.1).
 
 **The Pel (RGB) projection of this source is the projected PRODUCT, not the
-product of projections.** Using the same pinned per-channel response
-functions R_c(λ) as the §4.3 phase closure (normalized over 380–780 nm — a
-photopic curve or unrecorded camera response is forbidden there and here):
+product of projections.** Using the same per-channel response functions R_c(λ) as the §4.3 phase
+closure — the renderer's existing film response, CMF→XYZ→Rec.709 normalized
+by `CIE_Y_Integral` (§4.3 pins it; there is no separate preset asset), and
+used here with its negative lobes intact:
 
 > σ̄_a,c(x) = ∫ R_c(λ) σ_a(x,λ) dλ,
 > σ̄_s,c(x) = ∫ R_c(λ) σ_s(x,λ) dλ,
@@ -1613,21 +1614,58 @@ different λ after construction. Its mean cosine is
 
 > g(x,λ) = Σ_j σ_s,j(x,λ)g_j / Σ_j σ_s,j(x,λ).
 
-The Pel preview constructs `MakePhaseClosurePel(x, band_preset)`, where the
-versioned preset is the renderer's three spectral-to-Pel response functions
-R_c(λ), normalized per channel over 380–780 nm. It computes
+**R_c(λ) is the renderer's existing film response — not a new asset.**
+`MakePhaseClosurePel(x)` takes no preset argument. The three spectral-to-Pel
+response functions are
 
-> S_jc=∫R_c(λ)σ_s,j(x,λ)dλ,  S_c=Σ_jS_jc,
-> p_c(ω)=Σ_j(S_jc/S_c)p_j(ω),
-> q_Pel(ω)=Σ_c[S_c/Σ_dS_d]p_c(ω).
+> R_c(λ) = XYZtoRec709RGB( XYZFromNM(λ) )_c / CIE_Y_Integral(380, 780),
+
+i.e. the CIE 1931 2° standard observer (`ColorUtils::XYZFromNM`) composed
+with the XYZ→`RISEPel` matrix (`ColorUtils::XYZtoRec709RGB`) under the same
+normalization the spectral rasterizers already use (`CIE_Y_Integral`) — the
+path `FilteredFilm`/`ProgressiveFilm` take to turn spectral samples into
+pixels today. **A separate versioned `band_preset` is deliberately NOT
+introduced** (r33): a spectral-to-Pel response is a *camera* property, not a
+medium property, so a per-medium preset would admit a scene whose two fire
+media disagree about what camera is looking at them, and a second response
+could silently diverge from the one actually forming the image. §9's
+no-implicit-defaults rule governs a medium's own physical constants (E(m),
+ω, g, k_m), where a wrong default corrupts physics invisibly; it does not
+reach the film response, which is shared by everything in the scene and is
+recorded once in provenance (§8) as the renderer build's colour
+configuration.
+
+**Two roles, two nonnegativity requirements.** The composed Rec.709 response
+has negative lobes (the XYZ→RGB matrix does), which is correct colour
+science but invalid as a probability. The roles separate cleanly:
+
+- **Projection** — σ̄_a,c, σ̄_s,c (§4.3) and ε_c (§4.2) use R_c *as is*,
+  negative lobes included. This is what makes a Pel image agree with the
+  spectral image of the same scene; out-of-gamut Pel values are handled
+  downstream by the existing gamut mapping, exactly as for every other
+  spectral render.
+- **Sampling** — the closure computes
+
+  > S_jc=∫W(λ)σ_s,j(x,λ)dλ,  S_c=Σ_jS_jc,
+  > p_c(ω)=Σ_j(S_jc/S_c)p_j(ω),
+  > q_Pel(ω)=Σ_c[S_c/Σ_dS_d]p_c(ω),
+
+  with **W(λ) = x̄(λ)+ȳ(λ)+z̄(λ)**, the nonnegative CMF sum. Mixture weights
+  and the proposal density must be nonnegative, and their choice affects
+  *variance only* — any W positive wherever σ_s is nonzero leaves the
+  estimator unbiased, because the per-channel value returned by `Evaluate`
+  is still the R_c-projected one and continuation divides by the density
+  actually sampled.
 
 Zero-S_c channels contribute neither to q_Pel nor to that channel's scattered
 throughput. `Evaluate` returns the Pel-valued (p_R,p_G,p_B); `Sample` draws the
 single scalar proposal q_Pel and returns its scalar `PdfProposal`; continuation
 multiplies each channel by p_c/q_Pel. `GetMeanCosine` is the corresponding
 S_c-weighted mean of q_Pel, used only for preview guiding. This pins both the
-projection and its throughput compensation; using luminance, a photopic curve,
-or an unrecorded camera response is forbidden. Constituent lobes remain
+projection and its throughput compensation. The prohibition on luminance, a
+photopic curve, or an unrecorded camera response applies to the **projection**
+— collapsing R_c to ȳ there would destroy the chromatic result. It does not
+apply to W, whose only job is importance. Constituent lobes remain
 stateless. The **same closure instance** serves continuation
 sampling, direct-light adapters, and guiding for that collision; falling back
 to `GetPhaseFunction()` anywhere after a fire-medium hit is an error. Gate: a
@@ -2160,9 +2198,15 @@ engineering task waits on this list.**
    §4.2-projected slab value**, for a pure absorber
    **L_c = (ε_c/σ̄_a,c)·(1−e^{−σ̄_a,c·L})**, which is approximate by
    construction (§7.1 step 4's projection bias) and gated against its own
-   analytic value rather than against L_λ. For a **grey** medium the two
-   coincide exactly — L_c = ∫R_c L_λ dλ — which is what makes the execution
-   order's grey step-4 increment checkable in both measures with one target.
+   analytic value rather than against L_λ. **The two targets are different
+   numbers in different measures and are never compared to each other**;
+   what holds for a **grey** medium is that the Pel target equals the
+   *projection of* the spectral one, L_c = ∫R_c(λ)·L_λ dλ (verified to
+   1e-12), so a single grey reference field can be checked twice — once
+   per measure against its own target — during the execution order's step-4
+   increment. Earlier phrasing ("the two coincide") was ambiguous and read
+   as if a Pel triple could be compared to a wavelength-valued radiance;
+   it cannot.
    Both run through both entry routes with
    `maxVolumeBounce=0`; and a forced >1024-null-proposal slab that must match
    an uncapped reference. (CDF normalization is a Phase B gate — §7.2.7.)
@@ -2215,7 +2259,8 @@ engineering task waits on this list.**
    the old correlated Gauss–Kronrod alias is a RED implementation.
 4. **Chromatic heterogeneous coefficients** (G4): real `GetCoefficientsNM`
    with λ-dependent σ_a/σ_s from §4.1/§4.3 — plus the exact §4.3
-   **`MakePhaseClosure(x,λ)` / `MakePhaseClosurePel(x,band_preset)` API**, with
+   **`MakePhaseClosure(x,λ)` / `MakePhaseClosurePel(x)` API** (the Pel form
+   takes no preset — §4.3 pins R_c to the renderer's film response), with
    the returned immutable closure used by continuation, direct-light adapters,
    and guiding in both `PathTracingIntegrator` and `RayCaster`. This replaces,
    rather than supplements, the fixed `GetPhaseFunction()` path for fire
@@ -3885,6 +3930,13 @@ medium in Phase C.
   rejected — soot emission depends on the joint (T, f_v) distribution and
   covariance; a joint model is Phase D, and only if the measured error
   justifies it.
+- **Pel response R_c** (r33) → **the renderer's existing film response**
+  (CMF→XYZ→Rec.709, `CIE_Y_Integral`-normalized), not a new versioned
+  `band_preset` asset: a spectral-to-Pel response is a camera property, and a
+  second one could silently diverge from the response actually forming the
+  image. Projection uses R_c with its negative lobes; sampling importance
+  uses the nonnegative CMF sum W = x̄+ȳ+z̄, which affects variance only
+  (§4.3).
 - **RGB path** (was Q7; adopted) → kept as an explicitly approximate
   preview path with a logged diagnostic; auto/final fire rendering routes
   spectral. The correct framing is deterministic spectral-projection
