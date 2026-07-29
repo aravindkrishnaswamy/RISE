@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 28 — after internal review rounds 1–4,
-**six external expert review rounds**, and seventeen post-r11 implementation-review
+**Status:** DRAFT (revision 29 — after internal review rounds 1–4,
+**six external expert review rounds**, and eighteen post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r28; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r29; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1074,11 +1074,17 @@ The most notorious practical trap in fire LES; specified accordingly:
 
   which is equivalent to E q=ρ_totb(Z) because b(Z) is affine. The qualified
   schema carries a versioned `conservative_reconstruction_v1` record containing
-  the exact state/constraint row order, declared rank, dimensions, and every
+  the exact state/constraint row order, declared rank r, dimensions, and every
   **binary64 byte of N_A**, plus SHA-256 over those canonical bytes. The same
   record ID is part of calibration/provenance. Runtime never recomputes QR/SVD,
   chooses column signs/order, or changes a rank tolerance: it verifies the
-  recorded matrix against the exact A with
+  recorded matrix against the exact A. Qualification requires
+  `cols(N_A)=state_dimension-r` and carries an independent rank certificate:
+  recorded pivot-row/pivot-column indices select an r×r minor B of A, and a
+  canonical binary64 approximate inverse R. Outward-rounded interval arithmetic
+  must prove ‖I−BR‖∞<1; this Neumann bound proves B nonsingular and hence
+  rank(A)≥r, while the required orthonormal null columns prove rank(A)≤r.
+  Runtime verifies that certificate and
   ‖AN_A‖_∞≤128ε_64‖A‖_∞ and
   ‖N_AᵀN_A−I‖_∞≤128ε_64, then uses those bytes or rejects. This pin is
   load-bearing because componentwise MC is not invariant to a rotation of the
@@ -1195,7 +1201,8 @@ The most notorious practical trap in fire LES; specified accordingly:
      Every scalar update below uses L(f); bare addition of a face flux to a
      cell state is dimensionally invalid. The pair differs **only in
      advection**. Define one centered physical nonadvective face flux f_N(Q)
-     containing every constituent diffusion flux J_j, J_h, and conduction, and
+     containing the ρ_totZ diffusion flux J_Z, every constituent diffusion flux
+     J_j, J_h, and conduction, and
      set
 
      > f^L=f_adv^donor+f_N,
@@ -1205,9 +1212,25 @@ The most notorious practical trap in fire LES; specified accordingly:
      uses the centered two-cell difference divided by center spacing and the
      harmonic mean of its positive cell transport coefficient (ρ_gD for
      constituent diffusion, k_eff for conduction); prescribed boundary fluxes
-     use the same one-sided ledger value in both candidates. The constituent
-     correction enforces Σ_jJ_j=0 on every primal face, T_f is the arithmetic
-     face temperature, and J_h,f=Σ_j h_s,j(T_f)J_j,f. These are the complete
+     use the same one-sided ledger value in both candidates. Form the raw
+     mass/Z diffusion vector `J_tilde=(J_Z_tilde,{J_j_tilde})` with those same
+     centered stencils, then apply the pinned
+     `nonadvective_flux_projection_v1`: the qualified record carries a complete,
+     rank-certified orthonormal basis N_C for
+
+     > C=[A; (0,1,...,1)],
+
+     in the same canonical format and with the same dimension, pivot-minor,
+     interval-inverse, null-residual, and orthonormality checks as N_A. Set
+     `J=N_C N_C^T J_tilde`; no sequential species correction or
+     implementation-chosen constrained solve is permitted. Consequently every
+     primal face satisfies both Σ_jJ_j=0 and the full affine tangent identity
+
+     > E J_j - b(0)Σ_jJ_j - [b(1)-b(0)]J_Z = 0.
+
+     (Here `E J_j` denotes E applied to the ordered constituent-flux vector.)
+     T_f is the arithmetic face temperature, and
+     J_h,f=Σ_j h_s,j(T_f)J_j,f. These are the complete
      face averaging/stencil rules; no alternative low/high diffusion stencil is
      permitted. The explicit diffusion CFL must make the resulting donor+
      physical-flux low-order state feasible, otherwise Δt is rejected/reduced.
@@ -1374,9 +1397,13 @@ The most notorious practical trap in fire LES; specified accordingly:
      D_iI_i=I_ρ,iD. A limiter-active record whose fuel/ambient elemental vectors
      overlap separately forces the lower and upper ρ_totZ rows; accepting Z<0
      or Z>1 is RED even when every q_j and element equality passes. Basis tests
-     load the exact recorded bytes/hash/rank/order, verify both residual bounds,
-     and show a rotated valid nullspace would produce a different MC slope;
-     recomputation or accepting a changed hash is RED. Spatially uniform
+     load the exact recorded bytes/hash/rank/order, verify the pivot-minor
+     certificate and both residual bounds, and show a rotated valid nullspace
+     would produce a different MC slope; deleting one valid basis column,
+     recomputation, or accepting a changed hash is RED. A multielement
+     pure-diffusion fixture requires both C J=0 and nonzero J_Z at every face;
+     omitting J_Z or applying a ΣJ-only correction that is not tangent to A is
+     RED. Spatially uniform
      nonzero S_div on a periodic domain is explicitly invalid because
      ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
 
@@ -1946,7 +1973,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r28)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r29)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -2359,7 +2386,24 @@ families reach emission at a point y from vertex x:
     p_ω,reach(ω)=p_phase(ω)r(ω), never the unrecorded guide-aware
     `effectivePdf`. Medium vertices with no emissive-medium NEE competitor may
     retain existing guiding. The surface RIS/guiding disables below remain
-    separate.
+    separate. This is an explicit capability, not an adaptation of legacy
+    `GetPhaseFunction()`: append default-unsupported
+    `IMedium::MakeContinuationPhaseClosurePel/NM(...)`. Before calling it, a
+    central preflight requires an exact built-in dynamic-type pair. The initial
+    closed table permits exact `HomogeneousMedium` and exact
+    `HeterogeneousMedium` only when their phase object is exact
+    `IsotropicPhaseFunction` or exact `HenyeyGreensteinPhaseFunction`; the
+    latter additionally requires finite -1<g<1. The arc's new chromatic grid
+    medium is default-deny until its exact type is added to this reviewed table.
+    Every subclass, plugin medium, plugin phase, and unlisted future type is no,
+    even if it inherits or overrides a yes factory. Predictive preflight of
+    every render-reachable medium rejects
+    `medium_continuation_closure_unsupported`; preview sets
+    `competitionAvailable=false`, disables volume NEE at that vertex, and uses
+    the legacy collision march with weight 1. Supported competing vertices
+    must have guide alpha and guide sample count exactly zero. Pel/NM
+    phase-Evaluate/Pdf/Sample equality, mixed supported/unsupported media,
+    derived built-in, plugin, invalid-g, and guiding-zero tests gate the table.
 
     Closure creation is **material-owned**, not SPF-RTTI-owned: append
     default-unsupported `IMaterial::MakeContinuationClosurePel/NM(...)`. An
@@ -2378,8 +2422,15 @@ families reach emission at a point y from vertex x:
     collision march weight 1. This capability is part of the normal public
     interface/ABI, parser-independent implementation, all-build-project, and
     Pel/NM sibling checklist. The Phase-B implementation lands an audited exact
-    capability allowlist; “built in” alone never implies support. The initial
-    allowlist is closed and default-deny:
+    capability allowlist; “built in” alone never implies support. That allowlist
+    is enforced independently of the virtual factory by a central exact-dynamic-
+    type check (`typeid(*material)==typeid(listed_type)`, or an equivalently
+    unforgeable core type token). A plugin/subclass cannot inherit, override, or
+    self-attest its way into a yes cell. Luminaire entries require the exact
+    wrapper type and recursively apply the same exact-type check to the wrapped
+    base before delegation. Only after this central check succeeds may Job call
+    the material-owned factory. The initial allowlist is closed and
+    default-deny:
 
     | exact material factory | Pel | NM | closure classes / selection / transition |
     |---|---:|---:|---|
@@ -2397,11 +2448,24 @@ families reach emission at a point y from vertex x:
     `PolishedSPF`, `SchlickSPF`, `SheenSPF`, `SubSurfaceScatteringSPF`,
     `TranslucentSPF`, both Ward SPFs, and any unlisted future type. A custom or
     wrapper `IMaterial` that merely returns an allowlisted SPF/BSDF pair remains
-    unsupported unless its own audited factory delegates as listed. A zero sum
-    of selection weights makes A empty. Each yes cell has Pel/NM
+    unsupported unless its own audited factory delegates as listed. Each
+    closure construction validates the parameter values actually used at the
+    vertex before NEE: every Pel channel or queried NM response coefficient must
+    be finite and componentwise nonnegative; the Phong exponent must be finite
+    and ≥0 (and Pel-channel invariant as required by the table); Oren-Nayar
+    roughness must be finite and ≥0. NaN, infinity, negative response, or an
+    invalid exponent/roughness returns `continuation_parameter_invalid` and may
+    not be clamped. Predictive rendering hard-fails the request; preview disables
+    volume NEE for that vertex and uses the legacy weight-1 march. Physical
+    energy-conservation bounds, if later desired, are a separate qualification
+    rule and are not silently inferred here. With the required nonnegative
+    coefficients, a zero sum of selection weights makes A empty and also makes
+    its scattering response zero. Each yes cell has Pel/NM
     Evaluate/Pdf mass, horizon-null, sampled-frequency, cap, and transition tests;
     changing the table is a reviewed design/schema change, not adapter
-    auto-discovery.
+    auto-discovery. RED controls include a derived Lambertian, a derived
+    luminaire wrapper, negative/NaN/infinite constant and procedural painters,
+    invalid Phong exponents, and invalid Oren-Nayar roughness.
   - **Continuation availability is resolved before NEE.** Build an immutable
     `ContinuationAvailability` view of that closure from the current total/path and per-type
     bounce limits. Let A be exactly the lobes that the later continuation is
@@ -3369,12 +3433,22 @@ The Job-owned sink exists before the Scene. The constructor opens a
 `JobBootstrapTransaction` around `InitializeContainers()`, commits the exact
 default-asset/config baseline, records `bootstrap_author_generation`, and marks
 the new Job `load_eligible`. It does not claim a file scene identity.
-`LoadAsciiSceneAuto|ViaCst` may then open `SceneLoadTransaction` only if the
+Each public `LoadAsciiSceneAuto` or `LoadAsciiSceneViaCst` first performs one
+atomic `load_attempted` false→true CAS for the current epoch, before any open,
+classification, or parser work, and then may open `SceneLoadTransaction` only if the
 current author generation still equals that bootstrap generation, sticky state
 is clear, and no earlier load was attempted; otherwise the resulting job is
 preview-only and the transaction cannot clear it. The load transaction takes
-the sink's exclusive lease before the first parser mutation and forbids render
-or external mutation entry while open. Load-time mutations remain authored and increment author generation, but
+the sink's exclusive lease before the first file open and forbids render or
+external mutation entry while open. It opens and reads the top-level scene
+exactly once into an immutable transaction-owned
+`SceneSourceBlob{logical_locator,bytes,sha256}`. Auto classification consumes
+that blob and calls a private `LoadAsciiSceneViaCstImpl(blob,transaction)`;
+direct ViaCst reads one blob and calls the same private implementation. Neither
+path calls the other public entry, nests a load transaction, reopens the
+top-level file, or classifies bytes different from those parsed, retained, and
+digested. Failure to open, classify, or parse consumes the attempt and requires
+`ClearAll()` for another load. Load-time mutations remain authored and increment author generation, but
 sticky-state publication is deferred. Only after the entire CST derives
 successfully, all external assets are opened/enumerated, and the current
 `RISE-CST-CANON-v1` plus asset identity is built does one atomic commit set
@@ -3384,7 +3458,11 @@ unrepresented preview state; the transaction can never clear a sticky bit that
 predated its starting generation. IJob calls outside this private transaction
 remain ordinary unrepresented author mutations. Gate the repository's existing
 `RISE_CreateJob → LoadAsciiSceneAuto` and `ViaCst` routes, plus pre-load mutation,
-second-load, parse-failure, mid-load render attempt, and mutate-after-commit.
+second-load, parse-failure, failed-open attempt, mid-load render attempt, and
+mutate-after-commit. A replace-at-classification test hook atomically swaps the
+path after the blob read and proves Auto still derives and hashes the original
+bytes; direct ViaCst and Auto must produce identical retained-CST identity from
+the same blob.
 
 `ClearAll()` must open a private **JobResetTransaction** before destroying any
 tracked container. It acquires the sink's exclusive lease, increments a
@@ -3527,14 +3605,19 @@ artifact states are independently PENDING→COMMITTING→COMMITTED|FAILED after 
 request is COMMITTED.
 
 Canonical-path authority belongs only to Job. For each captured descriptor Job
-exclusive-creates a seekable `IJobStagingFile` handle inside the target
-directory (the later commit takes its interprocess lock) and passes only that
-opaque handle plus immutable execution/encoding
-inputs to `IPreparedArtifactFinalizer::EncodeToStaging`; canonical paths and
-rename capability are not exposed. A finalizer may write/seek that handle and
-return status/encoder metadata, but cannot reopen/substitute a path, write the
-sidecar/marker, or rename anything. Job closes and hashes the staged artifact,
-constructs the provenance sidecar into its own exclusive-created handle, and
+exclusive-creates and retains the **sole native seekable handle** inside the
+target directory (the later commit takes its interprocess lock). It passes only
+a call-scoped, reference-safe `IStagingWriteFacade` plus immutable
+execution/encoding inputs to
+`IPreparedArtifactFinalizer::EncodeToStaging`; canonical/staging paths, native
+handles, duplication/export, sidecar/marker creation, and rename capability are
+not exposed. The facade serializes seek/write, tracks every operation already
+admitted, and offers no detached/asynchronous-write API. Immediately when
+`EncodeToStaging` returns or throws, Job atomically seals the facade, rejects all
+new or retained-facade operations with `staging_sealed`, joins every admitted
+operation, propagates any write failure as FAILED_PRECOMMIT, flushes, and closes
+the sole native handle. Only after that close does Job hash the immutable staged
+artifact, construct the provenance sidecar into its own exclusive-created handle, and
 alone performs every sync, recovery, canonical rename, and marker operation.
 Built-in file/movie encoders are adapted to handle-based I/O. A legacy/plugin
 finalizer is default-deny; only audited built-in implementation IDs in the
@@ -3553,21 +3636,40 @@ ID, complete target set, new digests, prior marker bytes/digests, and every
 staging/final/rollback name before relocating anything. The lexicographically
 first locked directory is the cohort coordinator and owns the journal and group
 marker; that marker references every cohort member across all locked directories.
+For canonical artifact locator P, the stable discovery locator for its head
+marker is exactly `P + ".rise-artifact-marker-v1"`; the provenance sidecar is
+exactly `P + ".riseprov.cbor"`. The required group-marker locator is exactly
+`coordinator_directory + "/.rise-required-cohort-" +
+lowercase_hex(cohort_id) + ".v1"`. All components are NFC-normalized before joining. These suffixes and
+the `.rise-required-cohort-*.v1` namespace are reserved: predictive preflight
+rejects any configured artifact whose canonical/file identity aliases any
+other artifact or any derived sidecar, head-marker, group-marker, journal, or
+rollback locator.
 
-Marker linkage is exact. Each canonical `artifact_marker_v1` contains
-`{tx_id,cohort_id,cohort_kind,member_index,artifact_locator,artifact_sha256,
-sidecar_locator,sidecar_sha256,provenance_id,coordinator_locator}`. The canonical
-`required_cohort_marker_v1` contains the same tx/cohort/request identity and the
-sorted complete array `{artifact_marker_locator,artifact_marker_sha256}`.
+Marker linkage is an exact canonical-CBOR tagged union; fields not listed for a
+variant are forbidden. A required-member `artifact_marker_v1` is
+`{schema:1,kind:"required_member",tx_id,request_id,cohort_id,member_index,
+artifact_locator,artifact_sha256,sidecar_locator,sidecar_sha256,provenance_id,
+required_group_locator}`. An optional marker is
+`{schema:1,kind:"optional_singleton",tx_id,request_id,cohort_id,member_index:0,
+artifact_locator,artifact_sha256,sidecar_locator,sidecar_sha256,provenance_id,
+primary_required_group_locator,primary_required_group_sha256}`. The canonical
+`required_cohort_marker_v1` is
+`{schema:1,kind:"required_group",tx_id,request_id,cohort_id,members:[...]}`,
+where `members` is the complete lexicographically sorted array of
+`{artifact_marker_locator,artifact_marker_sha256}`. Every locator is the
+canonical locator defined above, not an implementation-relative path.
 A reader starting from any required member acquires shared versions of the same
 directory locks (or retries if the generation changes), validates artifact +
-sidecar against its artifact marker, follows the coordinator locator, validates
+sidecar against its artifact marker, follows `required_group_locator`, validates
 the durable group marker, and proves exact marker-digest membership. Until all
 steps pass, the member is unpublished even if its individual marker has already
-been renamed. Optional derivatives instead use
-`cohort_kind=optional_singleton`, contain the committed primary group-marker
-digest, and are explicitly valid without membership in a new group. Coordinator
-locators use the same canonical path/file-identity rules as alias detection.
+been renamed. Optional derivatives follow their primary group locator and
+digest and are explicitly valid without membership in a new group. Locator
+comparison uses the same canonical path/file-identity rules as alias detection.
+Canonical-CBOR byte fixtures for all three variants, stale/overwritten
+head-marker races, reserved-name collisions, and artifact→head→group discovery
+are required gates.
 
 Each artifact, sidecar, staged marker, and journal is closed and durably synced
 (`fsync`/`fdatasync`, Windows `FlushFileBuffers`, or a tested platform-equivalent)
@@ -3996,8 +4098,9 @@ registry).
    regeneration path**: that path invokes `TracePhotons(..., time, true, ...)`,
    which performs repeated animator evaluations after TLAS/light preparation
    and can leave the scene at an arbitrary photon time. Append the same const
-   `ClassifyPreparedTransportDependencies()` virtual to `IRasterizer`,
-   `IShader`, and `IShaderOp`. It returns a **tri-state per dependency bit**
+   `ClassifyPreparedTransportDependencies(DependencyTraversal&)` virtual to
+   `IRasterizer`, `IShader`, `IShaderOp`, and `IObject`. It returns a
+   **tri-state per dependency bit**
    (`no|yes|unknown`) for Scene photon maps, SMS, irradiance cache, and nonlocal
    SSS; unknown is never coerced to no and hard-errors prepared entry with
    `transport_dependency_unknown`. The componentwise join is explicitly
@@ -4007,9 +4110,17 @@ registry).
    Ordinary/Kleene boolean OR is forbidden because `yes OR unknown` could mask
    an ungoverned plugin. `StandardShader`/`AdvancedShader` join the
    results of every child op, nested shader-owning ops forward recursively, and
-   plugin defaults return unknown. Job/RayCaster combines the active
-   rasterizer's dedicated-integrator flags with the default shader and every
-   render-reachable object's shader. The SMS bit therefore includes pure PT,
+   plugin defaults return unknown. Every built-in leaf-object override joins
+   its own shader; every built-in container recursively joins all children that
+   can supply a hit/shader, whether or not the child is independently world-
+   visible. In particular, `CSGObject` joins its own shader and both operand
+   object subgraphs: `SetWorldVisible(false)` on an operand never removes it
+   from dependency reachability. `DependencyTraversal` owns an identity visited
+   set and recursion stack; repeated DAG nodes are joined once, and a cycle
+   rejects with `transport_dependency_cycle` rather than recursing or returning
+   no. An unoverridden/plugin object returns unknown. Job/RayCaster combines the
+   active rasterizer's dedicated-integrator flags with the default shader and
+   the classifier result of every TLAS root. The SMS bit therefore includes pure PT,
    integrated `PathTracingShaderOp`, and standalone `SMSShaderOp`; the SSS bit
    includes the two named §7.2.2 shader ops. Dependency preflight runs this walk
    before any TLAS/cache mutation. Active Scene-photon-map
@@ -4033,8 +4144,9 @@ registry).
    classifier bits are reachability properties, not tests for whether a cache
    object merely exists. The appended virtuals follow the public ABI and
    all-build-project checklist and have recursive default/object/nested-op,
-   unknown-plugin, mixed known-yes+unknown sibling/nested, and mock-graph
-   forwarding tests.
+   unknown-plugin, mixed known-yes+unknown sibling/nested, mock-graph
+   forwarding, hidden CSG-operand photon/irradiance/SSS, derived/plugin object,
+   shared-DAG, and cycle tests.
    Preview use of an active photon/irradiance consumer remains possible only on
    a legacy nonprepared static-scene path and cannot claim this arc's
    immutable-time guarantee.
@@ -4840,3 +4952,12 @@ registry).
   made unknown dominate dependency joins, added FAILED_PRECOMMIT, gave Job sole
   opaque-handle staging/canonical-rename authority, and required consumer
   validation through exact artifact-to-required-cohort marker membership.
+- **r29 (2026-07-28):** after the eighteenth fresh P1-only review of committed
+  r28 (nine P1). CFD: certified nullspace-basis completeness and made the common
+  nonadvective flux include a full mass/Z-tangent diffusion projection.
+  Transport: made exact material types independently enforceable, rejected
+  invalid closure parameters, and added a closed medium/phase continuation
+  capability table. Pipeline: made dependency traversal include hidden CSG
+  operands, sealed Job-owned staging before hashing, specified discoverable
+  canonical marker variants, and made Auto/ViaCst share one transaction-owned
+  immutable source blob.
