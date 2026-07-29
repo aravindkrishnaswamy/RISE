@@ -109,7 +109,13 @@ namespace RISE
 				// kind="camera" positional fallback, so the camera-SWAP
 				// recipe (remove FIRST, then insert) is taught, plus the
 				// retarget-refused remove+reinsert escape).
-				"You can change PARAMETERS of existing entities via propose_patch, "
+				"You can change PARAMETERS of existing entities via propose_patch. "
+				"To patch a chunk that has NO name -- the sole camera, the film, "
+				"the rasterizer -- leave `target` EMPTY and pass `kind`: "
+				"{target:\"\", kind:\"camera\", param:\"location\", value:\"0 1 4\"} "
+				"moves an unnamed camera. Do NOT pass the chunk keyword as the "
+				"target (target:\"pinhole_camera\" does not resolve), and do NOT "
+				"remove-and-reinsert a camera just to move it. "
 				"ADD a new entity with insert_chunk (exactly ONE complete "
 				"`keyword { ... }` chunk per call, braces on their own lines; "
 				"declaration chunks -- painters, materials, geometry, shaders, "

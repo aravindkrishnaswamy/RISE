@@ -364,7 +364,7 @@ namespace RISE
 				// propose_patch
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "target", StringProp( "The entity NAME to edit (a chunk's `name` param); an unnamed camera resolves positionally if it is the sole one." ) );
+					props.set( "target", StringProp( "The entity NAME to edit (a chunk's `name` param). For a chunk with NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead (the kind-addressed singleton form). Passing the chunk KEYWORD here as if it were a name (e.g. \"pinhole_camera\") does not resolve and is rejected." ) );
 					props.set( "kind",   StringProp( "OPTIONAL entity KIND keyword (e.g. \"material\", \"sphere_geometry\", \"camera\") to disambiguate a cross-category name clash." ) );
 					props.set( "param",  StringProp( "The parameter role to set (e.g. \"radius\", \"reflectance\", \"location\")." ) );
 					props.set( "value",  StringProp( "The new value, as a string (parsed per the parameter's declared kind by the derive layer)." ) );

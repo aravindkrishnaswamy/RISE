@@ -65,6 +65,12 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid() -- per-process fixture path
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -5771,6 +5777,78 @@ static void TestReadVerbsBindDocumentToHeadVersion()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// The KIND-ADDRESSED SINGLETON patch form: an EMPTY target plus a kind
+// addresses the sole unnamed chunk of that kind (camera / film /
+// rasterizer).  The capability already existed -- SceneEditController's
+// agent commit documents it, and Job::ApplyCstParamEditImpl_ resolves it
+// via the unique-in-kind fallback -- but NOTHING the model reads said so.
+//
+// Measured consequence (20260729T100542Z-331b6cd1): building a scene from
+// scratch, the model wanted to move the camera it had just created, sent
+// target:"pinhole_camera" (the chunk KEYWORD as if it were a name), was
+// correctly rejected, and fell back to remove_chunk + insert_chunk -- three
+// turns to set a camera location, in a scene where remove/insert also
+// churns the head twice.
+//
+// This pins the capability so the prompt/tool-description guidance that now
+// teaches it cannot drift away from something that actually works, and
+// pins the keyword-as-name mistake as a genuine rejection rather than a
+// silent no-op.
+//////////////////////////////////////////////////////////////////////
+static void TestUnnamedSingletonPatchAddressing()
+{
+	std::printf( "Unnamed-singleton patch addressing (empty target + kind)...\n" );
+
+	// Per-process path in TMPDIR, deliberately NOT this file's prevailing
+	// fixed-name-in-cwd idiom: that pattern lets two concurrent runs clobber
+	// each other's fixture mid-load (the same hazard the WriteTemp helpers
+	// elsewhere in tests/ were pid-suffixed to close).
+	std::string scenePath;
+	{
+		const char* base = std::getenv( "TMPDIR" );
+		std::string dir = base ? base : "/tmp";
+		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+		scenePath = dir + std::to_string( (long)getpid() ) + "_rise_unnamed_singleton.RISEscene";
+		std::ofstream o( scenePath.c_str() );
+		o << kU2RasterizerScene;
+	}
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::LoadFromFile( scenePath );
+	Check( sess != nullptr, "singleton: scene with an UNNAMED pinhole_camera loads" );
+	if( !sess ) return;
+
+	// The mistake the model actually made: the chunk KEYWORD in `target`.
+	// It must be REJECTED, not silently applied to something.
+	Agent::AgentSetPatch byKeyword;
+	byKeyword.target = "pinhole_camera";
+	byKeyword.param  = "location";
+	byKeyword.value  = "0 1 4";
+	const Agent::AgentPatchResult rKeyword = sess->ProposePatch( byKeyword );
+	Check( !rKeyword.applied,
+	       "singleton: MONEY -- target=\"pinhole_camera\" (the KEYWORD as a name) is REJECTED" );
+	Check( rKeyword.status == "rejected",
+	       "singleton: the keyword-as-name attempt reports status=rejected" );
+
+	// The form that works, and that the guidance now teaches.
+	Agent::AgentSetPatch byKind;
+	byKind.target = "";              // EMPTY -- this is what selects the singleton form
+	byKind.kind   = "camera";
+	byKind.param  = "location";
+	byKind.value  = "0 1 4";
+	const Agent::AgentPatchResult rKind = sess->ProposePatch( byKind );
+	Check( rKind.applied,
+	       "singleton: MONEY -- empty target + kind=\"camera\" PATCHES the unnamed camera "
+	       "(so a model never needs remove_chunk + insert_chunk to move one)" );
+	Check( rKind.status == "applied", "singleton: the kind-addressed patch reports applied" );
+
+	// It really reached the document, not just the result envelope.
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "0 1 4" ) != std::string::npos,
+	       "singleton: the new camera location is in the retained document" );
+
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -5826,6 +5904,7 @@ int main()
 	TestProposalHistoryEvictionSurvivesPending();
 	TestTransientResolveLeavesProposalPending();
 	TestReadVerbsBindDocumentToHeadVersion();
+	TestUnnamedSingletonPatchAddressing();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

@@ -186,9 +186,9 @@ namespace RISE
 					"still carries the engine's own diagnostic.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
-						"\"The entity NAME to edit (a chunk name from the document).\"},"
+						"\"The entity NAME to edit (a chunk name from the document). For a chunk that has NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead; that is the kind-addressed singleton form. Do NOT pass the chunk keyword here as if it were a name: `target:\\\"pinhole_camera\\\"` does not resolve and is rejected.\"},"
 						"\"kind\":{\"type\":\"string\",\"description\":"
-						"\"Optional entity KIND keyword (e.g. lambertian_material) to disambiguate a name clash.\"},"
+						"\"Entity KIND keyword (e.g. lambertian_material). Two uses: disambiguate a name clash, OR -- with an EMPTY `target` -- address the sole unnamed chunk of that kind, e.g. {target:\\\"\\\", kind:\\\"camera\\\", param:\\\"location\\\", value:\\\"0 1 4\\\"} to move an unnamed camera without removing and re-inserting it.\"},"
 						"\"param\":{\"type\":\"string\",\"description\":"
 						"\"The parameter to set (e.g. radius, color, location).\"},"
 						"\"value\":{\"type\":\"string\",\"description\":"

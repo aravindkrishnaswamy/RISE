@@ -1267,12 +1267,31 @@ namespace RISE
 				r.message = "no retained CST Document -- ProposePatch needs a CST-loaded head";
 				return r;
 			}
-			if( patch.target.empty() || patch.param.empty() || patch.value.empty() ) {
+			// An EMPTY target with a NON-EMPTY kind is the KIND-ADDRESSED
+			// SINGLETON form -- the sole unnamed camera / film / rasterizer,
+			// resolved by Job::ApplyCstParamEditImpl_'s unique-in-kind
+			// fallback.  Only the BOTH-empty case is invalid.
+			//
+			// This guard used to reject every empty target, which put this
+			// direct/headless path out of step with the controller path
+			// (SceneEditController::ApplyAgentParamEdit already gates on
+			// "both empty" and documents the singleton form).  The divergence
+			// was invisible until a scene build tried to move a camera it had
+			// just created: with no name to address, the model guessed the
+			// chunk KEYWORD as the target, was rejected, and fell back to
+			// remove_chunk + insert_chunk -- three turns and two extra head
+			// revisions to set a location.
+			if( ( patch.target.empty() && patch.kind.empty() )
+			 || patch.param.empty() || patch.value.empty() ) {
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "rejected";
 				r.headVersion = mJob->GetCstHeadVersion();
-				r.message = "target, param, and value must all be non-empty";
+				r.message = patch.target.empty() && patch.kind.empty()
+					? "target and kind cannot BOTH be empty -- name the entity, or leave "
+					  "target empty and pass kind to address the sole unnamed chunk of "
+					  "that kind (camera / film / rasterizer)"
+					: "param and value must both be non-empty";
 				return r;
 			}
 

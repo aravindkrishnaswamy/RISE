@@ -902,8 +902,21 @@ static void TestAnthropicRequestShape()
 	// camera IS removable via kind="camera", the swap order is remove-FIRST --
 	// and the retarget-refused remove+re-insert escape.  The false round-2
 	// "an unnamed camera cannot be removed" claim must be gone.
-	Check( sysText.find( "an unnamed camera" ) == std::string::npos,
-	       "the system prompt no longer claims the unnamed camera is unremovable" );
+	// Assert the TRUE claim positively rather than banning a noun phrase.
+	// This originally required that "an unnamed camera" appear nowhere, to
+	// keep out a round-2 falsehood ("an unnamed camera cannot be removed").
+	// But banning the phrase also rejects TRUE statements about unnamed
+	// cameras, and it fired on the kind-addressed singleton patch form --
+	// guidance the prompt SHOULD carry.  A first attempt to narrow it to
+	// "cannot be removed" was also wrong: the prompt says exactly that, and
+	// correctly, about unnamed FILM and RASTERIZER chunks.  So: assert the
+	// two true camera claims, both of which the old falsehood contradicted.
+	Check( sysText.find( "SOLE camera (even unnamed) IS removable" ) != std::string::npos,
+	       "the system prompt still says the SOLE camera IS removable (the round-2 "
+	       "'cannot be removed' falsehood has not come back)" );
+	Check( sysText.find( "kind:\"camera\"" ) != std::string::npos,
+	       "the system prompt teaches the kind-addressed singleton patch form for the "
+	       "unnamed camera (so a model does not remove+reinsert one just to move it)" );
 	Check( sysText.find( "kind=\"camera\"" ) != std::string::npos &&
 	       sysText.find( "SOLE camera" ) != std::string::npos,
 	       "the system prompt teaches the kind=\"camera\" sole-camera removal" );
