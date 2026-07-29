@@ -292,6 +292,17 @@ namespace RISE
 				: -coeff.sigma_t * maxDist;
 		}
 
+		/// Construct an immutable, wavelength-bound phase closure at a
+		/// spectral collision.  The returned object captures every local
+		/// constituent weight needed by Evaluate/Sample/Pdf/GetMeanCosine;
+		/// those methods deliberately take no wavelength argument.  The caller
+		/// owns the returned reference and must release it.  Ordinary media are
+		/// unsupported by default and continue to use GetPhaseFunction().
+		virtual const IPhaseFunction* MakePhaseClosure(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0; }
+
 	};
 }
 

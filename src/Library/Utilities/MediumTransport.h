@@ -56,6 +56,41 @@ namespace RISE
 
 	namespace MediumTransport
 	{
+		/// Owns the phase object used for one medium collision.  NM fire
+		/// collisions can only acquire a wavelength-bound MakePhaseClosure;
+		/// there is no code path from that branch to GetPhaseFunction.  Ordinary
+		/// media borrow their legacy stateless phase.  Pel fire is unsupported
+		/// until the separate preview increment and therefore resolves to null.
+		class CollisionPhaseClosure
+		{
+			const IPhaseFunction* m_pPhase;
+			bool m_owned;
+
+			CollisionPhaseClosure( const CollisionPhaseClosure& ) = delete;
+			CollisionPhaseClosure& operator=( const CollisionPhaseClosure& ) = delete;
+
+		public:
+			CollisionPhaseClosure(
+				const IMedium& medium,
+				const Point3& scatterPoint,
+				const Scalar nm,
+				const bool spectral
+				);
+			~CollisionPhaseClosure();
+
+			const IPhaseFunction* Get() const { return m_pPhase; }
+		};
+
+		/// Closed preflight table that Phase B must consult before asking a medium
+		/// for an NM continuation closure.  It checks the exact dynamic-type row
+		/// and the phase parameters already available on that instance.  It does
+		/// not claim that the Phase-B continuation factory/availability record has
+		/// already been constructed: Phase B must add and call that
+		/// default-unsupported factory after this gate before enabling competition.
+		/// Derived and plugin types remain default-denied even when they inherit an
+		/// eligible built-in.
+		bool IsContinuationPhaseClosureNMPreflightAllowlisted( const IMedium& medium );
+
 		/// Adapts an IPhaseFunction to the IBSDF interface so that
 		/// LightSampler::EvaluateDirectLighting can evaluate the
 		/// phase function at a medium scatter point.
@@ -141,6 +176,7 @@ namespace RISE
 			const Point3& scatterPoint,								///< [in] World-space scatter point
 			const Vector3& wo,										///< [in] Travel direction of arriving photon (= ray.Dir())
 			const IMedium* pMedium,									///< [in] Current medium
+			const IPhaseFunction* pPhase,							///< [in] Exact closure retained for this collision
 			const IRayCaster& caster,								///< [in] Ray caster for shadow tests
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
@@ -154,6 +190,7 @@ namespace RISE
 			const Point3& scatterPoint,								///< [in] World-space scatter point
 			const Vector3& wo,										///< [in] Travel direction of arriving photon (= ray.Dir())
 			const IMedium* pMedium,									///< [in] Current medium
+			const IPhaseFunction* pPhase,							///< [in] Exact wavelength-bound closure retained for this collision
 			const Scalar nm,										///< [in] Wavelength in nanometers
 			const IRayCaster& caster,								///< [in] Ray caster for shadow tests
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE

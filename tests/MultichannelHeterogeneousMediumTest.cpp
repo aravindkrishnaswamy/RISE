@@ -28,9 +28,12 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Materials/HenyeyGreensteinPhaseFunction.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/MediumTransport.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -105,6 +108,111 @@ namespace
 		~AffineWorldScalarPainter() override = default;
 	};
 
+	class DerivedMultichannelHeterogeneousMedium final :
+		public MultichannelHeterogeneousMedium
+	{
+	public:
+		DerivedMultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IPhaseFunction& phase
+			) :
+		  MultichannelHeterogeneousMedium(
+			carbonPainter, temperaturePainter, 2, 2, 2,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+			0.26, 1800.0, 0.40, 0.85, 8.7, 1.2, 0.70, -0.35,
+			phase )
+		{
+		}
+
+		~DerivedMultichannelHeterogeneousMedium() override = default;
+	};
+
+	class PluginPhase final :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+	public:
+		Scalar Evaluate( const Vector3&, const Vector3& ) const override
+		{
+			return 1.0 / FOUR_PI;
+		}
+		Vector3 Sample( const Vector3& wi, ISampler& ) const override { return wi; }
+		Scalar Pdf( const Vector3&, const Vector3& ) const override
+		{
+			return 1.0 / FOUR_PI;
+		}
+
+	protected:
+		~PluginPhase() override = default;
+	};
+
+	class DerivedHomogeneousMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit DerivedHomogeneousMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		{
+		}
+
+		~DerivedHomogeneousMedium() override = default;
+	};
+
+	class PluginMedium final :
+		public virtual IMedium,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit PluginMedium( const IPhaseFunction& phase ) : m_phase( phase )
+		{
+			m_phase.addref();
+		}
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients c;
+			c.sigma_t = RISEPel( 1, 1, 1 );
+			c.sigma_s = RISEPel( 1, 1, 1 );
+			c.emission = RISEPel( 0, 0, 0 );
+			return c;
+		}
+		MediumCoefficientsNM GetCoefficientsNM( const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM c;
+			c.sigma_t = 1;
+			c.sigma_s = 1;
+			c.emission = 0;
+			return c;
+		}
+		const IPhaseFunction* GetPhaseFunction() const override { return &m_phase; }
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+		Scalar SampleDistanceNM(
+			const Ray&, const Scalar maxDist, const Scalar,
+			ISampler&, bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+		RISEPel EvalTransmittance( const Ray&, const Scalar ) const override
+		{
+			return RISEPel( 1, 1, 1 );
+		}
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar, const Scalar ) const override { return 1; }
+		bool IsHomogeneous() const override { return true; }
+
+	protected:
+		~PluginMedium() override { m_phase.release(); }
+
+	private:
+		const IPhaseFunction& m_phase;
+	};
+
 	IMedium* CreateMedium(
 		const IScalarPainter& carbon,
 		const IScalarPainter& temperature,
@@ -122,6 +230,22 @@ namespace
 			0.26, 1800.0, 0.10, 0.5,
 			8.7, 1.2, 0.6, 0.6 );
 		return ok ? medium : nullptr;
+	}
+
+	Scalar SampleMeanCosine(
+		const IPhaseFunction& phase,
+		const unsigned int seed,
+		const unsigned int sampleCount = 40000
+		)
+	{
+		RandomNumberGenerator rng( seed );
+		Implementation::IndependentSampler sampler( rng );
+		const Vector3 wi( 0, 0, 1 );
+		Scalar sum = 0.0;
+		for( unsigned int i = 0; i < sampleCount; ++i ) {
+			sum += Vector3Ops::Dot( wi, phase.Sample( wi, sampler ) );
+		}
+		return sum / Scalar( sampleCount );
 	}
 
 	struct FactoryInputs
@@ -320,6 +444,193 @@ namespace
 		safe_release( coolTemperature );
 	}
 
+	void TestWavelengthBoundConstituentPhaseClosure()
+	{
+		std::cout << "TestWavelengthBoundConstituentPhaseClosure" << std::endl;
+		const Scalar hotG = 0.85;
+		const Scalar coolG = -0.35;
+		const Scalar hotAlbedo = 0.40;
+		const Scalar coolAlbedo = 0.70;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 600.0, 400.0, 0.0, 0.0 );
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature, 8, 8, 8,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+			0.26, 1800.0, hotAlbedo, hotG,
+			8.7, 1.2, coolAlbedo, coolG );
+		Check( created && medium, "phase-closure fixture constructs" );
+		if( !medium ) {
+			safe_release( carbon );
+			safe_release( temperature );
+			return;
+		}
+
+		Check( medium->GetPhaseFunction() == nullptr,
+			"fire medium exposes no legacy fixed phase function" );
+		Check( MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( *medium ),
+			"exact multichannel fire medium occupies the continuation-closure allowlist row" );
+		{
+			IPhaseFunction* legacyPhase = nullptr;
+			RISE_API_CreateHenyeyGreensteinPhaseFunction( &legacyPhase, 0.0 );
+			DerivedMultichannelHeterogeneousMedium derived(
+				*carbon, *temperature, *legacyPhase );
+			Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( derived ),
+				"derived multichannel fire medium is default-denied by the exact-type table" );
+			safe_release( legacyPhase );
+		}
+
+		const Point3 coolPoint( 0.125, 0.5, 0.5 );
+		const Point3 hotPoint( 0.875, 0.5, 0.5 );
+		const Scalar wavelengths[] = { 450.0, 750.0 };
+		for( const Scalar nm : wavelengths )
+		{
+			const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, nm );
+			const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, nm );
+			Check( coolClosure && hotClosure,
+				"two-position/two-wavelength closures construct" );
+			if( coolClosure && hotClosure )
+			{
+				Check( Near( coolClosure->GetMeanCosine(), coolG, 1e-12 ) &&
+					Near( hotClosure->GetMeanCosine(), hotG, 1e-12 ),
+					"opposite constituent positions bind their authored g values" );
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.6, 0, 0.8 ) );
+				const Scalar expectedCool =
+					HenyeyGreensteinPhaseFunction::EvaluateWithG( 0.8, coolG );
+				const Scalar expectedHot =
+					HenyeyGreensteinPhaseFunction::EvaluateWithG( 0.8, hotG );
+				Check( NearRelative( coolClosure->Evaluate( wi, wo ), expectedCool, 1e-13 ) &&
+					NearRelative( hotClosure->Evaluate( wi, wo ), expectedHot, 1e-13 ) &&
+					NearRelative( coolClosure->Pdf( wi, wo ), expectedCool, 1e-13 ) &&
+					NearRelative( hotClosure->Pdf( wi, wo ), expectedHot, 1e-13 ),
+					"closure Evaluate/Pdf are the sigma_s-weighted HG law" );
+			}
+			safe_release( coolClosure );
+			safe_release( hotClosure );
+		}
+
+		const Point3 mixedPoint( 0.5, 0.5, 0.5 );
+		const Scalar mixedWavelengths[] = { 450.0, 750.0 };
+		Scalar measuredMeans[2] = { 0.0, 0.0 };
+		for( unsigned int i = 0; i < 2; ++i )
+		{
+			const Scalar nm = mixedWavelengths[i];
+			const IPhaseFunction* closure = medium->MakePhaseClosure( mixedPoint, nm );
+			Check( closure != nullptr, "mixed-constituent closure constructs" );
+			if( closure )
+			{
+				const Scalar scale = 633.0 / nm;
+				const Scalar hotAbsorptionMass =
+					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+				const Scalar hotS = 0.5 * hotAbsorptionMass * scale *
+					hotAlbedo / (1.0 - hotAlbedo);
+				const Scalar coolS = 0.5 * 8.7 * std::pow( scale, 1.2 ) * coolAlbedo;
+				const Scalar expectedMean = (hotS * hotG + coolS * coolG) / (hotS + coolS);
+				measuredMeans[i] = closure->GetMeanCosine();
+				Check( NearRelative( measuredMeans[i], expectedMean, 1e-13 ),
+					"mixed closure mean cosine uses local wavelength-dependent sigma_s weights" );
+
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.6, 0, 0.8 ) );
+				RayIntersectionGeometric ri( Ray( mixedPoint, wi ), RasterizerState{ 0, 0 } );
+				MediumTransport::MediumScatterBSDF adapterBSDF( closure, wi );
+				MediumTransport::MediumScatterMaterial adapterMaterial( closure, wi );
+				const Scalar expected = closure->Evaluate( wo, wi );
+				const IORStack ior( 1.0 );
+				Check( NearRelative( adapterBSDF.valueNM( wo, ri, nm ), expected, 1e-13 ) &&
+					NearRelative( adapterMaterial.PdfNM( wo, ri, nm, ior ),
+						closure->Pdf( wo, wi ), 1e-13 ),
+					"NEE evaluation and Pdf adapters consume the retained closure instance" );
+			}
+			safe_release( closure );
+		}
+		Check( std::fabs( measuredMeans[0] - measuredMeans[1] ) > 1e-4,
+			"one position binds distinct phase closures at distinct wavelengths" );
+
+		const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, 500.0 );
+		const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, 500.0 );
+		if( coolClosure && hotClosure )
+		{
+			const Scalar sampledCool = SampleMeanCosine( *coolClosure, 0xc001u );
+			const Scalar sampledHot = SampleMeanCosine( *hotClosure, 0x807u );
+			Check( std::fabs( sampledCool - coolG ) < 0.015 &&
+				std::fabs( sampledHot - hotG ) < 0.015 && sampledHot - sampledCool > 1.0,
+				"stored constituent g values materially change sampled directions" );
+		}
+		safe_release( coolClosure );
+		safe_release( hotClosure );
+
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestContinuationPhaseClosurePreflightTable()
+	{
+		std::cout << "TestContinuationPhaseClosurePreflightTable" << std::endl;
+		IPhaseFunction* isotropic = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction( &isotropic );
+		HomogeneousMedium* exactHomogeneous = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *isotropic );
+		Check( MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*exactHomogeneous ),
+			"exact homogeneous medium with exact isotropic phase is allowlisted" );
+
+		DerivedHomogeneousMedium* derived = new DerivedHomogeneousMedium( *isotropic );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( *derived ),
+			"derived built-in medium is default-denied" );
+
+		PluginMedium* pluginMedium = new PluginMedium( *isotropic );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*pluginMedium ),
+			"plugin medium is default-denied" );
+
+		PluginPhase* pluginPhase = new PluginPhase();
+		HomogeneousMedium* pluginPhaseMedium = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *pluginPhase );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*pluginPhaseMedium ),
+			"plugin phase on an exact built-in medium is default-denied" );
+
+		HenyeyGreensteinPhaseFunction* invalidHG =
+			new HenyeyGreensteinPhaseFunction( 1.0 );
+		HomogeneousMedium* invalidHGMedium = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *invalidHG );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*invalidHGMedium ),
+			"finite-density HG qualification rejects g at the singular endpoint" );
+
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+		MultichannelHeterogeneousMedium* invalidFire =
+			new MultichannelHeterogeneousMedium(
+				*carbon, *temperature, 2, 2, 2,
+				Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+				0.26, 1800.0, 0.4, 1.0, 8.7, 1.2, 0.7, -0.35,
+				*isotropic );
+		Check( !invalidFire->IsValid() &&
+			!MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+				*invalidFire ),
+			"invalid exact fire instance cannot pass continuation preflight" );
+
+		safe_release( invalidFire );
+		safe_release( temperature );
+		safe_release( carbon );
+		safe_release( invalidHGMedium );
+		safe_release( invalidHG );
+		safe_release( pluginPhaseMedium );
+		safe_release( pluginPhase );
+		safe_release( pluginMedium );
+		safe_release( derived );
+		safe_release( exactHomogeneous );
+		safe_release( isotropic );
+	}
+
 	void TestPhysicalUnitsAndSceneScale()
 	{
 		std::cout << "TestPhysicalUnitsAndSceneScale" << std::endl;
@@ -472,6 +783,15 @@ namespace
 				(std::string( "+Inf " ) + input.label + " is rejected by the direct factory").c_str() );
 		}
 
+		invalid = FactoryInputs();
+		invalid.sootGHot = 1.0;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"g_hot=1 is rejected because the HG continuation density must remain finite" );
+		invalid = FactoryInputs();
+		invalid.smokeGCarbon = -1.0;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"g_carbon=-1 is rejected because the HG continuation density must remain finite" );
+
 		safe_release( carbon );
 		safe_release( temperature );
 	}
@@ -609,6 +929,8 @@ int main()
 {
 	TestBakedTrilinearChannelsAndOptics();
 	TestChromaticNMTrackingAndTransmittance();
+	TestWavelengthBoundConstituentPhaseClosure();
+	TestContinuationPhaseClosurePreflightTable();
 	TestPhysicalUnitsAndSceneScale();
 	TestPhiSupMajorant();
 	TestNonFiniteRejection();

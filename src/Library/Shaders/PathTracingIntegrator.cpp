@@ -1260,6 +1260,7 @@ namespace
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateInScattering(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
 		const Tag& tag );
@@ -1267,18 +1268,20 @@ namespace
 	template<>
 	inline RISEPel PTEvaluateInScattering<PelTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
 		const PelTag& )
-	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, caster, pLS, sampler, rast, pMediumObject ); }
+	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, pPhase, caster, pLS, sampler, rast, pMediumObject ); }
 
 	template<>
 	inline Scalar PTEvaluateInScattering<NMTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
 		const NMTag& tag )
-	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
+	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, pPhase, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
 
 	// Radiance-map lookup (per-object or global environment).
 	template<class Tag>
@@ -1944,12 +1947,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						(guidingRecorder && guidingRecorder->active) ?
 							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
 #endif
+					Scalar phaseNM = 0.0;
+					if constexpr ( !Traits::is_pel ) {
+						phaseNM = tag.nm;
+					}
+					MediumTransport::CollisionPhaseClosure phaseClosure(
+						*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel );
+					const IPhaseFunction* pPhase = phaseClosure.Get();
 
 					// NEE at scatter point
-					if( pLS )
+					if( pLS && pPhase )
 					{
 						Value Ld = PTEvaluateInScattering<Tag>(
-							scatterPt, wo, pCurrentMedium, caster, pLS,
+							scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
 							sampler, rast, pMediumObject, tag );
 						if( PTPositiveMagnitude( Ld ) > 0 )
 						{
@@ -1964,7 +1974,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 
 					// Sample phase function for continuation
-					const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 					if( !pPhase ) {
 						break;
 					}
@@ -3831,6 +3840,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				return result;
 			}
 
+			Scalar phaseNM = 0.0;
+			if constexpr ( !Traits::is_pel ) {
+				phaseNM = tag.nm;
+			}
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+
 			// NEE at scatter point.  GUI render modes P2b `indirect` fix
 			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
 			// camera-ray segment -- the medium/volumetric analog of the
@@ -3849,10 +3866,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// shadow-ray cost as every other mode, matching the surface
 			// site's lockstep contract) so the sampler stream stays in
 			// lockstep across modes; only the contribution is zeroed.
-			if( pLS )
+			if( pLS && pPhase )
 			{
 				Value Ld = PTEvaluateInScattering<Tag>(
-					scatterPt, wo, pCurrentMedium, caster, pLS,
+					scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
 					sampler, rast, pMediumObject, tag );
 				if( PTPositiveMagnitude( Ld ) > 0 )
 				{
@@ -3868,14 +3885,66 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			// Sample phase function for continuation
-			const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 			if( !pPhase ) {
 				return result;
 			}
 
-			const Vector3 wi = pPhase->Sample( wo, sampler );
-			const Scalar phasePdf = pPhase->Pdf( wo, wi );
+			Vector3 wi = pPhase->Sample( wo, sampler );
+			Scalar phasePdf = pPhase->Pdf( wo, wi );
 			if( phasePdf <= NEARZERO ) {
+				return result;
+			}
+			Scalar effectivePdf = phasePdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+			// The camera-first volume collision is the depth-zero twin of the
+			// iterative medium loop's guiding branch.  It must use the same
+			// retained collision closure for the HG product, phase evaluation,
+			// and continuation density; otherwise the first visible fire scatter
+			// silently bypasses guiding while later scatters do not.
+			if constexpr ( !Traits::is_pel ) {
+				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+					rc.guidingAlpha > 0 )
+				{
+					static thread_local Implementation::GuidingVolumeDistributionHandle
+						cameraVolumeGuideHandle;
+					if( rc.pGuidingField->InitVolumeDistribution(
+							cameraVolumeGuideHandle, scatterPt, sampler.Get1D() ) )
+					{
+						const Scalar meanCosine = pPhase->GetMeanCosine();
+						if( fabs( meanCosine ) > 1e-6 ) {
+							rc.pGuidingField->ApplyHGProduct(
+								cameraVolumeGuideHandle, wo, meanCosine );
+						}
+
+						const Scalar alpha = rc.guidingAlpha;
+						if( PathTransportUtilities::ShouldUseGuidedSample(
+								alpha, sampler.Get1D() ) )
+						{
+							Scalar guidePdf = 0;
+							const Vector3 guidedDir = rc.pGuidingField->SampleVolume(
+								cameraVolumeGuideHandle,
+								Point2( sampler.Get1D(), sampler.Get1D() ), guidePdf );
+							if( guidePdf > 0 ) {
+								wi = guidedDir;
+								phasePdf = pPhase->Pdf( wo, wi );
+								effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+									alpha, guidePdf, phasePdf );
+							}
+						} else {
+							const Scalar guidePdf = rc.pGuidingField->PdfVolume(
+								cameraVolumeGuideHandle, wi );
+							if( guidePdf > 0 ) {
+								effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+									alpha, guidePdf, phasePdf );
+							}
+						}
+					}
+				}
+			}
+#endif
+
+			if( effectivePdf <= NEARZERO ) {
 				return result;
 			}
 
@@ -3888,9 +3957,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			Value volThroughput;
 			if constexpr ( Traits::is_pel ) {
 				volThroughput = medWeight * RISEPel(
-					phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
+					phaseVal / effectivePdf, phaseVal / effectivePdf,
+					phaseVal / effectivePdf );
 			} else {
-				volThroughput = medWeight * phaseVal / phasePdf;
+				volThroughput = medWeight * phaseVal / effectivePdf;
 			}
 
 			const Ray scatteredRay( scatterPt, wi );
@@ -3917,7 +3987,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				}
 
 				Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
-					sampler, pRadianceMap, 1, iorStack, phasePdf,
+					sampler, pRadianceMap, 1, iorStack, effectivePdf,
 					Traits::zero(), true, 1.0,
 					IRayCaster::RAY_STATE::eRayDiffuse,
 					0, 0, 0, 0, 1, 0,
@@ -3930,7 +4000,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				RayIntersection continuation( scatteredRay, rast );
 				Value continuationResult = IntegrateFromHitForTag<Tag>(
 					rc, rast, continuation, scene, caster,
-					sampler, pRadianceMap, 1, iorStack, phasePdf,
+					sampler, pRadianceMap, 1, iorStack, effectivePdf,
 					Traits::zero(), true, 1.0,
 					IRayCaster::RAY_STATE::eRayDiffuse,
 					0, 0, 0, 0, 1, 0,
@@ -4443,12 +4513,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 						if( medWeight <= 0 ) continue;
 
+						MediumTransport::CollisionPhaseClosure phaseClosure(
+							*pCurrentMedium, scatterPt, swl.lambda[w], true );
+						const IPhaseFunction* pPhase = phaseClosure.Get();
+						if( !pPhase ) continue;
+
 						// NEE at scatter point
 						if( pLS )
 						{
 							const Vector3 wo = currentRay.Dir();
 							Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-								scatterPt, wo, pCurrentMedium, swl.lambda[w], caster, pLS,
+								scatterPt, wo, pCurrentMedium, pPhase,
+								swl.lambda[w], caster, pLS,
 								sampler, rast, pMediumObject );
 							if( Ld > 0 )
 							{
@@ -5261,6 +5337,11 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 				if( medWeight <= 0 ) continue;
 
+				MediumTransport::CollisionPhaseClosure phaseClosure(
+					*pCurrentMedium, scatterPt, swl.lambda[w], true );
+				const IPhaseFunction* pPhase = phaseClosure.Get();
+				if( !pPhase ) continue;
+
 				// NEE at scatter point.  GUI render modes P2b `indirect`
 				// fix (review-p2b P2-e, HWSS twin of the RGB/NM
 				// IntegrateRayTemplated fix): same primary-camera-segment
@@ -5270,7 +5351,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				if( pLS )
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-						scatterPt, wo, pCurrentMedium, swl.lambda[w], caster,
+						scatterPt, wo, pCurrentMedium, pPhase, swl.lambda[w], caster,
 						pLS, sampler, rast, pMediumObject );
 					if( Ld > 0 )
 					{
@@ -5284,7 +5365,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				}
 
 				// Phase function continuation
-				const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 				if( pPhase )
 				{
 					const Vector3 wi = pPhase->Sample( wo, sampler );

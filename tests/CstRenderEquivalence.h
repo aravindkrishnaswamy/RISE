@@ -98,12 +98,16 @@ inline void DumpMedium( std::ostream& o, const IMedium* m )
 {
 	Point3 bbMin, bbMax; const bool bounded = m->GetBoundingBox( bbMin, bbMax );
 	const Point3 sp = bounded ? Point3( (bbMin.x+bbMax.x)*0.5, (bbMin.y+bbMax.y)*0.5, (bbMin.z+bbMax.z)*0.5 ) : Point3(0,0,0);
-	const MediumCoefficients c = m->GetCoefficients( sp ); const IPhaseFunction* pf = m->GetPhaseFunction();
+	const MediumCoefficients c = m->GetCoefficients( sp );
+	const IPhaseFunction* pf = m->GetPhaseFunction();
+	const bool ownsPhaseClosure = !pf && m->IsFireMedium();
+	if( ownsPhaseClosure ) pf = m->MakePhaseClosure( sp, 550.0 );
 	char b[480];
 	std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] g=%.17g homog=%d",
 		(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
 		(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, (double)( pf ? pf->GetMeanCosine() : 0 ), m->IsHomogeneous()?1:0 );
 	o << b;
+	if( ownsPhaseClosure && pf ) pf->release();
 	if( bounded ) {
 		char bb[224]; std::snprintf( bb, sizeof(bb), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",
 			(double)bbMin.x,(double)bbMin.y,(double)bbMin.z, (double)bbMax.x,(double)bbMax.y,(double)bbMax.z ); o << bb;

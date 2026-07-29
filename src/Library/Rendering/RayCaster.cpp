@@ -1141,16 +1141,22 @@ bool RayCaster::CastRay(
 				}
 			}
 
+			// Retain one collision closure across NEE adapters, continuation,
+			// and guiding.  Pel fire resolves to null until the preview step;
+			// ordinary media borrow their legacy stateless phase.
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pMedium, scatterPt, 0.0, false );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+
 			// 1. NEE at scatter point (in-scattering from lights)
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
-				scatterPt, wo, pMedium, *this, pLightSampler,
+				scatterPt, wo, pMedium, pPhase, *this, pLightSampler,
 				mediumSampler, rast, pMediumObject );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
 			// depth limit to prevent excessive scattering in dense media.
 			static const unsigned int nMaxVolumeBounces = 64;
-			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			RISEPel Li( 0, 0, 0 );
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
@@ -1236,7 +1242,7 @@ bool RayCaster::CastRay(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = phasePdf;
+				rs2.bsdfPdf = effectivePdf;
 
 				Scalar hitDist = 0;
 				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
@@ -1828,14 +1834,19 @@ bool RayCaster::CastRayNM(
 				throughput = coeff.sigma_s / coeff.sigma_t;
 			}
 
+			// The fire branch can only acquire its wavelength-bound closure;
+			// CollisionPhaseClosure contains no legacy fallback for fire media.
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pMedium, scatterPt, nm, true );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+
 			// NEE at scatter point
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-				scatterPt, wo, pMedium, nm, *this, pLightSampler,
+				scatterPt, wo, pMedium, pPhase, nm, *this, pLightSampler,
 				mediumSampler, rast, pMediumObject );
 
 			// Phase-function continuation
 			static const unsigned int nMaxVolumeBounces = 64;
-			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			Scalar Li = 0;
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
@@ -1917,7 +1928,7 @@ bool RayCaster::CastRayNM(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = phasePdf;
+				rs2.bsdfPdf = effectivePdf;
 
 				Scalar hitDist = 0;
 				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,

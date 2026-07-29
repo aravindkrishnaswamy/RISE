@@ -18,6 +18,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -41,6 +42,9 @@
 #include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
+#ifdef RISE_ENABLE_OPENPGL
+	#include "../src/Library/Utilities/PathGuidingField.h"
+#endif
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
@@ -315,6 +319,181 @@ namespace
 		~ForwardPhase() override = default;
 	};
 
+	struct PhaseClosureAudit
+	{
+		unsigned int nextId;
+		unsigned int makeCalls;
+		unsigned int destroyCalls;
+		unsigned int legacyLookups;
+		unsigned int evaluateCalls;
+		unsigned int evaluateId;
+		unsigned int sampleId;
+		unsigned int pdfId;
+		unsigned int meanCosineId;
+		bool mixedInstanceUse;
+		std::vector<Point3> positions;
+		std::vector<Scalar> wavelengths;
+
+		PhaseClosureAudit() { Reset(); }
+
+		void Reset()
+		{
+			nextId = 0;
+			makeCalls = 0;
+			destroyCalls = 0;
+			legacyLookups = 0;
+			evaluateCalls = 0;
+			evaluateId = 0;
+			sampleId = 0;
+			pdfId = 0;
+			meanCosineId = 0;
+			mixedInstanceUse = false;
+			positions.clear();
+			wavelengths.clear();
+		}
+
+		void Record( unsigned int& recordedId, const unsigned int id )
+		{
+			if( recordedId == 0 ) {
+				recordedId = id;
+			} else if( recordedId != id ) {
+				mixedInstanceUse = true;
+			}
+		}
+	};
+
+	class AuditedPhaseClosure :
+		public virtual IPhaseFunction,
+		public virtual Reference
+	{
+	public:
+		AuditedPhaseClosure( PhaseClosureAudit& audit, const unsigned int id ) :
+		  m_audit( audit ), m_id( id )
+		{}
+
+		Scalar Evaluate( const Vector3&, const Vector3& ) const override
+		{
+			++m_audit.evaluateCalls;
+			m_audit.Record( m_audit.evaluateId, m_id );
+			return 1.0 / FOUR_PI;
+		}
+
+		Vector3 Sample( const Vector3&, ISampler& ) const override
+		{
+			m_audit.Record( m_audit.sampleId, m_id );
+			return Vector3( 1, 0, 0 );
+		}
+
+		Scalar Pdf( const Vector3&, const Vector3& ) const override
+		{
+			m_audit.Record( m_audit.pdfId, m_id );
+			return 1.0 / FOUR_PI;
+		}
+
+		Scalar GetMeanCosine() const override
+		{
+			m_audit.Record( m_audit.meanCosineId, m_id );
+			return 0.5;
+		}
+
+	protected:
+		~AuditedPhaseClosure() override { ++m_audit.destroyCalls; }
+
+	private:
+		PhaseClosureAudit& m_audit;
+		const unsigned int m_id;
+	};
+
+	class AuditedFireMedium :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		explicit AuditedFireMedium( PhaseClosureAudit& audit ) : m_audit( audit ) {}
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients c;
+			c.sigma_t = RISEPel( 1, 1, 1 );
+			c.sigma_s = RISEPel( 1, 1, 1 );
+			c.emission = RISEPel( 0, 0, 0 );
+			return c;
+		}
+
+		MediumCoefficientsNM GetCoefficientsNM( const Point3& pt, const Scalar ) const override
+		{
+			MediumCoefficientsNM c;
+			const bool onCameraLine = std::fabs( std::fabs( pt.x ) - 0.5 ) < 1e-13 &&
+				std::fabs( pt.y ) < 1e-13;
+			c.sigma_t = onCameraLine ? 1.0 : 0.0;
+			c.sigma_s = onCameraLine ? 1.0 : 0.0;
+			c.emission = 0.0;
+			return c;
+		}
+
+		const IPhaseFunction* GetPhaseFunction() const override
+		{
+			++m_audit.legacyLookups;
+			return nullptr;
+		}
+
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3& pt, const Scalar nm ) const override
+		{
+			++m_audit.makeCalls;
+			m_audit.positions.push_back( pt );
+			m_audit.wavelengths.push_back( nm );
+			return new AuditedPhaseClosure( m_audit, ++m_audit.nextId );
+		}
+
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar,
+			ISampler&, bool& scattered ) const override
+		{
+			if( std::fabs( ray.origin.z ) < 1e-15 ) {
+				scattered = true;
+				return 0.25;
+			}
+			scattered = false;
+			return maxDist;
+		}
+
+		RISEPel EvalTransmittance( const Ray&, const Scalar dist ) const override
+		{
+			const Scalar tr = std::exp( -dist );
+			return RISEPel( tr, tr, tr );
+		}
+
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar dist, const Scalar ) const override
+		{
+			return std::exp( -dist );
+		}
+
+		bool IsHomogeneous() const override { return false; }
+		bool IsFireMedium() const override { return true; }
+
+		bool GetBoundingBox( Point3& bbMin, Point3& bbMax ) const override
+		{
+			bbMin = Point3( -2, -2, 0 );
+			bbMax = Point3( 2, 2, 1 );
+			return true;
+		}
+
+	protected:
+		~AuditedFireMedium() override = default;
+
+	private:
+		PhaseClosureAudit& m_audit;
+	};
+
 	class TwoEventFireMedium :
 		public virtual IMedium,
 		public virtual Reference
@@ -341,7 +520,13 @@ namespace
 			c.emission = 0.0;
 			return c;
 		}
-		const IPhaseFunction* GetPhaseFunction() const override { return pPhase; }
+		const IPhaseFunction* GetPhaseFunction() const override { return nullptr; }
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3&, const Scalar ) const override
+		{
+			pPhase->addref();
+			return pPhase;
+		}
 		Scalar SampleDistance(
 			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
 		{
@@ -1138,6 +1323,223 @@ namespace
 		safe_release( job );
 		std::filesystem::remove( scenePath );
 	}
+
+	void TestFirePhaseClosureRoutesOneBoundInstancePerCollision()
+	{
+		std::cout << "TestFirePhaseClosureRoutesOneBoundInstancePerCollision" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_pt_phase_closure_" + std::to_string( static_cast<int>( ::getpid() ) ) +
+				".RISEscene" );
+		{
+			std::ofstream output( scenePath );
+			output <<
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\nname global\n}\n"
+				"ambient_light\n{\nname phase_ambient\npower 1\ncolor 1 1 1\n}\n"
+				"omni_light\n{\nname phase_nee\npower 10\ncolor 1 1 1\n"
+				"position 1 0 0.5\n}\n";
+		}
+
+		PhaseClosureAudit audit;
+		AuditedFireMedium* medium = new AuditedFireMedium( audit );
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		PathTracingIntegrator* integrator = nullptr;
+		Check( RISE_CreateJobPriv( &job ) && job &&
+			job->LoadAsciiSceneViaCst( scenePath.string().c_str() ),
+			"phase-closure transport fixture initializes" );
+		if( job ) {
+			job->GetScene()->SetGlobalMedium( medium );
+			IShader* shader = job->GetShaders()->GetItem( "global" );
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster, false, 4, *shader, true ) && caster,
+				"phase-closure transport caster initializes" );
+			if( caster ) caster->AttachScene( job->GetScene() );
+			StabilityConfig stability;
+			stability.maxVolumeBounce = 1;
+			integrator = new PathTracingIntegrator( ManifoldSolverConfig(), stability );
+			integrator->SetMaxPathDepth( 2 );
+		}
+
+		auto CheckOneCollision = [&audit](
+			const Scalar expectedX,
+			const Scalar expectedNM,
+			const bool guidingExpected,
+			const char* label )
+		{
+			const bool oneBoundInstance = audit.makeCalls == 1 &&
+				audit.destroyCalls == 1 && audit.legacyLookups == 0 &&
+				audit.evaluateCalls >= 2 && audit.evaluateId != 0 &&
+				audit.sampleId == audit.evaluateId &&
+				audit.pdfId == audit.evaluateId && !audit.mixedInstanceUse &&
+				audit.positions.size() == 1 && audit.wavelengths.size() == 1 &&
+				NearRelative( audit.positions[0].x, expectedX, 1e-13 ) &&
+				NearRelative( audit.wavelengths[0], expectedNM, 1e-13 ) &&
+				( guidingExpected ? audit.meanCosineId == audit.evaluateId :
+					audit.meanCosineId == 0 );
+			if( !oneBoundInstance ) {
+				std::cout << "  audit make=" << audit.makeCalls <<
+					" destroy=" << audit.destroyCalls <<
+					" legacy=" << audit.legacyLookups <<
+					" evalCalls=" << audit.evaluateCalls <<
+					" eval=" << audit.evaluateId <<
+					" sample=" << audit.sampleId <<
+					" pdf=" << audit.pdfId <<
+					" mean=" << audit.meanCosineId <<
+					" mixed=" << audit.mixedInstanceUse <<
+					" positions=" << audit.positions.size() <<
+					" wavelengths=" << audit.wavelengths.size() << std::endl;
+				if( !audit.positions.empty() ) {
+					for( unsigned int i = 0; i < audit.positions.size(); ++i ) {
+						std::cout << "  position[" << i << "]=(" << audit.positions[i].x << "," <<
+							audit.positions[i].y << "," << audit.positions[i].z << ") nm=" <<
+							audit.wavelengths[i] << std::endl;
+					}
+				}
+			}
+			Check( oneBoundInstance, label );
+		};
+
+		if( integrator && caster && job )
+		{
+			const RasterizerState rast = { 0, 0 };
+			const Scalar positions[] = { -0.5, 0.5 };
+			const Scalar wavelengths[] = { 450.0, 750.0 };
+			for( const Scalar x : positions ) {
+				for( const Scalar nm : wavelengths ) {
+					audit.Reset();
+					RandomNumberGenerator rng(
+						static_cast<unsigned int>( 1000.0 + 10.0 * x + nm ) );
+					RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+					IndependentSampler sampler( rng );
+					const Ray ray( Point3( x, 0, 0 ), Vector3( 0, 0, 1 ) );
+					integrator->IntegrateRayNM( rc, rast, ray, nm,
+						*job->GetScene(), *caster, sampler, nullptr, nullptr );
+					CheckOneCollision( x, nm, false,
+						"PT NEE and continuation share one local wavelength-bound closure" );
+
+					audit.Reset();
+					RandomNumberGenerator casterRng(
+						static_cast<unsigned int>( 2000.0 + 10.0 * x + nm ) );
+					RuntimeContext casterRc(
+						casterRng, RuntimeContext::PASS_NORMAL, false );
+					IRayCaster::RAY_STATE state;
+					Scalar value = 0.0;
+					caster->CastRayNM( casterRc, rast, ray, value, state,
+						nm, nullptr, nullptr );
+					CheckOneCollision( x, nm, false,
+						"RayCaster NEE and continuation share one local wavelength-bound closure" );
+				}
+			}
+
+#ifdef RISE_ENABLE_OPENPGL
+			PathGuidingConfig guidingConfig;
+			guidingConfig.enabled = true;
+			Implementation::PathGuidingField* guiding =
+				new Implementation::PathGuidingField(
+					guidingConfig, Point3( -2, -2, -1 ), Point3( 2, 2, 2 ) );
+			guiding->BeginTrainingIteration();
+			const Vector3 trainingDirections[] = {
+				Vector3( 1, 0, 0 ), Vector3( -1, 0, 0 ),
+				Vector3( 0, 1, 0 ), Vector3( 0, -1, 0 ),
+				Vector3( 0, 0, 1 ), Vector3( 0, 0, -1 )
+			};
+			for( const Scalar x : positions ) {
+				for( unsigned int i = 0; i < 96; ++i ) {
+					guiding->AddVolumeSample(
+						Point3( x, 0, 0.5 ), trainingDirections[i % 6],
+						1.0, 1.0 / FOUR_PI, 1.0, false );
+				}
+			}
+			guiding->EndTrainingIteration();
+			Check( guiding->IsTrained(), "volume-guiding closure fixture trains" );
+
+			for( unsigned int route = 0; route < 2; ++route ) {
+				const Scalar x = route == 0 ? positions[0] : positions[1];
+				const Scalar nm = route == 0 ? wavelengths[0] : wavelengths[1];
+				audit.Reset();
+				RandomNumberGenerator rng( 0x6a1d000u + route );
+				RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+				rc.pGuidingField = guiding;
+				rc.guidingAlpha = 0.5;
+				rc.guidingLearnedAlpha = false;
+				rc.maxGuidingDepth = 8;
+				IndependentSampler sampler( rng );
+				const Ray ray( Point3( x, 0, 0 ), Vector3( 0, 0, 1 ) );
+				if( route == 0 ) {
+					integrator->IntegrateRayNM( rc, rast, ray, nm,
+						*job->GetScene(), *caster, sampler, nullptr, nullptr );
+					CheckOneCollision( x, nm, true,
+						"guided PT uses the collision closure for HG product and transport" );
+				} else {
+					IRayCaster::RAY_STATE state;
+					Scalar value = 0.0;
+					caster->CastRayNM( rc, rast, ray, value, state,
+						nm, nullptr, nullptr );
+					CheckOneCollision( x, nm, true,
+						"guided RayCaster uses the collision closure for HG product and transport" );
+				}
+			}
+			safe_release( guiding );
+#endif
+
+			const SampledWavelengths requested = SampledWavelengths::SampleEquidistant(
+				0.375, 380.0, 780.0 );
+			audit.Reset();
+			RandomNumberGenerator hwssRng( 0x48555u );
+			RuntimeContext hwssRc( hwssRng, RuntimeContext::PASS_NORMAL, false );
+			IndependentSampler hwssSampler( hwssRng );
+			SampledWavelengths ptWavelengths = requested;
+			Scalar ptValues[SampledWavelengths::N];
+			integrator->IntegrateRayHWSS(
+				hwssRc, rast, Ray( Point3( 0.5, 0, 0 ), Vector3( 0, 0, 1 ) ),
+				ptWavelengths, *job->GetScene(), *caster, hwssSampler,
+				nullptr, ptValues, nullptr );
+			bool ptWavelengthsBound = audit.wavelengths.size() == SampledWavelengths::N;
+			for( unsigned int w = 0; w < audit.wavelengths.size(); ++w ) {
+				ptWavelengthsBound = ptWavelengthsBound &&
+					NearRelative( audit.wavelengths[w], requested.lambda[w], 1e-13 );
+			}
+			Check( audit.legacyLookups == 0 &&
+				audit.makeCalls == SampledWavelengths::N &&
+				audit.destroyCalls == SampledWavelengths::N && ptWavelengthsBound,
+				"HWSS-requested PT fire path takes NM closure fallback before legacy lookup" );
+
+			audit.Reset();
+			RandomNumberGenerator casterHWSSRng( 0xca57e485u );
+			RuntimeContext casterHWSSRc(
+				casterHWSSRng, RuntimeContext::PASS_NORMAL, false );
+			IRayCaster::RAY_STATE state;
+			SampledWavelengths casterWavelengths = requested;
+			Scalar casterValues[SampledWavelengths::N];
+			const IORStack casterIorStack( 1.0 );
+			caster->CastRayHWSS(
+				casterHWSSRc, rast, Ray( Point3( 0.5, 0, 0 ), Vector3( 0, 0, 1 ) ),
+				casterValues, state, casterWavelengths, nullptr, nullptr, casterIorStack );
+			bool casterWavelengthsBound = audit.wavelengths.size() == SampledWavelengths::N;
+			for( unsigned int w = 0; w < audit.wavelengths.size(); ++w ) {
+				casterWavelengthsBound = casterWavelengthsBound &&
+					NearRelative( audit.wavelengths[w], requested.lambda[w], 1e-13 );
+			}
+			const bool casterHWSSFallsBack = audit.legacyLookups == 0 &&
+				audit.makeCalls == SampledWavelengths::N &&
+				audit.destroyCalls == SampledWavelengths::N && casterWavelengthsBound;
+			if( !casterHWSSFallsBack ) {
+				std::cout << "  RayCaster HWSS audit make=" << audit.makeCalls <<
+					" destroy=" << audit.destroyCalls <<
+					" legacy=" << audit.legacyLookups <<
+					" wavelengths=" << audit.wavelengths.size() << std::endl;
+			}
+			Check( casterHWSSFallsBack,
+				"HWSS-requested RayCaster fire path takes NM closure fallback before legacy lookup" );
+		}
+
+		safe_release( integrator );
+		safe_release( caster );
+		safe_release( job );
+		safe_release( medium );
+		std::filesystem::remove( scenePath );
+	}
 }
 
 int main()
@@ -1154,6 +1556,7 @@ int main()
 	TestObjectFireRoutingCacheRefreshesAfterBinding();
 	TestLegacySceneEditorMediumUndoRefreshesCache();
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
+	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }

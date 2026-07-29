@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "HeterogeneousMedium.h"
+#include "HenyeyGreensteinPhaseFunction.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/PlanckRadiance.h"
@@ -30,6 +31,58 @@ static const unsigned int nMaxDeltaTrackingSteps = 1024;
 
 namespace
 {
+	class ConstituentHGPhaseClosure :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+		const Scalar m_hotWeight;
+		const Scalar m_coolWeight;
+		const Scalar m_hotG;
+		const Scalar m_coolG;
+
+	protected:
+		~ConstituentHGPhaseClosure() override = default;
+
+	public:
+		ConstituentHGPhaseClosure(
+			const Scalar hotScattering,
+			const Scalar coolScattering,
+			const Scalar hotG,
+			const Scalar coolG
+			) :
+		  m_hotWeight( hotScattering / (hotScattering + coolScattering) ),
+		  m_coolWeight( coolScattering / (hotScattering + coolScattering) ),
+		  m_hotG( hotG ),
+		  m_coolG( coolG )
+		{
+		}
+
+		Scalar Evaluate( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			return m_hotWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_hotG ) +
+				m_coolWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+					cosTheta, m_coolG );
+		}
+
+		Vector3 Sample( const Vector3& wi, ISampler& sampler ) const override
+		{
+			const Scalar g = sampler.Get1D() < m_hotWeight ? m_hotG : m_coolG;
+			return HenyeyGreensteinPhaseFunction::SampleWithG( wi, sampler, g );
+		}
+
+		Scalar Pdf( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return Evaluate( wi, wo );
+		}
+
+		Scalar GetMeanCosine() const override
+		{
+			return m_hotWeight * m_hotG + m_coolWeight * m_coolG;
+		}
+	};
+
 	static Scalar SmoothHotFraction( const Scalar temperature )
 	{
 		if( temperature <= 700.0 ) return 0.0;
@@ -1324,10 +1377,10 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		RISE::IsFiniteDouble( smokeAlbedoCarbon ) && RISE::IsFiniteDouble( smokeGCarbon ) &&
 		sceneUnitMeters > 0.0 && sootEm >= 0.0 && sootDensity > 0.0 &&
 		sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0 &&
-		sootGHot >= -1.0 && sootGHot <= 1.0 &&
+		sootGHot > -1.0 && sootGHot < 1.0 &&
 		smokeKmCarbon >= 0.0 && smokeNCarbon >= 0.0 &&
 		smokeAlbedoCarbon >= 0.0 && smokeAlbedoCarbon <= 1.0 &&
-		smokeGCarbon >= -1.0 && smokeGCarbon <= 1.0;
+		smokeGCarbon > -1.0 && smokeGCarbon < 1.0;
 	if( !validDimensions || !validBounds || !validOptics ||
 		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ) {
 		GlobalLog()->PrintEasyError(
@@ -1485,6 +1538,30 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 	c.sigma_t = sigmaA + sigmaS;
 	c.sigma_s = sigmaS;
 	return c;
+}
+
+const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid || !RISE::IsFiniteDouble( nm ) || nm <= 0.0 ) return 0;
+
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar wavelengthScale = 633.0 / nm;
+	const Scalar hotAbsorption = carbon * phi * m_hotAbsorptionMass633 * wavelengthScale;
+	const Scalar hotScattering = m_sceneUnitMeters * hotAbsorption *
+		m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
+	const Scalar coolExtinction = carbon * (1.0 - phi) *
+		m_coolExtinctionMass633 * pow( wavelengthScale, m_smokeNCarbon );
+	const Scalar coolScattering = m_sceneUnitMeters * coolExtinction *
+		m_smokeAlbedoCarbon;
+	const Scalar totalScattering = hotScattering + coolScattering;
+	if( !RISE::IsFiniteDouble( totalScattering ) || totalScattering <= 0.0 ) return 0;
+
+	return new ConstituentHGPhaseClosure(
+		hotScattering, coolScattering, m_sootGHot, m_smokeGCarbon );
 }
 
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(

@@ -15,9 +15,69 @@
 #include "MediumTransport.h"
 #include "../Lights/LightSampler.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Materials/HeterogeneousMedium.h"
+#include "../Materials/HomogeneousMedium.h"
+#include "../Materials/HenyeyGreensteinPhaseFunction.h"
+#include "../Materials/IsotropicPhaseFunction.h"
+#include "FiniteMath.h"
+#include <typeinfo>
 
 using namespace RISE;
 using namespace RISE::MediumTransport;
+
+
+CollisionPhaseClosure::CollisionPhaseClosure(
+	const IMedium& medium,
+	const Point3& scatterPoint,
+	const Scalar nm,
+	const bool spectral
+	) :
+  m_pPhase( 0 ),
+  m_owned( false )
+{
+	if( medium.IsFireMedium() )
+	{
+		if( spectral ) {
+			m_pPhase = medium.MakePhaseClosure( scatterPoint, nm );
+			m_owned = m_pPhase != 0;
+		}
+		return;
+	}
+
+	m_pPhase = medium.GetPhaseFunction();
+}
+
+CollisionPhaseClosure::~CollisionPhaseClosure()
+{
+	if( m_owned && m_pPhase ) {
+		m_pPhase->release();
+	}
+	m_pPhase = 0;
+}
+
+bool MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+	const IMedium& medium
+	)
+{
+	if( typeid( medium ) == typeid( MultichannelHeterogeneousMedium ) ) {
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( &medium );
+		return fire && fire->IsValid();
+	}
+	if( typeid( medium ) != typeid( HomogeneousMedium ) &&
+		typeid( medium ) != typeid( HeterogeneousMedium ) ) {
+		return false;
+	}
+
+	const IPhaseFunction* phase = medium.GetPhaseFunction();
+	if( !phase ) return false;
+	if( typeid( *phase ) == typeid( IsotropicPhaseFunction ) ) return true;
+	if( typeid( *phase ) == typeid( HenyeyGreensteinPhaseFunction ) ) {
+		const Scalar g = phase->GetMeanCosine();
+		return RISE::IsFiniteDouble( g ) && g > -1.0 && g < 1.0;
+	}
+	return false;
+}
 
 
 //
@@ -96,6 +156,7 @@ RISEPel MediumTransport::EvaluateInScattering(
 	const Point3& scatterPoint,
 	const Vector3& wo,
 	const IMedium* pMedium,
+	const IPhaseFunction* pPhase,
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
@@ -108,7 +169,6 @@ RISEPel MediumTransport::EvaluateInScattering(
 		return RISEPel( 0, 0, 0 );
 	}
 
-	const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 	if( !pPhase )
 	{
 		return RISEPel( 0, 0, 0 );
@@ -140,6 +200,7 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	const Point3& scatterPoint,
 	const Vector3& wo,
 	const IMedium* pMedium,
+	const IPhaseFunction* pPhase,
 	const Scalar nm,
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
@@ -153,7 +214,6 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 		return 0;
 	}
 
-	const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 	if( !pPhase )
 	{
 		return 0;

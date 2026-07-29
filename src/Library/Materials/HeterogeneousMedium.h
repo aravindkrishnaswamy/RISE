@@ -370,6 +370,14 @@ namespace RISE
 			) const override;
 
 		bool IsFireMedium() const override { return true; }
+		/// Fire scattering is wavelength/local-mixture bound.  Returning no
+		/// legacy phase makes an accidental GetPhaseFunction fallback fail
+		/// closed instead of silently using the constructor's base-class phase.
+		const IPhaseFunction* GetPhaseFunction() const override { return 0; }
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
 		Scalar GetThermalEmissionNM(
 			const Point3& pt,
 			const Scalar nm
