@@ -1,10 +1,10 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 10 — after internal review rounds 1–4 and
-**five external expert review rounds**; see §14). No fire *feature* code has
+**Status:** DRAFT (revision 11 — after internal review rounds 1–4 and
+**six external expert review rounds**; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r10; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r11; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -34,6 +34,16 @@ renderer features to consume them. **Ember/char-bed glow and lofted sparks**
 are visually co-dominant with the gas flame at campfire scale; they are
 surface/particle Planck emitters the existing pipeline handles cheaply and are
 in scope as a Phase D item (§7.4), not a core driver.
+
+**Dry-aerosol scope boundary:** “smoke” in this arc means soot carbon plus the
+modeled dry condensed-organic surrogate. Water vapor, liquid-water aerosol,
+humidity-driven particle growth, steam-cloud optics, and wet-fuel aerosol
+thermodynamics are out of scope. Grid metadata records this as
+`aerosol_humidity_model = none`; a future wet-smoke preset requires transported
+water, its latent coupling, and multi-RH extinction validation before it may
+claim the §1 fidelity bar. This restriction is material for wet wood and other
+high-moisture fuels and is reported by the simulator when such a fuel preset is
+requested.
 
 **Non-goals (this arc):**
 - Premixed-combustion engineering (engines, detonation). Premixed chemistry
@@ -110,8 +120,9 @@ local heat release, and no reaction ODEs are integrated per cell.
    flames, up to ∼10⁻⁵ in heavily sooting pool-fire plumes. The luminous
    yellow flame body **is** this soot, thermally glowing.
 4. **Smoke** is the soot that escaped oxidation (smoke point exceeded), plus
-   condensed organics and water aerosol after cooling and dilution. Sooty
-   fuels (diesel, tires, PMMA) make black smoke; clean fuels (methanol,
+   condensed organics and water aerosol after cooling and dilution. This arc's
+   explicit dry-aerosol boundary (§1) models the first two and excludes water.
+   Sooty fuels (diesel, tires, PMMA) make black smoke; clean fuels (methanol,
    natural gas) burn with almost none — note methanol still radiates
    strongly via gas bands (§2.4), a constraint on the radiative-loss model.
 
@@ -201,40 +212,52 @@ row depends on it:
 - **Pressure split.** p(x,t) = p₀ + p̃(x,t): thermodynamic background p₀
   (constant — open domain) and dynamic perturbation p̃ ≪ p₀. Density and
   temperature couple through the equation of state at p₀ only:
-  **ρ = p₀ W̄ / (R T)**, with mean molecular weight W̄ from the lumped-species
+  **ρ_g = p₀ W̄ / (R T)**, with mean molecular weight W̄ from the lumped-species
   composition. Acoustics are removed by construction; p̃ enters only the
   momentum equation.
 - **Momentum** with buoyancy formulated against the ambient hydrostatic
-  state: body force (ρ − ρ∞) g, so the unignited far field is exactly
+  state: body force (ρ_g − ρ∞) g, so the unignited far field is exactly
   quiescent and no spurious hydrostatic adjustment flows arise.
 - **Divergence constraint** derived from the EOS at constant p₀ **and the
-  transported-h_s → T inversion together** (the external review caught that
-  r2–r5 carried the W̄ term but dropped the composition-*enthalpy* term that
-  appears when T is diagnosed from h_s = Σ_k Y_k h_{s,k}(T) — a distinct
-  term, not the stated Dc_p/Dt neglect). With
-  S_k = ω̇_k + ∇·(ρD∇Y_k) the net species source and
-  H = q̇‴_step − q̇‴_rad + ∇·(k_eff∇T):
+  transported total-sensible-energy → T inversion together**. Aerosol mass
+  shares the gas velocity in the supported one-fluid limit but contributes
+  heat capacity, not pressure. Define the conservative sensible-energy
+  density and its temperature derivative
 
-  > ∇·u = H/(ρ c_p T) + (1/ρ) Σ_k ( W̄/W_k − h_{s,k}/(c_p T) ) · S_k
+  > ℋ_s = ρ_g Σ_k Y_k h_{s,k}(T) + Σ_i c_i h_{s,i}(T),
+  > C_T = ∂ℋ_s/∂T = ρ_g c_{p,g} + Σ_i c_i c_{p,i},
 
-  Both composition contributions are load-bearing: the W̄/W_k part is the
-  molecular-weight effect (CH₄ 16 vs air 28.9 g/mol near the source), and
-  the −h_{s,k}/(c_pT) part is what keeps the expansion rate EOS-consistent
-  when species with different enthalpies mix or react — omit it and
-  different mixing histories give different expansion at identical (T, Y),
-  the energy-imbalance failure NIST documents for low-Mach LES.
+  where i spans carbon and condensed-organic aerosol. With S_k the
+  conservative gas-species source (kg·m⁻³·s⁻¹), S_{a,i} the conservative
+  aerosol source, and
+
+  > H = q̇‴_step + q̇‴_lat − q̇‴_rad + ∇·(k_eff∇T),
+
+  the complete local identity used by the projection is
+
+  > ∇·u = H/(C_T T)
+  >       + Σ_k [ W̄/(ρ_g W_k) − h_{s,k}/(C_T T) ] S_k
+  >       − Σ_i h_{s,i} S_{a,i}/(C_T T).
+
+  All three composition contributions are load-bearing: the W̄/W_k part is
+  the molecular-weight effect (CH₄ 16 vs air 28.9 g/mol near the source),
+  while the gas- and aerosol-enthalpy terms keep expansion EOS-consistent
+  when species with different enthalpies mix, react, or change phase. Omit
+  them and different histories give different expansion at identical
+  (T, composition), the energy-imbalance failure NIST documents for
+  low-Mach LES.
   **Implementation requirement:** S_div is derived from the *actual
   discrete* scalar/enthalpy updates (same operators, same limiters), not
   from the continuous form independently — and §3.8's verification tier
   gates it with a two-gas mixing box and a reacting
-  manufactured-solution test. The species enthalpies are defined as
+  manufactured-solution test. Gas and aerosol sensible enthalpies are defined as
   temperature integrals, h_{s,k}(T) = ∫_{T_ref}^{T} c_{p,k}(T′)dT′, so
-  with c_p ≡ ∂h_s/∂T there is no separate "Dc_p/Dt" to neglect (r6
+  with C_T ≡ ∂ℋ_s/∂T there is no separate "Dc_p/Dt" to neglect (r6
   claimed one — an external-review correction); species-diffusion
   enthalpy flux remains the single stated (small) neglect. The monitored
   EOS-vs-continuity drift (below) is then a genuine numerics diagnostic.
 - **Variable-coefficient projection.** Enforce the constraint via
-  ∇·((1/ρ) ∇p̃) = (∇·u* − S_div)/Δt, S_div the right-hand side above
+  ∇·((1/ρ_g) ∇p̃) = (∇·u* − S_div)/Δt, S_div the right-hand side above
   (units s⁻¹). At density ratios of 4–5× this is a genuinely
   variable-coefficient Poisson problem: **geometric multigrid** is the
   planned solver (FFT/constant-coefficient shortcuts do not apply; FDS's
@@ -244,15 +267,15 @@ row depends on it:
   floor are in s⁻¹; ε_abs is set per scene as 10⁻³·(u_ref/L), the
   buoyant-velocity-over-domain scale, covering cold-start steps where
   S_div ≈ 0; solver accumulates in fp64 regardless of field precision
-  (§3.7). The single stated neglect is the species-diffusion enthalpy
-  flux (per the divergence-constraint bullet — with h_{s,k} as temperature
-  integrals there is no separate Dc_p/Dt term); the radiative sink enters
-  S_div at its semi-implicit end-of-step value (§3.5), keeping source and
-  constraint consistent within a stage.
+  (§3.7). The stated enthalpy-system neglect is the species-diffusion enthalpy
+  flux (per the divergence-constraint bullet — with the sensible enthalpies
+  as temperature integrals there is no separate Dc_p/Dt term); radiative and
+  latent terms enter S_div at their accepted end-of-stage values (§3.4–§3.5),
+  keeping source, energy, and constraint consistent within a stage.
 - **Phase-transfer closure — gas vs aerosol, defined** (round 4: soot
   formation and condensation move mass *out of the gas phase*; burnout
-  and evaporation move it back — the divergence system must know). **ρ in
-  the EOS and in every transport equation is GAS density**; the aerosol
+  and evaporation move it back — the divergence system must know). **ρ_g in
+  the EOS and every gas-species equation is GAS density**; the aerosol
   inventories (c_carbon, c_condensed) are separate pressureless mass
   fields contributing **no molecular partial pressure** (the earlier "W̄
   closes over c_carbon" phrasing was wrong on that point — solid carbon
@@ -264,50 +287,72 @@ row depends on it:
 
   where burnout's net gas gain is **+Δc_ox — the carbon mass only** (the
   2.667 O₂ mass was already gaseous; r9's "+3.667·Δc_ox" was wrong).
-  **No separate ṁ‴_gas/ρ term is added to S_div** (round 5 caught r9
+  **No separate ṁ‴_gas/ρ_g term is added to S_div** (round 5 caught r9
   double-counting it): with the conservative species RHS
-  S_k = ω̇_k + ∇·(ρD∇Y_k), Σ_k S_k = ṁ‴_gas, and the displayed
-  coefficient-sum divergence constraint already carries the full
+  S_k = ω̇_k + ∇·(ρ_gD∇Y_k), Σ_k S_k = ṁ‴_gas, and the gas-species and
+  aerosol coefficient sums in the displayed divergence constraint carry the full
   phase-transfer effect — the displayed formula IS the complete
   constraint. V2 gains manufactured condensation and burnout cases as
   the gate.
   **Momentum and buoyancy use gas density with aerosol inertia
-  neglected — in a RESTRICTED, MONITORED loading regime** (round 5: the
+  neglected — in a RESTRICTED loading regime** (round 5: the
   r9 "< 10⁻³" bound was numerically false — at f_v = 10⁻⁶ against
   hot-gas ρ ≈ 0.2 kg/m³ the loading is ~0.9 %, and ~9 % at the f_v = 10⁻⁵
-  extreme). The supported regime is χ_load = c_aer/ρ_gas ≤ 1 %, monitored
-  per step with a logged diagnostic when exceeded; heavy-sooting cases
-  beyond it are out of the supported envelope until aerosol
-  inertia/heat-capacity coupling lands (recorded Phase-D extension).
-  **Aerosol sensible enthalpy is CARRIED in the accounting** (h_aer =
-  c_aer·c_p,soot·T rides the budget — V4 cannot claim round-off enthalpy
-  balance while omitting a percent-level term), even though its dynamic
-  feedback is part of the neglected coupling. V4 gains **gas↔soot and
-  vapor↔condensate closed-box EOS tests**.
-- **Density update policy: EOS-primary.** ρ is diagnosed from the EOS each
+  extreme). With c_aer = c_carbon + c_condensed, the supported regime is
+  χ_load = c_aer/ρ_g ≤ 1 %. Aerosol heat
+  capacity is **dynamically coupled through ℋ_s and C_T above**; only aerosol
+  momentum inertia is neglected. Exceeding the limit is a hard
+  unsupported-regime error for predictive output, not a warning that lets a
+  run retain the fidelity label. The f_v ≈ 10⁻⁵, χ_load ≈ 9 % heavily-sooting
+  pool-plume extreme in §2.2 is therefore background/out-of-envelope until
+  two-way aerosol momentum lands in Phase D. V4 gains **inert-aerosol
+  heating/cooling at χ_load = 1 %, gas↔soot, and vapor↔condensate closed-box
+  EOS/energy tests**.
+- **Density update policy: EOS-primary.** ρ_g is diagnosed from the EOS each
   step; continuity is enforced through the divergence constraint. Discrete
   drift between EOS-density and continuity-density is monitored with a gate
-  (drift < 1 % of local ρ over a flow-through time), alongside the global
+  (drift < 1 % of local ρ_g over a flow-through time), alongside the global
   conservation budgets of §3.7 (FDS makes the same EOS-primary choice).
 
 ### 3.3 Transported fields and the reaction closure
 
+**Mixture-fraction ownership is total-mixture, not gas-only.** Define
+ρ_tot = ρ_g + c_carbon + c_condensed and transport the conservative scalar
+ρ_tot Z. Ambient material has Z = 0 and injected fuel material Z = 1;
+reaction, soot formation/burnout, and condensation/evaporation only repartition
+that material and therefore do not source Z. In the supported one-velocity,
+unit-Lewis limit,
+
+> ∂(ρ_tot Z)/∂t + ∇·(ρ_tot u Z) = ∇·(ρ_tot D∇Z).
+
+If b(Z) is the total-mixture elemental mass-fraction vector, the gas-normalized
+element constraint used by the limiter is
+
+> E_g Y + E_a(c/ρ_g) = (1 + χ_load) b(Z),
+
+not E_gY + E_a(c/ρ_g) = b(Z). This convention keeps Z unchanged through a
+closed gas↔aerosol cycle and removes phase-transfer source ambiguity. The
+production one-fluid closure uses the same effective scalar diffusivity D for
+ρ_totZ, gas species, and aerosol inventories (SGS mixing dominates; differential
+and Brownian diffusion are neglected), so the summed elemental flux and the Z
+flux remain identical discretely.
+
 | field | symbol | equation / source | sink | consumed by |
 |---|---|---|---|---|
-| mixture fraction | Z | conserved scalar; fuel-inflow BC | — | property lookups; diagnostics (incl. the Y_O consistency check below) |
+| mixture fraction | ρ_tot Z | conservative total-mixture scalar; fuel-inflow BC | — | property lookups; elemental feasible set; diagnostics (incl. the Y_O consistency check below) |
 | fuel mass fraction | Y_F | fuel-inflow BC | reaction (below) | reaction rate |
 | oxygen mass fraction | **Y_O (prognostic — r8)** | ambient/entrainment BC | gas reaction (s_st,eff per §3.4); soot burnout (2.667·Δc_ox) | reaction rate; burnout; products/W̄ element balance |
-| sensible enthalpy | h_s | q̇‴_step from reaction+burnout | q̇‴_rad (§3.5); mixing | **T = T(h_s, composition)** → EOS, buoyancy, Planck emission (§4.2) |
+| total sensible-energy density | ℋ_s = ρ_gΣY_kh_{s,k}+Σc_ih_{s,i} | q̇‴_step + q̇‴_lat; conservative enthalpy transport | q̇‴_rad (§3.5) | **T = T(ℋ_s, gas+aerosol composition)** → EOS, buoyancy, Planck emission (§4.2) |
 | carbon aerosol mass concentration | c_carbon | gross formation (§3.4) | oxidation (§3.4) | exported; renderer derives glowing fraction φ(T)·c_carbon → §4.1–4.2, cool fraction (1−φ) → §4.3 |
 | condensed organics mass concentration | c_condensed | condensation of Y_cv per the §3.4 saturation rule | re-evaporation per the same rule | exported; droplet-preset scattering (§4.3) |
 | condensable vapor | Y_cv | y_cond·ΔY_F with reaction; re-evaporation from c_condensed (§3.4 saturation rule) | condensation to c_condensed | conserved condensable inventory |
-| reaction rates (derived) | q̇‴_gas, q̇‴_sox | conservative step rates (closure below — q̇‴_inst is closure-internal) | — | total q̇‴_step = gas+sox → S_div, h_s, Q̇_tot, §3.5; **q̇‴_gas exported as `reaction`** → chemiluminescence (§4.4) |
+| reaction rates (derived) | q̇‴_gas, q̇‴_sox | conservative step rates (closure below — q̇‴_inst is closure-internal) | — | total q̇‴_step = gas+sox → S_div, ℋ_s, Q̇_tot, §3.5; **q̇‴_gas exported as `reaction`** → chemiluminescence (§4.4) |
 | velocity | **u** | momentum (buoyancy + baroclinic) | — | advection; renderer motion blur (§8) |
 
 **Reaction closure** (mixing-limited, FDS-*style* — two stated deviations
 below):
 
-> q̇‴_inst = ρ · min(Y_F, Y_O/s_st,eff) / τ_mix · Δh_c,eff,   (s_st,eff, Δh_c,eff per §3.4's withheld-streams coefficients; q̇‴_inst is closure-internal — see the named rates below)
+> q̇‴_inst = ρ_g · min(Y_F, Y_O/s_st,eff) / τ_mix · Δh_c,eff,   (s_st,eff, Δh_c,eff per §3.4's withheld-streams coefficients; q̇‴_inst is closure-internal — see the named rates below)
 > **τ_mix = max( τ_chem, min( τ_diff, τ_u, τ_buoy ) )**,
 > τ_diff = Δ²/(D_mol + D_sgs), τ_u = Δ/√(2 k_sgs), τ_buoy = √(2Δ/g′),
 
@@ -320,7 +365,7 @@ translation produces no subgrid mixing, and a resolved-speed form would
 make the burning rate frame-dependent (Galilean non-invariant). g′ is
 **signed** — cold heavy fuel or cooled products give g′ < 0 (stable
 stratification) and √(2Δ/g′) goes non-real — so τ_buoy uses
-**g′₊ = max(g·(ρ∞−ρ)/ρ, 0)**, with τ_buoy = ∞ when g′₊ = 0 (stable or
+**g′₊ = max(g·(ρ∞−ρ_g)/ρ_g, 0)**, with τ_buoy = ∞ when g′₊ = 0 (stable or
 neutral; unignited injected fuel is *not* generally neutral, hence the
 explicit clamp rather than an assumption). τ_chem is the fast-chemistry bound on the rate; at
 this fidelity a fuel-independent constant τ_chem ≈ 10⁻⁴ s suffices (it
@@ -339,24 +384,29 @@ density deficit — but a deviation).
 
 **Discrete realization** (the external review noted the continuous rate has
 no Δt-convergent naive discretization: with τ_chem = 10⁻⁴ s the hydro step
-can be ≫ τ, and explicit ρL/τ·Δt overshoots the available reactants, while
+can be ≫ τ, and explicit ρ_gL/τ·Δt overshoots the available reactants, while
 clipping / subcycling / implicit each give *different* heat-release
 histories). The committed update is the exact exponential-relaxation form
 for frozen per-step τ_mix:
 
 > ΔY_F = L · (1 − e^{−Δt/τ_mix}),  L = min(Y_F, Y_O/s_st,eff),
 
-with O₂, products, soot production, and the h_s heat release all computed
-from that same ΔY_F (one consumption, one bookkeeping). **Named rates, every consumer assigned** (external-review catch — when
+This expression chooses the reacted fuel mass
+δm_F = ρ_g,begin·ΔY_F; it is **not** applied by subtracting mass fractions in
+place. Fuel, O₂, gas products, gross carbon, condensable vapor, gas total mass,
+and ℋ_s are updated as conservative mass/energy densities from that one δm_F,
+then all Y_k are recomputed using the accepted new ρ_g. This is the same
+one-consumption bookkeeping used by the phase-transfer formulas. **Named
+rates, every consumer assigned** (external-review catch — when
 Δt/τ is not small the instantaneous and realized rates differ
 substantially): the *instantaneous closure rate*
-q̇‴_inst = ρ·L·Δh_c,eff/τ_mix exists **only inside the closure** (it is the
+q̇‴_inst = ρ_g·L·Δh_c,eff/τ_mix exists **only inside the closure** (it is the
 thing the exponential update integrates). The realized conservative step
-rates are the *gas-phase* rate **q̇‴_gas = ρ·ΔY_F·Δh_c,eff/Δt** (Δh_c,eff — the
+rates are the *gas-phase* rate **q̇‴_gas = δm_F·Δh_c,eff/Δt** (Δh_c,eff — the
 withheld-streams effective heat, §3.4, so gas + burnout sum to the fuel
 LHV net of the withheld condensable energy, with no double count) and the
 *soot-burnout* rate **q̇‴_sox = Δc_ox·Δh_soot/Δt** (§3.4), with
-**q̇‴_step = q̇‴_gas + q̇‴_sox**. Assignments: the h_s update, the S_div
+**q̇‴_step = q̇‴_gas + q̇‴_sox**. Assignments: the ℋ_s update, the S_div
 divergence source, Q̇_tot, the §3.5 radiative normalization, and
 diagnostics use the **total q̇‴_step**; **chemiluminescence and the
 exported `reaction` channel use q̇‴_gas only** — excited CH*/C₂*/CO₂*
@@ -424,12 +474,12 @@ destroys global elements, and the r9 inequality was neither the full
 C/H/O polytope nor unit-consistent across gas fractions and aerosol
 concentrations): feasibility is defined by the **element matrix E** over
 the full state — gas species mass fractions plus aerosol concentrations
-converted as c/ρ_gas — requiring componentwise E·y ≥ 0 and the C/H/O
-totals implied by Z; enforcement is an **invariant-domain-preserving
-flux-corrected-transport limiter on the advection step** (Zalesak-class:
-antidiffusive fluxes limited so every cell stays in the feasible
-polytope — flux form, hence globally element-conservative by
-construction), with reaction/burnout updates capping consumption by
+converted as c/ρ_g — requiring componentwise E·y ≥ 0 and the C/H/O
+totals fixed by **(1 + χ_load)b(Z)** under the total-mixture convention
+above; enforcement is the **invariant-domain-preserving coupled
+finite-volume FCT scheme pinned in §3.7** (one face coefficient shared by
+the full state, hence globally element-conservative by construction), with
+reaction/burnout updates capping consumption by
 availability (§3.3/§3.4). V3 gains a multicomponent fuel/air/aerosol
 interface test checking local realizability and global C/H/O totals.
 
@@ -472,19 +522,22 @@ the burnout bookkeeping. The corrected model:
   **s_st,eff = s_st − 2.667·y_form − s_cv·y_cond** (s_cv = the
   condensable's stoichiometric O₂ demand per unit mass from its formula —
   ≈ 1.18 kg/kg for C₆H₁₀O₅), and emits y_form of
-  gross soot carbon plus y_cond of condensable vapor — so primary +
-  eventual burnout sum *exactly* to the fuel's complete-combustion LHV
-  and O₂ demand for the burned fraction, with the condensable stream's
-  energy never released in-model (V4 gates total heat against the LHV
-  accounting for the withheld streams). Soot advects, then
+  gross soot carbon plus y_cond of condensable vapor. Primary reaction plus
+  complete **soot** burnout therefore releases
+  **Δh_c − y_cond·Δh_cv** and consumes
+  **s_st − s_cv·y_cond**, not the complete-combustion values; the remaining
+  condensable chemical potential and O₂ demand stay explicitly withheld
+  because condensable oxidation is not modeled. V4 gates the invariant
+  energy ledger at primary formation, partial burnout, and final state.
+  Soot advects, then
   **mixing-limited oxidation with a stated rate equation** consumes the
   *transported* Y_O (§3.3):
 
-  > Δc_ox = min( c_carbon , ρ·Y_O/2.667 ) · (1 − e^{−Δt/τ_mix}),
+  > Δc_ox = min( c_carbon , ρ_g·Y_O/2.667 ) · (1 − e^{−Δt/τ_mix}),
   > active only where T > T_ox (≈ 1300 K — soot oxidation effectively
   > freezes below it),
 
-  releasing Δh_soot·Δc_ox into h_s (= q̇‴_sox, §3.3) and its CO₂ into the
+  releasing Δh_soot·Δc_ox into ℋ_s (= q̇‴_sox, §3.3) and its CO₂ into the
   element-balanced products. **The element/W̄ closure spans the full state
   (Z, Y_F, Y_O, Y_cv, c_carbon, c_condensed)** — Y_cv and c_condensed
   carry fuel elements too (round 4) — with only the *gas-phase* species
@@ -501,15 +554,28 @@ the burnout bookkeeping. The corrected model:
   data), quiescent §3.6 domain, D*/δx = 10, prescribed ṁ″_F from the
   published MLR, calibration functional = escaped-soot mass ÷ fuel
   consumed over a 30 s statistically-steady window after the §3.8
-  discard; the calibrated y_form must then **predict the 0.60 m pool
-  unchanged within ±25 %** — the cross-prediction gate that
-  distinguishes a physical constant from a tune. **y_cond gets the same
-  treatment** (round 5 — otherwise it is exactly the hidden
-  smoke-opacity tune §1 forbids): measurement basis =
-  organic-vs-elemental-carbon partitions of wood-smoke aerosol (OC/EC
-  literature), calibrated on the wood-crib analog of the reference case,
-  cross-predicted at a second scale, and validated absolutely through
-  the §3.8 known-mass smoke-transmittance gate. Published net yields
+  discard. After that single fit, y_form must **predict both 0.30 m and
+  0.60 m pools at D*/δx ∈ {6, 10, 14} unchanged**, with escaped yield within
+  ±25 % of the measured value at every scale/resolution. Failure makes
+  y_form a resolution-dependent closure coefficient and fails the §1
+  no-scene-tuning bar; it is not repaired with a per-scene override.
+
+  **y_cond gets an independently pinned mass-yield protocol** (round 5 —
+  otherwise it is exactly the hidden smoke-opacity tune §1 forbids). The
+  calibration dataset must name the wood-crib geometry, fuel moisture,
+  MLR/HRR, sampling height, dilution ratio, sampling temperature, residence
+  time, PM size cut, and analytical method. Required measurement is a paired
+  particle-plus-gas organic yield over the same exhaust stream: thermo-optical
+  OC/EC on the particle filter plus a downstream sorbent measurement of the
+  gas condensable surrogate. For C₆H₁₀O₅ the carbon mass fraction is
+  72/162 = 0.4444, so particle surrogate mass is **M_OC/0.4444**, not M_OC;
+  gas and particle surrogate masses are summed before division by fuel
+  consumed. One reference crib is fitted; an independently measured second
+  scale and D*/δx ∈ {6, 10, 14} are cross-predicted unchanged within ±25 %.
+  No y_cond preset may be frozen until a dataset satisfying every field is
+  named and archived. The §3.8 known-mass smoke-transmittance gate separately
+  validates renderer optics given mass; it is explicitly **not** evidence for
+  simulated y_cond. Published net yields
   y_s anchor the reference: ~0.001 methanol, ~0.015
   wood volatiles, ~0.04 aliphatics (heptane/kerosene), **0.10–0.18 for the
   aromatic-heavy black-smoke class §2.2 describes** (e.g. toluene 0.178,
@@ -529,26 +595,40 @@ the burnout bookkeeping. The corrected model:
     was unimplementable): a nominal formula and molecular weight
     (levoglucosan-class C₆H₁₀O₅, W ≈ 162 g/mol, as the wood-smoke
     surrogate; per-fuel override in metadata), formation and sensible
-    enthalpies for the h_s bookkeeping, a heat of combustion Δh_cv for
-    the primary withholding above, and a **latent heat exchanged with h_s
+    enthalpies for the ℋ_s bookkeeping, a heat of combustion Δh_cv for
+    the primary withholding above, and a **latent heat exchanged with ℋ_s
     on every condensation/evaporation step**. Phase change follows a
     saturation rule with a mixing-limited rate: condensation where
     Y_cv exceeds the Clausius–Clapeyron-style saturation fraction at
     local T (T_cond is the metadata-pinned reference dew point),
     relaxation toward equilibrium on τ_mix, evaporation symmetric.
-    **Pinned quantitatively** (round 5 — a dew point alone does not
-    define Y_sat): the saturation law is
-    Y_sat(T) = (W_cv/W̄)·(p_sat,ref/p₀)·exp( −(L_cv·W_cv/R)·(1/T − 1/T_cond) ),
-    with reference pair (T_cond, p_sat,ref) and latent heat L_cv from the
-    metadata record; the per-stage update is the capped exponential
-    ΔY = (Y_cv − Y_sat(T))₊ · (1 − e^{−Δt/τ_mix}) for condensation and
-    the symmetric form capped by c_condensed for evaporation;
-    **condensation releases +L_cv·ΔY into h_s, evaporation absorbs**;
-    coupling policy: one semi-implicit pass per stage evaluating Y_sat at
-    beginning-of-stage T, the accepted transfer feeding h_s once — the
-    same split-first-order discipline (and halving convergence gate) as
-    §3.5. The condensable inventory is conserved end to end and never
-    appears from nothing at the dew point.
+    **Pinned quantitatively and mass-conservatively** (round 6 — a dew point
+    alone does not define Y_sat, and changing a gas mass fraction is not the
+    transferred aerosol mass). With W_c the molecular weight of the
+    non-condensable carrier mixture, compute
+
+    > x_sat(T) = clamp[(p_sat,ref/p₀)
+    >   exp{−(L_cv W_cv/R)(1/T − 1/T_cond)}, 0, 1],
+    > Y_sat(T) = x_sat W_cv / [x_sat W_cv + (1−x_sat)W_c].
+
+    The clamp prevents an unphysical saturation partial pressure above p₀.
+    Let r = 1−exp(−Δt/τ_mix) and choose the relaxed target
+    Y* = Y_cv + r(Y_sat−Y_cv). The candidate transferred mass density is
+
+    > condensation: δc = ρ_g (Y_cv−Y*)/(1−Y*),
+    > evaporation:  δc = ρ_g (Y*−Y_cv)/(1−Y*), capped by c_condensed.
+
+    Update gas total mass and vapor mass conservatively
+    (ρ_g′, ρ_g′Y_cv′) = (ρ_g∓δc, ρ_gY_cv∓δc), with the upper signs for
+    condensation, and update c_condensed by ±δc. If the evaporation cap
+    binds, recompute Y_cv′ from those accepted conservative masses rather
+    than retaining Y*. The accepted latent power is
+    **q̇‴_lat = +L_cv δc/Δt for condensation and −L_cv δc/Δt for
+    evaporation**; it feeds ℋ_s and the H used by S_div exactly once.
+    One split-first-order pass per stage evaluates saturation at the
+    beginning-of-stage T; halving Δt must halve the split error. The
+    condensable inventory is conserved end to end and never appears from
+    nothing at the dew point.
 
   There is **no soot/smoke transfer operator at all**: the hot/cool split
   is the *derived* partition c_hot = φ(T)·c_carbon,
@@ -589,8 +669,11 @@ across a 0.5 m flame at that κ_P (τ ≈ 1.2) is outside any credible
 optically-thin limit. Replacement — a **budget-partitioned escape-factor
 model**:
 
-> e(x) = 4 κ_P(T) σ (T⁴ − T∞⁴)  (the optically-thin local emission shape,
-> with the ambient-equilibrium term so cooling stops at T∞), evaluated
+> e(x) = 4σ [ κ_P(T; κ_λ(x)) T⁴
+>                   − κ_P(T∞; κ_λ(x)) T∞⁴ ],
+> (the optically-thin exchange with an isotropic black enclosure, using the
+> same **local opacity spectrum** but a Planck mean at each radiation
+> temperature), evaluated
 > over the **total radiating support (all cells)**,
 > **q̇‴_rad(x) = max( β(t), γ(t) ) · e(x)**, with
 > β(t) = χ_r · Q̇_tot(t) / Σ_all e·V  and  γ(t) = clamp(1 − Q̇_tot/ε_Q, 0, 1),
@@ -615,7 +698,7 @@ the semi-implicit temperature update, so the *accepted* sink deviates from
 the budget by a first-order-in-Δt splitting error): β and γ are computed
 **once per stage from beginning-of-stage state and frozen**; the per-cell
 semi-implicit integration runs against frozen β; the *accepted*
-post-integration sink is the single value consumed identically by the h_s
+post-integration sink is the single value consumed identically by the ℋ_s
 update, S_div, and diagnostics (the same one-rate discipline as q̇‴_step,
 §3.3). No global iteration; the splitting error is gated, not assumed:
 **per-step accepted-vs-budget deviation ≤ 2 %, and halving Δt must halve
@@ -634,7 +717,9 @@ optically-thin-shape assumption is measured, not presumed.
     mean of κ_λ = C₀f_v/λ under λ-independent E(m) (the commonly quoted
     3.72 is the Hubbard–Tien fit, which folds in λ-dependent optical
     constants — using it here would be internally inconsistent with §4.1).
-    Note the extra factor of T: soot loss scales as f_v·T⁵, not f_v·T⁴.
+    For the ambient term the same analytic mean is evaluated at T∞, so soot
+    exchange is proportional to **f_v·(T⁵−T∞⁵)**, not
+    f_v·T·(T⁴−T∞⁴).
   - **κ_gas** from tabulated Planck-mean CO₂/H₂O coefficients evaluated on
     the Z-derived composition.
 - For wavelength-dependent E(m) datasets (§12), the 3.83 constant formula
@@ -658,7 +743,7 @@ The most notorious practical trap in fire LES; specified accordingly:
   is the deliberate, stated choice at this fidelity).
 - **Lateral faces: pressure-based open boundaries** — ambient air enters at
   sim-determined entrainment rates; the boundary pressure is the ambient
-  hydrostatic state (consistent with the (ρ−ρ∞)g formulation, which makes
+  hydrostatic state (consistent with the (ρ_g−ρ∞)g formulation, which makes
   the far field exactly quiescent), with the standard inflow/outflow
   asymmetry on the dynamic-pressure condition (FDS's Bernoulli-type H
   treatment: total head prescribed on entraining inflow, static on
@@ -681,11 +766,21 @@ The most notorious practical trap in fire LES; specified accordingly:
 - **Grid:** uniform staggered MAC grid first; sparse/tiled (VDB-topology)
   when plumes outgrow dense memory. Precision: fields in fp32; pressure
   solve and all global reductions accumulate in fp64.
-- **Advection — scalars:** MacCormack with a monotone limiter (clamp to the
-  local min/max of the semi-Lagrangian stencil) — an unlimited overshoot in
-  T enters B_λ(T) and renders as an emission firefly. Bounds: Z, Y_F,
-  c_carbon, c_condensed, Y_cv to physical ranges, with Y_F, Y_O ≥ 0
-  enforced jointly with the reaction/burnout updates (§3.3); T to [T_amb, T_ad].
+- **Advection — all mass/energy scalars: conservative finite-volume FCT.**
+  Advect ρ_totZ, every ρ_gY_k, c_carbon, c_condensed, and ℋ_s with the
+  staggered-grid face mass flux. The low-order flux is donor-cell upwind; the
+  high-order candidate is second-order MUSCL with the monotonized-central
+  slope. Their difference is the antidiffusive face flux. A coupled convex
+  limiter computes **one α_face ∈ [0,1] shared by every transported component**,
+  chosen as the largest value for which both adjacent cells remain inside the
+  §3.3 elemental polytope, all inventories remain nonnegative, and the
+  composition-dependent ℋ_s bounds corresponding to T∈[T_amb,T_ad] hold.
+  The same signed α_face correction is applied to both cells, so each species,
+  C/H/O, and total sensible energy are globally conservative to fp64 reduction
+  tolerance. Independent per-component clipping or post-advection temperature
+  clamping is forbidden: either destroys the coupled element/energy ledger.
+  Semi-Lagrangian MacCormack remains a visually useful **debug-only** fallback
+  and may not be used for validation or predictive grids.
 - **Advection — momentum** (unstated in revision 2, flagged): second-order
   central, kinetic-energy-conserving discretization on the staggered grid —
   the standard LES practice; upwinded/dissipative momentum advection kills
@@ -694,11 +789,13 @@ The most notorious practical trap in fire LES; specified accordingly:
   incompressible flow (orthogonal L² projection onto a divergence-free
   space); neither assumption holds here, and no published variable-density
   validation exists. Semi-Lagrangian remains a debug fallback.
-- **Conservation accounting:** MacCormack-class scalar advection is not
-  discretely conservative, and §3.8's flame-height row gates on fuel burning
-  at the right total rate — so the harness tracks **global budgets** (fuel
-  in vs burnt+resident, enthalpy in vs released−radiated+resident) with a
-  stated tolerance (≤2 % drift per flow-through), as a standing diagnostic.
+- **Conservation accounting:** the harness tracks global fuel, C/H/O, aerosol,
+  and total-sensible-energy budgets. On a closed or periodic domain, advection
+  error must be at fp64 reduction tolerance; the ≤2 % flow-through tolerance
+  applies only to the complete open-boundary/reacting balance after explicitly
+  accounting for boundary fluxes, reaction heat, latent exchange, radiation,
+  and resident chemical potential. It is not permission for scalar-advection
+  drift.
 - **Time stepping:** two-stage predictor–corrector (FDS-style), **projection
   applied at every stage**. Step size: min of advective CFL, the
   buoyant-acceleration limit Δt ≲ √(2δx/g′₊) (g′₊ = max(g′, 0) per §3.3 —
@@ -740,24 +837,38 @@ radiative loss):
 
 - V1. Hydrostatic open-domain rest: unignited domain stays exactly
   quiescent (machine-level velocities) — exercises §3.6's BCs and the
-  (ρ−ρ∞)g formulation.
+  (ρ_g−ρ∞)g formulation.
 - V2. Variable-density projection + the full divergence identity (§3.2),
   including a **two-gas isothermal mixing box** and a **reacting
   manufactured solution** — the S_div-from-discrete-updates gate.
-- V3. Conservative transport: uniform-scalar preservation **plus a
-  translated non-uniform periodic blob with a global mass-error metric**
-  (the uniform test alone cannot detect MacCormack's admitted
-  non-conservation — second external round); global budget drift bounds
-  (§3.7).
-- V4. Closed reacting box: atom, mass, enthalpy, and EOS balance to
-  round-off across a complete burn, gated as **released heat + residual
-  condensable chemical potential ((Σ c_condensed + Y_cv mass)·Δh_cv) =
-  complete-combustion LHV** (round 5: "released = LHV" alone is
-  impossible under condensable withholding — the residual-potential term
-  closes the ledger). The balance carries aerosol sensible enthalpy
-  (§3.2). Includes the §3.2 closed-box gas↔soot and vapor↔condensate
-  EOS/phase-transfer tests.
-- V5. Radiative cooling of a single cell vs the exact ODE for §3.5's sink.
+- V3. Conservative transport: uniform-scalar preservation plus a translated
+  non-uniform periodic multicomponent gas/aerosol blob. At every step it checks
+  the local elemental feasible set and requires global mass, each gas species,
+  each aerosol inventory, C/H/O, ρ_totZ, and ℋ_s conservation to fp64
+  reduction tolerance. A deliberately activated debug MacCormack run must fail
+  this gate, proving that the test distinguishes the production FCT path.
+- V4. Closed reacting box: atom, gas+aerosol mass, ℋ_s, chemical potential,
+  and EOS balance to round-off at **three checkpoints** — immediately after
+  primary formation, after partial soot burnout, and at the accepted final
+  state. At every checkpoint the invariant is
+
+  > Q_released + M_carbon Δh_soot
+  >   + (M_cv + M_condensed) Δh_cv = M_fuel,reacted Δh_c.
+
+  The corresponding invariant is
+  **M_O2,consumed + 2.667 M_carbon + s_cv(M_cv+M_condensed)
+  = s_st M_fuel,reacted**. The test includes inert-aerosol heating/cooling
+  at χ_load=1 %, homogeneous soot formation/burnout with unchanged Z,
+  isothermal and adiabatic vapor↔condensate cycles (including the saturation
+  cap), and closed-box gas↔aerosol EOS/phase-transfer checks. “Released heat =
+  LHV” is required only after **all** withheld chemical inventories have been
+  oxidized by a test-only completion step; the production model does not burn
+  condensables.
+- V5. Radiative cooling of a single cell vs an **independent numerical
+  wavelength integral** of 4π∫κ_λ[B_λ(T)−B_λ(T∞)]dλ, plus the analytic
+  near-ambient derivative. For κ_λ∝1/λ the gate requires the
+  f_v(T⁵−T∞⁵) law; merely integrating the implementation's own §3.5 ODE is
+  not an independent test.
 - V6. **Timestep-refinement convergence** of heat-release and
   ignition-front histories at fixed grid (§3.3's discrete-realization and
   ignition-gate requirements).
@@ -948,17 +1059,23 @@ above — and note the mixture weights are **wavelength-dependent**
 (σ_s,j(λ) varies per constituent), which the current interface cannot
 express: `IPhaseFunction` takes no wavelength and
 `IMedium::GetPhaseFunction()` returns one fixed object (round 4,
-verified). §7.1 step 4 therefore adds a **per-collision phase closure built at the
-sample point** — the medium constructs, at each scatter location x, a
-closure carrying the LOCAL constituent σ_s weights (round 5: λ alone is
-insufficient — the weights are σ_s,j(x, λ), spatially varying), exposing
-Evaluate/Sample/Pdf(λ, ...) and GetMeanCosine (the σ_s-weighted mean
-cosine, for volume guiding) over the constituent lobes, which themselves
-stay stateless. The closure serves continuation sampling, the
-direct-light adapters, and guiding alike; the RGB path uses
-band-averaged mixture weights under its §7.1 step 4 preview scoping.
-Gate: two-position test with opposite constituent mixtures across
-continuation, NEE, and guiding paths.
+verified). §7.1 step 4 therefore adds one pinned API: the spectral medium
+constructs an immutable **`MakePhaseClosure(x, λ)`** at every collision. The
+closure captures the local weights σ_s,j(x,λ) and exposes wavelength-bound
+`Evaluate`, `Sample`, `Pdf`, and `GetMeanCosine`; callers cannot supply a
+different λ after construction. Its mean cosine is
+
+> g(x,λ) = Σ_j σ_s,j(x,λ)g_j / Σ_j σ_s,j(x,λ).
+
+The Pel preview constructs `MakePhaseClosurePel(x, band_preset)` with the
+same four methods over the documented band-projected weights. Constituent
+lobes remain stateless. The **same closure instance** serves continuation
+sampling, direct-light adapters, and guiding for that collision; falling back
+to `GetPhaseFunction()` anywhere after a fire-medium hit is an error. Gate: a
+two-position, two-wavelength test with opposite constituent mixtures across
+PT and RayCaster continuation, NEE adapters, and guiding on/off; an
+HWSS-requested fire path must take the NM fallback before any legacy phase
+lookup.
 Tabulated Mie / RDG-FA in Phase D (§12, presets decision).
 
 ### 4.4 Chemiluminescence: a second, line-spectrum emission field
@@ -1168,7 +1285,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the external reviews' verdicts, r6–r10)
+### 7.0 Phase gating (adopted from the external reviews' verdicts, r6–r11)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1178,9 +1295,9 @@ the g/m³→SI conversion gates **in both §8 and the §4.3 optics formulas**
 (round 5 caught a surviving 1000× line), the repaired trilinear accessor
 (**landed**, commit `2fba2b48`; §7.1 step 0 verifies the fire path uses
 it), the **constituent aerosol inventories with derived φ(T) optics, the
-φ-aware 7-point quadrature/panel-splitting rule, the per-collision phase
-CLOSURE carrying local constituent weights** (round 5: λ-only was
-insufficient), **and the pinned φ-sup extinction-majorant bound**
+φ-aware 7-point quadrature/panel-splitting rule, the exact per-collision
+**`MakePhaseClosure(x,λ)` / Pel-band closure API** carrying local constituent
+weights and wavelength-bound g, **and the pinned φ-sup extinction-majorant bound**
 (§3.4/§4.3, §7.1 steps 1/4, §7.2.3), the chem spectral contract with the
 length-allocated Gauss–Kronrod budget controller and the effective-HRR η
 convention (§4.4, §7.1 step 3), the trilinear-only rule for physical
@@ -1200,22 +1317,24 @@ p_march support/survival, labeled medium selection — plus the §7.2.7
 configuration matrix. **Phase C sim and motion-sequence
 work** additionally require: the r8 P0 correction (transported Y_O +
 withheld-stream primary coefficients — extended r9 to condensables),
-the **r9 phase-transfer/EOS closure** (gas-density definition,
-phase-transfer sources in S_div, closed-box gas↔aerosol tests), the
+the **r11 phase-transfer/EOS/energy closure** (gas-density definition,
+total-mixture ρ_totZ, conservative phase-transfer masses, latent power,
+aerosol heat capacity in ℋ_s/C_T and S_div, closed-box gas↔aerosol tests), the
 condensable pseudo-species thermochemistry and joint elemental feasible
-set (§3.3/§3.4), the y_form calibration protocol with its
-cross-prediction gate (§3.4), §3.2's discrete S_div derivation, the §3.3
+set (§3.3/§3.4), the y_form/y_cond multi-resolution calibration protocols
+with their scale cross-prediction gates (§3.4), §3.2's discrete S_div derivation, the §3.3
 two-rate/flood-fill/exponential-update specs, §3.5's total-support budget
 closure with the branch-conditioned split-first-order gate, §3.8's
 executable verification tier and absolute/CI-based end-to-end gates —
-now including the round-5 items: the corrected ṁ‴_gas (no S_div
-double-count), the χ_load-restricted loading regime with carried aerosol
-enthalpy, the residual-potential V4 gate, the pinned saturation law and
-condensable record, the conservative FCT feasibility limiter, the
-concrete heptane calibration case with y_cond's protocol — and §8's
+including: the corrected ṁ‴_gas (no S_div double-count), the χ_load≤1 %
+hard predictive boundary, the all-intermediate-state chemical-potential V4
+gate, the mass-conservative saturation law and condensable record, the
+conservative finite-volume coupled FCT scheme, and the calibration cases —
+and §8's
 fixed sequence epoch with nominal/shutter time separation,
-halo-serialization/blur-disable policy, the blur ⇒ pure-DT distance-MIS
-rule, timestamped probes, residency model, and trilinear rules.
+halo-serialization/blur-disable policy, the render-global blur rule (no
+volume NEE/equiangular, NM pure DT, Pel nominal-only, ratio-tracked chem),
+timestamped probes, residency model, and trilinear rules.
 
 ### 7.1 Phase A — "a fire renders at all" (renderer-only; no sim)
 
@@ -1381,12 +1500,17 @@ rule, timestamped probes, residency model, and trilinear rules.
    biases exactly the zero-soot showcase this step exists for. Collected
    with controlled bias (the declared quadrature tolerance above) for
    every path with a segment through the medium; no collisions required.
+   This deterministic Gauss–Kronrod construction is **blur-off only**. When
+   velocity blur is active, §8 replaces it with the independent uniform-distance
+   plus ratio-tracked-transmittance estimator; the two estimators are never
+   combined on one segment.
 4. **Chromatic heterogeneous coefficients** (G4): real `GetCoefficientsNM`
-   with λ-dependent σ_a/σ_s from §4.1/§4.3 — **plus the medium-level
-   wavelength-aware phase interface** (eval/sample/pdf taking λ, owned by
-   the medium so the §4.3 constituent mixture is expressible; round 4:
-   `IPhaseFunction` is λ-blind and chromatic coefficients alone cannot
-   implement the specified scattering). **Spectral-path-first policy**:
+   with λ-dependent σ_a/σ_s from §4.1/§4.3 — plus the exact §4.3
+   **`MakePhaseClosure(x,λ)` / `MakePhaseClosurePel(x,band_preset)` API**, with
+   the returned immutable closure used by continuation, direct-light adapters,
+   and guiding in both `PathTracingIntegrator` and `RayCaster`. This replaces,
+   rather than supplements, the fixed `GetPhaseFunction()` path for fire
+   media. **Spectral-path-first policy**:
    fire scenes target the spectral rasterizers, where per-λ tracking against
    a per-λ majorant is correct today via the G5 fallback. The RGB path gets
    band-averaged (projected) coefficients so fire scenes still *render*
@@ -1789,13 +1913,17 @@ transform, sim Δt, frame rate, the §8 time-mapping four-tuple (t₀, α,
 extrapolation policy, per-fuel constants used (y_form, oxidation constants
 (T_ox; the 2.667 kg-O₂/kg, 3.667 kg-CO₂/kg (=44/12), 32.8 MJ/kg set), y_s (net, as the calibration check), y_cond,
 χ_r, ρ_soot, T_pilot/T_AIT, Q̇_ref, aerosol-channel storage scales, and
+the y_form/y_cond calibration dataset IDs, full sampling-protocol record,
+resolution/scale cross-prediction results, **`aerosol_humidity_model = none`**,
+and the χ_load≤1 % supported-regime flag,
 the condensable pseudo-species record: formula/W_cv, formation and
 sensible enthalpy references, Δh_cv, s_cv, latent heat L_cv, the
 saturation-law record (T_cond, p_sat,ref), and the chem-HRR denominator
 convention), the **versioned optical
 preset record** (E(m) dataset ID/hash — shared by sim-side C₀ and
-renderer-side σ_a per §3.5/§4.1 — plus the §4.3 k_m, n, ω, g values and
-the φ(T) partition band), the §4.4 chemiluminescence set (η_chem, SPD
+renderer-side σ_a per §3.5/§4.1 — plus **separate cool-carbon and
+condensed-organic** §4.3 k_m, n, ω, g values and the φ(T) partition band),
+the §4.4 chemiluminescence set (η_chem, SPD
 dataset identifier, wavelength units, [λa, λb], per-band fractions), and a
 provenance hash.
 
@@ -1831,7 +1959,7 @@ precedent).
 rule: **one shutter-time sample per camera path**, with density, emission,
 transmittance, *and majorants* all evaluated at that same time — mixed-time
 lookups make Tr and ε disagree and alias. Lookup is backward
-semi-Lagrangian (x − u·(t_s − t_frame), signed — shutter samples fall on
+semi-Lagrangian (x − u·(t_s,sim − t_i), signed — shutter samples fall on
 both sides of frame time); first-order, smears under rotation at large CFL —
 accepted and documented. **Path-time carrier** (external-review catch):
 neither `RuntimeContext` nor `Ray` carries a sampled path time today, and
@@ -1868,7 +1996,7 @@ approximation, valid for Δt_shutter ≪ Δt_frame; a shutter longer than
 the frame interval is rejected with a diagnostic). Gates: α ≠ 1,
 subframe nominal times, and cadence-crossing shutters. Majorants must
 bound the field *over the shutter interval*: blocks are dilated by the
-**global** max|u|·max|t_s − t_frame| at build time (loose but safe;
+**global** max|u|·max|t_s,sim − t_i| at build time (loose but safe;
 per-block dilation is a measured optimization) — **and the medium's
 traversal AABB is expanded by the same displacement bound**
 (`ClipDistanceToBounds` clips to the base AABB today, §5.1) — **and AABB
@@ -1880,7 +2008,9 @@ original bounds. The sim therefore exports the velocity grid with a
 (max|u|·Δt_frame — the sim cannot know the camera shutter at export;
 round 4), with the **available halo width and the outside-halo
 extrapolation policy serialized in metadata**; at render time, if the
-shutter's displacement bound exceeds the available halo the renderer
+shutter's mapped-SI displacement bound
+max|u|·max|t_s,sim−t_i| (with shutter duration |α|Δt_scene) exceeds the
+available halo the renderer
 **disables blur for that medium with a logged diagnostic** rather than
 silently extrapolating. Lookup order pinned as clamp-to-halo-then-sample;
 gates: a constant-velocity slab translating across the base AABB with
@@ -1903,27 +2033,48 @@ and invalid tracking probabilities — while clamping would break the
 polynomial-exactness that `EvalDeterministicOpticalDepth`'s quadrature
 and the §7.1 pure-DT reduction rely on (third external round). A monotone
 positive cubic is the recorded upgrade path if trilinear proves visually
-insufficient; naive tricubic is excluded for physical channels outright. One consistency
-note with §7.2.3: the emission CDF is built at frame time, so
-shutter-displaced ε can be nonzero where the frame-built φ_v = 0 — this
-stays unbiased (the march weight is 1 wherever p_V = 0, by the §7.2.2
-partition), just unimportance-sampled at the displaced fringe. **And a
-hard interaction rule (round 5): media rendered with velocity blur
-disable the deterministic-distance-MIS competitors (equiangular and
-volume-NEE distance MIS) and run pure delta-tracking collision
-estimation.** The advection warp composes polynomial degrees far past
-the §7.1 quadrature guarantee (trilinear velocity makes the warped
-coordinate degree 3; a trilinear channel through it degree 9; φ(T(x'))
-times carbon degree 36, with grid-plane crossings becoming cubic roots
-and φ-threshold crossings degree-9 roots) — so `EvalDistancePdf` can no
-longer match the actual tracking proposal, which would bias the MIS.
-Pure DT needs no deterministic τ at all (the (σ_a/σ_t)·B reduction) and
-stays exact under blur; blur was already conditional, and blur-off
-renders keep the full §7.2 machinery. Gated by a
-spatially-varying-velocity test against a high-accuracy reference. Ships in
-Phase C only if per-frame cadence proves visually insufficient;
-grid-interpolation blur is rejected (it fabricates density where none
-advected).
+insufficient; naive tricubic is excluded for physical channels outright.
+
+One hard, render-global interaction rule removes every ambiguous MIS state:
+**if any active fire medium uses velocity blur, the renderer disables the
+entire volume-NEE and equiangular families for that render.** It draws no
+pivot U or volume endpoint Y, sets `competitionAvailable = false` at every
+vertex, defines p_V = 0, and gives every march-collected thermal-emission hit
+weight 1. All medium distances use pure per-wavelength delta tracking. This is
+deliberately render-global rather than per-medium: a static emitter connection
+may cross a blurred non-emissive medium, and a surface continuation may later
+enter a blurred emitter. Static media lose variance reduction in this mode but
+not energy. The frame-time emission CDF may remain resident but is never
+sampled.
+
+The restriction is necessary because the advection warp composes polynomial
+degrees far past §7.1's deterministic-quadrature guarantee (trilinear velocity
+makes the warped coordinate degree 3; a trilinear channel through it degree 9;
+φ(T(x′)) times carbon degree 36, with cubic grid-plane roots and degree-9
+φ-threshold roots). `EvalDistancePdf` therefore cannot represent the actual
+warped tracking proposal. For **NM spectral thermal transport**, pure DT is
+exact and its collision score remains (σ_a/σ_t)B. The scalarized Pel tracker
+does not share that reduction; fire-medium Pel preview consequently evaluates
+the nominal frame without velocity blur and logs that limitation. Predictive
+blurred output is spectral-only.
+
+Chemiluminescence uses a separate unbiased blur-mode estimator instead of the
+static deterministic quadrature. On every full marched segment [0,L], draw one
+t∼Uniform(0,L), independently of the collision sampler, and score
+
+> L · ε_chem(x′(t),λ) · T̂_ratio(0,t),
+
+where x′ is the shutter-time warp and T̂_ratio is an independent spectral
+ratio-tracking estimate using the same shutter-bounded majorant. This remains
+valid when σ_t=0 and is averaged if more than one chem sample is requested.
+It has MIS weight 1 because the render-global rule disables volume NEE. No
+distance-sampler early-out may skip the draw. Gates: chromatic Pel must prove
+it stayed nominal/unblurred; spectral thermal and chem-only velocity-shear
+slabs must match high-accuracy references; and nested static+blurred media,
+including a static emitter behind a null-bounded blurred medium, must match
+volume-NEE-on blur-off references within confidence intervals. Ships in Phase
+C only if per-frame cadence proves visually insufficient; grid interpolation
+blur remains rejected because it fabricates density where none advected.
 
 ## 9. Scene-language sketch (illustrative, not final)
 
@@ -1936,20 +2087,23 @@ fire_medium
 	channel_condensed	condensed
 	channel_reaction	reaction			// optional, enables chem sheet
 	channel_velocity	velocity			// optional, enables motion blur (§8)
-	// soot_em / chem_eta etc. are OVERRIDES of the grid-metadata values
-	// (§8); unset, the metadata governs — overriding logs a diagnostic,
-	// since a freely tuned value abandons the §1 "exposure only" claim.
-	soot_em				0.26				// E(m); default per §4.1
-	chem_eta			0.0001				// §4.4 η_chem (fraction of HRR; SPD id from metadata)
-	smoke_exponent		1.2					// §4.3 λ-exponent n (flaming smoke)
-	smoke_albedo		0.6					// §4.3 scattering split
-	phase				hg 0.6
+	// Optional overrides replace WHOLE versioned metadata records. Loose
+	// per-parameter soot/smoke/phase tuning is intentionally unsupported.
+	optical_preset_override	presets/fire_optics_v1.json
+	chem_preset_override	presets/methane_chem_v1.json
 }
 ```
 
-Conventions (verified against the registry): all-lowercase snake_case
-parameter names matching every existing medium descriptor; `phase hg 0.6`
-follows the existing composite-token convention. Spatial placement: for VDB
+Conventions (verified against the registry): new parameters follow the existing
+all-lowercase snake_case descriptor convention. Each override is a
+schema-versioned, hashed record: the optical record contains soot E(m) plus
+**separate** cool-carbon and condensed-organic k_m/n/ω/g entries; the chem
+record contains per-fuel η_chem, SPD, normalization range, and provenance.
+Loading either override logs that grid metadata was replaced, and the record
+identity is written to output provenance. Overrides are calibration/ablation
+features: predictive mode rejects a record whose hash differs from the grid
+metadata, so a scene cannot tune smoke appearance while retaining the §1
+fidelity claim. Spatial placement: for VDB
 input the grid transform is authoritative; raw-slice input requires explicit
 `bbox_min`/`bbox_max` as today. The printf-slot semantics change is called
 out explicitly: in `grid_sequence` the slot is the **frame index** (VDB
@@ -2024,6 +2178,8 @@ registry).
 | Multi-channel grid memory (dense 512³, 7 scalar fields — velocity is 3 — per §8 precisions ≈ 2.7 GB/frame) | fp16 where §8 permits; candle is small-domain DNS; sparse grids in Phase D |
 | Quantization/normalization destroying physical units (the bridge's 8-bit lesson, §5.1) | §8 units + precision table; ingestion round-trip test asserting known values |
 | RGB-path fire looks different from spectral-path fire | §7.1 step 4 declares spectral-first; RGB is an approximate preview path with a logged diagnostic (deterministic projection bias, §12 RGB-path decision) |
+| Velocity blur silently mixes incompatible distance estimators | §8 disables volume NEE/equiangular render-globally, uses NM pure DT, keeps Pel nominal/unblurred, and gives chem an independent ratio-tracked estimator; nested static+blurred gates |
+| Heavy or wet smoke exceeds the one-fluid dry-aerosol model | χ_load>1 % is a hard predictive error; water/hygroscopic aerosol is explicitly out of scope and recorded in metadata (§1/§3.2/§8) |
 | Phase-A procedural flame looks wrong and stalls review | it is a *radiometry* target, not a beauty target; beauty ships with Phase C sims |
 
 ## 12. Decisions taken and questions still open
@@ -2038,7 +2194,9 @@ registry).
   transported Y_O, and **two transported aerosol inventories (c_carbon,
   c_condensed) with the hot/cool split derived via φ(T) — no transfer
   operators**; LLJ deferred
-  behind a validation gate (§3.4; revised r6 through r9 — the r7 full
+  behind a validation gate (§3.4; revised r6 through r11 — r11 defines Z as
+  a total-mixture conservative scalar and makes aerosol heat capacity and
+  phase latent energy dynamic rather than diagnostic-only; the r7 full
   bookkeeping without a transported oxidizer was the third round's P0).
 - Chemiluminescence source → **sim exports the reaction-rate channel**
   (§3.3); amplitude is the metadata-pinned η_chem with a unit-normalized
@@ -2090,7 +2248,12 @@ registry).
 - **RGB path** (was Q7; adopted) → kept as an explicitly approximate
   preview path with a logged diagnostic; auto/final fire rendering routes
   spectral. The correct framing is deterministic spectral-projection
-  *bias*, not variance (§7.1 step 4).
+  *bias*, not variance (§7.1 step 4). Under velocity blur it evaluates the
+  nominal unblurred frame because scalarized tracking lacks the per-wavelength
+  pure-DT reduction (§8).
+- **Wet smoke** → excluded from this arc. Predictive scope is dry soot carbon
+  plus dry condensed organics; water aerosol/hygroscopic growth requires a
+  future transported-water and multi-RH validation extension (§1).
 
 **Still open:**
 
@@ -2114,7 +2277,11 @@ registry).
    out one merged smoke preset, matching §3.4/§4.3's split inventories),
    and the λ-dependent E(m) table. Round-5 direction, adopted:
    **Chang–Charalampopoulos (0.2–6.4 µm) is the leading Phase-C
-   candidate for the versioned soot E(m) table**, and
+   candidate for the measured portion of the versioned soot E(m) table**,
+   but it cannot alone define low-temperature Planck means: at 300 K only
+   about 12.8 % of the B_λ/λ integral lies below 6.4 µm. Preset v1 therefore
+   requires an explicitly identified, continuity-checked long-wave extension
+   (or a second measured dataset) before §3.5 may integrate it. Also,
    **Mulholland–Croarkin's 8.7 ± 1.1 m²/g @ 633 nm serves as a
    total-post-flame validation anchor only** — it cannot split cool
    carbon from condensed organics or determine both constituents'
@@ -2429,3 +2596,28 @@ registry).
   §12 Q1/Q2 updated with the round-5 dataset candidates (Lai 2025;
   Chang–Charalampopoulos as leading E(m) table, Mulholland–Croarkin as
   total-anchor-only) and their adoption criteria.
+- **r11 (2026-07-28):** after **external review round 6** (0 P0, 10 P1
+  families, 2 P2; every cited transport surface rechecked against the branch).
+  Sim: resolved the FCT/MacCormack contradiction by pinning conservative
+  finite-volume coupled FCT and making MacCormack debug-only; defined Z as a
+  conservative total-mixture scalar ρ_totZ with the gas-normalized
+  (1+χ_load)b(Z) element constraint; replaced diagnostic-only aerosol
+  enthalpy with dynamic total sensible energy ℋ_s, C_T, and the corresponding
+  complete divergence identity; made χ_load>1 % a hard predictive-scope
+  error; made condensable transfer mass-conservative, capped saturation
+  pressure, and inserted accepted latent power into energy/S_div; corrected
+  the primary+burnout LHV/O₂ wording and expanded V4 to carry both soot and
+  condensable chemical potential at intermediate states; strengthened
+  y_form/y_cond scale+resolution calibration and pinned OC-to-surrogate mass
+  conversion/sampling requirements; corrected non-gray ambient exchange to
+  separate κ_P(T) and κ_P(T∞) means and made V5 independently spectral.
+  Renderer: pinned one immutable MakePhaseClosure(x,λ) API including
+  wavelength-bound g; made velocity blur disable volume NEE/equiangular
+  render-globally with explicit weight state, restricted Pel to nominal
+  unblurred preview, and added an unbiased ratio-tracked chem blur estimator;
+  corrected every blur displacement to mapped simulation seconds; replaced
+  loose smoke parameters with whole-record constituent preset overrides.
+  Scope/contract: dry aerosol is explicit, wet/hygroscopic smoke is deferred;
+  metadata carries that boundary, calibration provenance, and distinct
+  constituent optics; Chang's 6.4 µm endpoint now requires a named long-wave
+  extension before low-temperature Planck means are predictive.
