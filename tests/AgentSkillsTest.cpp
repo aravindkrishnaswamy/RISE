@@ -556,13 +556,15 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
 	// A rot guard for the extraction itself: the seven seed skills ship
-	// FOURTEEN snippets total (lighting-recipes 3, materials-and-media-
+	// FIFTEEN snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 2, object-modeling-recipes 3, observe-modes 1,
+	// geometry 2, object-modeling-recipes 4, observe-modes 1,
 	// scene-skeleton-and-conventions 1) -- if the fence tag or
 	// extraction regresses, this trips before a snippet silently
-	// escapes checking.
-	Check( totalSnippets == 14, "the seed skills carry the expected 14 ```rise snippets in total (got " +
+	// escapes checking.  object-modeling-recipes gained Recipe 4 (the
+	// turned-vessel profile: sdf_geometry roundcone/smin chain + a
+	// sweep_geometry neck) with the lathe-forms guidance.
+	Check( totalSnippets == 15, "the seed skills carry the expected 15 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -833,6 +835,132 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 }
 
 //----------------------------------------------------------------------
+// S3c: THE OUTPUT-QUALITY RULES.  Three guidance rules were added after
+// a measured from-scratch build ("an alchemist's workbench") came back
+// fast but cartoonish: it built every lathe form -- a retort, a mortar,
+// three bottles -- out of stacked cylinders (14 cylinder_geometry
+// against 2 sweep_geometry), and it rendered only FOUR times in
+// thirty-three turns, so the prompt's relational constraints ("pestle
+// resting against the rim", "the neck crosses in front of the book")
+// were never once looked at.  The rules:
+//
+//   1. TURNED FORMS ARE A PROFILE.  A solid of revolution is authored
+//      as an sdf_geometry roundcone/smin chain, never a cylinder stack.
+//   2. BUILD CADENCE.  Look after each OBJECT GROUP, not once at the
+//      end.
+//   3. RELATIONAL CONSTRAINTS MUST BE SEEN.  Verify "resting against /
+//      behind / in front of" against a rendered IMAGE, not coordinates.
+//
+// These are POSITIVE assertions -- each names something the skills must
+// SAY.  Deliberately not written as bans on words: a previous guard in
+// this repo banned a noun phrase and thereby rejected true statements.
+// The rules must survive rewording of the surrounding prose, so each
+// check below is anchored on a term the rule cannot be stated without.
+//----------------------------------------------------------------------
+static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
+{
+	std::printf( "S3c: output-quality rules (turned-form profiles, build cadence, relational checks)...\n" );
+
+	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
+		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
+		return env.get( "result" ).get( "markdown" ).asString();
+	};
+
+	const std::string omr = fetch( rpc, 300, "object-modeling-recipes" );
+	const std::string mwg = fetch( rpc, 301, "modeling-workflow-and-geometry" );
+	const std::string obs = fetch( rpc, 302, "observe-modes" );
+	Check( !omr.empty() && !mwg.empty() && !obs.empty(),
+	       "S3c: the three guidance skills fetched" );
+
+	// ---- Rule 1: turned forms are a profile, not a cylinder stack ----
+	//
+	// The vessel nouns are the trigger the model pattern-matches on, so
+	// the rule is worthless if it does not name them.  Assert the ones
+	// the failing build actually got wrong (retort, mortar, bottle) plus
+	// the common rest of the family.
+	static const char* const kLatheNouns[] = {
+		"bottle", "jar", "flask", "retort", "vase", "cup", "bowl",
+		"mortar", "candlestick", "goblet", "urn", "barrel"
+	};
+	for( size_t i = 0; i < sizeof( kLatheNouns ) / sizeof( kLatheNouns[0] ); ++i ) {
+		Check( omr.find( kLatheNouns[i] ) != std::string::npos,
+		       ( std::string( "S3c: object-modeling-recipes names \"" ) + kLatheNouns[i]
+		         + "\" as a turned form" ).c_str() );
+	}
+	Check( omr.find( "solid of revolution" ) != std::string::npos,
+	       "S3c: object-modeling-recipes states the turned-form rule in terms of a solid of revolution" );
+	Check( omr.find( "stack of cylinders" ) != std::string::npos,
+	       "S3c: object-modeling-recipes names the cylinder-stack anti-pattern it is replacing" );
+	// The PRESCRIPTION, not just the prohibition: the actual verbs.  A
+	// rule that says "do not stack cylinders" without naming what to do
+	// instead is the failure mode this whole change exists to fix.
+	Check( omr.find( "roundcone" ) != std::string::npos && omr.find( "smin" ) != std::string::npos,
+	       "S3c: object-modeling-recipes prescribes sdf_geometry roundcone parts joined by smin" );
+	// And the honest scope limit: sweep_geometry sweeps a FIXED
+	// cross-section (point_width scales the x axis alone, end_scale_y is
+	// linear-only), so it is the curved-tube verb, NOT the lathe verb.
+	// Getting this backwards would send a model to a chunk that cannot
+	// express a varying-radius revolve at all.
+	Check( omr.find( "NOT the lathe verb" ) != std::string::npos,
+	       "S3c: object-modeling-recipes states that sweep_geometry is not the lathe verb" );
+	// Not blanket cargo-culting: cylinders stay right for constant-radius
+	// parts, and the skill must say so.
+	Check( omr.find( "When a cylinder IS the right answer" ) != std::string::npos,
+	       "S3c: object-modeling-recipes keeps a cylinder-is-correct carve-out" );
+	// The rule is reachable from the geometry-selection skill too -- a
+	// model that reads only modeling-workflow-and-geometry must still
+	// hit it.
+	Check( mwg.find( "solid of revolution" ) != std::string::npos
+	       && mwg.find( "roundcone" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry carries the turned-form rule as well" );
+
+	// ---- Rule 2: build cadence -- look after each object group ----
+	Check( mwg.find( "OBJECT GROUP" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry sets the build cadence per object group" );
+	Check( mwg.find( "not** one look at the end" ) != std::string::npos
+	       || mwg.find( "not one look at the end" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry rules out the one-look-at-the-end build" );
+	Check( obs.find( "BUILDING a scene from scratch" ) != std::string::npos,
+	       "S3c: observe-modes carries a decision-table row for a from-scratch build" );
+
+	// ---- The param-vs-placement tension, resolved in BOTH directions ----
+	//
+	// Cadence guidance must NOT be allowed to erode the rule that a
+	// parameter edit is confirmed by its apply response.  Both halves
+	// have to be present, in the same skill, or the two rules read as
+	// contradictory and a model picks whichever it saw last.
+	Check( mwg.find( "Do NOT render to confirm a parameter took" ) != std::string::npos,
+	       "S3c: the param-confirmation rule SURVIVES in modeling-workflow-and-geometry" );
+	Check( mwg.find( "are not param confirmations" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry distinguishes placement/shape/composition FROM param confirmation" );
+	// And the economies the cadence change must not weaken.
+	Check( mwg.find( "Batching is where you\nsave round-trips" ) != std::string::npos
+	       || mwg.find( "Batching is where you" ) != std::string::npos,
+	       "S3c: the batching economy is explicitly preserved alongside the raised cadence" );
+
+	// ---- Rule 3: relational constraints are verified against an image ----
+	static const char* const kRelationalTerms[] = {
+		"resting against", "behind", "in front of", "overlap"
+	};
+	for( size_t i = 0; i < sizeof( kRelationalTerms ) / sizeof( kRelationalTerms[0] ); ++i ) {
+		Check( mwg.find( kRelationalTerms[i] ) != std::string::npos,
+		       ( std::string( "S3c: modeling-workflow-and-geometry names the relational form \"" )
+		         + kRelationalTerms[i] + "\"" ).c_str() );
+	}
+	Check( mwg.find( "Reasoning about\ncoordinates is not verification" ) != std::string::npos
+	       || mwg.find( "coordinates is not verification" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry states that coordinate reasoning is not verification" );
+	Check( mwg.find( "query_object_at" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry points at query_object_at as the cheap positional check" );
+	// What to DO on failure -- a check with no recovery step is advice,
+	// not a procedure.
+	Check( mwg.find( "patch the position and look again" ) != std::string::npos,
+	       "S3c: modeling-workflow-and-geometry says what to do when the relational check FAILS" );
+	Check( obs.find( "RELATIONAL" ) != std::string::npos,
+	       "S3c: observe-modes carries a decision-table row for relational constraints" );
+}
+
+//----------------------------------------------------------------------
 // S4: chat-loop tool table + SetSkillIndex.
 //----------------------------------------------------------------------
 static JsonValue ParseBody( const std::string& body )
@@ -1038,6 +1166,7 @@ int main()
 	TestVerbRejections( rpc );
 	TestSnippetContract( rpc );
 	TestFenceEscapes( rpc );
+	TestOutputQualityRules( rpc );
 	TestObserveModesTeaching( rpc );
 	TestChatLoopWiring();
 	TestToolRound( rpc );

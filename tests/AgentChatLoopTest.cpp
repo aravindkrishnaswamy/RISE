@@ -7010,6 +7010,108 @@ static void TestAskUserAbandonedFlushSynthesis()
 }
 
 //----------------------------------------------------------------------
+// T40x: THE OBSERVATION RULES, and the param-vs-placement tension.
+//
+// Two rules were added to the system prompt after a measured build came
+// back fast but cartoonish -- four renders in thirty-three turns, so the
+// user's relational constraints ("pestle resting against the rim", "the
+// neck crosses in front of the book") were never looked at once:
+//
+//   BUILD CADENCE      -- look after each OBJECT GROUP, not once at the
+//                         end.
+//   RELATIONAL CHECK   -- verify "resting against / behind / in front
+//                         of" against a rendered IMAGE, never against
+//                         coordinates.
+//
+// The load-bearing part of this test is the TENSION.  The prompt already
+// said, correctly, that a param edit is confirmed by its apply response
+// and that you must NOT render just to confirm a parameter took.  Raising
+// the render cadence must not erode that rule, and the two must not read
+// as contradictory -- so all THREE clauses are asserted together: the
+// original param rule, the cadence rule, and the sentence that separates
+// them (a value landing is a param confirmation; a placement is not).
+// Drop any one and the pair becomes ambiguous.
+//
+// Positive assertions only -- each names something the prompt must SAY.
+//----------------------------------------------------------------------
+static void TestObservationCadenceRules()
+{
+	std::printf( "T40x: system prompt -- build cadence, relational checks, and the param-vs-placement split...\n" );
+
+	const std::string sys = AgentChatLoop::SystemPrompt();
+	Check( !sys.empty(), "T40x: the base system prompt is non-empty" );
+
+	// --- The PRE-EXISTING rule that must SURVIVE this change ---------
+	Check( sys.find( "do NOT render just to confirm a "
+	                 "parameter took" ) != std::string::npos,
+	       "T40x: the param-confirmation rule is STILL present (a render never re-reads a value you set)" );
+	Check( sys.find( "confirmed by "
+	                 "the apply response's status and bumped headVersion alone" ) != std::string::npos,
+	       "T40x: PARAM/STRUCTURAL edits are still confirmed by the apply response alone" );
+
+	// --- The clause that RESOLVES the tension ------------------------
+	// Without this, "render more" and "do not render to confirm" are two
+	// rules with no stated boundary.  The boundary is WHAT is being
+	// checked: a value versus a placement.
+	Check( sys.find( "A VALUE landing is a param confirmation" ) != std::string::npos,
+	       "T40x: the prompt names a value landing as the param-confirmation case" );
+	Check( sys.find( "are NOT param confirmations" ) != std::string::npos,
+	       "T40x: the prompt states that placement/shape/composition are NOT param confirmations" );
+	Check( sys.find( "never render to re-read a number you "
+	                 "set; always look to judge a placement" ) != std::string::npos,
+	       "T40x: the prompt carries the one-line form of the split, so the two rules cannot read as contradictory" );
+
+	// --- Rule: build cadence -----------------------------------------
+	Check( sys.find( "BUILD CADENCE" ) != std::string::npos,
+	       "T40x: the prompt carries an explicit BUILD CADENCE rule" );
+	Check( sys.find( "look after EACH OBJECT GROUP" ) != std::string::npos,
+	       "T40x: the cadence is per object group" );
+	Check( sys.find( "not once "
+	                 "at the end" ) != std::string::npos,
+	       "T40x: the cadence rule rules out the one-look-at-the-end build" );
+	// The cadence must not be paid for out of the batching economy --
+	// that is a separate, still-correct saving.
+	Check( sys.find( "batching chunks "
+	                 "into one insert_chunks call is where you save round-trips" ) != std::string::npos,
+	       "T40x: the prompt preserves batching as the place to save round-trips, not the looks" );
+
+	// --- Rule: relational constraints --------------------------------
+	Check( sys.find( "RELATIONAL CONSTRAINTS MUST BE SEEN" ) != std::string::npos,
+	       "T40x: the prompt carries an explicit relational-constraint rule" );
+	Check( sys.find( "Reasoning about coordinates is NOT verification" ) != std::string::npos,
+	       "T40x: the prompt states that coordinate reasoning does not verify a relational claim" );
+	Check( sys.find( "query_object_at" ) != std::string::npos,
+	       "T40x: the relational rule points at query_object_at as the cheap positional check" );
+	Check( sys.find( "patch the "
+	                 "position and look again" ) != std::string::npos,
+	       "T40x: the prompt says what to do when the relational check FAILS" );
+
+	// --- The same cadence must reach the render TOOL DESCRIPTION -----
+	// A model that never reads the skills still sees every tool schema,
+	// so the tool description is the surface with the widest reach.  Go
+	// through a real BuildRequest body rather than the literal, so this
+	// tracks what is actually sent on the wire.
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.AddUserMessage( "Build me a still life." );
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	Check( req.body.find( "BUILD CADENCE" ) != std::string::npos,
+	       "T40x: the render tool description on the wire carries the build cadence" );
+	Check( req.body.find( "after each "
+	                      "OBJECT GROUP you place" ) != std::string::npos,
+	       "T40x: the render tool description sets the cadence per object group" );
+	Check( req.body.find( "Do NOT render to confirm "
+	                      "a parameter value took" ) != std::string::npos,
+	       "T40x: the render tool description keeps the param-confirmation carve-out" );
+	Check( req.body.find( "RELATIONAL claim" ) != std::string::npos,
+	       "T40x: the render tool description carries the relational-constraint check" );
+	// The token economies the cadence change must not weaken.
+	Check( req.body.find( "TOKEN ECONOMY" ) != std::string::npos
+	       && req.body.find( "do not follow an ordinary render with a separate" ) != std::string::npos,
+	       "T40x: the small-render economy and the inline-image one-call form both SURVIVE" );
+}
+
+//----------------------------------------------------------------------
 // T41: GUI stage 3 -- SetSystemPromptOverride replaces the composed
 // system prompt VERBATIM (no base prompt, no skills section) in the
 // actual BuildRequest body, and the override survives Reset().
@@ -8900,6 +9002,7 @@ int main()
 	TestAskUserToolLoop();
 	TestAskUserParallelWithDispatchedTool( rpc );
 	TestAskUserAbandonedFlushSynthesis();
+	TestObservationCadenceRules();
 	TestSystemPromptOverride();
 	TestSkillIndexDiscourageRelist();
 	TestReasoningTokenAccounting();

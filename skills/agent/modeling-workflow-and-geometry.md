@@ -39,10 +39,25 @@ stale, the WHOLE batch stops with nothing applied (so it cannot
 half-clobber an edit someone else made) -- re-read the document and
 resubmit.
 
-**Render after each coherent group, and always after lighting.**  Once
-a group has landed -- the surface, a cluster of furniture, the light
-rig -- render a small preview and check it before you build the next
-group on top.  In particular:
+**Render after each OBJECT GROUP, and always after lighting.**  Once a
+group has landed -- the surface, a piece of furniture, the light rig --
+render a small preview and check it before you build the next group on
+top.  On a from-scratch build that means a look after each object or
+pair of objects, **not** one look at the end: four renders across a
+six-object scene is too few, and a measured build that rendered only
+four times in thirty-three turns spent fourteen of those turns tearing
+down and rebuilding things a look would have caught immediately.  A
+192px preview per group is cheap; the turns you spend re-deriving a
+placement you never saw are not.
+
+Note what this does and does not trade against.  Batching is where you
+save round-trips -- a painter, its material, its geometry and its
+object still go in ONE `insert_chunks` call.  The look BETWEEN groups is
+not the thing to economize on.  And it does not contradict the rule that
+a parameter edit needs no render: see "Param confirmation versus visual
+judgement" below.
+
+In particular:
 - **the LIGHTING render is the one you must not skip.**  Once your
   lights are in place -- and again whenever you change a light or a
   material -- render and actually CHECK the lit result.  Is it too dark,
@@ -67,6 +82,55 @@ look, or rendering to confirm a binding that `read_document` or the
 insert's own `issues` diagnostics already answered.  Short of that,
 when in doubt, look -- the render is cheap and the failure it catches
 is not.
+
+**Param confirmation versus visual judgement.**  These are two
+different questions and only one of them needs an image, so the rules
+never actually collide:
+
+- **A VALUE landing is a param confirmation.**  You set `power` to 12,
+  or bound a material, or inserted a chunk: the apply response's status
+  and bumped `headVersion` already told you it took, and `validate` with
+  no arguments covers the structural case.
+  Do NOT render to confirm a parameter took -- a render cannot tell you
+  anything the apply response did not.
+- **PLACEMENT, SHAPE and COMPOSITION are not param confirmations.**
+  Where an object sits relative to another, what silhouette it reads as,
+  whether the frame composes -- an apply response reports clean success
+  for coordinates that leave two objects a foot apart, so it cannot
+  answer any of these.  They are visual judgements, and a visual
+  judgement needs an image.  Look.
+
+The short form: never render to re-read a number you set; always look
+to judge a placement.
+
+**Relational constraints must be checked against an image.**  When the
+request describes one object as
+resting against / behind / in front of / overlapping
+another, that something breaks the horizon or leads the eye, or that
+the scene "reads as X from this angle" -- that claim is not verified
+until you have rendered and LOOKED at the result.  Reasoning about
+coordinates is not verification.  Two objects with entirely plausible
+numbers routinely fail to touch, interpenetrate instead of resting, or
+occlude in the wrong order, because contact depends on the geometry's
+actual extent and on the camera, neither of which is visible in the
+position values.
+
+- Render with `imageMaxEdge` (~192) and look at the relationship
+  directly -- and from a SECOND `camera` angle when the constraint is
+  about depth, since one view cannot distinguish touching from merely
+  overlapping in screen space.
+- Use `query_object_at {x,y}` to settle "is object A actually at this
+  screen position" for the price of one cheap call -- it returns the
+  name directly (`hit:false`, not an error, when nothing is there).
+  That is the fast way to confirm an occlusion is the object you meant.
+- **When the check fails, patch the position and look again.**  One
+  `propose_patches` call to nudge the offender, one small re-render to
+  confirm.  Do not re-derive the answer from the numbers -- the numbers
+  are what misled you the first time.
+
+Do not call a task with relational constraints done off a clean apply
+and clean validate.  Those say the document is well-formed, not that
+the pestle is leaning on the rim.
 
 **Do not fly blind.**  The failure that actually loses builds is the
 opposite of over-rendering: assembling an entire scene and never
@@ -147,7 +211,8 @@ invent kinds not listed here.
   materials.
 - **Other real kinds worth knowing about**: `circulardisk_geometry`,
   `bezierpatch_geometry`, `bilinearpatch_geometry` (patch/surface
-  primitives), `sdf_geometry` (signed-distance-field geometry),
+  primitives), `sdf_geometry` (signed-distance-field geometry -- also
+  the LATHE verb, see the rule below),
   `cartesian_disk_geometry`, `sweep_geometry`, `path_instances_geometry`
   (instancing along a path), and `displaced_geometry` (tessellates a
   `base_geometry` and offsets vertices by a `displacement` painter --
@@ -158,6 +223,26 @@ invent kinds not listed here.
   can make downstream specular/caustic solving worse).  These are
   real chunks but more specialized -- reach for the analytic
   primitives and meshes above first.
+
+**One override to "reach for the analytic primitives first": turned
+forms.**  If an object's silhouette is a solid of revolution -- bottle,
+jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,
+barrel, turned table leg -- do NOT stack cylinders to approximate it.
+A cylinder stack gives a faceted silhouette with a hard right-angle
+step at every joint where the real object curves continuously, and that
+single choice is what makes a render read as cartoonish regardless of
+how good the lighting and materials are.  Author it as a PROFILE
+instead: a chain of `sdf_geometry` `roundcone` parts (each one a
+`<r1> <r2> <h>` frustum = one height/radius span) joined with `smin`,
+whose blend radius fillets the joints into a continuous curve.
+`sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED
+cross-section along a path, so it is right for a tube that FOLLOWS A
+CURVE (a retort's neck, a spout, a handle) and wrong for a
+varying-radius body.  A cylinder is still exactly right when the real
+object's radius does not change along its axis: a straight shaft, a
+peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
+and a rendered profile recipe: object-modeling-recipes, "Turned forms
+are a PROFILE, never a stack of cylinders" and Recipe 4.
 
 ## Placement and scale sanity
 

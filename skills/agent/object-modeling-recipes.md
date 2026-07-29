@@ -23,13 +23,74 @@ not listed here.
 | `infiniteplane_geometry` | floors, walls, backdrops | cheap analytic, unbounded | the CHUNK itself only takes `name`/`xtile`/`ytile` -- placement/tilt comes from the enclosing `standard_object`'s `position`/`orientation` (universal for every geometry chunk); default lies in XY facing +Z before that transform |
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
-| `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp recipe below for the field layout |
-| `sweep_geometry` | tubes, rails, mouldings, cable runs | mesh cost (tessellated once) | OPEN paths only -- a closed loop needs `torus_geometry`, not a sweep with matching endpoints |
+| `sdf_geometry` | **TURNED/LATHE PROFILES (bottles, jars, vases, mortars, goblets -- see "Turned forms" below)**; melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
+| `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); OPEN paths only -- a closed loop needs `torus_geometry`, not a sweep with matching endpoints |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
 | `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
 | `bezierpatch_geometry`, `bilinearpatch_geometry` | authored curved/patch surfaces | analytic (bezier) / cheap (bilinear) | `bezierpatch_geometry`'s old tessellation params (`detail`, `cache_size`, ...) are retired -- wrap it in `displaced_geometry` if you need that control |
 | Mesh imports (`3dsmesh_geometry`, `rawmesh_geometry`/`rawmesh2_geometry`, `risemesh_geometry`, `plymesh_geometry`, `gltfmesh_geometry`) | authored/imported assets that are not primitive-shaped | mesh cost | `file` path resolved via the media-path search (see the reference-image skill for the exact resolution order); declare before the `standard_object` that references it |
+
+## Turned forms are a PROFILE, never a stack of cylinders
+
+**If the object's silhouette is a solid of revolution -- bottle, jar,
+flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,
+barrel, turned table leg, finial, decanter -- author it as a PROFILE:
+one continuous radius-versus-height curve.  Do NOT stack cylinders.**
+
+This is the single change that most separates a render that reads as a
+real object from one that reads as cartoonish and amateurish.  A stack
+of `cylinder_geometry` chunks gives you a silhouette made of straight
+vertical segments joined by hard right-angle steps, and every one of
+those steps is a place the real object has a continuous curve.  The eye
+reads the steps instantly, at any resolution, under any material.  No
+amount of lighting or material work rescues it.  Three cylinders of
+decreasing radius is not a bottle; it is three cylinders.
+
+**The verb is `sdf_geometry` with `roundcone` parts joined by `smin`.**
+`roundcone` IS a profile segment: `<r1> <r2> <h>` is a frustum that runs
+along local +Y from radius `r1` at `y=0` to radius `r2` at `y=h`, i.e.
+exactly one (height, radius) span of your profile.  Chain them
+end-to-end -- each part's `y` position is the previous part's top -- and
+join them with `smin <k>` instead of `union`.  `k` is the blend radius
+in world units, and it is the whole point: `smin` fillets the joint
+between two segments into a continuous curve, so the silhouette flows
+where a hard `union` (or a cylinder stack) would step.  Pick `k` around
+a third of the local radius; larger `k` = softer shoulder.
+
+Reading a profile off a reference is mechanical.  Write down (height,
+radius) pairs from the bottom up -- base, belly, shoulder, neck, lip --
+then emit one `roundcone` part per span, and a `torus` part for a rolled
+lip or a raised collar.  Recipe 4 below does exactly this and renders.
+
+Two things the profile approach needs:
+
+- **A flat bottom needs a cut.**  `roundcone`'s `y=0` end carries a
+  hemispherical cap of radius `r1`, so the bottom-most segment bulges
+  below its own origin and a vessel authored naively sinks through the
+  table.  End the part list with `part box subtract 0` positioned so the
+  box's top face sits at the intended base plane -- one line, and the
+  bottom is flat.  (A round-bottomed florence flask genuinely wants the
+  cap; leave it in that one case.)
+- **`sweep_geometry` is NOT the lathe verb.**  It sweeps a FIXED profile
+  polygon along a path, and its only per-station control, `point_width`,
+  scales the profile's x-axis alone (`end_scale_y` on the other axis is
+  linear-only) -- so a varying-radius sweep goes ELLIPTICAL, not round.
+  What `sweep_geometry` is genuinely the right verb for is a TUBE THAT
+  FOLLOWS A CURVE at roughly constant bore: a retort's curved neck, a
+  spout, a handle, a bail, a cable.  A retort is therefore both verbs --
+  an SDF profile for the bulb, a sweep for the neck.  Recipe 4 shows the
+  pair.
+
+**When a cylinder IS the right answer** -- do not cargo-cult this into
+banning cylinders.  `cylinder_geometry` is correct, and cheaper and
+more exact than any SDF, whenever the thing genuinely IS a cylinder:
+a straight shaft or rod, a peg, a dowel, a pipe or tube seen straight,
+a cork, a candle body, a coin or puck, a drinking glass with truly
+straight sides, a table leg that is not turned, a drum.  The test is
+whether the real object's radius CHANGES along its axis.  Constant
+radius, flat ends: use the cylinder.  Radius that swells and necks:
+use a profile.
 
 ## Blockout -> refine workflow
 
@@ -579,6 +640,189 @@ the render still shows a rounded/bulging cap instead of a flat rim,
 the clip box isn't cutting deep enough -- shrink its `height` (or grow
 its Y `position` overlap into the roundcone's caps) until the
 curvature is gone.
+
+## Recipe 4: a turned vessel (`sdf_geometry` profile + `sweep_geometry` neck)
+
+The lathe recipe from "Turned forms" above, built for real: a flask
+whose whole body is one continuous profile, plus a curved neck that a
+profile cannot express.  This is the shape family that a cylinder stack
+ruins -- bottles, jars, retorts, mortars, vases, decanters.
+
+**The profile, read bottom-up as (height, radius) pairs:** base
+`(0.02, 0.26)` -> belly `(0.28, 0.31)` -> shoulder `(0.54, 0.22)` ->
+neck-in `(0.72, 0.075)` -> neck top `(0.98, 0.08)`, finished with a
+rolled lip.  Each span becomes ONE `roundcone` part; each part's `y`
+position is the previous part's top, so the segments chain end to end.
+
+`part` field layout (same as Recipe 3): `<prim> <op> <k>  <pos xyz>
+<euler xyz deg>  <scale xyz>  <a b c>  <round>`.  For `roundcone`,
+`a b c` = `<r1> <r2> <h>`; for `torus`, `a b` = `<major> <minor>`; for
+`box`, `a b c` = the HALF-extents.
+
+Three things to notice in the part list:
+
+1. **Every joint after the first is `smin`, not `union`**, with the
+   blend radius `k` roughly a third of the local radius (`0.10` at the
+   fat belly joint, tapering to `0.02` at the lip).  Swap those `smin`s
+   for `union` and the same five parts render as a stepped stack -- the
+   blend IS the difference between a turned vessel and a pile of cones.
+2. **The last part is `box subtract`**, half-extents `1.2 0.6 1.2` at
+   `y=-0.6`, so its top face lands exactly on `y=0`.  That flattens the
+   hemispherical cap on the bottom-most `roundcone`, giving the flat
+   base a vessel needs to sit on a table.
+3. **The neck is a `sweep_geometry`, not part of the profile**, because
+   it CURVES -- an eight-point circular `profile_point` polygon (radius
+   0.035) swept along a five-point Catmull-Rom path.  Its first path
+   point sits at `0.16 0.62 0`, inside the body's surface at that
+   height, so it reads as joined rather than floating alongside.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	1.1 0.85 1.9
+	lookat		0.15 0.45 0
+	up			0 1 0
+	fov			42.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.45 0.45 0.45
+}
+
+uniformcolor_painter
+{
+	name	pnt_glass
+	color	0.72 0.78 0.72
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+lambertian_material
+{
+	name		mat_glass
+	reflectance	pnt_glass
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.01 0
+	orientation	-90 0 0
+}
+
+# The PROFILE: one roundcone per (height, radius) span, chained end to
+# end, every joint after the first blended with smin so the silhouette
+# is continuous.  The closing box subtract flattens the bottom cap.
+sdf_geometry
+{
+	name	flask_body
+	part	roundcone union 0  0 0.02 0  0 0 0  1 1 1  0.26 0.31 0.26  0.0
+	part	roundcone smin 0.10  0 0.28 0  0 0 0  1 1 1  0.31 0.22 0.26  0.0
+	part	roundcone smin 0.08  0 0.54 0  0 0 0  1 1 1  0.22 0.075 0.18  0.0
+	part	roundcone smin 0.05  0 0.72 0  0 0 0  1 1 1  0.075 0.08 0.26  0.0
+	part	torus smin 0.02  0 0.99 0  0 0 0  1 1 1  0.085 0.024 0.0  0.0
+	part	box subtract 0  0 -0.6 0  0 0 0  1 1 1  1.2 0.6 1.2  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_flask_body
+	geometry	flask_body
+	material	mat_glass
+}
+
+# The NECK: a fixed circular cross-section swept along a curve -- the
+# job sweep_geometry actually does.  profile_point is <x> <h> in the
+# sweep frame (a closed polygon, CCW); point is a path control point.
+sweep_geometry
+{
+	name	spout
+	profile_point	0.035 0.0
+	profile_point	0.0247 0.0247
+	profile_point	0.0 0.035
+	profile_point	-0.0247 0.0247
+	profile_point	-0.035 0.0
+	profile_point	-0.0247 -0.0247
+	profile_point	0.0 -0.035
+	profile_point	0.0247 -0.0247
+	point	0.16 0.62 0
+	point	0.36 0.68 0
+	point	0.55 0.60 0
+	point	0.68 0.40 0
+	point	0.72 0.22 0
+	n_len	64
+	cap_start	TRUE
+	cap_end		TRUE
+}
+
+standard_object
+{
+	name		obj_spout
+	geometry	spout
+	material	mat_glass
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
+Rendered at 128px this already reads as a turned vessel: the silhouette
+runs from a flat base out through a full belly, tucks into a shoulder,
+draws in to a slim neck and finishes on a rolled lip, with no visible
+step anywhere along it -- and the swept neck arcs away and back down as
+one continuous tube.  Compare that against the same five radii authored
+as five `cylinder_geometry` chunks, which produces a staircase.
+
+If your version shows a visible ledge at a joint, the `smin` `k` there
+is too small for the radius change across it -- raise it.  If the vessel
+sinks into the table, the closing `box subtract` is missing or its top
+face is not at the base plane (`position.y + half-extent.y` must equal
+the intended base height).  If the neck floats beside the body, its
+first `point` is outside the body's radius at that height -- move it
+inward until it is buried, and confirm with a render, not with
+arithmetic.
 
 ## Traps specific to object modeling
 
