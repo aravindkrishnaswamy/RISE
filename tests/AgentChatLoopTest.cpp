@@ -7116,11 +7116,57 @@ static void TestSkillIndexDiscourageRelist()
 		loop.AddUserMessage( "hi" );
 		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
 		const std::string body = req.body;
-		const std::size_t at = body.find( "read_skill" );
+		// Anchor on the TOOL ENTRY, not the first "read_skill" in the body --
+		// the system prompt names the verb several times before the tool list
+		// starts, so a bare find() lands in the prompt and every assertion
+		// below it becomes vacuous.  (The pre-existing "NO name first" check
+		// was passing for exactly that reason: its needle is absent from the
+		// prompt too, so it proved nothing about the schema.)
+		const std::size_t at = body.find( "\"name\":\"read_skill\"" );
 		Check( at != std::string::npos, "T41b: read_skill is in the tool list" );
-		const std::string near = body.substr( at, 900 );
+		const std::string near = body.substr( at, 1400 );
 		Check( near.find( "NO name first" ) == std::string::npos,
 		       "T41b: MONEY -- the read_skill description no longer says to list first" );
+
+		// STRUCTURAL, not prose.  Prose telling the model not to list first
+		// was tried and measurably did NOT hold: gemini-3.5-flash opened a
+		// recorded scene build with a bare read_skill{}, then never read a
+		// named skill at all.  On the CHAT transport `name` is now REQUIRED,
+		// which the provider enforces.  (MCP deliberately keeps the listing
+		// form -- an external client has no RISE system prompt, so it has no
+		// index until it asks.  Do not "unify" the two.)
+		Check( near.find( "\"required\":[\"name\"]" ) != std::string::npos,
+		       "T41b: MONEY -- the CHAT read_skill schema makes `name` REQUIRED, so a bare "
+		       "read_skill{} cannot be emitted at all (prose alone did not hold)" );
+	}
+
+	// The validate-first recipe must say ONCE-on-the-whole-candidate, and
+	// must tell the model a clean result ends the loop.  Measured waste:
+	// one scene build spent SEVEN consecutive validate{text} calls, six of
+	// them returning zero diagnostics, ~6k output tokens re-echoing the
+	// document before a single edit landed.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build me a scene" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const std::string system = root.get( "system" ).at( 0 ).get( "text" ).asString();
+
+		Check( system.find( "ONCE, on the WHOLE candidate" ) != std::string::npos,
+		       "T41b: MONEY -- the system prompt says validate the candidate ONCE, on the whole "
+		       "document, not once per chunk as it is built up" );
+		Check( system.find( "EMPTY diagnostics array" ) != std::string::npos
+		       && system.find( "go insert" ) != std::string::npos,
+		       "T41b: MONEY -- the system prompt says a clean validate ends the loop (go insert), "
+		       "which is what stops the re-validate-a-superset run" );
+
+		const std::size_t v = req.body.find( "\"validate\"" );
+		Check( v != std::string::npos, "T41b: validate is in the tool list" );
+		const std::string vnear = req.body.substr( v, 1400 );
+		Check( vnear.find( "ONCE, when it " ) != std::string::npos,
+		       "T41b: MONEY -- validate's own description also says once-when-complete, so a model "
+		       "reading only the tool def gets the same rule as one reading the prompt" );
 	}
 }
 

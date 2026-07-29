@@ -107,14 +107,23 @@ namespace RISE
 					"verified scene snippets). Pass a NAME to read one BEFORE authoring "
 					"or explaining scenes -- the skills carry the conventions (light "
 					"directions, power semantics, painter wiring) that make first-try "
-					"scenes render correctly. Your system prompt normally already "
-					"lists every skill name with a one-line hook, so go straight to the "
-					"name you need; omitting 'name' re-lists that same index and is "
-					"only worth a round-trip if you were given no list.",
+					"scenes render correctly. Your system prompt already lists every "
+					"skill name with a one-line hook, so go straight to the name you "
+					"need.",
+					// `name` is REQUIRED on the CHAT transport, structurally, not by
+					// prose.  The index-listing form still exists in the RPC and is
+					// still advertised on MCP, where an external client genuinely has
+					// no index until it asks.  Here the system prompt always carries
+					// the index (SetSkillIndex runs on every scene attach), so a bare
+					// read_skill{} is a round-trip that fetches a list the model is
+					// already holding.  Prose telling it not to was tried first and
+					// measurably did NOT hold -- gemini-3.5-flash still opened a
+					// recorded scene build with a bare call, then never read a named
+					// skill at all.  A required parameter is enforced by the provider.
 					"{\"type\":\"object\",\"properties\":{"
 						"\"name\":{\"type\":\"string\",\"description\":"
-						"\"A skill name from the index (e.g. scene-skeleton-and-conventions); omit to list all available skills.\"}"
-					"}}"
+						"\"A skill name from the index in your system prompt (e.g. scene-skeleton-and-conventions).\"}"
+					"},\"required\":[\"name\"]}"
 				},
 				{
 					"validate",
@@ -127,7 +136,12 @@ namespace RISE
 					"check a CANDIDATE document you have not applied -- e.g. a "
 					"from-scratch scene you are composing before inserting it chunk by "
 					"chunk; that form works even with no scene loaded, while the "
-					"no-argument form needs one. Either way, no error-severity "
+					"no-argument form needs one. Validate the candidate ONCE, when it "
+					"is COMPLETE -- not after each chunk you add. Every `text` call "
+					"re-sends the whole document, and a clean result (empty "
+					"diagnostics) has told you all it can, so go insert rather than "
+					"re-validating a superset of text that already came back clean. "
+					"Either way, no error-severity "
 					"diagnostics means the scene has no SEMANTIC errors (warnings/info "
 					"alone are not failures; a candidate still needs its `RISE ASCII "
 					"SCENE 7` header line to actually load, which this does not check), "
