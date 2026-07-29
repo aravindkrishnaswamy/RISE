@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 23 — after internal review rounds 1–4,
-**six external expert review rounds**, and twelve post-r11 implementation-review
+**Status:** DRAFT (revision 24 — after internal review rounds 1–4,
+**six external expert review rounds**, and thirteen post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r23; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r24; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -1112,10 +1112,23 @@ The most notorious practical trap in fire LES; specified accordingly:
   clamping is forbidden: either destroys the coupled element/energy ledger.
   Semi-Lagrangian MacCormack remains a visually useful **debug-only** fallback
   and may not be used for validation or predictive grids.
-- **Advection — momentum** (unstated in revision 2, flagged): second-order
-  central, kinetic-energy-conserving discretization on the staggered grid —
-  the standard LES practice; upwinded/dissipative momentum advection kills
-  puffing exactly as surely as dissipative scalar advection.
+- **Advection — momentum** (unstated in revision 2, flagged): a
+  variable-density compatible mass/momentum flux on the staggered grid. For
+  each momentum-control-volume face, conservatively interpolate the gas
+  advective mass flux used by the scalar scheme and set
+
+  > Φ_g,f^{L/H}=Σ_{k∈gas}F_adv,k,f^{L/H},
+  > K_f^{L/H}=Φ_g,f^{L/H}(u_L+u_R)/2.
+
+  The same shared FCT α_f that accepts Φ_g accepts K_f. Consequently
+  K_f(U)=U Φ_g,f,accepted for a spatially uniform U, even while the limiter is
+  active, and the face identity
+  (u_R−u_L)·K_f=Φ_g,f(|u_R|²−|u_L|²)/2 gives the paired discrete kinetic-energy
+  balance. The unlimited high-order candidate is the second-order central,
+  kinetic-energy-conserving LES discretization; blending the donor-cell
+  low-order candidate adds only the limiter's explicit dissipation while
+  preserving free stream. An independent central momentum flux is forbidden:
+  it ceases to match gas-density transport whenever α_f<1.
   **Advection–reflection is dropped**: it is derived for constant-density
   incompressible flow (orthogonal L² projection onto a divergence-free
   space); neither assumption holds here, and no published variable-density
@@ -1148,12 +1161,16 @@ The most notorious practical trap in fire LES; specified accordingly:
   3. Advance the scalar/energy vector Q=(ρ_totZ,{q_k},{c_i},ℋ_s) and conservative
      momentum M with this exact projected-Heun tableau. Let F(Q,u) return the
      paired low/high conservative advection+diffusion/J_h+conduction face
-     fluxes (no local source). Preserve the gas-diffusion subflux
-     J_g^{L/H}=Σ_{k∈gas}J_k^{L/H} inside that pair and form the paired momentum
-     face flux G^{L/H}=u_face⊗J_g^{L/H}. Let A_bar(Q,u) be the remaining
-     nonpressure momentum RHS including advection, stress, buoyancy, and the packet-derived common-velocity phase
+     fluxes (no local source). Preserve separately within that pair (a) the gas
+     **advective** mass subflux Φ_g^{L/H}=Σ_{k∈gas}F_adv,k^{L/H} and its compatible
+     momentum flux K^{L/H}=u_face Φ_g^{L/H} from the rule above, and (b) the
+     gas-diffusion subflux J_g^{L/H}=Σ_{k∈gas}J_k^{L/H} and its momentum flux
+     G^{L/H}=u_face⊗J_g^{L/H}. Let A_hat(Q,u) be the remaining nonpressure
+     momentum RHS including stress, buoyancy, and the packet-derived common-velocity phase
      source **u S̄_ρ,phase** required by §3.2 (boundary injection momentum remains
-     a boundary flux). Every projection below uses
+     a boundary flux and uses the same prescribed gas mass flux and velocity
+     in K). Momentum advection is not also present in A_hat. Every projection
+     below uses
 
      > u=P(Q,M†,S_div):
      > ∇·[(1/ρ_g)∇π]=(∇·(M†/ρ_g)−S_div)/Δt,
@@ -1167,43 +1184,44 @@ The most notorious practical trap in fire LES; specified accordingly:
      p̃_bar^{n+1/2}=Δt⁻¹∫_{t_n}^{t_{n+1}}p̃(t)dt, not endpoint p̃ⁿ⁺¹.
 
      - **R0/predictor:** coupled-project Mⁿ to u₀ at Qⁿ; assemble
-       (F₀,G₀) and A_bar,0. Apply the shared FCT limiter to the full Euler face flux
+       (F₀,K₀,G₀) and A_hat,0. Apply the shared FCT limiter to the full Euler face flux
        over Δt with S̄_src and form
        Q*=Qⁿ+Δt[F₀,accepted+S̄_src]. Form the unprojected momentum
-       **M*†=Mⁿ+Δt[A_bar,0−∇·G₀,accepted(α₀)]** (not a ρ_g(Qⁿ)u₀ base),
+       **M*†=Mⁿ+Δt[A_hat,0−∇·(K₀+G₀)_accepted(α₀)]** (not a ρ_g(Qⁿ)u₀ base),
        using the exact same α₀ that accepted F₀; invert Q*→T/EOS and reject
        infeasibility.
      - **R1/corrector sample:** coupled-project M*† at Q* to u₁; assemble
-       (F₁,G₁) and A_bar,1=A_bar(Q*,u₁).
+       (F₁,K₁,G₁) and A_hat,1=A_hat(Q*,u₁).
      - **Heun commit:** form the combined low/high face-flux pair
        (F₀+F₁)/2 and run a **new** shared FCT solve on that combined flux—not
        the predictor α values—to commit
 
        > Qⁿ⁺¹=Qⁿ+Δt[((F₀+F₁)/2)_accepted+S̄_src],
-       Define G_H^{L/H}=(G₀^{L/H}+G₁^{L/H})/2 and accept it with the **same new
+       Define K_H^{L/H}=(K₀^{L/H}+K₁^{L/H})/2 and
+       G_H^{L/H}=(G₀^{L/H}+G₁^{L/H})/2 and accept both with the **same new
        combined α_H** used for (F₀+F₁)/2. Then
 
-       > Mⁿ⁺¹†=Mⁿ+(Δt/2)(A_bar,0+A_bar,1)−Δt∇·G_H,accepted(α_H).
+       > Mⁿ⁺¹†=Mⁿ+(Δt/2)(A_hat,0+A_hat,1)−Δt∇·(K_H+G_H)_accepted(α_H).
 
        Finally coupled-project Mⁿ⁺¹† at Qⁿ⁺¹ to u₂ and store
        Mⁿ⁺¹=ρ_g(Qⁿ⁺¹)u₂ and p̃_bar^{n+1/2}=π₂. Thus π₀/π₁ affect only their
        stage velocities and are not retained in the committed momentum; π₂ is
        the sole committed pressure impulse. No endpoint pressure is stored
-       or inferred from this multiplier. This final projection targets S_div
-       evaluated at Qⁿ⁺¹ with the same frozen average packet; the next step's R0
+       or inferred from this multiplier. This final projection targets the
+       endpoint S_div,2 defined by the R2 solve below; the next step's R0
        reprojects against its newly built packet. Q* and Qⁿ⁺¹ are separately
        T/EOS-inverted and gated. The source appears once in each scalar formula,
        so its net scalar increment is exactly ΔU_src. Momentum receives the
-       Heun average ½Δt(u₀+u₁)S̄_ρ,phase in A_bar plus the exact accepted
-       u⊗J_g flux above. Omitting either changes velocity when gas/aerosol mass
-       transfers locally or diffuses between phases.
+       Heun average ½Δt(u₀+u₁)S̄_ρ,phase in A_hat plus the exact accepted K and
+       u⊗J_g fluxes above. Omitting any one changes velocity under gas
+       advection, gas/aerosol transfer, or constituent diffusion.
 
      “Coupled-project” is a specific Picard solve because accepted FCT
      diffusion/enthalpy fluxes affect S_div while S_div affects the advecting
-     velocity. **R0 loop:** project u₀, build the predictor (F₀,G₀,A_bar,0)
+     velocity. **R0 loop:** project u₀, build the predictor (F₀,K₀,G₀,A_hat,0)
      pair/RHS, solve its Euler α₀, recompute S_div,0 from exactly the α₀-accepted
      diffusion/J_h/conduction plus packet increments, and repeat all four.
-     **R1 loop:** at fixed converged Q*, project u₁, build (F₁,G₁,A_bar,1), solve a
+     **R1 loop:** at fixed converged Q*, project u₁, build (F₁,K₁,G₁,A_hat,1), solve a
      stage-local Euler α₁ solely to identify its accepted diffusion/enthalpy
      increments, recompute S_div,1 from those increments plus S̄_src, and
      repeat; α₁ is diagnostic and is not
@@ -1212,15 +1230,27 @@ The most notorious practical trap in fire LES; specified accordingly:
      the projection/EOS tolerances.
 
      After both stage loops converge, the Heun commit performs the new combined
-     (F₀+F₁)/2 FCT solve once, forms Qⁿ⁺¹, and derives **S_div,commit only from
+     (F₀+F₁)/2 FCT solve once, forms Qⁿ⁺¹, and derives **S_div,Heun only from
      the nonadvective diffusion/J_h/conduction components after applying that
      new combined α_H, plus S̄_src, evaluated with Qⁿ⁺¹**. Advective constituent
-     or enthalpy flux is never inserted into S_k or H. It then performs the final u₂/π₂
-     projection. This last projection intentionally has no feedback into the
-     already integrated Heun flux; u₂ is the constrained accepted endpoint and
-     the starting momentum for the next step. Calling it a flux Picard loop or
-     recomputing F with u₂ would define a different tableau and is forbidden.
-     A fixed iteration count with an unconverged R0/R1 or open-boundary solve is
+     or enthalpy flux is never inserted into S_k or H. S_div,Heun closes the
+     integrated scalar/EOS ledger but is **not** an endpoint projection target.
+
+     The final projection is an **R2 endpoint diagnostic Picard solve** at fixed
+     committed Qⁿ⁺¹ and fixed Mⁿ⁺¹†. For each candidate u₂ it assembles a fresh
+     endpoint pair F₂(Qⁿ⁺¹,u₂), solves a stage-local α₂ solely to identify the
+     instantaneous accepted nonadvective diffusion/J_h/conduction flux, and
+     derives S_div,2 from that flux plus S̄_src. The source term is necessarily
+     the frozen step-average packet—the declared first-order source-split
+     approximation—but transport coefficients and fluxes are endpoint values.
+     Project Mⁿ⁺¹† against S_div,2 with §3.6's π₂ boundary rule and repeat until
+     S_div,2, every projected face mass flux, α₂, and the open-face active set
+     converge. F₂ and α₂ are diagnostic: they never alter Qⁿ⁺¹, K_H, G_H, or
+     Mⁿ⁺¹†. Thus u₂ is the constrained accepted endpoint and starting momentum
+     for the next step, while π₂ remains the accepted step-average pressure
+     impulse; neither quantity is mislabelled as the other. Feeding F₂ back
+     into the Heun commit would define a different tableau and is forbidden.
+     A fixed iteration count with an unconverged R0/R1/R2 or open-boundary solve is
      forbidden; failure rejects/reduces Δt. If the frozen packet makes either
      low-order state infeasible after fluxing, likewise reject/recompute rather
      than clamp.
@@ -1229,7 +1259,7 @@ The most notorious practical trap in fire LES; specified accordingly:
      a limiter-active, varying-S_div nonzero heat/species source whose analytic expansion
      distinguishes R0 advection by u₀ from advection by the unprojected Uⁿ or
      M*† velocities. It separately asserts R0 and R1 residual convergence and
-     formal order, then verifies S_div,commit against the combined accepted
+     formal order, then verifies S_div,Heun against the combined accepted
      flux. Transport-only cases retain Heun's order; swapping the
      named velocities, using ρ_gu₀ rather than Mⁿ as either unprojected momentum
      base, or omitting π₂ is RED. Its analytic pressure comparison
@@ -1248,8 +1278,15 @@ The most notorious practical trap in fire LES; specified accordingly:
      uS̄_ρ,phase is its RED control. A second periodic fixture starts with
      uniform velocity and a nonuniform gas/aerosol loading gradient under pure
      constituent diffusion; M/ρ_g must remain uniform, and its Galilean-shifted
-     copy must converge at the same order. Omitting u⊗J_g or accepting it with a
-     different α than the constituent flux is RED. Spatially uniform
+     copy must converge at the same order. A limiter-active multidimensional
+     periodic free-stream fixture advects a nonuniform gas density/composition
+     blob at uniform U and requires M−Uρ_g to remain roundoff-zero regardless
+     of α; its Galilean-boosted copy must converge identically. An independent
+     central momentum flux is its RED control. Omitting u⊗J_g or accepting it
+     with a different α than the constituent flux is also RED. A time-varying
+     pure-diffusion manufactured case makes endpoint S_div,2 differ from
+     S_div,Heun and requires second-order endpoint divergence; projecting
+     against S_div,Heun is RED. Spatially uniform
      nonzero S_div on a periodic domain is explicitly invalid because
      ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
 
@@ -1819,7 +1856,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r23)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r24)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1859,7 +1896,8 @@ competing vertices** (§7.2.2, round 5), the strict null-boundary class
 with all non-null interfaces blocking (§7.2.2), the **two-bit weight-1
 state (competitionAvailable, continuationSingular)** (§7.2.2, round 5),
 independent pivot/endpoint draws (u_m vs Y), shared-guide-state ordering,
-p_march support/survival, distinct q_m^V versus equiangular a coefficients,
+the pre-NEE continuation-availability record, capped-lobe f_A/f_D split, exact
+p_march bounce/roulette support and survival, distinct q_m^V versus equiangular a coefficients,
 physical-band-power/scene-unit weighting, the near-collinear equiangular
 repair, labeled medium selection — plus the §7.2.7
 configuration matrix. **Phase C simulation and mandatory time-varying-sequence
@@ -2185,7 +2223,31 @@ never inside a pdf, avoiding the stochastic-Tr-in-MIS-weight trap.
 families reach emission at a point y from vertex x:
 
 - **March**: direction sampling followed by distance sampling to a real
-  collision, with three externally-reviewed refinements to its density:
+  collision, with the following externally-reviewed refinements to its density:
+  - **Continuation availability is resolved before NEE.** Build an immutable
+    `ContinuationAvailability` record from the current total/path and per-type
+    bounce limits. Let A be exactly the lobes that the later continuation is
+    allowed to sample; renormalize its direction-independent selection masses
+    over A, and let r_ℓ(ω) be the exact later roulette-survival probability
+    (including any deterministic zero gate). The successful-continuation
+    directional **subdensity** is
+
+    > p_ω,reach(ω)=Σ_{ℓ∈A}s_ℓ^A p_ℓ(ω) r_ℓ(ω).
+
+    It need not integrate to one. The later continuation must use this same A,
+    selection law, roulette atom, and survival compensation; a future random
+    choice or gate that is not evaluable from the record is forbidden. If A is
+    empty, or every r_ℓ is zero in direction ω, p_ω,reach(ω)=0. Volume NEE may
+    still run at that terminal vertex and then has no march competitor.
+
+    Mixed-lobe caps require an additive support split, not one weight on the
+    full BSDF. Define f_A=Σ_{ℓ∈A}f_ℓ and f_D as the remaining direct-connection
+    response. NEE evaluates f_A with the family MIS weight against
+    p_ω,reach and evaluates f_D as a separate NEE-only, weight-1 term; the
+    continuation evaluates f_A against the full allowed-lobe marginal, never a
+    sampled labeled component. When A is empty the whole NEE response is f_D
+    and has weight 1. This preserves direct lighting at a terminal vertex
+    without pretending a capped continuation exists.
   - **p_ω is the actual direction proposal — with the ordering and
     RIS constraints that make that evaluable** (second external round):
     volume NEE runs at the scatter vertex *before* the guided continuation
@@ -2208,9 +2270,9 @@ families reach emission at a point y from vertex x:
     where volume NEE competes, lobe preselection is
     direction-independent** (selection probabilities s_ℓ from
     direction-independent lobe weights, e.g. hemispherical albedos, fixed
-    before NEE) — and the march directional pdf is the **full marginal
-    p_ω(ω) = Σ_ℓ s_ℓ·p_ℓ(ω)**, with the **total BSDF** evaluated over
-    that marginal in both the NEE numerator and the continuation
+    before NEE) — and, before roulette, the march directional pdf is the **full
+    allowed marginal p_ω,A(ω) = Σ_{ℓ∈A}s_ℓ^A·p_ℓ(ω)**, with the **total
+    allowed response f_A** evaluated over that marginal in both its NEE term and the continuation
     throughput (round 4: the single labeled component s_ℓ·p_ℓ is not the
     marginal — with overlapping diffuse/glossy lobes it gives unequal
     lobes non-complementary MIS weights; the alternative — NEE decomposed
@@ -2259,12 +2321,15 @@ families reach emission at a point y from vertex x:
     boundary.
     For y in segment k of the chain, the density carries the **boundary
     survival factors**:
-    p_march(y) = p_ω(ω)/‖x−y‖² · (Π_{i<k} P_{0,i}) · p_{t,k}(s_k), where
+    p_march(y) = p_ω,reach(ω)/‖x−y‖² · (Π_{i<k} P_{0,i}) · p_{t,k}(s_k), where
     P_{0,i} is segment i's no-event probability — under the 50/50 mixture
     that is 0.5·S_i with **S_i = e^{−τ_i}, segment i's deterministic
     transmittance** (the DT no-scatter atom's mass), since only the
     delta-tracking branch owns the no-scatter atom (the equiangular branch
     always proposes a scatter).
+    This p_march is identically zero when continuation cannot reach y; neither
+    a nominal material lobe nor an NEE-before-RR implementation order creates
+    proposal support.
   - p_t per segment is the pdf of the sampler actually in use — pure DT
     (σ_t·exp(−τ)) or the 50/50 balance mixture (§5.1) — evaluated
     deterministically via `EvalDeterministicOpticalDepth`, the same
@@ -2534,7 +2599,13 @@ media, >16 boundary crossings, the **wrong-origin interrupted-global-
 medium case**, and **forced step-cap continuation** past the ratio
 tracker's 1024-step budget — §7.2.1's no-silent-caps replacement walk)
 and the **diffuse+glossy and coated-material NEE-on-vs-off equality
-tests** (§7.2.2's direction-independent lobe preselection).
+tests** (§7.2.2's direction-independent lobe preselection). Terminal total/path
+depth and each per-type lobe cap are forced separately: volume NEE remains on,
+the impossible continuation has p_march=0, and NEE-on/off high-spp references
+agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
+roulette probabilities 0, (0,1), and 1, pdf normalization including its
+survival mass, and recorded-proposal/throughput agreement. Using the uncapped
+full-lobe marginal or omitting roulette survival is RED.
 **Configuration matrix** (second external round): every equality gate
 above re-runs across guiding on/off, RIS enabled at *non-competing*
 vertices on/off (RIS at competing vertices is forbidden outright — an
@@ -3058,7 +3129,8 @@ without changing every mutator signature; no other call site can construct the
 scope/token. Public callers cannot obtain it.
 
 The actual `RISE_CreateJob → Job::Job/InitializeContainers →
-LoadAsciiSceneAuto|ViaCst` lifecycle is supported by two private transactions.
+LoadAsciiSceneAuto|ViaCst` lifecycle, including reuse of one Job through
+`Job::ClearAll()`, is supported by four private transaction types.
 The Job-owned sink exists before the Scene. The constructor opens a
 `JobBootstrapTransaction` around `InitializeContainers()`, commits the exact
 default-asset/config baseline, records `bootstrap_author_generation`, and marks
@@ -3080,6 +3152,28 @@ remain ordinary unrepresented author mutations. Gate the repository's existing
 `RISE_CreateJob → LoadAsciiSceneAuto` and `ViaCst` routes, plus pre-load mutation,
 second-load, parse-failure, mid-load render attempt, and mutate-after-commit.
 
+`ClearAll()` must open a private **JobResetTransaction** before destroying any
+tracked container. It acquires the sink's exclusive lease, increments a
+monotonic `job_epoch` (generation counters are never reset), revokes every old
+capability/freeze token and scene identity, detaches the old graph, and rejects
+subsequent sink entry from stale externally retained object pointers. It then
+creates the new Scene/managers under a fresh epoch-bound sink scope and runs the
+same `JobBootstrapTransaction` to establish a fresh default baseline and
+per-epoch `load_eligible`/`load_attempted=false`. A new file may therefore load
+predictively after a clean reset, but no generation, sticky bit, identity, or
+tracked object from the discarded epoch can qualify the new graph.
+
+The editor's `ClearAll()`-then-rederive path is not treated as an unrelated new
+file. It opens an **EditorRederiveTransaction** carrying the exact already
+represented retained-CST snapshot across the epoch change, reopens and hashes
+every asset byte stream actually consumed, then atomically derives and commits
+the resulting current canonical identity in the fresh graph. Stale prior asset
+digests may not be copied forward. Entry is forbidden if the old epoch had an unrepresented authored
+mutation or if the retained snapshot/generation does not match; failure leaves
+the new epoch preview-only. Tests cover GUI clear/open/clear/open, variant/full
+rederive, stale-pointer mutation after reset, reset after failed load, and an
+attempt to use reset/rederive to clear pre-existing sticky state.
+
 Predictive preflight recursively enumerates every render-reachable manager item/
 asset **and the complete active rasterizer/config/output graph** and requires the
 `IMutationTracked` capability bound to this exact sink;
@@ -3093,15 +3187,19 @@ final fidelity preflight. The lease covers the whole user-visible rasterize
 request through every still/AOV sidecar or final movie finalization—not merely
 worker completion. One animation lease spans all frames/fields; later nominal
 animator evaluations use the private derived token under the lease. Built-in mutators require
-the exclusive side of that lease, so concurrent/direct mutations cannot race or
-silently change a predictive render. The provenance records author/config/runtime
+the exclusive side of that lease. **Every external mutation entry while frozen
+fails immediately with `mutation_frozen`; it never blocks and a shared-to-exclusive
+upgrade is forbidden.** This includes re-entry from progress, output, encoder,
+and finalization callbacks running on the lease-owning thread, eliminating the
+otherwise deterministic self-deadlock. Concurrent/direct mutations therefore
+cannot race or silently change a predictive render. The provenance records author/config/runtime
 generations and the prepared freeze token. Tests mutate a transform through the
 const-manager→mutable-item→`IBasicTransform` route, mutate each other built-in
 asset family, attempt a concurrent mutation under the freeze, and inject an
 untracked plugin object; none may preserve predictive eligibility unnoticed.
 The lease owner receives a private main-thread `RenderPreparationUpdate`
 capability used only for the named cache/control-plane operations in §10.3
-(spatial/light invalidation, media-state swap, TLAS, photon/cache, and guide
+(spatial/light invalidation, media-state swap, TLAS, prepared safe-cache, and guide
 rebuild); it cannot invoke authored-value setters and therefore does not deadlock
 on its own freeze or alter scene identity.
 Worker/frame accumulation uses a separate private `RenderExecutionUpdate`
@@ -3109,11 +3207,27 @@ capability; post-worker FrameStore/encoder/sidecar/movie completion uses
 `ArtifactFinalizationUpdate`. Both are bound to the freeze token and permit only
 data accumulation/finalization under the already captured configuration—never
 SPP, callback, route, container, channel, compression, transform, or encoder-
-option mutation. Public `GetRasterizer()` callers cannot obtain either token and
-block/fail on the exclusive side while frozen. Tests directly mutate live sample
+option mutation. Finalization ownership is concrete: every platform bridge
+registers a `PreparedArtifactFinalizer` callback before dispatch; after workers
+join, Job invokes all registered finalizers synchronously under an
+`ArtifactFinalizationUpdate`, and `Rasterize*` may not return request completion
+until they have all succeeded, failed, or acknowledged cancellation. Detached
+or post-return movie/sidecar finalization is forbidden. RAII releases every
+finalization capability and then the freeze exactly once on success, encoder
+error, callback exception, and cancellation; finalizer failure makes the request
+fail but cannot leak the lease. The macOS and Windows movie-finalization code
+currently after `RasterizeAnimationUsingOptions()` returns moves behind this
+callback seam.
+
+Public `GetRasterizer()` callers cannot obtain either token and receive
+`mutation_frozen` from the exclusive side while frozen. Tests directly mutate live sample
 count, callback, add/free outputs, FrameStore route, and encoder settings before
 capture and concurrently after capture; provenance must reflect the former and
-the latter must not race or change pixels/artifacts.
+the latter must not race or change pixels/artifacts. Separate progress,
+final-output, and encoder callbacks attempt transform, output-route, and SPP
+mutations and must fail immediately rather than hang. Finalization tests inject
+success, error, exception, and cancellation and require exactly-one release and
+no `Rasterize*` return while a finalizer remains live.
 
 For an unmodified file-loaded job, the exact opened-byte array above is the
 identity. An editor mutation is predictive-capable only when it updates the
@@ -3471,8 +3585,22 @@ registry).
    `InvalidateSpatialStructure()` **and** `IRayCaster::InvalidateLightSamplers()` →
    controller media preparation/CDF swap →
    `RayCaster::AttachScene` geometry realization → object
-   `PrepareForRendering`/TLAS rebuild → `SetSceneTime` photon/cache update →
+   `PrepareForRendering`/TLAS rebuild → private `SetPreparedSceneTime` safe-cache update →
    explicit volume-emission guide rebuild → worker dispatch.
+   `SetPreparedSceneTime(time, RenderPreparationUpdate)` sets the nominal scene
+   time and refreshes only caches proven not to trace rays or evaluate an
+   Animator. It **must not call the legacy `Scene::SetSceneTime` photon-map
+   regeneration path**: that path invokes `TracePhotons(..., time, true, ...)`,
+   which performs repeated animator evaluations after TLAS/light preparation
+   and can leave the scene at an arbitrary photon time. The predictive fire PT
+   routes do not consume photon maps; if the selected shader/rasterizer would
+   consume one, preflight fails with `photon_transport_unprepared`. Merely
+   configured but unreachable photon maps are skipped, not regenerated.
+   Preview use of a photon-consuming route remains on the legacy, nonprepared
+   path and cannot claim this arc's immutable-time guarantee. A configured
+   dormant photon map plus moving occluder test records zero photon traces and
+   exactly one main-thread nominal animator evaluation; an active
+   photon-consuming configuration must reject before cache/TLAS mutation.
    `InvalidateLightSamplers()` is appended to `IRayCaster` (the helper owns only
    that interface) and implemented by `RayCaster` as an explicit control-plane
    dirty bit; on the
@@ -3501,7 +3629,8 @@ registry).
    points and `PredictTimeToRasterizeScene` (which traces rays) must call the
    helper rather than duplicate the order. This explicit dependency also avoids
    extending the pre-existing conceptually-non-const `IScene::SetSceneTime`
-   exception. Tests compare
+   exception; the private prepared setter is capability-gated and not appended
+   to the public interface. Tests compare
    selected frame identity across those entry modes and assert no prepare call
    occurs from a worker or per-sample path; a rolling-scan/pixel-rate fixture
    asserts every sampled path time lies inside the prepared interval and the
@@ -4218,3 +4347,13 @@ registry).
   Pipeline: aligned parser baselining with the real constructor-initializes-first
   lifecycle and extended mutation tracking/freeze through the live rasterizer,
   configuration, FrameStore, output, and encoder graph.
+- **r24 (2026-07-28):** after the thirteenth fresh P1-only review of committed
+  r23 (seven P1). CFD: paired limiter-active gas advective mass and momentum
+  fluxes with a discrete kinetic-energy/free-stream identity, and added an R2
+  diagnostic endpoint-divergence solve without feeding it back into the Heun
+  commit. Transport: made march MIS use the exact cap- and roulette-aware
+  continuation subdensity and split capped direct-only lobes into a weight-1
+  NEE term. Pipeline: defined epoch-safe `ClearAll()`/editor rederive,
+  prohibited photon-map tracing from prepared time updates, moved platform
+  artifact finalization inside the request-wide lease, and made every external
+  mutation during freeze fail fast to prevent callback self-deadlock.
