@@ -110,20 +110,26 @@ namespace RISE
 					"scenes render correctly. Your system prompt already lists every "
 					"skill name with a one-line hook, so go straight to the name you "
 					"need.",
-					// `name` is REQUIRED on the CHAT transport, structurally, not by
-					// prose.  The index-listing form still exists in the RPC and is
-					// still advertised on MCP, where an external client genuinely has
-					// no index until it asks.  Here the system prompt always carries
-					// the index (SetSkillIndex runs on every scene attach), so a bare
-					// read_skill{} is a round-trip that fetches a list the model is
-					// already holding.  Prose telling it not to was tried first and
-					// measurably did NOT hold -- gemini-3.5-flash still opened a
-					// recorded scene build with a bare call, then never read a named
-					// skill at all.  A required parameter is enforced by the provider.
+					// `name` is deliberately OPTIONAL.  It was briefly made
+					// "required" on the strength of a misdiagnosis: a recorded run
+					// opened with a bare read_skill{} and never read a named skill,
+					// which was read as the model ignoring guidance.  It was not --
+					// SkillsRoot() was not resolving in that GUI session, the index
+					// was EMPTY (0 skills), and calling read_skill{} to discover
+					// names was the correct move for a model with no index.  Making
+					// `name` required then removed the only discovery path: the next
+					// run guessed the example name out of this very description,
+					// failed, guessed "index", failed again, and ran 41 turns
+					// against the previous run's 22.
+					//
+					// The listing form is the recovery path for exactly the case
+					// where the prompt carries no index.  Do not remove it; if a
+					// bare call is genuinely wasteful, the fix is to ensure the
+					// index is PRESENT, not to forbid asking for it.
 					"{\"type\":\"object\",\"properties\":{"
 						"\"name\":{\"type\":\"string\",\"description\":"
-						"\"A skill name from the index in your system prompt (e.g. scene-skeleton-and-conventions).\"}"
-					"},\"required\":[\"name\"]}"
+						"\"A skill name from the index (the list in your system prompt, or what read_skill with no arguments returns); omit to list the available skills.\"}"
+					"}}"
 				},
 				{
 					"validate",

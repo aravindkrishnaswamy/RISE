@@ -7128,16 +7128,15 @@ static void TestSkillIndexDiscourageRelist()
 		Check( near.find( "NO name first" ) == std::string::npos,
 		       "T41b: MONEY -- the read_skill description no longer says to list first" );
 
-		// STRUCTURAL, not prose.  Prose telling the model not to list first
-		// was tried and measurably did NOT hold: gemini-3.5-flash opened a
-		// recorded scene build with a bare read_skill{}, then never read a
-		// named skill at all.  On the CHAT transport `name` is now REQUIRED,
-		// which the provider enforces.  (MCP deliberately keeps the listing
-		// form -- an external client has no RISE system prompt, so it has no
-		// index until it asks.  Do not "unify" the two.)
-		Check( near.find( "\"required\":[\"name\"]" ) != std::string::npos,
-		       "T41b: MONEY -- the CHAT read_skill schema makes `name` REQUIRED, so a bare "
-		       "read_skill{} cannot be emitted at all (prose alone did not hold)" );
+		// `name` must stay OPTIONAL.  It was briefly made "required" here on a
+		// misdiagnosis -- see the schema comment in AgentChatCodecs.cpp.  The
+		// bare listing form is the recovery path for a session whose prompt
+		// carries no index (SkillsRoot() not resolving, an empty index), and
+		// forbidding it left the model guessing names out of the tool
+		// description and burning turns on -32602s.
+		Check( near.find( "\"required\":[\"name\"]" ) == std::string::npos,
+		       "T41b: MONEY -- `name` stays OPTIONAL on chat: the no-argument listing form is "
+		       "the ONLY way a model with an empty/absent skill index can discover names" );
 	}
 
 	// The validate-first recipe must say ONCE-on-the-whole-candidate, and
