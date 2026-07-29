@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 18 — after internal review rounds 1–4,
-**six external expert review rounds**, and seven post-r11 implementation-review
+**Status:** DRAFT (revision 19 — after internal review rounds 1–4,
+**six external expert review rounds**, and eight post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r18; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r19; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -78,7 +78,8 @@ point of decision (see §3.4 on soot-yield calibration and §4.3 on smoke
 optical mapping).
 
 **Fidelity state is enforceable, not descriptive prose.** A simulator/importer
-authenticates source qualification and producer gate evidence; a `fire_medium`
+supplies source qualification and producer gate evidence under the detached
+trusted attestation defined in §8; a `fire_medium`
 scene/job independently requests `fidelity_mode=predictive|preview`. Predictive
 is fail-closed: any unmet producer or renderer prerequisite in §7.0/§8 aborts
 before fields are accepted or render workers launch; it never silently
@@ -414,7 +415,8 @@ inert carrier (N₂ for the baseline air record), O₂, lumped fuel, CO₂, H₂
 condensable vapor, and any additional product/inert species. For each it pins
 the nominal elemental formula/column of E, W_k, valid T range, c_p,k(T) and
 h_s,k(T) table/polynomial with interpolation rule and one common T_ref. It also
-pins p₀, ambient composition, injected-fuel composition and temperature, the
+pins p₀, ambient and injected-fuel compositions **and their temperatures**
+(including the unique sequence T_inf), the
 fuel formula/LHV, and the atom-balanced primary product coefficients used with
 the withheld streams. E carries **every conserved element present in the
 schema, including N for an N₂ carrier**, not a hard-coded C/H/O subset. Unknown
@@ -422,6 +424,26 @@ species or an unbalanced coefficient record is a load error; the exact record
 bytes/hash ride in §8 metadata. This one record owns W̄, ℋ_s inversion, S_div,
 EOS checks, reaction products, and gas-opacity composition, so those consumers
 cannot quietly use different thermochemistry.
+
+Record admissibility also closes the inverse, rather than merely naming one.
+Every h_s,k is continuous on its closed certified interval, satisfies
+h_s,k(T_ref)=0, and has derivative exactly equal to the record's interpolated
+c_p,k(T); the generator certifies c_p,k(T)≥c_p,min,k>0 over that whole interval.
+The gas and aerosol records must have one nonempty common temperature interval
+[T_min,T_max]. For every limiter-admissible non-vacuum composition/loading,
+
+> C_T(T,q)=Σ_k q_k c_p,k(T)+Σ_i c_i c_p,i(T) ≥ C_min(q)>0,
+
+so ℋ_s(T,q) is continuous and strictly increasing. Before every inversion require
+
+> ℋ_s(T_min,q) ≤ ℋ_s,accepted ≤ ℋ_s(T_max,q),
+
+then use a bracket-preserving root solve on that common interval. There is
+exactly one T. A discontinuity, h_s/c_p derivative mismatch, nonpositive lower
+bound, empty common interval, or unbracketed accepted energy rejects the record
+or current step; clamping/extrapolation and implementation-selected roots are
+forbidden. Generator RED fixtures inject each defect, and a multicomponent
+gas+aerosol round trip tests monotonicity and inversion at interval endpoints.
 
 | field | symbol | equation / source | sink | consumed by |
 |---|---|---|---|---|
@@ -781,7 +803,11 @@ the burnout bookkeeping. The corrected model:
   c_p,i(T), h_s,i(T), certified T domain, interpolation, provenance, and the
   **same T_ref convention** as `gas_thermochemistry`; optical hot/cool φ does
   not change carbon's thermodynamic phase or heat capacity. Predictive mode
-  rejects missing/out-of-domain records. This closes the ℋ_s/C_T/S_div input
+  rejects missing/out-of-domain records. Each condensed-phase pair obeys the
+  same continuity, h_s(T_ref)=0, dh_s/dT=c_p, and certified c_p>0 requirements
+  above and participates in the common-domain, C_T lower-bound, bracket, RED,
+  and round-trip proofs; neither record may pass preflight in isolation if the
+  combined inverse is not certified. This closes the ℋ_s/C_T/S_div input
   at the allowed 1 % loading rather than leaving carbon c_p as an implementation
   constant. Ownership is non-overlapping: `gas_thermochemistry` owns Y_cv's
   h_s/c_p, `aerosol_thermochemistry` owns condensed-organic h_s/c_p, and the
@@ -960,7 +986,16 @@ The most notorious practical trap in fire LES; specified accordingly:
   hints; the normal velocity is solved by the variable-coefficient projection,
   tangential velocity has zero normal gradient, and the pressure ghost/Robin
   stencil is the second-order face-centered discretization of the applicable
-  equation. Use u_bc,tol=ε_absL, the already-defined projection velocity
+  equation. For a fixed inflow active set, solve the coupled nonlinear
+  Poisson+total-head boundary equations with damped Newton: each Newton step
+  linearizes both p̃_face and the projected ‖u_face‖² term, solves the resulting
+  variable-coefficient system, and line-searches on the combined interior
+  divergence and boundary-head residual. Select the incoming physical branch
+  u_n<0; a converged positive-normal root invalidates the class and returns to
+  the active-set solve. Require both the normal projection residual and
+  max_inflow|p̃+½ρ∞‖u‖²| ≤ p_bc,tol with
+  p_bc,tol=ρ∞u_ref u_bc,tol. Lagging ‖u‖ from a prior iterate is forbidden.
+  Use u_bc,tol=ε_absL, the already-defined projection velocity
   tolerance: |u_n|≤u_bc,tol retains the previous accepted class, preventing a
   roundoff toggle; a repeated active-set state outside that band is a cycle and
   rejects/reduces Δt rather than choosing first/last wins. Only after this
@@ -975,7 +1010,8 @@ The most notorious practical trap in fire LES; specified accordingly:
   outflow ghost. A prescribed source patch is never reclassified. V1 plus an
   inflow→outflow scalar/enthalpy pulse, zero-start plume entrainment, oblique
   inflow, and a deliberately within-stage reversing-face budget test gate the
-  pressure switch, ambient backflow, and every advective/diffusive ledger.
+  pressure switch, ambient backflow, discrete total-head residual, incoming
+  branch selection, and every advective/diffusive ledger.
 - **Domain-size guidance:** lateral extent ≥ 2–3 D per side beyond the
   source; top ≥ 2× the expected flame height L_f for flame-zone rows — but
   **the plume-law row (§3.8 row 3) needs its own taller domain, top
@@ -1084,7 +1120,9 @@ The most notorious practical trap in fire LES; specified accordingly:
      momentum M with this exact projected-Heun tableau. Let F(Q,u) return the
      paired low/high conservative advection+diffusion/J_h+conduction face
      fluxes (no local source), and A(Q,u) the nonpressure momentum RHS including
-     advection, stress, and buoyancy. Every projection below uses
+     advection, stress, buoyancy, and the packet-derived common-velocity phase
+     source **u S̄_ρ,phase** required by §3.2 (boundary injection momentum remains
+     a boundary flux). Every projection below uses
 
      > u=P(Q,M†,S_div):
      > ∇·[(1/ρ_g)∇π]=(∇·(M†/ρ_g)−S_div)/Δt,
@@ -1112,26 +1150,45 @@ The most notorious practical trap in fire LES; specified accordingly:
        evaluated at Qⁿ⁺¹ with the same frozen average packet; the next step's R0
        reprojects against its newly built packet. Q* and Qⁿ⁺¹ are separately
        T/EOS-inverted and gated. The source appears once in each scalar formula,
-       so its net increment is exactly ΔU_src; it is never added to momentum.
+       so its net scalar increment is exactly ΔU_src. Momentum receives only
+       the Heun average ½Δt(u₀+u₁)S̄_ρ,phase already contained in A₀/A₁; omitting
+       it would spuriously change velocity when gas/aerosol mass transfers.
 
      “Coupled-project” is a specific Picard solve because accepted FCT
      diffusion/enthalpy fluxes affect S_div while S_div affects the advecting
-     velocity. For R0 iterate projection → predictor combined low/high flux and
-     α → S_div until converged; for the Heun commit iterate the final projection
-     → combined-Heun flux/α → S_div. R1 uses the converged predictor state and
-     projects before F₁. Convergence requires the cellwise S_div, every face
-     mass flux, and every α_face change to fall below the projection/EOS
-     tolerances. Only the converged flux/projection tuple is committed. A fixed
-     iteration count with an unconverged last iterate is forbidden;
-     failure rejects/reduces Δt. If the frozen packet makes either coupled
+     velocity. **R0 loop:** project u₀, build the predictor F₀ low/high pair,
+     solve its Euler α₀, recompute S_div,0 from exactly the α₀-accepted
+     diffusion/J_h/conduction plus packet increments, and repeat all four.
+     **R1 loop:** at fixed converged Q*, project u₁, build F₁, solve a
+     stage-local Euler α₁ solely to identify its accepted diffusion/enthalpy
+     increments, recompute S_div,1 from those increments plus S̄_src, and
+     repeat; α₁ is diagnostic and is not
+     reused by the final corrector. Each loop converges when its cellwise
+     S_div, every projected face mass flux, and every α_face change fall below
+     the projection/EOS tolerances.
+
+     After both stage loops converge, the Heun commit performs the new combined
+     (F₀+F₁)/2 FCT solve once, forms Qⁿ⁺¹, derives **S_div,commit from that exact
+     combined accepted flux plus S̄_src**, and then performs the final u₂/π₂
+     projection. This last projection intentionally has no feedback into the
+     already integrated Heun flux; u₂ is the constrained accepted endpoint and
+     the starting momentum for the next step. Calling it a flux Picard loop or
+     recomputing F with u₂ would define a different tableau and is forbidden.
+     A fixed iteration count with an unconverged R0/R1 or open-boundary solve is
+     forbidden; failure rejects/reduces Δt. If the frozen packet makes either
      low-order state infeasible after fluxing, likewise reject/recompute rather
      than clamp.
 
      V2's reacting manufactured case records every Picard residual and includes
-     a limiter-active nonzero heat/species source whose analytic expansion
+     a limiter-active, varying-S_div nonzero heat/species source whose analytic expansion
      distinguishes R0 advection by u₀ from advection by the unprojected Uⁿ or
-     M*† velocities. Transport-only cases retain Heun's order; swapping the
-     named velocities or omitting π₂ is RED.
+     M*† velocities. It separately asserts R0 and R1 residual convergence and
+     formal order, then verifies S_div,commit against the combined accepted
+     flux. Transport-only cases retain Heun's order; swapping the
+     named velocities or omitting π₂ is RED. A periodic Galilean fixture with
+     uniform nonzero velocity and spatially uniform condensation/evaporation
+     must preserve that velocity while gas mass changes; leaving
+     uS̄_ρ,phase out of A is its RED control.
 
   This source freezing is explicitly first-order in noncommuting local/transport
   operators; the existing Δt-halving gates must show first-order source-split
@@ -1698,7 +1755,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r18)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r19)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1975,10 +2032,10 @@ entry gates rather than integration details left to implementers.
    must still score the segment's chem integral** — dropping it there
    biases exactly the zero-soot showcase this step exists for. It is collected
    for every path with a segment through the medium; no collisions required.
-   This reaction-importance construction is **blur-off only**. When
-   velocity blur is active, §8 replaces it with the independent uniform-distance
-   plus ratio-tracked-transmittance estimator; the two estimators are never
-   combined on one segment. Estimator tests may use a clearly marked synthetic
+   This reaction-importance construction is **nominal/static only**. Requested
+   blur with nonzero chem is a predictive preflight error; preview disables
+   blur for the whole medium and retains this same estimator (§8). No advected-
+   chem ratio estimator exists. Estimator tests may use a clearly marked synthetic
    SPD, but predictive enablement requires the §7.0 per-fuel record and an
    optically thin uniform reaction slab whose integrated spectral power equals
    the pinned band-source power over each S_b interval within a stated
@@ -2202,8 +2259,11 @@ B_ijk is the Cartesian center cube
 > × [o+(k−½)Δz,o+(k+½)Δz),
 
 with only the global upper faces closed. These N_xN_yN_z disjoint bins exactly
-tile the core face bbox. Outside-core scalar samples are the declared zero
-background. Point lookup is componentwise
+tile the core face bbox. An inactive VDB voxel inside that bbox samples the
+channel's declared background: T_inf kelvin for temperature and exact zero for
+carbon, condensed mass, reaction, and every chem-source channel. The exterior
+of the medium face bbox is **not** another background voxel: traversal ends and
+the medium is absent. Point lookup is componentwise
 clamp(floor((x−o)/Δ+½),0,N−1), including the closed upper-face clamp.
 For each bin, a fixed 2×2×2 Gauss rule in space plus the pinned wavelength quadrature computes the nonnegative proposal
 estimate
@@ -2215,7 +2275,7 @@ radiometric integral used in the contribution. The channel/temperature
 interval bounds also produce a finite conservative emissive-power upper bound
 U_v over the same bin and band. A center bin intersects halves of as many as
 2³ trilinear interpolation cells; U_v encloses **every** such stencil, including
-zero-background corners at the outer boundary, rather than treating the center
+the declared per-channel background corners at the outer boundary, rather than treating the center
 cube as one eight-corner interpolation cell. U_v>0 whenever trilinear
 interpolation can produce nonzero thermal emission anywhere in the bin, even if
 the quadrature nodes miss it. Define η=2⁻¹⁰ and
@@ -2395,7 +2455,8 @@ flame (methanol analog — exercises the §7.1 step 3 line integral with
 (Σp_V·V = 1 over the emissive support; pdf lookup matches the sampled
 distribution), knot-plane and outer-half-bin ownership, and one isolated hot
 lattice sample: every center bin intersecting its complete nonzero trilinear
-support must have q_v>0, including boundary bins with zero-background corners.
+support must have q_v>0, including boundary bins with the declared per-channel
+background corners.
 The multi-media labeled-density check (7.2.5) remains. The point-light+flame fixture additionally
 forces the equiangular label to the point light while confirming that the
 independent volume endpoint was still attempted and march MIS used q_m^V;
@@ -2426,7 +2487,13 @@ per-frame multi-channel grids + probe time series (§8). Renderer side:
 grid-sequence loading + per-frame majorant/CDF rebuild (G6), wired into the
 existing animation render workflow, plus the §8 manifest/preparation lifecycle
 and portable output-provenance plumbing through `FrameStore`, file encoders,
-AOVs, and animation/MOV finalization. Progression: laminar candle (DNS) →
+AOVs, and animation/MOV finalization. This includes an audited Ed25519 verifier,
+CLI/job configuration for a signed qualification-key registry, registry
+version/revocation handling, and deterministic build/scene identity emitters;
+private qualification keys never ship in the renderer or repository (fixture
+keys are marked test-only). Signature verification uses a pinned dependency
+and known-answer, altered-payload, wrong-key, revoked-key, and null-attestation
+tests; its source/build-project/release staging is part of Phase C. Progression: laminar candle (DNS) →
 puffing pool fire → turbulent plume, gating each on §3.8.
 
 **Frontends.** The standalone §3 simulator is the only first-class predictive
@@ -2509,13 +2576,16 @@ carry indistinguishable metadata. Each sequence stores:
   ordering, NFC, numeric width, and all other profile rules **before semantic
   field decoding**; noncanonical bytes are rejected rather than normalized.
   The same rules apply recursively to sequence manifests, every embedded/
-  override record, output provenance, and any future build manifest. The top-level
-  manifest envelope is exactly `{payload, sequence_id}`. `payload` contains
+  override record, output provenance, and every build/attestation record. The top-level
+  manifest envelope is exactly `{payload, sequence_id, qualification_attestation}`.
+  `payload` contains
   every semantic field listed in this section, including
   `schema_version=1`, but contains no `sequence_id`; `sequence_id` is SHA-256
   over the exact canonical RISE-CBOR64-v1 byte encoding of `payload` alone.
   This avoids a self-hashing manifest while giving every implementation one
-  preimage. The complete envelope is then encoded with the same profile and
+  preimage. `qualification_attestation` is outside that preimage and is either
+  the versioned map below or CBOR null for an unattested preview source; omission
+  is noncanonical. The complete envelope is then encoded with the same profile and
   media type `application/vnd.rise.fire-sequence+cbor`. Unknown versions are rejected. The scene locates
   this file explicitly with `sequence_manifest`; no frame-pattern discovery is
   performed. For this arc `end_policy` is `hold` or `error`. Let
@@ -2548,7 +2618,7 @@ carry indistinguishable metadata. Each sequence stores:
   rejected in this arc (a future inverse-transform accessor can add them).
   Velocity axes are therefore unchanged and u_scene=u_m/s; it is never
   transformed as a point. Each channel descriptor stores o_m, Δx_m,
-  dimensions, core bbox, zero-background rule, and the §8
+  dimensions, core bbox, explicit `background_value`, and the §8
   `temporal_semantics` enum.
   Carbon/temperature/condensed share the exact extinction lattice; reaction and
   all three chem-source channels share one separately declared knot lattice;
@@ -2558,12 +2628,24 @@ carry indistinguishable metadata. Each sequence stores:
   deterministic decode; the manifest is authoritative and mismatch is a load
   error. The simulator's sequence writer (or a separately qualified external
   exporter) is the only place deterministic resampling may occur;
+- every OpenVDB grid's stored background must bit-match the manifest descriptor
+  after deterministic decode: temperature uses the sequence's T_inf in kelvin;
+  carbon, condensed, reaction, and chem sources use +0. Inactive voxels inside
+  the velocity halo use (0,0,0) m/s for this quiescent-ambient arc before the
+  separately declared outside-halo policy applies. Inactive voxels inside
+  the core bbox take their channel value, while points outside the medium face bbox are
+  outside the medium. Backgrounds participate in channel extrema/domain checks,
+  U_v construction, and the frame digest; a zero temperature background or an
+  active-only extrema scan is a load error. Boundary-bin fixtures exercise an
+  inactive T_inf corner, zero material corners, and traversal immediately
+  outside every face;
 - per-fuel y_form, y_s, y_cond, χ_r, T_pilot/T_AIT, Q̇_ref, ρ_soot,
   oxidation constants (T_ox, 2.667 kg-O₂/kg, 3.667 kg-CO₂/kg, 32.8 MJ/kg),
   channel scales, calibration dataset/protocol IDs, and scale/resolution
   cross-prediction results;
 - the complete `gas_thermochemistry` record/hash from §3.3, including all
-  species/inerts, E, W/c_p/h_s/T_ref, ambient/fuel composition, p₀, LHV, and
+  species/inerts, E, W/c_p/h_s/T_ref, ambient/fuel composition and temperature
+  (T_inf included), p₀, LHV, and
   atom-balanced primary products;
 - the `transport_closure` record/hash from §3.2: μ/k tables and mixture laws,
   unit-Lewis D rule, Pr_t/Sc_t, Vreman C_v/filter widths, wall treatment,
@@ -2589,16 +2671,40 @@ carry indistinguishable metadata. Each sequence stores:
 - the chem record or explicit `chem_model=none`: the state-dependent η_b
   functions/domains, each S_b dataset ID, wavelength units and normalization
   interval, absolute band/spatial calibration evidence, or the measured
-  negligible-chem upper-bound record required by §7.0; and
+  negligible-chem upper-bound record required by §7.0;
+- an embedded `producer_build_v1` record and ID pinning simulator source
+  revision, executable/module SHA-256, dirty flag plus deterministic dirty-diff
+  hash, schema/solver and
+  gate-harness versions, compiler and floating-point/fast-math/contraction
+  settings, target platform/architecture, and exact dependency versions plus
+  loaded-binary hashes; and
 - producer-owned `source_qualification=predictive_qualified|preview_only`, a
   stable `producer_reason_codes` list, and the exact producer gate-evidence
-  record IDs; authenticated `source_kind`, whose enum is `rise_simulation`,
+  record IDs; claimed `source_kind`, whose enum is `rise_simulation`,
   `qualified_external`, or `heuristic_import`, and `physical_mapping`, whose
   value is `absolute_si` or `heuristic:<profile_id>`. The manifest never stores
   the scene's requested render mode or a renderer-derived final status;
-  `sequence_id` transitively authenticates the frame digests and verbatim
-  record blobs above; no second ambiguously-defined "hash over everything" is
-  introduced.
+  `sequence_id` is a content-integrity digest that transitively covers the frame
+  digests and verbatim record blobs above; it is **not authentication**.
+
+Producer qualification is authenticated only by a detached
+`qualification_attestation_v1={algorithm,key_id,signed_payload,signature}` in
+the envelope. `algorithm` is `ed25519`; `signed_payload` is the exact
+RISE-CBOR64-v1 byte string for
+`{schema_version,sequence_id,producer_build_id,source_kind,physical_mapping,
+source_qualification,producer_reason_codes,gate_evidence_ids}` with the reason
+and evidence arrays sorted and duplicate-free. The loader requires every
+signed value to equal the decoded payload, verifies the signature against an
+operator-configured trusted qualification-key registry, and records its exact
+signed registry-record ID and key ID. Missing, unknown, revoked by that registry,
+or invalid attestations are unconditional `producer_untrusted` for fidelity:
+the sequence may remain integrity-valid and usable only in explicitly requested
+preview. Predictive mode accepts `rise_simulation` or `qualified_external` only
+from a registry entry authorized for that source kind and producer-build ID;
+`heuristic_import` can never be promoted by a signature. Trust registries and
+revocation snapshots are themselves versioned signed records, never keys baked
+into a scene or self-signed manifests. Signature/key substitution and a
+self-hashed forged-qualified manifest are RED fixtures.
 
 Every tabulated/polynomial record has a **closed certified domain** over all of
 its arguments. Predictive simulation rejects the stage before accepting any
@@ -2629,11 +2735,12 @@ preview profile containing the complete normalized-field→T/aerosol/reaction
 plus band-resolved-chem mapping and optical/chem fixtures; otherwise it is also
 a load error.
 
-**Fidelity ownership and transition table:** the producer alone derives and
-authenticates `source_qualification` from simulation/import gates. The scene/job
+**Fidelity ownership and transition table:** the producer alone derives
+`source_qualification` from simulation/import gates, and the renderer verifies
+the detached trusted attestation above. The scene/job
 alone supplies requested `fidelity_mode`. On every render the renderer ignores
 any producer claim of final render status and derives `fidelity_status` plus
-renderer reason codes afresh from the authenticated producer evidence and the
+renderer reason codes afresh from the trusted producer evidence and the
 actual integrator, records, overrides, channels, domains, blur fallbacks, and
 output route. `predictive` is permitted only for the
 `rise_simulation` or validated `qualified_external` with `absolute_si`, spectral NM transport, matching
@@ -2655,11 +2762,18 @@ can therefore qualify only its source evidence, never a downstream render.
 Until separately qualified in Phase D, predictive fire preflight also requires
 `oidn_denoise=false`, no radiance/contribution clamp, and no path
 regularization; the integrator must produce unclamped raw linear spectral
-radiance before the recorded output conversion/exposure. Enabling any of those
+radiance before exposure. The **predictive primary artifact** must be a
+losslessly encoded fp32-or-wider scene-linear spectral/XYZ/RGB container (EXR
+ZIP/PIZ/uncompressed are permitted; DWAA/DWAB and integer/LDR containers are
+not), with only the recorded scalar exposure applied and no white balance,
+tone/display transform, clipping, quantization, or lossy chroma/compression.
+Enabling any of those
 features rejects requested predictive mode and yields the corresponding preview
-reason only when preview was requested. Display/output transforms remain
-allowed because their exact configuration is recorded, but §3.8 radiometric
-gates always read the raw linear NM result before them.
+reason only when preview was requested. A display-rendered or lossy derivative
+may still be written as a separate `artifact_fidelity=display_derivative`
+artifact whose sidecar contains `derived_from_provenance_id` and digest of the
+lossless predictive primary; the derivative itself never carries predictive
+status. §3.8 radiometric gates read the raw linear NM result before exposure.
 
 Reason codes are schema-v1 enum strings, emitted once each in lexicographic
 order: `requested_preview`, `producer_unqualified`, `heuristic_source`, `qualified_record_override`,
@@ -2670,9 +2784,12 @@ order: `requested_preview`, `producer_unqualified`, `heuristic_source`, `qualifi
 `table_domain_exceeded`, `missing_channel`, `loading_exceeded`,
 `wet_aerosol_unsupported`, `pel_transport`, `hwss_transport`,
 `pel_blur_ignored`, `blur_halo_insufficient`, `blur_time_support_out_of_range`,
-`nonadvected_source_blur_unsupported`, `programmatic_scene_unqualified`,
+`nonadvected_source_blur_unsupported`, `keyframed_temporal_sampling_unsupported`,
+`programmatic_scene_unqualified`, `unrepresented_scene_mutation`,
+`producer_untrusted`,
 `oidn_unqualified`, `radiance_clamp_enabled`, `path_regularization_enabled`, `gate_failure`, and
-`output_provenance_unavailable`. A fully valid explicitly preview-requested
+`lossy_output`, `display_transform_enabled`, `output_provenance_unavailable`.
+A fully valid explicitly preview-requested
 render carries only `requested_preview`; codes are never free-form log text.
 
 **Output provenance is a Phase-C data product.** Every still, animation frame,
@@ -2685,11 +2802,15 @@ over the exact finalized artifact bytes. Every digest is a 32-byte CBOR byte
 string, never implementation-formatted hex.
 
 The payload enumerates requested/derived fidelity and producer+renderer reason
-codes and contains a canonical `active_fire_media` array. Each entry is keyed
+codes, `artifact_fidelity=predictive_primary|display_derivative|preview`, and
+contains a canonical `active_fire_media` array. A display derivative also
+contains its primary's `derived_from_provenance_id` and artifact digest. Each medium entry is keyed
 by stable `(manager_name,binding_kind,binding_owner)`—global binding uses owner
 `scene`, bounded binding uses the closed object's stable name—and contains
 sequence ID, selected base-frame index and whole-OpenVDB-file digest, exact
-record IDs, effective blur state/fallback, and medium-local reasons. Sort entries
+record and producer-build IDs, qualification-attestation digest, trusted
+registry-record/key IDs (or explicit unattested nulls), effective blur
+state/fallback, and medium-local reasons. Sort entries
 lexicographically by the encoded key tuple and reject duplicate binding keys;
 there is no singular sequence slot and no undefined extra “channel hash.”
 
@@ -2707,14 +2828,44 @@ default resolution, not as authored sparse text. Adding a render-affecting
 parameter requires a `render_config` schema update/test; a free-form “other”
 map is forbidden.
 
+The payload additionally embeds exact bytes and ID for
+`renderer_build_v1`: RISE source revision, dirty flag plus deterministic
+dirty-diff hash, executable/module SHA-256,
+integrator/medium/CDF/provenance schema versions, compile-time
+features, compiler and floating-point/fast-math/contraction settings, target
+platform/architecture, and exact OpenVDB/image-I/O/encoder dependency versions
+plus loaded-binary hashes.
+It also carries each selected medium's `producer_build_v1` ID; that producer ID
+must be the one signed by its qualification attestation. Renderer build identity
+is provenance, not a new unspecified trust gate: clean and dirty builds are both
+distinguishable, while the existing numeric gates decide qualification. Two artifacts from different binaries therefore cannot
+have indistinguishable provenance even when scene and render settings match.
+
 Scene identity for a file-loaded job is a sorted array of
 `{role,logical_locator,sha256}` for the top-level scene and every external asset
 byte stream actually opened, where each digest covers the exact opened bytes.
 Locators are UTF-8 NFC with `/` separators and the array is lexicographic by
 encoded `(role,logical_locator)` bytes; duplicate pairs with the same digest
 collapse and a duplicate pair with different bytes is an error. This arc does
-not define a canonical serialization of a programmatically built scene graph,
-so **programmatic jobs are preview-only** and carry
+not permit the initially opened bytes to stand in for later state. A
+`SceneMutationTracker` generation is incremented by every render-affecting
+`IJob`, editor, parser-finalization, and asset-rebind mutator. For an unmodified
+file-loaded job, the exact opened-byte array above is the identity. An editor
+mutation is predictive-capable only when it updates the retained CST and the
+payload additionally embeds the exact deterministic `RISE-CST-CANON-v1`
+serialization and SHA-256 of that **current** CST; that versioned serializer
+is a RISE-CBOR64-v1 syntax tree preserving top-level/chunk source order while
+putting parameters in descriptor order; it uses NFC text, explicit resolved
+defaults, binary64 numbers, and the sorted external-asset identity array.
+Any mutation not representable in/currently mirrored to retained CST sets the
+sticky `unrepresented_scene_mutation` bit before render preparation; predictive
+preflight then fails until the scene is saved and reloaded or a future canonical
+programmatic-build record is implemented. Clearing the bit without rebuilding
+identity is forbidden and a mutate-after-load fixture is RED. The provenance
+stores the final mutation generation and chosen identity form.
+
+This arc does not define a canonical serialization of a wholly programmatically
+built scene graph, so **programmatic jobs are preview-only** and carry
 `programmatic_scene_unqualified` plus a per-job 128-bit UUID and optional caller
 label for disambiguation. Caller-supplied opaque bytes are not accepted as a
 predictive build manifest. EXR
@@ -2722,8 +2873,11 @@ repeats the same fields as attributes where supported,
 **except its own artifact digest** (which cannot be embedded without changing
 the bytes being hashed); it embeds the sidecar provenance ID instead. Artifact
 SHA-256 exists only in the sibling sidecar. EXR attributes are not the portable source of truth; MOV carries one sidecar
-with the ordered per-frame provenance array and finalized movie digest. A
-predictive output fails if its sidecar cannot be written atomically. The work
+with the ordered per-frame provenance array and finalized movie digest. Because
+the MOV encoders in scope are lossy/display-referred, MOV is always a
+`display_derivative` linked to the lossless EXR-frame primaries; it is never the
+predictive primary. A
+predictive primary fails if its sidecar cannot be written atomically. The work
 item explicitly extends `FrameStore::Metadata`, file rasterizer output, legacy
 encoders, EXR, animation/MOV finalization, and AOV fallback propagation—the
 current free-form encoder attributes are ignored and cannot satisfy this
@@ -2791,7 +2945,19 @@ manifest's exact `end_policy` to nominal time always and to shutter support
 only when blur remains active, per the manifest rule above, before computing
 any shutter advection offset; a
 missing/digest-mismatched frame in the explicit manifest is
-a hard load error, not a skip. **Residency model, pinned — with nominal and shutter time separated**
+a hard load error, not a skip. The prepared fire-render path **must not call
+`IAnimator::EvaluateAtTime` from a worker or per sample at all**. Until immutable
+per-path scene snapshots plus conservative swept TLAS bounds exist, any active
+keyframed camera, object transform/bounds, material, light, or other
+render-affecting animator whose state would vary over the computed path-time
+support is a predictive preflight error
+`keyframed_temporal_sampling_unsupported`. Explicit preview holds all such
+scene state at nominal time, records that reason, and may still apply the
+read-only fire velocity warp; it does not fall back to the racy legacy sampler.
+Static animators/properties that prove identical state over the entire support
+are allowed. Moving-camera, moving-occluder, and animated-material RED fixtures
+assert the rejection/nominal hold and TLAS consistency.
+**Residency model, pinned — with nominal and shutter time separated**
 (round 5: introducing the index via per-path t_sim conflicted with
 single-base residency): the render's **nominal** simulation time —
 mapped once per render from the nominal scene time — selects the base
@@ -3017,8 +3183,20 @@ registry).
    cadence checks. Preview fallbacks that disable blur are committed before the
    render-global estimator mode is selected. Camera exposure alone is not a
    valid bound when blur is active.
+   Append a const, side-effect-free
+   `IAnimator::ClassifyTimeSupport(open,close)` query (plus the sole
+   `Animator` implementation) that returns the sorted stable identities of
+   active keyframed targets whose evaluated parameter is not provably constant
+   over the closed interval. “Provably constant” means the interpolation
+   segment representation itself is constant over every overlapped segment;
+   sampling endpoints is forbidden. The prepared helper uses this query for
+   the reject/nominal-hold rule in §8 and records those identities in output
+   provenance. As an appended virtual, the normal API/build-project checklist
+   and an old-caller ABI test apply.
    The shared `PixelBasedRasterizerHelper` per-render/field order is fixed to:
-   animator evaluation → object-manager `InvalidateSpatialStructure()` →
+   one main-thread nominal animator evaluation → prove/reject/nominal-hold every
+   animator over the full path-time support → object-manager
+   `InvalidateSpatialStructure()` →
    controller media preparation/CDF swap →
    `RayCaster::AttachScene` geometry realization → object
    `PrepareForRendering`/TLAS rebuild → `SetSceneTime` photon/cache update →
@@ -3041,9 +3219,14 @@ registry).
    asserts every sampled path time lies inside the prepared interval and the
    shutter-bounded majorant.
    Additionally (ARCHITECTURE.md:70): `IAnimator::EvaluateAtTime` per-sample
-   evaluation is a documented pre-existing data race — **volume data must
-   never join the per-sample animation path**; §8's read-only Eulerian
-   velocity blur is the compatible design and this is its justification.
+   evaluation is a documented pre-existing data race — **the prepared fire
+   path disables that worker-time call for the whole scene, not only volume
+   data**. Predictive mode rejects nonconstant keyframed state across the
+   support; preview holds it at nominal time. §8's read-only Eulerian velocity
+   blur is the only temporal variation in this arc until immutable scene
+   snapshots and swept acceleration bounds land. Tests instrument the animator
+   call count/thread ID and combine a moving occluder with a translating fire
+   slab to prove no worker mutation or stale-TLAS visibility is possible.
 4. **Tests are executables** (`tests/`), scenes under `scenes/Tests/Volumes/`;
    numeric gates, not eyeballs
    ([skills/write-highly-effective-tests.md](skills/write-highly-effective-tests.md)).
@@ -3241,8 +3424,12 @@ registry).
    W/c_p/h_s record, common T_ref, ambient/injection composition, fuel formula
    and LHV, and atom-balanced primary products. The record generator must prove
    element balance and the y_form/y_cond admissibility inequalities over every
-   accepted fuel preset, certify closed property domains, and pass the
-   out-of-domain RED gate. Predictive simulation is blocked for a fuel until its
+   accepted fuel preset; certify continuous h_s with h_s(T_ref)=0 and
+   dh_s/dT=c_p, strictly positive c_p/C_T bounds, a nonempty common gas+aerosol
+   temperature interval, and endpoint bracketing/unique inversion for every
+   admissible composition/loading; certify closed property domains; and pass
+   discontinuity, derivative-mismatch, nonpositive-c_p, empty-domain,
+   unbracketed-energy, and out-of-domain RED gates. Predictive simulation is blocked for a fuel until its
    gas and aerosol record is archived and hashed.
 7. **(molecular/SGS transport)** Freeze the §3.2 `transport_closure` record:
    sourced μ_k/k_k tables and certified domains, Wilke and Wassiljewa/Mason–
@@ -3654,7 +3841,8 @@ registry).
   post-animation shutter-support computation; required `AutoRasterizer` and all
   entry surfaces to forward the prepared controller path; pinned axis-aligned
   voxel/placement/vector-transform semantics; separated unconditional
-  loadability from preview fidelity; made source provenance authenticated;
+  loadability from preview fidelity; attempted source authentication through
+  the content-digest envelope (superseded by r19's detached attestation);
   defined non-self-referential manifest and output-provenance envelopes; pinned
   the RISE-CBOR64-v1 wire profile and independent record preimages; required
   pre-worker table-domain checks; and separated mandatory time-varying sequence
@@ -3689,3 +3877,15 @@ registry).
   scoped programmatic jobs to preview; hardened CBOR against non-text/duplicate
   keys and noncanonical input; and restored explicit animator-driven TLAS
   invalidation.
+- **r19 (2026-07-28):** after the eighth fresh convergence review of committed
+  r18 (eleven P1; P2 intentionally excluded from this closeout). CFD: restored
+  common-velocity phase-transfer momentum, closed the separate R0/R1 projected
+  stage iterations and final accepted endpoint projection, specified the
+  nonlinear total-head boundary solve, and certified a unique bracketed
+  gas+aerosol enthalpy inverse. Transport: removed the stale chem-blur estimator
+  contradiction and defined channel-specific sparse-grid backgrounds.
+  Pipeline: disabled worker-time Animator mutation for prepared fire renders;
+  restricted predictive primaries to lossless floating scene-linear output;
+  replaced self-hash “authentication” with detached trusted qualification;
+  added producer/renderer build identity and post-load scene-mutation identity;
+  and made display derivatives explicitly non-predictive.
