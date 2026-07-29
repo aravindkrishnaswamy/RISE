@@ -1,11 +1,11 @@
 # Render Preparation Lifecycle — Mutation Tracking, Freeze, and Artifact Publication
 
-**Status:** DRAFT, extracted 2026-07-28 from `FIRE_SMOKE_DESIGN.md` §8.
+**Status:** DRAFT, extracted 2026-07-28 from [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md) §8.
 **Scope:** repo-wide RISE concern, not fire-specific.
 
 ## Why this is its own document
 
-The fire/smoke arc needs one narrow guarantee from this area: **per-frame
+The fire/smoke arc ([FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md)) needs one narrow guarantee from this area: **per-frame
 volume-grid swaps, majorant rebuilds, and emission-CDF rebuilds must happen
 between renders, never during one** (`FIRE_SMOKE_DESIGN.md` §10.3), which in
 turn needs a prepared-input/freeze seam on the render entry points. Answering
@@ -433,7 +433,6 @@ built scene graph, so **programmatic jobs are preview-only** and carry
 `programmatic_scene_unqualified` plus a per-job 128-bit UUID and optional caller
 label for disambiguation. Caller-supplied opaque bytes are not accepted as a
 predictive build manifest.
-
 
 ---
 

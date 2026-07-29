@@ -1872,7 +1872,9 @@ prerequisite and a pre-existing bug affecting every heterogeneous volume.
 4. **The fire medium's row in the continuation-closure table** — its
    σ_s-weighted constituent HG-mixture closure (§7.2.2). Without this the
    feature is default-denied inside the only medium it exists to light.
-5. The §7.2.7 equality gates and configuration matrix.
+5. Per-frame invalidation and rebuild of the emission structures (§7.2.6),
+   scheduled in the same between-renders step as the majorant rebuild.
+6. The §7.2.7 equality gates and configuration matrix.
 
 #### Phase C gates (all engineering)
 
@@ -1886,7 +1888,10 @@ prerequisite and a pre-existing bug affecting every heterogeneous volume.
    dataset-independent.
 4. §8's *sequence* contract: the manifest, `fire_medium`, time mapping,
    residency, and velocity halo (the channel/precision and interpolation
-   rules land with Phase A gate 2).
+   rules land with Phase A gate 2); plus the output-provenance sidecar and
+   its digest verifier plumbed through `FrameStore`, file encoders, AOVs, and
+   animation/MOV finalization — §8 makes a predictive primary fail if its
+   sidecar cannot be written, so this is a required deliverable, not polish.
 5. The freeze/prepared-input seam this arc depends on
    ([RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)) —
    grid/majorant/CDF swaps strictly between renders, mid-render mutation
@@ -1970,7 +1975,10 @@ engineering task waits on this list.**
    are in tree (tests 6–11 in `tests/PainterVolumeAccessorTest.cpp`,
    covering TRI, NNB, and TriCubic); step 0 retains only the
    verification that the fire path builds on the repaired accessor.
-1. **Multi-channel heterogeneous media** (G2): named scalar channels per
+1. **Multi-channel heterogeneous media** (G2), authored through the new
+   **`multichannel_heterogeneous_medium`** chunk (§9 — statically sourced,
+   preview-only; `fire_medium` and its manifest are Phase C): named scalar
+   channels per
    medium (`carbon`, `temperature`, `condensed`, diagnostic `reaction`, and
    `chem_CH`/`chem_C2`/`chem_CO2` when chem is enabled), each a `Volume<>`
    grid + accessor sharing bbox/transform — and **all extinction-relevant
@@ -3046,7 +3054,11 @@ content-integrity digest transitively covering the frame digests and verbatim
 record blobs. **Predictive fidelity requires `source_kind` ∈ {`rise_simulation`,
 `qualified_external`} together with `physical_mapping=absolute_si`;
 `heuristic_import` or any heuristic mapping is preview-only and stamps
-`producer_unqualified`.** A digest mismatch anywhere is a load error
+`producer_unqualified`.** A statically authored medium (§9's
+`multichannel_heterogeneous_medium`, which has no manifest and therefore no
+declared `source_kind`) is `producer_unqualified` by construction — correct
+for Phase A, whose gates are analytic rather than predictive. A digest
+mismatch anywhere is a load error
 (`integrity_digest_mismatch`), never a silent downgrade.
 
 This is deliberately an **integrity** contract, not an authentication one. It
@@ -3480,8 +3492,15 @@ cannot be the vehicle for renderer-only work. The general chunk therefore
 takes the same named channels bound to **statically authored sources** rather
 than a manifest: per channel either a raw grid (the existing
 `volume_pattern`/bbox idiom, one lattice shared by all extinction-relevant
-channels per §7.1 step 1) or a baked 3D painter, plus the same
-`soot_em`/`smoke_*`/`phase` physical parameters `fire_medium` exposes:
+channels per §7.1 step 1) or a baked 3D painter, plus the physical parameters that turn those fields into
+optics (their meaning and units are §4.1/§4.3's, and their values come from
+the §12 preset record — hand values here are fixtures, not presets):
+`soot_em` = E(m) for the hot-carbon constituent; `smoke_km_carbon`,
+`smoke_n_carbon`, `smoke_albedo_carbon` and `smoke_km_cond`, `smoke_n_cond`,
+`smoke_albedo_cond` = the cool-carbon and condensed-organic (k_m, n, ω)
+triples; and `phase` = the per-constituent HG asymmetries the §4.3 mixture
+closure combines. Channel values are read in §8's units (`carbon`/`condensed`
+in g/m³, `temperature` in K) — there is no separate scaling here:
 
 ```
 multichannel_heterogeneous_medium
@@ -3489,12 +3508,22 @@ multichannel_heterogeneous_medium
 	name			candle_test
 	channel_carbon		painter carbon_profile     # or: volume_pattern ...
 	channel_temperature	painter temperature_profile
+	bake_resolution		96 96 192                  # one lattice, all channels
 	bbox_min		-0.02 0.0  -0.02
 	bbox_max		 0.02 0.08  0.02
 	soot_em			0.26
 	phase			hg 0.5
 }
 ```
+
+Grammar note: each `channel_*` value here is a **source** (`painter <name>`
+or `volume_pattern <pattern>`), not the channel-name string `fire_medium`
+uses to select a grid from its manifest — the two chunks answer different
+questions ("where does this field come from" vs "which grid in the sequence
+is it"), and the descriptor declares them as distinct tuple kinds.
+`bake_resolution` fixes the single shared lattice for every
+extinction-relevant channel (§7.1 step 1), following
+`painter_heterogeneous_medium`'s existing bake idiom.
 
 It is **preview-only by construction** — hand-authored fields carry no
 producer qualification, so §8's predictive gate cannot be met and the medium
