@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 14 — after internal review rounds 1–4,
-**six external expert review rounds**, and three post-r11 implementation-review
+**Status:** DRAFT (revision 15 — after internal review rounds 1–4,
+**six external expert review rounds**, and four post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r14; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r15; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -230,9 +230,37 @@ row depends on it:
   **ρ_g = p₀ W̄ / (R T)**, with mean molecular weight W̄ from the lumped-species
   composition. Acoustics are removed by construction; p̃ enters only the
   momentum equation.
-- **Momentum** with buoyancy formulated against the ambient hydrostatic
-  state: body force (ρ_g − ρ∞) g, so the unignited far field is exactly
-  quiescent and no spurious hydrostatic adjustment flows arise.
+- **Momentum and transport closure.** The conservative gas-momentum equation is
+
+  > ∂(ρ_gu)/∂t + ∇·(ρ_gu⊗u)
+  > = −∇p̃ + ∇·τ_eff + (ρ_g−ρ∞)g + u S_ρ,phase,
+  > τ_eff=μ_eff[∇u+(∇u)ᵀ−(2/3)(∇·u)I],
+  > μ_eff=μ_mol+ρ_gν_sgs.
+
+  The phase source S_ρ,phase=ṁ̇‴_gas from below carries the common velocity,
+  so phase transfer alone cannot accelerate the one-velocity mixture; boundary
+  injection carries its prescribed momentum separately. Buoyancy is relative
+  to the ambient hydrostatic state, so the unignited far field is quiescent.
+  The baseline molecular record uses species μ_k(T), k_k(T) tables, Wilke
+  viscosity mixing and Wassiljewa/Mason–Saxena conductivity mixing. With the
+  declared unit-Lewis closure,
+
+  > D_mol=k_mol/(ρ_gc_p,g),
+  > D_sgs=ν_sgs/Sc_t,
+  > D=D_mol+D_sgs,
+  > k_eff=k_mol+ρ_gc_p,gν_sgs/Pr_t,
+
+  and the same D drives every J_j and J_Z. Baseline Pr_t=Sc_t=0.7. Vreman uses
+  α_ij=∂u_j/∂x_i, β_ij=Σ_mΔ_m²α_miα_mj,
+  B_β=β_11β_22−β_12²+β_11β_33−β_13²+β_22β_33−β_23², and
+  ν_sgs=C_v√(B_β/(α_ijα_ij)) with nonnegative B_β, zero when the denominator
+  vanishes, **C_v=0.07**, and Δ_m equal to the directional MAC cell widths
+  (uniform in Phase C). The versioned `transport_closure` record owns all
+  property tables/ranges/mixing laws, Pr_t, Sc_t, C_v, filter widths, wall
+  stress choice, τ_chem, T_CFT, and the relationships above; predictive mode
+  permits no implicit library defaults. DNS sets ν_sgs=D_sgs=0 but retains the
+  molecular laws. No-slip/adiabatic walls use resolved molecular stress/heat
+  flux; no wall function is used in this arc.
 - **Divergence constraint** derived from the EOS at constant p₀ **and the
   transported total-sensible-energy → T inversion together**. Aerosol mass
   shares the gas velocity in the supported one-fluid limit but contributes
@@ -708,8 +736,9 @@ the burnout bookkeeping. The corrected model:
   construction, and no mass is ever double-counted because each
   constituent has exactly one optics model at each temperature (§4.3).
 
-Production, advection, oxidation, and condensation/evaporation are applied
-in a fixed documented operator order so escaped-soot mass is well-defined.
+Production, transport, oxidation, condensation/evaporation, radiation, and
+projection follow §3.7's immutable-stage-input schedule, so escaped-soot mass
+and every source dependency are reproducible.
 
 **Known, accepted bias:** production is co-located with the reaction sheet
 rather than distributed through the rich interior where inception physically
@@ -885,7 +914,13 @@ The most notorious practical trap in fire LES; specified accordingly:
   and therefore their difference, are tangent to every exact mass/element/Z
   equality before limiting. Projecting an independently reconstructed vector
   after the fact is forbidden because it changes its stencil and can violate
-  face conservation. Their difference is the antidiffusive face flux. The limiter is a
+  face conservation. **ℋ_s is not part of this dimensionally-mass-valued
+  nullspace basis:** it receives its own scalar MC MUSCL face reconstruction
+  and donor-cell low-order flux. Its antidiffusive correction is assembled
+  beside the constrained mass-block correction before limiting, and the one
+  shared α_face below multiplies both. Leaving ℋ_s donor-cell or limiting its
+  correction independently is forbidden. Their difference is the
+  antidiffusive face flux. The limiter is a
   **multiconstraint Zalesak nodal-budget algorithm, not independent face-local
   clipping**: first compute the complete low-order update and all raw incident
   antidiffusive corrections A_cf. Exact equalities are already satisfied by
@@ -927,8 +962,25 @@ The most notorious practical trap in fire LES; specified accordingly:
   accounting for boundary fluxes, reaction heat, latent exchange, radiation,
   and resident chemical potential. It is not permission for scalar-advection
   drift.
-- **Time stepping:** two-stage predictor–corrector (FDS-style), **projection
-  applied at every stage**. Step size: min of advective CFL, the
+- **Time stepping and exact stage schedule:** two-stage Heun predictor/
+  corrector. Form U*=Uⁿ+ΔtR(Uⁿ), project and accept the predictor, then form
+  Uⁿ⁺¹=Uⁿ+(Δt/2)[R(Uⁿ)+R(U*)] and project the final corrector; thus
+  **projection is applied to every accepted stage output**. `EvaluateRHS(U_s,Δt)` treats U_s as immutable: (1) invert
+  ℋ_s→T and evaluate all molecular/SGS properties; (2) build scalar advection,
+  constituent diffusion/J_h, conduction, and momentum advection/stress/
+  buoyancy fluxes; (3) from that same U_s independently evaluate primary
+  reaction/soot formation and its ignition+CFT graph, oxidation of only the
+  soot already in U_s, condensation/evaporation from U_s's T/Y_cv, and frozen-
+  β/γ radiation from U_s; newly formed soot/vapor/heat feeds these other
+  closures only at the next RK stage, never by accidental call order; (4)
+  assemble all low/high fluxes and source increments, apply FCT once, and form
+  the provisional conservative state. For each predictor/corrector assembly,
+  invert its T/EOS, derive S_div from those exact accepted increments, solve
+  the variable-density projection, and reject on feasibility/EOS/projection
+  gates. The exponential reaction and
+  phase formulas supply their accepted ΔU/Δt as R(U_s); they are not applied a
+  second time outside RK2. Predictor and corrector use the identical schedule.
+  Step size: min of advective CFL, the
   buoyant-acceleration limit Δt ≲ √(2δx/g′₊) (g′₊ = max(g′, 0) per §3.3 —
   the signed form goes non-real over cold dense fuel; the limit is simply
   inactive where g′₊ = 0), and
@@ -971,7 +1023,12 @@ radiative loss):
   (ρ_g−ρ∞)g formulation.
 - V2. Variable-density projection + the full divergence identity (§3.2),
   including a **two-gas isothermal mixing box** and a **reacting
-  manufactured solution** — the S_div-from-discrete-updates gate.
+  manufactured solution** — the S_div-from-discrete-updates gate. A nonzero
+  variable-density manufactured momentum case simultaneously exercises
+  conservative advection, dynamic pressure, buoyancy, viscous stress, and
+  nonzero S_div with observed second-order velocity/pressure convergence; a
+  separate linear-gradient fixture checks the pinned Vreman ν_sgs and its
+  zero/rotation/laminar limits.
 - V3. Conservative transport has three independent cases: (a) uniform-scalar
   preservation; (b) a periodic **pure-diffusion loading gradient** checking
   locally that E_gq_g+E_aq_a=ρ_totb(Z), not only global totals; and (c) a
@@ -986,7 +1043,7 @@ radiative loss):
   smooth periodic manufactured case remains away from every inequality bound,
   requires observed L1 order ≥1.8 over three refinements, asserts that a
   nonzero fraction of faces has α_face>0, and must be strictly more accurate
-  than donor-cell. This prevents an all-α=0 implementation from passing the
+  than donor-cell for every mass field, ℋ_s, and the derived T. This prevents an all-α=0 implementation from passing the
   conservation checks while silently collapsing to first order. Every case
   checks local feasibility and global mass, gas species, aerosol inventories,
   every schema element (C/H/O/N for baseline air), ρ_totZ, and ℋ_s to fp64
@@ -1046,7 +1103,10 @@ radiative fraction vs the fuel's measured χ_r, and escaped soot vs y_s):
    q̇‴_gas threshold is the fallback for near-zero-soot fuels, with the
    luminous-tip vs heat-release-tip offset noted in the harness.
 3. **Centerline plume law**: ΔT ∝ (z − z₀)^{−5/3} **above the flame tip**,
-   fit with a virtual origin z₀, on the taller §3.6 plume domain.
+   fit with a virtual origin z₀, on the taller §3.6 plume domain. The same
+   McCaffrey stations carry absolute centerline velocity (±10 %) and integrated
+   entrainment mass flow (±15 %) gates; temperature alone cannot validate the
+   momentum/SGS closure.
 4. **Laminar candle**: steady flame height and shape vs. published candle
    measurements (DNS-resolved case; shape/height gate only, §3.7).
 5. **Qualitative gates**: reaction sheet lies at Z ≈ Z_st; soot field sits
@@ -1475,7 +1535,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r14)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r15)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1538,7 +1598,7 @@ including r13's conservative-density owner, constituent sensible-enthalpy
 diffusion, invariant-coordinate FCT reconstruction and nondegeneracy/order
 gates, plus the exhaustive gas-thermochemistry schema and admissible fuel
 record, and the versioned simulator gas-opacity record. Predictive simulation
-waits for §12 Q5/Q6's actual frozen records, not merely their schemas — and §8's
+waits for §12 Q5–Q7's actual frozen records, not merely their schemas — and §8's
 fixed sequence epoch with nominal/shutter time separation,
 halo-serialization/blur-disable policy, the render-global blur rule (no
 volume NEE/equiangular, uncapped NM pure DT, Pel nominal-only, independently
@@ -1988,10 +2048,10 @@ If W_m=0 the medium has no thermal-emission strategy. Otherwise q_v>0 wherever
 ε_thermal can be nonzero, including a hot corner with a cold/zero-emission
 voxel center. Per-cell weights on the majorant topology are
 Φ_c=Σ_{v∈c}w_v
-(units W/sr — a radiance-derived weight; multiply by 4π for emitted power
-only when coordinates are metres; in scene coordinates §8's s² factor is also
-required. The medium-only q^V pmf is unaffected because the common 4πs²
-cancels). Majorant grids are capped at 32 *cells per axis* (§5.1) —
+(units W/sr, but **not physical power** because ηU_v intentionally inflates
+support. Thus 4πs²W_m is a dimensioned band-importance proxy, not a
+radiometric claim. The medium-only q^V pmf is unaffected because the common
+4πs² cancels). Majorant grids are capped at 32 *cells per axis* (§5.1) —
 at 512³ a cell spans 16³ voxels whose ε varies by orders of magnitude
 across the flame sheet, so within-cell *uniform* sampling would leave large
 variance the cell CDF cannot address. The structure is therefore
@@ -2035,16 +2095,17 @@ vertex whenever at least one emissive medium has W_m>0**: it chooses a labeled
 medium with q_m^V=W_m/Σ_nW_n and then an independent endpoint from p_m. This
 attempt sets `competitionAvailable` even if the sample is inactive, occluded,
 or zero-valued. Separately, the existing equiangular strategy pivots on a
-positional-light/medium mixture with coefficients a_i and a_m. All entries use
-one exact scalar convention: physical 380–780 nm radiant power in watts,
-integrated with the same pinned wavelength quadrature as §7.2.3. Thus a
-medium has **P_m,band=4πs²W_m**, where one scene unit is s metres. Positional
-lights gain `EstimateVisibleBandPower()` over their full spatial/directional
-emission; spectral lights integrate their actual SPD, while legacy RGB lights
-integrate the renderer's versioned RGB→spectrum reconstruction. The current
+positional-light/medium mixture with coefficients a_i and a_m. Entries use
+explicit nonnegative **importance proxies with watt dimensions**, not claimed
+exact powers: A_m=4πs²W_m for a medium (including §7.2.3's support inflation),
+and A_i=`EstimateVisibleBandPower()` for a positional light, both using the
+pinned 380–780 nm quadrature. Positional lights integrate their full spatial/
+directional emission; spectral lights integrate their actual SPD, while legacy
+RGB lights integrate the renderer's versioned RGB→spectrum reconstruction. The current
 `MaxValue(radiantExitance())` weight is not comparable and is retired for this
 mixed distribution. Only importance changes—the contribution remains spectral.
-The s² factor cancels in medium-only q_m^V but is mandatory in a_m when media
+Set a_r=A_r/ΣA over all positional and medium entries. The s² factor cancels in
+medium-only q_m^V but is mandatory in a_m when media
 mix with lights. The flame thus joins as one more entry in this **equiangular
 pivot** distribution, alongside the positional lights' existing power CDF,
 and the activation gate widens accordingly:
@@ -2085,7 +2146,13 @@ pivot). The coherent scheme committed to:
   it abandons the deterministic positional sums.
 
 The inherited near-collinear sampler is a Phase-B prerequisite, not trusted
-as-is. Compute perpendicular D² with a nonnegative robust difference and let
+as-is. Segment boundedness is an explicit flag from intersection/traversal—not
+inferred by comparing L to the finite `RISE_INFINITY=DBL_MAX` sentinel. An
+unbounded segment disables its equiangular technique before the technique roll:
+p_march is pure DT, including its correct survival/no-event atom, and both
+sampling and every MIS denominator use that same branch. No uniform density is
+formed over DBL_MAX. On a genuinely finite segment, compute perpendicular D²
+with a nonnegative robust difference and let
 S=max(L,|pivot−rayOrigin|). If D≤32√ε_machine·S, both `Sample` and `Pdf` take
 the same uniform-on-[0,L] fallback with density 1/L; otherwise both use the
 same robust D² in the equiangular formula. The branch predicate is shared
@@ -2093,7 +2160,9 @@ code. Mixing a floored D in sampling with raw or negative D² in evaluation is
 forbidden. On-ray, near-on-ray on both sides of the threshold, and large-scene-
 scale tests require finite nonnegative samples/PDFs, numerical normalization,
 and Sample/Pdf agreement. The metre-vs-centimetre gate also requires identical
-q^V, `a`, and Sample/Pdf behavior after physical-power conversion.
+q^V, `a`, and Sample/Pdf behavior after physical-power conversion. An
+unbounded-global-medium fixture represented by the live DBL_MAX sentinel must
+take pure DT and retain finite normalized/survival bookkeeping.
 
 Note the equiangular 1/r² concentration argument weakens when the receiver
 is *inside* the emitter; the delta-tracking half of the 50/50 pair covers
@@ -2232,7 +2301,7 @@ full-resolution pass; that contradicted §7.2.3 and was wrong.)
 **Metadata completeness rule:** two physically different grids must never
 carry indistinguishable metadata. Each sequence stores:
 
-- world transform, sim Δt/frame rate, and a versioned sequence manifest. The
+- a versioned sequence manifest carrying sim Δt/frame rate. The
   manifest contains the complete time map
   (t₀,α,t_scene,0,Δt_frame,i₀), an ordered explicit frame-index/file list
   (paths are UTF-8 NFC and relative to the manifest directory), frame count,
@@ -2244,6 +2313,8 @@ carry indistinguishable metadata. Each sequence stores:
   deterministic-CBOR bytes. Unknown versions are rejected. The scene locates
   this file explicitly with `sequence_manifest`; no frame-pattern discovery is
   performed. For this arc `end_policy` is `hold` or `error`. Let
+  i_first=i₀, require a nonempty strictly increasing **contiguous** unique index
+  list, frame_count=list length=i_last−i₀+1, and finite Δt_frame>0. Then
   t_first=t₀ and t_end=t₀+(i_last−i₀+1)Δt_frame. `error` rejects mapped times
   outside the half-open authored support [t_first,t_end). `hold` clamps to the
   closed evaluation interval [t_first,t_end], with i=min(i_last,
@@ -2251,7 +2322,17 @@ carry indistinguishable metadata. Each sequence stores:
   advection offset is exactly Δt_frame. Clamp applies separately to nominal and
   shutter-mapped times **before** the §8 advection offset is formed. An index
   inside the declared range but absent from the explicit list, or any digest
-  mismatch, is a hard load error;
+  mismatch, duplicate path, inconsistent channel set/type, or invalid cadence/
+  index invariant is a hard manifest-load error, not a lazy render failure;
+- one canonical sequence-to-world transform plus a per-channel lattice
+  descriptor (voxel size/origin/dimensions/core bbox), fixed across frames.
+  Carbon/temperature/condensed share the exact extinction lattice; reaction may
+  use its separately declared knot lattice; velocity uses the declared core
+  lattice plus its halo. Every VDB embedded transform, resolution, bbox,
+  channel type, and topology contract must match its manifest descriptor after
+  deterministic decode; the manifest is authoritative and mismatch is a load
+  error. The offline transcode is the only place deterministic resampling may
+  occur;
 - per-fuel y_form, y_s, y_cond, χ_r, T_pilot/T_AIT, Q̇_ref, ρ_soot,
   oxidation constants (T_ox, 2.667 kg-O₂/kg, 3.667 kg-CO₂/kg, 32.8 MJ/kg),
   channel scales, calibration dataset/protocol IDs, and scale/resolution
@@ -2259,6 +2340,9 @@ carry indistinguishable metadata. Each sequence stores:
 - the complete `gas_thermochemistry` record/hash from §3.3, including all
   species/inerts, E, W/c_p/h_s/T_ref, ambient/fuel composition, p₀, LHV, and
   atom-balanced primary products;
+- the `transport_closure` record/hash from §3.2: μ/k tables and mixture laws,
+  unit-Lewis D rule, Pr_t/Sc_t, Vreman C_v/filter widths, wall treatment,
+  τ_chem, T_CFT, and every certified property domain;
 - `aerosol_humidity_model = none`, the χ_load≤1 % support flag, and the
   condensable record (formula/W_cv, formation and sensible enthalpy
   references, Δh_cv, s_cv, L_cv, T_sat,ref, p_sat,ref, and chem-HRR convention);
@@ -2276,6 +2360,14 @@ carry indistinguishable metadata. Each sequence stores:
   same deterministic-CBOR/SHA-256 contract rather than implementation-native
   JSON.
 
+Every tabulated/polynomial record has a **closed certified domain** over all of
+its arguments. Predictive simulation rejects the stage before accepting any
+cell lookup outside that domain—no clamp or extrapolation. Preview may proceed
+only with a versioned extrapolation rule named in the record and adds
+`table_domain_exceeded`; the offending record/cell/range is logged. Q5/Q6 and
+the transport record cannot close without these policies and out-of-domain RED
+fixtures.
+
 **Fidelity transition table:** `predictive` is permitted only for the
 standalone absolute-unit simulator source, spectral NM transport, matching
 frozen optical/chem/condensable/gas records, intact hashes, all required
@@ -2291,12 +2383,27 @@ pure-DT path; Pel's nominal-frame fallback remains preview. The simulator
 applies the same rule before writing a predictive grid, so an invalid sequence
 cannot acquire a predictive label downstream.
 
+Reason codes are schema-v1 enum strings, emitted once each in lexicographic
+order: `requested_preview`, `heuristic_source`, `record_hash_mismatch`,
+`missing_optical_record`, `missing_chem_record`, `chem_none_unqualified`,
+`missing_condensable_record`, `missing_gas_opacity_record`,
+`missing_thermochemistry_record`, `missing_transport_record`,
+`table_domain_exceeded`, `missing_channel`, `loading_exceeded`,
+`wet_aerosol_unsupported`, `pel_transport`, `hwss_transport`,
+`pel_blur_ignored`, `blur_halo_insufficient`, `gate_failure`, and
+`output_provenance_unavailable`. A fully valid explicitly preview-requested
+render carries only `requested_preview`; codes are never free-form log text.
+
 **Output provenance is a Phase-C data product.** Every still, animation frame,
 AOV artifact, and finalized movie writes a sibling deterministic-CBOR
 `*.rise-provenance.cbor` sidecar containing the requested/derived fidelity,
 reason codes, sequence/record hashes, render configuration, and SHA-256 of the
-finished artifact. EXR repeats the same fields as attributes where supported,
-but attributes are not the portable source of truth; MOV carries one sidecar
+finished artifact. `provenance_id` is SHA-256 of the canonical provenance
+payload **excluding** `artifact_sha256`; the sidecar stores both fields. EXR
+repeats the same fields as attributes where supported,
+**except its own artifact digest** (which cannot be embedded without changing
+the bytes being hashed); it embeds the sidecar provenance ID instead. Artifact
+SHA-256 exists only in the sibling sidecar. EXR attributes are not the portable source of truth; MOV carries one sidecar
 with the ordered per-frame provenance array and finalized movie digest. A
 predictive output fails if its sidecar cannot be written atomically. The work
 item explicitly extends `FrameStore::Metadata`, file rasterizer output, legacy
@@ -2393,8 +2500,11 @@ extrapolation policy serialized in metadata**; at render time, if the
 shutter's mapped-SI displacement bound
 max|u|·max|t_s,sim−t_i| (with shutter duration |α|Δt_scene) exceeds the
 available halo the renderer
-**disables blur for that medium with a logged diagnostic** rather than
-silently extrapolating. Lookup order pinned as clamp-to-halo-then-sample;
+raises a **predictive preflight error** whenever nonzero blur was requested.
+Preview may disable blur for that medium only with
+`blur_halo_insufficient` in provenance; the render-global NEE/equiangular
+decision is made after preflight from the media that actually remain blurred.
+It never silently extrapolates. Lookup order pinned as clamp-to-halo-then-sample;
 gates: a constant-velocity slab translating across the base AABB with
 integrated emission/extinction preserved, plus exposures bracketing the
 halo limit.
@@ -2480,8 +2590,8 @@ fire_medium
 	channel_velocity	velocity			# optional, enables motion blur (§8)
 	# Optional overrides replace WHOLE versioned metadata records. Loose
 	# per-parameter soot/smoke/phase tuning is intentionally unsupported.
-	optical_preset_override	presets/fire_optics_v1.json
-	chem_preset_override	presets/methane_chem_v1.json
+	optical_preset_override	presets/fire_optics_v1.cbor
+	chem_preset_override	presets/methane_chem_v1.cbor
 }
 
 global_medium
@@ -2492,7 +2602,8 @@ global_medium
 
 Conventions (verified against the registry): new parameters follow the existing
 all-lowercase snake_case descriptor convention. Each override is a
-schema-versioned, hashed record: the optical record contains soot E(m) plus
+schema-versioned deterministic-CBOR record under the same schema as the
+embedded manifest record—JSON overrides are not accepted. The optical record contains soot E(m) plus
 **separate** cool-carbon and condensed-organic k_m/n/ω/g entries; the chem
 record contains per-fuel η_chem, SPD, normalization range, and provenance.
 Loading either override logs that grid metadata was replaced, and the record
@@ -2500,8 +2611,9 @@ identity is written to output provenance. Overrides are calibration/ablation
 features: a whole-record override is fidelity-neutral only when its canonical
 bytes/hash exactly equal the embedded record; predictive mode rejects every
 different hash, so a scene cannot tune smoke appearance while retaining the §1
-fidelity claim. Spatial placement: for VDB
-input the grid transform is authoritative; raw-slice input requires explicit
+fidelity claim. Spatial placement: the manifest's sequence/channel transforms
+are authoritative and every VDB embedded transform is validated against them;
+raw-slice input requires explicit
 `bbox_min`/`bbox_max` as today. `sequence_manifest` is the sole locator for a
 time sequence and contains the ordered frame paths/digests; it does not infer
 siblings from a printf pattern. Legacy `volume_pattern`'s slot remains the
@@ -2540,10 +2652,16 @@ registry).
    in the between-renders frame-advance step, never during a render. This is a
    concrete **non-const control-plane API**, not a new `mutable` escape hatch
    on `IScene`: `Job` owns an `IRenderPreparationController` registry populated
-   when time-varying media are constructed, and every rasterize/predict/
-   animation entry receives an explicit `RenderTimeSupport{nominal,open,close}`
-   from its caller. Legacy still wrappers pass the documented default
-   `{0,0,0}`; editor/timeline calls must pass the scrubbed time explicitly.
+   when time-varying media are constructed. Append three prepared overloads to
+   `IRasterizer`—`RasterizeScenePrepared`, `PredictTimeToRasterizeScenePrepared`,
+   and `RasterizeSceneAnimationPrepared`—each taking non-const
+   `IRenderPreparationController&` plus explicit
+   `RenderTimeSupport{nominal,open,close}` (animation supplies the per-frame
+   base request and derives each field/frame support internally). `IJob`, CLI,
+   and editor routes own/pass the controller. Legacy direct rasterizer overloads
+   retain `{0,0,0}` only for static scenes; `IScene::HasTimeVaryingMedia()` makes
+   them hard-error before tracing when preparation is required. Editor/timeline
+   calls must pass the scrubbed time explicitly.
    The controller's non-const
    `PrepareMediaForRender(const RenderTimeSupport&)` builds a complete
    immutable frame state off to the side and atomically swaps it before worker
@@ -2555,9 +2673,14 @@ registry).
    per-pixel `pixelRate`; §8 maps both endpoints through α (swapping min/max
    when α<0) before halo/majorant dilation and before the full-support-width
    cadence rejection. Camera exposure alone is not a valid bound.
-   The shared `PixelBasedRasterizerHelper` preparation seam invokes the
-   controller after animator evaluation, object `PrepareForRendering`, and
-   `SetSceneTime`, but before `RayCaster::AttachScene`/worker dispatch. Every
+   The shared `PixelBasedRasterizerHelper` per-render/field order is fixed to:
+   animator evaluation → controller media preparation/CDF swap →
+   `RayCaster::AttachScene` geometry realization → object
+   `PrepareForRendering`/TLAS rebuild → `SetSceneTime` photon/cache update →
+   explicit volume-emission/light-guide sampler rebuild → worker dispatch.
+   Animation may no longer attach only once before its frame loop; every CDF
+   swap reaches this sequence, and the sampler rebuild consumes the controller's
+   monotonically increasing generation even when the Scene pointer is unchanged. Every
    still, normal animation frame, interlaced field, explicit single frame or
    subrange, and AOV fallback re-entry uses that same seam; direct PT entry
    points and `PredictTimeToRasterizeScene` (which traces rays) must call the
@@ -2754,15 +2877,23 @@ registry).
    wavelength/T/composition/pressure domains, broadening and band-overlap
    convention, interpolation, independent absolute cooling reference and
    tolerance, deterministic bytes/hash, and the 380–780 nm absorption/emission
-   upper-bound test. Predictive Phase C is blocked until this closes; metadata
+   upper-bound test, certified closed domains, and out-of-domain rejection RED
+   gate. Predictive Phase C is blocked until this closes; metadata
    fields without the actual table are not a model.
 6. **(thermochemistry)** Freeze the baseline air plus per-fuel
    `gas_thermochemistry` records required by §3.3: source/provenance for every
    W/c_p/h_s record, common T_ref, ambient/injection composition, fuel formula
    and LHV, and atom-balanced primary products. The record generator must prove
    element balance and the y_form/y_cond admissibility inequalities over every
-   accepted fuel preset. Predictive simulation is blocked for a fuel until its
+   accepted fuel preset, certify closed property domains, and pass the
+   out-of-domain RED gate. Predictive simulation is blocked for a fuel until its
    record is archived and hashed.
+7. **(molecular/SGS transport)** Freeze the §3.2 `transport_closure` record:
+   sourced μ_k/k_k tables and certified domains, Wilke and Wassiljewa/Mason–
+   Saxena implementations, unit-Lewis D relation, Pr_t/Sc_t, Vreman C_v/filter
+   definition, wall treatment, τ_chem, and T_CFT. The manufactured momentum,
+   Vreman, DNS molecular-diffusion, and out-of-domain gates must pass before
+   predictive Phase C; substituting platform/library defaults is forbidden.
 
 ## 13. References (non-exhaustive)
 
@@ -3145,3 +3276,15 @@ registry).
   specified portable per-artifact provenance, and reconciled override hashes.
   §12 now tracks the gas-opacity and thermochemistry records as explicit
   predictive blockers.
+- **r15 (2026-07-28):** after the fourth fresh convergence review of committed
+  r14. CFD: pinned the conservative momentum/stress equation, molecular and
+  Vreman transport laws/records, immutable-stage two-stage schedule, separate
+  high-order ℋ_s reconstruction, and nonzero momentum/SGS/velocity validation.
+  Transport: made unbounded segments take pure DT instead of a DBL_MAX uniform
+  fallback, stopped calling the support-inflated emission weight physical
+  power, and made insufficient blur halo fail predictive preflight. Pipeline:
+  injected preparation through explicit prepared `IRasterizer` overloads,
+  restored the codebase-required attach/realize/TLAS order with per-frame CDF
+  guide refresh, completed manifest index/lattice/domain invariants, removed
+  the EXR self-digest cycle, standardized CBOR overrides and reason codes, and
+  added the transport record as §12 Q7.
