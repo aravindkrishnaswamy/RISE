@@ -9,6 +9,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +59,17 @@ namespace
 		return std::fabs( actual - expected ) <= tolerance;
 	}
 
+	Scalar ScalarFromBits( const std::uint64_t bits )
+	{
+		static_assert( sizeof( Scalar ) == sizeof( bits ),
+			"non-finite regression inputs require binary64 Scalar" );
+		volatile std::uint64_t barrier = bits;
+		const std::uint64_t materialised = barrier;
+		Scalar value = 0.0;
+		std::memcpy( &value, &materialised, sizeof( value ) );
+		return value;
+	}
+
 	class AffineWorldScalarPainter :
 		public virtual IScalarPainter,
 		public virtual Implementation::Reference
@@ -101,6 +114,46 @@ namespace
 			0.26, 1800.0, 0.10, 0.5,
 			8.7, 1.2, 0.6, 0.6 );
 		return ok ? medium : nullptr;
+	}
+
+	struct FactoryInputs
+	{
+		Point3 bboxMin;
+		Point3 bboxMax;
+		Scalar sceneUnitMeters;
+		Scalar sootEm;
+		Scalar sootDensity;
+		Scalar sootAlbedoHot;
+		Scalar sootGHot;
+		Scalar smokeKmCarbon;
+		Scalar smokeNCarbon;
+		Scalar smokeAlbedoCarbon;
+		Scalar smokeGCarbon;
+
+		FactoryInputs() :
+		  bboxMin( 0, 0, 0 ), bboxMax( 1, 1, 1 ), sceneUnitMeters( 1.0 ),
+		  sootEm( 0.26 ), sootDensity( 1800.0 ), sootAlbedoHot( 0.10 ), sootGHot( 0.5 ),
+		  smokeKmCarbon( 8.7 ), smokeNCarbon( 1.2 ),
+		  smokeAlbedoCarbon( 0.6 ), smokeGCarbon( 0.6 )
+		{
+		}
+	};
+
+	bool FactoryRejects(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const FactoryInputs& inputs
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, carbon, temperature, 2, 2, 2,
+			inputs.bboxMin, inputs.bboxMax, inputs.sceneUnitMeters,
+			inputs.sootEm, inputs.sootDensity, inputs.sootAlbedoHot, inputs.sootGHot,
+			inputs.smokeKmCarbon, inputs.smokeNCarbon,
+			inputs.smokeAlbedoCarbon, inputs.smokeGCarbon );
+		safe_release( medium );
+		return !created && !medium;
 	}
 
 	void TestBakedTrilinearChannelsAndOptics()
@@ -241,6 +294,68 @@ namespace
 		safe_release( temperature );
 	}
 
+	void TestNonFiniteRejection()
+	{
+		std::cout << "TestNonFiniteRejection" << std::endl;
+		const Scalar infinity = ScalarFromBits( UINT64_C(0x7FF0000000000000) );
+		const Scalar nan = ScalarFromBits( UINT64_C(0x7FF8000000000000) );
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+
+		AffineWorldScalarPainter* infiniteCarbon =
+			new AffineWorldScalarPainter( infinity, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *infiniteCarbon, *temperature, FactoryInputs() ),
+			"+Inf carbon painter is rejected before majorant construction" );
+		safe_release( infiniteCarbon );
+
+		AffineWorldScalarPainter* nanTemperature =
+			new AffineWorldScalarPainter( nan, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *carbon, *nanTemperature, FactoryInputs() ),
+			"NaN temperature painter is rejected under fast-math" );
+		safe_release( nanTemperature );
+
+		AffineWorldScalarPainter* zeroTemperature =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *carbon, *zeroTemperature, FactoryInputs() ),
+			"non-positive temperature is rejected" );
+		safe_release( zeroTemperature );
+
+		FactoryInputs invalid;
+		invalid.bboxMin.x = nan;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"NaN bbox component is rejected by the direct factory" );
+		invalid = FactoryInputs();
+		invalid.bboxMax.z = infinity;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"+Inf bbox component is rejected by the direct factory" );
+
+		struct ScalarInput
+		{
+			const char* label;
+			Scalar FactoryInputs::* member;
+		};
+		const ScalarInput scalarInputs[] = {
+			{ "scene_unit", &FactoryInputs::sceneUnitMeters },
+			{ "soot_em", &FactoryInputs::sootEm },
+			{ "soot_density", &FactoryInputs::sootDensity },
+			{ "soot_albedo_hot", &FactoryInputs::sootAlbedoHot },
+			{ "soot_g_hot", &FactoryInputs::sootGHot },
+			{ "smoke_km_carbon", &FactoryInputs::smokeKmCarbon },
+			{ "smoke_n_carbon", &FactoryInputs::smokeNCarbon },
+			{ "smoke_albedo_carbon", &FactoryInputs::smokeAlbedoCarbon },
+			{ "smoke_g_carbon", &FactoryInputs::smokeGCarbon }
+		};
+		for( const ScalarInput& input : scalarInputs ) {
+			invalid = FactoryInputs();
+			invalid.*(input.member) = infinity;
+			Check( FactoryRejects( *carbon, *temperature, invalid ),
+				(std::string( "+Inf " ) + input.label + " is rejected by the direct factory").c_str() );
+		}
+
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
 	const IAsciiChunkParser* FindMultichannelParser(
 		const std::vector<ChunkParserEntry>& entries
 		)
@@ -375,6 +490,7 @@ int main()
 	TestBakedTrilinearChannelsAndOptics();
 	TestPhysicalUnitsAndSceneScale();
 	TestPhiSupMajorant();
+	TestNonFiniteRejection();
 	TestDescriptorAndRequiredness();
 	TestSceneLanguageAndSceneUnitPropagation();
 

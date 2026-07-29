@@ -1547,29 +1547,6 @@ namespace RISE
 			const double bboxMax[3]									///< [in] World-space AABB maximum corner
 			) = 0;
 
-		//! Adds the Phase-A painter-baked carbon + temperature medium.
-		//! Each channel source is `painter <scalar_painter-name>` in the
-		//! scene grammar; both are baked onto the same trilinear lattice.
-		virtual bool AddMultichannelHeterogeneousMedium(
-			const char* name,
-			const char* carbon_painter,
-			const char* temperature_painter,
-			const unsigned int bake_width,
-			const unsigned int bake_height,
-			const unsigned int bake_depth,
-			const double bboxMin[3],
-			const double bboxMax[3],
-			const double scene_unit_meters,
-			const double soot_em,
-			const double soot_density,
-			const double soot_albedo_hot,
-			const double soot_g_hot,
-			const double smoke_km_carbon,
-			const double smoke_n_carbon,
-			const double smoke_albedo_carbon,
-			const double smoke_g_carbon
-			) = 0;
-
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetGlobalMedium(
@@ -3775,6 +3752,30 @@ namespace RISE
 				camName, location, lookat, up,
 				orientation, targetOrientation );
 		}
+
+		//! Adds the Phase-A painter-baked carbon + temperature medium.
+		//! Each channel source is `painter <scalar_painter-name>` in the
+		//! scene grammar; both are baked onto the same trilinear lattice.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMedium(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/
+			) { return false; }
 
 	};
 

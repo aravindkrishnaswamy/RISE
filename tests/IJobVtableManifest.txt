@@ -104,7 +104,6 @@ AddHomogeneousMedium
 AddHomogeneousMediumSpectral
 AddHeterogeneousMedium
 AddPainterHeterogeneousMedium
-AddMultichannelHeterogeneousMedium
 SetGlobalMedium
 SetObjectInteriorMedium
 GetMedium
@@ -285,3 +284,4 @@ ClearProgressIfCurrent
 SetProgressIfCurrent
 ExchangeProgress
 ApplyCstCameraPoseEditWithBasis
+AddMultichannelHeterogeneousMedium

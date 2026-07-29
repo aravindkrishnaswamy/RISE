@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "HeterogeneousMedium.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
@@ -41,7 +42,9 @@ namespace
 		const Scalar sootDensity
 		)
 	{
-		if( sootEm < 0.0 || sootDensity <= 0.0 ) return 0.0;
+		if( !RISE::IsFiniteDouble( sootEm ) ||
+			!RISE::IsFiniteDouble( sootDensity ) ||
+			sootEm < 0.0 || sootDensity <= 0.0 ) return 0.0;
 		const Scalar lambdaMeters = 633.0e-9;
 		return 6.0 * PI * sootEm * 1.0e-3 / (lambdaMeters * sootDensity);
 	}
@@ -54,7 +57,12 @@ namespace
 		const Scalar smokeKmCarbon
 		)
 	{
-		if( sceneUnitMeters <= 0.0 || sootAlbedoHot < 0.0 ||
+		if( !RISE::IsFiniteDouble( sceneUnitMeters ) ||
+			!RISE::IsFiniteDouble( sootEm ) ||
+			!RISE::IsFiniteDouble( sootDensity ) ||
+			!RISE::IsFiniteDouble( sootAlbedoHot ) ||
+			!RISE::IsFiniteDouble( smokeKmCarbon ) ||
+			sceneUnitMeters <= 0.0 || sootAlbedoHot < 0.0 ||
 			sootAlbedoHot >= 1.0 || smokeKmCarbon < 0.0 ) {
 			return 0.0;
 		}
@@ -130,7 +138,8 @@ namespace
 		const unsigned int depth,
 		const Point3& bboxMin,
 		const Point3& bboxMax,
-		const char* channelName
+		const char* channelName,
+		const bool requirePositive
 		)
 	{
 		Volume<Scalar>* volume = new Volume<Scalar>( width, height, depth );
@@ -160,9 +169,10 @@ namespace
 					ri.ptObjIntersec = worldPt;
 					ri.ptCoord = Point2( nx, ny );
 					const Scalar value = painter.GetValuesAt( ri ).v[0];
-					if( !( value >= 0.0 ) ) {
+					if( !RISE::IsFiniteDouble( value ) ||
+						( requirePositive ? value <= 0.0 : value < 0.0 ) ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"MultichannelHeterogeneousMedium:: `%s` painter produced a negative or non-finite value at (%g,%g,%g)",
+							"MultichannelHeterogeneousMedium:: `%s` painter produced an out-of-domain or non-finite value at (%g,%g,%g)",
 							channelName, worldPt.x, worldPt.y, worldPt.z );
 						safe_release( volume );
 						return 0;
@@ -1276,8 +1286,20 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
 	const bool validDimensions = volWidth >= 2 && volHeight >= 2 && volDepth >= 2 &&
 		volWidth <= 0x7fffffffu && volHeight <= 0x7fffffffu && volDepth <= 0x7fffffffu;
-	const bool validBounds = extent.x > 0.0 && extent.y > 0.0 && extent.z > 0.0;
-	const bool validOptics = sceneUnitMeters > 0.0 && sootEm >= 0.0 && sootDensity > 0.0 &&
+	const bool validBounds =
+		RISE::IsFiniteDouble( bboxMin.x ) && RISE::IsFiniteDouble( bboxMin.y ) &&
+		RISE::IsFiniteDouble( bboxMin.z ) && RISE::IsFiniteDouble( bboxMax.x ) &&
+		RISE::IsFiniteDouble( bboxMax.y ) && RISE::IsFiniteDouble( bboxMax.z ) &&
+		RISE::IsFiniteDouble( extent.x ) && RISE::IsFiniteDouble( extent.y ) &&
+		RISE::IsFiniteDouble( extent.z ) &&
+		extent.x > 0.0 && extent.y > 0.0 && extent.z > 0.0;
+	const bool validOptics =
+		RISE::IsFiniteDouble( sceneUnitMeters ) &&
+		RISE::IsFiniteDouble( sootEm ) && RISE::IsFiniteDouble( sootDensity ) &&
+		RISE::IsFiniteDouble( sootAlbedoHot ) && RISE::IsFiniteDouble( sootGHot ) &&
+		RISE::IsFiniteDouble( smokeKmCarbon ) && RISE::IsFiniteDouble( smokeNCarbon ) &&
+		RISE::IsFiniteDouble( smokeAlbedoCarbon ) && RISE::IsFiniteDouble( smokeGCarbon ) &&
+		sceneUnitMeters > 0.0 && sootEm >= 0.0 && sootDensity > 0.0 &&
 		sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0 &&
 		sootGHot >= -1.0 && sootGHot <= 1.0 &&
 		smokeKmCarbon >= 0.0 && smokeNCarbon >= 0.0 &&
@@ -1291,11 +1313,11 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	}
 
 	m_pCarbonAccessor = BakeScalarChannel(
-		carbonPainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "carbon" );
+		carbonPainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "carbon", false );
 	if( !m_pCarbonAccessor ) return;
 
 	m_pTemperatureAccessor = BakeScalarChannel(
-		temperaturePainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "temperature" );
+		temperaturePainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "temperature", true );
 	if( !m_pTemperatureAccessor ) return;
 
 	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
