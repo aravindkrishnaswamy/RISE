@@ -658,3 +658,32 @@ it was already tried and refuted here.
   the normalizer (K_c > 0, checked once at startup); the §4.3 sampling
   weights need no normalizer since S_jc/S_c and S_c/Σ_dS_d are ratios.
 
+- **r36 (2026-07-29):** **spectral is the target; Pel is preview** — a
+  scope decision taken after r33–r35 spent three consecutive design
+  revisions on the Pel projection without producing a line of transport
+  code. Each of those findings was real (a phantom `band_preset`; a
+  gamut-mapped conversion that is not a linear functional and so cannot
+  define a projection; coefficients projected as integrals rather than
+  means, giving a *grey* medium a −7.9 %/+2.1 %/+4.0 % colour cast). None
+  was on the path to a physically correct flame. The math r33–r35 produced
+  is kept — it is right, and the grey identity is what caught the last
+  defect — but the *bar* it is held to changed:
+  - **Every absolute radiometric gate is defined in NM.** The isothermal
+    slab, the pure-absorber slab, and scene-unit invariance are spectral
+    gates; the Pel path is not held to any of them.
+  - **Pel carries consistency gates only:** it runs without assert/NaN/
+    negative extinction; the structural grey identity L_c = ∫R_c L_λ dλ
+    holds (free, since K_c cancels); and its divergence from the projected
+    spectral render on the reference scene stays inside a *measured,
+    recorded* regression bound — a tripwire for a broken preview, not a
+    certificate for a correct one. There is deliberately **no absolute Pel
+    radiance target**: a Pel triple is not a radiance and predictive output
+    is spectral-only.
+  - **Pel moves to the end of Phase A's critical path** (new step 7).
+    Steps 1–6 are all spectral. Until step 7 lands, the RGB rasterizers
+    **reject fire media with a diagnostic** rather than rendering something
+    unvalidated, and no gate or phase may depend on the Pel path.
+  The general lesson, recorded because this arc keeps relearning it: hold a
+  path to the bar its output actually claims. Pel claimed preview and was
+  being gated as if it claimed predictive.
+

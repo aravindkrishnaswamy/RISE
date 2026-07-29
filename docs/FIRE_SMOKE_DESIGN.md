@@ -1522,7 +1522,13 @@ B(500 nm, 1800 K) = 0.43477836 W·m⁻²·sr⁻¹·nm⁻¹, and the integral ide
 exitance-per-metre convention at its boundary); the fire path must *never*
 reach Planck through `IPainter::GetColorNM` (§10.1).
 
-**The Pel (RGB) projection of this source is the projected PRODUCT, not the
+**The Pel (RGB) projection below is a PREVIEW mechanism** (r36): spectral is
+this design's correctness target, every absolute radiometric gate lives in
+NM, and the Pel path lands last on Phase A's critical path with consistency
+gates only (§7.0, §7.1 step 2). The math is stated precisely anyway —
+a preview that is silently wrong is worse than none, and the grey identity
+below is what catches that — but nothing here is claimed as predictive.
+**The projection of this source is the projected PRODUCT, not the
 product of projections.** Using the same per-channel response functions R_c(λ) as the §4.3 phase
 closure — CMF→XYZ→Rec.709 via the **matrix-only** transform, normalized by
 `CIE_Y_Integral` (§4.3 pins it; there is no separate preset asset, and the
@@ -1958,17 +1964,25 @@ the shared per-nm Planck radiance kernel with its two numeric gates (§4.2), on
    §7.1 steps 1/4, §7.2.3). The **authoring surface is
    `multichannel_heterogeneous_medium`** (§9) — statically authored,
    preview-only; `fire_medium` and its manifest are Phase C.
-3. **Emission estimator on both transport surfaces** — the σ_a·B_λ·T_det/p
-   rule with correct event ordering in `PathTracingIntegrator` *and*
-   `RayCaster`, the no-scatter deletion, HWSS hard-disabled for fire media,
-   and the no-silent-cap distance-sampler repair (§7.1 step 2, G11).
+3. **Emission estimator on both transport surfaces, spectral** — the
+   σ_a·B_λ·T_det/p rule with correct event ordering in
+   `PathTracingIntegrator` *and* `RayCaster`, the no-scatter deletion, HWSS
+   hard-disabled for fire media, and the no-silent-cap distance-sampler
+   repair (§7.1 step 2, G11). **Correctness is defined in NM**; the Pel
+   preview is gate 7 and blocks nothing here.
 4. **Chem transport** — the band-resolved source fields and the support-safe
    randomized line estimator (§4.4, §7.1 step 3).
 5. **Auto-rasterizer media routing** (G10) and the scene/metadata contract for
    fire media (§8, §9).
-6. **Gates green** — the isothermal-slab absolute radiance test, the
-   metre-vs-centimetre scene-unit invariance test, and the Phase-A step-0
-   emission-bias characterization (§7.1).
+6. **Spectral gates green** — the isothermal-slab absolute radiance test in
+   NM, the metre-vs-centimetre scene-unit invariance test, and the Phase-A
+   step-0 emission-bias characterization (§7.1).
+7. **Pel preview path** (r36) — the §4.2/§4.3 projection, landing *after*
+   gates 1–6, held to §7.1 step 2's consistency gates only (runs; the
+   structural grey identity; bounded, recorded divergence from the spectral
+   render). Until it lands the RGB rasterizers **reject fire media with a
+   diagnostic**. No absolute Pel radiance target exists, and no other gate
+   or phase may depend on this one.
 
 #### Phase B gates (all engineering)
 
@@ -2025,13 +2039,15 @@ green numeric test:
    `multichannel_heterogeneous_medium`**, painter-baked, trilinear, no
    manifest, no chem, no condensed phase. This is the smallest thing that can
    carry a flame field.
-4. **Collision-based emission on `RayCaster`** (§7.1 step 2), gated on the
-   isothermal-slab absolute target and the scene-unit invariance test, in
-   Pel and NM — using each measure's own target per §7.1 step 2 (L_λ for NM,
-   the §4.2-projected L_c for Pel; they coincide while the medium is grey). **Scope this increment to a
-   grey (wavelength-independent σ) medium at constant φ**: with τ_λ constant
-   the slab target is still exact and still checks the estimator against the
-   pinned Planck kernel, which is what this step exists to prove. What it
+4. **Collision-based emission on `RayCaster`, spectral (NM) only** (§7.1
+   step 2), gated on the isothermal-slab absolute target L_λ and the
+   scene-unit invariance test. **Scope this increment to a grey
+   (wavelength-independent σ) medium at constant φ**: with τ_λ constant the
+   slab target is still exact and still checks the estimator against the
+   pinned Planck kernel, which is what this step exists to prove. **Do not
+   implement the Pel projection here** — the RGB path refuses fire media
+   with a diagnostic until step 7 (r36); nothing on the critical path
+   depends on it. What it
    does *not* yet produce is a physically correct flame — soot extinction
    goes as 1/λ (§4.1), so grey σ gets τ(500 nm)/τ(700 nm) = 1 where the
    physics requires 1.4.
@@ -2043,12 +2059,20 @@ green numeric test:
    slab gate exercise chromatic extinction rather than a grey special case.
 6. **The whole estimator on `PathTracingIntegrator`** (G11), with the
    pure-absorber tests through both entry routes. Now the PT rasterizers —
-   what users actually run — produce the same numbers.
+   what users actually run — produce the same numbers, and **a fire scene
+   renders with physically correct spectral radiance end to end.** This is
+   the natural handback point for a human to try it in the product.
+7. **Pel preview projection** (§4.2/§4.3), *after* the spectral path is
+   proven and there is a real spectral image to measure divergence against.
+   Until it lands, the RGB rasterizers reject fire media with a clear
+   diagnostic rather than rendering something unvalidated. Gates are §7.1
+   step 2's Pel consistency gates — runs, grey identity, bounded divergence
+   — never an absolute radiance target.
 
 The rest of Phase A (the condensed constituent, chem bands, the φ-aware
 quadrature upgrade with its φ-root panel splitting, the auto-rasterizer rule)
 extends a pipeline that already renders and already has numeric gates. Steps
-1–6 are the critical path; the rest can be parallelized or deferred within
+1–6 are the critical path — **all spectral**; the rest can be parallelized or deferred within
 the phase. Note the ordering constraint that forced step 5 up: §7.1 step 2's
 own gate list requires the NM path, so "defer chromatic" cannot mean "defer
 past the estimator gates" — it means the φ-aware quadrature and the
@@ -2240,31 +2264,40 @@ engineering task waits on this list.**
    companion-proposal bias (~:4158) is fixed in Phase D. Gates: matches
    step 0's closed form on constant media; matches brute-force ray-marched
    reference on a varying-T slab, with and without positional lights (both
-   regimes above); **pure-absorber emissive slab (σ_s = 0) in Pel, NM, and
+   regimes above); **pure-absorber emissive slab (σ_s = 0) in NM and
    HWSS-requested modes, through both entry routes**; and the
-   **isothermal-slab absolute gate**, whose target is *measure-specific*: the
-   exact spectral form **L_λ = B_λ(T)·(1−e^{−τ_λ}) is the NM target** and is
-   not directly comparable to a Pel triple; the **Pel target is the
-   §4.2-projected slab value**, for a pure absorber
-   **L_c = (ε_c/σ̄_a,c)·(1−e^{−σ̄_a,c·L})**, which is approximate by
-   construction (§7.1 step 4's projection bias) and gated against its own
-   analytic value rather than against L_λ. **The two targets are different
-   numbers in different measures and are never compared to each other**;
-   what holds for a **grey** medium is that the Pel target equals the
-   *projection of* the spectral one, L_c = ∫R_c(λ)·L_λ dλ — **exactly, and
-   structurally**: the response mass K_c cancels between ε_c's integral and
-   σ̄_a,c's mean (§4.2), so the identity is a consequence of the projection
-   definitions rather than a numerical coincidence. A single grey reference
-   field is therefore checked twice — once per measure against its own
-   target — during the execution order's step-4 increment. **This gate is
-   load-bearing**: it is what would have caught defining σ̄ as an
-   unnormalized integral, which gives a grey medium a per-channel colour
-   cast of −7.9 %/+2.1 %/+4.0 % at σL = 1. Earlier phrasing ("the two coincide") was ambiguous and read
-   as if a Pel triple could be compared to a wavelength-valued radiance;
-   it cannot.
-   Both run through both entry routes with
-   `maxVolumeBounce=0`; and a forced >1024-null-proposal slab that must match
+   **isothermal-slab absolute gate L_λ = B_λ(T)·(1−e^{−τ_λ}) in NM** against
+   the pinned Planck kernel. **These are spectral gates. The Pel path is not
+   held to any of them** — see the split immediately below. All spectral
+   gates run through both entry routes with `maxVolumeBounce=0`; and a forced >1024-null-proposal slab that must match
    an uncapped reference. (CDF normalization is a Phase B gate — §7.2.7.)
+
+   **Pel gates are consistency gates, not radiometric ones** (r36). The Pel
+   path is a preview: its job is that fire scenes render in the RGB
+   rasterizers, not that they render *correctly*, and holding it to absolute
+   targets put a preview path on the critical path for three consecutive
+   design revisions without producing a line of transport code. Its gates
+   are, in full:
+   - **It runs.** A fire medium renders through both entry routes in Pel
+     without assert, NaN, negative extinction, or unbounded transmittance.
+   - **Structural self-consistency.** For a **grey** medium the Pel slab
+     value equals the projection of the spectral one,
+     L_c = ∫R_c(λ)·L_λ dλ. This is free — §4.2's mean/integral asymmetry
+     makes K_c cancel identically — and it is worth keeping precisely
+     because it is what caught the unnormalized-integral defect (a grey
+     medium with a −7.9 %/+2.1 %/+4.0 % colour cast). It is a *definitional*
+     check on the projection, not a claim about image fidelity.
+   - **Bounded divergence from spectral.** On the Phase-A reference scene,
+     the Pel render's channel means sit within a **recorded** tolerance of
+     the projection of the spectral render. The tolerance is *measured once
+     and pinned as a regression bound*, not derived from a fidelity
+     requirement — its purpose is to catch a Pel path that has silently
+     broken, not to certify one that is right.
+
+   There is deliberately **no absolute Pel radiance gate**. A Pel triple is
+   not a radiance, the projection bias is systematic and known (§7.1 step 4),
+   and predictive output is spectral-only (§12) — so an absolute Pel target
+   would be certifying a number the design does not claim.
 3. **Chemiluminescence estimator** (the §4.4 term — revision 3 defined the
    source but gave it no transport path, and in exactly the showcase
    regimes — flame base, methanol blue-only flame, zero-soot premixed
@@ -2314,8 +2347,9 @@ engineering task waits on this list.**
    the old correlated Gauss–Kronrod alias is a RED implementation.
 4. **Chromatic heterogeneous coefficients** (G4): real `GetCoefficientsNM`
    with λ-dependent σ_a/σ_s from §4.1/§4.3 — plus the exact §4.3
-   **`MakePhaseClosure(x,λ)` / `MakePhaseClosurePel(x)` API** (the Pel form
-   takes no preset — §4.3 pins R_c to the renderer's film response), with
+   **`MakePhaseClosure(x,λ)` API**. (The Pel twin `MakePhaseClosurePel(x)`
+   is specified in §4.3 and takes no preset, but it lands with the
+   **step-7 preview path**, not here — this step is spectral, r36.) With
    the returned immutable closure used by continuation, direct-light adapters,
    and guiding in both `PathTracingIntegrator` and `RayCaster`. This replaces,
    rather than supplements, the fixed `GetPhaseFunction()` path for fire
@@ -2328,10 +2362,11 @@ engineering task waits on this list.**
    there — but this is **deterministic spectral-projection bias, not merely
    variance** (external-review correction: exp(−σ̄L) ≠ the channel-averaged
    spectral transmittance, so the expected RGB result itself changes). The
-   RGB path is an explicitly **approximate preview path**: it renders with
-   a logged diagnostic, and predictive output is spectral-only — the
-   fidelity bar (§1) is claimed only for the spectral path (§12, RGB-path
-   decision). Majorants: conservative max-over-λ first — with the bound
+   RGB path is an explicitly **approximate preview path**: once step 7 lands
+   it renders with a logged diagnostic (before that it rejects fire media
+   outright), it carries consistency gates rather than radiometric ones
+   (§7.1 step 2), and predictive output is spectral-only — the fidelity bar
+   (§1) is claimed only for the spectral path (§12, RGB-path decision). Majorants: conservative max-over-λ first — with the bound
    including interpolation overshoot, and (once HWSS media land) bounding
    every wavelength in the carried bundle, not only the hero (§12,
    chromatic-majorants decision).
@@ -3994,10 +4029,20 @@ medium in Phase C.
   image. Projection uses R_c with its negative lobes; sampling importance
   uses the nonnegative CMF sum W = x̄+ȳ+z̄, which affects variance only
   (§4.3).
-- **RGB path** (was Q7; adopted) → kept as an explicitly approximate
-  preview path with a logged diagnostic; auto/final fire rendering routes
-  spectral. The correct framing is deterministic spectral-projection
-  *bias*, not variance (§7.1 step 4). Under velocity blur it evaluates the
+- **RGB path** (was Q7; adopted, hardened r36) → **spectral is the target;
+  Pel is preview.** The correct framing is deterministic
+  spectral-projection *bias*, not variance (§7.1 step 4). Concretely, and
+  bindingly: every absolute radiometric gate is defined in NM; the Pel path
+  carries only consistency gates (§7.1 step 2); it is the last item on
+  Phase A's critical path and nothing may depend on it; until it lands the
+  RGB rasterizers reject fire media with a diagnostic rather than rendering
+  something unvalidated; and auto/final fire rendering routes spectral.
+  **Rationale from experience, not preference:** three consecutive design
+  revisions (r33–r35) were spent making the Pel projection defensible —
+  a phantom `band_preset`, a gamut-mapped conversion that is not a linear
+  functional, and coefficients projected as integrals instead of means —
+  each a real defect, none of them on the path to a physically correct
+  flame. A preview path earns preview-grade scrutiny. Under velocity blur it evaluates the
   nominal unblurred frame because scalarized tracking lacks the per-wavelength
   pure-DT reduction (§8).
 - **Wet smoke** → excluded from this arc. Predictive scope is dry soot carbon
