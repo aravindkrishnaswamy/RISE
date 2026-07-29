@@ -2617,14 +2617,9 @@ bool RayCaster::CastRayHWSS(
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		c[i] = 0;
 
-#ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
-		return false;
-#endif
-
-	// Check for participating medium BEFORE Russian roulette.
-	// CastRayNM performs its own RR internally, so we must not
-	// apply RR here and then again inside CastRayNM.
+	// Check for participating medium before recursion and Russian-roulette
+	// gates.  The per-wavelength fallback owns both gates and keeps a local
+	// fire-source score ahead of continuation termination.
 	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
 	if( pMedium )
 	{
@@ -2641,6 +2636,11 @@ bool RayCaster::CastRayHWSS(
 		}
 		return anyHit;
 	}
+
+#ifdef ENABLE_MAX_RECURSION
+	if( rs.depth > nMaxRecursions )
+		return false;
+#endif
 
 	// Russian roulette using hero importance (applied only on the
 	// non-medium path — medium fallback delegates to CastRayNM

@@ -34,6 +34,7 @@
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/ISampler.h"
+#include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -310,6 +311,36 @@ namespace
 		}
 	}
 
+	void TestHWSSFallbackPrecedesDepthGate()
+	{
+		std::cout << "TestHWSSFallbackPrecedesDepthGate" << std::endl;
+		Fixture thick;
+		Check( thick.Initialize( "hwss_depth", 1.0, 1.0, 1000.0 ),
+			"HWSS fallback fire slab initializes" );
+		if( !thick.caster ) return;
+
+		RandomNumberGenerator rng( 0x4a775u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		const RasterizerState rast = { 0, 0 };
+		IRayCaster::RAY_STATE state;
+		state.volumeBounces = 64;
+		SampledWavelengths wavelengths = SampledWavelengths::SampleEquidistant(
+			0.2, 400.0, 700.0 );
+		IORStack iorStack( 1.0 );
+		Scalar values[SampledWavelengths::N] = { 0.0, 0.0, 0.0, 0.0 };
+		Scalar distance = 0.0;
+		const bool hasSource = thick.caster->CastRayHWSS(
+			rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			values, state, wavelengths, &distance, nullptr, iorStack );
+		Check( hasSource,
+			"HWSS-requested fire uses the per-NM fallback before the depth gate" );
+		for( unsigned int i = 0; i < SampledWavelengths::N; ++i ) {
+			Check( NearRelative( values[i], PlanckSpectralRadianceNM(
+				wavelengths.lambda[i], kTemperatureK ), 1e-13 ),
+				"HWSS fallback retains the per-wavelength thermal collision score" );
+		}
+	}
+
 	class DelayedDensityAccessor :
 		public virtual IVolumeAccessor,
 		public virtual Reference
@@ -487,6 +518,7 @@ int main()
 	TestAbsoluteSlabAndSceneUnits();
 	TestOpticallyThickDensityIsNotFloored();
 	TestThermalScorePrecedesContinuationRoulette();
+	TestHWSSFallbackPrecedesDepthGate();
 	TestDistanceSamplingContinuesPast1024Nulls();
 	TestSpatialAdditiveSourceSurvivesEscape();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
