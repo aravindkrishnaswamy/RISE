@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 19 — after internal review rounds 1–4,
-**six external expert review rounds**, and eight post-r11 implementation-review
+**Status:** DRAFT (revision 20 — after internal review rounds 1–4,
+**six external expert review rounds**, and nine post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r19; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r20; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -995,6 +995,11 @@ The most notorious practical trap in fire LES; specified accordingly:
   the active-set solve. Require both the normal projection residual and
   max_inflow|p̃+½ρ∞‖u‖²| ≤ p_bc,tol with
   p_bc,tol=ρ∞u_ref u_bc,tol. Lagging ‖u‖ from a prior iterate is forbidden.
+  In the discrete projections of §3.7, this p̃ symbol is the current projection
+  multiplier π_r (pressure impulse divided by that advance's Δt) paired with
+  the simultaneously solved u_r. In particular π₂ is the accepted step-average
+  pressure, not an endpoint field; the equation is the pinned discrete
+  total-head closure and makes no pointwise endpoint-pressure claim.
   Use u_bc,tol=ε_absL, the already-defined projection velocity
   tolerance: |u_n|≤u_bc,tol retains the previous accepted class, preventing a
   roundoff toggle; a repeated active-set state outside that band is a cycle and
@@ -1129,7 +1134,10 @@ The most notorious practical trap in fire LES; specified accordingly:
      > u=M†/ρ_g−(Δt/ρ_g)∇π,
 
      with §3.6's converged open-face active set. π₀ and π₁ are auxiliary stage
-     multipliers and discarded; π₂ is the accepted dynamic pressure p̃ⁿ⁺¹.
+     multipliers and discarded. π₂ is the pressure impulse divided by Δt for
+     the accepted Heun advance: a second-order approximation to the
+     **step-average dynamic pressure**
+     p̃_bar^{n+1/2}=Δt⁻¹∫_{t_n}^{t_{n+1}}p̃(t)dt, not endpoint p̃ⁿ⁺¹.
 
      - **R0/predictor:** coupled-project Mⁿ to u₀ at Qⁿ; assemble F₀=F(Qⁿ,u₀)
        and A₀=A(Qⁿ,u₀). Apply the shared FCT limiter to the full Euler face flux
@@ -1146,7 +1154,8 @@ The most notorious practical trap in fire LES; specified accordingly:
        > Mⁿ⁺¹†=ρ_g(Qⁿ)u₀+(Δt/2)(A₀+A₁).
 
        Finally coupled-project Mⁿ⁺¹† at Qⁿ⁺¹ to u₂ and store
-       Mⁿ⁺¹=ρ_g(Qⁿ⁺¹)u₂ and p̃ⁿ⁺¹=π₂. This final projection targets S_div
+       Mⁿ⁺¹=ρ_g(Qⁿ⁺¹)u₂ and p̃_bar^{n+1/2}=π₂. No endpoint pressure is stored
+       or inferred from this multiplier. This final projection targets S_div
        evaluated at Qⁿ⁺¹ with the same frozen average packet; the next step's R0
        reprojects against its newly built packet. Q* and Qⁿ⁺¹ are separately
        T/EOS-inverted and gated. The source appears once in each scalar formula,
@@ -1185,10 +1194,17 @@ The most notorious practical trap in fire LES; specified accordingly:
      M*† velocities. It separately asserts R0 and R1 residual convergence and
      formal order, then verifies S_div,commit against the combined accepted
      flux. Transport-only cases retain Heun's order; swapping the
-     named velocities or omitting π₂ is RED. A periodic Galilean fixture with
-     uniform nonzero velocity and spatially uniform condensation/evaporation
-     must preserve that velocity while gas mass changes; leaving
-     uS̄_ρ,phase out of A is its RED control.
+     named velocities or omitting π₂ is RED. Its analytic pressure comparison
+     uses the exact interval average, including a linearly time-varying gradient
+     whose endpoint differs by 2× from its average; interpreting π₂ as endpoint
+     is RED. A periodic Galilean phase-transfer fixture uses smooth zero-mean
+     condensation/evaporation, constructs a compatible zero-mean S_div and
+     analytic expansion velocity (for example S_div=S₀sin(kx),
+     u_exp=−(S₀/k)cos(kx)e_x), then adds a uniform boost U. The boosted and
+     unboosted solutions must differ by exactly U while gas mass changes
+     locally; leaving uS̄_ρ,phase out of A is its RED control. Spatially uniform
+     nonzero S_div on a periodic domain is explicitly invalid because
+     ∫Ω∇·u dV=0; that case must be rejected, not used as a preservation test.
 
   This source freezing is explicitly first-order in noncommuting local/transport
   operators; the existing Δt-halving gates must show first-order source-split
@@ -1245,7 +1261,8 @@ radiative loss):
   manufactured solution** — the S_div-from-discrete-updates gate. A nonzero
   variable-density manufactured momentum case simultaneously exercises
   conservative advection, dynamic pressure, buoyancy, viscous stress, and
-  nonzero S_div with observed second-order velocity/pressure convergence; a
+  nonzero S_div with observed second-order velocity and **step-average dynamic-
+  pressure** convergence; a
   separate linear-gradient fixture checks the pinned Vreman ν_sgs and its
   zero/rotation/laminar limits.
 - V3. Conservative transport has three independent cases: (a) uniform-scalar
@@ -1755,7 +1772,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r19)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r20)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -2488,8 +2505,9 @@ grid-sequence loading + per-frame majorant/CDF rebuild (G6), wired into the
 existing animation render workflow, plus the §8 manifest/preparation lifecycle
 and portable output-provenance plumbing through `FrameStore`, file encoders,
 AOVs, and animation/MOV finalization. This includes an audited Ed25519 verifier,
-CLI/job configuration for a signed qualification-key registry, registry
-version/revocation handling, and deterministic build/scene identity emitters;
+CLI/job configuration for an operator-owned signed qualification-key registry,
+durable anti-rollback epoch state, trusted-clock expiry/revocation handling, and
+deterministic build/scene identity emitters;
 private qualification keys never ship in the renderer or repository (fixture
 keys are marked test-only). Signature verification uses a pinned dependency
 and known-answer, altered-payload, wrong-key, revoked-key, and null-attestation
@@ -2701,10 +2719,24 @@ or invalid attestations are unconditional `producer_untrusted` for fidelity:
 the sequence may remain integrity-valid and usable only in explicitly requested
 preview. Predictive mode accepts `rise_simulation` or `qualified_external` only
 from a registry entry authorized for that source kind and producer-build ID;
-`heuristic_import` can never be promoted by a signature. Trust registries and
-revocation snapshots are themselves versioned signed records, never keys baked
-into a scene or self-signed manifests. Signature/key substitution and a
-self-hashed forged-qualified manifest are RED fixtures.
+`heuristic_import` can never be promoted by a signature.
+
+The registry is operator-owned state, never selected by a scene/manifest. Its
+root-signed canonical record contains `registry_epoch` (uint64, strictly
+monotonic), `issued_at`, `not_after`, the authorized key/build scopes, and all
+revocations. The operator profile pins the registry root key and durably stores
+the highest accepted `(registry_epoch,registry_record_id)`. Before predictive
+preflight, verify the root signature and trusted wall-clock validity, require an
+epoch at least the stored epoch, reject the same epoch with a different record
+ID, and atomically persist a higher accepted pair before launching workers. If
+durable state or a trustworthy clock is unavailable, predictive mode fails
+closed; preview records `producer_untrusted`. Root rotation requires a
+cross-signed higher-epoch registry. Thus replaying an older correctly signed
+snapshot cannot resurrect a revoked producer key/build. Signature/key
+substitution, self-hashed forged qualification, accept-N/revoke-at-N+1/replay-N,
+expired registry, and same-epoch-different-record are RED fixtures. Output
+provenance records the accepted epoch, registry record ID, and qualification key
+ID.
 
 Every tabulated/polynomial record has a **closed certified domain** over all of
 its arguments. Predictive simulation rejects the stage before accepting any
@@ -2809,7 +2841,7 @@ by stable `(manager_name,binding_kind,binding_owner)`—global binding uses owne
 `scene`, bounded binding uses the closed object's stable name—and contains
 sequence ID, selected base-frame index and whole-OpenVDB-file digest, exact
 record and producer-build IDs, qualification-attestation digest, trusted
-registry-record/key IDs (or explicit unattested nulls), effective blur
+registry epoch/record/key IDs (or explicit unattested nulls), effective blur
 state/fallback, and medium-local reasons. Sort entries
 lexicographically by the encoded key tuple and reject duplicate binding keys;
 there is no singular sequence slot and no undefined extra “channel hash.”
@@ -3196,11 +3228,20 @@ registry).
    The shared `PixelBasedRasterizerHelper` per-render/field order is fixed to:
    one main-thread nominal animator evaluation → prove/reject/nominal-hold every
    animator over the full path-time support → object-manager
-   `InvalidateSpatialStructure()` →
+   `InvalidateSpatialStructure()` **and** `RayCaster::InvalidateLightSamplers()` →
    controller media preparation/CDF swap →
    `RayCaster::AttachScene` geometry realization → object
    `PrepareForRendering`/TLAS rebuild → `SetSceneTime` photon/cache update →
-   explicit volume-emission/light-guide sampler rebuild → worker dispatch.
+   explicit volume-emission guide rebuild → worker dispatch.
+   `InvalidateLightSamplers()` is a new explicit control-plane dirty bit; on the
+   following same-pointer or new-pointer `AttachScene`, it forces the existing
+   complete `RebuildLightSamplers()` path (LuminaryManager, LightSampler, and
+   EnvironmentSampler) regardless of `Scene::GetLightTopologyGeneration()`, then
+   clears only after success. This unconditional baseline covers animated light
+   position/power, environment parameters, and emissive-material power whose
+   `RegenerateData()` calls do not currently bump scene light generation. The
+   later volume-emission guide rebuild is separate and consumes the prepared
+   medium/CDF generation; neither rebuild stands in for the other.
    The invalidation is mandatory after every animator evaluation in this
    baseline, before `PrepareForRendering`; an optimization may skip it only
    when the animator provides a proven “no object transform/bounds changed”
@@ -3227,6 +3268,11 @@ registry).
    snapshots and swept acceleration bounds land. Tests instrument the animator
    call count/thread ID and combine a moving occluder with a translating fire
    slab to prove no worker mutation or stale-TLAS visibility is possible.
+   Zero-exposure consecutive-frame tests animate, separately, a light's power
+   and position, environment power, and emissive-material power; each asserts
+   the unified sampler's probabilities/positions and rendered direct-light
+   expectation change at the nominal frame without reattaching a different
+   Scene pointer.
 4. **Tests are executables** (`tests/`), scenes under `scenes/Tests/Volumes/`;
    numeric gates, not eyeballs
    ([skills/write-highly-effective-tests.md](skills/write-highly-effective-tests.md)).
@@ -3889,3 +3935,12 @@ registry).
   replaced self-hash “authentication” with detached trusted qualification;
   added producer/renderer build identity and post-load scene-mutation identity;
   and made display derivatives explicitly non-predictive.
+- **r20 (2026-07-28):** after the ninth fresh P1-only review of committed r19
+  (four P1; transport/radiometry clean). CFD: classified the final projection
+  multiplier as step-average pressure rather than endpoint pressure, changed
+  pressure validation accordingly, and replaced the incompatible uniform
+  periodic phase-change gate with a zero-mean Galilean manufactured case.
+  Pipeline: made qualification-registry revocation anti-rollback and
+  time-validity fail-closed, and forced the complete existing light/environment/
+  luminary sampler rebuild after nominal animation independently of the volume
+  emission guide rebuild.
