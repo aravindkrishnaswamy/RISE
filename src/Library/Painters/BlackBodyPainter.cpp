@@ -15,6 +15,7 @@
 #include "BlackBodyPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/PlanckRadiance.h"
 #include "../Utilities/PiecewiseLinearFunction.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -25,22 +26,13 @@ static const Scalar NM_to_M = 1e-9;			// Convert an expression in nanometers to 
 
 Scalar BlackBodyPainter::IntensityForWavelength( const Scalar T, const Scalar lambda )
 {
-	static const Scalar speed_of_light = 2.99792458e8;
-	static const Scalar planck_constant = 6.6260755e-34;
-	static const Scalar boltzmann_constant = 1.380658e-23;
-
-	static const Scalar sqr_c = speed_of_light*speed_of_light;
-
-	// Planck's radiation function
-	// From "Introduction to Classical and Modern Optics" Meyer-Ardent, Jurgen R.
-
-	static const Scalar C1 = TWO_PI * planck_constant * sqr_c;
-	static const Scalar C2 = (planck_constant * speed_of_light) / boltzmann_constant;
-
-	const Scalar first = C1 / (pow( lambda, 5.0 ) );
-	const Scalar second = 1.0 / (exp(C2/(lambda*T)) - 1.0);
-
-	return first * second;
+	// The painter's historical spectral convention is hemispherical exitance
+	// per metre of wavelength. The shared fire kernel is radiance per nm, so
+	// keep both the pi angular projection and wavelength-unit conversion here
+	// at the painter boundary.
+	static const Scalar perNanometreToPerMetre = 1e9;
+	return PI * perNanometreToPerMetre *
+		PlanckSpectralRadianceNM( lambda / NM_to_M, T );
 }
 
 Scalar BlackBodyPainter::TotalRadiationOutput( const Scalar T )

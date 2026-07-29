@@ -36,8 +36,8 @@ namespace RISE
 			const unsigned int		numfreq; 
 			const bool				normalize;
 
-			// Given temperature and lambda, gives the intensity
-			// Uses Planck's radiation formula shown above
+			// Converts the shared per-nm radiance kernel to this painter's
+			// historical hemispherical-exitance-per-metre convention.
 			static Scalar IntensityForWavelength( const Scalar T, const Scalar lambda );
 
 			// Given tempierature, gives the total radiation output

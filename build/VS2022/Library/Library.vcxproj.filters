@@ -273,6 +273,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Optics.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -1234,6 +1237,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h">

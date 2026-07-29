@@ -764,6 +764,8 @@
 		F24B74382F52A632008304C4 /* MRUCache.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2D069C42900069C9E5 /* MRUCache.h */; };
 		F24B74392F52A632008304C4 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F24B743A2F52A632008304C4 /* Optics.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000002 /* PlanckRadiance.h in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
 		F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F24B743D2F52A632008304C4 /* PEL.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -1411,6 +1413,8 @@
 		F27F0C86069C42910069C9E5 /* MRUCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2D069C42900069C9E5 /* MRUCache.h */; };
 		F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F27F0C88069C42910069C9E5 /* Optics.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000004 /* PlanckRadiance.h in Headers */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
 		F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F27F0C8B069C42910069C9E5 /* PEL.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -2597,6 +2601,8 @@
 		F27F0A2D069C42900069C9E5 /* MRUCache.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MRUCache.h; sourceTree = "<group>"; };
 		F27F0A2E069C42900069C9E5 /* Optics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Optics.cpp; sourceTree = "<group>"; };
 		F27F0A2F069C42900069C9E5 /* Optics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Optics.h; sourceTree = "<group>"; };
+		FA51000131AA000100000005 /* PlanckRadiance.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PlanckRadiance.cpp; sourceTree = "<group>"; };
+		FA51000131AA000100000006 /* PlanckRadiance.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PlanckRadiance.h; sourceTree = "<group>"; };
 		F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OrthonormalBasis3D.cpp; sourceTree = "<group>"; };
 		F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OrthonormalBasis3D.h; sourceTree = "<group>"; };
 		F27F0A32069C42900069C9E5 /* PEL.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PEL.h; sourceTree = "<group>"; };
@@ -4046,6 +4052,8 @@
 				F27F0A2D069C42900069C9E5 /* MRUCache.h */,
 				F27F0A2E069C42900069C9E5 /* Optics.cpp */,
 				F27F0A2F069C42900069C9E5 /* Optics.h */,
+				FA51000131AA000100000005 /* PlanckRadiance.cpp */,
+				FA51000131AA000100000006 /* PlanckRadiance.h */,
 				F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */,
 				F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */,
 				F27F0A32069C42900069C9E5 /* PEL.h */,
@@ -4842,6 +4850,7 @@
 				F27F0C85069C42910069C9E5 /* MersenneTwister.h in Headers */,
 				F27F0C86069C42910069C9E5 /* MRUCache.h in Headers */,
 				F27F0C88069C42910069C9E5 /* Optics.h in Headers */,
+				FA51000131AA000100000004 /* PlanckRadiance.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
 				F27F0C8B069C42910069C9E5 /* PEL.h in Headers */,
 				F27F0C8C069C42910069C9E5 /* PiecewiseLinearFunction.h in Headers */,
@@ -5327,6 +5336,7 @@
 				F27F0C82069C42910069C9E5 /* MemoryBuffer.cpp in Sources */,
 				F27F0C84069C42910069C9E5 /* MersenneTwister.cpp in Sources */,
 				F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */,
+				FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
@@ -6227,6 +6237,8 @@
 				F24B74382F52A632008304C4 /* MRUCache.h in Sources */,
 				F24B74392F52A632008304C4 /* Optics.cpp in Sources */,
 				F24B743A2F52A632008304C4 /* Optics.h in Sources */,
+				FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */,
+				FA51000131AA000100000002 /* PlanckRadiance.h in Sources */,
 				F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */,
 				F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */,
 				F24B743D2F52A632008304C4 /* PEL.h in Sources */,
