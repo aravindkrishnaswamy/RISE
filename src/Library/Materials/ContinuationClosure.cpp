@@ -102,7 +102,11 @@ namespace
 		const ClosureFrame& frame, const Point2& xi )
 	{
 		OrthonormalBasis3D basis = frame.ri.onb;
-		if( Vector3Ops::Dot(frame.ri.ray.Dir(),frame.ri.onb.w()) > NEARZERO ) {
+		// The material's sampling frame has already resolved the side of the
+		// surface.  IsotropicPhong keys that decision on the geometric normal,
+		// while Lambertian/Oren-Nayar use the shading-normal predicate.  Reusing
+		// frame.normal keeps the sampled law identical to BasePdf in both cases.
+		if( Vector3Ops::Dot(basis.w(),frame.normal) < 0.0 ) {
 			basis.FlipW();
 		}
 		return GeometricUtilities::CreateDiffuseVector(basis,xi);

@@ -82,12 +82,12 @@ namespace RISE
 			const IPhaseFunction* Get() const { return m_pPhase; }
 		};
 
-		/// Closed preflight table that Phase B must consult before asking a medium
-		/// for an NM continuation closure.  It checks the exact dynamic-type row
-		/// and the phase parameters already available on that instance.  It does
-		/// not claim that the Phase-B continuation factory/availability record has
-		/// already been constructed: Phase B must add and call that
-		/// default-unsupported factory after this gate before enabling competition.
+			/// Closed preflight table that Phase B must consult before asking a medium
+			/// for an NM continuation closure.  It checks the exact dynamic-type row
+			/// and the phase parameters already available on that instance.  Preflight
+			/// does not create or retain a closure; callers invoke the existing
+			/// default-unsupported factory only after this gate succeeds and retain
+			/// that one immutable instance through NEE and continuation.
 		/// Derived and plugin types remain default-denied even when they inherit an
 		/// eligible built-in.
 		bool IsContinuationPhaseClosureNMPreflightAllowlisted( const IMedium& medium );

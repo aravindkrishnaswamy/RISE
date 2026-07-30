@@ -112,6 +112,21 @@ namespace
 		bool HasPerChannelVariation() const override { return variationHint; }
 	};
 
+	class FixedSampler final : public ISampler
+	{
+	public:
+		Scalar Get1D() override { return 0.0; }
+		Point2 Get2D() override { return Point2(0.0,0.0); }
+	};
+
+	const ScatteredRay* FindDiffuseRay( const ScatteredRayContainer& rays )
+	{
+		for( unsigned int i=0; i<rays.Count(); ++i ) {
+			if( rays[i].type==ScatteredRay::eRayDiffuse ) return &rays[i];
+		}
+		return 0;
+	}
+
 	void TestR42AvailabilityReductionAndCaps()
 	{
 		const unsigned int all = eContinuationLobeDiffuse |
@@ -626,6 +641,74 @@ namespace
 		safe_release(exponent); safe_release(roughness);
 	}
 
+	void TestPhongTiltedNormalSamplingIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(1.0));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.0));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		rd->addref(); rs->addref(); exponent->addref();
+		IsotropicPhongMaterial* material =
+			new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		material->addref();
+
+		const Vector3 shadingNormal =
+			Vector3Ops::Normalize(Vector3(0.8,0.0,0.6));
+		const Vector3 rayDirection =
+			Vector3Ops::Normalize(Vector3(1.0,0.0,-0.1));
+		const RayIntersectionGeometric ri =
+			MakeIntersection(shadingNormal,rayDirection);
+		Check(Vector3Ops::Dot(rayDirection,ri.vGeomNormal)<0.0 &&
+			Vector3Ops::Dot(rayDirection,ri.onb.w())>0.0,
+			"tilted-normal fixture makes geometric and shading side predicates disagree");
+
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* pel =
+			material->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* nm =
+			material->MakeContinuationClosureNM(ri,ior,550.0,state);
+		ContinuationSamplePel pelSample;
+		ContinuationSampleNM nmSample;
+		const bool pelSelected = pel && pel->SampleSubset(
+			eContinuationLobeDiffuse,0.0,Point2(0.0,0.0),0.0,false,pelSample);
+		const bool nmSelected = nm && nm->SampleSubset(
+			eContinuationLobeDiffuse,0.0,Point2(0.0,0.0),0.0,false,nmSample);
+
+		FixedSampler pelSampler;
+		FixedSampler nmSampler;
+		ScatteredRayContainer pelRays;
+		ScatteredRayContainer nmRays;
+		material->GetSPF()->Scatter(ri,pelSampler,pelRays,ior);
+		material->GetSPF()->ScatterNM(ri,nmSampler,550.0,nmRays,ior);
+		const ScatteredRay* pelDiffuse = FindDiffuseRay(pelRays);
+		const ScatteredRay* nmDiffuse = FindDiffuseRay(nmRays);
+
+		Check(pelSelected && pelSample.horizonPassed && pelDiffuse,
+			"Pel tilted-normal closure and SPF both produce the diffuse continuation");
+		Check(nmSelected && nmSample.horizonPassed && nmDiffuse,
+			"NM tilted-normal closure and SPF both produce the diffuse continuation");
+		if( pelSelected && pelDiffuse ) {
+			CheckNear(Vector3Ops::Magnitude(pelSample.ray.Dir()-pelDiffuse->ray.Dir()),
+				0.0,1e-15,
+				"Pel tilted-normal closure samples the exact SPF diffuse direction");
+			CheckNear(pelSample.pdf,pel->PdfMarginal(
+				eContinuationLobeDiffuse,pelSample.ray.Dir()),1e-15,
+				"Pel tilted-normal sampled direction matches its recorded marginal");
+		}
+		if( nmSelected && nmDiffuse ) {
+			CheckNear(Vector3Ops::Magnitude(nmSample.ray.Dir()-nmDiffuse->ray.Dir()),
+				0.0,1e-15,
+				"NM tilted-normal closure samples the exact SPF diffuse direction");
+			CheckNear(nmSample.pdf,nm->PdfMarginal(
+				eContinuationLobeDiffuse,nmSample.ray.Dir()),1e-15,
+				"NM tilted-normal sampled direction matches its recorded marginal");
+		}
+
+		safe_release(pel); safe_release(nm);
+		safe_release(material);
+		safe_release(rd); safe_release(rs); safe_release(exponent);
+	}
+
 	void TestDeterministicZeroContinuationGate()
 	{
 		const RayIntersectionGeometric ri = MakeIntersection();
@@ -730,6 +813,7 @@ int main()
 	TestHorizonNullAndRouletteMass();
 	TestSingleDiffuseMassAndBRDFGrazingPredicates();
 	TestMaterialResponseAndMixedSamplingIdentity();
+	TestPhongTiltedNormalSamplingIdentity();
 	TestDeterministicZeroContinuationGate();
 	TestInvalidParametersFailClosed();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
