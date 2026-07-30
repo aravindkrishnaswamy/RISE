@@ -590,6 +590,13 @@ namespace
 				"tiny-bbox density still equals its bin probability per volume" );
 		}
 		safe_release( medium );
+
+		IMedium* unrepresentable = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0),
+			Point3(1.0e-106,1.0e-106,1.0e-106), 1.0 );
+		Check( unrepresentable == nullptr,
+			"medium construction rejects a bbox whose q_v per-volume density overflows" );
+		safe_release( unrepresentable );
 	}
 
 	void TestSupportInflationAtBoundary()
@@ -645,6 +652,103 @@ namespace
 			"interior_medium fire_a\ncasts_shadows FALSE\n}\n"
 			"standard_object\n{\nname box_b\ngeometry box_geom\nmaterial none\nposition 2 0 0\n"
 			"interior_medium fire_b\ncasts_shadows FALSE\n}\n";
+	}
+
+	std::string TwoScaleMediumScene(
+		const char* sideA,
+		const char* sideB
+		)
+	{
+		std::ostringstream scene;
+		scene <<
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue 0.2\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire_a\nchannel_carbon painter carbon\n"
+			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
+			"bbox_min 0 0 0\nbbox_max " << sideA << " " << sideA << " " << sideA <<
+			"\nsoot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
+			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\nsmoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire_b\nchannel_carbon painter carbon\n"
+			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
+			"bbox_min 0 0 0\nbbox_max " << sideB << " " << sideB << " " << sideB <<
+			"\nsoot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
+			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\nsmoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"box_geometry\n{\nname box_geom\nwidth 1\nheight 1\ndepth 1\n}\n"
+			"standard_object\n{\nname box_a\ngeometry box_geom\nmaterial none\nposition -2 0 0\n"
+			"interior_medium fire_a\ncasts_shadows FALSE\n}\n"
+			"standard_object\n{\nname box_b\ngeometry box_geom\nmaterial none\nposition 2 0 0\n"
+			"interior_medium fire_b\ncasts_shadows FALSE\n}\n";
+		return scene.str();
+	}
+
+	const LightSampler* PrepareLightSampler(
+		IJobPriv* job,
+		IRayCaster*& caster
+		)
+	{
+		caster = nullptr;
+		if( !job ) return nullptr;
+		IShader* shader = job->GetShaders()->GetItem("global");
+		if( !shader || !RISE_API_CreateRayCaster(&caster,false,0,*shader,true) || !caster )
+			return nullptr;
+		caster->AttachScene( job->GetScene() );
+		const RayCaster* concrete = dynamic_cast<const RayCaster*>(caster);
+		return concrete ? concrete->GetLightSampler() : nullptr;
+	}
+
+	void TestScaleSafeCrossMediumNormalization()
+	{
+		std::cout << "TestScaleSafeCrossMediumNormalization" << std::endl;
+		IJobPriv* overflowJob = LoadScene( TwoScaleMediumScene("6e101","6e101") );
+		IRayCaster* overflowCaster = nullptr;
+		const LightSampler* overflowLights = PrepareLightSampler(
+			overflowJob, overflowCaster );
+		Check( overflowLights && overflowLights->GetVolumeEmissionMediumCount() == 2 &&
+			overflowLights->IsVolumeEmissionDistributionValid(),
+			"two finite W_m values remain selectable when their raw sum overflows" );
+		if( overflowLights ) {
+			RandomNumberGenerator rng( 0x5ca1eu );
+			IndependentSampler sampler( rng );
+			bool finiteHalfDensities = true;
+			for( unsigned int i = 0; i < 64; ++i ) {
+				VolumeEmissionSample sample;
+				finiteHalfDensities = finiteHalfDensities &&
+					overflowLights->SampleVolumeEmission(sampler,sample) &&
+					std::fabs(sample.mediumSelectionPdf-0.5) < 2e-15 &&
+					RISE::IsFiniteDouble(sample.pdf) && sample.pdf > 0.0;
+			}
+			Check( finiteHalfDensities,
+				"max-scaled cross-medium alias preserves the finite equal-weight ratio" );
+		}
+		safe_release( overflowCaster );
+		safe_release( overflowJob );
+
+		IJobPriv* rangeJob = LoadScene( TwoScaleMediumScene("1e50","1e-50") );
+		IRayCaster* rangeCaster = nullptr;
+		const LightSampler* rangeLights = PrepareLightSampler(rangeJob,rangeCaster);
+		const IObject* smallObject = rangeJob ?
+			rangeJob->GetScene()->GetObjects()->GetItem("box_b") : nullptr;
+		const IMedium* smallMedium = smallObject ? smallObject->GetInteriorMedium() : nullptr;
+		Check( rangeLights && rangeLights->IsVolumeEmissionDistributionValid() &&
+			smallMedium && rangeLights->VolumeEmissionPdf(
+				*smallMedium,Point3(5e-51,5e-51,5e-51)) > 0.0,
+			"a representable 1e-300 medium-selection ratio stays positive" );
+		safe_release( rangeCaster );
+		safe_release( rangeJob );
+
+		IJobPriv* rejectedJob = LoadScene( TwoScaleMediumScene("1e100","1e-100") );
+		IRayCaster* rejectedCaster = nullptr;
+		const LightSampler* rejectedLights = PrepareLightSampler(
+			rejectedJob,rejectedCaster );
+		RandomNumberGenerator rejectedRng( 0x5ca1fu );
+		IndependentSampler rejectedSampler( rejectedRng );
+		VolumeEmissionSample rejectedSample;
+		Check( rejectedLights && !rejectedLights->IsVolumeEmissionDistributionValid() &&
+			!rejectedLights->SampleVolumeEmission(rejectedSampler,rejectedSample),
+			"unrepresentable positive labeled ratio fails preparation instead of becoming zero" );
+		safe_release( rejectedCaster );
+		safe_release( rejectedJob );
 	}
 
 	void TestLabeledMultiMediumDensity()
@@ -938,6 +1042,7 @@ int main()
 	TestSceneUnitInvariantImportance();
 	TestTinyFiniteBBoxDensityFormulation();
 	TestSupportInflationAtBoundary();
+	TestScaleSafeCrossMediumNormalization();
 	TestLabeledMultiMediumDensity();
 	TestInactiveNestedLabelReturnsZero();
 	TestOpaqueGeometricVisibility();

@@ -209,6 +209,7 @@ namespace RISE
 			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
 			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
 			AliasTable					volumeEmissionAlias;	///< q_m^V proportional to W_m
+			bool						volumeEmissionDistributionValid;
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -484,6 +485,11 @@ namespace RISE
 			unsigned int GetVolumeEmissionMediumCount() const
 			{
 				return static_cast<unsigned int>( volumeEmissionMedia.size() );
+			}
+
+			bool IsVolumeEmissionDistributionValid() const
+			{
+				return volumeEmissionDistributionValid;
 			}
 
 			/// Returns the alias-table selection probability for a given

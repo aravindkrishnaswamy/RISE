@@ -481,6 +481,7 @@ LightSampler::LightSampler() :
   lightSampleRRThreshold( 0 ),
   bSceneHasObjectMedia( false ),
   bSceneHasObjectFireMedia( false ),
+  volumeEmissionDistributionValid( true ),
   pLightBVH( 0 ),
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
@@ -769,12 +770,41 @@ void LightSampler::Prepare(
 		scan.AddEmitter( globalMedium );
 		volumeEmissionMedia.swap( scan.emitters );
 	}
+	volumeEmissionDistributionValid = true;
 	std::vector<double> volumeWeights( volumeEmissionMedia.size(), 0.0 );
+	double maxVolumeWeight = 0.0;
 	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
 		volumeWeights[i] = static_cast<double>(
 			volumeEmissionMedia[i]->GetThermalEmissionImportance() );
+		if( !RISE::IsFiniteDouble(volumeWeights[i]) || volumeWeights[i] <= 0.0 ) {
+			volumeEmissionDistributionValid = false;
+		} else {
+			if( volumeWeights[i] > maxVolumeWeight ) maxVolumeWeight = volumeWeights[i];
+		}
 	}
-	volumeEmissionAlias.Build( volumeWeights );
+	if( volumeEmissionDistributionValid && !volumeWeights.empty() ) {
+		for( unsigned int i = 0; i < volumeWeights.size(); ++i ) {
+			volumeWeights[i] /= maxVolumeWeight;
+			if( volumeWeights[i] <= 0.0 ||
+				!RISE::IsFiniteDouble(volumeWeights[i]) ) {
+				volumeEmissionDistributionValid = false;
+			}
+		}
+	}
+	if( volumeEmissionDistributionValid ) {
+		volumeEmissionAlias.Build( volumeWeights );
+		for( unsigned int i = 0; i < volumeWeights.size(); ++i ) {
+			if( volumeEmissionAlias.Pdf(i) <= 0.0 ) {
+				volumeEmissionDistributionValid = false;
+				break;
+			}
+		}
+	}
+	if( !volumeEmissionDistributionValid ) {
+		GlobalLog()->PrintEasyError(
+			"LightSampler:: thermal-emission medium weights exceed the representable labeled-density range" );
+		volumeEmissionAlias.Build( std::vector<double>() );
+	}
 
 	// Compute scene bounding sphere from visible objects' world AABBs.
 	// Used by `SampleEnvLightEmission` to place the env-light emission

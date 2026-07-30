@@ -1604,6 +1604,9 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 		for( unsigned int i = 0; i < binCount; ++i ) {
 			m_emissionBinProbabilities[i] = m_emissionBinWeights[i] /
 				static_cast<double>(m_thermalEmissionImportance);
+			const Scalar density = static_cast<Scalar>(
+				m_emissionBinProbabilities[i] ) / m_emissionBinVolume;
+			if( !RISE::IsFiniteDouble(density) || density < 0.0 ) return false;
 		}
 	}
 	return true;
