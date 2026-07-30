@@ -273,7 +273,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 			i != enclosingObjects.end(); ++i ) {
 			const IMedium* pEnclosingMedium = (*i)->GetInteriorMedium();
 			// Retain medium-less enclosing objects as sentinels.  MediumTracking
-			// resolves an IOR-stack top without an interior medium to the world
+			// resolves an enclosure-stack top without an interior medium to the world
 			// medium, not to a lower object's medium; the sentinel preserves that
 			// state until its exit restores the next outer entry.
 			if( !stack.push( *i, pEnclosingMedium ) ) {

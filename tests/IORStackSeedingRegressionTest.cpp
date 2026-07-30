@@ -19,7 +19,7 @@
 //    the near surface (cosN < 0, "ignored") and exits at the far
 //    surface (cosN > 0, "counted").  The dedup didn't compensate
 //    because there's only one exit per object — so the sphere was
-//    erroneously pushed onto the seed's IOR stack.
+//    erroneously pushed onto the seed's optical and enclosure stacks.
 //
 //    Symptom: every BDPT-family eye / light subpath starting at the
 //    affected position treats its FIRST hit on the sphere as an exit
@@ -404,6 +404,12 @@ static void RunUnitTests()
 		IORStackSeeding::SeedFromPoint( stack, Point3(0, 0, 0), *pScene );
 		Check( stack.containsCurrent() && std::fabs(stack.top() - 1.5) < 1e-6,
 			"(C) seed-inside: stack contains sphere with ior=1.5" );
+		std::vector<const IObject*> enclosingObjects;
+		stack.AppendObjectStack( enclosingObjects );
+		Check( enclosingObjects.size() == 1 &&
+			stack.topObject() == enclosingObjects.back() &&
+			stack.DebugOpticalStackIsEnclosureSubsequence(),
+			"(C) seed-inside: optical and enclosure stacks are both seeded" );
 	}
 
 	// Case (D): outside sphere, +Z probe goes parallel (misses).

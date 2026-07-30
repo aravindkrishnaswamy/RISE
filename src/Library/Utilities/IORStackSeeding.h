@@ -1,17 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  IORStackSeeding.h - Seed a light / eye subpath's IORStack so that
-//    `containsCurrent()` reports the correct inside/outside state
-//    when the subpath's origin is physically inside one or more
-//    dielectric (or otherwise refractive) objects.
+//  IORStackSeeding.h - Seed a light / eye subpath's optical and enclosure
+//    stacks so that refraction and medium lookup both start from the
+//    correct nested-object state.
 //
 //  Why this exists
 //
 //    BDPT (and integrators that reuse its light subpaths, e.g. VCM)
-//    used to initialize the IOR stack to just the environment IOR
-//    and rely on the stack to reflect the ray's current medium.  That
-//    works for rays starting in free space — the stack grows as the
-//    ray enters dielectrics and shrinks as it exits them.  It FAILS
+//    used to initialize transport state to just the environment IOR
+//    and rely on later boundary hits to establish both logical stacks.
+//    That works for rays starting in free space — both stacks grow as
+//    the ray enters dielectrics and shrink as it exits them.  It FAILS
 //    silently for light subpaths whose origin is a luminaire sealed
 //    inside nested dielectrics, and for eye subpaths whose camera
 //    sits inside a dielectric (submerged camera, camera inside a
@@ -54,6 +53,7 @@
 //
 //    Objects with parity > 0 at the end are pushed in OUTERMOST-FIRST
 //    order (stack convention: bottom = outermost, top = innermost).
+//    The dielectric push operation seeds both logical stacks.
 //    Order is determined by each containing object's FIRST exit's
 //    probe-step index: smaller index = closer to seed = innermost.
 //    Insertion-sort by firstExitStep descending and push in that order.
@@ -97,9 +97,9 @@ namespace RISE
 {
 	namespace IORStackSeeding
 	{
-		/// Populate `stack` with the dielectric objects that physically
-		/// contain `pos`, so that subsequent scatters at the first
-		/// enclosing boundary see bFromInside==true.
+		/// Populate both logical stacks with the dielectric objects that
+		/// physically contain `pos`, so that subsequent refraction decisions
+		/// and innermost-exclusive medium lookup agree at the first boundary.
 		///
 		/// Safe to call with a camera position even when the camera is
 		/// not inside anything — the probe will simply find no exit

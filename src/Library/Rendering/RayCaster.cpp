@@ -844,7 +844,7 @@ bool RayCaster::CastRay(
 	// participating medium and handle absorption/scattering.
 	//
 	// Resolution order (matching Cycles volume stack):
-	//   1. Check innermost enclosing object (IOR stack top) for
+	//   1. Check innermost object on IORStack's enclosure state for
 	//      interior medium
 	//   2. Fall back to scene's global medium
 	//   3. No medium (vacuum) — skip medium transport entirely
