@@ -2108,6 +2108,19 @@ bool LightSampler::SampleVolumeEmissionPivots(
 	return true;
 }
 
+bool LightSampler::SampleVolumeEmissionVertex(
+	ISampler& sampler,
+	VolumeEmissionVertexSample& sample
+	) const
+{
+	sample = VolumeEmissionVertexSample();
+	sample.pivotsReady = SampleVolumeEmissionPivots( sampler, sample.pivots );
+	if( !sample.pivotsReady ) return false;
+	sample.endpointAttempted = true;
+	sample.endpointReady = SampleVolumeEmission( sampler, sample.endpoint );
+	return sample.endpointReady;
+}
+
 bool LightSampler::SampleEquiangularPivot(
 	const VolumeEmissionPivotState& pivots,
 	const Scalar xi,

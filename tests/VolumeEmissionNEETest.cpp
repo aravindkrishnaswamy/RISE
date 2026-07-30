@@ -1431,18 +1431,46 @@ namespace
 				mediumPower/totalPower, 2e-15,
 				"medium pivot pmf is normalized in the shared watt measure" );
 
-			FixedSampler sampler( {
+			const std::vector<Scalar> vertexDraws = {
 				0.11, 0.23, 0.31, 0.41, 0.53,
-				0.67, 0.73, 0.79, 0.83, 0.89, 0.97 } );
-			VolumeEmissionPivotState pivots;
-			const bool pivoted = lights->SampleVolumeEmissionPivots(sampler,pivots);
-			Check( pivoted && pivots.mediumPivots.size()==1,
+				0.67, 0.73, 0.79, 0.83, 0.89, 0.97 };
+			FixedSampler sampler( vertexDraws );
+			VolumeEmissionVertexSample vertexSample;
+			const bool sampledVertex = lights->SampleVolumeEmissionVertex(
+				sampler,vertexSample);
+			const VolumeEmissionPivotState& pivots = vertexSample.Pivots();
+			Check( sampledVertex && vertexSample.HasPivots() &&
+				pivots.mediumPivots.size()==1,
 				"pivot vector draws one unconditional point per emissive medium" );
-			VolumeEmissionSample endpoint;
-			const bool endpointSampled = lights->SampleVolumeEmission(sampler,endpoint);
-			Check( endpointSampled && sampler.Consumed()==11,
+			const VolumeEmissionSample& endpoint = vertexSample.Endpoint();
+			Check( vertexSample.WasEndpointAttempted() && vertexSample.HasEndpoint() &&
+				sampler.Consumed()==11,
 				"NEE endpoint consumes a distinct draw after the complete pivot vector" );
-			if( pivoted && endpointSampled ) {
+			if( sampledVertex ) {
+				FixedSampler expectedPivotSampler( std::vector<Scalar>(
+					vertexDraws.begin(), vertexDraws.begin()+5) );
+				VolumeEmissionPivotState expectedPivots;
+				FixedSampler expectedEndpointSampler( std::vector<Scalar>(
+					vertexDraws.begin()+5, vertexDraws.end()) );
+				VolumeEmissionSample expectedEndpoint;
+				const bool expectedPivotReady = lights->SampleVolumeEmissionPivots(
+					expectedPivotSampler,expectedPivots);
+				const bool expectedEndpointReady = lights->SampleVolumeEmission(
+					expectedEndpointSampler,expectedEndpoint);
+				Check( expectedPivotReady && expectedEndpointReady &&
+					expectedPivots.mediumPivots.size()==1,
+					"fixed draw ranges independently prepare the expected U and Y" );
+				if( expectedPivotReady && expectedEndpointReady &&
+					expectedPivots.mediumPivots.size()==1 ) {
+					const Vector3 pivotError = Vector3Ops::mkVector3(
+						pivots.mediumPivots[0], expectedPivots.mediumPivots[0] );
+					const Vector3 endpointError = Vector3Ops::mkVector3(
+						endpoint.point, expectedEndpoint.point );
+					Check( Vector3Ops::Magnitude(pivotError) == 0.0 &&
+						Vector3Ops::Magnitude(endpointError) == 0.0 &&
+						endpoint.pdf == expectedEndpoint.pdf,
+						"vertex sampling assigns the first five draws to U and the final six to Y" );
+				}
 				const Vector3 delta = Vector3Ops::mkVector3(
 					endpoint.point, pivots.mediumPivots[0] );
 				Check( Vector3Ops::Magnitude(delta) > 1e-12,

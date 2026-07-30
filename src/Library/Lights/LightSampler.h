@@ -197,6 +197,32 @@ namespace RISE
 			std::vector<Point3> mediumPivots;
 		};
 
+		/// One vertex's shared thermal-volume auxiliary state.  LightSampler
+		/// constructs it in the pinned order -- the complete pivot vector U
+		/// first, then the independent labeled endpoint Y -- and consumers get
+		/// read-only access so NEE and the outgoing march cannot silently mutate
+		/// or regenerate either draw.
+		class VolumeEmissionVertexSample
+		{
+		public:
+			VolumeEmissionVertexSample() : pivotsReady(false), endpointAttempted(false),
+			  endpointReady(false) {}
+
+			bool HasPivots() const { return pivotsReady; }
+			bool WasEndpointAttempted() const { return endpointAttempted; }
+			bool HasEndpoint() const { return endpointReady; }
+			const VolumeEmissionPivotState& Pivots() const { return pivots; }
+			const VolumeEmissionSample& Endpoint() const { return endpoint; }
+
+		private:
+			friend class LightSampler;
+			VolumeEmissionPivotState pivots;
+			VolumeEmissionSample endpoint;
+			bool pivotsReady;
+			bool endpointAttempted;
+			bool endpointReady;
+		};
+
 		class LightSampler : public virtual Reference
 		{
 		protected:
@@ -484,6 +510,14 @@ namespace RISE
 			bool SampleVolumeEmissionPivots(
 				ISampler& sampler,
 				VolumeEmissionPivotState& pivots
+				) const;
+
+			/// Draw the shared per-vertex auxiliary state in the required order:
+			/// every medium pivot U_m unconditionally precedes the independent
+			/// labeled volume-NEE endpoint Y.
+			bool SampleVolumeEmissionVertex(
+				ISampler& sampler,
+				VolumeEmissionVertexSample& sample
 				) const;
 
 			/// Select one equiangular pivot from the watt-dimensioned mixture.
