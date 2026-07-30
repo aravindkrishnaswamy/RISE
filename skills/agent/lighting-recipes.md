@@ -61,8 +61,25 @@ pinhole_camera
 
 uniformcolor_painter
 {
+	name	pnt_gray_a
+	color	0.82 0.83 0.86
+}
+
+uniformcolor_painter
+{
+	name	pnt_gray_b
+	color	0.35 0.37 0.42
+}
+
+# View-angle colour shift instead of a flat grey -- a lit subject reads
+# its shading better than a plain matte ball.  Swap back to
+# uniformcolor_painter for a neutral subject.
+iridescent_painter
+{
 	name	pnt_gray
-	color	0.7 0.7 0.7
+	colora	pnt_gray_a
+	colorb	pnt_gray_b
+	bias	0.05
 }
 
 uniformcolor_painter
@@ -203,8 +220,27 @@ pinhole_camera
 
 uniformcolor_painter
 {
-	name	pnt_rust
+	name	pnt_rust_dark
+	color	0.25 0.08 0.04
+}
+
+uniformcolor_painter
+{
+	name	pnt_rust_bright
 	color	0.6 0.15 0.1
+}
+
+# Ridged/veiny turbulence reads as oxidation mottle -- a flat rust
+# colour is exactly the amateur-render tell procedural-textures warns
+# about.
+turbulence3d_painter
+{
+	name		pnt_rust
+	colora		pnt_rust_dark
+	colorb		pnt_rust_bright
+	octaves		4
+	persistence	0.6
+	scale		4.0 4.0 4.0
 }
 
 lambertian_material

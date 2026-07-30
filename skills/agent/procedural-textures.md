@@ -1,6 +1,8 @@
 # Procedural Textures
 > hook: Read when a surface should look like a real material -- wood, stone, marble, metal wear, water, cloth -- rather than a flat colour, or when picking a spatially-varying painter.
 
+On a bare build prompt, state a one-line design plan -- materials AND forms -- in the reply and proceed; do not ask about style.
+
 ## When a flat colour is the wrong answer
 
 `uniformcolor_painter` has ZERO spatial variation.  It is correct for

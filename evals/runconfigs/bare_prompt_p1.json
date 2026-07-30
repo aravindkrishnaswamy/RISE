@@ -1,0 +1,12 @@
+{
+  "//": "P1 (skill re-anchoring) measurement run -- same instrument as the baseline (gemini-only, see bare_prompt_baseline.json for the narrowing rationale), fresh runDir so the before/after delta is a clean directory diff against evals/runs/bare_prompt_baseline. Success bars: docs/agentic-redesign/73-creative-richness-design.md paragraph 6 -- scalar-pipe >=1/3 runs, advanced geometry >=2/3, painter_kinds floor >=2 every run, build_ambiguous_scene unmoved.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_p1"
+}
