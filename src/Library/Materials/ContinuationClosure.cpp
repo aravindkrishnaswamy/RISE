@@ -495,6 +495,19 @@ ContinuationAvailability RISE::Implementation::ResolveContinuationAvailability(
 	return result;
 }
 
+MediumContinuationAvailability
+RISE::Implementation::ResolveMediumContinuationAvailability(
+	const bool downstreamVertexAllowedByTotalDepth,
+	const unsigned int volumeBounces,
+	const StabilityConfig& config )
+{
+	MediumContinuationAvailability result;
+	result.marchAllowed = volumeBounces < config.maxVolumeBounce;
+	result.vertexAllowed = downstreamVertexAllowedByTotalDepth &&
+		result.marchAllowed;
+	return result;
+}
+
 bool RISE::Implementation::IsExactSupportedContinuationMaterial(
 	const IMaterial* material )
 {

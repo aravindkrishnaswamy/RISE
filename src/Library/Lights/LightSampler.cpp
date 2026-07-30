@@ -2525,6 +2525,66 @@ Scalar LightSampler::EvaluateVolumeDirectLightingFromClosureNM(
 		(distance*distance*endpoint.pdf);
 }
 
+Scalar LightSampler::EvaluateVolumeDirectLightingFromPhaseClosureNM(
+	const Point3& scatterPoint,
+	const Vector3& incomingDirection,
+	const IPhaseFunction& phaseClosure,
+	const MediumContinuationAvailability& availability,
+	const Scalar rouletteSurvivalProbability,
+	const Scalar nm,
+	const VolumeEmissionVertexSample& vertexSample,
+	const IMedium* pMedium,
+	const IObject* pMediumObject,
+	const IORStack* pMediumStack
+	) const
+{
+	if( !vertexSample.HasPivots() || !vertexSample.WasEndpointAttempted() ||
+		!vertexSample.HasEndpoint() ) return 0.0;
+	const VolumeEmissionSample& endpoint = vertexSample.Endpoint();
+	if( !endpoint.pMedium || !RISE::IsFiniteDouble(endpoint.pdf) ||
+		endpoint.pdf <= 0.0 ) return 0.0;
+	Vector3 direction = Vector3Ops::mkVector3(endpoint.point,scatterPoint);
+	const Scalar distance = Vector3Ops::NormalizeMag(direction);
+	if( !RISE::IsFiniteDouble(distance) || distance <= 0.0 ) return 0.0;
+	const Scalar phaseResponse = phaseClosure.Evaluate(
+		incomingDirection,direction);
+	if( !RISE::IsFiniteDouble(phaseResponse) || phaseResponse <= 0.0 ) return 0.0;
+
+	Scalar responseMarch = 0.0;
+	Scalar responseDirectOnly = phaseResponse;
+	Scalar directionPdf = 0.0;
+	if( availability.marchAllowed ) {
+		responseMarch = phaseResponse;
+		responseDirectOnly = 0.0;
+		const Scalar phasePdf = phaseClosure.Pdf(incomingDirection,direction);
+		const bool terminalSourceOnly = availability.vertexAllowed !=
+			availability.marchAllowed;
+		if( terminalSourceOnly ) {
+			directionPdf = phasePdf;
+		} else if( RISE::IsFiniteDouble(rouletteSurvivalProbability) &&
+			rouletteSurvivalProbability >= 0.0 &&
+			rouletteSurvivalProbability <= 1.0 ) {
+			directionPdf = phasePdf*rouletteSurvivalProbability;
+		}
+	}
+
+	Scalar transmittance = 0.0;
+	const IMedium* endpointMedium = 0;
+	MISWeights::LogDensity marchDensity;
+	if( !EvaluateVolumeEmissionConnectionNM(
+		Ray(scatterPoint,direction),distance,pMedium,pMediumObject,pMediumStack,
+		nm,vertexSample.Pivots(),directionPdf,transmittance,&endpointMedium,
+		marchDensity) ) return 0.0;
+	if( endpointMedium != endpoint.pMedium || transmittance <= 0.0 ) return 0.0;
+	const Scalar emission = endpoint.pMedium->GetThermalEmissionNM(
+		endpoint.point,nm);
+	if( emission <= 0.0 ) return 0.0;
+	const Scalar neeWeight = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+		MISWeights::MakeLogDensity(endpoint.pdf),marchDensity);
+	return (responseMarch*neeWeight+responseDirectOnly)*transmittance*emission/
+		(distance*distance*endpoint.pdf);
+}
+
 Scalar LightSampler::EvaluateDirectLightingNM(
 	const RayIntersectionGeometric& ri,
 	const IBSDF& brdf,

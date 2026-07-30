@@ -1918,6 +1918,97 @@ namespace
 		safe_release( job );
 	}
 
+	void TestMediumPhaseClosureMISPartition()
+	{
+		std::cout << "TestMediumPhaseClosureMISPartition" << std::endl;
+		IJobPriv* job = LoadScene( GlobalMediumScene(false) );
+		IRayCaster* caster = nullptr;
+		const LightSampler* lights = PrepareLightSampler(job,caster);
+		const IMedium* fire = job ? job->GetScene()->GetGlobalMedium() : nullptr;
+		const Point3 scatterPoint(0,0,-0.75);
+		const Scalar nm = 550.0;
+		const IPhaseFunction* phase = fire ?
+			fire->MakeContinuationPhaseClosureNM(scatterPoint,nm) : nullptr;
+		Check( lights && fire && phase,
+			"medium phase-closure MIS fixture prepares retained fire closure" );
+		if( lights && fire && phase ) {
+			FixedSampler sampler( {
+				0.19,0.27,0.37,0.49,0.57,
+				0.63,0.69,0.77,0.81,0.91,0.95 } );
+			VolumeEmissionVertexSample vertex;
+			Check( lights->SampleVolumeEmissionVertex(sampler,vertex),
+				"medium phase-closure MIS draws shared U and independent Y" );
+			if( vertex.HasEndpoint() ) {
+				const VolumeEmissionSample& endpoint = vertex.Endpoint();
+				const Vector3 incomingDirection(0,0,1);
+				Vector3 direction = Vector3Ops::mkVector3(
+					endpoint.point,scatterPoint);
+				const Scalar distance = Vector3Ops::NormalizeMag(direction);
+				const Scalar phasePdf = phase->Pdf(incomingDirection,direction);
+				const Scalar response = phase->Evaluate(incomingDirection,direction);
+				const Scalar rrSurvival = 0.25;
+				Scalar reachTr = 0.0;
+				const IMedium* reachEndpoint = nullptr;
+				MISWeights::LogDensity reachDensity;
+				lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(scatterPoint,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),phasePdf*rrSurvival,reachTr,
+					&reachEndpoint,reachDensity);
+				const Scalar reachWeight =
+					MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+						MISWeights::MakeLogDensity(endpoint.pdf),reachDensity);
+				const Scalar common = reachTr*endpoint.pMedium->GetThermalEmissionNM(
+					endpoint.point,nm)/(distance*distance*endpoint.pdf);
+				MediumContinuationAvailability nonterminal;
+				nonterminal.vertexAllowed = true;
+				nonterminal.marchAllowed = true;
+				const Scalar reachActual =
+					lights->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+						scatterPoint,incomingDirection,*phase,nonterminal,rrSurvival,
+						nm,vertex,fire,nullptr,nullptr);
+				Check( reachDensity.hasSupport && reachEndpoint==endpoint.pMedium &&
+					phasePdf > 0.0 && response > 0.0,
+					"nonterminal medium closure has phase-times-RR march support" );
+				CheckRelative( reachActual,common*response*reachWeight,2e-14,
+					"medium closure NEE uses phase response and RR-weighted reach density" );
+
+				Scalar terminalTr = 0.0;
+				const IMedium* terminalEndpoint = nullptr;
+				MISWeights::LogDensity terminalDensity;
+				lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(scatterPoint,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),phasePdf,terminalTr,
+					&terminalEndpoint,terminalDensity);
+				const Scalar terminalWeight =
+					MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+						MISWeights::MakeLogDensity(endpoint.pdf),terminalDensity);
+				MediumContinuationAvailability terminal;
+				terminal.vertexAllowed = false;
+				terminal.marchAllowed = true;
+				const Scalar terminalActual =
+					lights->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+						scatterPoint,incomingDirection,*phase,terminal,rrSurvival,
+						nm,vertex,fire,nullptr,nullptr);
+				Check( terminalDensity.hasSupport && terminalWeight < reachWeight &&
+					terminalActual < reachActual,
+					"terminal medium source segment omits ordinary roulette survival" );
+				CheckRelative( terminalActual,common*response*terminalWeight,2e-14,
+					"terminal medium NEE competes against roulette-free phase density" );
+
+				MediumContinuationAvailability capped;
+				const Scalar cappedActual =
+					lights->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+						scatterPoint,incomingDirection,*phase,capped,rrSurvival,
+						nm,vertex,fire,nullptr,nullptr);
+				CheckRelative( cappedActual,common*response,2e-14,
+					"volume-capped phase response is NEE-only at weight one" );
+			}
+		}
+		safe_release( phase );
+		safe_release( caster );
+		safe_release( job );
+	}
+
 	void TestStandaloneEstimatorFormula()
 	{
 		std::cout << "TestStandaloneEstimatorFormula" << std::endl;
@@ -2004,6 +2095,7 @@ int main()
 	TestOpaqueGeometricVisibility();
 	TestConnectionMarchDensityThroughNullBoundaries();
 	TestSurfaceClosureMISPartition();
+	TestMediumPhaseClosureMISPartition();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
 	return failed == 0 ? 0 : 1;

@@ -99,7 +99,9 @@ namespace RISE
 	class ILightPriv;
 	class IORStack;
 	class IContinuationClosureNM;
+	class IPhaseFunction;
 	struct ContinuationAvailability;
+	struct MediumContinuationAvailability;
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
@@ -629,6 +631,22 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IContinuationClosureNM& closure,
 				const ContinuationAvailability& availability,
+				Scalar nm,
+				const VolumeEmissionVertexSample& vertexSample,
+				const IMedium* pMedium,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			/// Medium-vertex sibling.  A retained wavelength-bound phase closure
+			/// supplies both response and direction density; the caller supplies
+			/// the exact ordinary-RR survival of that counterfactual continuation.
+			Scalar EvaluateVolumeDirectLightingFromPhaseClosureNM(
+				const Point3& scatterPoint,
+				const Vector3& incomingDirection,
+				const IPhaseFunction& phaseClosure,
+				const MediumContinuationAvailability& availability,
+				Scalar rouletteSurvivalProbability,
 				Scalar nm,
 				const VolumeEmissionVertexSample& vertexSample,
 				const IMedium* pMedium,

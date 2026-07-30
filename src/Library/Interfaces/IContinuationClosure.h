@@ -36,6 +36,15 @@ namespace RISE
 		ContinuationAvailability() : vertexMask(0), marchMask(0) {}
 	};
 
+	struct MediumContinuationAvailability
+	{
+		bool vertexAllowed;
+		bool marchAllowed;
+
+		MediumContinuationAvailability() :
+		  vertexAllowed(false), marchAllowed(false) {}
+	};
+
 	/// Path-local state captured before volume NEE consumes random numbers.
 	struct ContinuationPathState
 	{
@@ -151,6 +160,11 @@ namespace RISE
 			bool downstreamVertexAllowedByTotalDepth,
 			unsigned int diffuseBounces,
 			unsigned int glossyBounces,
+			const StabilityConfig& config );
+
+		MediumContinuationAvailability ResolveMediumContinuationAvailability(
+			bool downstreamVertexAllowedByTotalDepth,
+			unsigned int volumeBounces,
 			const StabilityConfig& config );
 
 		bool IsExactSupportedContinuationMaterial( const IMaterial* material );

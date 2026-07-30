@@ -158,6 +158,19 @@ namespace
 		Check( availability.vertexMask==eContinuationLobeNone &&
 			availability.marchMask==eContinuationLobeNone,
 			"per-type caps can make A_march empty" );
+
+		StabilityConfig mediumConfig;
+		MediumContinuationAvailability mediumAvailability =
+			ResolveMediumContinuationAvailability(true,0,mediumConfig);
+		Check( mediumAvailability.vertexAllowed && mediumAvailability.marchAllowed,
+			"non-terminal medium availability views are identical" );
+		mediumAvailability = ResolveMediumContinuationAvailability(false,0,mediumConfig);
+		Check( !mediumAvailability.vertexAllowed && mediumAvailability.marchAllowed,
+			"total-depth terminal preserves the medium source-only march" );
+		mediumConfig.maxVolumeBounce = 0;
+		mediumAvailability = ResolveMediumContinuationAvailability(false,0,mediumConfig);
+		Check( !mediumAvailability.vertexAllowed && !mediumAvailability.marchAllowed,
+			"volume per-type cap removes the medium lobe from both views" );
 	}
 
 	template<class Closure>
