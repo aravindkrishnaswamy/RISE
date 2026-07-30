@@ -192,6 +192,87 @@ enum ShadowBoundaryPolicy
 	eShadowBoundaryExactNullOnly
 };
 
+struct NoMarchProposalObserver
+{
+	bool RequiresGeometry() const { return false; }
+	bool Accumulate(
+		const IMedium*, const Ray&, const Scalar, const Scalar,
+		const bool, const bool ) { return true; }
+	void Blocked() {}
+};
+
+class VolumeMarchProposalObserverNM
+{
+public:
+	VolumeMarchProposalObserverNM(
+		const LightSampler& sampler,
+		const Scalar nm,
+		const VolumeEmissionPivotState& pivots,
+		const Scalar directionPdf ) :
+		sampler_( sampler ), nm_( nm ), pivots_( pivots ),
+		logDirection_( MISWeights::MakeLogDensity(directionPdf) ),
+		logBoundarySurvival_( 0.0 ), endpointSeen_( false ), supported_( true )
+	{}
+
+	bool RequiresGeometry() const { return true; }
+
+	bool Accumulate(
+		const IMedium* pMedium,
+		const Ray& ray,
+		const Scalar travelDistance,
+		const Scalar proposalMaxDist,
+		const bool surfaceBounded,
+		const bool endpointSegment )
+	{
+		if( !supported_ ) return true;
+		if( !pMedium ) {
+			if( endpointSegment ) supported_ = false;
+			return true;
+		}
+		const MISWeights::LogDensity distanceDensity =
+			sampler_.EvaluateVolumeEmissionDistanceLogDensityNM(
+				*pMedium,ray,proposalMaxDist,surfaceBounded,&pivots_,nm_,
+				travelDistance,endpointSegment);
+		if( !distanceDensity.hasSupport ) {
+			supported_ = false;
+			return true;
+		}
+		if( endpointSegment ) {
+			endpointSeen_ = true;
+			logEndpointDistance_ = distanceDensity;
+		} else {
+			logBoundarySurvival_ += distanceDensity.value;
+			if( !RISE::IsFiniteDouble(logBoundarySurvival_) ||
+				logBoundarySurvival_ > 0.0 ) supported_ = false;
+		}
+		return true;
+	}
+
+	void Blocked() { supported_ = false; }
+
+	MISWeights::LogDensity Finish( const Scalar endpointDistance ) const
+	{
+		if( !supported_ || !endpointSeen_ || !logDirection_.hasSupport ||
+			!logEndpointDistance_.hasSupport ||
+			!RISE::IsFiniteDouble(endpointDistance) || endpointDistance <= 0.0 ) {
+			return MISWeights::LogDensity();
+		}
+		return MISWeights::MakeLogDensityFromLogValue(
+			logDirection_.value + logBoundarySurvival_ +
+			logEndpointDistance_.value - 2.0*log(endpointDistance) );
+	}
+
+private:
+	const LightSampler& sampler_;
+	const Scalar nm_;
+	const VolumeEmissionPivotState& pivots_;
+	MISWeights::LogDensity logDirection_;
+	Scalar logBoundarySurvival_;
+	MISWeights::LogDensity logEndpointDistance_;
+	bool endpointSeen_;
+	bool supported_;
+};
+
 template<typename Evaluator>
 bool AccumulateShadowMediumSegment(
 	const Evaluator& evaluator,
@@ -218,7 +299,7 @@ bool AccumulateShadowMediumSegment(
 	return true;
 }
 
-template<typename Evaluator>
+template<typename Evaluator, typename MarchObserver>
 bool EvaluateShadowMediumTransmittanceImpl(
 	const Ray& ray,
 	const Scalar maxDist,
@@ -230,7 +311,8 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	typename Evaluator::Value& outTr,
 	const IORStack* pOriginStack,
 	const IMedium** pEndpointMedium,
-	const ShadowBoundaryPolicy boundaryPolicy = eShadowBoundaryIgnoreGeometry
+	const ShadowBoundaryPolicy boundaryPolicy,
+	MarchObserver& marchObserver
 	)
 {
 	typename Evaluator::Value Tr = evaluator.Identity();
@@ -251,7 +333,8 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	const IObjectManager* pObjects = pScene->GetObjects();
 
 	// Quick exit: no media anywhere
-	if( boundaryPolicy==eShadowBoundaryIgnoreGeometry &&
+	if( !marchObserver.RequiresGeometry() &&
+		boundaryPolicy==eShadowBoundaryIgnoreGeometry &&
 		!pOriginMedium && !pGlobalMedium && !bSceneHasObjectMedia ) {
 		outTr = Tr;
 		return true;
@@ -259,7 +342,8 @@ bool EvaluateShadowMediumTransmittanceImpl(
 
 	// Fast path: no per-object media in scene, just apply
 	// origin/global medium for the full distance.
-	if( boundaryPolicy==eShadowBoundaryIgnoreGeometry && !bSceneHasObjectMedia ) {
+	if( !marchObserver.RequiresGeometry() &&
+		boundaryPolicy==eShadowBoundaryIgnoreGeometry && !bSceneHasObjectMedia ) {
 		const IMedium* pMedium = pOriginMedium ? pOriginMedium : pGlobalMedium;
 		if( pMedium ) {
 			if( !AccumulateShadowMediumSegment(
@@ -314,6 +398,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	for( ;; )
 	{
 		if( !(segStart < maxDist) ) {
+			marchObserver.Blocked();
 			outTr = Tr;
 			if( pEndpointMedium ) {
 				*pEndpointMedium = stack.top() ? stack.top() : pFallbackMedium;
@@ -345,6 +430,9 @@ bool EvaluateShadowMediumTransmittanceImpl(
 				if( !AccumulateShadowMediumSegment(
 					evaluator, *pActive, segRay, remaining, Tr ) ) return false;
 			}
+			const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+			if( !marchObserver.Accumulate(
+				pActive,segRay,remaining,RISE_INFINITY,false,true) ) return false;
 			outTr = Tr;
 			if( pEndpointMedium ) *pEndpointMedium = pActive;
 			return true;
@@ -363,6 +451,11 @@ bool EvaluateShadowMediumTransmittanceImpl(
 				if( !AccumulateShadowMediumSegment(
 					evaluator, *pActive, segRay, remaining, Tr ) ) return false;
 			}
+			const Scalar proposalMaxDist = IsExactNullBoundaryMaterial(ri.pMaterial)
+				? ri.geometric.surfaceRange : ri.geometric.range;
+			const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+			if( !marchObserver.Accumulate(
+				pActive,segRay,remaining,proposalMaxDist,true,true) ) return false;
 			outTr = Tr;
 			if( pEndpointMedium ) *pEndpointMedium = pActive;
 			return true;
@@ -383,6 +476,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 			// shadow settings are deliberately irrelevant here: every other
 			// interface terminates the originating vertex's strategy family.
 			outTr = evaluator.Zero();
+			marchObserver.Blocked();
 			return true;
 		}
 
@@ -394,6 +488,9 @@ bool EvaluateShadowMediumTransmittanceImpl(
 			if( !AccumulateShadowMediumSegment(
 				evaluator, *pActive, segRay, segLen, Tr ) ) return false;
 		}
+		const Ray proposalRay( ray.PointAtLength( segStart ), ray.Dir() );
+		if( !marchObserver.Accumulate(
+			pActive,proposalRay,segLen,segLen,true,false) ) return false;
 
 		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
 		const Scalar rawFacing = Vector3Ops::Dot(
@@ -432,9 +529,11 @@ bool RISE::Implementation::EvaluateShadowMediumTransmittance(
 	const IORStack* pOriginStack
 	)
 {
+	NoMarchProposalObserver marchObserver;
 	return EvaluateShadowMediumTransmittanceImpl(
 		ray, maxDist, pOriginMedium, pOriginMediumObject, pScene,
-		bSceneHasObjectMedia, ShadowTransmittanceRGB(), outTr, pOriginStack, 0 );
+		bSceneHasObjectMedia, ShadowTransmittanceRGB(), outTr, pOriginStack, 0,
+		eShadowBoundaryIgnoreGeometry, marchObserver );
 }
 
 bool RISE::Implementation::EvaluateShadowMediumTransmittanceNM(
@@ -449,9 +548,11 @@ bool RISE::Implementation::EvaluateShadowMediumTransmittanceNM(
 	const IORStack* pOriginStack
 	)
 {
+	NoMarchProposalObserver marchObserver;
 	return EvaluateShadowMediumTransmittanceImpl(
 		ray, maxDist, pOriginMedium, pOriginMediumObject, pScene,
-		bSceneHasObjectMedia, ShadowTransmittanceNM( nm ), outTr, pOriginStack, 0 );
+		bSceneHasObjectMedia, ShadowTransmittanceNM( nm ), outTr, pOriginStack, 0,
+		eShadowBoundaryIgnoreGeometry, marchObserver );
 }
 
 static RISEPel EvalShadowTransmittance(
@@ -2192,6 +2293,123 @@ Scalar LightSampler::EquiangularDistancePdf(
 	return RISE::IsFiniteDouble(density) && density >= 0.0 ? density : 0.0;
 }
 
+static bool ResolveEquiangularSegmentInterval(
+	const IMedium& medium,
+	const Ray& ray,
+	const Scalar maxDist,
+	const bool surfaceBounded,
+	Scalar& tNear,
+	Scalar& tFar
+	)
+{
+	bool bounded = surfaceBounded;
+	tNear = 0.0;
+	tFar = maxDist;
+	Point3 bbMin, bbMax;
+	if( medium.GetBoundingBox(bbMin,bbMax) ) {
+		Scalar tEntry = 0.0;
+		Scalar tExit = maxDist;
+		const Scalar invX = fabs(ray.Dir().x) > 1e-20 ? 1.0/ray.Dir().x : 0.0;
+		const Scalar invY = fabs(ray.Dir().y) > 1e-20 ? 1.0/ray.Dir().y : 0.0;
+		const Scalar invZ = fabs(ray.Dir().z) > 1e-20 ? 1.0/ray.Dir().z : 0.0;
+		bool hit = true;
+		if( invX != 0.0 ) {
+			Scalar a = (bbMin.x-ray.origin.x)*invX;
+			Scalar b = (bbMax.x-ray.origin.x)*invX;
+			if( a > b ) { const Scalar swap = a; a = b; b = swap; }
+			tEntry = fmax(tEntry,a);
+			tExit = fmin(tExit,b);
+		} else if( ray.origin.x < bbMin.x || ray.origin.x > bbMax.x ) hit = false;
+		if( hit && invY != 0.0 ) {
+			Scalar a = (bbMin.y-ray.origin.y)*invY;
+			Scalar b = (bbMax.y-ray.origin.y)*invY;
+			if( a > b ) { const Scalar swap = a; a = b; b = swap; }
+			tEntry = fmax(tEntry,a);
+			tExit = fmin(tExit,b);
+		} else if( hit && (ray.origin.y < bbMin.y || ray.origin.y > bbMax.y) ) hit = false;
+		if( hit && invZ != 0.0 ) {
+			Scalar a = (bbMin.z-ray.origin.z)*invZ;
+			Scalar b = (bbMax.z-ray.origin.z)*invZ;
+			if( a > b ) { const Scalar swap = a; a = b; b = swap; }
+			tEntry = fmax(tEntry,a);
+			tExit = fmin(tExit,b);
+		} else if( hit && (ray.origin.z < bbMin.z || ray.origin.z > bbMax.z) ) hit = false;
+		if( hit && tEntry < tExit ) {
+			tNear = fmax(0.0,tEntry);
+			tFar = fmin(maxDist,tExit);
+			bounded = true;
+		}
+	}
+	return bounded && tFar > tNear;
+}
+
+MISWeights::LogDensity LightSampler::EvaluateVolumeEmissionDistanceLogDensityNM(
+	const IMedium& medium,
+	const Ray& ray,
+	const Scalar proposalMaxDist,
+	const bool surfaceBounded,
+	const VolumeEmissionPivotState* pivots,
+	const Scalar nm,
+	const Scalar eventDistance,
+	const bool scattered
+	) const
+{
+	if( !RISE::IsFiniteDouble(eventDistance) || eventDistance <= 0.0 ||
+		!RISE::IsFiniteDouble(proposalMaxDist) || proposalMaxDist <= 0.0 ||
+		eventDistance > proposalMaxDist ) return MISWeights::LogDensity();
+	const MISWeights::LogDensity deltaTracking =
+		MISWeights::MakeLogDensityFromLogValue(
+			medium.EvalLogDistancePdfNM(
+				ray,eventDistance,scattered,proposalMaxDist,nm) );
+	const bool hasSharedPivots = pivots &&
+		pivots->mediumPivots.size()==volumeEmissionMedia.size();
+	Scalar tNear = 0.0;
+	Scalar tFar = proposalMaxDist;
+	const bool useEquiangular = hasSharedPivots &&
+		equiangularPivotDistributionValid && equiangularPivotAlias.IsValid() &&
+		equiangularPivotAlias.Size() > 0 &&
+		ResolveEquiangularSegmentInterval(
+			medium,ray,proposalMaxDist,surfaceBounded,tNear,tFar);
+	if( !useEquiangular ) return deltaTracking;
+	if( !scattered ) {
+		return deltaTracking.hasSupport ? MISWeights::LogDensity(
+			true,deltaTracking.value-log(2.0)) : MISWeights::LogDensity();
+	}
+	const Scalar equiangularPdf = EquiangularDistancePdf(
+		*pivots,ray,tNear,tFar,true,eventDistance);
+	return MISWeights::EqualMixtureLogDensity(
+		deltaTracking,MISWeights::MakeLogDensity(equiangularPdf));
+}
+
+bool LightSampler::EvaluateVolumeEmissionConnectionNM(
+	const Ray& ray,
+	const Scalar endpointDistance,
+	const IMedium* pOriginMedium,
+	const IObject* pOriginMediumObject,
+	const IORStack* pOriginStack,
+	const Scalar nm,
+	const VolumeEmissionPivotState& pivots,
+	const Scalar directionPdf,
+	Scalar& outTransmittance,
+	const IMedium** pEndpointMedium,
+	MISWeights::LogDensity& outMarchDensity
+	) const
+{
+	outTransmittance = 0.0;
+	outMarchDensity = MISWeights::LogDensity();
+	if( pEndpointMedium ) *pEndpointMedium = 0;
+	if( !pPreparedScene || !RISE::IsFiniteDouble(endpointDistance) ||
+		endpointDistance <= 0.0 ) return false;
+	VolumeMarchProposalObserverNM marchObserver(
+		*this,nm,pivots,directionPdf);
+	const bool walked = EvaluateShadowMediumTransmittanceImpl(
+		ray,endpointDistance,pOriginMedium,pOriginMediumObject,pPreparedScene,
+		bSceneHasObjectMedia,ShadowTransmittanceNM(nm),outTransmittance,
+		pOriginStack,pEndpointMedium,eShadowBoundaryExactNullOnly,marchObserver);
+	if( walked ) outMarchDensity = marchObserver.Finish(endpointDistance);
+	return walked;
+}
+
 Scalar LightSampler::GetEquiangularPivotPower(
 	const unsigned int index
 	) const
@@ -2231,10 +2449,12 @@ Scalar LightSampler::EvaluateVolumeDirectLightingNM(
 	const Ray shadowRay( ri.ptIntersection, direction );
 	Scalar transmittance = 0.0;
 	const IMedium* endpointMedium = 0;
+	NoMarchProposalObserver marchObserver;
 	if( !EvaluateShadowMediumTransmittanceImpl(
 		shadowRay, distance, pMedium, pMediumObject, pPreparedScene,
 		bSceneHasObjectMedia, ShadowTransmittanceNM(nm), transmittance,
-		pMediumStack, &endpointMedium, eShadowBoundaryExactNullOnly ) ) return 0.0;
+		pMediumStack, &endpointMedium, eShadowBoundaryExactNullOnly,
+		marchObserver ) ) return 0.0;
 	// Innermost-exclusive support: an outer medium's labeled draw can land
 	// inside a nested medium.  It remains a valid sample at the original pdf,
 	// but its contribution is zero rather than being renormalized.

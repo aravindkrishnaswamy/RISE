@@ -129,18 +129,6 @@ namespace
 		return RISE::RISEPel( 1, 1, 1 );
 	}
 
-	inline RISE::Scalar LogBalancedDistanceMixture(
-		const RISE::Scalar logPdfDt,
-		const RISE::Scalar pdfEq )
-	{
-		const RISE::Scalar logHalf = log( RISE::Scalar( 0.5 ) );
-		if( pdfEq <= 0.0 ) return logHalf + logPdfDt;
-		const RISE::Scalar logPdfEq = log( pdfEq );
-		const RISE::Scalar common = fmax( logPdfDt, logPdfEq );
-		return logHalf + common + log(
-			exp( logPdfDt - common ) + exp( logPdfEq - common ) );
-	}
-
 	inline RISE::Scalar FullSegmentAdditiveEmissionNM(
 		const RISE::IMedium& medium,
 		const RISE::Ray& ray,
@@ -1799,9 +1787,12 @@ bool RayCaster::CastRayNMImpl_(
 						const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
 							equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
-						logCombinedPdf_NM = LogBalancedDistanceMixture(
-							pMedium->EvalLogDistancePdfNM(
-								ray, t_m, true, maxDist, nm ), pdf_eq );
+						const MISWeights::LogDensity logDensity =
+							pLightSampler->EvaluateVolumeEmissionDistanceLogDensityNM(
+								*pMedium,ray,maxDist,bHit,&equiangularPivots_NM,
+								nm,t_m,true);
+						logCombinedPdf_NM = logDensity.hasSupport ?
+							logDensity.value : -RISE_INFINITY;
 						useExplicitThroughput_NM = true;
 					}
 					else
@@ -1834,9 +1825,12 @@ bool RayCaster::CastRayNMImpl_(
 								equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 
 							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
-							logCombinedPdf_NM = LogBalancedDistanceMixture(
-								pMedium->EvalLogDistancePdfNM(
-									ray, t_m, true, maxDist, nm ), pdf_eq );
+							const MISWeights::LogDensity logDensity =
+								pLightSampler->EvaluateVolumeEmissionDistanceLogDensityNM(
+									*pMedium,ray,maxDist,bHit,&equiangularPivots_NM,
+									nm,t_m,true);
+							logCombinedPdf_NM = logDensity.hasSupport ?
+								logDensity.value : -RISE_INFINITY;
 							useExplicitThroughput_NM = true;
 						}
 						else

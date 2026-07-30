@@ -362,6 +362,14 @@ static void TestVolumeEmissionFamilyPartition()
 			MISWeights::LogDensity(true,-1400.0),true,false);
 	Check(ApproxEqual(commonTinyMarch,0.5,TOL),
 		"common-scale densities remain balanced after both ordinary values underflow");
+	const MISWeights::LogDensity tinyMixture =
+		MISWeights::EqualMixtureLogDensity(
+			MISWeights::LogDensity(true,-1400.0),
+			MISWeights::LogDensity(true,-1401.0));
+	const Scalar expectedTinyMixture = -1400.0 + log1p(exp(-1.0)) - log(2.0);
+	Check(tinyMixture.hasSupport &&
+		ApproxEqual(tinyMixture.value,expectedTinyMixture,1e-13),
+		"equal distance mixture retains its log density after both terms underflow");
 	VolumeEmissionSegmentState deepChain = proposalState;
 	for(unsigned int i=0;i<2000;++i) {
 		deepChain = AdvanceVolumeEmissionSegmentState(deepChain,0.5,1.0);

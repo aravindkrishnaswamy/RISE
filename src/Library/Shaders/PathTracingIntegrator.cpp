@@ -232,18 +232,6 @@ namespace
 		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
 	};
 
-	static Scalar PTLogBalancedDistanceMixture(
-		const Scalar logPdfDt,
-		const Scalar pdfEq )
-	{
-		const Scalar logHalf = log( Scalar( 0.5 ) );
-		if( pdfEq <= 0.0 ) return logHalf + logPdfDt;
-		const Scalar logPdfEq = log( pdfEq );
-		const Scalar common = fmax( logPdfDt, logPdfEq );
-		return logHalf + common + log(
-			exp( logPdfDt - common ) + exp( logPdfEq - common ) );
-	}
-
 	static bool PTMediumSegmentInterval(
 		const IMedium& medium,
 		const Ray& ray,
@@ -648,9 +636,11 @@ namespace
 				const Scalar pdf_eq = pLS->EquiangularDistancePdf(
 					pivots, ray, eqTNear, eqTFar, true, out.t );
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
-				out.logCombinedPdf = PTLogBalancedDistanceMixture(
-					pMedium->EvalLogDistancePdfNM(
-						ray, out.t, true, maxDist, nm ), pdf_eq );
+				const MISWeights::LogDensity logDensity =
+					pLS->EvaluateVolumeEmissionDistanceLogDensityNM(
+						*pMedium,ray,maxDist,surfaceBounded,&pivots,nm,out.t,true);
+				out.logCombinedPdf = logDensity.hasSupport ?
+					logDensity.value : -RISE_INFINITY;
 				out.useExplicitThroughput = true;
 			}
 			else
@@ -682,9 +672,11 @@ namespace
 					const Scalar pdf_eq = pLS->EquiangularDistancePdf(
 						pivots, ray, eqTNear, eqTFar, true, out.t );
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
-					out.logCombinedPdf = PTLogBalancedDistanceMixture(
-						pMedium->EvalLogDistancePdfNM(
-							ray, out.t, true, maxDist, nm ), pdf_eq );
+					const MISWeights::LogDensity logDensity =
+						pLS->EvaluateVolumeEmissionDistanceLogDensityNM(
+							*pMedium,ray,maxDist,surfaceBounded,&pivots,nm,out.t,true);
+					out.logCombinedPdf = logDensity.hasSupport ?
+						logDensity.value : -RISE_INFINITY;
 					out.useExplicitThroughput = true;
 				}
 				else

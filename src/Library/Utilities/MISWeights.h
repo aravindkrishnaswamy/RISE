@@ -160,6 +160,28 @@ namespace RISE
 				LogDensity(true,log(density)) : LogDensity();
 		}
 
+		inline LogDensity MakeLogDensityFromLogValue( const Scalar logDensity )
+		{
+			return RISE::IsFiniteDouble(logDensity) && logDensity > -RISE_INFINITY ?
+				LogDensity(true,logDensity) : LogDensity();
+		}
+
+		inline LogDensity EqualMixtureLogDensity(
+			const LogDensity& first,
+			const LogDensity& second
+			)
+		{
+			if( !first.hasSupport ) {
+				return second.hasSupport ? LogDensity(true,second.value-log(2.0)) :
+					LogDensity();
+			}
+			if( !second.hasSupport ) return LogDensity(true,first.value-log(2.0));
+			const Scalar maximum = fmax(first.value,second.value);
+			const Scalar value = maximum + log(
+				exp(first.value-maximum)+exp(second.value-maximum) ) - log(2.0);
+			return MakeLogDensityFromLogValue(value);
+		}
+
 		/// Power-2 family weight with stable ratio scaling.  This is the
 		/// NEE-side weight for thermal-volume emission when both pV and pMarch
 		/// describe the same endpoint in scene-volume measure.
@@ -302,7 +324,8 @@ namespace RISE
 				!RISE::IsFiniteDouble(state.logBoundarySurvival) ||
 				!RISE::IsFiniteDouble(state.distanceOffset) ||
 				!RISE::IsFiniteDouble(segmentDistance) ||
-				state.directionPdf <= 0.0 || state.logBoundarySurvival > 0.0 ||
+				state.directionPdf <= 0.0 || logDistancePdf <= -RISE_INFINITY ||
+				state.logBoundarySurvival > 0.0 ||
 				state.logBoundarySurvival <= -RISE_INFINITY ||
 				state.distanceOffset < 0.0 || state.distanceOffset >= RISE_INFINITY ||
 				segmentDistance <= 0.0 ) return LogDensity();

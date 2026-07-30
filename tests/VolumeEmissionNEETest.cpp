@@ -1648,6 +1648,100 @@ namespace
 		safe_release( nullBoundaryJob );
 	}
 
+	void TestConnectionMarchDensityThroughNullBoundaries()
+	{
+		std::cout << "TestConnectionMarchDensityThroughNullBoundaries" << std::endl;
+		IJobPriv* clearJob = LoadScene( GlobalMediumScene(false) );
+		IJobPriv* nullJob = LoadScene( GlobalMediumScene(true,false,true) );
+		IJobPriv* blockedJob = LoadScene( GlobalMediumScene(true,false,false) );
+		IRayCaster* clearCaster = nullptr;
+		IRayCaster* nullCaster = nullptr;
+		IRayCaster* blockedCaster = nullptr;
+		const LightSampler* clearLights = PrepareLightSampler(clearJob,clearCaster);
+		const LightSampler* nullLights = PrepareLightSampler(nullJob,nullCaster);
+		const LightSampler* blockedLights = PrepareLightSampler(blockedJob,blockedCaster);
+		const IMedium* fire = nullJob ? nullJob->GetScene()->GetGlobalMedium() : nullptr;
+		Check( clearLights && nullLights && blockedLights && fire,
+			"connection-density boundary fixtures prepare" );
+		if( clearLights && nullLights && blockedLights && fire ) {
+			FixedSampler pivotSampler( { 0.17, 0.29, 0.43, 0.61, 0.79 } );
+			VolumeEmissionPivotState pivots;
+			Check( nullLights->SampleVolumeEmissionPivots(pivotSampler,pivots),
+				"connection-density fixture prepares shared U" );
+			const Scalar nm = 550.0;
+			const Scalar directionPdf = 0.25;
+			const Ray fullRay( Point3(0,0,-0.9), Vector3(0,0,1) );
+			const Scalar fullDistance = 1.4;
+			Scalar transmittance = 0.0;
+			const IMedium* endpointMedium = nullptr;
+			MISWeights::LogDensity actual;
+			const bool walked = nullLights->EvaluateVolumeEmissionConnectionNM(
+				fullRay,fullDistance,fire,nullptr,nullptr,nm,pivots,directionPdf,
+				transmittance,&endpointMedium,actual);
+			const MISWeights::LogDensity firstNoEvent =
+				nullLights->EvaluateVolumeEmissionDistanceLogDensityNM(
+					*fire,fullRay,0.35,true,&pivots,nm,0.35,false);
+			const Ray insideRay( Point3(0,0,-0.55), Vector3(0,0,1) );
+			const MISWeights::LogDensity secondNoEvent =
+				nullLights->EvaluateVolumeEmissionDistanceLogDensityNM(
+					*fire,insideRay,0.10,true,&pivots,nm,0.10,false);
+			const Ray finalRay( Point3(0,0,-0.45), Vector3(0,0,1) );
+			const MISWeights::LogDensity finalScatter =
+				nullLights->EvaluateVolumeEmissionDistanceLogDensityNM(
+					*fire,finalRay,RISE_INFINITY,false,&pivots,nm,0.95,true);
+			const Scalar expectedLog = log(directionPdf) + firstNoEvent.value +
+				secondNoEvent.value + finalScatter.value - 2.0*log(fullDistance);
+			Check( walked && transmittance > 0.0 && endpointMedium==fire &&
+				actual.hasSupport && firstNoEvent.hasSupport &&
+				secondNoEvent.hasSupport && finalScatter.hasSupport,
+				"two exact-null crossings retain physical and proposal support" );
+			CheckRelative( actual.value, expectedLog, 2e-13,
+				"connection density carries both no-event atoms and originating r-squared" );
+
+			Scalar blockedTr = 1.0;
+			MISWeights::LogDensity blockedDensity(true,0.0);
+			const IMedium* blockedEndpoint = fire;
+			const IMedium* blockedFire = blockedJob->GetScene()->GetGlobalMedium();
+			Check( blockedLights->EvaluateVolumeEmissionConnectionNM(
+				fullRay,fullDistance,blockedFire,nullptr,nullptr,nm,pivots,
+				directionPdf,blockedTr,&blockedEndpoint,blockedDensity) &&
+				blockedTr==0.0 && !blockedDensity.hasSupport,
+				"non-null interface terminates NEE and march support despite shadow flags" );
+
+			const Scalar nearDistance = 0.2;
+			Scalar nearTr = 0.0;
+			const IMedium* nearEndpoint = nullptr;
+			MISWeights::LogDensity nearDensity;
+			const IMedium* clearFire = clearJob->GetScene()->GetGlobalMedium();
+			Check( blockedLights->EvaluateVolumeEmissionConnectionNM(
+				fullRay,nearDistance,blockedFire,nullptr,nullptr,nm,pivots,
+				directionPdf,nearTr,&nearEndpoint,nearDensity) &&
+				nearDensity.hasSupport && nearEndpoint==blockedFire,
+				"endpoint before a non-null interface remains in march support" );
+			const MISWeights::LogDensity boundedFinal =
+				blockedLights->EvaluateVolumeEmissionDistanceLogDensityNM(
+					*blockedFire,fullRay,0.35,true,&pivots,nm,nearDistance,true);
+			const Scalar boundedExpected = log(directionPdf)+boundedFinal.value-
+				2.0*log(nearDistance);
+			CheckRelative( nearDensity.value,boundedExpected,2e-13,
+				"NEE-side density normalizes against the downstream segment boundary" );
+
+			Scalar clearTr = 0.0;
+			const IMedium* clearEndpoint = nullptr;
+			MISWeights::LogDensity clearDensity;
+			Check( clearLights->EvaluateVolumeEmissionConnectionNM(
+				fullRay,fullDistance,clearFire,nullptr,nullptr,nm,pivots,0.0,
+				clearTr,&clearEndpoint,clearDensity) && !clearDensity.hasSupport,
+				"zero direction marginal gives structural zero march support" );
+		}
+		safe_release( clearCaster );
+		safe_release( nullCaster );
+		safe_release( blockedCaster );
+		safe_release( clearJob );
+		safe_release( nullJob );
+		safe_release( blockedJob );
+	}
+
 	void TestStandaloneEstimatorFormula()
 	{
 		std::cout << "TestStandaloneEstimatorFormula" << std::endl;
@@ -1732,6 +1826,7 @@ int main()
 	TestIndependentPivotVectorAndPowerMixture();
 	TestCombinedPivotSceneUnitInvariance();
 	TestOpaqueGeometricVisibility();
+	TestConnectionMarchDensityThroughNullBoundaries();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
 	return failed == 0 ? 0 : 1;

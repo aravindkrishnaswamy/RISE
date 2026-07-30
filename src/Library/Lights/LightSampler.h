@@ -87,6 +87,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/AliasTable.h"
+#include "../Utilities/MISWeights.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/EnvironmentSampler.h"
 #include "LightBVH.h"
@@ -551,6 +552,37 @@ namespace RISE
 				const Scalar tMax,
 				const bool segmentBounded,
 				const Scalar t
+				) const;
+
+			/// Evaluate the spectral distance proposal used by both PT entry
+			/// routes on one boundary-delimited segment.  The result is kept in
+			/// log form so optically thick NEE/march weights do not underflow.
+			MISWeights::LogDensity EvaluateVolumeEmissionDistanceLogDensityNM(
+				const IMedium& medium,
+				const Ray& ray,
+				const Scalar proposalMaxDist,
+				const bool surfaceBounded,
+				const VolumeEmissionPivotState* pivots,
+				const Scalar nm,
+				const Scalar eventDistance,
+				const bool scattered
+				) const;
+
+			/// Walk the exact-null connection from a vertex to a labeled volume
+			/// endpoint once, returning physical transmittance, endpoint-medium
+			/// identity, and the competing march density conditioned on the same U.
+			bool EvaluateVolumeEmissionConnectionNM(
+				const Ray& ray,
+				const Scalar endpointDistance,
+				const IMedium* pOriginMedium,
+				const IObject* pOriginMediumObject,
+				const IORStack* pOriginStack,
+				const Scalar nm,
+				const VolumeEmissionPivotState& pivots,
+				const Scalar directionPdf,
+				Scalar& outTransmittance,
+				const IMedium** pEndpointMedium,
+				MISWeights::LogDensity& outMarchDensity
 				) const;
 
 			unsigned int GetEquiangularPivotEntryCount() const
