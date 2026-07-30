@@ -28,6 +28,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IContinuationClosure.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -1742,6 +1743,181 @@ namespace
 		safe_release( blockedJob );
 	}
 
+	void TestSurfaceClosureMISPartition()
+	{
+		std::cout << "TestSurfaceClosureMISPartition" << std::endl;
+		IJobPriv* job = LoadScene( GlobalMediumScene(false) );
+		IRayCaster* caster = nullptr;
+		const LightSampler* lights = PrepareLightSampler(job,caster);
+		const IMedium* fire = job ? job->GetScene()->GetGlobalMedium() : nullptr;
+		Check( lights && fire, "surface closure MIS fixture prepares" );
+		if( lights && fire ) {
+			FixedSampler sampler( {
+				0.13,0.23,0.31,0.47,0.59,
+				0.67,0.71,0.79,0.83,0.89,0.97 } );
+			VolumeEmissionVertexSample vertex;
+			Check( lights->SampleVolumeEmissionVertex(sampler,vertex),
+				"surface closure MIS draws U before independent Y" );
+			const Scalar nm = 550.0;
+			const Ray viewRay( Point3(0,0,-1), Vector3(0,0,-1) );
+			const RasterizerState rast = {0,0};
+			RayIntersectionGeometric ri( viewRay, rast );
+			ri.ptIntersection = Point3(0,0,-1);
+			ri.vNormal = Vector3(0,0,1);
+			ri.vGeomNormal = ri.vNormal;
+			ContinuationPathState noRoulette;
+			noRoulette.pathDepth = 0;
+			noRoulette.rrMinDepth = 8;
+			noRoulette.rrThreshold = 0.5;
+			noRoulette.importance = 1.0;
+			const IContinuationClosureNM* lambert =
+				CreateLambertianContinuationClosureNM(ri,0.8,noRoulette);
+			ContinuationAvailability allAllowed;
+			allAllowed.vertexMask = eContinuationLobeDiffuse;
+			allAllowed.marchMask = eContinuationLobeDiffuse;
+			Check( lambert != nullptr, "Lambertian spectral closure constructs" );
+			if( lambert && vertex.HasEndpoint() ) {
+				const VolumeEmissionSample& endpoint = vertex.Endpoint();
+				Vector3 direction = Vector3Ops::mkVector3(
+					endpoint.point,ri.ptIntersection);
+				const Scalar distance = Vector3Ops::NormalizeMag(direction);
+				const Scalar directionPdf = lambert->PdfReachMarginal(
+					allAllowed.marchMask,direction);
+				Scalar tr = 0.0;
+				const IMedium* endpointMedium = nullptr;
+				MISWeights::LogDensity marchDensity;
+				const bool connected = lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(ri.ptIntersection,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),directionPdf,tr,&endpointMedium,marchDensity);
+				const Scalar weight = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+					MISWeights::MakeLogDensity(endpoint.pdf),marchDensity);
+				const Scalar common = Vector3Ops::Dot(direction,ri.vNormal)*tr*
+					endpoint.pMedium->GetThermalEmissionNM(endpoint.point,nm)/
+					(distance*distance*endpoint.pdf);
+				const Scalar expected = common*
+					lambert->EvaluateSubset(allAllowed.marchMask,direction)*weight;
+				const Scalar actual = lights->EvaluateVolumeDirectLightingFromClosureNM(
+					ri,*lambert,allAllowed,nm,vertex,fire,nullptr,nullptr);
+				Check( connected && endpointMedium==endpoint.pMedium &&
+					marchDensity.hasSupport && weight > 0.0 && weight < 1.0,
+					"allowed Lambertian response has a genuine march competitor" );
+				CheckRelative( actual,expected,2e-14,
+					"closure NEE applies the complementary family weight to f_A" );
+
+				ContinuationAvailability capped;
+				const Scalar cappedActual =
+					lights->EvaluateVolumeDirectLightingFromClosureNM(
+						ri,*lambert,capped,nm,vertex,fire,nullptr,nullptr);
+				const Scalar cappedExpected = common*
+					lambert->EvaluateSubset(lambert->GetLobeMask(),direction);
+				CheckRelative( cappedActual,cappedExpected,2e-14,
+					"per-type-capped response is confined to weight-one f_D" );
+			}
+
+			const IContinuationClosureNM* phong =
+				CreateIsotropicPhongContinuationClosureNM(
+					ri,0.25,0.75,8.0,noRoulette);
+			ContinuationAvailability diffuseOnly;
+			diffuseOnly.vertexMask = eContinuationLobeDiffuse;
+			diffuseOnly.marchMask = eContinuationLobeDiffuse;
+			Check( phong != nullptr, "mixed Phong spectral closure constructs" );
+			if( phong && vertex.HasEndpoint() ) {
+				const VolumeEmissionSample& endpoint = vertex.Endpoint();
+				Vector3 direction = Vector3Ops::mkVector3(
+					endpoint.point,ri.ptIntersection);
+				const Scalar distance = Vector3Ops::NormalizeMag(direction);
+				const Scalar directionPdf = phong->PdfReachMarginal(
+					diffuseOnly.marchMask,direction);
+				Scalar tr = 0.0;
+				const IMedium* endpointMedium = nullptr;
+				MISWeights::LogDensity marchDensity;
+				lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(ri.ptIntersection,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),directionPdf,tr,&endpointMedium,marchDensity);
+				const Scalar weight = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+					MISWeights::MakeLogDensity(endpoint.pdf),marchDensity);
+				const Scalar common = Vector3Ops::Dot(direction,ri.vNormal)*tr*
+					endpoint.pMedium->GetThermalEmissionNM(endpoint.point,nm)/
+					(distance*distance*endpoint.pdf);
+				const Scalar expected = common*(phong->EvaluateSubset(
+					eContinuationLobeDiffuse,direction)*weight +
+					phong->EvaluateSubset(eContinuationLobeGlossy,direction));
+				const Scalar actual = lights->EvaluateVolumeDirectLightingFromClosureNM(
+					ri,*phong,diffuseOnly,nm,vertex,fire,nullptr,nullptr);
+				CheckRelative( actual,expected,2e-14,
+					"mixed allowed+capped lobes add weighted f_A and weight-one f_D" );
+			}
+
+			ContinuationPathState rouletteState;
+			rouletteState.pathDepth = 3;
+			rouletteState.rrMinDepth = 3;
+			rouletteState.rrThreshold = 2.0;
+			rouletteState.importance = 1.0;
+			const IContinuationClosureNM* terminalClosure =
+				CreateLambertianContinuationClosureNM(ri,0.8,rouletteState);
+			ContinuationAvailability totalTerminal;
+			totalTerminal.vertexMask = 0;
+			totalTerminal.marchMask = eContinuationLobeDiffuse;
+			if( terminalClosure && vertex.HasEndpoint() ) {
+				const VolumeEmissionSample& endpoint = vertex.Endpoint();
+				Vector3 direction = Vector3Ops::mkVector3(
+					endpoint.point,ri.ptIntersection);
+				const Scalar distance = Vector3Ops::NormalizeMag(direction);
+				const Scalar marchPdf = terminalClosure->PdfMarchMarginal(
+					totalTerminal.marchMask,direction);
+				const Scalar reachPdf = terminalClosure->PdfReachMarginal(
+					totalTerminal.marchMask,direction);
+				Scalar tr = 0.0;
+				const IMedium* endpointMedium = nullptr;
+				MISWeights::LogDensity marchDensity;
+				lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(ri.ptIntersection,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),marchPdf,tr,&endpointMedium,marchDensity);
+				const Scalar weight = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+					MISWeights::MakeLogDensity(endpoint.pdf),marchDensity);
+				const Scalar common = Vector3Ops::Dot(direction,ri.vNormal)*tr*
+					endpoint.pMedium->GetThermalEmissionNM(endpoint.point,nm)/
+					(distance*distance*endpoint.pdf);
+				const Scalar expected = common*terminalClosure->EvaluateSubset(
+					totalTerminal.marchMask,direction)*weight;
+				const Scalar actual = lights->EvaluateVolumeDirectLightingFromClosureNM(
+					ri,*terminalClosure,totalTerminal,nm,vertex,
+					fire,nullptr,nullptr);
+				ContinuationAvailability rouletteNonterminal;
+				rouletteNonterminal.vertexMask = eContinuationLobeDiffuse;
+				rouletteNonterminal.marchMask = eContinuationLobeDiffuse;
+				Scalar reachTr = 0.0;
+				const IMedium* reachEndpointMedium = nullptr;
+				MISWeights::LogDensity reachDensity;
+				lights->EvaluateVolumeEmissionConnectionNM(
+					Ray(ri.ptIntersection,direction),distance,fire,nullptr,nullptr,nm,
+					vertex.Pivots(),reachPdf,reachTr,&reachEndpointMedium,reachDensity);
+				const Scalar reachWeight =
+					MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+						MISWeights::MakeLogDensity(endpoint.pdf),reachDensity);
+				const Scalar reachExpected = common*terminalClosure->EvaluateSubset(
+					rouletteNonterminal.marchMask,direction)*reachWeight;
+				const Scalar reachActual = lights->EvaluateVolumeDirectLightingFromClosureNM(
+					ri,*terminalClosure,rouletteNonterminal,nm,vertex,
+					fire,nullptr,nullptr);
+				Check( marchPdf > reachPdf && reachPdf > 0.0,
+					"terminal total-depth direction density omits ordinary roulette survival" );
+				CheckRelative( actual,expected,2e-14,
+					"terminal source-only segment competes at genuine roulette-free p_march" );
+				Check( reachDensity.hasSupport && reachEndpointMedium==endpoint.pMedium &&
+					reachWeight > weight && reachActual > actual,
+					"nonterminal march density includes roulette survival before family MIS" );
+				CheckRelative( reachActual,reachExpected,2e-14,
+					"nonterminal closure NEE uses PdfReachMarginal rather than PdfMarchMarginal" );
+			}
+			safe_release( lambert );
+			safe_release( phong );
+			safe_release( terminalClosure );
+		}
+		safe_release( caster );
+		safe_release( job );
+	}
+
 	void TestStandaloneEstimatorFormula()
 	{
 		std::cout << "TestStandaloneEstimatorFormula" << std::endl;
@@ -1827,6 +2003,7 @@ int main()
 	TestCombinedPivotSceneUnitInvariance();
 	TestOpaqueGeometricVisibility();
 	TestConnectionMarchDensityThroughNullBoundaries();
+	TestSurfaceClosureMISPartition();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
 	return failed == 0 ? 0 : 1;

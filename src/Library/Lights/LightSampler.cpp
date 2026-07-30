@@ -18,6 +18,7 @@
 #include "../Utilities/ISampler.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IContinuationClosure.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Materials/NullBoundaryMaterial.h"
 #include "../Interfaces/IRayCaster.h"
@@ -2467,6 +2468,61 @@ Scalar LightSampler::EvaluateVolumeDirectLightingNM(
 	if( response <= 0.0 ) return 0.0;
 	return response * receiverCosine * transmittance * emission /
 		(distance * distance * endpoint.pdf);
+}
+
+Scalar LightSampler::EvaluateVolumeDirectLightingFromClosureNM(
+	const RayIntersectionGeometric& ri,
+	const IContinuationClosureNM& closure,
+	const ContinuationAvailability& availability,
+	const Scalar nm,
+	const VolumeEmissionVertexSample& vertexSample,
+	const IMedium* pMedium,
+	const IObject* pMediumObject,
+	const IORStack* pMediumStack
+	) const
+{
+	if( !vertexSample.HasPivots() || !vertexSample.WasEndpointAttempted() ||
+		!vertexSample.HasEndpoint() ) return 0.0;
+	const VolumeEmissionSample& endpoint = vertexSample.Endpoint();
+	if( !endpoint.pMedium || !RISE::IsFiniteDouble(endpoint.pdf) ||
+		endpoint.pdf <= 0.0 ) return 0.0;
+	Vector3 direction = Vector3Ops::mkVector3(
+		endpoint.point,ri.ptIntersection);
+	const Scalar distance = Vector3Ops::NormalizeMag(direction);
+	if( !RISE::IsFiniteDouble(distance) || distance <= 0.0 ) return 0.0;
+	const Scalar cosine = Vector3Ops::Dot(direction,ri.vNormal);
+	if( cosine <= 0.0 ) return 0.0;
+
+	const unsigned int fullMask = closure.GetLobeMask();
+	const unsigned int marchMask = availability.marchMask&fullMask;
+	const unsigned int directOnlyMask = fullMask&~marchMask;
+	const Scalar responseMarch = closure.EvaluateSubset(marchMask,direction);
+	const Scalar responseDirectOnly =
+		closure.EvaluateSubset(directOnlyMask,direction);
+	if( responseMarch <= 0.0 && responseDirectOnly <= 0.0 ) return 0.0;
+	const bool terminalSourceOnly = availability.vertexMask != marchMask;
+	const Scalar directionPdf = terminalSourceOnly ?
+		closure.PdfMarchMarginal(marchMask,direction) :
+		closure.PdfReachMarginal(marchMask,direction);
+
+	Scalar transmittance = 0.0;
+	const IMedium* endpointMedium = 0;
+	MISWeights::LogDensity marchDensity;
+	if( !EvaluateVolumeEmissionConnectionNM(
+		Ray(ri.ptIntersection,direction),distance,pMedium,pMediumObject,
+		pMediumStack,nm,vertexSample.Pivots(),directionPdf,transmittance,
+		&endpointMedium,marchDensity) ) return 0.0;
+	if( endpointMedium != endpoint.pMedium || transmittance <= 0.0 ) return 0.0;
+	const Scalar emission = endpoint.pMedium->GetThermalEmissionNM(
+		endpoint.point,nm);
+	if( emission <= 0.0 ) return 0.0;
+	const MISWeights::LogDensity neeDensity =
+		MISWeights::MakeLogDensity(endpoint.pdf);
+	const Scalar neeWeight = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+		neeDensity,marchDensity);
+	const Scalar response = responseMarch*neeWeight + responseDirectOnly;
+	return response*cosine*transmittance*emission/
+		(distance*distance*endpoint.pdf);
 }
 
 Scalar LightSampler::EvaluateDirectLightingNM(

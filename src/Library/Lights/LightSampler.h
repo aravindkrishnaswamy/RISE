@@ -98,6 +98,8 @@ namespace RISE
 	class IMaterial;
 	class ILightPriv;
 	class IORStack;
+	class IContinuationClosureNM;
+	struct ContinuationAvailability;
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
@@ -616,6 +618,20 @@ namespace RISE
 				ISampler& sampler,
 				const IMedium* pMedium,
 				const bool isVolumeScatter,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			/// Surface-closure Phase-B estimator.  The shared vertex sample was
+			/// drawn before this call; A_march controls the weighted response and
+			/// its complement remains an NEE-only weight-one term.
+			Scalar EvaluateVolumeDirectLightingFromClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IContinuationClosureNM& closure,
+				const ContinuationAvailability& availability,
+				Scalar nm,
+				const VolumeEmissionVertexSample& vertexSample,
+				const IMedium* pMedium,
 				const IObject* pMediumObject,
 				const IORStack* pMediumStack = 0
 				) const;
