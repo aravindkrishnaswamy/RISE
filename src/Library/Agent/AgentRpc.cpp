@@ -566,6 +566,16 @@ namespace RISE
 					}
 					result.set( "legend", legend );
 				}
+				// Creative-richness P2 (73-creative-richness-design.md sec 2 P2
+				// / sec 7 re-target): the observed-state design note
+				// (AgentSession::ComputeDesignNote, run inside RenderCore_ --
+				// see AgentRenderResult::note's doc). CONDITIONAL key, same
+				// omit-when-empty convention as `legend` above and as
+				// read_skill's index-only `note` -- absent whenever the scan
+				// found neither measured deficit (or never ran, e.g. an
+				// objectmap/view-mode render).
+				if( !rr.note.empty() )
+					result.set( "note", JsonValue::MakeString( rr.note ) );
 				return result;
 			}
 
@@ -1187,12 +1197,29 @@ namespace RISE
 							AgentSession::ValidateText( snap.document ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
+						// Creative-richness P2 (73-creative-richness-design.md sec 2
+						// P2 / sec 7 re-target): the SAME observed-state design-note
+						// scan the render-result carrier attaches
+						// (AgentSession::RenderCore_), on the SAME retained snapshot
+						// text already read above -- omitted (key absent) whenever
+						// the scan finds neither measured deficit, same convention
+						// as read_skill's index-only `note`.
+						{
+							const std::string designNote = AgentSession::ComputeDesignNote( snap.document );
+							if( !designNote.empty() )
+								headResult.set( "note", JsonValue::MakeString( designNote ) );
+						}
 						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "diagnostics", diagnosticsArray(
 						AgentSession::ValidateText( text->asString() ) ) );
 					result.set( "validated", JsonValue::MakeString( "text" ) );
+					{
+						const std::string designNote = AgentSession::ComputeDesignNote( text->asString() );
+						if( !designNote.empty() )
+							result.set( "note", JsonValue::MakeString( designNote ) );
+					}
 					return MakeSuccess( idValue, result );
 				}
 

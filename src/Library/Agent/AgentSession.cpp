@@ -1110,6 +1110,162 @@ namespace RISE
 
 		namespace
 		{
+			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			//! RE-TARGETED by sec 7 to the two MEASURED bare-prompt deficits --
+			//! sec 7 wins where the two disagree): the shared, engine-side
+			//! "design note" scan CORE, over an ALREADY-PARSED Document --
+			//! ONE function so the THREE call sites (AgentSession::
+			//! ComputeDesignNote's text-taking wrapper below, used by the
+			//! `validate` carrier in AgentRpc.cpp on a retained-snapshot /
+			//! candidate TEXT; and RenderCore_'s doRenderWork closure, which
+			//! calls this overload DIRECTLY on `*mJob->GetCstDocument()` from
+			//! its isDraft branch AND its production-body tail -- see
+			//! designNoteLocal's declaration and RenderCore_'s carrier-site
+			//! comment for why the render path never goes through the
+			//! text-taking wrapper) can never drift apart.
+			//!
+			//! Walks the document's top-level chunks ONCE, counting:
+			//!   * `standard_object` chunks (the gate quantity for BOTH
+			//!     conditions below);
+			//!   * whether ANY `scalar_painter` chunk exists ANYWHERE in the
+			//!     document (existence, not reachability from an object -- the
+			//!     measured baseline failure was literally "no chunk of kind
+			//!     'scalar_painter' exists", so that is exactly what this
+			//!     checks);
+			//!   * whether ANY `sdf_geometry` / `sweep_geometry` /
+			//!     `displaced_geometry` chunk exists (same existence test, the
+			//!     second measured deficit);
+			//!   * a per-keyword census of every OTHER Geometry-category chunk
+			//!     (registry-resolved via DescriptorForKeyword, the same
+			//!     category lookup AgentEvalRunner.cpp's
+			//!     CheckerCollectKindFilterMatches uses) -- purely for the
+			//!     human-readable "k box_geometry, m sphere_geometry" clause;
+			//!     it plays no role in either fire condition.
+			//!
+			//! FIRE CONDITIONS (sec 7's re-target, both pure existence/count
+			//! checks -- deliberately no BuildReferenceGraph closure; a v1 that
+			//! needs one hasn't been justified by the baseline):
+			//!   A (scalar-pipe unused):  standardObjectCount >= 3 && !hasScalarPainter
+			//!   B (no advanced geometry): standardObjectCount >= 4 && !hasAdvancedGeometry
+			//! Neither condition looks at whether an object's MATERIAL actually
+			//! reaches the missing kind -- an object with no material bound at
+			//! all still counts toward the gate, matching the sec 7 text's
+			//! "walk doc.items roles" framing (a coarser, cheaper test than A1's
+			//! originally-approved reachability scan, superseded here).
+			//!
+			//! RETURNS empty iff neither condition fires (the "omit the note
+			//! entirely when clean" convention -- see AgentSkillResult::note
+			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
+			//! mirrors).  When one or both fire, returns ONE combined
+			//! "DESIGN NOTE: ..." string carrying every firing clause plus the
+			//! anti-churn escape clause (load-bearing from day one, sec 2 P2 --
+			//! a loud signal with no escape clause just buys a different
+			//! wasted-turn loop).
+			std::string ComputeDesignNoteFromDoc_( const Document& doc )
+			{
+				int  standardObjectCount = 0;
+				bool hasScalarPainter    = false;
+				bool hasAdvancedGeometry = false;
+				std::map<std::string, int> geometryCensus;   // keyword -> count, every OTHER geometry kind seen
+
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+					if( !id ) continue;
+					const NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					const std::string& role = item->role;
+
+					if( role == "standard_object" ) { ++standardObjectCount; continue; }
+					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
+					if( role == "sdf_geometry" || role == "sweep_geometry" || role == "displaced_geometry" ) {
+						hasAdvancedGeometry = true;
+						++geometryCensus[role];
+						continue;
+					}
+
+					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
+					if( !d ) continue;
+					if( d->category == ChunkCategory::Geometry ) ++geometryCensus[role];
+				}
+
+				const bool conditionA = standardObjectCount >= 3 && !hasScalarPainter;
+				const bool conditionB = standardObjectCount >= 4 && !hasAdvancedGeometry;
+				if( !conditionA && !conditionB ) return std::string();
+
+				std::string note = "DESIGN NOTE:";
+				if( conditionA ) {
+					// Review P1 fix: the ORIGINAL wording ("all N materials use
+					// constant roughness") is FALSE whenever the scene's
+					// materials don't even HAVE a roughness parameter
+					// (lambertian, perfect reflector/refractor, luminaire,
+					// SSS, ...) -- including both of this file's own test
+					// fixtures.  This wording claims only what is true
+					// regardless of material mix: the scalar pipe (a
+					// spatially-varying scalar_painter) is unused, so ANY
+					// physical-scalar parameter that DOES exist is
+					// necessarily a constant -- and names the material KINDS
+					// that actually carry a roughness slot, rather than
+					// implying every material in the scene has one.
+					// Round-3 review P1 fix: name ONLY materials whose roughness
+					// slots are Reference-kind and so genuinely accept a
+					// scalar_painter (ggx_material and
+					// ward_anisotropic_material alphax/alphay).
+					// pbr_metallic_roughness_material's `roughness` and
+					// cooktorrance's slot are baked ValueKind::Double scalars
+					// -- naming them here would teach a binding the parser
+					// rejects.
+					note += " the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
+						"so any physical-scalar material parameter (roughness, displacement) is a "
+						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
+						"surface, spatially-varying roughness via expression_function2d -> "
+						"scalar_painter -> alphax/alphay adds realism "
+						"(read_skill {\"name\":\"procedural-textures\"}).";
+				}
+				if( conditionB ) {
+					std::string census;
+					for( const auto& kv : geometryCensus ) {
+						if( !census.empty() ) census += ", ";
+						census += std::to_string( kv.second ) + " " + kv.first;
+					}
+					if( census.empty() ) census = "no geometry chunks bound";
+					note += " geometry census: " + std::to_string( standardObjectCount ) + " objects -- " + census +
+						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
+						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+				}
+				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
+					"ignore this note and do not churn.";
+				return note;
+			}
+		}
+
+		//! Thin, STATELESS wrapper (like ValidateText above) around
+		//! ComputeDesignNoteFromDoc_: parses `documentText` to its OWN
+		//! throwaway CST Document (never touches a session's retained one)
+		//! and runs the shared scan.  Used ONLY by the `validate` carrier
+		//! (AgentRpc.cpp, both its head-form and text-form branches, on the
+		//! retained-snapshot / candidate text they already have in hand).
+		//!
+		//! NEVER call this (or ReadDocumentSnapshot, or anything else that
+		//! re-enters the controller) from inside a RunPreviewRenderParked /
+		//! SubmitAgentRender* closure -- those already hold the
+		//! controller's non-recursive mMutex for the closure's whole
+		//! duration, and this wrapper's ParseToCst is also needless
+		//! SerializeCst+ParseToCst work when a live, already-parsed
+		//! Document is sitting right there.  RenderCore_'s render-result
+		//! carrier does NOT use this overload for exactly that reason: it
+		//! calls ComputeDesignNoteFromDoc_ directly on
+		//! `mJob->GetCstDocument()` from INSIDE doRenderWork's tail, while
+		//! still under the park -- see designNoteLocal's declaration and
+		//! its two call sites in RenderCore_.
+		std::string AgentSession::ComputeDesignNote( const std::string& documentText )
+		{
+			if( documentText.empty() ) return std::string();
+			return ComputeDesignNoteFromDoc_( RISE::Cst::ParseToCst( documentText ) );
+		}
+
+		namespace
+		{
 			//! Forward declaration: AttachParamEditRejectionIssues is DEFINED
 			//! further down this file (alongside AnalyzeRejectedParamEdit and its
 			//! insert_chunk/remove_chunk sibling analysers -- keeping the three
@@ -4358,6 +4514,17 @@ namespace RISE
 			// doRenderWork's production body, instead of re-dereferencing
 			// `rast` from the tail (see the `readBack` site below).
 			int productionSampleReadBack = -1;
+			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2 /
+			// sec 7 re-target; RELOCATED post-review from a post-park
+			// ReadDocumentSnapshot() re-lock -- see ComputeDesignNoteFromDoc_'s
+			// doc and this closure's own tail comments for the full
+			// rationale): the design-note text, computed INSIDE doRenderWork's
+			// tail (draft branch and production branch only) from the LIVE
+			// `mJob->GetCstDocument()` while still under the park -- exactly
+			// the document THIS render actually saw, no re-serialize/re-parse,
+			// no re-entering the controller.  Read back at the carrier site
+			// below, gated on res.ok/renderMode, same as productionSampleReadBack.
+			std::string designNoteLocal;
 			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
 			// sample-cap outcome, tracked separately from
 			// overrodeSamples/origSamples above -- those describe the
@@ -5351,6 +5518,12 @@ namespace RISE
 				}
 				if( isDraft ) {
 					runEphemeralIsolated( doDraftRenderWork );
+					// Creative-richness P2: read the LIVE document HERE, still
+					// under the park -- never re-enter the controller
+					// (ReadDocumentSnapshot / ComputeDesignNote) from inside
+					// this closure.  See designNoteLocal's declaration above.
+					if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
+						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
 					publishCompletedToLastRender();
 					return;
 				}
@@ -5781,6 +5954,13 @@ namespace RISE
 					rast->SetSampleCountOverride( origSamples );
 				}
 				sampleGuard.Disarm();
+				// Creative-richness P2: read the LIVE document HERE, still
+				// under the park -- see designNoteLocal's declaration above
+				// and the isDraft branch's twin comment for why this must
+				// never go through ReadDocumentSnapshot / ComputeDesignNote
+				// (both re-enter the controller) from inside this closure.
+				if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
+					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
 				publishCompletedToLastRender();
 			};
 
@@ -6422,6 +6602,38 @@ namespace RISE
 					res.message += what;
 					res.message += " -- no scene lighting is evaluated)";
 				}
+			}
+
+			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			// RE-TARGETED by sec 7): attach the observed-state design note
+			// on a successful BEAUTY render only -- "production" or
+			// "draft" `renderMode`, deliberately never "objectmap" or a
+			// view mode (those are diagnostic/segmentation renders, not
+			// the "the model just looked at its finished work" moment the
+			// note is anchored to; matches the isObjectMap/isViewMode
+			// gating precedent used throughout this function).
+			//
+			// RELOCATED post-review (concurrency review, round 2): the
+			// document is read and the note COMPUTED inside doRenderWork's
+			// tail (the isDraft branch and the production branch each set
+			// `designNoteLocal` -- see its declaration above), while this
+			// call is STILL under the park in every controller-attached
+			// branch (the worker's cancel-and-park hold for both
+			// RunPreviewRenderParked and SubmitAgentRender*, or headless's
+			// single-writer guarantee) -- so it describes EXACTLY the
+			// document this render saw, never a later edit that landed in
+			// the window after the park released.  This site only
+			// PUBLISHES the already-computed local into `res`, gated on
+			// success/renderMode; it does no document I/O of its own and
+			// never touches the controller.  This is also why the earlier
+			// `assumeParked` branch (which called ReadDocumentSnapshot()/
+			// ComputeDesignNote() from OUTSIDE the park, and for
+			// assumeParked==true self-deadlocked on the worker's own
+			// already-held mMutex -- see the historical mutation-probe log
+			// in the final report) is gone: there is no document access
+			// left here to branch on.
+			if( res.ok && ( res.renderMode == "production" || res.renderMode == "draft" ) ) {
+				res.note = designNoteLocal;
 			}
 
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --

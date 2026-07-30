@@ -405,6 +405,227 @@ static void RunReadSchemaBatchTest()
 	}
 }
 
+//----------------------------------------------------------------------
+// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// by sec 7 to the two MEASURED bare-prompt deficits): unit-level red-proofs
+// of AgentSession::ComputeDesignNote, the ONE shared scan both carriers
+// (render-result, validate) call.  STATELESS -- calls the static function
+// directly on crafted CST text, no session/Job needed.  Every crafted
+// document below is minimal (just enough top-level chunks for the scan to
+// see, no materials/params that would actually DERIVE) since the scan only
+// walks chunk keywords -- it never parses into a Job.
+//
+// Orthogonal fixtures, one variable changed at a time:
+//   docA3NoScalar        -- 3 standard_object, no scalar_painter -> A fires alone (3<4, B silent)
+//   docA3WithScalar      -- same 3 objects + a scalar_painter    -> A silenced (B still silent, 3<4)
+//   docB4AllBoxWithScalar-- 4 standard_object/box_geometry + a scalar_painter (A silenced) -> B fires alone
+//   docB4WithSdf         -- same as above + an sdf_geometry      -> B silenced too -> EMPTY
+//   docBelowThresholds   -- 2 standard_object, nothing else      -> both silent (below either gate)
+//   docCombined          -- 4 standard_object, no scalar_painter, no advanced geometry -> BOTH fire
+//----------------------------------------------------------------------
+static void RunDesignNoteScanTest()
+{
+	std::printf( "[design-note] AgentSession::ComputeDesignNote red-proofs\n" );
+
+	const std::string docA3NoScalar =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n\n"
+		"standard_object\n{\n\tname c\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docA3NoScalar );
+		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
+		       note.find( "scalar_painter" ) != std::string::npos,
+		       "RED-PROVE A: 3 standard_object + no scalar_painter fires condition A" );
+		Check( note.find( "geometry census" ) == std::string::npos,
+		       "...and condition B stays silent (3 < 4)" );
+	}
+
+	const std::string docA3WithScalar =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n\n"
+		"standard_object\n{\n\tname c\n}\n\n"
+		"scalar_painter\n{\n\tname r\n\tfile none\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docA3WithScalar );
+		Check( note.empty(),
+		       "GREEN-PROVE A: the SAME 3 objects + a bound scalar_painter silences condition A "
+		       "(and B stays silent, still 3 < 4) -- empty, not just A's clause missing" );
+	}
+
+	const std::string docB4AllBoxWithScalar =
+		"RISE ASCII SCENE 7\n"
+		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docB4AllBoxWithScalar );
+		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
+		       note.find( "geometry census" ) != std::string::npos &&
+		       note.find( "box_geometry" ) != std::string::npos,
+		       "RED-PROVE B: 4 standard_object all bound to box_geometry, no advanced-geometry "
+		       "chunk anywhere, fires condition B" );
+		Check( note.find( "the scalar pipe is unused" ) == std::string::npos,
+		       "...and condition A stays silent (a scalar_painter IS bound)" );
+	}
+
+	const std::string docB4WithSdf = docB4AllBoxWithScalar +
+		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docB4WithSdf );
+		Check( note.empty(),
+		       "GREEN-PROVE B: the SAME 4-box scene + an sdf_geometry chunk silences condition B "
+		       "too (A was already silenced by the scalar_painter) -- fully empty" );
+	}
+
+	const std::string docBelowThresholds =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docBelowThresholds );
+		Check( note.empty(),
+		       "GREEN-PROVE (thresholds): 2 standard_object -- below BOTH gates (3 for A, 4 for "
+		       "B) -- stays silent even with no scalar_painter and no advanced geometry" );
+	}
+
+	const std::string docCombined =
+		"RISE ASCII SCENE 7\n"
+		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
+	{
+		const std::string note = AgentSession::ComputeDesignNote( docCombined );
+		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
+		       note.find( "the scalar pipe is unused" ) != std::string::npos &&
+		       note.find( "geometry census" ) != std::string::npos,
+		       "COMBINED: 4 standard_object, no scalar_painter, no advanced geometry -- fires "
+		       "BOTH conditions into one note" );
+		// The anti-churn escape clause is load-bearing from day one (sec 2 P2)
+		// -- present regardless of which condition(s) fired.
+		Check( note.find( "ignore this note and do not churn" ) != std::string::npos,
+		       "the anti-churn escape clause is present" );
+	}
+
+	// Empty document text -> empty note (defensive; no carrier ever calls
+	// this with an empty string in practice, but the function must not
+	// mis-scan a degenerate input as a false trigger).
+	Check( AgentSession::ComputeDesignNote( std::string() ).empty(),
+	       "empty document text -> empty note" );
+}
+
+// A minimal, fully-derivable 3-sphere scene (mirrors AgentObjectMapTest.cpp's
+// kScene3 shape) with NO scalar_painter anywhere -- trips design-note
+// condition A. Needs a real rasterizer/camera/film so LoadAsciiSceneViaCst
+// actually derives (unlike RunDesignNoteScanTest's bare-CST fixtures above,
+// `validate`'s HEAD form needs a genuinely loaded session).
+static const char* const kValidateNoteTriggerScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
+//----------------------------------------------------------------------
+// Creative-richness P2 carrier test: `validate` (both the HEAD form and the
+// stateless `text` form) attaches the SAME design note the render-result
+// carrier does, via the ONE shared AgentSession::ComputeDesignNote helper --
+// present (key populated) on a triggering document, OMITTED ENTIRELY (not
+// present-but-empty) on a clean one.
+//----------------------------------------------------------------------
+static void RunValidateDesignNoteCarrierTest()
+{
+	std::printf( "[validate] design-note carrier (head form + text form)\n" );
+
+	// -- HEAD form, triggering document -------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_validate_note_trigger.RISEscene", kValidateNoteTriggerScene );
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "design-note trigger scene loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"validate\",\"params\":{}}" ), env, err ),
+				"head-form validate response parses" );
+			const JsonValue& r = env.get( "result" );
+			Check( r.has( "note" ) &&
+			       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+			       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+			       "MONEY: validate's HEAD form carries the design note on a triggering document "
+			       "(3 spheres, no scalar_painter)" );
+		}
+		std::remove( scenePath.c_str() );
+	}
+
+	// -- HEAD form, clean document (kGoodScene: 0 standard_object -- below
+	//    either gate) -- key must be OMITTED ENTIRELY, not present-empty.
+	{
+		const std::string scenePath = WriteTemp( "rise_validate_note_clean.RISEscene", kGoodScene );
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "clean scene loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"validate\",\"params\":{}}" ), env, err ),
+				"head-form validate response parses (clean scene)" );
+			const JsonValue& r = env.get( "result" );
+			Check( !r.has( "note" ),
+			       "MONEY: validate's HEAD form OMITS the `note` key entirely on a clean document "
+			       "(key absent, not an empty string)" );
+		}
+		std::remove( scenePath.c_str() );
+	}
+
+	// -- TEXT form (stateless, no head needed), triggering candidate --
+	{
+		std::unique_ptr<AgentSession> noSession;
+		AgentRpcDispatcher headless( std::move( noSession ) );
+		JsonValue p = JsonValue::MakeObject();
+		p.set( "text", JsonValue::MakeString( kValidateNoteTriggerScene ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( headless.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"validate\",\"params\":" +
+			JsonSerialize( p ) + "}" ), env, err ),
+			"text-form validate response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "validated" ).asString() == "text", "validated == \"text\"" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos,
+		       "MONEY: validate's TEXT form ALSO carries the design note on a triggering candidate "
+		       "-- the SAME shared scan, no separate implementation to drift" );
+	}
+
+	// -- TEXT form, clean candidate -- key omitted entirely.
+	{
+		std::unique_ptr<AgentSession> noSession;
+		AgentRpcDispatcher headless( std::move( noSession ) );
+		JsonValue p = JsonValue::MakeObject();
+		p.set( "text", JsonValue::MakeString( kGoodScene ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( headless.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"validate\",\"params\":" +
+			JsonSerialize( p ) + "}" ), env, err ),
+			"text-form validate response parses (clean candidate)" );
+		const JsonValue& r = env.get( "result" );
+		Check( !r.has( "note" ),
+		       "MONEY: validate's TEXT form OMITS `note` entirely on a clean candidate" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentReadValidateTest (Facet 5 slice 0a: read + schema + validate) ===\n" );
@@ -1021,6 +1242,8 @@ int main()
 	}
 
 	RunReadSchemaBatchTest();
+	RunDesignNoteScanTest();
+	RunValidateDesignNoteCarrierTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
