@@ -868,8 +868,9 @@ model**:
 > over the **total radiating support (all cells)**,
 > **q̇‴_rad(x) = max( β(t), γ(t) ) · e(x)**, with
 > β(t) = χ_r · Q̇_tot(t) / Σ_all e·V  and  γ(t) = clamp(1 − Q̇_tot/ε_Q, 0, 1),
-> with ε_Q = 10⁻²·Q̇_ref (Q̇_ref the scene's nominal heat-release rate,
-> a serialized §8 metadata value).
+> with ε_Q = 10⁻²·Q̇_ref (Q̇_ref = the peak nominal heat-release rate of the
+> case envelope, §3.9 — a derived case-record echo serialized into the §8
+> metadata).
 
 Normalizing over the **total** support (r7 correction — r6 normalized over
 reacting cells only and exempted the plume, so the global sum was
@@ -986,9 +987,11 @@ rule to the three exported aerosol terms, but not to unexported gas. Details:
 The most notorious practical trap in fire LES; specified accordingly:
 
 - **Fuel bed (bottom, source patch):** prescribe outward-into-domain fuel mass
-  flux ṁ″_F, Z=1, the complete fuel-record gas composition and injection
-  temperature/enthalpy, zero injected aerosol, and u_n=ṁ″_F/ρ_g; tangential
-  velocity is zero. The projection pressure-correction boundary is Neumann and
+  flux **ṁ″_F(t) = ṁ″_F·e(t)** — the case envelope of §3.9, identically 1
+  when the case omits it, constant on every validation/calibration case —
+  with Z=1, the complete fuel-record gas composition and injection
+  temperature/enthalpy, zero injected aerosol, and u_n=ṁ″_F(t)/ρ_g;
+  tangential velocity is zero. The projection pressure-correction boundary is Neumann and
   preserves that normal flux. The bed outside the patch is no-slip and
   **adiabatic**, with zero normal advective and molecular/SGS diffusive flux for
   every q_k, ρ_totZ, c_carbon, and c_condensed; ∂T/∂n=0. An isothermal-cold bed
@@ -1449,6 +1452,113 @@ and the strict per-fuel radiometry keep the *rendering* side honest
 independently.
 
 ---
+
+### 3.9 Case specification — the user→simulator contract (r38)
+
+§7.3 specified the simulator's outputs in detail and its inputs not at all —
+a user would have had to hand-assemble a mass flux in kg·m⁻²·s⁻¹, a domain
+box, a grid resolution, and a timestep policy, which is precisely the
+un-understandable authoring surface §1's philosophy forbids. This section
+defines the case file: **the few physically meaningful choices a user
+actually makes, with everything else derived from rules this design already
+pins.** Illustrative form (grammar not final; semantics normative):
+
+```
+fire_case
+{
+	fuel        wood_v1                 # named fuel record (§8) — all
+	                                    # thermochemistry/optics/chem by reference
+	source      pool 0.30               # circular pool, D in metres
+	                                    # (or: patch <x> <z>; every D-keyed
+	                                    # rule then uses the equivalent
+	                                    # diameter D_eq = 2·sqrt(x·z/π))
+	intensity   hrr 45                  # kW — or: mass_flux 0.011 (kg/m2/s)
+	envelope    ramp 0 3  steady 3 20  decay 20 30   # seconds; omit = steady
+	duration    30                      # simulated seconds of OUTPUT (see
+	                                    # discard/spin-up semantics below)
+	quality     standard                # draft | standard | high
+	seed        1234
+	output      frames 24               # write cadence, Hz
+}
+```
+
+**The user chooses; the tool derives.** Semantics per field:
+
+- **`fuel`** names a versioned fuel record (§8): Δh_c, s_st, W, y_form/y_s,
+  y_cond, χ_r, ρ_soot, T_pilot/T_AIT/T_ox/T_cond, the condensable
+  pseudo-species set, and the optical/chem preset references. The case file
+  never restates a fuel constant; overriding one is creating a *new named
+  record*, not editing a case (the same no-loose-tuning posture as
+  `fire_medium`, §9).
+- **`intensity`** is either the physical mass flux ṁ″_F directly, or a
+  target heat-release rate Q̇ in kW, converted through the fuel record as
+  **ṁ″_F = Q̇ / (A · Δh_c)** — complete-combustion basis, because that is
+  the basis closest to the correlations' measured chemical HRR (Heskestad,
+  D* — the residual mismatch enters L_f as (few %)^{2/5} ≈ 1–2 %, immaterial
+  to the ±15 % gates). The realized in-sim HRR is slightly lower — the
+  withheld soot energy is *mostly recovered* at burnout, so the permanent
+  deficit is y_cond·Δh_cv plus escaped-soot chemical potential, a few % for
+  wood-class fuels (§3.4's ledger). Both the nominal Q̇ and the conversion
+  are echoed into the case record.
+- **`envelope`** is the time-varying source schedule — **the
+  animation-authoring surface** (r38: without it, a fire that catches or
+  dies over a shot was inexpressible; §3.6's constant ṁ″_F becomes
+  ṁ″_F(t) = ṁ″_F · e(t)). e(t) is piecewise-linear with values in [0,1], C⁰, with
+  named phases as sugar (`ramp`/`steady`/`decay`); it is evaluated at the
+  same beginning-of-stage time as the frozen source packet (§3.7's
+  one-evaluation discipline — the envelope is part of the source, not a
+  per-RK-stage function); the low-Mach formulation
+  needs no rate restriction (acoustics are filtered by construction), but
+  knots are required to be ≥ one puffing period apart (1.5/√D Hz, §2.4) so
+  the envelope directs the fire's *strength*, not its turbulence. Ignition
+  and extinction remain the §3.3 gates' job: the envelope schedules fuel
+  supply; whether and where it burns is physics. **Every §3.8 validation row
+  uses a constant envelope** — the empirical correlations are steady-state
+  statements, and a case with a non-constant envelope is not eligible as a
+  validation or calibration case.
+- **`quality`** maps to the §3.7 resolution rule: **draft/standard/high =
+  D*/δx = 4/10/16** (the FDS Validation Guide band's floor, middle, and
+  ceiling), with a numeric form `quality dstar <value>` accepted for any
+  value inside [4, 16] — required by §3.4's calibration protocol, whose
+  cross-prediction runs at D*/δx ∈ {6, 10, 14} and must be expressible as
+  case files. (Resolution is a cost/accuracy dial, not a physical tune, so
+  the numeric form does not breach the no-loose-tuning posture.) The candle
+  DNS regime (§3.7) is selected by a dedicated `candle` quality tier, not
+  by pushing this dial.
+- **Derived, not asked** — computed by the tool from §3.6/§3.7/§3.8 rules
+  and **echoed verbatim into the case record for reproducibility**: domain
+  extents (lateral ≥ 2–3 D per side; top ≥ 2 L_f via Heskestad from the
+  peak Q̇, or ≥ 4–5 L_f when the case is tagged as a plume-law validation
+  run), δx from D* at the chosen tier, the Δt policy (CFL/buoyant/diffusive
+  limits), the **discard/spin-up policy** — for constant-envelope
+  (statistics-eligible) cases, the §3.8 discard of ≥ 5 flow-through times
+  precedes the output clock; for animation cases starting from a cold
+  source (e(0) = 0, the fire catches on camera) there is *nothing to
+  discard* — output starts at t = 0 from quiescent ambient; and for
+  animation cases with e(0) > 0 the tool runs a **pre-roll at constant
+  e(0)** of ≥ 5 flow-through times before the envelope clock starts, so the
+  shot opens on a developed fire rather than a numerical transient — the
+  symmetry-breaking perturbation (from `seed`), and Q̇_ref (= the peak
+  nominal Q̇ of the envelope, feeding §3.5's ε_Q and the §8 case record).
+- **Reproducibility and provenance:** the complete case file — authored
+  fields *and* derived echoes — is canonically serialized and hashed, and
+  the §8 manifest gains an explicit **`case_record_id`** field carrying that
+  hash (distinct from the qualification gate-evidence IDs, which record how
+  the *producer* was validated, not which case ran), so a grid sequence
+  names the exact case that produced it. Same case + same build + same
+  seed + same thread count reproduces the sequence per §3.8's determinism
+  policy (bitwise at fixed thread count with ordered reductions).
+- **Looping is explicitly out of scope.** A physically simulated fire never
+  tiles in time; authoring a loop (cross-fade selection, phase-aligned cuts
+  on the puffing period) is a content-tooling problem over finished
+  sequences, recorded as possible Phase-D work, and no case-file field
+  pretends otherwise.
+
+What this section deliberately does **not** add: any parameter without units
+and a physical meaning, any per-scene optical or chemical tune (those live
+in versioned records), wind (§1 non-goal), or a second way to specify
+anything the fuel record already pins.
+
 
 ## 4. Radiometry — mapping fields to light
 
@@ -3201,7 +3311,9 @@ carry indistinguishable metadata. Each sequence stores:
   and constant active tiles containing a negative value, NaN, +Inf, −Inf, zero/
   out-of-domain T, and a nonfinite velocity component, plus value-off leaf/tile
   payloads containing hot, negative, or NaN data;
-- per-fuel y_form, y_s, y_cond, χ_r, T_pilot/T_AIT, Q̇_ref, ρ_soot,
+- the §3.9 **`case_record_id`** (hash of the complete case file, authored +
+  derived fields) and its Q̇_ref echo;
+- per-fuel y_form, y_s, y_cond, χ_r, T_pilot/T_AIT, ρ_soot,
   oxidation constants (T_ox, 2.667 kg-O₂/kg, 3.667 kg-CO₂/kg, 32.8 MJ/kg),
   channel scales, calibration dataset/protocol IDs, and scale/resolution
   cross-prediction results;

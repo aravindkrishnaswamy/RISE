@@ -50,6 +50,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/PathGuidingField.cpp"
     "${RISE_LIB}/Utilities/Optics.cpp"
     "${RISE_LIB}/Utilities/PlanckRadiance.cpp"
+    "${RISE_LIB}/Utilities/GaussLegendreQuadrature.cpp"
     "${RISE_LIB}/Utilities/OrthonormalBasis3D.cpp"
     "${RISE_LIB}/Utilities/Primes.cpp"
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"

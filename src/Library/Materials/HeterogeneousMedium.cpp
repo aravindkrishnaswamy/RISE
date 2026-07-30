@@ -18,6 +18,7 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/PlanckRadiance.h"
+#include "../Utilities/GaussLegendreQuadrature.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
@@ -205,11 +206,11 @@ namespace
 		const int halfD = static_cast<int>( depth ) / 2;
 
 		for( int z = -halfD; z < static_cast<int>( depth ) - halfD; ++z ) {
-			const Scalar nz = Scalar(z) / Scalar(depth) + 0.5;
+			const Scalar nz = (Scalar(z + halfD) + 0.5) / Scalar(depth);
 			for( int y = -halfH; y < static_cast<int>( height ) - halfH; ++y ) {
-				const Scalar ny = Scalar(y) / Scalar(height) + 0.5;
+				const Scalar ny = (Scalar(y + halfH) + 0.5) / Scalar(height);
 				for( int x = -halfW; x < static_cast<int>( width ) - halfW; ++x ) {
-					const Scalar nx = Scalar(x) / Scalar(width) + 0.5;
+					const Scalar nx = (Scalar(x + halfW) + 0.5) / Scalar(width);
 					const Point3 worldPt(
 						bboxMin.x + nx * extent.x,
 						bboxMin.y + ny * extent.y,
@@ -1371,6 +1372,9 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		  ? m_hotAbsorptionMass633 / (1.0 - sootAlbedoHot)
 		  : 0.0 ),
   m_coolExtinctionMass633( smokeKmCarbon ),
+  m_emissionBinSize( 0, 0, 0 ),
+  m_emissionBinVolume( 0.0 ),
+  m_thermalEmissionImportance( 0.0 ),
   m_valid( false )
 {
 	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
@@ -1422,12 +1426,177 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	InitializeTrackingAccessor( *trackingAccessor, *m_pCarbonAccessor );
 	safe_release( trackingAccessor );
 	m_valid = true;
+	if( !BuildThermalEmissionImportance() ) {
+		m_valid = false;
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: failed to build finite thermal-emission importance" );
+	}
 }
 
 MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 {
 	safe_release( m_pCarbonAccessor );
 	safe_release( m_pTemperatureAccessor );
+}
+
+unsigned int MultichannelHeterogeneousMedium::EmissionBinIndex(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	return z * m_volWidth * m_volHeight + y * m_volWidth + x;
+}
+
+bool MultichannelHeterogeneousMedium::EmissionBinAtPoint(
+	const Point3& point,
+	unsigned int& x,
+	unsigned int& y,
+	unsigned int& z
+	) const
+{
+	if( point.x < m_bboxMin.x || point.x > m_bboxMax.x ||
+		point.y < m_bboxMin.y || point.y > m_bboxMax.y ||
+		point.z < m_bboxMin.z || point.z > m_bboxMax.z ) return false;
+
+	const Scalar fx = (point.x - m_bboxMin.x) / m_emissionBinSize.x;
+	const Scalar fy = (point.y - m_bboxMin.y) / m_emissionBinSize.y;
+	const Scalar fz = (point.z - m_bboxMin.z) / m_emissionBinSize.z;
+	x = fx >= Scalar(m_volWidth) ? m_volWidth - 1u : static_cast<unsigned int>( floor(fx) );
+	y = fy >= Scalar(m_volHeight) ? m_volHeight - 1u : static_cast<unsigned int>( floor(fy) );
+	z = fz >= Scalar(m_volDepth) ? m_volDepth - 1u : static_cast<unsigned int>( floor(fz) );
+	return true;
+}
+
+Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	Scalar maxCarbon = 0.0;
+	Scalar maxTemperature = 0.0;
+	const int halfW = static_cast<int>(m_volWidth / 2u);
+	const int halfH = static_cast<int>(m_volHeight / 2u);
+	const int halfD = static_cast<int>(m_volDepth / 2u);
+	for( int dz = -1; dz <= 1; ++dz ) {
+		for( int dy = -1; dy <= 1; ++dy ) {
+			for( int dx = -1; dx <= 1; ++dx ) {
+				const int ix = static_cast<int>(x) + dx - halfW;
+				const int iy = static_cast<int>(y) + dy - halfH;
+				const int iz = static_cast<int>(z) + dz - halfD;
+				maxCarbon = fmax( maxCarbon,
+					m_pCarbonAccessor->GetValue( ix, iy, iz ) );
+				maxTemperature = fmax( maxTemperature,
+					m_pTemperatureAccessor->GetValue( ix, iy, iz ) );
+			}
+		}
+	}
+	if( maxCarbon <= 0.0 || maxTemperature <= 0.0 ) return 0.0;
+
+	const Scalar blueScale = 633.0 / 380.0;
+	const Scalar hotAbsorptionMax = m_hotAbsorptionMass633 * blueScale;
+	const Scalar coolAbsorptionMax = m_coolExtinctionMass633 *
+		(1.0 - m_smokeAlbedoCarbon) * pow( blueScale, m_smokeNCarbon );
+	const Scalar absorptionMax = fmax( hotAbsorptionMax, coolAbsorptionMax );
+
+	// Wien's displacement gives the maximum of B_lambda(T) on the band.
+	// Clamp that analytic peak to [380,780]; separating the absorption and
+	// Planck maxima is intentionally conservative.
+	const Scalar wienPeakNM = 2.897771955e6 / maxTemperature;
+	const Scalar planckPeakNM = fmax( Scalar(380.0), fmin( Scalar(780.0), wienPeakNM ) );
+	const Scalar planckMax = PlanckSpectralRadianceNM(
+		planckPeakNM, maxTemperature );
+	return m_emissionBinVolume * Scalar(400.0) * m_sceneUnitMeters *
+		maxCarbon * absorptionMax * planckMax;
+}
+
+bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
+{
+	if( !m_pMajorantGrid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) {
+		return false;
+	}
+	m_emissionBinSize = Vector3(
+		m_bboxExtent.x / Scalar(m_volWidth),
+		m_bboxExtent.y / Scalar(m_volHeight),
+		m_bboxExtent.z / Scalar(m_volDepth) );
+	m_emissionBinVolume = m_emissionBinSize.x *
+		m_emissionBinSize.y * m_emissionBinSize.z;
+	m_thermalEmissionImportance = 0.0;
+	if( !RISE::IsFiniteDouble( m_emissionBinVolume ) || m_emissionBinVolume <= 0.0 ) {
+		return false;
+	}
+
+	const unsigned int binCount = m_volWidth * m_volHeight * m_volDepth;
+	m_emissionBinWeights.assign( binCount, 0.0 );
+	const unsigned int cellCount = m_pMajorantGrid->GetGridX() *
+		m_pMajorantGrid->GetGridY() * m_pMajorantGrid->GetGridZ();
+	m_emissionCells.clear();
+	m_emissionCells.resize( cellCount );
+	std::vector<std::vector<double> > cellWeights( cellCount );
+
+	static const Scalar spatialNodes[2] = {
+		Scalar(0.5) * (Scalar(1.0) - Scalar(1.0) / sqrt(Scalar(3.0))),
+		Scalar(0.5) * (Scalar(1.0) + Scalar(1.0) / sqrt(Scalar(3.0)))
+	};
+	static const Scalar supportMix = Scalar(1.0) / Scalar(1024.0);
+
+	for( unsigned int z = 0; z < m_volDepth; ++z ) {
+		for( unsigned int y = 0; y < m_volHeight; ++y ) {
+			for( unsigned int x = 0; x < m_volWidth; ++x ) {
+				const Point3 binMin(
+					m_bboxMin.x + Scalar(x) * m_emissionBinSize.x,
+					m_bboxMin.y + Scalar(y) * m_emissionBinSize.y,
+					m_bboxMin.z + Scalar(z) * m_emissionBinSize.z );
+				Scalar proposalAverage = 0.0;
+				for( unsigned int gz = 0; gz < 2; ++gz ) {
+					for( unsigned int gy = 0; gy < 2; ++gy ) {
+						for( unsigned int gx = 0; gx < 2; ++gx ) {
+							const Point3 samplePoint(
+								binMin.x + spatialNodes[gx] * m_emissionBinSize.x,
+								binMin.y + spatialNodes[gy] * m_emissionBinSize.y,
+								binMin.z + spatialNodes[gz] * m_emissionBinSize.z );
+							proposalAverage += GaussLegendre21::IntegrateVisibleBand(
+								[this, &samplePoint]( const Scalar nm ) {
+									return GetThermalEmissionNM( samplePoint, nm );
+								} ) / Scalar(8.0);
+						}
+					}
+				}
+				const Scalar proposal = m_emissionBinVolume * proposalAverage;
+				const Scalar upper = EmissionBinUpperBound( x, y, z );
+				const Scalar weight = (Scalar(1.0) - supportMix) * proposal +
+					supportMix * upper;
+				if( !RISE::IsFiniteDouble( proposal ) || proposal < 0.0 ||
+					!RISE::IsFiniteDouble( upper ) || upper < 0.0 ||
+					!RISE::IsFiniteDouble( weight ) || weight < 0.0 ) return false;
+
+				const unsigned int binIndex = EmissionBinIndex( x, y, z );
+				m_emissionBinWeights[binIndex] = static_cast<double>( weight );
+				const Point3 center(
+					binMin.x + Scalar(0.5) * m_emissionBinSize.x,
+					binMin.y + Scalar(0.5) * m_emissionBinSize.y,
+					binMin.z + Scalar(0.5) * m_emissionBinSize.z );
+				unsigned int cx = 0, cy = 0, cz = 0;
+				if( !m_pMajorantGrid->WorldToCell( center, cx, cy, cz ) ) return false;
+				const unsigned int cellIndex = cz * m_pMajorantGrid->GetGridX() *
+					m_pMajorantGrid->GetGridY() + cy * m_pMajorantGrid->GetGridX() + cx;
+				m_emissionCells[cellIndex].binIndices.push_back( binIndex );
+				cellWeights[cellIndex].push_back( static_cast<double>( weight ) );
+			}
+		}
+	}
+
+	std::vector<double> topWeights( cellCount, 0.0 );
+	for( unsigned int i = 0; i < cellCount; ++i ) {
+		m_emissionCells[i].binAlias.Build( cellWeights[i] );
+		topWeights[i] = m_emissionCells[i].binAlias.TotalWeight();
+	}
+	m_emissionCellAlias.Build( topWeights );
+	m_thermalEmissionImportance = static_cast<Scalar>(
+		m_emissionCellAlias.TotalWeight() );
+	return RISE::IsFiniteDouble( m_thermalEmissionImportance ) &&
+		m_thermalEmissionImportance >= 0.0;
 }
 
 Scalar MultichannelHeterogeneousMedium::LookupChannel(
@@ -1444,10 +1613,13 @@ Scalar MultichannelHeterogeneousMedium::LookupChannel(
 	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
 	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
 	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
+	const Scalar halfW = Scalar(m_volWidth / 2u);
+	const Scalar halfH = Scalar(m_volHeight / 2u);
+	const Scalar halfD = Scalar(m_volDepth / 2u);
 	return accessor.GetValue(
-		(nx - 0.5) * Scalar(m_volWidth),
-		(ny - 0.5) * Scalar(m_volHeight),
-		(nz - 0.5) * Scalar(m_volDepth) );
+		nx * Scalar(m_volWidth) - 0.5 - halfW,
+		ny * Scalar(m_volHeight) - 0.5 - halfH,
+		nz * Scalar(m_volDepth) - 0.5 - halfD );
 }
 
 Scalar MultichannelHeterogeneousMedium::LookupCarbon( const Point3& worldPt ) const
@@ -1589,4 +1761,60 @@ Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
 	return sigmaA > 0.0
 		? sigmaA * PlanckSpectralRadianceNM( nm, LookupTemperature( pt ) )
 		: 0.0;
+}
+
+bool MultichannelHeterogeneousMedium::SampleThermalEmission(
+	ISampler& sampler,
+	Point3& point,
+	Scalar& pdf
+	) const
+{
+	pdf = 0.0;
+	if( !m_valid || !m_emissionCellAlias.IsValid() ||
+		m_thermalEmissionImportance <= 0.0 ) return false;
+
+	const unsigned int cellIndex = m_emissionCellAlias.Sample( sampler.Get1D() );
+	if( cellIndex >= m_emissionCells.size() ) return false;
+	const EmissionCell& cell = m_emissionCells[cellIndex];
+	if( !cell.binAlias.IsValid() || cell.binIndices.empty() ) return false;
+	const unsigned int localBin = cell.binAlias.Sample( sampler.Get1D() );
+	if( localBin >= cell.binIndices.size() ) return false;
+	const unsigned int binIndex = cell.binIndices[localBin];
+	const unsigned int xy = m_volWidth * m_volHeight;
+	const unsigned int z = binIndex / xy;
+	const unsigned int rem = binIndex - z * xy;
+	const unsigned int y = rem / m_volWidth;
+	const unsigned int x = rem - y * m_volWidth;
+	point = Point3(
+		m_bboxMin.x + (Scalar(x) + sampler.Get1D()) * m_emissionBinSize.x,
+		m_bboxMin.y + (Scalar(y) + sampler.Get1D()) * m_emissionBinSize.y,
+		m_bboxMin.z + (Scalar(z) + sampler.Get1D()) * m_emissionBinSize.z );
+	pdf = ThermalEmissionPdf( point );
+	return pdf > 0.0 && RISE::IsFiniteDouble( pdf );
+}
+
+Scalar MultichannelHeterogeneousMedium::ThermalEmissionPdf(
+	const Point3& point
+	) const
+{
+	if( !m_valid || m_thermalEmissionImportance <= 0.0 ||
+		m_emissionBinVolume <= 0.0 ) return 0.0;
+	unsigned int x = 0, y = 0, z = 0;
+	if( !EmissionBinAtPoint( point, x, y, z ) ) return 0.0;
+	const double weight = m_emissionBinWeights[EmissionBinIndex( x, y, z )];
+	return static_cast<Scalar>( weight ) /
+		(m_thermalEmissionImportance * m_emissionBinVolume);
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionBinProbability(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	if( x >= m_volWidth || y >= m_volHeight || z >= m_volDepth ||
+		m_thermalEmissionImportance <= 0.0 ) return 0.0;
+	return static_cast<Scalar>(
+		m_emissionBinWeights[EmissionBinIndex( x, y, z )] ) /
+		m_thermalEmissionImportance;
 }

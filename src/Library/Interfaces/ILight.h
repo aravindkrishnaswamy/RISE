@@ -23,6 +23,8 @@
 #include "IKeyframable.h"
 #include "IBSDF.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/Color/RGBSpectra.h"
+#include "../Utilities/GaussLegendreQuadrature.h"
 
 namespace RISE
 {
@@ -164,6 +166,19 @@ namespace RISE
 			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount );
 			(void)nm;  // default fallback discards wavelength
 			return Scalar(0.2126) * amount.r + Scalar(0.7152) * amount.g + Scalar(0.0722) * amount.b;
+		}
+
+		//! Watt-dimensioned visible-band importance proxy for positional-light
+		//! selection.  `radiantExitance()` has already integrated the light's
+		//! spatial/directional emission; its legacy RGB value is reconstructed
+		//! with the renderer's versioned illuminant spectrum and integrated by
+		//! the single shared GL21 [380,780] rule used by fire-medium importance.
+		virtual Scalar EstimateVisibleBandPower() const
+		{
+			const RGBIlluminantSpectrum spectrum =
+				RGBIlluminantSpectrum::FromRGB( radiantExitance() );
+			return GaussLegendre21::IntegrateVisibleBand(
+				[&spectrum]( const Scalar nm ) { return spectrum.Eval( nm ); } );
 		}
 	};
 }

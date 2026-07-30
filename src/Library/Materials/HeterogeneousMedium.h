@@ -57,6 +57,8 @@
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/MajorantGrid.h"
+#include "../Utilities/AliasTable.h"
+#include <vector>
 
 namespace RISE
 {
@@ -315,6 +317,18 @@ namespace RISE
 		Scalar m_hotAbsorptionMass633;
 		Scalar m_hotExtinctionMass633;
 		Scalar m_coolExtinctionMass633;
+
+		struct EmissionCell
+		{
+			AliasTable binAlias;
+			std::vector<unsigned int> binIndices;
+		};
+		AliasTable m_emissionCellAlias;
+		std::vector<EmissionCell> m_emissionCells;
+		std::vector<double> m_emissionBinWeights;
+		Vector3 m_emissionBinSize;
+		Scalar m_emissionBinVolume;
+		Scalar m_thermalEmissionImportance;
 		bool m_valid;
 
 		virtual ~MultichannelHeterogeneousMedium();
@@ -329,6 +343,24 @@ namespace RISE
 			Scalar sootEm,
 			Scalar sootDensity
 			);
+
+		bool BuildThermalEmissionImportance();
+		unsigned int EmissionBinIndex(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
+			) const;
+		bool EmissionBinAtPoint(
+			const Point3& point,
+			unsigned int& x,
+			unsigned int& y,
+			unsigned int& z
+			) const;
+		Scalar EmissionBinUpperBound(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
+			) const;
 
 	public:
 		MultichannelHeterogeneousMedium(
@@ -382,6 +414,36 @@ namespace RISE
 			const Point3& pt,
 			const Scalar nm
 			) const override;
+		Scalar GetThermalEmissionImportance() const override
+		{
+			return m_thermalEmissionImportance;
+		}
+		Scalar GetThermalEmissionPowerProxy() const override
+		{
+			return FOUR_PI * m_sceneUnitMeters * m_sceneUnitMeters *
+				m_thermalEmissionImportance;
+		}
+		bool SampleThermalEmission(
+			ISampler& sampler,
+			Point3& point,
+			Scalar& pdf
+			) const override;
+		Scalar ThermalEmissionPdf( const Point3& point ) const override;
+
+		/// Structural gate accessors for the exact emission-bin partition.
+		void GetThermalEmissionBinDimensions(
+			unsigned int& x,
+			unsigned int& y,
+			unsigned int& z
+			) const
+		{
+			x = m_volWidth; y = m_volHeight; z = m_volDepth;
+		}
+		Scalar GetThermalEmissionBinProbability(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
+			) const;
 	};
 }
 

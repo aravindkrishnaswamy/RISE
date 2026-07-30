@@ -173,6 +173,22 @@ namespace RISE
 			Point3				position;	///< Representative position for distance estimates
 		};
 
+		/// One wavelength-independent endpoint draw from a labeled emissive
+		/// medium.  `pdf` is q_m^V p_m(y), per scene-volume unit.
+		struct VolumeEmissionSample
+		{
+			const IMedium*	pMedium;
+			Point3			point;
+			Scalar			mediumSelectionPdf;
+			Scalar			pointPdf;
+			Scalar			pdf;
+
+			VolumeEmissionSample() :
+			  pMedium( 0 ), point( 0, 0, 0 ), mediumSelectionPdf( 0 ),
+			  pointPdf( 0 ), pdf( 0 )
+			{}
+		};
+
 		class LightSampler : public virtual Reference
 		{
 		protected:
@@ -191,6 +207,8 @@ namespace RISE
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
+			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
+			AliasTable					volumeEmissionAlias;	///< q_m^V proportional to W_m
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -434,6 +452,39 @@ namespace RISE
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
+
+			/// Draw a labeled thermal-emission endpoint using q_m^V p_m(y).
+			bool SampleVolumeEmission(
+				ISampler& sampler,
+				VolumeEmissionSample& sample
+				) const;
+
+			/// Evaluate the same labeled endpoint density without sampling.
+			Scalar VolumeEmissionPdf(
+				const IMedium& medium,
+				const Point3& point
+				) const;
+
+			/// Standalone Phase-B volume-NEE estimator.  It is deliberately not
+			/// added to EvaluateDirectLightingNM until the following MIS-partition
+			/// gate can weight the competing march contribution.
+			Scalar EvaluateVolumeDirectLightingNM(
+				const RayIntersectionGeometric& ri,
+				const IBSDF& receiver,
+				const Scalar nm,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IObject* pShadingObject,
+				const IMedium* pMedium,
+				const bool isVolumeScatter,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			unsigned int GetVolumeEmissionMediumCount() const
+			{
+				return static_cast<unsigned int>( volumeEmissionMedia.size() );
+			}
 
 			/// Returns the alias-table selection probability for a given
 			/// mesh luminary.  Used for MIS weight computation when a

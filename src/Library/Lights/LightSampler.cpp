@@ -220,13 +220,16 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	const bool bSceneHasObjectMedia,
 	const Evaluator& evaluator,
 	typename Evaluator::Value& outTr,
-	const IORStack* pOriginStack
+	const IORStack* pOriginStack,
+	const IMedium** pEndpointMedium
 	)
 {
 	typename Evaluator::Value Tr = evaluator.Identity();
 	outTr = evaluator.Zero();
+	if( pEndpointMedium ) *pEndpointMedium = 0;
 	if( maxDist <= 0 ) {
 		outTr = Tr;
+		if( pEndpointMedium ) *pEndpointMedium = pOriginMedium;
 		return true;
 	}
 	if( !pScene ) {
@@ -253,6 +256,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 				evaluator, *pMedium, ray, maxDist, Tr ) ) return false;
 		}
 		outTr = Tr;
+		if( pEndpointMedium ) *pEndpointMedium = pMedium;
 		return true;
 	}
 
@@ -301,6 +305,9 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	{
 		if( !(segStart < maxDist) ) {
 			outTr = Tr;
+			if( pEndpointMedium ) {
+				*pEndpointMedium = stack.top() ? stack.top() : pFallbackMedium;
+			}
 			return true;
 		}
 
@@ -329,6 +336,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 					evaluator, *pActive, segRay, remaining, Tr ) ) return false;
 			}
 			outTr = Tr;
+			if( pEndpointMedium ) *pEndpointMedium = pActive;
 			return true;
 		}
 		if( ri.geometric.surfaceRange >= RISE_INFINITY ) {
@@ -346,6 +354,7 @@ bool EvaluateShadowMediumTransmittanceImpl(
 					evaluator, *pActive, segRay, remaining, Tr ) ) return false;
 			}
 			outTr = Tr;
+			if( pEndpointMedium ) *pEndpointMedium = pActive;
 			return true;
 		}
 
@@ -406,7 +415,7 @@ bool RISE::Implementation::EvaluateShadowMediumTransmittance(
 {
 	return EvaluateShadowMediumTransmittanceImpl(
 		ray, maxDist, pOriginMedium, pOriginMediumObject, pScene,
-		bSceneHasObjectMedia, ShadowTransmittanceRGB(), outTr, pOriginStack );
+		bSceneHasObjectMedia, ShadowTransmittanceRGB(), outTr, pOriginStack, 0 );
 }
 
 bool RISE::Implementation::EvaluateShadowMediumTransmittanceNM(
@@ -423,7 +432,7 @@ bool RISE::Implementation::EvaluateShadowMediumTransmittanceNM(
 {
 	return EvaluateShadowMediumTransmittanceImpl(
 		ray, maxDist, pOriginMedium, pOriginMediumObject, pScene,
-		bSceneHasObjectMedia, ShadowTransmittanceNM( nm ), outTr, pOriginStack );
+		bSceneHasObjectMedia, ShadowTransmittanceNM( nm ), outTr, pOriginStack, 0 );
 }
 
 static RISEPel EvalShadowTransmittance(
@@ -722,12 +731,23 @@ void LightSampler::Prepare(
 	// evaluation is skipped entirely.
 	bSceneHasObjectMedia = false;
 	bSceneHasObjectFireMedia = false;
+	volumeEmissionMedia.clear();
 	{
 		struct MediaScan : public IEnumCallback<IObject>
 		{
 			bool found;
 			bool foundFire;
+			std::vector<const IMedium*> emitters;
 			MediaScan() : found(false), foundFire(false) {}
+			void AddEmitter( const IMedium* medium )
+			{
+				if( !medium || medium->GetThermalEmissionImportance() <= 0.0 ) return;
+				for( std::vector<const IMedium*>::const_iterator i = emitters.begin();
+					i != emitters.end(); ++i ) {
+					if( *i == medium ) return;
+				}
+				emitters.push_back( medium );
+			}
 			bool operator()( const IObject& obj )
 			{
 				const IMedium* medium = obj.GetInteriorMedium();
@@ -735,17 +755,26 @@ void LightSampler::Prepare(
 					found = true;
 					if( medium->IsFireMedium() ) {
 						foundFire = true;
-						return false;  // both answers are now final
 					}
+					AddEmitter( medium );
 				}
-				return true;  // continue
+				return true;
 			}
 		};
 		MediaScan scan;
 		scene.GetObjects()->EnumerateObjects( scan );
 		bSceneHasObjectMedia = scan.found;
 		bSceneHasObjectFireMedia = scan.foundFire;
+		const IMedium* globalMedium = scene.GetGlobalMedium();
+		scan.AddEmitter( globalMedium );
+		volumeEmissionMedia.swap( scan.emitters );
 	}
+	std::vector<double> volumeWeights( volumeEmissionMedia.size(), 0.0 );
+	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
+		volumeWeights[i] = static_cast<double>(
+			volumeEmissionMedia[i]->GetThermalEmissionImportance() );
+	}
+	volumeEmissionAlias.Build( volumeWeights );
 
 	// Compute scene bounding sphere from visible objects' world AABBs.
 	// Used by `SampleEnvLightEmission` to place the env-light emission
@@ -1904,6 +1933,94 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	}
 
 	return result;
+}
+
+bool LightSampler::SampleVolumeEmission(
+	ISampler& sampler,
+	VolumeEmissionSample& sample
+	) const
+{
+	sample = VolumeEmissionSample();
+	if( !volumeEmissionAlias.IsValid() || volumeEmissionMedia.empty() ) return false;
+	const unsigned int mediumIndex = volumeEmissionAlias.Sample( sampler.Get1D() );
+	if( mediumIndex >= volumeEmissionMedia.size() ) return false;
+	sample.pMedium = volumeEmissionMedia[mediumIndex];
+	sample.mediumSelectionPdf = static_cast<Scalar>(
+		volumeEmissionAlias.Pdf( mediumIndex ) );
+	if( !sample.pMedium || sample.mediumSelectionPdf <= 0.0 ||
+		!sample.pMedium->SampleThermalEmission(
+			sampler, sample.point, sample.pointPdf ) ) {
+		sample = VolumeEmissionSample();
+		return false;
+	}
+	sample.pdf = sample.mediumSelectionPdf * sample.pointPdf;
+	return RISE::IsFiniteDouble( sample.pdf ) && sample.pdf > 0.0;
+}
+
+Scalar LightSampler::VolumeEmissionPdf(
+	const IMedium& medium,
+	const Point3& point
+	) const
+{
+	if( !volumeEmissionAlias.IsValid() ) return 0.0;
+	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
+		if( volumeEmissionMedia[i] == &medium ) {
+			return static_cast<Scalar>( volumeEmissionAlias.Pdf(i) ) *
+				medium.ThermalEmissionPdf( point );
+		}
+	}
+	return 0.0;
+}
+
+Scalar LightSampler::EvaluateVolumeDirectLightingNM(
+	const RayIntersectionGeometric& ri,
+	const IBSDF& receiver,
+	const Scalar nm,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const IObject* pShadingObject,
+	const IMedium* pMedium,
+	const bool isVolumeScatter,
+	const IObject* pMediumObject,
+	const IORStack* pMediumStack
+	) const
+{
+	if( !pPreparedScene || !pPreparedLuminaries ) return 0.0;
+	VolumeEmissionSample endpoint;
+	if( !SampleVolumeEmission( sampler, endpoint ) ) return 0.0;
+
+	Vector3 direction = Vector3Ops::mkVector3(
+		endpoint.point, ri.ptIntersection );
+	const Scalar distance = Vector3Ops::NormalizeMag( direction );
+	if( !RISE::IsFiniteDouble( distance ) || distance <= 0.0 ) return 0.0;
+	const Scalar receiverCosine = isVolumeScatter ? Scalar(1.0) :
+		Vector3Ops::Dot( direction, ri.vNormal );
+	if( receiverCosine <= 0.0 ) return 0.0;
+
+	const Ray shadowRay( ri.ptIntersection, direction );
+	if( (!pShadingObject || pShadingObject->DoesReceiveShadows()) &&
+		caster.CastShadowRay( shadowRay, std::nextafter(distance, Scalar(0.0)) ) ) {
+		return 0.0;
+	}
+
+	Scalar transmittance = 0.0;
+	const IMedium* endpointMedium = 0;
+	if( !EvaluateShadowMediumTransmittanceImpl(
+		shadowRay, distance, pMedium, pMediumObject, pPreparedScene,
+		bSceneHasObjectMedia, ShadowTransmittanceNM(nm), transmittance,
+		pMediumStack, &endpointMedium ) ) return 0.0;
+	// Innermost-exclusive support: an outer medium's labeled draw can land
+	// inside a nested medium.  It remains a valid sample at the original pdf,
+	// but its contribution is zero rather than being renormalized.
+	if( endpointMedium != endpoint.pMedium ) return 0.0;
+
+	const Scalar emission = endpoint.pMedium->GetThermalEmissionNM(
+		endpoint.point, nm );
+	if( emission <= 0.0 || transmittance <= 0.0 ) return 0.0;
+	const Scalar response = receiver.valueNM( direction, ri, nm );
+	if( response <= 0.0 ) return 0.0;
+	return response * receiverCosine * transmittance * emission /
+		(distance * distance * endpoint.pdf);
 }
 
 Scalar LightSampler::EvaluateDirectLightingNM(

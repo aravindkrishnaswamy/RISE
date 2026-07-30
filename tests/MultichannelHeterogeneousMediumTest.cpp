@@ -692,8 +692,8 @@ namespace
 		// carbon*k(phi(T)) is large in the interior.  A grid built from the
 		// nonlinear product's knots is non-conservative; the required bound
 		// is max_phi(k) times the carbon-only lattice majorant.
-		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 1.0, -2.0, 0.0, 0.0 );
-		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 700.0, 400.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 1.5, -2.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 600.0, 400.0, 0.0, 0.0 );
 		const Scalar targetHotMassExtinction = 100.0;
 		const Scalar sootEm = targetHotMassExtinction * 633.0e-9 * 1800.0 /
 			(6.0 * PI * 1.0e-3);
@@ -707,7 +707,7 @@ namespace
 			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
 		Check( created && fire, "adversarial majorant fixture constructs" );
 		if( fire ) {
-			const Point3 interior( 0.25, 0.25, 0.25 );
+			const Point3 interior( 0.5, 0.5, 0.5 );
 			const Scalar sigmaT = fire->GetCoefficients( interior ).sigma_t[0];
 			const Scalar majorant = fire->TrackingMajorantAt( interior );
 			Check( Near( sigmaT, 25.25, 1e-11 ),

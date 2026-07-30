@@ -303,6 +303,32 @@ namespace RISE
 			const Scalar nm
 			) const { return 0; }
 
+		/// Raw scene-space thermal-emission importance W_m.  Zero means this
+		/// medium has no volume-NEE endpoint strategy.
+		virtual Scalar GetThermalEmissionImportance() const { return 0.0; }
+
+		/// Watt-dimensioned cross-medium/light importance proxy
+		/// A_m = 4*pi*s^2*W_m.
+		virtual Scalar GetThermalEmissionPowerProxy() const { return 0.0; }
+
+		/// Draw from this medium's wavelength-independent two-level thermal
+		/// emission distribution.  `pdf` is p_m(y), per scene-volume unit.
+		virtual bool SampleThermalEmission(
+			ISampler& sampler,
+			Point3& point,
+			Scalar& pdf
+			) const
+		{
+			pdf = 0.0;
+			return false;
+		}
+
+		/// Evaluate this medium's wavelength-independent endpoint density p_m(y).
+		virtual Scalar ThermalEmissionPdf( const Point3& point ) const
+		{
+			return 0.0;
+		}
+
 	};
 }
 

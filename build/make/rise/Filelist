@@ -79,6 +79,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
+	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\

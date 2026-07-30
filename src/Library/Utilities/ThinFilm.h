@@ -71,7 +71,8 @@
 #include "Math3D/Math3D.h"		// RISE Scalar (double)
 #include "Color/Color.h"		// RISEPel / XYZPel (RGB-path albedo basis)
 #include "Color/ColorUtils.h"	// ColorUtils::XYZFromNM (renderer CMFs)
-#include "MicrofacetEnergyLUT.h"	// GL_N / GL_nodes / GL_weights (shared Kulla-Conty F_avg quadrature)
+#include "MicrofacetEnergyLUT.h"	// Kulla-Conty energy helpers
+#include "GaussLegendreQuadrature.h"
 
 namespace RISE
 {
@@ -598,10 +599,10 @@ namespace RISE
 			Scalar n2, Scalar k2 )
 		{
 			Scalar sum = Scalar( 0 );
-			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
-				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+			for( unsigned int i = 0; i < GaussLegendre21::NodeCount; ++i ) {
+				const Scalar mu = GaussLegendre21::Nodes[i];
 				sum += ReflectanceConductor( mu, wavelength_nm, n0, k0, n1, k1, thickness_nm, n2, k2 )
-					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
+					* ( Scalar( 2 ) * mu * GaussLegendre21::Weights[i] );
 			}
 			return sum;
 		}
@@ -625,10 +626,10 @@ namespace RISE
 			const StackFn& stackAt )
 		{
 			RISEPel sum( Scalar( 0 ), Scalar( 0 ), Scalar( 0 ) );
-			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
-				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+			for( unsigned int i = 0; i < GaussLegendre21::NodeCount; ++i ) {
+				const Scalar mu = GaussLegendre21::Nodes[i];
 				sum = sum + ReflectanceConductorRGBSpectral( mu, thickness_nm, stackAt )
-					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
+					* ( Scalar( 2 ) * mu * GaussLegendre21::Weights[i] );
 			}
 			return sum;
 		}

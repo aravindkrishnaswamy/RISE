@@ -709,3 +709,31 @@ it was already tried and refuted here.
   precisely because 'reference-only' specifications look harmless until
   someone has to compute with them.
 
+- **r38 (2026-07-29):** two coverage gaps raised by the project owner,
+  audited and confirmed against the document. **(1) Animation authoring:**
+  playback was thoroughly designed (§8 time machinery, §10.3 animation loop,
+  MOV linkage) but a fire that *changes over a shot* was inexpressible —
+  §3.6's source was a constant ṁ″_F. **(2) User-facing parameters:** the
+  physical data layer existed (fuel records, versioned presets) but the
+  user→simulator surface was never designed; §7.3 specified outputs only.
+  Added **§3.9, the case specification**: a small authored surface (named
+  fuel record; pool/patch source with D_eq convention; intensity as ṁ″_F or
+  target HRR via ṁ″_F = Q̇/(A·Δh_c); the **time-varying source envelope**
+  e(t) — piecewise-linear, knots ≥ one puffing period apart, evaluated at
+  the §3.7 beginning-of-stage source time, constant on every
+  validation/calibration case; duration; quality tiers draft/standard/high
+  = D*/δx 4/10/16 plus a numeric `dstar` form so §3.4's {6,10,14}
+  calibration runs are expressible; seed; cadence) with **everything else
+  derived, not asked** (domain from §3.6, δx from D*, Δt policy,
+  discard/spin-up — including the pre-roll rule for e(0)>0 shots and the
+  no-discard rule for fires that catch on camera — the seeded perturbation,
+  and Q̇_ref as the envelope's peak). The complete case file is hashed into
+  a new §8 `case_record_id` manifest field (Q̇_ref moved out of the
+  per-fuel group, where it never belonged — a fuel record cannot know a
+  case's HRR). Looping declared out of scope explicitly. A review pass
+  found four P1s in the draft (Q̇_ref ownership; underivable discard for
+  from-zero envelopes; patch sources breaking D-keyed rules; calibration
+  resolutions inexpressible) — all fixed before commit, plus the
+  conversion-basis nuance (withheld soot energy is mostly recovered at
+  burnout; the permanent deficit is condensables + escapes).
+
