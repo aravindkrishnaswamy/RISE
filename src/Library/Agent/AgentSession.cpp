@@ -327,7 +327,7 @@ namespace RISE
 						for( const std::string& v : values ) {
 							// This diagnostic consumes already-tokenised numeric
 							// text, so materialise the parsed value before its
-							// finiteness test; -ffast-math can fold ordinary FP
+							// finiteness test; bare -ffast-math could fold ordinary FP (fixed 2026-07-29)
 							// classification predicates away.
 							const double dv = std::strtod( v.c_str(), nullptr );
 							if( !LooksNumeric( v ) || !RISE::IsFiniteDouble( dv ) ) { bad = true; break; }

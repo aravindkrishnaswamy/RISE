@@ -163,7 +163,8 @@ namespace RISE
 		//! but skips the `float` type round-trip — important under
 		//! `-ffast-math` (`-ffinite-math-only`), which lets the
 		//! compiler assume any `float` value is finite and may then
-		//! constant-fold NaN/Inf bit-pattern checks to false even for
+		//! constant-fold NaN/Inf bit-pattern checks to false (bare -ffast-math; fixed
+		//! 2026-07-29) even for
 		//! genuine NaN inputs.  Use this from contexts that must
 		//! correctly round-trip NaN/Inf bit patterns end-to-end.
 		uint16_t FloatBitsToHalf( uint32_t floatBits );
