@@ -49,9 +49,10 @@ static void Check( bool condition, const std::string& testName )
 	else { failCount++; std::cout << "  FAIL: " << testName << std::endl; }
 }
 
-// Forbidden -ffast-math-foldable constructs.  A NaN/Inf VALUE compiled
-// under -ffinite-math-only is undefined-ish: comparisons may fold, so it
-// must never be used as a control-flow sentinel in a test.
+// Forbidden NaN/Inf-sentinel constructs.  Under -ffinite-math-only a NaN/Inf
+// VALUE is undefined-ish and its comparisons may fold; macOS no longer sets
+// that flag (see the header), but a NaN must never be used as a control-flow
+// sentinel in a test regardless -- one -Ofast anywhere re-arms the fold.
 static const char* kForbidden[] = {
 	"std::nan(",
 	"quiet_NaN(",

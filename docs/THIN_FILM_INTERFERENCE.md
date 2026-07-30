@@ -135,7 +135,12 @@ Admittance:   ηⱼ(s) = Nⱼ cosθⱼ ;   ηⱼ(p) = Nⱼ / cosθⱼ        (pe
 Phase:        δⱼ = (2π/λ) Nⱼ dⱼ cosθⱼ                        (complex if film absorbs)
 
 TMM (per pol):  Mⱼ = [[cosδⱼ, −i sinδⱼ/ηⱼ], [−i ηⱼ sinδⱼ, cosδⱼ]] ;  M = Π Mⱼ
-                [B;C] = M·[1; η_s] ;  Y = C/B ;  r = (η₀ − Y)/(η₀ + Y) ;  R = |r|²
+                [B;C] = M·[1; η_s] ;  r = (η₀B − C)/(η₀B + C) ;  R = |r|²
+                (Y = C/B ELIMINATED 2026-07-29: every term is carried pre-scaled
+                 by 1 (s) / cosθ (p), so no 1/cosθ appears and cosθ = 0 — exactly
+                 at the critical angle, or exactly grazing — yields |r| = 1
+                 instead of Inf/Inf = NaN.  See ThinFilm.h InterfaceReflection /
+                 AdmittanceScale / ScaledAdmittance.)
 Airy (1 film):  r = (r₀₁ + r₁s e^{+2iδ₁}) / (1 + r₀₁ r₁s e^{+2iδ₁}) ;  R = |r|²
                 with r_{ab} = (η_a − η_b)/(η_a + η_b)  (per-pol admittances)
 Unpolarized:    R = ½(R_s + R_p)
@@ -386,7 +391,9 @@ independent verification; workers adversarially reviewed; nothing pushed):
 - **P2-A** `src/Library/Utilities/ThinFilm.h` (`b75f69fd`) — production Airy evaluator
   (`ReflectanceConductor{,RGB}`, N-layer-capable), registered in the header-tracking build projects
   (VS + Xcode; `plutil` clean). Production ≡ Phase-1 oracle to 3.3e-16 (3271 asserts). A grazing
-  `cosθ=0` NaN was caught + fixed (input clamp).
+  `cosθ=0` NaN was caught + fixed (input clamp).  **Superseded 2026-07-29:** the
+  TMM/Airy reformulation makes `cosθ = 0` return R → 1 directly, so the clamp is no
+  longer the NaN defence — it is retained only for Snell-invariant representability.
 - **P2-B** GGX `eFresnelThinFilmConductor` + `film_*` slots (`fab1d8e8`) — **exact** spectral path
   (`ScatterNM`/`valueNM`; HWSS companions route through `valueNM`); RGB albedo-basis integral
   (von-Kries E→D65; the 2D LUT was **deferred** — §13.1). Conductor/Schlick paths byte-identical
@@ -431,7 +438,9 @@ thread-safety, post-fix re-review, "what's left").
   getters/setters; `tests/ThinFilmIntrospectionTest.cpp` (29 asserts). The GUI/Blender property panels
   can now view + edit a thin-film material's defining parameters.
 - **Cleared with no findings:** the §5 optics convention + numerics (incl. the principled-fix audit
-  of the grazing-`cosθ` clamp — it has a derivable bound), spectral `ScatterNM`≡`valueNM` twins +
+  of the grazing-`cosθ` clamp — it has a derivable bound; note that audit's premise
+  changed 2026-07-29, when the reformulation removed the NaN the clamp was defending
+  against), spectral `ScatterNM`≡`valueNM` twins +
   HWSS companions + BDPT/VCM/MLT safety, energy conservation, reference-counting of the new slots,
   ABI preservation, thread-safety/reentrancy (the RGB integral uses load-init CMF tables, not a lazy
   singleton), MIS lobe classification (`isDelta=false`, glossy), parser diagnostics, n/k data, and

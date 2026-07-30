@@ -13,9 +13,14 @@
 //    Magnitude tracks the worst -v across any channel of any pixel.
 //    Alpha is ignored.
 //
-//    NaN / Inf are intentionally NOT detected here — the RISE build
-//    enables -ffast-math on OSX / Linux, which makes `std::isnan` /
-//    `std::isinf` unreliable (the compiler assumes they never occur).
+//    NaN / Inf are intentionally NOT detected here — gross-scale
+//    corruption is user-visible immediately, while small negatives clamp
+//    silently to black at PNG write, so the scan targets the latter.
+//    (Historical note: this was previously also justified by -ffast-math
+//    making `std::isnan`/`std::isinf` unreliable.  That was doubly wrong:
+//    Config.Linux never enabled fast-math at all, and macOS pairs
+//    -fno-finite-math-only since 2026-07-29, so both predicates work.
+//    Adding NaN/Inf detection here is viable now if wanted.)
 //    If those are observed at runtime they typically propagate as
 //    gross-scale corruption a user notices immediately; the sanity
 //    scan focuses on the subtle case (small negatives) that quietly

@@ -82,8 +82,10 @@
 //        RESIDUAL: a FILM sitting exactly at ITS OWN critical angle is
 //        still NaN (measured) -- the layer loop's `etaj` is the one
 //        admittance not carried pre-scaled, and clearing it needs a
-//        running scale factor threaded through the matrix product.  No
-//        test exercises that geometry.  Prior to the 2026-07-29
+//        running scale factor threaded through the matrix product.  Scope:
+//        this N-layer path only; the single-film Airy form in
+//        AiryReference.h has no `etaj` and is unaffected.  No test
+//        exercises that geometry.  Prior to the 2026-07-29
 //        reformulation θ = 90° and the critical angle were BOTH NaN; the
 //        critical-angle case was a live ThinFilmTMMTest failure once
 //        -fno-finite-math-only stopped the optimiser from folding it.

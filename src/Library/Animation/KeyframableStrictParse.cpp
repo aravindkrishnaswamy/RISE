@@ -79,9 +79,13 @@ namespace RISE
 			// Layer 1: textual reject.  Skip leading whitespace and
 			// optional sign, then match `nan`/`inf` case-insensitive.
 			// `strtod` recognises these spellings as valid input, so
-			// rejecting them up-front is the only reliable path under
-			// `-ffast-math` (which lets the compiler assume strtod's
-			// result is finite and DCE any subsequent bit check).
+			// rejecting them up-front at the STRING layer is immune to any FP
+			// flag and to per-site inlining, so it remains the right design.
+			// It was historically the ONLY reliable path, under bare
+			// `-ffast-math`, which let the compiler assume strtod's result was
+			// finite and DCE any subsequent bit check; macOS pairs
+			// `-fno-finite-math-only` since 2026-07-29, so a value-level check
+			// would work too -- the string layer is still preferred.
 			const char* p = c;
 			while( IsWhitespace( *p ) ) ++p;
 			if( *p == '+' || *p == '-' ) ++p;

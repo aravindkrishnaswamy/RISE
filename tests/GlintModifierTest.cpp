@@ -974,9 +974,15 @@ static void TestNonFiniteInert()
 
 	// NaN in each scalar slot, NaN in a scale/shift component, and an
 	// Inf coverage: every one must yield a completely inert modifier.
-	// This discriminates the VOLATILE-LAUNDERED ctor guard from the
-	// plain memcpy form, which -ffast-math deletes via nofpclass
-	// parameter poison (measured: NaN coverage -> FULLY-LIT field).
+	// HISTORICAL (pre-2026-07-29): this used to DISCRIMINATE the
+	// volatile-laundered ctor guard from the plain memcpy form, which
+	// -ffast-math deleted via nofpclass parameter poison (measured then:
+	// NaN coverage -> FULLY-LIT field).  clang does not emit
+	// nofpclass(nan inf) with -fno-finite-math-only, so the plain form
+	// now passes too and this no longer discriminates the two.  The
+	// coverage itself is still valid and worth keeping -- it pins that a
+	// non-finite parameter yields an inert modifier -- but do not cite it
+	// as evidence that the laundered form is REQUIRED.
 	const GlintModifier* bad[7] = {
 		MakeMod( qnan, 0.5, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),
 		MakeMod( 2.0, qnan, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),

@@ -2036,10 +2036,14 @@ namespace RISE
 
 					if( const JsonValue* sv = params.find( "samples" ) ) {
 						if( sv->isNumber() ) {
-							// Same explicit finite-range guard idiom as every
-							// other numeric parse in this file (NOT
-							// std::isfinite -- dead code under
-							// -ffinite-math-only; see the 'samples' parse in
+							// Explicit finite-range guard.  NOTE: this is NOT
+							// equivalent to a finiteness check -- the range
+							// idiom is NaN-BLIND by construction (it catches
+							// only +/-Inf).  It was historically chosen because
+							// std::isfinite was dead code under
+							// -ffinite-math-only; that is no longer true
+							// (macOS pairs -fno-finite-math-only since
+							// 2026-07-29), and the 'samples' parse in
 							// the render dispatch above).
 							const double sd = sv->asNumber();
 							if( !( sd >= -2147483648.0 && sd <= 2147483647.0 ) )

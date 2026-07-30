@@ -761,8 +761,10 @@ public:
 		const double accMax = mAccMax.load( std::memory_order_relaxed );
 		// accMin <= kAlmostSentinel is the "did any sample land last pass"
 		// test -- compared against a large FINITE threshold rather than
-		// std::isfinite, per the class doc's -ffast-math note (value-level
-		// isfinite guards are unreliable under -ffast-math/LTO in this repo).
+		// std::isfinite.  (Pre-2026-07-29 that was REQUIRED: value-level
+		// isfinite guards were folded under -ffinite-math-only.  macOS now
+		// passes -fno-finite-math-only so isfinite works; the finite-threshold
+		// form is kept because it also catches the sentinel itself.)
 		if( accMin <= kAlmostSentinel )
 		{
 			const double range = accMax - accMin;

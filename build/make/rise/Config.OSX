@@ -69,19 +69,29 @@ CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_
 # producing `-Wc++17-attribute-extensions` warnings.  Linux already pins
 # gnu++17 in Config.Linux; OSX matches.
 #
-# -fno-finite-math-only: infs/nans are used in intersection math.  The
-# BVH slab test (Acceleration/BVH.h) computes (bbox - origin) * invDir,
-# where invDir is +/-Inf for an axis-parallel ray, and relies on IEEE
-# Inf/NaN propagation through min/max for correctness on those rays.
-# -ffast-math's implied -ffinite-math-only (plus -fno-signed-zeros)
-# lets the optimiser assume that never happens, and additionally folds
-# every std::isfinite / std::isnan guard in the tree to a constant --
-# which has produced both dead guards and false-green tests.  Android
-# already builds with this flag for the same reason (see
-# build/cmake/rise-android/CMakeLists.txt); Linux and MSVC never
-# enabled fast-math at all, so this also aligns macOS's FP semantics
-# with every other platform.  Measured cost is small; see
-# docs/INTEGRATOR_BUGFIX_FINDINGS.md "Diagnostic note - macOS -ffast-math".
+# -fno-finite-math-only.  NOTE: RISE does NOT rely on IEEE Inf in
+# intersection math -- every invDir producer deliberately substitutes a
+# finite sentinel precisely BECAUSE -ffinite-math-only made real Infs
+# unsafe (BVH::PrepRayFloat uses +/-FLT_MAX, Ray::RecomputeInvDir uses
+# +/-1e30, RISE_INFINITY is DBL_MAX).  The BVH4 slab kernel (RayBox4)
+# compiles to byte-identical NEON either way, so the flag costs nothing
+# there.  The reasons to enable it are:
+#   1. std::isfinite / std::isnan are otherwise folded to a constant and
+#      dead-code-eliminated tree-wide -- which produced both dead guards
+#      and false-green TESTS (a NaN-sentinel assertion that silently
+#      passed hid a real bug three times).
+#   2. The optimiser otherwise assumes finiteness in code that genuinely
+#      can produce Inf/NaN at runtime (HDR readers, degenerate PDFs,
+#      the thin-film TMM at a critical angle -- see below).
+#   3. It lets the finite-sentinel workarounds above stop being
+#      load-bearing, and stops new ones from being needed.
+# It earned this immediately: it surfaced a real Inf/Inf = NaN bug in the
+# thin-film TMM at exactly the critical angle (fixed in the same branch).
+# Android already builds with this flag; Linux and MSVC never enabled
+# fast-math at all, so this also aligns macOS with every other platform.
+# Measured cost: +2.7% CPU on a shading-bound render, and no resolvable
+# cost on a traversal-bound one (see docs/INTEGRATOR_BUGFIX_FINDINGS.md
+# section "SUPERSEDED 2026-07-29" for the interval and the caveats).
 #
 CXXFLAGS = -O3 -flto -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
 

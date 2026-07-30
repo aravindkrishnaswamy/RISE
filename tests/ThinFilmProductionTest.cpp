@@ -247,10 +247,11 @@ int main()
 			{ "thick strong absorber",         {1.0,0.0}, {1.80,3.50}, {2.50,3.00} },
 		};
 		int n = 0;
-		// Detection by COMPARISON, not std::isfinite: the RISE build
-		// mandates -ffast-math, under which std::isfinite is folded to
-		// true and never fires (see ThinFilmAnodizeSwatchTest.cpp and
-		// src/Library/Utilities/RasterSanityScan.h for the same rationale).
+		// Detection by COMPARISON, not std::isfinite.  (Historically this was
+		// REQUIRED: under -ffinite-math-only std::isfinite folded to true and
+		// never fired.  macOS pairs -fno-finite-math-only since 2026-07-29, so
+		// isfinite works -- the comparison form is kept because it also
+		// catches out-of-[0,1] values, which isfinite would not.)
 		// The negated in-range test  !(R >= 0 && R <= 1)  rejects NaN and
 		// +/-Inf (every comparison with NaN is false) AS WELL AS any value
 		// that escaped the evaluator's [0,1] clamp, and stays effective
@@ -283,7 +284,10 @@ int main()
 
 		// Grazing boundary: EXACTLY cosθ = 0 is the documented θ = 90°
 		// degeneracy (η_p = N/cosθ -> Inf, r_ab -> Inf/Inf = NaN in the raw
-		// math).  The evaluator clamps the cosine to NEARZERO so it returns
+		// math -- no longer true since the 2026-07-29 reformulation, which
+		// returns R -> 1 directly at cosθ = 0).  The evaluator clamps the
+		// cosine to kGrazingCosFloor (1e-6, NOT NEARZERO/1e-12 -- see
+		// ThinFilm.h) so it returns
 		// the well-conditioned physical LIMIT (R -> 1) instead of NaN/0,
 		// even if a caller passes cosθ = 0.  Verify: (a) cosθ = 0 yields a
 		// finite R in [0,1]; (b) R -> 1 monotonically as cosθ -> 0.  Uses

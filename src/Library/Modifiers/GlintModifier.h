@@ -138,7 +138,10 @@ namespace RISE
 		public:
 			//! ANY non-finite (NaN/Inf) parameter makes the modifier
 			//! INERT, decided with the volatile-laundered bit test — the
-			//! only formulation that survives the production -ffast-math
+			//! formulation that was REQUIRED under -ffinite-math-only (macOS
+			//! pairs -fno-finite-math-only since 2026-07-29, so a plain
+			//! std::isfinite works now; this is kept for uniformity).  It
+			//! survives the production -ffast-math
 			//! build (a plain memcpy exponent check was empirically
 			//! DELETED via clang's nofpclass parameter poison, rendering
 			//! a NaN coverage as a FULLY-LIT field; see the .cpp note).

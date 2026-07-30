@@ -205,8 +205,12 @@ namespace RISE
 			//! The floor is 1e-6, NOT NEARZERO (1e-12): the invariant is
 			//! built from sqrt(1 - cos²), and for cos <~ sqrt(eps_double)
 			//! (~1.5e-8) the term 1 - cos² rounds to exactly 1.0, collapsing
-			//! sinθ0 to 1 and cosθ in the ambient back to 0 -- the very NaN
-			//! we are avoiding.  1e-6 is comfortably above that
+			//! sinθ0 to 1 and cosθ in the ambient back to 0 -- which would
+			//! silently return the exact-grazing limit R = 1 instead of the
+			//! near-grazing value the caller asked for.  (Before the
+			//! 2026-07-29 reformulation that collapse produced NaN; it is now
+			//! a precision loss rather than a NaN, which is still worth the
+			//! floor.)  1e-6 is comfortably above that
 			//! representability threshold (so 1 - cos² stays < 1) and is
 			//! still ~1 microradian from grazing, where R is already ~1.
 			static const Scalar kGrazingCosFloor = Scalar(1e-6);
@@ -277,6 +281,16 @@ namespace RISE
 					const Scalar  dj = filmThickness_nm[j];
 
 					const Complex cosj = CosThetaInMedium( Nj, sinInvariant );
+					// KNOWN RESIDUAL (2026-07-29): etaj is the one admittance
+					// NOT carried pre-scaled, so a FILM sitting exactly at ITS
+					// OWN critical angle (cosj == 0 exactly) makes eta_p
+					// infinite here and NaN downstream.  Scope: only this
+					// N-layer path (ReflectanceConductorStack -> DielectricSPF
+					// ar_layer multi-layer coatings) is affected; the
+					// single-film Airy path used by GGX `fresnel_mode thinfilm`
+					// has no etaj and is unaffected.  Clearing it needs a
+					// running scale factor threaded through the matrix
+					// product.  No test exercises that geometry.
 					const Complex etaj = Admittance( Nj, cosj, pol );
 
 					const Complex delta = Complex( TWO_PI * dj / lambda_nm, Scalar(0) ) * Nj * cosj;

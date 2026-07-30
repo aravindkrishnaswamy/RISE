@@ -202,9 +202,14 @@ exist yet).  Slice 2 WILL choose parser-level defaults so an unconfigured
 `glint_modifier` chunk is a no-op-adjacent gentle sparkle, and MUST validate
 inputs string-level at parse time (loud rejection of non-finite/garbage
 tokens).  The ctor additionally forces the modifier INERT on any non-finite
-parameter as a silent backstop — but only via the **volatile-laundered**
-bit test: round 3 first implemented a plain memcpy/integer finiteness check
-and the production `-ffast-math` build **deleted it** (clang tags double
+parameter as a silent backstop.  **Superseded 2026-07-29 — this no longer
+dictates the formulation:** macOS now pairs `-fno-finite-math-only`, clang does
+not emit `nofpclass(nan inf)`, and a plain `std::isfinite` works.  Use the
+laundered form for uniformity with the rest of the tree if you like, but it is
+no longer *required*.  Historical record: it was originally required via the
+**volatile-laundered** bit test, because round 3 first implemented a plain
+memcpy/integer finiteness check and the production `-ffast-math` build
+**deleted it** (clang tags double
 function parameters `nofpclass(nan inf)`, so the NaN is poison at the call
 boundary; a runtime-bit NaN coverage rendered a fully-lit facet field with
 that guard compiled in, even from a strict-FP caller TU).  The laundered

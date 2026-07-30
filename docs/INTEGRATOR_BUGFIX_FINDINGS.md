@@ -470,6 +470,14 @@ VCM-spectral **merging** still uses a luminance proxy (`RISEPelToNMProxy`), a
   **0.17550** (matrix 0.1742) — all within MC noise; the fix is orthographic-only.
 
 ## Diagnostic note for future agents — macOS `-ffast-math`
+
+> **⚠ SUPERSEDED — do not act on anything in this section without first
+> reading §"SUPERSEDED 2026-07-29 — `-fno-finite-math-only` is now ON
+> everywhere" below.  `std::isfinite` / `std::isnan` WORK now; the
+> `volatile`-laundering instruction in this section is no longer required,
+> and this section's measured table has the two workloads' verdicts
+> backwards.**
+
 [build/make/rise/Config.OSX](../build/make/rise/Config.OSX) builds with
 `-ffast-math` (⇒ `-ffinite-math-only`) and `-flto`. Consequently **every
 `std::isfinite` / `std::isnan` guard in the integrators is folded to a constant
@@ -507,27 +515,54 @@ the costly ones). **DECISION 2026-06-04: leave as-is (documented).** The glass_p
 table and its cost attribution are both WRONG.** `-fno-finite-math-only` now
 ships in every macOS build configuration; `std::isfinite` / `std::isnan` work
 again, and the `volatile`-laundering / finite-threshold workarounds described
-above are no longer required (they remain harmless, and
-[FiniteMath.h](../src/Library/Utilities/FiniteMath.h)'s `IsFiniteDouble` stays
-in tree with its ~75 call sites).
+above are no longer required. [FiniteMath.h](../src/Library/Utilities/FiniteMath.h)'s
+`IsFiniteDouble` stays in tree with its ~73 call sites, kept for uniformity and
+`-Ofast` resistance rather than for correctness — but it is **not** free:
+measured **0.38–0.40 ns/call vs ~0.01 ns for `std::isfinite` (~35–39×)**,
+because the `volatile` barrier forces a stack round-trip and blocks
+vectorization of the enclosing loop. At current call-site density that is well
+under the +2.7 % measured below, but **part of that 2.7 % is recoverable** by
+reverting per-sample sites to plain `std::isfinite`
+(e.g. `AOVBuffers.cpp:120`, `FrameStore.cpp:838`, `BDPTIntegrator.cpp:333`,
+`PathGuidingField.cpp:474`). Not done here — it is a separate change.
 
 **What was wrong with the old measurement.** Re-measured with the same
-interleaved-ABBA protocol at 8–12 pairs per workload, plus a **CPU-time**
-metric (`ru_utime + ru_stime`, near-deterministic for a fixed workload where
-wall clock is not):
+interleaved-ABBA protocol, **10 pairs per workload** for every number in the
+table below, plus a **CPU-time** metric (`ru_utime + ru_stime`). CIs are
+Student-t at n = 10 (t₉ = 2.262), not normal:
 
-| workload | wall Δ | CPU Δ | verdict |
-|---|---|---|---|
-| BVH-traversal-heavy (aphrodite mesh @ 700 spp) | −0.02 % (±1.10 SE) | **−0.48 %** (±1.39 SE, 0.3σ) | **no measurable cost** |
-| shading-heavy (irradiance_cache_torture) | +2.61 % (±0.34 SE) | **+2.69 %** (±0.25 SE, 11.0σ) | **real, ~2.7 %** |
+| workload | wall Δ | CPU Δ | 95 % CI (CPU) | verdict |
+|---|---|---|---|---|
+| BVH-traversal-heavy (aphrodite mesh @ 700 spp) | −0.02 % (±1.10 SE) | −0.48 % (±1.39 SE, 0.3σ) | **[−3.63 %, +2.66 %]** | **no RESOLVABLE cost — a weak null, not a measured zero: the data bound the cost only below about +2.7 %, which does not exclude the shading workload's own +2.7 %** |
+| shading-heavy (irradiance_cache_torture) | +2.61 % (±0.34 SE) | **+2.69 %** (±0.25 SE, 11.0σ) | [+2.14 %, +3.25 %] | **real, ~2.7 %** |
+
+**Instrument caveats — read before reusing either workload.** CPU time is the
+better instrument only where the work is *balanced*. On aphrodite it is
+actually the NOISIER of the two (paired SD 4.40 vs wall 3.47; per-arm CV 3.6–4.3 %
+vs 2.8–3.3 %) because CPU time *absorbs* lock contention as spin rather than
+rejecting it — a profile of that render puts ~28 % of samples in
+`__psynch_cvwait` / mutex waits. It behaves as intended on torture (CV 1.0 %
+vs 1.3–1.7 %). Aphrodite also carries ~5.7 s of serial setup inside the timed
+region (≈17 % of wall) and reaches only ~8.4 of 10 effective cores, and
+traversal is ~36 % of its samples — so its whole-run CI bounds the
+*traversal-code* cost only to roughly ±7 %. It is a low-sensitivity
+instrument for the question it is used to answer. Both figures are one scene,
+one integrator (`pixelpel_rasterizer`, RGB PT), one machine, and the **make**
+build; the release DMG ships from Xcode **Opto**, which was never timed.
 
 The old table has the two workloads' verdicts **backwards**. The claim that
 "the ~3 % BVH cost is the NaN-aware ray-box / ray-tri min/max the flag
 re-enables" is false: the hot BVH4 traversal uses hand-written SIMD
 intrinsics (`vminq_f32` / `_mm_min_ps`, [BVH.h](../src/Library/Acceleration/BVH.h)
-`IntersectNode`) whose NaN semantics are fixed in hardware and **cannot** be
+`RayBox4`) whose NaN semantics are fixed in hardware and **cannot** be
 altered by `-ffinite-math-only`, so the flag was never buying anything in that
-kernel. The real cost is scalar shading math. The old +3.23 % was almost
+kernel — verified by extracting `RayBox4` and compiling it both ways: the NEON
+output is **byte-identical** (55 instructions each). The real cost is scalar
+shading math. **Scope, however:** the BVH2-fallback scalar slab test
+(`RayBoxF`) DOES change — without the flag clang SLP-vectorizes it to
+`fminnm.4s`/`fmaxnm.4s`, and with the flag it stays scalar. Scenes on the BVH2
+path (failed BVH4 collapse, or the ≤4-object linear TLAS fallback) were never
+measured and could pay more than the aphrodite figure implies. The old +3.23 % was almost
 certainly session drift — an 8-pair wall-clock run on the same scene
 reproduced +4.60 % ±3.46 (1.3σ) and then −0.02 % ±1.10 on replication.
 
@@ -540,9 +575,20 @@ values the compiler cannot fold:
 | `-ffast-math` | 0 | 1 | **0** |
 | `+ -fno-finite-math-only` | 1 | 0 | **1** |
 
-Column 3 is the BVH slab test's own expression — for an axis-parallel ray
-`invDir` is ±Inf, and `-ffast-math` (plus its implied `-fno-signed-zeros`)
-licenses the optimiser to assume that never happens.
+These are properties of the **toolchain**, not of RISE's traversal code. An
+earlier draft of this section (and of `Config.OSX`) claimed column 3 was "the
+BVH slab test's own expression, since `invDir` is ±Inf for an axis-parallel
+ray" — that is **FALSE and has been corrected**: RISE never produces an Inf
+`invDir`. All four prep sites substitute a finite sentinel *because*
+`-ffinite-math-only` made real Infs unsafe — `BVH::PrepRayFloat` uses
+±`FLT_MAX` ([BVH.h:1222](../src/Library/Acceleration/BVH.h), and `:1502`,
+`:1587`, `:1661`), `Ray::RecomputeInvDir` uses ±1e30
+([Ray.h:33](../src/Library/Utilities/Ray.h)), and `RISE_INFINITY` is DBL_MAX,
+not `inf`. So `0.0 * inf` never arises in the slab test and the kernel never
+"relied" on the flag. The real justification is the one above plus the next
+paragraph: guards and tests that are live rather than folded, the optimiser no
+longer assuming finiteness in code that *can* produce Inf at runtime, and the
+finite-sentinel workarounds ceasing to be load-bearing.
 
 **It caught a real bug within one test run.** `ThinFilmTMMTest` went red
 immediately (3/3 FAIL with the flag, 3/3 PASS without — deterministic): at
@@ -570,10 +616,15 @@ purpose (keeping the Snell invariant strictly below 1, a representability
 property of `SnellInvariant` itself). The clamp was **not** removed; that would
 be an unrelated behaviour change.
 
-**Known residual:** a *film* sitting exactly at its own critical angle still
-produces NaN (measured) — `etaj` in the layer loop is the one admittance not
-carried pre-scaled, and clearing it needs a running scale factor threaded
-through the matrix product. No test exercises that geometry. The pre-existing
+**Known residual (scoped):** a *film* sitting exactly at its own critical angle
+still produces NaN (measured) — `etaj` in the layer loop is the one admittance
+not carried pre-scaled, and clearing it needs a running scale factor threaded
+through the matrix product. **This affects only the N-layer TMM path**
+(`ReflectanceConductorStack` → `DielectricSPF`'s `ar_layer` multi-layer
+coatings). The single-film **Airy** path used by GGX `fresnel_mode thinfilm` has
+no `etaj` and is unaffected — so no shipped single-film thin-film material can
+hit it. No test exercises that geometry; the residual is commented at the line
+that carries it in [ThinFilm.h](../src/Library/Utilities/ThinFilm.h). The pre-existing
 thick-absorber overflow caveat (matrix entries grow like e^{|Im δ|}; NaN from
 d ≳ 50 µm at k = 3) is **unchanged** by this work — verified finite at 10 µm
 and NaN at 50 µm, exactly the documented threshold.
@@ -606,7 +657,9 @@ check and ship. Worth keeping in mind for any future per-configuration flag.
 **Verification:** make build warning-free; `run_all_tests.sh` **220/220**;
 Xcode `RISE-GUI`/Deployment, `RISE-GUI-Opto`/Opto and `rise`/Deployment all
 BUILD SUCCEEDED with 0 warnings; rendered output unchanged (an A-vs-B image
-diff is *smaller* than the same-binary A-vs-A control, i.e. within the
+diff is **indistinguishable from** the same-binary A-vs-A control — mean |Δ|
+0.03606 vs 0.03626 against one control frame and 0.03680 against the other, so
+the sign of the difference is a coin-flip — i.e. within the
 renderer's own run-to-run nondeterminism). `AgentRenderAsyncTest` failed once
 during this work and is a **pre-existing flake**, not flag-related (passes 3/3
 both with and without the flag, and in the final full suite).
