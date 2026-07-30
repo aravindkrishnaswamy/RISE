@@ -218,6 +218,18 @@ namespace RISE
 			) const override;
 
 		const IPhaseFunction* GetPhaseFunction() const override;
+		const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
+		const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt, const Scalar nm ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
 
 		Scalar SampleDistance(
 			const Ray& ray,
@@ -411,6 +423,13 @@ namespace RISE
 			const Point3& pt,
 			const Scalar nm
 			) const override;
+		const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override
+		{
+			return MakePhaseClosure(pt,nm);
+		}
 		Scalar GetThermalEmissionNM(
 			const Point3& pt,
 			const Scalar nm

@@ -120,21 +120,33 @@ namespace RISE
 
 		MediumCoefficients GetCoefficients(
 			const Point3& pt
-			) const;
+			) const override;
 
 		MediumCoefficientsNM GetCoefficientsNM(
 			const Point3& pt,
 			const Scalar nm
-			) const;
+			) const override;
 
-		const IPhaseFunction* GetPhaseFunction() const;
+		const IPhaseFunction* GetPhaseFunction() const override;
+		const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
+		const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt, const Scalar nm ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
 
 		Scalar SampleDistance(
 			const Ray& ray,
 			const Scalar maxDist,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		Scalar SampleDistanceNM(
 			const Ray& ray,
@@ -142,20 +154,20 @@ namespace RISE
 			const Scalar nm,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		RISEPel EvalTransmittance(
 			const Ray& ray,
 			const Scalar dist
-			) const;
+			) const override;
 
 		Scalar EvalTransmittanceNM(
 			const Ray& ray,
 			const Scalar dist,
 			const Scalar nm
-			) const;
+			) const override;
 
-		bool IsHomogeneous() const;
+		bool IsHomogeneous() const override;
 
 		//! Read-back + rebind for the interactive editor.  Setters
 		//! update the derived `m_sigma_t = sigma_a + sigma_s` and

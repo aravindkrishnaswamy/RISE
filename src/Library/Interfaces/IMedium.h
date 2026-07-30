@@ -337,6 +337,20 @@ namespace RISE
 			return 0.0;
 		}
 
+		/// Phase-B pre-NEE continuation capability. The returned reference is
+		/// owned by the caller and must be retained unchanged through NEE and
+		/// the later continuation sample. Unsupported by default. These methods
+		/// remain at the absolute vtable tail for binary compatibility.
+		virtual const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt
+			) const { return 0; }
+
+		/// Wavelength-bound spectral continuation sibling.
+		virtual const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0; }
+
 	};
 }
 

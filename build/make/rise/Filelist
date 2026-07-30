@@ -182,6 +182,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
+	$(PATHLIBRARY)Materials/ContinuationClosure.cpp						\
 	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\

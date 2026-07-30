@@ -19,6 +19,7 @@
 #include "../Interfaces/ILog.h"
 #include "OrenNayarBRDF.h"
 #include "OrenNayarSPF.h"
+#include "../Interfaces/IContinuationClosure.h"
 
 namespace RISE
 {
@@ -52,13 +53,34 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {			return pBRDF; };
+			inline IBSDF* GetBSDF() const override {			return pBRDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack&,
+				const ContinuationPathState& pathState ) const override
+			{
+				const ScalarTriple roughness = pBRDF->GetRoughness().GetValuesAt(ri);
+				return CreateOrenNayarContinuationClosurePel(
+					ri,pBRDF->GetReflectance().GetColor(ri),
+					RISEPel(roughness.v[0],roughness.v[1],roughness.v[2]),pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack&, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateOrenNayarContinuationClosureNM(
+					ri,pBRDF->GetReflectance().GetColorNM(ri,nm),
+					pBRDF->GetRoughness().GetValueAtNM(ri,nm),pathState);
+			}
 
 			//! Read-back + rebind for the interactive editor.  Material
 			//! forwards to BOTH BRDF and SPF in lockstep.

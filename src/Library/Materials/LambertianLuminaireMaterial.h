@@ -21,6 +21,7 @@
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/ILog.h"
 #include "LambertianEmitter.h"
+#include "../Interfaces/IContinuationClosure.h"
 
 namespace RISE
 {
@@ -50,13 +51,30 @@ namespace RISE
 			}
 			
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {			return pMaterial.GetBSDF(); };
+			inline IBSDF* GetBSDF() const override {			return pMaterial.GetBSDF(); };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pMaterial.GetSPF(); };
+			inline ISPF* GetSPF() const override {			return pMaterial.GetSPF(); };
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return pEmitter; };
+			inline IEmitter* GetEmitter() const override {	return pEmitter; };
+			inline const IMaterial& GetBaseMaterial() const { return pMaterial; }
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const ContinuationPathState& pathState ) const override
+			{
+				return pMaterial.MakeContinuationClosurePel(ri,ior_stack,pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return pMaterial.MakeContinuationClosureNM(ri,ior_stack,nm,pathState);
+			}
 
 			//! Read-back + rebind for the interactive editor.  Material
 			//! forwards to the LambertianEmitter — the wrapped base
@@ -74,7 +92,7 @@ namespace RISE
 			//! only owner here).  Runs before a render — no threading
 			//! concern.
 			/// \return TRUE always (this material is a luminaire)
-			bool SetEmissionScale( const Scalar scale )
+			bool SetEmissionScale( const Scalar scale ) override
 			{
 				const IPainter& radEx = pEmitter->GetRadEx();
 				radEx.addref();

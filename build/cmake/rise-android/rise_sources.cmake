@@ -18,6 +18,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBINTERFACES
     "${RISE_LIB}/Materials/IMaterial.cpp"
     "${RISE_LIB}/Materials/NullBoundaryMaterial.cpp"
+    "${RISE_LIB}/Materials/ContinuationClosure.cpp"
 
     # SRCLIBUTILITIES
     "${RISE_LIB}/Utilities/Color/Color.cpp"

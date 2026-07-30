@@ -489,8 +489,14 @@ namespace
 		{
 			const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, nm );
 			const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, nm );
+			const IPhaseFunction* continuationClosure =
+				medium->MakeContinuationPhaseClosureNM( coolPoint, nm );
 			Check( coolClosure && hotClosure,
 				"two-position/two-wavelength closures construct" );
+			Check( continuationClosure && coolClosure &&
+				Near(continuationClosure->GetMeanCosine(),
+					coolClosure->GetMeanCosine(),1e-15),
+				"fire continuation factory delegates to the local wavelength-bound closure" );
 			if( coolClosure && hotClosure )
 			{
 				Check( Near( coolClosure->GetMeanCosine(), coolG, 1e-12 ) &&
@@ -510,6 +516,7 @@ namespace
 			}
 			safe_release( coolClosure );
 			safe_release( hotClosure );
+			safe_release( continuationClosure );
 		}
 
 		const Point3 mixedPoint( 0.5, 0.5, 0.5 );
