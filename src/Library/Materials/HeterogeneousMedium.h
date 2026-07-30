@@ -330,6 +330,7 @@ namespace RISE
 		Vector3 m_emissionBinSize;
 		Scalar m_emissionBinVolume;
 		Scalar m_thermalEmissionImportance;
+		Scalar m_minPositiveThermalEmissionPdf;
 		bool m_valid;
 
 		virtual ~MultichannelHeterogeneousMedium();
@@ -419,17 +420,17 @@ namespace RISE
 		{
 			return m_thermalEmissionImportance;
 		}
-		Scalar GetThermalEmissionPowerProxy() const override
-		{
-			return FOUR_PI * m_sceneUnitMeters * m_sceneUnitMeters *
-				m_thermalEmissionImportance;
-		}
+		Scalar GetThermalEmissionPowerProxy() const override;
 		bool SampleThermalEmission(
 			ISampler& sampler,
 			Point3& point,
 			Scalar& pdf
 			) const override;
 		Scalar ThermalEmissionPdf( const Point3& point ) const override;
+		Scalar GetMinimumPositiveThermalEmissionPdf() const override
+		{
+			return m_minPositiveThermalEmissionPdf;
+		}
 
 		/// Structural gate accessors for the exact emission-bin partition.
 		void GetThermalEmissionBinDimensions(

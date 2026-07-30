@@ -329,6 +329,14 @@ namespace RISE
 			return 0.0;
 		}
 
+		/// Smallest positive p_m(y) over this medium's piecewise-constant
+		/// emission bins.  Used during cross-medium preparation to prove that
+		/// the labeled product q_m^V p_m remains representable.
+		virtual Scalar GetMinimumPositiveThermalEmissionPdf() const
+		{
+			return 0.0;
+		}
+
 	};
 }
 

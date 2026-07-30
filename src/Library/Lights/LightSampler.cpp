@@ -794,7 +794,13 @@ void LightSampler::Prepare(
 	if( volumeEmissionDistributionValid ) {
 		volumeEmissionAlias.Build( volumeWeights );
 		for( unsigned int i = 0; i < volumeWeights.size(); ++i ) {
-			if( volumeEmissionAlias.Pdf(i) <= 0.0 ) {
+			const Scalar mediumPdf = static_cast<Scalar>(
+				volumeEmissionAlias.Pdf(i) );
+			const Scalar minPointPdf =
+				volumeEmissionMedia[i]->GetMinimumPositiveThermalEmissionPdf();
+			const Scalar minLabeledPdf = mediumPdf * minPointPdf;
+			if( mediumPdf <= 0.0 || minPointPdf <= 0.0 ||
+				minLabeledPdf <= 0.0 || !RISE::IsFiniteDouble(minLabeledPdf) ) {
 				volumeEmissionDistributionValid = false;
 				break;
 			}

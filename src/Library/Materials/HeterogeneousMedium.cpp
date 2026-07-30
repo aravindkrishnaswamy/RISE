@@ -1375,6 +1375,7 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
   m_emissionBinSize( 0, 0, 0 ),
   m_emissionBinVolume( 0.0 ),
   m_thermalEmissionImportance( 0.0 ),
+  m_minPositiveThermalEmissionPdf( 0.0 ),
   m_valid( false )
 {
 	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
@@ -1525,6 +1526,7 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 	m_emissionBinVolume = m_emissionBinSize.x *
 		m_emissionBinSize.y * m_emissionBinSize.z;
 	m_thermalEmissionImportance = 0.0;
+	m_minPositiveThermalEmissionPdf = 0.0;
 	if( !RISE::IsFiniteDouble( m_emissionBinVolume ) || m_emissionBinVolume <= 0.0 ) {
 		return false;
 	}
@@ -1604,10 +1606,19 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 		for( unsigned int i = 0; i < binCount; ++i ) {
 			m_emissionBinProbabilities[i] = m_emissionBinWeights[i] /
 				static_cast<double>(m_thermalEmissionImportance);
+			if( m_emissionBinWeights[i] > 0.0 &&
+				m_emissionBinProbabilities[i] <= 0.0 ) return false;
 			const Scalar density = static_cast<Scalar>(
 				m_emissionBinProbabilities[i] ) / m_emissionBinVolume;
-			if( !RISE::IsFiniteDouble(density) || density < 0.0 ) return false;
+			if( !RISE::IsFiniteDouble(density) || density < 0.0 ||
+				(m_emissionBinProbabilities[i] > 0.0 && density <= 0.0) ) return false;
+			if( density > 0.0 &&
+				(m_minPositiveThermalEmissionPdf <= 0.0 ||
+				density < m_minPositiveThermalEmissionPdf) ) {
+				m_minPositiveThermalEmissionPdf = density;
+			}
 		}
+		if( m_minPositiveThermalEmissionPdf <= 0.0 ) return false;
 	}
 	return true;
 }
@@ -1774,6 +1785,22 @@ Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
 	return sigmaA > 0.0
 		? sigmaA * PlanckSpectralRadianceNM( nm, LookupTemperature( pt ) )
 		: 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionPowerProxy() const
+{
+	if( m_sceneUnitMeters <= 0.0 || m_thermalEmissionImportance <= 0.0 ) return 0.0;
+	int sceneExponent = 0;
+	int importanceExponent = 0;
+	const Scalar sceneMantissa = std::frexp( m_sceneUnitMeters, &sceneExponent );
+	const Scalar importanceMantissa = std::frexp(
+		m_thermalEmissionImportance, &importanceExponent );
+	int productExponent = 0;
+	const Scalar productMantissa = std::frexp(
+		FOUR_PI * sceneMantissa * sceneMantissa * importanceMantissa,
+		&productExponent );
+	return std::ldexp( productMantissa,
+		2*sceneExponent + importanceExponent + productExponent );
 }
 
 bool MultichannelHeterogeneousMedium::SampleThermalEmission(

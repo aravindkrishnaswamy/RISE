@@ -140,6 +140,34 @@ namespace
 		~RampCarbonPainter() override = default;
 	};
 
+	class ExtremeContrastCarbonPainter :
+		public virtual IScalarPainter,
+		public virtual Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( ri.ptCoord.x < 0.5 ? 1.0e-250 : 1.0 );
+		}
+		bool HasPerChannelVariation() const override { return false; }
+	protected:
+		~ExtremeContrastCarbonPainter() override = default;
+	};
+
+	class ProbabilityUnderflowCarbonPainter :
+		public virtual IScalarPainter,
+		public virtual Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( ri.ptCoord.x < 0.5 ? 1.0e-200 : 1.0e200 );
+		}
+		bool HasPerChannelVariation() const override { return false; }
+	protected:
+		~ProbabilityUnderflowCarbonPainter() override = default;
+	};
+
 	class SpectralResponseBSDF :
 		public virtual IBSDF,
 		public virtual Reference
@@ -564,8 +592,37 @@ namespace
 				meter->ThermalEmissionPdf(meterPoint), 3e-14,
 				"per-scene-volume density transforms by the coordinate Jacobian" );
 		}
+
+		IMedium* overflowIntermediateMedium = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0),
+			Point3(1.0e-100,1.0e-100,1.0e-100), 1.0e155 );
+		IMedium* underflowIntermediateMedium = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0),
+			Point3(1.0e98,1.0e98,1.0e98), 1.0e-200 );
+		MultichannelHeterogeneousMedium* overflowIntermediate =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( overflowIntermediateMedium );
+		MultichannelHeterogeneousMedium* underflowIntermediate =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( underflowIntermediateMedium );
+		Check( overflowIntermediate && underflowIntermediate,
+			"power-proxy range fixtures build" );
+		if( overflowIntermediate && underflowIntermediate ) {
+			const Scalar overflowExpected = std::exp(
+				std::log(FOUR_PI) + 2.0*std::log(1.0e155) +
+				std::log(overflowIntermediate->GetThermalEmissionImportance()) );
+			const Scalar underflowExpected = std::exp(
+				std::log(FOUR_PI) + 2.0*std::log(1.0e-200) +
+				std::log(underflowIntermediate->GetThermalEmissionImportance()) );
+			CheckRelative( overflowIntermediate->GetThermalEmissionPowerProxy(),
+				overflowExpected, 2e-13,
+				"A_m remains finite when the left-associated scene-scale square overflows" );
+			CheckRelative( underflowIntermediate->GetThermalEmissionPowerProxy(),
+				underflowExpected, 2e-13,
+				"A_m remains positive when the left-associated scene-scale square underflows" );
+		}
 		safe_release( meterMedium );
 		safe_release( centimeterMedium );
+		safe_release( overflowIntermediateMedium );
+		safe_release( underflowIntermediateMedium );
 	}
 
 	void TestTinyFiniteBBoxDensityFormulation()
@@ -597,6 +654,32 @@ namespace
 		Check( unrepresentable == nullptr,
 			"medium construction rejects a bbox whose q_v per-volume density overflows" );
 		safe_release( unrepresentable );
+
+		ExtremeContrastCarbonPainter* contrast = new ExtremeContrastCarbonPainter();
+		IScalarPainter* temperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &temperature, 1800.0 );
+		IMedium* underflowingDensity = nullptr;
+		const bool contrastCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&underflowingDensity, *contrast, *temperature, 8, 8, 8,
+			Point3(0,0,0), Point3(1e33,1e33,1e33), 1.0,
+			0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
+		Check( !contrastCreated && underflowingDensity == nullptr,
+			"positive bin support whose q_v per-volume density underflows is rejected" );
+		safe_release( underflowingDensity );
+		safe_release( contrast );
+
+		ProbabilityUnderflowCarbonPainter* probabilityContrast =
+			new ProbabilityUnderflowCarbonPainter();
+		IMedium* underflowingProbability = nullptr;
+		const bool probabilityCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&underflowingProbability, *probabilityContrast, *temperature, 8, 8, 8,
+			Point3(0,0,0), Point3(1,1,1), 1.0,
+			0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
+		Check( !probabilityCreated && underflowingProbability == nullptr,
+			"positive raw bin support whose normalized q_v underflows is rejected" );
+		safe_release( underflowingProbability );
+		safe_release( probabilityContrast );
+		safe_release( temperature );
 	}
 
 	void TestSupportInflationAtBoundary()
@@ -656,20 +739,23 @@ namespace
 
 	std::string TwoScaleMediumScene(
 		const char* sideA,
-		const char* sideB
+		const char* sideB,
+		const char* carbonA = "0.2",
+		const char* carbonB = "0.2"
 		)
 	{
 		std::ostringstream scene;
 		scene <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
-			"scalar_painter\n{\nname carbon\nvalue 0.2\n}\n"
+			"scalar_painter\n{\nname carbon_a\nvalue " << carbonA << "\n}\n"
+			"scalar_painter\n{\nname carbon_b\nvalue " << carbonB << "\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
-			"multichannel_heterogeneous_medium\n{\nname fire_a\nchannel_carbon painter carbon\n"
+			"multichannel_heterogeneous_medium\n{\nname fire_a\nchannel_carbon painter carbon_a\n"
 			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
 			"bbox_min 0 0 0\nbbox_max " << sideA << " " << sideA << " " << sideA <<
 			"\nsoot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
 			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\nsmoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
-			"multichannel_heterogeneous_medium\n{\nname fire_b\nchannel_carbon painter carbon\n"
+			"multichannel_heterogeneous_medium\n{\nname fire_b\nchannel_carbon painter carbon_b\n"
 			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
 			"bbox_min 0 0 0\nbbox_max " << sideB << " " << sideB << " " << sideB <<
 			"\nsoot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
@@ -736,6 +822,20 @@ namespace
 			"a representable 1e-300 medium-selection ratio stays positive" );
 		safe_release( rangeCaster );
 		safe_release( rangeJob );
+
+		IJobPriv* productJob = LoadScene(
+			TwoScaleMediumScene("1e33","1e33","1","1e-250") );
+		IRayCaster* productCaster = nullptr;
+		const LightSampler* productLights = PrepareLightSampler(
+			productJob,productCaster );
+		RandomNumberGenerator productRng( 0x5ca20u );
+		IndependentSampler productSampler( productRng );
+		VolumeEmissionSample productSample;
+		Check( productLights && !productLights->IsVolumeEmissionDistributionValid() &&
+			!productLights->SampleVolumeEmission(productSampler,productSample),
+			"q_m and p_m that are separately positive cannot form a zero labeled density" );
+		safe_release( productCaster );
+		safe_release( productJob );
 
 		IJobPriv* rejectedJob = LoadScene( TwoScaleMediumScene("1e100","1e-100") );
 		IRayCaster* rejectedCaster = nullptr;
