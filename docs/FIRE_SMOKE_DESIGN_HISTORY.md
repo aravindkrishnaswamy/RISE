@@ -779,3 +779,26 @@ it was already tried and refuted here.
   from Snell's law with n₁=n₂, but stack-shape-sensitive code — boundary
   counting, parity, TIR bookkeeping — would see phantom entries).
 
+- **r41 (2026-07-30):** resolved the terminal-path-depth contradiction, the
+  implementation agent's seventh stop and again genuine: §7.1's
+  source-before-depth rule (deliberate — the emission score precedes every
+  σ_s/max-bounce/depth/RR gate, and the terminal outgoing segment is
+  sampled and marched for source pickup) coexisted with a §7.2.7 gate
+  sentence declaring the terminal continuation "impossible with
+  p_march = 0" — but p_march is defined as the density of that sampled
+  strategy, and a sampled strategy's density is by definition nonzero.
+  **Adopted the agent's option 1** (preserve source-before-depth): terminal
+  depth forbids processing any *downstream vertex*; the source-only
+  segment keeps its genuine nonzero p_march (p_ω·p_t/r² with survival
+  factors) and competes with volume NEE under the standard partition; the
+  gate wording is corrected and §7.2.2 gains a canonical terminal-vertex
+  statement pinning that "p_march = 0" is structural only (beyond non-null
+  interfaces, outside chain support), never a depth-cap consequence.
+  Rejected: gating depth before outgoing sampling (reverses pinned Phase-A
+  behavior and loses terminal-segment emission), and disabling volume NEE
+  at terminal vertices (contradicts the always-attempted rule and wastes
+  the estimator precisely where paths end most often). Prerequisites
+  landed by the agent before the stop: the optical/enclosure IORStack
+  split (26208c16) and exact NullBoundaryMaterial (2a422986), both
+  reviewed to zero P1 with 232/232 and 233/233 suites.
+

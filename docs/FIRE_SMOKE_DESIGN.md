@@ -2819,6 +2819,15 @@ families reach emission at a point y from vertex x:
     (σ_t·exp(−τ)) or the 50/50 balance mixture (§5.1) — evaluated
     deterministically via `EvalDeterministicOpticalDepth`, the same
     deterministic-denominator discipline the existing MIS uses.
+  - **Terminal-depth vertices** (r41): a total/path-depth or per-type lobe
+    cap forbids processing any *downstream vertex*, not the outgoing
+    segment itself — per the §7.1 source-before-depth rule, the terminal
+    direction and distance are still sampled and the segment is still
+    marched for source pickup. p_march on that segment is therefore the
+    ordinary nonzero p_ω·p_t/r² with its survival factors, and the
+    NEE-vs-march partition applies unchanged. "p_march = 0" situations are
+    *structural* only — beyond a non-null interface, outside the chain's
+    support — never a consequence of a depth cap.
 - **Volume NEE**: p_V(y) from 7.2.3.
 
 **BSSRDF/SSS containment.** “Eligible vertex” in this arc excludes the two
@@ -3130,9 +3139,16 @@ medium case**, and **forced step-cap continuation** past the ratio
 tracker's 1024-step budget — §7.2.1's no-silent-caps replacement walk)
 and the **allowlisted Lambertian/Oren–Nayar/Isotropic-Phong NEE-on-vs-off
 equality tests** (§7.2.2's direction-independent lobe preselection). Terminal total/path
-depth and each per-type lobe cap are forced separately: volume NEE remains on,
-the impossible continuation has p_march=0, and NEE-on/off high-spp references
-agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
+depth and each per-type lobe cap are forced separately: volume NEE remains
+on, and **the terminal source-only segment keeps its genuine nonzero
+p_march** (r41 — the earlier "impossible continuation has p_march=0" wording
+contradicted the source-before-depth rule, which deliberately samples and
+marches the terminal outgoing segment for emission; a sampled strategy's
+density is by definition nonzero). What terminal depth forbids is the
+**downstream vertex** — no scatter, surface, or environment event is
+processed beyond it — so the segment contributes source pickup only, its
+emission competes with NEE under the standard partition at the actual
+p_march, and NEE-on/off high-spp references agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
 roulette probabilities 0, (0,1), and 1, pdf normalization including its
 survival mass, and recorded-proposal/throughput agreement. Using the uncapped
 full-lobe marginal or omitting roulette survival is RED.
