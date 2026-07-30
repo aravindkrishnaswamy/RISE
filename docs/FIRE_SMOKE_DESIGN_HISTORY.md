@@ -757,3 +757,25 @@ it was already tried and refuted here.
   definition); and class-level transparency to shadow and volume-NEE rays
   independent of shadow flags.
 
+- **r40 (2026-07-29):** corrected r39's self-contradiction, found by the
+  implementation agent on its sixth stop: r39 demanded the null boundary
+  perform the medium-stack transition while "never entering the IOR
+  stack" — but RISE has no independent medium stack (`MediumTracking`
+  resolves the active medium from `ior_stack.topObject()`; verified), so
+  both requirements could not hold. **Adopted the agent's option 1**: an
+  internal split of `IORStack` into an **optical stack** (Snell/Fresnel/TIR;
+  dielectric boundaries only — null boundaries never appear, which is what
+  "no optical effect" means mechanically) and an **enclosure stack**
+  (medium resolution and shadow-walk seeding; dielectric boundaries update
+  both, null boundaries only this one, ambient IOR unchanged). External
+  signature and copy semantics unchanged — nothing new threads through
+  transport calls; the optical stack is a subsequence of the enclosure
+  stack, asserted as a debug invariant; `IORStackSeeding::SeedFromPoint`
+  seeds both so shadow-walk origins inside null-bounded media start from
+  true boundary state. Rejected: a fully separate `MediumStack` threaded
+  through every transport call (large diff surface and a standing risk of
+  the two stacks disagreeing about enclosure), and pushing null-boundary
+  entries into the unified stack with unchanged IOR (no optical effect
+  from Snell's law with n₁=n₂, but stack-shape-sensitive code — boundary
+  counting, parity, TIR bookkeeping — would see phantom entries).
+

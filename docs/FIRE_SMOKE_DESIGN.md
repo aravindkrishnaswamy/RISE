@@ -1929,7 +1929,7 @@ fire media** (per-λ fallback) until the companion-proposal fix lands
 | Transmittance | ratio tracking (Novák 2014) | |
 | Majorant machinery | [MajorantGrid.h](../src/Library/Utilities/MajorantGrid.h) + Amanatides–Woo DDA; [NullScatteringTracker.h](../src/Library/Utilities/NullScatteringTracker.h) (Miller–Georgiev–Jarosz 2019 null-scattering PDFs) | the substrate for the Phase A emission estimator and Phase D spectral tracking; grid built once in the medium constructors (HeterogeneousMedium.cpp:55–62, 94–101); cell resolution `clamp(ceil(dim/8), 4, 32)` per axis — note the 32-cap, which drives §7.2.3's two-level CDF |
 | Distance-sampling MIS | 50/50 **balance** one-sample MIS, delta-tracking vs equiangular ([EquiangularSampler.h](../src/Library/Utilities/EquiangularSampler.h), Kulla–Fajardo) | gated on `GetPositionalLightCount() > 0` (RayCaster.cpp:807, 1486); MIS denominators are *deterministic sums over all positional lights* via `EvalDeterministicOpticalDepth` (HeterogeneousMedium.cpp:729 — knot-aligned DDA + 5-pt Gauss–Legendre, exact for all three accessors *today*; §7.1 step 1 upgrades fire media to 7-point with φ-root panel splitting). Phase B extends exactly this structure (§7.2.4). In-tree comment drift note: the comment at RayCaster.cpp ~903–906 says pdf_dt uses majorant transmittance; the code computes deterministic real transmittance — fix the comment when Phase B lands |
-| Medium stack / nesting | [MediumTracking.h](../src/Library/Utilities/MediumTracking.h) via IORStack; shadow-ray boundary walk in `LightSampler.cpp` | |
+| Medium stack / nesting | [MediumTracking.h](../src/Library/Utilities/MediumTracking.h) via IORStack; shadow-ray boundary walk in `LightSampler.cpp` | **r40 note:** medium resolution reads `ior_stack.topObject()` — there is no independent medium stack, which is why the null boundary requires §7.2.2's optical/enclosure split of `IORStack` |
 | Volume emission (limited) | `MediumCoefficients::emission`, closed-form per-segment integral `Le·(1−Tr)·t/τ` with Le evaluated at a **single point** per segment (scatter point RayCaster.cpp:~1014, midpoint :~1238/:~1821; blocks 1181–1259 RGB, 1792–1833 NM) | **constant per medium** (G1) and **the estimator itself dies with spatially varying Le** (G9) — see §6 |
 | Spectral media (homogeneous only) | `homogeneous_medium` `absorption_spectral`/`scattering_spectral` | heterogeneous collapses to luminance (HeterogeneousMedium.cpp:228–240) — G4 |
 | Planck evaluation | [PlanckRadiance.cpp](../src/Library/Utilities/PlanckRadiance.cpp), called by [BlackBodyPainter.cpp](../src/Library/Painters/BlackBodyPainter.cpp) (`blackbody_painter`) | shared free function returns per-nm spectral radiance; the surface painter converts it to its historical exitance-per-metre convention at its boundary and remains forbidden as the fire-path API; §4.2 defines the pinned quantity and gates |
@@ -2750,10 +2750,31 @@ families reach emission at a point y from vertex x:
     hitting geometry whose material is exactly `NullBoundaryMaterial`, the
     ray continues with the same direction and parameterization, no depth
     increment, no roulette event, no shading or emission lookup, and **the
-    medium-stack transition is the only effect** (the object's
-    `interior_medium` pushes/pops per the existing innermost-exclusive
-    walk; no IOR change — a null boundary is IOR-matched by definition, so
-    it never enters the IOR stack). Shadow and volume-NEE rays treat it as
+    enclosure transition is the only effect**. r39's phrasing ("it never
+    enters the IOR stack") was self-contradictory in this codebase and is
+    corrected here (r40): RISE has no independent medium stack —
+    `MediumTracking` resolves the active medium from
+    `ior_stack.topObject()` — so a boundary that never entered the stack
+    could never affect medium resolution. The precise statement, realized
+    by an **internal split of `IORStack` into two logical stacks**:
+    - an **optical stack** — consulted by Snell/Fresnel/TIR and every
+      refraction decision; dielectric boundaries push/pop it; **null
+      boundaries never appear here** (that is what "no optical effect"
+      means mechanically);
+    - an **enclosure stack** — consulted by `MediumTracking`'s
+      innermost-exclusive resolution and by the shadow-walk seeding;
+      dielectric boundaries push/pop it *and* the optical stack; null
+      boundaries push/pop **only** this one, carrying the object and its
+      `interior_medium` with the ambient IOR unchanged.
+
+    The container object keeps its single external signature and copy
+    semantics (nothing new threads through transport calls); the optical
+    stack is by construction a subsequence of the enclosure stack, asserted
+    as a debug invariant; and `IORStackSeeding::SeedFromPoint` seeds both —
+    the enclosure stack including null-boundary containers, the optical
+    stack with optical boundaries only — so a shadow-walk origin inside a
+    null-bounded medium starts from true boundary state rather than
+    reconstructing it. Shadow and volume-NEE rays treat it as
     fully transparent by *class*, independent of `casts_shadows`/
     `transparent_shadows` flags. Only a null boundary stays inside the
     march chain — preserving the originating vertex's NEE state, direction
