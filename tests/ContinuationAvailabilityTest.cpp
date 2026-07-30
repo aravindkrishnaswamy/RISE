@@ -12,7 +12,9 @@
 
 #include "../src/Library/Interfaces/IContinuationClosure.h"
 #include "../src/Library/Materials/IsotropicPhongMaterial.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -523,6 +525,142 @@ namespace
 		safe_release(viewLambert); safe_release(viewPhong);
 	}
 
+	void TestMaterialResponseAndMixedSamplingIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(0.25));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.75));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		UniformScalarPainter* roughness = new UniformScalarPainter(0.35);
+		rd->addref(); rs->addref(); exponent->addref(); roughness->addref();
+		IsotropicPhongMaterial* phong = new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		OrenNayarMaterial* oren = new OrenNayarMaterial(*rd,*roughness);
+		phong->addref(); oren->addref();
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar nmValue = 550.0;
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.6,0.2,0.77)),
+			Vector3Ops::Normalize(Vector3(-0.4,0.5,0.76))
+		};
+		for( unsigned int face=0; face<2; ++face ) {
+			const Vector3 rayDirection = face==0 ? Vector3(0,0,-1) : Vector3(0,0,1);
+			const RayIntersectionGeometric ri = MakeIntersection(
+				Vector3(0,0,1),rayDirection);
+			const IContinuationClosurePel* phongPel =
+				phong->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* phongNM =
+				phong->MakeContinuationClosureNM(ri,ior,nmValue,state);
+			const IContinuationClosurePel* orenPel =
+				oren->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* orenNM =
+				oren->MakeContinuationClosureNM(ri,ior,nmValue,state);
+			Check(phongPel && phongNM && orenPel && orenNM,
+				"material-owned Pel/NM response fixtures construct");
+			for( const Vector3& frontDirection : directions ) {
+				const Vector3 direction = face==0 ? frontDirection : -frontDirection;
+				if( phongPel ) CheckPelNear(phongPel->EvaluateSubset(
+					phongPel->GetLobeMask(),direction),
+					phong->GetBSDF()->value(direction,ri),1e-14,
+					"Pel Phong closure response equals renderer BRDF");
+				if( phongNM ) CheckNear(phongNM->EvaluateSubset(
+					phongNM->GetLobeMask(),direction),
+					phong->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
+					"NM Phong closure response equals renderer BRDF");
+				if( orenPel ) CheckPelNear(orenPel->EvaluateSubset(
+					orenPel->GetLobeMask(),direction),
+					oren->GetBSDF()->value(direction,ri),1e-14,
+					"Pel Oren-Nayar closure response equals renderer BRDF");
+				if( orenNM ) CheckNear(orenNM->EvaluateSubset(
+					orenNM->GetLobeMask(),direction),
+					oren->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
+					"NM Oren-Nayar closure response equals renderer BRDF");
+			}
+			safe_release(phongPel); safe_release(phongNM);
+			safe_release(orenPel); safe_release(orenNM);
+		}
+
+		const RayIntersectionGeometric front = MakeIntersection();
+		const IContinuationClosurePel* pel =
+			phong->MakeContinuationClosurePel(front,ior,state);
+		const IContinuationClosureNM* nm =
+			phong->MakeContinuationClosureNM(front,ior,nmValue,state);
+		Scalar pelDiffuseZ = 0.0, pelGlossyZ = 0.0;
+		Scalar nmDiffuseZ = 0.0, nmGlossyZ = 0.0;
+		unsigned int pelDiffuseCount = 0, pelGlossyCount = 0;
+		unsigned int nmDiffuseCount = 0, nmGlossyCount = 0;
+		const unsigned int sampleCount = 20000;
+		for( unsigned int i=0; i<sampleCount; ++i ) {
+			const Scalar uLobe = std::fmod((Scalar(i)+0.5)*0.7548776662466927,1.0);
+			const Point2 uDirection(
+				(Scalar(i)+0.5)/Scalar(sampleCount),
+				std::fmod((Scalar(i)+0.5)*0.5698402909980532,1.0));
+			if( pel ) {
+				ContinuationSamplePel sample;
+				pel->SampleSubset(pel->GetLobeMask(),uLobe,uDirection,0,false,sample);
+				if( sample.lobe==eContinuationLobeDiffuse ) {
+					pelDiffuseZ += sample.ray.Dir().z; ++pelDiffuseCount;
+				} else { pelGlossyZ += sample.ray.Dir().z; ++pelGlossyCount; }
+			}
+			if( nm ) {
+				ContinuationSampleNM sample;
+				nm->SampleSubset(nm->GetLobeMask(),uLobe,uDirection,0,false,sample);
+				if( sample.lobe==eContinuationLobeDiffuse ) {
+					nmDiffuseZ += sample.ray.Dir().z; ++nmDiffuseCount;
+				} else { nmGlossyZ += sample.ray.Dir().z; ++nmGlossyCount; }
+			}
+		}
+		const Scalar diffuseMean = 2.0/3.0;
+		const Scalar glossyMean = 10.0/11.0;
+		CheckNear(pelDiffuseZ/Scalar(pelDiffuseCount),diffuseMean,0.006,
+			"Pel mixed sample's diffuse label follows its cosine base law");
+		CheckNear(pelGlossyZ/Scalar(pelGlossyCount),glossyMean,0.006,
+			"Pel mixed sample's glossy label follows its Phong base law");
+		CheckNear(nmDiffuseZ/Scalar(nmDiffuseCount),diffuseMean,0.006,
+			"NM mixed sample's diffuse label follows its cosine base law");
+		CheckNear(nmGlossyZ/Scalar(nmGlossyCount),glossyMean,0.006,
+			"NM mixed sample's glossy label follows its Phong base law");
+		safe_release(pel); safe_release(nm);
+		safe_release(phong); safe_release(oren);
+		safe_release(rd); safe_release(rs);
+		safe_release(exponent); safe_release(roughness);
+	}
+
+	void TestDeterministicZeroContinuationGate()
+	{
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar tiny = NEARZERO*0.5;
+		const IContinuationClosurePel* pel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(tiny),state);
+		const IContinuationClosureNM* nm =
+			CreateLambertianContinuationClosureNM(ri,tiny,state);
+		const Vector3 direction(0,0,1);
+		Check(pel && pel->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel deterministic zero gate removes march reach density before RR");
+		Check(nm && nm->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM deterministic zero gate removes march reach density before RR");
+		if( pel ) {
+			ContinuationSamplePel regular, terminal;
+			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
+			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
+			Check(!regular.rouletteSurvived && !terminal.rouletteSurvived &&
+				regular.reachPdf==0.0 && terminal.reachPdf==0.0,
+				"Pel deterministic zero gate forbids regular and terminal segments");
+		}
+		if( nm ) {
+			ContinuationSampleNM regular, terminal;
+			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
+			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
+			Check(!regular.rouletteSurvived && !terminal.rouletteSurvived &&
+				regular.reachPdf==0.0 && terminal.reachPdf==0.0,
+				"NM deterministic zero gate forbids regular and terminal segments");
+		}
+		safe_release(pel); safe_release(nm);
+	}
+
 	void TestInvalidParametersFailClosed()
 	{
 		const RayIntersectionGeometric ri = MakeIntersection();
@@ -563,6 +701,22 @@ namespace
 			safe_release(material);
 			safe_release(exponent);
 		}
+		{
+			TestScalarPainter* exponent = new TestScalarPainter(
+				ScalarTriple(9.0),true);
+			exponent->addref();
+			IsotropicPhongMaterial* material =
+				new IsotropicPhongMaterial(*rd,*rs,*exponent);
+			material->addref();
+			const IORStack ior(1.0);
+			const IContinuationClosurePel* pel =
+				material->MakeContinuationClosurePel(ri,ior,state);
+			Check(pel==0,
+				"Pel Phong rejects a statically per-channel exponent painter even at a uniform point");
+			safe_release(pel);
+			safe_release(material);
+			safe_release(exponent);
+		}
 		safe_release(rd); safe_release(rs);
 	}
 }
@@ -575,6 +729,8 @@ int main()
 	TestHorizonNormalizationPelAndNM();
 	TestHorizonNullAndRouletteMass();
 	TestSingleDiffuseMassAndBRDFGrazingPredicates();
+	TestMaterialResponseAndMixedSamplingIdentity();
+	TestDeterministicZeroContinuationGate();
 	TestInvalidParametersFailClosed();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
 	return failed==0 ? 0 : 1;

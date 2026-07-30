@@ -484,19 +484,25 @@ namespace
 
 		const Point3 coolPoint( 0.125, 0.5, 0.5 );
 		const Point3 hotPoint( 0.875, 0.5, 0.5 );
+		Check( medium->MakeContinuationPhaseClosurePel(coolPoint) == nullptr,
+			"fire medium remains fail-closed on the pre-step-7 Pel continuation path" );
 		const Scalar wavelengths[] = { 450.0, 750.0 };
 		for( const Scalar nm : wavelengths )
 		{
 			const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, nm );
 			const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, nm );
-			const IPhaseFunction* continuationClosure =
+			const IPhaseFunction* coolContinuation =
 				medium->MakeContinuationPhaseClosureNM( coolPoint, nm );
+			const IPhaseFunction* hotContinuation =
+				medium->MakeContinuationPhaseClosureNM( hotPoint, nm );
 			Check( coolClosure && hotClosure,
 				"two-position/two-wavelength closures construct" );
-			Check( continuationClosure && coolClosure &&
-				Near(continuationClosure->GetMeanCosine(),
-					coolClosure->GetMeanCosine(),1e-15),
-				"fire continuation factory delegates to the local wavelength-bound closure" );
+			Check( coolContinuation && hotContinuation && coolClosure && hotClosure &&
+				Near(coolContinuation->GetMeanCosine(),
+					coolClosure->GetMeanCosine(),1e-15) &&
+				Near(hotContinuation->GetMeanCosine(),
+					hotClosure->GetMeanCosine(),1e-15),
+				"fire continuation factory preserves both local constituent mixtures" );
 			if( coolClosure && hotClosure )
 			{
 				Check( Near( coolClosure->GetMeanCosine(), coolG, 1e-12 ) &&
@@ -514,9 +520,24 @@ namespace
 					NearRelative( hotClosure->Pdf( wi, wo ), expectedHot, 1e-13 ),
 					"closure Evaluate/Pdf are the sigma_s-weighted HG law" );
 			}
+			if( coolContinuation && hotContinuation && coolClosure && hotClosure )
+			{
+				const Vector3 wi(0,0,1);
+				const Vector3 wo = Vector3Ops::Normalize(Vector3(0.6,0,0.8));
+				Check( NearRelative(coolContinuation->Evaluate(wi,wo),
+					coolClosure->Evaluate(wi,wo),1e-15) &&
+					NearRelative(coolContinuation->Pdf(wi,wo),
+						coolClosure->Pdf(wi,wo),1e-15) &&
+					NearRelative(hotContinuation->Evaluate(wi,wo),
+						hotClosure->Evaluate(wi,wo),1e-15) &&
+					NearRelative(hotContinuation->Pdf(wi,wo),
+						hotClosure->Pdf(wi,wo),1e-15),
+					"fire continuation Evaluate/Pdf match the retained local phase closures" );
+			}
 			safe_release( coolClosure );
 			safe_release( hotClosure );
-			safe_release( continuationClosure );
+			safe_release( coolContinuation );
+			safe_release( hotContinuation );
 		}
 
 		const Point3 mixedPoint( 0.5, 0.5, 0.5 );
@@ -525,7 +546,8 @@ namespace
 		for( unsigned int i = 0; i < 2; ++i )
 		{
 			const Scalar nm = mixedWavelengths[i];
-			const IPhaseFunction* closure = medium->MakePhaseClosure( mixedPoint, nm );
+			const IPhaseFunction* closure =
+				medium->MakeContinuationPhaseClosureNM( mixedPoint, nm );
 			Check( closure != nullptr, "mixed-constituent closure constructs" );
 			if( closure )
 			{
@@ -557,8 +579,10 @@ namespace
 		Check( std::fabs( measuredMeans[0] - measuredMeans[1] ) > 1e-4,
 			"one position binds distinct phase closures at distinct wavelengths" );
 
-		const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, 500.0 );
-		const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, 500.0 );
+		const IPhaseFunction* coolClosure =
+			medium->MakeContinuationPhaseClosureNM( coolPoint, 500.0 );
+		const IPhaseFunction* hotClosure =
+			medium->MakeContinuationPhaseClosureNM( hotPoint, 500.0 );
 		if( coolClosure && hotClosure )
 		{
 			const Scalar sampledCool = SampleMeanCosine( *coolClosure, 0xc001u );

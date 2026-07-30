@@ -423,6 +423,12 @@ namespace RISE
 			const Point3& pt,
 			const Scalar nm
 			) const override;
+		const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& ) const override
+		{
+			// RGB fire remains deliberately unsupported until Phase-A step 7.
+			return 0;
+		}
 		const IPhaseFunction* MakeContinuationPhaseClosureNM(
 			const Point3& pt,
 			const Scalar nm

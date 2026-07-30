@@ -48,13 +48,24 @@ namespace
 		Vector3 normal;
 		Vector3 geometricNormal;
 		Vector3 reflected;
+		Vector3 responseNormal;
+		Vector3 responseReflected;
 		bool viewBranchValid;
 
-		explicit ClosureFrame( const RayIntersectionGeometric& source ) : ri(source)
+		explicit ClosureFrame(
+			const RayIntersectionGeometric& source,
+			const bool isotropicPhong ) : ri(source)
 		{
 			const Scalar rayNormal = Vector3Ops::Dot(ri.ray.Dir(),ri.onb.w());
 			viewBranchValid = std::fabs(rayNormal) >= NEARZERO;
-			normal = rayNormal > NEARZERO ? -ri.onb.w() : ri.onb.w();
+			responseNormal = rayNormal > NEARZERO ? -ri.onb.w() : ri.onb.w();
+			responseReflected = Optics::CalculateReflectedRay(
+				ri.ray.Dir(),responseNormal);
+			const Scalar samplingSide = isotropicPhong ?
+				Vector3Ops::Dot(ri.ray.Dir(),ri.vGeomNormal) : rayNormal;
+			const bool flipSamplingNormal = isotropicPhong ?
+				samplingSide > 0.0 : samplingSide > NEARZERO;
+			normal = flipSamplingNormal ? -ri.onb.w() : ri.onb.w();
 			const Vector3& rawGeom =
 				Vector3Ops::SquaredModulus(ri.vGeomNormal) > Scalar(1e-12) ?
 				ri.vGeomNormal : normal;
@@ -148,6 +159,7 @@ namespace
 		const Value glossy;
 		const Scalar exponent;
 		const bool orenNayar;
+		const bool isotropicPhong;
 		const bool unitDiffuseMass;
 		const Value roughness;
 		const ContinuationPathState pathState;
@@ -156,12 +168,14 @@ namespace
 			const RayIntersectionGeometric& ri,
 			const Value& diffuse_, const Value& glossy_,
 			const Scalar exponent_, const bool orenNayar_,
+			const bool isotropicPhong_,
 			const bool unitDiffuseMass_,
 			const Value& roughness_,
 			const ContinuationPathState& pathState_ ) :
-		  frame(ri), diffuse(diffuse_), glossy(glossy_),
+		  frame(ri,isotropicPhong_), diffuse(diffuse_), glossy(glossy_),
 		  exponent(exponent_), orenNayar(orenNayar_),
-		  unitDiffuseMass(unitDiffuseMass_), roughness(roughness_),
+		  isotropicPhong(isotropicPhong_), unitDiffuseMass(unitDiffuseMass_),
+		  roughness(roughness_),
 		  pathState(pathState_) {}
 
 		unsigned int LobeMask() const
@@ -198,30 +212,38 @@ namespace
 		{
 			if( !frame.AboveHorizon(direction) ) return ZeroValue<Value>();
 			const Vector3 normalized = Vector3Ops::Normalize(direction);
-			const Scalar cosine = Vector3Ops::Dot(normalized,frame.normal);
-			if( !orenNayar && (!frame.viewBranchValid || cosine < NEARZERO) ) {
-				return ZeroValue<Value>();
-			}
-			if( cosine <= 0.0 ) return ZeroValue<Value>();
 			Value result = ZeroValue<Value>();
+			if( isotropicPhong ) {
+				const Scalar cosine = Vector3Ops::Dot(normalized,frame.responseNormal);
+				if( !frame.viewBranchValid || cosine < NEARZERO ) return result;
+				if( mask&eContinuationLobeDiffuse ) {
+					result = result + diffuse*INV_PI;
+				}
+				if( mask&eContinuationLobeGlossy ) {
+					const Scalar alpha = Vector3Ops::Dot(
+						normalized,Vector3Ops::Normalize(frame.responseReflected));
+					if( alpha > 0.0 ) {
+						result = result + glossy *
+							((exponent+2.0)*INV_PI*0.5*pow(alpha,exponent));
+					}
+				}
+				return result;
+			}
+			const Scalar cosine = Vector3Ops::Dot(normalized,frame.responseNormal);
+			if( !orenNayar && (!frame.viewBranchValid || cosine < NEARZERO) ) {
+				return result;
+			}
+			if( cosine <= 0.0 ) return result;
 			if( mask&eContinuationLobeDiffuse ) {
 				if( orenNayar ) {
 					Value l1 = ZeroValue<Value>();
 					Value l2 = ZeroValue<Value>();
 					OrenNayarBRDF::ComputeFactor<Value>(
-						l1,l2,direction,frame.ri,frame.normal,roughness);
+						l1,l2,direction,frame.ri,frame.responseNormal,roughness);
 					result = result + l1*INV_PI*diffuse +
 						l2*INV_PI*(diffuse*diffuse);
 				} else {
 					result = result + diffuse*INV_PI;
-				}
-			}
-			if( mask&eContinuationLobeGlossy ) {
-				const Scalar alpha = Vector3Ops::Dot(
-					normalized,Vector3Ops::Normalize(frame.reflected));
-				if( alpha > 0.0 ) {
-					result = result + glossy *
-						((exponent+2.0)*INV_PI*0.5*pow(alpha,exponent));
 				}
 			}
 			return result;
@@ -263,7 +285,7 @@ namespace
 			if( pdf <= 0.0 ) return 0.0;
 			const Scalar magnitude = ThroughputMagnitude(
 				ScatterThroughput(mask,direction,pdf));
-			if( !FiniteNonnegative(magnitude) || magnitude <= 0.0 ) return 0.0;
+			if( !FiniteNonnegative(magnitude) || magnitude <= NEARZERO ) return 0.0;
 			if( pathState.pathDepth < pathState.rrMinDepth ) return 1.0;
 			const Scalar denominator = r_max(pathState.importance,pathState.rrThreshold);
 			if( !RISE::IsFiniteDouble(denominator) || denominator <= 0.0 ) return 0.0;
@@ -313,11 +335,12 @@ namespace
 		PelClosure(
 			const RayIntersectionGeometric& ri,
 			const RISEPel& diffuse, const RISEPel& glossy,
-			Scalar exponent, bool orenNayar, bool unitDiffuseMass,
+			Scalar exponent, bool orenNayar, bool isotropicPhong,
+			bool unitDiffuseMass,
 			const RISEPel& roughness,
 			const ContinuationPathState& pathState ) :
 		  ContinuationClosureBase<RISEPel>(
-			ri,diffuse,glossy,exponent,orenNayar,unitDiffuseMass,
+			ri,diffuse,glossy,exponent,orenNayar,isotropicPhong,unitDiffuseMass,
 			roughness,pathState) {}
 		unsigned int GetLobeMask() const override { return LobeMask(); }
 		Scalar GetSelectionMass( unsigned int lobe ) const override { return LobeMass(lobe); }
@@ -345,6 +368,11 @@ namespace
 			sample.response = Evaluate(mask,direction);
 			sample.pdf = Pdf(mask,direction);
 			sample.throughput = ScatterThroughput(mask,direction,sample.pdf);
+			if( ThroughputMagnitude(sample.throughput) <= NEARZERO ) {
+				sample.survivalProbability = 0.0;
+				sample.reachPdf = 0.0;
+				return true;
+			}
 			sample.survivalProbability = applyRoulette ?
 				SurvivalProbability(mask,direction) : 1.0;
 			sample.reachPdf = sample.pdf*sample.survivalProbability;
@@ -370,10 +398,11 @@ namespace
 		NMClosure(
 			const RayIntersectionGeometric& ri,
 			Scalar diffuse, Scalar glossy, Scalar exponent,
-			bool orenNayar, bool unitDiffuseMass, Scalar roughness,
+			bool orenNayar, bool isotropicPhong, bool unitDiffuseMass,
+			Scalar roughness,
 			const ContinuationPathState& pathState ) :
 		  ContinuationClosureBase<Scalar>(
-			ri,diffuse,glossy,exponent,orenNayar,unitDiffuseMass,
+			ri,diffuse,glossy,exponent,orenNayar,isotropicPhong,unitDiffuseMass,
 			roughness,pathState) {}
 		unsigned int GetLobeMask() const override { return LobeMask(); }
 		Scalar GetSelectionMass( unsigned int lobe ) const override { return LobeMass(lobe); }
@@ -401,6 +430,11 @@ namespace
 			sample.response = Evaluate(mask,direction);
 			sample.pdf = Pdf(mask,direction);
 			sample.throughput = ScatterThroughput(mask,direction,sample.pdf);
+			if( ThroughputMagnitude(sample.throughput) <= NEARZERO ) {
+				sample.survivalProbability = 0.0;
+				sample.reachPdf = 0.0;
+				return true;
+			}
 			sample.survivalProbability = applyRoulette ?
 				SurvivalProbability(mask,direction) : 1.0;
 			sample.reachPdf = sample.pdf*sample.survivalProbability;
@@ -465,7 +499,8 @@ const IContinuationClosurePel* RISE::Implementation::CreateLambertianContinuatio
 {
 	if( !FiniteNonnegative(reflectance) ) return 0;
 	return new PelClosure(
-		ri,reflectance,RISEPel(0.0),0.0,false,true,RISEPel(0.0),pathState);
+		ri,reflectance,RISEPel(0.0),0.0,false,false,true,
+		RISEPel(0.0),pathState);
 }
 
 const IContinuationClosureNM* RISE::Implementation::CreateLambertianContinuationClosureNM(
@@ -473,7 +508,7 @@ const IContinuationClosureNM* RISE::Implementation::CreateLambertianContinuation
 	const ContinuationPathState& pathState )
 {
 	if( !FiniteNonnegative(reflectance) ) return 0;
-	return new NMClosure(ri,reflectance,0.0,0.0,false,true,0.0,pathState);
+	return new NMClosure(ri,reflectance,0.0,0.0,false,false,true,0.0,pathState);
 }
 
 const IContinuationClosurePel* RISE::Implementation::CreateOrenNayarContinuationClosurePel(
@@ -482,7 +517,7 @@ const IContinuationClosurePel* RISE::Implementation::CreateOrenNayarContinuation
 {
 	if( !FiniteNonnegative(reflectance) || !FiniteNonnegative(roughness) ) return 0;
 	return new PelClosure(
-		ri,reflectance,RISEPel(0.0),0.0,true,true,roughness,pathState);
+		ri,reflectance,RISEPel(0.0),0.0,true,false,true,roughness,pathState);
 }
 
 const IContinuationClosureNM* RISE::Implementation::CreateOrenNayarContinuationClosureNM(
@@ -490,7 +525,7 @@ const IContinuationClosureNM* RISE::Implementation::CreateOrenNayarContinuationC
 	const Scalar roughness, const ContinuationPathState& pathState )
 {
 	if( !FiniteNonnegative(reflectance) || !FiniteNonnegative(roughness) ) return 0;
-	return new NMClosure(ri,reflectance,0.0,0.0,true,true,roughness,pathState);
+	return new NMClosure(ri,reflectance,0.0,0.0,true,false,true,roughness,pathState);
 }
 
 const IContinuationClosurePel* RISE::Implementation::CreateIsotropicPhongContinuationClosurePel(
@@ -501,7 +536,7 @@ const IContinuationClosurePel* RISE::Implementation::CreateIsotropicPhongContinu
 	if( !FiniteNonnegative(rd) || !FiniteNonnegative(rs) ||
 		!FiniteNonnegative(exponent) ) return 0;
 	return new PelClosure(
-		ri,rd,rs,exponent,false,false,RISEPel(0.0),pathState);
+		ri,rd,rs,exponent,false,true,false,RISEPel(0.0),pathState);
 }
 
 const IContinuationClosureNM* RISE::Implementation::CreateIsotropicPhongContinuationClosureNM(
@@ -511,5 +546,5 @@ const IContinuationClosureNM* RISE::Implementation::CreateIsotropicPhongContinua
 {
 	if( !FiniteNonnegative(rd) || !FiniteNonnegative(rs) ||
 		!FiniteNonnegative(exponent) ) return 0;
-	return new NMClosure(ri,rd,rs,exponent,false,false,0.0,pathState);
+	return new NMClosure(ri,rd,rs,exponent,false,true,false,0.0,pathState);
 }
