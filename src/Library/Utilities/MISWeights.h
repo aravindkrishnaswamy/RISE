@@ -39,6 +39,11 @@
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		struct VolumeEmissionPivotState;
+	}
+
 	/// Phase-B thermal-volume MIS state for the segment launched by a vertex.
 	/// This deliberately does not live in public IRayCaster::RAY_STATE: adding
 	/// fields there would consume its historical tail padding, whose bytes are
@@ -47,12 +52,15 @@ namespace RISE
 	{
 		bool competitionAvailable;
 		bool continuationSingular;
+		const Implementation::VolumeEmissionPivotState* pivots;
 
 		VolumeEmissionSegmentState(
 			const bool competitionAvailable_ = false,
-			const bool continuationSingular_ = false ) :
+			const bool continuationSingular_ = false,
+			const Implementation::VolumeEmissionPivotState* pivots_ = 0 ) :
 			competitionAvailable( competitionAvailable_ ),
-			continuationSingular( continuationSingular_ )
+			continuationSingular( continuationSingular_ ),
+			pivots( pivots_ )
 		{}
 	};
 

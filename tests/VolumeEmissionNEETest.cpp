@@ -35,6 +35,7 @@
 #include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/MISWeights.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -1475,6 +1476,29 @@ namespace
 					endpoint.point, pivots.mediumPivots[0] );
 				Check( Vector3Ops::Magnitude(delta) > 1e-12,
 					"auxiliary medium pivot and NEE endpoint are different random variables" );
+
+				FixedSampler unusedSampler( { 0.02, 0.04, 0.06, 0.08, 0.10 } );
+				VolumeEmissionPivotState resolvedPivots;
+				const bool resolved = lights->ResolveVolumeEmissionPivots(
+					unusedSampler,&pivots,resolvedPivots);
+				Check( resolved && unusedSampler.Consumed()==0 &&
+					resolvedPivots.mediumPivots.size()==1 &&
+					Vector3Ops::Magnitude(Vector3Ops::mkVector3(
+						resolvedPivots.mediumPivots[0],pivots.mediumPivots[0]))==0.0,
+					"march reuses the immutable vertex U without consuming replacement draws" );
+				{
+					const VolumeEmissionSegmentStateScope stateScope(
+						VolumeEmissionSegmentState(true,false,&pivots) );
+					Check( CurrentVolumeEmissionSegmentState().pivots==&pivots,
+						"recursive segment state preserves the exact originating U identity" );
+				}
+
+				VolumeEmissionPivotState invalidSharedPivots;
+				FixedSampler forbiddenFallback( { 0.12, 0.14, 0.16, 0.18, 0.20 } );
+				Check( !lights->ResolveVolumeEmissionPivots(
+						forbiddenFallback,&invalidSharedPivots,resolvedPivots) &&
+					forbiddenFallback.Consumed()==0,
+					"invalid shared U fails closed instead of regenerating a different conditioning state" );
 			}
 
 			Point3 selectedPivot;

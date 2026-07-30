@@ -370,6 +370,7 @@ namespace
 		const Scalar maxDist,
 		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
 		ISampler& sampler					///< Independent medium sampler (not the path QMC sampler)
 		)
 	{
@@ -453,7 +454,7 @@ namespace
 		VolumeEmissionPivotState pivots;
 		Point3 selectedPivot;
 		Scalar selectedPivotPdf = 0.0;
-		if( !pLS->SampleVolumeEmissionPivots(sampler,pivots) ||
+		if( !pLS->ResolveVolumeEmissionPivots(sampler,sharedPivots,pivots) ||
 			!pLS->SampleEquiangularPivot(
 				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
 			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
@@ -542,6 +543,7 @@ namespace
 		const bool surfaceBounded,
 		const Scalar nm,
 		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
 		ISampler& sampler
 		)
 	{
@@ -622,7 +624,7 @@ namespace
 		VolumeEmissionPivotState pivots;
 		Point3 selectedPivot;
 		Scalar selectedPivotPdf = 0.0;
-		if( !pLS->SampleVolumeEmissionPivots(sampler,pivots) ||
+		if( !pLS->ResolveVolumeEmissionPivots(sampler,sharedPivots,pivots) ||
 			!pLS->SampleEquiangularPivot(
 				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
 			out.t = pMedium->SampleDistanceNM(
@@ -1282,23 +1284,30 @@ namespace
 	inline MediumSampleOutcome PTSampleMediumDistance(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
 		const bool surfaceBounded,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const Tag& tag );
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const Tag& tag );
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<PelTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
 		const bool surfaceBounded,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const PelTag& )
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const PelTag& )
 	{ return SampleDistanceWithEquiangularMIS(
-		pMedium, ray, maxDist, surfaceBounded, pLS, sampler ); }
+		pMedium, ray, maxDist, surfaceBounded, pLS, sharedPivots, sampler ); }
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
 		const bool surfaceBounded,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const NMTag& tag )
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const NMTag& tag )
 	{ return SampleDistanceWithEquiangularMIS_NM(
-		pMedium, ray, maxDist, surfaceBounded, tag.nm, pLS, sampler ); }
+		pMedium, ray, maxDist, surfaceBounded, tag.nm, pLS,
+		sharedPivots, sampler ); }
 
 	// In-scattered radiance (NEE) at a medium scatter point.
 	template<class Tag>
@@ -1943,8 +1952,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					result = result + throughput * additiveEmission;
 				}
 				IndependentSampler mediumSampler( rc.random );
+				const VolumeEmissionSegmentState volumeSegmentState =
+					CurrentVolumeEmissionSegmentState();
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-					pCurrentMedium, currentRay, maxDist, bHit, pLS, mediumSampler, tag );
+					pCurrentMedium, currentRay, maxDist, bHit, pLS,
+					volumeSegmentState.pivots, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -3869,9 +3881,11 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
 		}
 		IndependentSampler mediumSampler( rc.random );
+		const VolumeEmissionSegmentState volumeSegmentState =
+			CurrentVolumeEmissionSegmentState();
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
-			pLS, mediumSampler, tag );
+			pLS, volumeSegmentState.pivots, mediumSampler, tag );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -4568,7 +4582,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// for equiangular; hero-driven for delta tracking).
 				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
 					pCurrentMedium, currentRay, maxDist, bHit,
-					heroNM, pLS, mediumSampler );
+					heroNM, pLS, CurrentVolumeEmissionSegmentState().pivots,
+					mediumSampler );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -5416,7 +5431,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// independent equiangular).
 		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
 			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
-			heroNM, pLS, mediumSampler );
+			heroNM, pLS, CurrentVolumeEmissionSegmentState().pivots,
+			mediumSampler );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 

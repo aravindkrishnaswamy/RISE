@@ -512,6 +512,16 @@ namespace RISE
 				VolumeEmissionPivotState& pivots
 				) const;
 
+			/// Use the immutable pivot vector carried by an originating vertex,
+			/// or draw a local vector when this is a camera/legacy segment.  A
+			/// supplied vector is never regenerated: invalid shared state fails
+			/// closed so NEE and march cannot condition on different U values.
+			bool ResolveVolumeEmissionPivots(
+				ISampler& sampler,
+				const VolumeEmissionPivotState* sharedPivots,
+				VolumeEmissionPivotState& pivots
+				) const;
+
 			/// Draw the shared per-vertex auxiliary state in the required order:
 			/// every medium pivot U_m unconditionally precedes the independent
 			/// labeled volume-NEE endpoint Y.

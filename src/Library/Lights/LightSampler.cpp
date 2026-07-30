@@ -2108,6 +2108,23 @@ bool LightSampler::SampleVolumeEmissionPivots(
 	return true;
 }
 
+bool LightSampler::ResolveVolumeEmissionPivots(
+	ISampler& sampler,
+	const VolumeEmissionPivotState* sharedPivots,
+	VolumeEmissionPivotState& pivots
+	) const
+{
+	if( sharedPivots ) {
+		if( sharedPivots->mediumPivots.size() != volumeEmissionMedia.size() ) {
+			pivots.mediumPivots.clear();
+			return false;
+		}
+		pivots = *sharedPivots;
+		return true;
+	}
+	return SampleVolumeEmissionPivots( sampler, pivots );
+}
+
 bool LightSampler::SampleVolumeEmissionVertex(
 	ISampler& sampler,
 	VolumeEmissionVertexSample& sample

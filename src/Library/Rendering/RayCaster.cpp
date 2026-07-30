@@ -946,9 +946,11 @@ bool RayCaster::CastRayImpl_(
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots;
+		const VolumeEmissionSegmentState volumeSegmentState =
+			CurrentVolumeEmissionSegmentState();
 		const bool equiangularPivotsReady = useEquiangularMIS &&
-			pLightSampler->SampleVolumeEmissionPivots(
-				mediumSampler, equiangularPivots );
+			pLightSampler->ResolveVolumeEmissionPivots(
+				mediumSampler, volumeSegmentState.pivots, equiangularPivots );
 		Scalar combinedPdf = 0;		// Deterministic MIS denominator
 		bool useExplicitThroughput = false;
 		bool equiangularZeroContrib = false;	// True when equiangular strategy samples zero density
@@ -1698,9 +1700,11 @@ bool RayCaster::CastRayNMImpl_(
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots_NM;
+		const VolumeEmissionSegmentState volumeSegmentState =
+			CurrentVolumeEmissionSegmentState();
 		const bool equiangularPivotsReady_NM = useEquiangularMIS_NM &&
-			pLightSampler->SampleVolumeEmissionPivots(
-				mediumSampler, equiangularPivots_NM );
+			pLightSampler->ResolveVolumeEmissionPivots(
+				mediumSampler, volumeSegmentState.pivots, equiangularPivots_NM );
 		Scalar combinedPdf_NM = 0;
 		bool useExplicitThroughput_NM = false;
 		bool equiangularZeroContrib_NM = false;
