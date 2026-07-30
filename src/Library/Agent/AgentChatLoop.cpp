@@ -1159,7 +1159,14 @@ namespace RISE
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
-			//!                                                  each with " (candidate)" appended when validated == "text"
+			//!                                                  each with " (candidate)" appended when validated == "text".
+			//!                                                  "clean" means zero error AND zero warning entries --
+			//!                                                  Info-severity entries (creative-richness P2.b's
+			//!                                                  DESIGN_SCALAR_PIPE_UNUSED / DESIGN_NO_ADVANCED_GEOMETRY
+			//!                                                  advisories) count toward NEITHER bucket, so a scene
+			//!                                                  carrying only advisories still reads "clean" here --
+			//!                                                  same convention AgentEvalRunner.cpp's
+			//!                                                  CheckDiagnosticsKind uses for expect:"clean".
 			//!   9. anything else                            -> "ok"
 			//! A line that does not parse as a JSON object returns "?".
 			std::string ToolOutcomeLine( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
@@ -1272,18 +1279,27 @@ namespace RISE
 				// transcript saw "validate -> ok" over a diagnosed document.
 				if( call.name == "validate" && result.get( "diagnostics" ).isArray() ) {
 					const JsonValue& diags = result.get( "diagnostics" );
-					std::size_t errors = 0;
+					std::size_t errors = 0, warnings = 0;
 					std::string firstCode;
+					// Creative-richness P2.b: Info-severity entries (the
+					// DESIGN_* advisories) count toward NEITHER bucket -- an
+					// advisory is not a warning, and folding it into the
+					// warning count here would be exactly the mislabeling sec 9
+					// warns against (an Info entry described as a problem).
 					for( std::size_t i = 0; i < diags.size(); ++i ) {
-						if( diags.at( i ).get( "severity" ).asString() != "error" ) continue;
-						++errors;
-						if( firstCode.empty() ) firstCode = diags.at( i ).get( "code" ).asString();
+						const std::string sev = diags.at( i ).get( "severity" ).asString();
+						if( sev == "error" ) {
+							++errors;
+							if( firstCode.empty() ) firstCode = diags.at( i ).get( "code" ).asString();
+						} else if( sev == "warning" ) {
+							++warnings;
+						}
 					}
 					const std::string scope =
 						result.get( "validated" ).asString() == "text" ? " (candidate)" : "";
-					if( diags.size() == 0 ) return "clean" + scope;
+					if( errors == 0 && warnings == 0 ) return "clean" + scope;
 					if( errors == 0 )
-						return std::to_string( diags.size() ) + " warning(s)" + scope;
+						return std::to_string( warnings ) + " warning(s)" + scope;
 					return std::to_string( errors ) + " error(s)" +
 					       ( firstCode.empty() ? std::string() : ": " + firstCode ) + scope;
 				}

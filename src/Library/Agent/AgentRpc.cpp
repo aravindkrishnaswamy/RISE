@@ -1197,29 +1197,24 @@ namespace RISE
 							AgentSession::ValidateText( snap.document ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
-						// Creative-richness P2 (73-creative-richness-design.md sec 2
-						// P2 / sec 7 re-target): the SAME observed-state design-note
-						// scan the render-result carrier attaches
-						// (AgentSession::RenderCore_), on the SAME retained snapshot
-						// text already read above -- omitted (key absent) whenever
-						// the scan finds neither measured deficit, same convention
-						// as read_skill's index-only `note`.
-						{
-							const std::string designNote = AgentSession::ComputeDesignNote( snap.document );
-							if( !designNote.empty() )
-								headResult.set( "note", JsonValue::MakeString( designNote ) );
-						}
+						// Creative-richness P2.b (73-creative-richness-design.md
+						// sec 9's closing recommendation): validate no longer
+						// attaches a `note` field -- the SAME two design-note
+						// conditions now ride the `diagnostics` array above as
+						// Info-severity DESIGN_SCALAR_PIPE_UNUSED /
+						// DESIGN_NO_ADVANCED_GEOMETRY entries (see
+						// AgentSession::ValidateText's AppendDesignDiagnostics_
+						// call).  ONE mechanism per carrier: the render-result
+						// carrier (AgentSession::RenderCore_) still attaches
+						// `note` -- untouched by this slice.
 						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "diagnostics", diagnosticsArray(
 						AgentSession::ValidateText( text->asString() ) ) );
 					result.set( "validated", JsonValue::MakeString( "text" ) );
-					{
-						const std::string designNote = AgentSession::ComputeDesignNote( text->asString() );
-						if( !designNote.empty() )
-							result.set( "note", JsonValue::MakeString( designNote ) );
-					}
+					// Creative-richness P2.b: no `note` field here either -- see
+					// the head-form branch's comment above.
 					return MakeSuccess( idValue, result );
 				}
 

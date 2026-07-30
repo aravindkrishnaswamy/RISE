@@ -6306,6 +6306,35 @@ static void TestToolOutcomeDisplay()
 			"\"validated\":\"text\"}}" );
 		Check( cand.toolSummaries[0].outcomeLine == "clean (candidate)",
 		       "T38a2: the text form's verdict is labelled (candidate)" );
+
+		// (a2b) Creative-richness P2.b: an Info-severity entry (a
+		// DESIGN_SCALAR_PIPE_UNUSED / DESIGN_NO_ADVANCED_GEOMETRY advisory)
+		// must NOT be described as a warning -- "clean" means zero error AND
+		// zero warning entries, matching AgentEvalRunner.cpp's
+		// CheckDiagnosticsKind expect:"clean" convention.  RED-PROVE target:
+		// pre-fix this counted diags.size() once errors==0, so a lone Info
+		// entry read "1 warning(s)" -- exactly the "info entry described as
+		// a problem" mislabeling sec 9's caveat warns against.
+		const ChatTranscriptEntry infoOnly = oneCallFlush( "validate",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"diagnostics\":["
+			"{\"severity\":\"info\",\"code\":\"DESIGN_SCALAR_PIPE_UNUSED\",\"message\":\"m\","
+			"\"offset\":0,\"length\":0}],\"validated\":\"head\"}}" );
+		Check( infoOnly.toolSummaries.size() == 1 && infoOnly.toolSummaries[0].outcomeLine == "clean",
+		       "T38a2b: MONEY -- a lone Info-severity diagnostic still reads \"clean\", not "
+		       "\"1 warning(s)\" (detail: " + infoOnly.toolSummaries[0].outcomeLine + ")" );
+
+		// A genuine warning is still counted -- and an accompanying Info
+		// entry does not inflate that count.
+		const ChatTranscriptEntry warnPlusInfo = oneCallFlush( "validate",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"diagnostics\":["
+			"{\"severity\":\"warning\",\"code\":\"SOME_WARNING\",\"message\":\"w\","
+			"\"offset\":0,\"length\":0},"
+			"{\"severity\":\"info\",\"code\":\"DESIGN_NO_ADVANCED_GEOMETRY\",\"message\":\"m\","
+			"\"offset\":0,\"length\":0}],\"validated\":\"head\"}}" );
+		Check( warnPlusInfo.toolSummaries.size() == 1 &&
+		       warnPlusInfo.toolSummaries[0].outcomeLine == "1 warning(s)",
+		       "T38a2b: a real warning is still counted, and the accompanying Info entry does not "
+		       "inflate the count to 2 (detail: " + warnPlusInfo.toolSummaries[0].outcomeLine + ")" );
 	}
 
 	// (b) rejected with NO issues -> falls back to the free-text message.

@@ -5879,9 +5879,23 @@ namespace RISE
 					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 
 					if( expect == "clean" ) {
-						if( diags.empty() ) return { true, "validate: clean (0 diagnostics)" };
-						return { false, "validate: expected clean but found " + std::to_string( diags.size() ) +
-							" diagnostic(s); first: " + diags[0].code + " " + diags[0].message };
+						// Creative-richness P2.b (73-creative-richness-design.md
+						// sec 9): "clean" means no ERROR or WARNING diagnostics --
+						// Severity::Info entries (the DESIGN_SCALAR_PIPE_UNUSED /
+						// DESIGN_NO_ADVANCED_GEOMETRY advisories) do NOT count.
+						// Those two facts are already measured by their OWN
+						// checkpoints (a "diagnostics":{expect:"code",code:
+						// "DESIGN_..."} checkpoint, or any_param_references_kind
+						// on the same document) -- counting them here too would
+						// double-count the same deficit under two checkpoint
+						// kinds AND fail expect:"clean" on a scene that is
+						// otherwise genuinely clean, corrupting both metrics.
+						std::vector<const AgentDiagnostic*> nonInfo;
+						for( const AgentDiagnostic& d : diags )
+							if( d.severity != AgentDiagnostic::Severity::Info ) nonInfo.push_back( &d );
+						if( nonInfo.empty() ) return { true, "validate: clean (0 error/warning diagnostics)" };
+						return { false, "validate: expected clean but found " + std::to_string( nonInfo.size() ) +
+							" error/warning diagnostic(s); first: " + nonInfo[0]->code + " " + nonInfo[0]->message };
 					}
 					if( expect == "code" ) {
 						if( !cp.has( "code" ) || !cp.get( "code" ).isString() )

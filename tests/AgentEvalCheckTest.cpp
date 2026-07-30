@@ -1112,6 +1112,104 @@ static void TestDiagnosticsLiveDocInvariant()
 }
 
 //----------------------------------------------------------------------
+// T6c: "diagnostics" checkpoint expect:"clean" IGNORES Info-severity
+// entries (creative-richness P2.b, 73-creative-richness-design.md sec 9):
+// a document tripping the DESIGN_SCALAR_PIPE_UNUSED advisory (>=3
+// standard_object, no scalar_painter anywhere) is NOT "unclean" for
+// expect:"clean" purposes -- the deficit is independently observable via
+// its own expect:"code" checkpoint (or any_param_references_kind), and
+// double-counting it here would fail expect:"clean" on a scenario that is
+// otherwise genuinely error/warning-free, corrupting both metrics.
+// RED-PROVEN: pre-fix, CheckDiagnosticsKind's "clean" branch counted
+// `diags.empty()` -- ANY entry, including an Info advisory, failed it. This
+// fixture is crafted to trip EXACTLY the advisory and nothing else (3
+// standard_object -- stays below condition B's >=4 gate, so
+// DESIGN_NO_ADVANCED_GEOMETRY stays silent too), so it discriminates the
+// fix from that regression rather than passing vacuously.
+//----------------------------------------------------------------------
+static void TestDiagnosticsCheckpointCleanIgnoresInfo()
+{
+	std::printf( "T6c: \"diagnostics\" expect:\"clean\" ignores Info-severity design advisories...\n" );
+	const std::string dir = ScratchRunDir( "t6c_diagnostics_info" );
+	const std::string scenePath = dir + "/design_advisory_probe.RISEscene";
+
+	// 3 standard_object sharing one material/geometry, NO scalar_painter
+	// anywhere -- trips condition A alone.
+	const std::string scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+		"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+		"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+		"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+		"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+	Check( WriteFile( scenePath, scene ), "wrote the design-advisory probe scene" );
+
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, "the design-advisory probe scene loads cleanly" );
+
+	if( loaded ) {
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "WrapJob produced a live session over the probe scene" );
+		if( session ) {
+			// Red-prove the fixture itself: DESIGN_SCALAR_PIPE_UNUSED must
+			// actually fire, at Info severity, DESIGN_NO_ADVANCED_GEOMETRY
+			// must NOT (3 < 4), and no error/warning may be present -- else
+			// the assertions below are vacuous.
+			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+			bool sawScalarInfo = false, sawGeom = false, sawAnyNonInfo = false;
+			for( const AgentDiagnostic& d : diags ) {
+				if( d.code == "DESIGN_SCALAR_PIPE_UNUSED" && d.severity == AgentDiagnostic::Severity::Info )
+					sawScalarInfo = true;
+				if( d.code == "DESIGN_NO_ADVANCED_GEOMETRY" ) sawGeom = true;
+				if( d.severity != AgentDiagnostic::Severity::Info ) sawAnyNonInfo = true;
+			}
+			Check( sawScalarInfo, "RED-PROVE fixture: DESIGN_SCALAR_PIPE_UNUSED fires at Info severity" );
+			Check( !sawGeom, "RED-PROVE fixture: DESIGN_NO_ADVANCED_GEOMETRY stays silent (3 < 4)" );
+			Check( !sawAnyNonInfo, "RED-PROVE fixture: the ONLY diagnostics entry is the Info advisory" );
+
+			AgentEvalRunHandle h;
+			h.result.scenarioId = "design_advisory_probe";
+			h.result.terminalStatus = "final_text";
+			h.trajectoryPath = "";
+			h.resultPath = dir + "/design_advisory_probe.result.jsonl";
+			h.dispatcher.reset( new AgentRpcDispatcher( std::move( session ) ) );
+
+			AgentEvalScenario s2;
+			s2.id = "design_advisory_probe";
+
+			auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+				JsonValue cps; std::string err;
+				Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+				s2.checkpoints = cps;
+				AgentEvalCheckResult r = CheckScenario( h, s2 );
+				if( r.checkpoints.size() == 1 ) {
+					Check( r.checkpoints[0].passed == expectPass,
+						label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+						" (detail: " + r.checkpoints[0].detail + ")" );
+				} else Check( false, label + ": expected exactly one checkpoint result" );
+			};
+
+			// THE MONEY ASSERTION: expect:"clean" PASSES despite the live
+			// Info-severity advisory.
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"clean\"}]", true,
+				"expect:\"clean\" PASSES on a document carrying ONLY an Info-severity design advisory" );
+			// The deficit is still independently observable via expect:"code".
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"code\",\"code\":\"DESIGN_SCALAR_PIPE_UNUSED\"}]", true,
+				"expect:\"code\" still FINDS the advisory -- the deficit is not hidden, just not "
+				"counted as \"unclean\"" );
+		}
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
 // T7: "trajectory" checkpoint kind.
 //----------------------------------------------------------------------
 static void TestTrajectoryCheckpoint()
@@ -5805,6 +5903,7 @@ int main()
 	TestObjectmapCheckpoint();
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
+	TestDiagnosticsCheckpointCleanIgnoresInfo();
 	TestTrajectoryCheckpoint();
 	TestTrajectoryNewAssertions();
 	TestToolOutcomesArgsContainsAndConflict();

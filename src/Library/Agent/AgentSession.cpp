@@ -955,6 +955,21 @@ namespace RISE
 			return ValidateText( candidateText );
 		}
 
+		namespace
+		{
+			//! Forward declaration: AppendDesignDiagnostics_ is DEFINED further
+			//! down this file (alongside ComputeDesignNoteConditionsFromDoc_ and
+			//! ComputeDesignNoteFromDoc_ -- creative-richness P2.b,
+			//! 73-creative-richness-design.md sec 9), but ValidateText (right
+			//! below) needs to call it before that definition appears in file
+			//! order.  Every `namespace { ... }` block at this scope in this
+			//! translation unit reopens the SAME compiler-unique anonymous
+			//! namespace (see AttachParamEditRejectionIssues's forward
+			//! declaration further down for the identical pattern), so this and
+			//! the later definition refer to the same symbol.
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out );
+		}
+
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
 		{
 			std::vector<AgentDiagnostic> out;
@@ -1105,24 +1120,38 @@ namespace RISE
 				out.push_back( d );
 			}
 
+			// (d) Creative-richness P2.b (73-creative-richness-design.md sec
+			// 9): the SAME two design-note conditions the render-result note
+			// computes (AppendDesignDiagnostics_ / ComputeDesignNoteFromDoc_
+			// share ONE conditions scan, ComputeDesignNoteConditionsFromDoc_,
+			// so the thresholds can never drift apart) -- surfaced here as
+			// Info-severity diagnostics, the exact list a model consults when
+			// it calls validate and reads "no errors" (sec 9's qwen
+			// transcript: "validated clean - no errors ... just a design
+			// suggestion").  validate-ONLY: the render-result note path is
+			// untouched (see 73-creative-richness-design.md sec 9's closing
+			// recommendation -- "keep the render-result note as-is").
+			// candidateDoc is ALREADY parsed above (step (a)), so this is a
+			// second scan of the same Document, not a re-parse.
+			AppendDesignDiagnostics_( candidateDoc, out );
+
 			return out;
 		}
 
 		namespace
 		{
-			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
-			//! RE-TARGETED by sec 7 to the two MEASURED bare-prompt deficits --
-			//! sec 7 wins where the two disagree): the shared, engine-side
-			//! "design note" scan CORE, over an ALREADY-PARSED Document --
-			//! ONE function so the THREE call sites (AgentSession::
-			//! ComputeDesignNote's text-taking wrapper below, used by the
-			//! `validate` carrier in AgentRpc.cpp on a retained-snapshot /
-			//! candidate TEXT; and RenderCore_'s doRenderWork closure, which
-			//! calls this overload DIRECTLY on `*mJob->GetCstDocument()` from
-			//! its isDraft branch AND its production-body tail -- see
-			//! designNoteLocal's declaration and RenderCore_'s carrier-site
-			//! comment for why the render path never goes through the
-			//! text-taking wrapper) can never drift apart.
+			//! Creative-richness P2 / P2.b (73-creative-richness-design.md sec
+			//! 2 P2, RE-TARGETED by sec 7 to the two MEASURED bare-prompt
+			//! deficits, DIAGNOSTIC-FRAMED by sec 9): the shared, engine-side
+			//! "design note conditions" scan CORE, over an ALREADY-PARSED
+			//! Document -- ONE function so its consumers (ComputeDesignNoteFromDoc_
+			//! below, feeding the render-result "DESIGN NOTE" string via
+			//! RenderCore_'s designNoteLocal AND the ComputeDesignNote text
+			//! wrapper; and AppendDesignDiagnostics_ below, feeding validate's
+			//! Info-severity diagnostics) can NEVER drift on the threshold
+			//! logic -- sec 9's P2.b directive is "do not duplicate", so this
+			//! is computed exactly ONCE per Document scan and both consumers
+			//! read the same struct.
 			//!
 			//! Walks the document's top-level chunks ONCE, counting:
 			//!   * `standard_object` chunks (the gate quantity for BOTH
@@ -1152,21 +1181,19 @@ namespace RISE
 			//! all still counts toward the gate, matching the sec 7 text's
 			//! "walk doc.items roles" framing (a coarser, cheaper test than A1's
 			//! originally-approved reachability scan, superseded here).
-			//!
-			//! RETURNS empty iff neither condition fires (the "omit the note
-			//! entirely when clean" convention -- see AgentSkillResult::note
-			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
-			//! mirrors).  When one or both fire, returns ONE combined
-			//! "DESIGN NOTE: ..." string carrying every firing clause plus the
-			//! anti-churn escape clause (load-bearing from day one, sec 2 P2 --
-			//! a loud signal with no escape clause just buys a different
-			//! wasted-turn loop).
-			std::string ComputeDesignNoteFromDoc_( const Document& doc )
+			struct DesignNoteConditions_
 			{
+				bool conditionA = false;   //!< scalar pipe unused
+				bool conditionB = false;   //!< no advanced geometry
 				int  standardObjectCount = 0;
+				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
+			};
+
+			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
+			{
+				DesignNoteConditions_ c;
 				bool hasScalarPainter    = false;
 				bool hasAdvancedGeometry = false;
-				std::map<std::string, int> geometryCensus;   // keyword -> count, every OTHER geometry kind seen
 
 				const int n = RISE::Cst::DocItemCount( doc );
 				for( int i = 0; i < n; ++i ) {
@@ -1176,25 +1203,56 @@ namespace RISE
 					if( !item || item->kind != NodeKind::Chunk ) continue;
 					const std::string& role = item->role;
 
-					if( role == "standard_object" ) { ++standardObjectCount; continue; }
+					if( role == "standard_object" ) { ++c.standardObjectCount; continue; }
 					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
 					if( role == "sdf_geometry" || role == "sweep_geometry" || role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
-						++geometryCensus[role];
+						++c.geometryCensus[role];
 						continue;
 					}
 
 					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
 					if( !d ) continue;
-					if( d->category == ChunkCategory::Geometry ) ++geometryCensus[role];
+					if( d->category == ChunkCategory::Geometry ) ++c.geometryCensus[role];
 				}
 
-				const bool conditionA = standardObjectCount >= 3 && !hasScalarPainter;
-				const bool conditionB = standardObjectCount >= 4 && !hasAdvancedGeometry;
-				if( !conditionA && !conditionB ) return std::string();
+				c.conditionA = c.standardObjectCount >= 3 && !hasScalarPainter;
+				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
+				return c;
+			}
+
+			//! Shared formatter for condition B's "k box_geometry, m
+			//! sphere_geometry" clause -- factored out so the note builder and
+			//! the diagnostic builder render the SAME census string rather
+			//! than two independently-maintained loops.
+			std::string FormatGeometryCensus_( const std::map<std::string, int>& geometryCensus )
+			{
+				std::string census;
+				for( const auto& kv : geometryCensus ) {
+					if( !census.empty() ) census += ", ";
+					census += std::to_string( kv.second ) + " " + kv.first;
+				}
+				if( census.empty() ) census = "no geometry chunks bound";
+				return census;
+			}
+
+			//! RETURNS empty iff neither condition fires (the "omit the note
+			//! entirely when clean" convention -- see AgentSkillResult::note
+			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
+			//! mirrors).  When one or both fire, returns ONE combined
+			//! "DESIGN NOTE: ..." string carrying every firing clause plus the
+			//! anti-churn escape clause (load-bearing from day one, sec 2 P2 --
+			//! a loud signal with no escape clause just buys a different
+			//! wasted-turn loop).  RENDER-RESULT PATH ONLY as of sec 9's P2.b
+			//! (validate no longer attaches this string -- see
+			//! AppendDesignDiagnostics_ below, its validate-side sibling).
+			std::string ComputeDesignNoteFromDoc_( const Document& doc )
+			{
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				if( !c.conditionA && !c.conditionB ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
-				if( conditionA ) {
+				if( c.conditionA ) {
 					// Review P1 fix: the ORIGINAL wording ("all N materials use
 					// constant roughness") is FALSE whenever the scene's
 					// materials don't even HAVE a roughness parameter
@@ -1222,20 +1280,75 @@ namespace RISE
 						"scalar_painter -> alphax/alphay adds realism "
 						"(read_skill {\"name\":\"procedural-textures\"}).";
 				}
-				if( conditionB ) {
-					std::string census;
-					for( const auto& kv : geometryCensus ) {
-						if( !census.empty() ) census += ", ";
-						census += std::to_string( kv.second ) + " " + kv.first;
-					}
-					if( census.empty() ) census = "no geometry chunks bound";
-					note += " geometry census: " + std::to_string( standardObjectCount ) + " objects -- " + census +
+				if( c.conditionB ) {
+					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
+						FormatGeometryCensus_( c.geometryCensus ) +
 						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
 						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
 				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
+			}
+
+			//! validate's Info-severity sibling of ComputeDesignNoteFromDoc_
+			//! (creative-richness P2.b, 73-creative-richness-design.md sec 9's
+			//! closing recommendation): consumes the SAME
+			//! ComputeDesignNoteConditionsFromDoc_ scan -- never re-derives the
+			//! >=3 / >=4 threshold logic -- and appends ZERO, ONE, or TWO
+			//! AgentDiagnostic entries to `out`: condition A ->
+			//! DESIGN_SCALAR_PIPE_UNUSED, condition B ->
+			//! DESIGN_NO_ADVANCED_GEOMETRY.  Both severity Info (an ADVISORY,
+			//! not a correctness problem -- see AgentDiagnostic.h).
+			//!
+			//! Message text is the SAME material/parameter claim the note
+			//! clause carries (the clause substring is copied verbatim, not
+			//! reworded -- it survived two truth reviews), with the leading
+			//! space that glued it onto "DESIGN NOTE:" trimmed since this is
+			//! now a standalone message, plus a per-diagnostic self-disarm
+			//! suffix.  Sec 9's caveat is binding here: the diagnostics shape
+			//! has no escape-clause slot the way the note's trailing sentence
+			//! does, so a deliberately flat/simple scene would otherwise carry
+			//! what LOOKS like a permanent, unfixable problem -- the suffix on
+			//! EACH message is what keeps it advisory instead.
+			//!
+			//! Called ONLY from AgentSession::ValidateText -- the render-result
+			//! note path (ComputeDesignNoteFromDoc_'s OTHER two call sites, in
+			//! RenderCore_, plus the ComputeDesignNote text wrapper) is
+			//! untouched; see that function's doc for why validate no longer
+			//! calls it.
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
+			{
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				if( !c.conditionA && !c.conditionB ) return;
+
+				static const char* const kSelfDisarm =
+					" If flat/simple styling is intentional, this is fine -- ignore.";
+
+				if( c.conditionA ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_SCALAR_PIPE_UNUSED;
+					d.message  = "the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
+						"so any physical-scalar material parameter (roughness, displacement) is a "
+						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
+						"surface, spatially-varying roughness via expression_function2d -> "
+						"scalar_painter -> alphax/alphay adds realism "
+						"(read_skill {\"name\":\"procedural-textures\"}).";
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionB ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
+					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
+						FormatGeometryCensus_( c.geometryCensus ) +
+						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
+						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
 			}
 		}
 

@@ -539,21 +539,33 @@ static const char* const kValidateNoteTriggerScene =
 	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
 
 //----------------------------------------------------------------------
-// Creative-richness P2 carrier test: `validate` (both the HEAD form and the
-// stateless `text` form) attaches the SAME design note the render-result
-// carrier does, via the ONE shared AgentSession::ComputeDesignNote helper --
-// present (key populated) on a triggering document, OMITTED ENTIRELY (not
-// present-but-empty) on a clean one.
+// Creative-richness P2.b carrier test (73-creative-richness-design.md sec
+// 9's closing recommendation): `validate` (both the HEAD form and the
+// stateless `text` form) NO LONGER attaches a `note` field -- EVER, clean
+// or triggering, this is not a "same convention as read_skill" omission
+// anymore -- and instead carries the SAME two design-note conditions as
+// Info-severity `diagnostics` entries (DESIGN_SCALAR_PIPE_UNUSED /
+// DESIGN_NO_ADVANCED_GEOMETRY), via the ONE shared
+// AppendDesignDiagnostics_ helper.  (Formerly RunValidateDesignNoteCarrierTest
+// -- renamed because validate's carrier mechanism changed from `note` to
+// `diagnostics`; the render-result carrier's `note` is untouched and has
+// its own coverage in RunDesignNoteScanTest above.)
 //----------------------------------------------------------------------
-static void RunValidateDesignNoteCarrierTest()
+static void RunValidateDesignDiagnosticsCarrierTest()
 {
-	std::printf( "[validate] design-note carrier (head form + text form)\n" );
+	std::printf( "[validate] design-diagnostics carrier (head form + text form)\n" );
+
+	auto findDiag = []( const JsonValue& diags, const std::string& code ) -> const JsonValue* {
+		for( std::size_t i = 0; i < diags.size(); ++i )
+			if( diags.at( i ).get( "code" ).asString() == code ) return &diags.at( i );
+		return nullptr;
+	};
 
 	// -- HEAD form, triggering document -------------------------------
 	{
-		const std::string scenePath = WriteTemp( "rise_validate_note_trigger.RISEscene", kValidateNoteTriggerScene );
+		const std::string scenePath = WriteTemp( "rise_validate_diag_trigger.RISEscene", kValidateNoteTriggerScene );
 		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
-		Check( session != nullptr, "design-note trigger scene loads" );
+		Check( session != nullptr, "design-diagnostics trigger scene loads" );
 		if( session ) {
 			AgentRpcDispatcher rpc( std::move( session ) );
 			JsonValue env; std::string err;
@@ -561,19 +573,33 @@ static void RunValidateDesignNoteCarrierTest()
 				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"validate\",\"params\":{}}" ), env, err ),
 				"head-form validate response parses" );
 			const JsonValue& r = env.get( "result" );
-			Check( r.has( "note" ) &&
-			       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
-			       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
-			       "MONEY: validate's HEAD form carries the design note on a triggering document "
-			       "(3 spheres, no scalar_painter)" );
+			Check( !r.has( "note" ),
+			       "MONEY (P2.b): validate's HEAD form carries NO `note` field, even on a "
+			       "triggering document -- render keeps `note`, validate carries `diagnostics`" );
+			const JsonValue& diags = r.get( "diagnostics" );
+			const JsonValue* d = findDiag( diags, "DESIGN_SCALAR_PIPE_UNUSED" );
+			Check( d != nullptr,
+			       "MONEY: validate's HEAD form carries a DESIGN_SCALAR_PIPE_UNUSED diagnostic on a "
+			       "triggering document (3 spheres, no scalar_painter)" );
+			if( d ) {
+				Check( d->get( "severity" ).asString() == "info",
+				       "DESIGN_SCALAR_PIPE_UNUSED rides at severity \"info\"" );
+				Check( d->get( "message" ).asString().find( "scalar_painter" ) != std::string::npos,
+				       "the message carries the same scalar_painter claim the render-result note does" );
+				Check( d->get( "message" ).asString().find( "If flat/simple styling is intentional" ) != std::string::npos,
+				       "the message carries the self-disarm suffix (sec 9's caveat: no escape-clause "
+				       "slot in the diagnostics shape, so it lives in the message)" );
+			}
+			Check( findDiag( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ) == nullptr,
+			       "...and DESIGN_NO_ADVANCED_GEOMETRY stays silent (3 < 4)" );
 		}
 		std::remove( scenePath.c_str() );
 	}
 
 	// -- HEAD form, clean document (kGoodScene: 0 standard_object -- below
-	//    either gate) -- key must be OMITTED ENTIRELY, not present-empty.
+	//    either gate) -- no `note`, and no DESIGN_* diagnostics either.
 	{
-		const std::string scenePath = WriteTemp( "rise_validate_note_clean.RISEscene", kGoodScene );
+		const std::string scenePath = WriteTemp( "rise_validate_diag_clean.RISEscene", kGoodScene );
 		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 		Check( session != nullptr, "clean scene loads" );
 		if( session ) {
@@ -584,8 +610,12 @@ static void RunValidateDesignNoteCarrierTest()
 				"head-form validate response parses (clean scene)" );
 			const JsonValue& r = env.get( "result" );
 			Check( !r.has( "note" ),
-			       "MONEY: validate's HEAD form OMITS the `note` key entirely on a clean document "
-			       "(key absent, not an empty string)" );
+			       "MONEY: validate's HEAD form OMITS the `note` key entirely (clean document)" );
+			const JsonValue& diags = r.get( "diagnostics" );
+			Check( findDiag( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) == nullptr &&
+			       findDiag( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ) == nullptr,
+			       "MONEY: validate's HEAD form carries NO design diagnostics on a clean document "
+			       "(0 standard_object -- below either gate)" );
 		}
 		std::remove( scenePath.c_str() );
 	}
@@ -603,13 +633,14 @@ static void RunValidateDesignNoteCarrierTest()
 			"text-form validate response parses" );
 		const JsonValue& r = env.get( "result" );
 		Check( r.get( "validated" ).asString() == "text", "validated == \"text\"" );
-		Check( r.has( "note" ) &&
-		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos,
-		       "MONEY: validate's TEXT form ALSO carries the design note on a triggering candidate "
-		       "-- the SAME shared scan, no separate implementation to drift" );
+		Check( !r.has( "note" ),
+		       "MONEY (P2.b): validate's TEXT form carries NO `note` field either" );
+		Check( findDiag( r.get( "diagnostics" ), "DESIGN_SCALAR_PIPE_UNUSED" ) != nullptr,
+		       "MONEY: validate's TEXT form ALSO carries the design diagnostic on a triggering "
+		       "candidate -- the SAME shared conditions scan, no separate implementation to drift" );
 	}
 
-	// -- TEXT form, clean candidate -- key omitted entirely.
+	// -- TEXT form, clean candidate -- no `note`, no DESIGN_* diagnostics.
 	{
 		std::unique_ptr<AgentSession> noSession;
 		AgentRpcDispatcher headless( std::move( noSession ) );
@@ -623,6 +654,132 @@ static void RunValidateDesignNoteCarrierTest()
 		const JsonValue& r = env.get( "result" );
 		Check( !r.has( "note" ),
 		       "MONEY: validate's TEXT form OMITS `note` entirely on a clean candidate" );
+		Check( findDiag( r.get( "diagnostics" ), "DESIGN_SCALAR_PIPE_UNUSED" ) == nullptr &&
+		       findDiag( r.get( "diagnostics" ), "DESIGN_NO_ADVANCED_GEOMETRY" ) == nullptr,
+		       "MONEY: validate's TEXT form carries NO design diagnostics on a clean candidate" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2.b threshold scan, at the AgentSession::ValidateText
+// layer (mirrors RunDesignNoteScanTest's fixtures/structure above, but
+// asserts on the AgentDiagnostic vector rather than the note string) --
+// proves the SAME six orthogonal fixtures fire the RIGHT diagnostic
+// code(s), at Info severity, with the self-disarm suffix, and that the
+// shared ComputeDesignNoteConditionsFromDoc_ scan really is shared (the
+// note and the diagnostics never disagree on which condition(s) fired).
+//----------------------------------------------------------------------
+static void RunValidateDesignDiagnosticsScanTest()
+{
+	std::printf( "[design-diagnostics] AgentSession::ValidateText DESIGN_* red-proofs\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	const std::string docA3NoScalar =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n\n"
+		"standard_object\n{\n\tname c\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docA3NoScalar );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" );
+		Check( d != nullptr, "RED-PROVE A: 3 standard_object + no scalar_painter fires DESIGN_SCALAR_PIPE_UNUSED" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "scalar_painter" ) != std::string::npos, "...naming scalar_painter" );
+			Check( d->message.find( "If flat/simple styling is intentional, this is fine -- ignore." ) != std::string::npos,
+			       "...carrying the exact self-disarm suffix" );
+			Check( d->offset == 0 && d->length == 0, "...not localizable (offset/length 0/0)" );
+		}
+		Check( !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ), "...and condition B stays silent (3 < 4)" );
+	}
+
+	const std::string docA3WithScalar =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n\n"
+		"standard_object\n{\n\tname c\n}\n\n"
+		"scalar_painter\n{\n\tname r\n\tfile none\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docA3WithScalar );
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
+		       "GREEN-PROVE A: the SAME 3 objects + a bound scalar_painter silences BOTH design codes" );
+	}
+
+	const std::string docB4AllBoxWithScalar =
+		"RISE ASCII SCENE 7\n"
+		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docB4AllBoxWithScalar );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" );
+		Check( d != nullptr, "RED-PROVE B: 4 standard_object all box_geometry, no advanced geometry, "
+		       "fires DESIGN_NO_ADVANCED_GEOMETRY" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "geometry census" ) != std::string::npos &&
+			       d->message.find( "box_geometry" ) != std::string::npos,
+			       "...carrying the geometry census clause" );
+			Check( d->message.find( "If flat/simple styling is intentional, this is fine -- ignore." ) != std::string::npos,
+			       "...carrying the exact self-disarm suffix" );
+		}
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ), "...and condition A stays silent (a scalar_painter IS bound)" );
+	}
+
+	const std::string docB4WithSdf = docB4AllBoxWithScalar +
+		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docB4WithSdf );
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
+		       "GREEN-PROVE B: the SAME 4-box scene + an sdf_geometry chunk silences BOTH design codes" );
+	}
+
+	const std::string docBelowThresholds =
+		"RISE ASCII SCENE 7\n"
+		"standard_object\n{\n\tname a\n}\n\n"
+		"standard_object\n{\n\tname b\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docBelowThresholds );
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
+		       "GREEN-PROVE (thresholds): 2 standard_object -- below BOTH gates -- fires neither code" );
+	}
+
+	const std::string docCombined =
+		"RISE ASCII SCENE 7\n"
+		"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+		"standard_object\n{\n\tname a\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
+		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docCombined );
+		Check( hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
+		       "COMBINED: 4 standard_object, no scalar_painter, no advanced geometry -- fires BOTH "
+		       "codes as TWO SEPARATE diagnostics" );
+		std::size_t designCount = 0;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == "DESIGN_SCALAR_PIPE_UNUSED" || d.code == "DESIGN_NO_ADVANCED_GEOMETRY" ) ++designCount;
+		Check( designCount == 2, "...exactly two design diagnostics, not a merged/combined one" );
+	}
+
+	// Empty document text -> ValidateText reports EMPTY_DOCUMENT and
+	// returns early (see AgentSession::ValidateText step (a2)) -- the
+	// design scan never even runs, so no DESIGN_* code can appear.
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( std::string() );
+		Check( !hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && !hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ),
+		       "empty document text -> no design diagnostics (EMPTY_DOCUMENT short-circuits first)" );
 	}
 }
 
@@ -1108,11 +1265,17 @@ int main()
 	//
 	// This is the assertion that discriminates.  Every OTHER check here
 	// passes vacuously if the branch validated some arbitrary clean string
-	// instead of ReadDocument(), because a clean head and (say) an empty
-	// document both validate to an EMPTY diagnostics array -- this validator
-	// only ever emits Error severity, so there is no "clean but noisy" head
-	// to compare.  (Mutation probe: swapping ReadDocument() for a constant
-	// left every other assertion in this file green.)
+	// instead of ReadDocument(), because kWedgeScene's own document (2
+	// standard_object -- below BOTH creative-richness gates, see
+	// RunValidateDesignDiagnosticsScanTest above) carries no diagnostics of
+	// ANY severity pre-edit, so there is no "clean but noisy" head built
+	// from THIS fixture to accidentally pass on.  (A scene with >=3
+	// standard_object and no scalar_painter WOULD be clean-but-noisy since
+	// P2.b -- errors==0 but an Info DESIGN_SCALAR_PIPE_UNUSED entry present
+	// -- kWedgeScene is deliberately shaped to stay below that gate so this
+	// section's ERROR-severity assertions below are not confounded by it.)
+	// (Mutation probe: swapping ReadDocument() for a constant left every
+	// other assertion in this file green.)
 	//
 	// A wedged head IS authorable, through exactly one route:
 	// Job::ApplyCstParamEdit -- the UNCHECKED GUI property-panel fast path
@@ -1243,7 +1406,8 @@ int main()
 
 	RunReadSchemaBatchTest();
 	RunDesignNoteScanTest();
-	RunValidateDesignNoteCarrierTest();
+	RunValidateDesignDiagnosticsScanTest();
+	RunValidateDesignDiagnosticsCarrierTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
