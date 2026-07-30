@@ -39,6 +39,63 @@
 
 namespace RISE
 {
+	/// Phase-B thermal-volume MIS state for the segment launched by a vertex.
+	/// This deliberately does not live in public IRayCaster::RAY_STATE: adding
+	/// fields there would consume its historical tail padding, whose bytes are
+	/// uninitialized in callers compiled against the old inline constructor.
+	struct VolumeEmissionSegmentState
+	{
+		bool competitionAvailable;
+		bool continuationSingular;
+
+		VolumeEmissionSegmentState(
+			const bool competitionAvailable_ = false,
+			const bool continuationSingular_ = false ) :
+			competitionAvailable( competitionAvailable_ ),
+			continuationSingular( continuationSingular_ )
+		{}
+	};
+
+	inline const VolumeEmissionSegmentState*& ActiveVolumeEmissionSegmentState()
+	{
+		static thread_local const VolumeEmissionSegmentState* pState = 0;
+		return pState;
+	}
+
+	/// Synchronous, request-local propagation across recursive CastRay calls.
+	/// The scope points at immutable stack storage and restores nesting exactly;
+	/// a public/root call outside a scope receives the weight-one default.
+	class VolumeEmissionSegmentStateScope
+	{
+	public:
+		explicit VolumeEmissionSegmentStateScope(
+			const VolumeEmissionSegmentState& state ) :
+			pPrevious_( ActiveVolumeEmissionSegmentState() )
+		{
+			ActiveVolumeEmissionSegmentState() = &state;
+		}
+
+		~VolumeEmissionSegmentStateScope()
+		{
+			ActiveVolumeEmissionSegmentState() = pPrevious_;
+		}
+
+		VolumeEmissionSegmentStateScope(
+			const VolumeEmissionSegmentStateScope& ) = delete;
+		VolumeEmissionSegmentStateScope& operator=(
+			const VolumeEmissionSegmentStateScope& ) = delete;
+
+	private:
+		const VolumeEmissionSegmentState* const pPrevious_;
+	};
+
+	inline VolumeEmissionSegmentState CurrentVolumeEmissionSegmentState()
+	{
+		const VolumeEmissionSegmentState* const pState =
+			ActiveVolumeEmissionSegmentState();
+		return pState ? *pState : VolumeEmissionSegmentState();
+	}
+
 	namespace MISWeights
 	{
 		/// Power-2 family weight with stable ratio scaling.  This is the

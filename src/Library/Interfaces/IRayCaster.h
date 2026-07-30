@@ -76,19 +76,10 @@ namespace RISE
 			bool smsPassedThroughSpecular;	///< True if path traversed a delta surface since last non-specular bounce
 			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
 
-			// Phase-B thermal-volume NEE partition state for the segment launched
-			// by the preceding vertex.  Appended after the established public state
-			// fields so their offsets do not move.  These are deliberately
-			// independent of RayType: glossy is not delta, and a true delta can
-			// follow diffuse NEE.
-			bool volumeCompetitionAvailable;
-			bool volumeContinuationSingular;
-
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
-				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
-				volumeCompetitionAvailable( false ), volumeContinuationSingular( false ) {}
+				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ) {}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene

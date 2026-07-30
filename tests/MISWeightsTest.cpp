@@ -289,14 +289,37 @@ static void TestVolumeEmissionFamilyPartition()
 	Check(std::isfinite(extremeMarch) && extremeMarch==0.0,
 		"march family weight stays finite for extreme density ratios");
 
-	IRayCaster::RAY_STATE state;
-	Check(!state.volumeCompetitionAvailable && !state.volumeContinuationSingular,
-		"new segment state defaults to camera/unsupported weight-one semantics");
-	state.volumeCompetitionAvailable = true;
-	state.volumeContinuationSingular = false;
-	const IRayCaster::RAY_STATE copied(state);
-	Check(copied.volumeCompetitionAvailable && !copied.volumeContinuationSingular,
-		"two-bit volume partition state survives ordinary ray-state copying");
+	const size_t legacyRayStateSize = 88;
+	Check(sizeof(IRayCaster::RAY_STATE)==legacyRayStateSize,
+		"volume MIS state does not alter the public RAY_STATE ABI");
+	const VolumeEmissionSegmentState defaultState =
+		CurrentVolumeEmissionSegmentState();
+	Check(!defaultState.competitionAvailable && !defaultState.continuationSingular,
+		"unscoped camera or unsupported segment gets weight-one state");
+	const VolumeEmissionSegmentState outerState(true,false);
+	{
+		const VolumeEmissionSegmentStateScope outerScope(outerState);
+		const VolumeEmissionSegmentState currentOuter =
+			CurrentVolumeEmissionSegmentState();
+		Check(currentOuter.competitionAvailable && !currentOuter.continuationSingular,
+			"request-local scope propagates the two-bit segment state");
+		const VolumeEmissionSegmentState innerState(false,true);
+		{
+			const VolumeEmissionSegmentStateScope innerScope(innerState);
+			const VolumeEmissionSegmentState currentInner =
+				CurrentVolumeEmissionSegmentState();
+			Check(!currentInner.competitionAvailable && currentInner.continuationSingular,
+				"nested recursive segment scope overrides its parent");
+		}
+		const VolumeEmissionSegmentState restoredOuter =
+			CurrentVolumeEmissionSegmentState();
+		Check(restoredOuter.competitionAvailable && !restoredOuter.continuationSingular,
+			"nested recursive segment scope restores its parent exactly");
+	}
+	const VolumeEmissionSegmentState restoredDefault =
+		CurrentVolumeEmissionSegmentState();
+	Check(!restoredDefault.competitionAvailable && !restoredDefault.continuationSingular,
+		"completed request-local scope restores camera defaults");
 }
 
 //////////////////////////////////////////////////////////////////////
