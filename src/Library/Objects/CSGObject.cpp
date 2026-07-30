@@ -605,9 +605,38 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	riObjA.geometric.PropagateCastInputs( ri.geometric );
 	RayIntersection		riObjB( ri.geometric.ray, ri.geometric.rast );
 	riObjB.geometric.PropagateCastInputs( ri.geometric );
+	const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+	if( exactBoundaryMode ) {
+		// Child objects report their exact ranges in this CSG's local frame,
+		// so the caller-frame representability bound needs the same conversion
+		// as dHowFar before it can reject the just-processed root.
+		riObjA.geometric.minimumSurfaceRange =
+			factor * ri.geometric.minimumSurfaceRange;
+		riObjB.geometric.minimumSurfaceRange =
+			factor * ri.geometric.minimumSurfaceRange;
+	}
 
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
+
+	if( exactBoundaryMode ) {
+		// The CSG interval algebra below was written in terms of range/range2.
+		// In topology mode make those its exact working coordinates, so every
+		// comparison and every branch assignment composes the same geometric
+		// boundaries.  Ordinary shading retains its historical offset ranges.
+		if( riObjA.geometric.bHit ) {
+			riObjA.geometric.range = riObjA.geometric.surfaceRange;
+			if( riObjA.geometric.range2 != 0 ) {
+				riObjA.geometric.range2 = riObjA.geometric.surfaceRange2;
+			}
+		}
+		if( riObjB.geometric.bHit ) {
+			riObjB.geometric.range = riObjB.geometric.surfaceRange;
+			if( riObjB.geometric.range2 != 0 ) {
+				riObjB.geometric.range2 = riObjB.geometric.surfaceRange2;
+			}
+		}
+	}
 
 	/* Not necessary, should never happen!
 	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
@@ -1051,7 +1080,30 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				m_mxInvTranspose, ri.geometric.derivatives.dndv );
 		}
 
-		// Compute the intersection in world space
+		// Compute the intersection in world space.  In exact-boundary mode the
+		// switch composed range/range2 from exact child intervals; preserve
+		// those boundary points before applying the legacy shading offsets.
+		if( exactBoundaryMode ) {
+			const Point3 ptLocalSurface =
+				ri.geometric.ray.PointAtLength( ri.geometric.range );
+			const Point3 ptWorldSurface =
+				Point3Ops::Transform( m_mxFinalTrans, ptLocalSurface );
+			ri.geometric.surfaceRange = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ptWorldSurface, orig.origin ) );
+			if( ri.geometric.range2 != 0 &&
+				ri.geometric.range2 < RISE_INFINITY )
+			{
+				const Point3 ptLocalSurface2 =
+					ri.geometric.ray.PointAtLength( ri.geometric.range2 );
+				const Point3 ptWorldSurface2 =
+					Point3Ops::Transform( m_mxFinalTrans, ptLocalSurface2 );
+				ri.geometric.surfaceRange2 = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( ptWorldSurface2, orig.origin ) );
+			} else {
+				ri.geometric.surfaceRange2 = RISE_INFINITY;
+			}
+		}
+
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
 

@@ -21,13 +21,10 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
+#include <cmath>
 #include <math.h>
 
 using namespace RISE;
-
-/// Maximum number of delta tracking steps before giving up.
-/// This prevents infinite loops in degenerate cases.
-static const unsigned int nMaxDeltaTrackingSteps = 1024;
 
 namespace
 {
@@ -781,8 +778,6 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 
 	RISEPel w( 1, 1, 1 );
 	const HeterogeneousMedium* self = this;
-	unsigned int totalSteps = 0;
-
 	struct RatioTrackingVisitor
 	{
 		const HeterogeneousMedium* self;
@@ -790,7 +785,6 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 		RandomNumberGenerator* pRng;
 		RISEPel* pW;
 		RISEPel max_sigma_t;
-		unsigned int* pTotalSteps;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -800,13 +794,24 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 			const Scalar invCellMaj = 1.0 / cellMajorant;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
-				const Scalar xi = pRng->CanonicalRandom();
-				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
-				t += dt;
+				Scalar xi = pRng->CanonicalRandom();
+				if( xi <= 0.0 ) {
+					// The continuous exponential law has no atom at zero.  Retry
+					// the discrete RNG endpoint instead of creating a zero step.
+					continue;
+				}
+				xi = std::fmin( xi, std::nextafter( Scalar(1.0), Scalar(0.0) ) );
+				const Scalar dt = -std::log1p( -xi ) * invCellMaj;
+				const Scalar nextT = t + dt;
+				if( !(nextT > t) ) {
+					GlobalLog()->PrintEasyError(
+						"HeterogeneousMedium::EvalTransmittance: finite ratio-tracking step cannot advance the ray parameter" );
+					*pW = RISEPel( -1.0, -1.0, -1.0 );
+					return false;
+				}
+				t = nextT;
 
 				if( t >= tCellExit )
 					return true;  // Next cell
@@ -838,7 +843,6 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 					*pW = *pW * (1.0 / pSurvive);
 				}
 			}
-			return false;
 		}
 	};
 
@@ -848,7 +852,6 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 	visitor.pRng = &tl_rng;
 	visitor.pW = &w;
 	visitor.max_sigma_t = m_max_sigma_t;
-	visitor.pTotalSteps = &totalSteps;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
 
@@ -898,9 +901,20 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 
 			for( ;; )
 			{
-				const Scalar xi = pRng->CanonicalRandom();
-				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
-				t += dt;
+				Scalar xi = pRng->CanonicalRandom();
+				if( xi <= 0.0 ) {
+					continue;
+				}
+				xi = std::fmin( xi, std::nextafter( Scalar(1.0), Scalar(0.0) ) );
+				const Scalar dt = -std::log1p( -xi ) * invCellMaj;
+				const Scalar nextT = t + dt;
+				if( !(nextT > t) ) {
+					GlobalLog()->PrintEasyError(
+						"HeterogeneousMedium::EvalTransmittanceNM: finite ratio-tracking step cannot advance the ray parameter" );
+					*pW = -1.0;
+					return false;
+				}
+				t = nextT;
 
 				if( t >= tCellExit )
 					return true;

@@ -127,6 +127,13 @@ namespace RISE
 				}
 				return false;
 			}
+
+			void appendObjects( std::vector<const IObject*>& objects ) const
+			{
+				for( std::vector<IORDATA>::const_iterator i = c.begin(); i != c.end(); ++i ) {
+					if( i->pObj ) objects.push_back( i->pObj );
+				}
+			}
 		};
 
 		MyIORStack iorstack;
@@ -213,6 +220,14 @@ namespace RISE
 			return iorstack.top().pObj;
 		}
 
+		// Appends enclosing objects from outermost to innermost.  Shadow-medium
+		// walks use the complete ordering so exiting an inner medium restores
+		// the next outer medium rather than incorrectly falling back to world.
+		inline void AppendObjectStack( std::vector<const IObject*>& objects ) const
+		{
+			iorstack.appendObjects( objects );
+		}
+
 		// Sets the current object
 		inline void SetCurrentObject( const IObject* pObj ) const
 		{
@@ -226,5 +241,4 @@ namespace RISE
 }
 
 #endif
-
 

@@ -96,11 +96,41 @@ namespace RISE
 	class IRayCaster;
 	class IMaterial;
 	class ILightPriv;
+	class IORStack;
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
 	namespace Implementation
 	{
+		/// Evaluate attenuation along a shadow segment using the medium that is
+		/// active on each boundary-delimited subsegment.  These are shared by
+		/// ordinary light NEE and emissive-volume NEE.  False means the scene's
+		/// boundary topology did not permit an unambiguous complete walk; @a outTr
+		/// is then zero and an error is logged rather than returning a partial
+		/// transmittance.
+		bool EvaluateShadowMediumTransmittance(
+			const Ray& ray,
+			const Scalar maxDist,
+			const IMedium* pOriginMedium,
+			const IObject* pOriginMediumObject,
+			const IScene* pScene,
+			const bool bSceneHasObjectMedia,
+			RISEPel& outTr,
+			const IORStack* pOriginStack = 0
+			);
+
+		bool EvaluateShadowMediumTransmittanceNM(
+			const Ray& ray,
+			const Scalar maxDist,
+			const IMedium* pOriginMedium,
+			const IObject* pOriginMediumObject,
+			const IScene* pScene,
+			const bool bSceneHasObjectMedia,
+			const Scalar nm,
+			Scalar& outTr,
+			const IORStack* pOriginStack = 0
+			);
+
 		/// Describes a sampled emission event from a light or mesh luminary
 		struct LightSample
 		{
@@ -385,7 +415,8 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -400,7 +431,8 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
 
 			/// Returns the alias-table selection probability for a given

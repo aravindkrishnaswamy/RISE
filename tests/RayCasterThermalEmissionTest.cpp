@@ -367,9 +367,11 @@ namespace
 	{
 	public:
 		bool tracking;
-		DelayedDensityAccessor() : tracking( false ) {}
+		mutable unsigned int trackingQueries;
+		DelayedDensityAccessor() : tracking( false ), trackingQueries( 0 ) {}
 		Scalar GetValue( Scalar, Scalar, Scalar z ) const override
 		{
+			if( tracking ) ++trackingQueries;
 			return tracking && z < 0.2 ? 0.0 : 1.0;
 		}
 		Scalar GetValue( int, int, int ) const override { return 1.0; }
@@ -527,6 +529,8 @@ namespace
 			"real event after the historical proposal cap is retained" );
 		Check( sampler.draws > 2048,
 			"fixture forced more than 1024 null proposals before the event" );
+		Check( accessor->trackingQueries > 1024,
+			"distance fixture evaluated more than 1024 tracked null locations" );
 		safe_release( medium );
 		safe_release( phase );
 		safe_release( accessor );
@@ -547,6 +551,29 @@ namespace
 			2.0, kWavelengthNM );
 		Check( transmittance < 1e-12,
 			"ratio tracking traverses the dense tail after more than 1024 null proposals" );
+		Check( accessor->trackingQueries > 1024,
+			"spectral transmittance fixture evaluated more than 1024 tracked null locations" );
+		safe_release( medium );
+		safe_release( phase );
+		safe_release( accessor );
+	}
+
+	void TestRGBTransmittanceContinuesPast1024Nulls()
+	{
+		std::cout << "TestRGBTransmittanceContinuesPast1024Nulls" << std::endl;
+		DelayedDensityAccessor* accessor = new DelayedDensityAccessor();
+		IPhaseFunction* phase = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction( &phase );
+		HeterogeneousMedium* medium = new HeterogeneousMedium(
+			RISEPel( 1000, 1000, 1000 ), RISEPel( 0, 0, 0 ), *phase, *accessor,
+			2, 2, 2, Point3( -1, -1, 0 ), Point3( 1, 1, 2 ) );
+		accessor->tracking = true;
+		const RISEPel transmittance = medium->EvalTransmittance(
+			Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 2.0 );
+		Check( ColorMath::MaxValue( transmittance ) < 1e-12,
+			"RGB ratio tracking traverses the dense tail after more than 1024 null proposals" );
+		Check( accessor->trackingQueries > 1024,
+			"RGB transmittance fixture evaluated more than 1024 tracked null locations" );
 		safe_release( medium );
 		safe_release( phase );
 		safe_release( accessor );
@@ -561,6 +588,7 @@ int main()
 	TestHWSSFallbackPrecedesDepthGate();
 	TestDistanceSamplingContinuesPast1024Nulls();
 	TestTransmittanceContinuesPast1024Nulls();
+	TestRGBTransmittanceContinuesPast1024Nulls();
 	TestSpatialAdditiveSourceSurvivesEscape();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;

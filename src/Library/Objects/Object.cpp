@@ -491,6 +491,23 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	if( ri.geometric.bHit )
 	{
+		// Preserve the exact geometric-boundary distances before the legacy
+		// shading-point offset below moves `range` just outside the surface.
+		// Transport topology must split at the true boundary; using the offset
+		// range forces every boundary walker to leap over a finite interval.
+		const Point3 ptObjectSurface = ri.geometric.ray.PointAtLength( ri.geometric.range );
+		const Point3 ptWorldSurface = Point3Ops::Transform( m_mxFinalTrans, ptObjectSurface );
+		ri.geometric.surfaceRange = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ptWorldSurface, orig.origin ) );
+		if( bComputeExitInfo && ri.geometric.range2 > 0 &&
+			ri.geometric.range2 < RISE_INFINITY )
+		{
+			const Point3 ptObjectSurface2 = ri.geometric.ray.PointAtLength( ri.geometric.range2 );
+			const Point3 ptWorldSurface2 = Point3Ops::Transform( m_mxFinalTrans, ptObjectSurface2 );
+			ri.geometric.surfaceRange2 = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ptWorldSurface2, orig.origin ) );
+		}
+
 		// This an overriding UV generator only, it is for geometries that don't know how to compute
 		// their UV co-ordinates so the user has specified a geometry object to help them out.
 		// Box/Cylinder/Sphere UV projections pick the projection axis
@@ -604,6 +621,30 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.ptObjIntersec = ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR );
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans, ri.geometric.ptObjIntersec );
 		ri.geometric.range = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptIntersection, orig.origin ) );
+
+		// Exact-boundary consumers can reject the zero-distance root without
+		// stepping the ray origin.  For a closed primitive queried exactly on
+		// its entry surface, promote the already-computed exit boundary when
+		// the entry is at/below the caller's minimum.  This preserves an
+		// arbitrarily thin interior instead of discarding the whole object.
+		if( bComputeExitInfo && ri.geometric.minimumSurfaceRange >= 0 &&
+			ri.geometric.surfaceRange <= ri.geometric.minimumSurfaceRange &&
+			ri.geometric.surfaceRange2 > ri.geometric.minimumSurfaceRange &&
+			ri.geometric.surfaceRange2 < RISE_INFINITY )
+		{
+			ri.geometric.range = ri.geometric.range2;
+			ri.geometric.surfaceRange = ri.geometric.surfaceRange2;
+			ri.geometric.vNormal = ri.geometric.vNormal2;
+			ri.geometric.vGeomNormal = ri.geometric.vGeomNormal2;
+			ri.geometric.ptIntersection = ri.geometric.ptExit;
+			ri.geometric.ptObjIntersec = ri.geometric.ptObjExit;
+			// Preserve the geometry contract that a single forward boundary
+			// with range2==0 means the query origin is already inside the solid.
+			// Nested CSG interval algebra relies on that distinction when this
+			// promoted exit is one of its operands.
+			ri.geometric.range2 = 0;
+			ri.geometric.surfaceRange2 = RISE_INFINITY;
+		}
 
 		ri.pObject = this;
 	}

@@ -1263,7 +1263,7 @@ namespace
 		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const Tag& tag );
+		const IORStack* pMediumStack, const Tag& tag );
 
 	template<>
 	inline RISEPel PTEvaluateInScattering<PelTag>(
@@ -1271,8 +1271,9 @@ namespace
 		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const PelTag& )
-	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, pPhase, caster, pLS, sampler, rast, pMediumObject ); }
+		const IORStack* pMediumStack, const PelTag& )
+	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, pPhase,
+		caster, pLS, sampler, rast, pMediumObject, pMediumStack ); }
 
 	template<>
 	inline Scalar PTEvaluateInScattering<NMTag>(
@@ -1280,8 +1281,9 @@ namespace
 		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const NMTag& tag )
-	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, pPhase, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
+		const IORStack* pMediumStack, const NMTag& tag )
+	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, pPhase,
+		tag.nm, caster, pLS, sampler, rast, pMediumObject, pMediumStack ); }
 
 	// Radiance-map lookup (per-object or global environment).
 	template<class Tag>
@@ -1386,19 +1388,24 @@ namespace
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag );
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const Tag& tag );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const PelTag& )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const PelTag& )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler,
+		pShadingObject, pMedium, isVolumeScatter, pMediumObject, pMediumStack ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const NMTag& tag )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster,
+		sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pMediumStack ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -1960,7 +1967,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					{
 						Value Ld = PTEvaluateInScattering<Tag>(
 							scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
-							sampler, rast, pMediumObject, tag );
+							sampler, rast, pMediumObject, &iorStack, tag );
 						if( PTPositiveMagnitude( Ld ) > 0 )
 						{
 							Value directContrib = throughput * Ld;
@@ -2572,7 +2579,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, 0, tag );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -2739,7 +2746,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, 0, tag );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -2980,7 +2987,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Value directAll = PTEvaluateDirectLighting<Tag>(
 				pLS, ri.geometric, *pBRDF,
 				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
+				ri.pObject, pCurrentMedium, false, pMediumObject, &iorStack, tag );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -3865,7 +3872,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			{
 				Value Ld = PTEvaluateInScattering<Tag>(
 					scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
-					sampler, rast, pMediumObject, tag );
+					sampler, rast, pMediumObject, &iorStack, tag );
 				if( PTPositiveMagnitude( Ld ) > 0 )
 				{
 					Value directContrib = medWeight * Ld;
@@ -4515,7 +4522,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 								scatterPt, wo, pCurrentMedium, pPhase,
 								swl.lambda[w], caster, pLS,
-								sampler, rast, pMediumObject );
+								sampler, rast, pMediumObject, &iorStack );
 							if( Ld > 0 )
 							{
 								Scalar directContrib = throughputComp[w] * medWeight * Ld;
@@ -4871,7 +4878,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
 					ri.geometric, *pBRDFCur,
 					EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, swl.lambda[w],
-					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
+					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject,
+					&iorStack );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
@@ -5342,7 +5350,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 						scatterPt, wo, pCurrentMedium, pPhase, swl.lambda[w], caster,
-						pLS, sampler, rast, pMediumObject );
+						pLS, sampler, rast, pMediumObject, &iorStack );
 					if( Ld > 0 )
 					{
 						Scalar directContrib = medWeight * Ld;

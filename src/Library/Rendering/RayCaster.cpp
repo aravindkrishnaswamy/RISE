@@ -1151,7 +1151,7 @@ bool RayCaster::CastRay(
 			// 1. NEE at scatter point (in-scattering from lights)
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
 				scatterPt, wo, pMedium, pPhase, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				mediumSampler, rast, pMediumObject, &ior_stack );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
@@ -1831,7 +1831,7 @@ bool RayCaster::CastRayNM(
 			// NEE at scatter point
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 				scatterPt, wo, pMedium, pPhase, nm, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				mediumSampler, rast, pMediumObject, &ior_stack );
 
 			// Phase-function continuation
 			static const unsigned int nMaxVolumeBounces = 64;

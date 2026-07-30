@@ -48,6 +48,7 @@ namespace RISE
 {
 	class IObject;
 	class LightSampler;
+	class IORStack;
 
 	namespace Implementation
 	{
@@ -181,7 +182,8 @@ namespace RISE
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			const IORStack* pMediumStack = 0						///< [in] Full outer-to-inner medium state when available
 			);
 
 		/// Spectral variant of EvaluateInScattering
@@ -196,7 +198,8 @@ namespace RISE
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			const IORStack* pMediumStack = 0						///< [in] Full outer-to-inner medium state when available
 			);
 	}
 }
