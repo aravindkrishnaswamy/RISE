@@ -33,6 +33,7 @@
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
+#include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -125,11 +126,11 @@ static Scalar SchlickFavgQuadrature( const Scalar F0 )
 	// Same quadrature ComputeFresnelAvg uses for the conductor path.
 	// F_avg = 2 * integral_0^1 F(μ) * μ dμ
 	Scalar sum = 0;
-	for( int i = 0; i < MicrofacetEnergyLUT::GL_N; i++ )
+	for( unsigned int i = 0; i < GaussLegendre21::NodeCount; i++ )
 	{
-		const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+		const Scalar mu = GaussLegendre21::Nodes[i];
 		const Scalar F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( F0, mu );
-		sum += F * (2.0 * mu * MicrofacetEnergyLUT::GL_weights[i]);
+		sum += F * (2.0 * mu * GaussLegendre21::Weights[i]);
 	}
 	return sum;
 }

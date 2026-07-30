@@ -1455,6 +1455,8 @@ bool MultichannelHeterogeneousMedium::EmissionBinAtPoint(
 	unsigned int& z
 	) const
 {
+	if( !RISE::IsFiniteDouble( point.x ) || !RISE::IsFiniteDouble( point.y ) ||
+		!RISE::IsFiniteDouble( point.z ) ) return false;
 	if( point.x < m_bboxMin.x || point.x > m_bboxMax.x ||
 		point.y < m_bboxMin.y || point.y > m_bboxMax.y ||
 		point.z < m_bboxMin.z || point.z > m_bboxMax.z ) return false;
@@ -1529,6 +1531,7 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 
 	const unsigned int binCount = m_volWidth * m_volHeight * m_volDepth;
 	m_emissionBinWeights.assign( binCount, 0.0 );
+	m_emissionBinProbabilities.assign( binCount, 0.0 );
 	const unsigned int cellCount = m_pMajorantGrid->GetGridX() *
 		m_pMajorantGrid->GetGridY() * m_pMajorantGrid->GetGridZ();
 	m_emissionCells.clear();
@@ -1595,8 +1598,15 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 	m_emissionCellAlias.Build( topWeights );
 	m_thermalEmissionImportance = static_cast<Scalar>(
 		m_emissionCellAlias.TotalWeight() );
-	return RISE::IsFiniteDouble( m_thermalEmissionImportance ) &&
-		m_thermalEmissionImportance >= 0.0;
+	if( !RISE::IsFiniteDouble( m_thermalEmissionImportance ) ||
+		m_thermalEmissionImportance < 0.0 ) return false;
+	if( m_thermalEmissionImportance > 0.0 ) {
+		for( unsigned int i = 0; i < binCount; ++i ) {
+			m_emissionBinProbabilities[i] = m_emissionBinWeights[i] /
+				static_cast<double>(m_thermalEmissionImportance);
+		}
+	}
+	return true;
 }
 
 Scalar MultichannelHeterogeneousMedium::LookupChannel(
@@ -1801,9 +1811,12 @@ Scalar MultichannelHeterogeneousMedium::ThermalEmissionPdf(
 		m_emissionBinVolume <= 0.0 ) return 0.0;
 	unsigned int x = 0, y = 0, z = 0;
 	if( !EmissionBinAtPoint( point, x, y, z ) ) return 0.0;
-	const double weight = m_emissionBinWeights[EmissionBinIndex( x, y, z )];
-	return static_cast<Scalar>( weight ) /
-		(m_thermalEmissionImportance * m_emissionBinVolume);
+	// Divide the pre-normalized q_v by V_v.  Keeping q_v as constructed state
+	// prevents fast-math reassociation back into weight/(W_m*V_v), whose
+	// denominator can underflow for a tiny but otherwise valid finite bbox.
+	return static_cast<Scalar>(
+		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] ) /
+		m_emissionBinVolume;
 }
 
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionBinProbability(
@@ -1815,6 +1828,5 @@ Scalar MultichannelHeterogeneousMedium::GetThermalEmissionBinProbability(
 	if( x >= m_volWidth || y >= m_volHeight || z >= m_volDepth ||
 		m_thermalEmissionImportance <= 0.0 ) return 0.0;
 	return static_cast<Scalar>(
-		m_emissionBinWeights[EmissionBinIndex( x, y, z )] ) /
-		m_thermalEmissionImportance;
+		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] );
 }

@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -72,6 +74,40 @@ namespace
 		if( !ok ) std::cout << "  got " << actual << ", expected " << expected << std::endl;
 	}
 
+	std::filesystem::path FindRepoRoot()
+	{
+		const char* candidates[] = { ".", "..", "../..", "../../.." };
+		for( const char* candidate : candidates ) {
+			const std::filesystem::path root( candidate );
+			if( std::filesystem::exists(root/"docs"/"FIRE_SMOKE_DESIGN.md") &&
+				std::filesystem::exists(root/"src"/"Library"/"Utilities"/
+					"GaussLegendreQuadrature.cpp") ) return root;
+		}
+		return std::filesystem::path();
+	}
+
+	std::string ReadFile( const std::filesystem::path& path )
+	{
+		std::ifstream input( path, std::ios::binary );
+		return std::string(
+			std::istreambuf_iterator<char>(input),
+			std::istreambuf_iterator<char>() );
+	}
+
+	unsigned int CountOccurrences(
+		const std::string& text,
+		const std::string& needle
+		)
+	{
+		unsigned int count = 0;
+		std::string::size_type at = 0;
+		while( (at=text.find(needle,at)) != std::string::npos ) {
+			++count;
+			at += needle.size();
+		}
+		return count;
+	}
+
 	class IsolatedCarbonPainter :
 		public virtual IScalarPainter,
 		public virtual Reference
@@ -90,7 +126,21 @@ namespace
 		~IsolatedCarbonPainter() override = default;
 	};
 
-	class UnitBSDF :
+	class RampCarbonPainter :
+		public virtual IScalarPainter,
+		public virtual Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( 0.01 + 3.0*ri.ptIntersection.x*ri.ptIntersection.x );
+		}
+		bool HasPerChannelVariation() const override { return false; }
+	protected:
+		~RampCarbonPainter() override = default;
+	};
+
+	class SpectralResponseBSDF :
 		public virtual IBSDF,
 		public virtual Reference
 	{
@@ -102,10 +152,10 @@ namespace
 		Scalar valueNM(
 			const Vector3&,
 			const RayIntersectionGeometric&,
-			const Scalar
-			) const override { return 1.0; }
+			const Scalar nm
+			) const override { return 0.25 + 0.001*nm; }
 	protected:
-		~UnitBSDF() override = default;
+		~SpectralResponseBSDF() override = default;
 	};
 
 	class FixedSampler : public ISampler
@@ -124,6 +174,26 @@ namespace
 	private:
 		std::vector<Scalar> values;
 		unsigned int index;
+	};
+
+	class RecordingSampler : public ISampler
+	{
+	public:
+		explicit RecordingSampler( const unsigned int seed ) :
+		  rng( seed ), sampler( rng )
+		{}
+		Scalar Get1D() override
+		{
+			const Scalar value = sampler.Get1D();
+			values.push_back( value );
+			return value;
+		}
+		Point2 Get2D() override { return Point2( Get1D(), Get1D() ); }
+		const std::vector<Scalar>& Values() const { return values; }
+	private:
+		RandomNumberGenerator rng;
+		IndependentSampler sampler;
+		std::vector<Scalar> values;
 	};
 
 	std::filesystem::path WriteScene( const std::string& text )
@@ -152,7 +222,10 @@ namespace
 	IMedium* CreateUniformFire(
 		const Scalar carbon,
 		const Scalar temperature,
-		const unsigned int resolution = 4
+		const unsigned int resolution = 4,
+		const Point3& bboxMin = Point3(0,0,0),
+		const Point3& bboxMax = Point3(1,1,1),
+		const Scalar sceneUnitMeters = 1.0
 		)
 	{
 		IScalarPainter* carbonPainter = nullptr;
@@ -163,12 +236,53 @@ namespace
 			RISE_API_CreateMultichannelHeterogeneousMedium(
 				&medium, *carbonPainter, *temperaturePainter,
 				resolution, resolution, resolution,
-				Point3(0,0,0), Point3(1,1,1), 1.0,
+				bboxMin, bboxMax, sceneUnitMeters,
 				0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
 		safe_release( carbonPainter );
 		safe_release( temperaturePainter );
 		if( !ok ) safe_release( medium );
 		return ok ? medium : nullptr;
+	}
+
+	void TestSharedQuadratureStructure()
+	{
+		std::cout << "TestSharedQuadratureStructure" << std::endl;
+		const std::filesystem::path root = FindRepoRoot();
+		Check( !root.empty(), "repository root found for shared-rule source gate" );
+		if( root.empty() ) return;
+
+		unsigned int nodeAnchorCount = 0;
+		unsigned int weightAnchorCount = 0;
+		unsigned int nodeDefinitionCount = 0;
+		unsigned int weightDefinitionCount = 0;
+		const std::filesystem::path library = root/"src"/"Library";
+		for( const auto& entry : std::filesystem::recursive_directory_iterator(library) ) {
+			if( !entry.is_regular_file() ) continue;
+			const std::filesystem::path& path = entry.path();
+			if( path.extension() != ".cpp" && path.extension() != ".h" ) continue;
+			const std::string source = ReadFile( path );
+			nodeAnchorCount += CountOccurrences(source,"0.0031239146898053");
+			weightAnchorCount += CountOccurrences(source,"0.0080086141288871");
+			nodeDefinitionCount += CountOccurrences(source,
+				"const Scalar GaussLegendre21::Nodes");
+			weightDefinitionCount += CountOccurrences(source,
+				"const Scalar GaussLegendre21::Weights");
+		}
+		// The symmetric endpoint weight appears at both ends of the one table.
+		Check( nodeAnchorCount == 1 && weightAnchorCount == 2 &&
+			nodeDefinitionCount == 1 && weightDefinitionCount == 1,
+			"GL21 nodes and weights have one shared definition and no copied table" );
+
+		const std::string mediumSource = ReadFile(
+			library/"Materials"/"HeterogeneousMedium.cpp" );
+		const std::string lightSource = ReadFile(
+			library/"Interfaces"/"ILight.h" );
+		Check( CountOccurrences(mediumSource,
+			"GaussLegendre21::IntegrateVisibleBand(") == 1,
+			"thermal-emission importance calls the shared visible-band integrator" );
+		Check( CountOccurrences(lightSource,
+			"GaussLegendre21::IntegrateVisibleBand(") == 1,
+			"positional-light band power calls the shared visible-band integrator" );
 	}
 
 	void TestSharedVisibleBandRule()
@@ -198,6 +312,42 @@ namespace
 			}
 		}
 		safe_release( job );
+
+		IMedium* medium = CreateUniformFire( 0.2, 1800.0 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( fire != nullptr, "shared-rule medium fixture builds" );
+		if( fire ) {
+			const Scalar spatialNodes[2] = {
+				0.5*(1.0-1.0/std::sqrt(3.0)),
+				0.5*(1.0+1.0/std::sqrt(3.0))
+			};
+			Scalar proposal = 0.0;
+			for( unsigned int z = 0; z < 4; ++z )
+				for( unsigned int y = 0; y < 4; ++y )
+					for( unsigned int x = 0; x < 4; ++x )
+						for( unsigned int gz = 0; gz < 2; ++gz )
+							for( unsigned int gy = 0; gy < 2; ++gy )
+								for( unsigned int gx = 0; gx < 2; ++gx ) {
+									const Point3 samplePoint(
+										(Scalar(x)+spatialNodes[gx])/4.0,
+										(Scalar(y)+spatialNodes[gy])/4.0,
+										(Scalar(z)+spatialNodes[gz])/4.0 );
+									proposal += GaussLegendre21::IntegrateVisibleBand(
+										[fire,&samplePoint]( const Scalar nm ) {
+											return fire->GetThermalEmissionNM( samplePoint, nm );
+										} ) / (64.0*8.0);
+								}
+			const Scalar hotAbsorption633 =
+				6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+			const Scalar upper = 400.0 * 0.2 * hotAbsorption633 *
+				(633.0/380.0) * PlanckSpectralRadianceNM(780.0,1800.0);
+			const Scalar expectedW = (1.0-1.0/1024.0)*proposal +
+				(1.0/1024.0)*upper;
+			CheckRelative( fire->GetThermalEmissionImportance(), expectedW, 3e-14,
+				"W_m proposal uses the same shared GL21 band integral" );
+		}
+		safe_release( medium );
 	}
 
 	void TestCDFNormalizationSamplingAndOwnership()
@@ -240,6 +390,9 @@ namespace
 				"closed global upper face clamps to the final bin" );
 			Check( fire->ThermalEmissionPdf(Point3(std::nextafter(1.0,2.0),1,1)) == 0.0,
 				"point beyond the closed upper face is outside the medium" );
+			Check( fire->ThermalEmissionPdf(Point3(
+				std::numeric_limits<Scalar>::quiet_NaN(),0,0)) == 0.0,
+				"non-finite endpoint coordinates have zero density" );
 
 			RandomNumberGenerator rng( 0xcdf21u );
 			IndependentSampler sampler( rng );
@@ -274,6 +427,167 @@ namespace
 					}
 			Check( maxFrequencyError < 0.003,
 				"two-level sampled frequencies match the reported bin pmf" );
+		}
+		safe_release( medium );
+	}
+
+	void TestNonuniformTwoLevelDistribution()
+	{
+		std::cout << "TestNonuniformTwoLevelDistribution" << std::endl;
+		RampCarbonPainter* carbon = new RampCarbonPainter();
+		IScalarPainter* temperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &temperature, 1800.0 );
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature, 8, 8, 8,
+			Point3(0,0,0), Point3(1,1,1), 1.0,
+			0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( created && fire, "nonuniform 8-cubed two-level fixture builds" );
+		if( fire ) {
+			const Scalar spatialNodes[2] = {
+				0.5*(1.0-1.0/std::sqrt(3.0)),
+				0.5*(1.0+1.0/std::sqrt(3.0))
+			};
+			const Scalar binVolume = 1.0/512.0;
+			const Scalar hotAbsorption633 =
+				6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+			const Scalar commonUpperFactor = binVolume * 400.0 *
+				hotAbsorption633 * (633.0/380.0) *
+				PlanckSpectralRadianceNM(780.0,1800.0);
+			std::vector<Scalar> expectedWeights( 512, 0.0 );
+			Scalar expectedTotal = 0.0;
+			for( unsigned int z = 0; z < 8; ++z )
+				for( unsigned int y = 0; y < 8; ++y )
+					for( unsigned int x = 0; x < 8; ++x ) {
+						Scalar proposalAverage = 0.0;
+						for( unsigned int gz = 0; gz < 2; ++gz )
+							for( unsigned int gy = 0; gy < 2; ++gy )
+								for( unsigned int gx = 0; gx < 2; ++gx ) {
+									const Point3 samplePoint(
+										(Scalar(x)+spatialNodes[gx])/8.0,
+										(Scalar(y)+spatialNodes[gy])/8.0,
+										(Scalar(z)+spatialNodes[gz])/8.0 );
+									proposalAverage += GaussLegendre21::IntegrateVisibleBand(
+										[fire,&samplePoint]( const Scalar nm ) {
+											return fire->GetThermalEmissionNM(samplePoint,nm);
+										} ) / 8.0;
+								}
+						const unsigned int maxLatticeX = std::min(x+1u,7u);
+						const Scalar centerX = (Scalar(maxLatticeX)+0.5)/8.0;
+						const Scalar maxCarbon = 0.01 + 3.0*centerX*centerX;
+						const Scalar proposal = binVolume*proposalAverage;
+						const Scalar upper = commonUpperFactor*maxCarbon;
+						const Scalar weight = (1.0-1.0/1024.0)*proposal +
+							(1.0/1024.0)*upper;
+						const unsigned int index = z*64u+y*8u+x;
+						expectedWeights[index] = weight;
+						expectedTotal += weight;
+					}
+
+			bool storedProbabilitiesAgree = true;
+			for( unsigned int z = 0; z < 8; ++z )
+				for( unsigned int y = 0; y < 8; ++y )
+					for( unsigned int x = 0; x < 8; ++x ) {
+						const Scalar expected = expectedWeights[z*64u+y*8u+x]/expectedTotal;
+						const Scalar actual = fire->GetThermalEmissionBinProbability(x,y,z);
+						storedProbabilitiesAgree = storedProbabilitiesAgree &&
+							std::fabs(actual-expected) <= 4e-14*expected;
+					}
+			Check( storedProbabilitiesAgree,
+				"nonuniform bin pmf matches independent GL21 plus support construction" );
+
+			RandomNumberGenerator rng( 0x2c0ffeeu );
+			IndependentSampler sampler( rng );
+			const unsigned int sampleCount = 200000;
+			std::vector<unsigned int> counts(512,0u);
+			bool sampledPdfsAgree = true;
+			for( unsigned int i = 0; i < sampleCount; ++i ) {
+				Point3 point;
+				Scalar pdf = 0.0;
+				if( !fire->SampleThermalEmission(sampler,point,pdf) ||
+					std::fabs(pdf-fire->ThermalEmissionPdf(point)) > 2e-14*pdf ) {
+					sampledPdfsAgree = false;
+					break;
+				}
+				const unsigned int x = std::min(static_cast<unsigned int>(point.x*8),7u);
+				const unsigned int y = std::min(static_cast<unsigned int>(point.y*8),7u);
+				const unsigned int z = std::min(static_cast<unsigned int>(point.z*8),7u);
+				++counts[z*64u+y*8u+x];
+			}
+			Check( sampledPdfsAgree,
+				"nonuniform two-level samples return the matching point density" );
+			Scalar maxFrequencyError = 0.0;
+			for( unsigned int i = 0; i < 512; ++i ) {
+				const Scalar observed = Scalar(counts[i])/Scalar(sampleCount);
+				const Scalar expected = expectedWeights[i]/expectedTotal;
+				maxFrequencyError = std::fmax(maxFrequencyError,std::fabs(observed-expected));
+			}
+			Check( maxFrequencyError < 0.0008,
+				"cell and within-cell alias draws follow the independent nonuniform pmf" );
+		}
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestSceneUnitInvariantImportance()
+	{
+		std::cout << "TestSceneUnitInvariantImportance" << std::endl;
+		IMedium* meterMedium = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		IMedium* centimeterMedium = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0), Point3(100,100,100), 0.01 );
+		MultichannelHeterogeneousMedium* meter =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( meterMedium );
+		MultichannelHeterogeneousMedium* centimeter =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( centimeterMedium );
+		Check( meter && centimeter,
+			"metre and centimetre importance fixtures build" );
+		if( meter && centimeter ) {
+			CheckRelative( centimeter->GetThermalEmissionPowerProxy(),
+				meter->GetThermalEmissionPowerProxy(), 3e-14,
+				"A_m=4pi s^2 W_m is invariant under metre-to-centimetre scene scaling" );
+			bool probabilitiesAgree = true;
+			for( unsigned int z = 0; z < 4; ++z )
+				for( unsigned int y = 0; y < 4; ++y )
+					for( unsigned int x = 0; x < 4; ++x )
+						probabilitiesAgree = probabilitiesAgree &&
+							std::fabs(meter->GetThermalEmissionBinProbability(x,y,z) -
+							centimeter->GetThermalEmissionBinProbability(x,y,z)) < 3e-15;
+			Check( probabilitiesAgree,
+				"q_v is unchanged by metre-to-centimetre scene scaling" );
+			const Point3 meterPoint(0.37,0.42,0.81);
+			const Point3 centimeterPoint(37,42,81);
+			CheckRelative( centimeter->ThermalEmissionPdf(centimeterPoint) * 1.0e6,
+				meter->ThermalEmissionPdf(meterPoint), 3e-14,
+				"per-scene-volume density transforms by the coordinate Jacobian" );
+		}
+		safe_release( meterMedium );
+		safe_release( centimeterMedium );
+	}
+
+	void TestTinyFiniteBBoxDensityFormulation()
+	{
+		std::cout << "TestTinyFiniteBBoxDensityFormulation" << std::endl;
+		const Scalar side = 1.0e-55;
+		IMedium* medium = CreateUniformFire(
+			0.2, 1800.0, 4, Point3(0,0,0), Point3(side,side,side), 1.0 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( fire && fire->GetThermalEmissionImportance() > 0.0,
+			"tiny finite bbox retains representable positive importance" );
+		if( fire ) {
+			const Scalar pointPdf = fire->ThermalEmissionPdf(
+				Point3(0.125*side,0.125*side,0.125*side) );
+			const Scalar binSide = side/4.0;
+			const Scalar binVolume = binSide*binSide*binSide;
+			Check( RISE::IsFiniteDouble(pointPdf) && pointPdf > 0.0,
+				"q_v divided by V_v stays finite when W_m times V_v underflows" );
+			CheckRelative( pointPdf*binVolume,
+				fire->GetThermalEmissionBinProbability(0,0,0), 3e-14,
+				"tiny-bbox density still equals its bin probability per volume" );
 		}
 		safe_release( medium );
 	}
@@ -387,9 +701,88 @@ namespace
 		safe_release( job );
 	}
 
-	std::string GlobalMediumScene()
+	std::string NestedMediumScene()
 	{
 		return
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue 0.1\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname outer_fire\nchannel_carbon painter carbon\n"
+			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
+			"bbox_min -2 -2 -2\nbbox_max 2 2 2\nsoot_em 0.26\nsoot_density 1800\n"
+			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname inner_fire\nchannel_carbon painter carbon\n"
+			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
+			"bbox_min -0.5 -0.5 -0.5\nbbox_max 0.5 0.5 0.5\nsoot_em 0.26\nsoot_density 1800\n"
+			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"box_geometry\n{\nname outer_geom\nwidth 4\nheight 4\ndepth 4\n}\n"
+			"box_geometry\n{\nname inner_geom\nwidth 1\nheight 1\ndepth 1\n}\n"
+			"standard_object\n{\nname outer_box\ngeometry outer_geom\nmaterial none\n"
+			"interior_medium outer_fire\ncasts_shadows FALSE\n}\n"
+			"standard_object\n{\nname inner_box\ngeometry inner_geom\nmaterial none\n"
+			"interior_medium inner_fire\ncasts_shadows FALSE\n}\n";
+	}
+
+	void TestInactiveNestedLabelReturnsZero()
+	{
+		std::cout << "TestInactiveNestedLabelReturnsZero" << std::endl;
+		IJobPriv* job = LoadScene( NestedMediumScene() );
+		IRayCaster* caster = nullptr;
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(&caster,false,0,*shader,true) && caster )
+				caster->AttachScene( job->GetScene() );
+		}
+		const RayCaster* concrete = dynamic_cast<const RayCaster*>(caster);
+		const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
+		const IObject* outerObject = job ?
+			job->GetScene()->GetObjects()->GetItem("outer_box") : nullptr;
+		const IMedium* outer = outerObject ? outerObject->GetInteriorMedium() : nullptr;
+		Check( lights && outer && lights->GetVolumeEmissionMediumCount() == 2,
+			"nested fixture prepares both labeled emissive media" );
+		std::vector<Scalar> replayValues;
+		Point3 inactivePoint;
+		if( lights && outer ) {
+			for( unsigned int seed = 1; seed <= 4096 && replayValues.empty(); ++seed ) {
+				RecordingSampler sampler( seed );
+				VolumeEmissionSample endpoint;
+				if( lights->SampleVolumeEmission(sampler,endpoint) &&
+					endpoint.pMedium == outer &&
+					std::fabs(endpoint.point.x) < 0.5 &&
+					std::fabs(endpoint.point.y) < 0.5 &&
+					std::fabs(endpoint.point.z) < 0.5 ) {
+					replayValues = sampler.Values();
+					inactivePoint = endpoint.point;
+				}
+			}
+		}
+		Check( !replayValues.empty() && outer &&
+			lights->VolumeEmissionPdf(*outer,inactivePoint) > 0.0,
+			"outer labeled density remains positive inside the nested medium" );
+		if( !replayValues.empty() && lights && caster ) {
+			const RasterizerState rast = {0,0};
+			const Ray viewRay( Point3(-3,0,0), Vector3(-1,0,0) );
+			RayIntersectionGeometric ri( viewRay, rast );
+			ri.ptIntersection = Point3(-3,0,0);
+			ri.vNormal = Vector3(1,0,0);
+			SpectralResponseBSDF* unit = new SpectralResponseBSDF();
+			FixedSampler sampler( replayValues );
+			const Scalar contribution = lights->EvaluateVolumeDirectLightingNM(
+				ri, *unit, 550.0, *caster, sampler, nullptr,
+				nullptr, true, nullptr, nullptr );
+			Check( contribution == 0.0,
+				"inactive outer-medium endpoint returns zero without density renormalization" );
+			safe_release( unit );
+		}
+		safe_release( caster );
+		safe_release( job );
+	}
+
+	std::string GlobalMediumScene( const bool addOpaqueBlocker = false )
+	{
+		std::string scene =
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
 			"scalar_painter\n{\nname carbon\nvalue 1e-12\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
@@ -399,6 +792,76 @@ namespace
 			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
 			"global_medium\n{\nmedium fire\n}\n";
+		if( addOpaqueBlocker ) {
+			scene +=
+				"box_geometry\n{\nname blocker_geom\nwidth 4\nheight 4\ndepth 0.1\n}\n"
+				"standard_object\n{\nname blocker\ngeometry blocker_geom\nmaterial none\n"
+				"position 0 0 -0.5\ncasts_shadows TRUE\n}\n";
+		}
+		return scene;
+	}
+
+	void TestOpaqueGeometricVisibility()
+	{
+		std::cout << "TestOpaqueGeometricVisibility" << std::endl;
+		IJobPriv* clearJob = LoadScene( GlobalMediumScene(false) );
+		IJobPriv* blockedJob = LoadScene( GlobalMediumScene(true) );
+		IRayCaster* clearCaster = nullptr;
+		IRayCaster* blockedCaster = nullptr;
+		if( clearJob ) {
+			IShader* shader = clearJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(&clearCaster,false,0,*shader,true) && clearCaster )
+				clearCaster->AttachScene( clearJob->GetScene() );
+		}
+		if( blockedJob ) {
+			IShader* shader = blockedJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(&blockedCaster,false,0,*shader,true) && blockedCaster )
+				blockedCaster->AttachScene( blockedJob->GetScene() );
+		}
+		const RayCaster* clearConcrete = dynamic_cast<const RayCaster*>(clearCaster);
+		const RayCaster* blockedConcrete = dynamic_cast<const RayCaster*>(blockedCaster);
+		const LightSampler* clearLights = clearConcrete ? clearConcrete->GetLightSampler() : nullptr;
+		const LightSampler* blockedLights = blockedConcrete ? blockedConcrete->GetLightSampler() : nullptr;
+		Check( clearLights && blockedLights,
+			"paired clear and opaque-blocked estimator fixtures prepare" );
+
+		std::vector<Scalar> replayValues;
+		if( clearLights ) {
+			for( unsigned int seed = 1; seed <= 256 && replayValues.empty(); ++seed ) {
+				RecordingSampler sampler( seed );
+				VolumeEmissionSample endpoint;
+				if( clearLights->SampleVolumeEmission(sampler,endpoint) &&
+					endpoint.point.z > 0.25 ) replayValues = sampler.Values();
+			}
+		}
+		Check( !replayValues.empty(),
+			"visibility fixture finds an endpoint beyond the blocker plane" );
+		if( !replayValues.empty() && clearLights && blockedLights &&
+			clearCaster && blockedCaster && clearJob && blockedJob ) {
+			const RasterizerState rast = {0,0};
+			const Ray viewRay( Point3(0,0,-1), Vector3(0,0,-1) );
+			RayIntersectionGeometric ri( viewRay, rast );
+			ri.ptIntersection = Point3(0,0,-1);
+			ri.vNormal = Vector3(0,0,1);
+			SpectralResponseBSDF* response = new SpectralResponseBSDF();
+			FixedSampler clearSampler( replayValues );
+			const Scalar clearContribution = clearLights->EvaluateVolumeDirectLightingNM(
+				ri, *response, 550.0, *clearCaster, clearSampler, nullptr,
+				clearJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
+			FixedSampler blockedSampler( replayValues );
+			const Scalar blockedContribution = blockedLights->EvaluateVolumeDirectLightingNM(
+				ri, *response, 550.0, *blockedCaster, blockedSampler, nullptr,
+				blockedJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
+			Check( clearContribution > 0.0,
+				"unobstructed paired endpoint contributes positive volume NEE" );
+			Check( blockedContribution == 0.0,
+				"opaque geometry supplies the estimator visibility factor" );
+			safe_release( response );
+		}
+		safe_release( clearCaster );
+		safe_release( blockedCaster );
+		safe_release( clearJob );
+		safe_release( blockedJob );
 	}
 
 	void TestStandaloneEstimatorFormula()
@@ -437,10 +900,10 @@ namespace
 					Ray(ri.ptIntersection,direction), distance,
 					job->GetScene()->GetGlobalMedium(), nullptr, job->GetScene(),
 					false, nm, tr, nullptr );
-				const Scalar expected = Vector3Ops::Dot(direction,ri.vNormal) * tr *
+				const Scalar expected = 0.8 * Vector3Ops::Dot(direction,ri.vNormal) * tr *
 					endpoint.pMedium->GetThermalEmissionNM(endpoint.point,nm) /
 					(distance*distance*endpoint.pdf);
-				UnitBSDF* unit = new UnitBSDF();
+				SpectralResponseBSDF* unit = new SpectralResponseBSDF();
 				FixedSampler estimatorSampler( randomValues );
 				const Scalar actual = lights->EvaluateVolumeDirectLightingNM(
 					ri, *unit, nm, *caster, estimatorSampler, nullptr,
@@ -468,10 +931,16 @@ namespace
 int main()
 {
 	std::cout << "Volume Emission NEE Phase-B Gate 2" << std::endl;
+	TestSharedQuadratureStructure();
 	TestSharedVisibleBandRule();
 	TestCDFNormalizationSamplingAndOwnership();
+	TestNonuniformTwoLevelDistribution();
+	TestSceneUnitInvariantImportance();
+	TestTinyFiniteBBoxDensityFormulation();
 	TestSupportInflationAtBoundary();
 	TestLabeledMultiMediumDensity();
+	TestInactiveNestedLabelReturnsZero();
+	TestOpaqueGeometricVisibility();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
 	return failed == 0 ? 0 : 1;
