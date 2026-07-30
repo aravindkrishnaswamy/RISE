@@ -189,6 +189,14 @@ namespace RISE
 			{}
 		};
 
+		/// Shared auxiliary pivot vector U for one path vertex.  Each emissive
+		/// medium contributes one unconditional wavelength-independent draw;
+		/// the later NEE endpoint is sampled separately.
+		struct VolumeEmissionPivotState
+		{
+			std::vector<Point3> mediumPivots;
+		};
+
 		class LightSampler : public virtual Reference
 		{
 		protected:
@@ -211,6 +219,10 @@ namespace RISE
 			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
 			AliasTable					volumeEmissionAlias;	///< q_m^V proportional to W_m
 			bool						volumeEmissionDistributionValid;
+			std::vector<Scalar>		positionalLightBandPowers;
+			std::vector<Scalar>		volumeEmissionPowerProxies;
+			AliasTable					equiangularPivotAlias;	///< a_r over positional lights plus emissive media
+			bool						equiangularPivotDistributionValid;
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -466,6 +478,44 @@ namespace RISE
 				const IMedium& medium,
 				const Point3& point
 				) const;
+
+			/// Draw the complete auxiliary pivot vector U: one independent
+			/// CDF sample per emissive medium, before endpoint selection.
+			bool SampleVolumeEmissionPivots(
+				ISampler& sampler,
+				VolumeEmissionPivotState& pivots
+				) const;
+
+			/// Select one equiangular pivot from the watt-dimensioned mixture.
+			/// Positional entries use their fixed light position; medium entries
+			/// read the corresponding already-drawn element of U.
+			bool SampleEquiangularPivot(
+				const VolumeEmissionPivotState& pivots,
+				const Scalar xi,
+				Point3& pivot,
+				Scalar& selectionPdf
+				) const;
+
+			unsigned int GetEquiangularPivotEntryCount() const
+			{
+				return equiangularPivotAlias.Size();
+			}
+
+			Scalar GetEquiangularPivotSelectionPdf(
+				const unsigned int index
+				) const
+			{
+				return static_cast<Scalar>( equiangularPivotAlias.Pdf(index) );
+			}
+
+			Scalar GetEquiangularPivotPower(
+				const unsigned int index
+				) const;
+
+			bool IsEquiangularPivotDistributionValid() const
+			{
+				return equiangularPivotDistributionValid;
+			}
 
 			/// Standalone Phase-B volume-NEE estimator.  It is deliberately not
 			/// added to EvaluateDirectLightingNM until the following MIS-partition

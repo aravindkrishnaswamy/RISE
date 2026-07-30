@@ -484,6 +484,7 @@ LightSampler::LightSampler() :
   bSceneHasObjectFireMedia( false ),
   bSceneHasNullBoundaries( false ),
   volumeEmissionDistributionValid( true ),
+  equiangularPivotDistributionValid( true ),
   pLightBVH( 0 ),
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
@@ -818,6 +819,58 @@ void LightSampler::Prepare(
 		GlobalLog()->PrintEasyError(
 			"LightSampler:: thermal-emission medium weights exceed the representable labeled-density range" );
 		volumeEmissionAlias.Build( std::vector<double>() );
+	}
+
+	// Build the equiangular pivot mixture in one common watt-dimensioned
+	// measure.  Positional lights use their visible-band power; media use
+	// A_m=4*pi*s^2*W_m.  Normalize by the largest finite proxy before the
+	// alias build so mixed astronomical/tiny powers cannot overflow a sum.
+	positionalLightBandPowers.assign( positionalLightIndices.size(), 0.0 );
+	volumeEmissionPowerProxies.assign( volumeEmissionMedia.size(), 0.0 );
+	std::vector<double> pivotWeights(
+		positionalLightIndices.size()+volumeEmissionMedia.size(), 0.0 );
+	double maxPivotWeight = 0.0;
+	equiangularPivotDistributionValid = volumeEmissionDistributionValid;
+	for( unsigned int i = 0; i < positionalLightIndices.size(); ++i ) {
+		const LightEntry& entry = lightEntries[positionalLightIndices[i]];
+		const Scalar power = entry.pLight ? entry.pLight->EstimateVisibleBandPower() : 0.0;
+		positionalLightBandPowers[i] = power;
+		if( !RISE::IsFiniteDouble(power) || power < 0.0 ) {
+			equiangularPivotDistributionValid = false;
+		} else {
+			pivotWeights[i] = static_cast<double>(power);
+			if( pivotWeights[i] > maxPivotWeight ) maxPivotWeight = pivotWeights[i];
+		}
+	}
+	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
+		const Scalar power = volumeEmissionMedia[i]->GetThermalEmissionPowerProxy();
+		volumeEmissionPowerProxies[i] = power;
+		const unsigned int entry = static_cast<unsigned int>(
+			positionalLightIndices.size()) + i;
+		if( !RISE::IsFiniteDouble(power) || power <= 0.0 ) {
+			equiangularPivotDistributionValid = false;
+		} else {
+			pivotWeights[entry] = static_cast<double>(power);
+			if( pivotWeights[entry] > maxPivotWeight ) maxPivotWeight = pivotWeights[entry];
+		}
+	}
+	if( maxPivotWeight <= 0.0 ) {
+		pivotWeights.clear();
+	} else if( equiangularPivotDistributionValid ) {
+		for( unsigned int i = 0; i < pivotWeights.size(); ++i ) {
+			const bool hadPositiveWeight = pivotWeights[i] > 0.0;
+			pivotWeights[i] /= maxPivotWeight;
+			if( hadPositiveWeight && pivotWeights[i] <= 0.0 ) {
+				equiangularPivotDistributionValid = false;
+			}
+		}
+	}
+	if( equiangularPivotDistributionValid ) {
+		equiangularPivotAlias.Build( pivotWeights );
+	} else {
+		equiangularPivotAlias.Build( std::vector<double>() );
+		GlobalLog()->PrintEasyError(
+			"LightSampler:: equiangular pivot powers are invalid" );
 	}
 
 	// Compute scene bounding sphere from visible objects' world AABBs.
@@ -2014,6 +2067,65 @@ Scalar LightSampler::VolumeEmissionPdf(
 		}
 	}
 	return 0.0;
+}
+
+bool LightSampler::SampleVolumeEmissionPivots(
+	ISampler& sampler,
+	VolumeEmissionPivotState& pivots
+	) const
+{
+	pivots.mediumPivots.clear();
+	pivots.mediumPivots.reserve( volumeEmissionMedia.size() );
+	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
+		Point3 point;
+		Scalar ignoredPdf = 0.0;
+		if( !volumeEmissionMedia[i] ||
+			!volumeEmissionMedia[i]->SampleThermalEmission(
+				sampler, point, ignoredPdf ) || ignoredPdf <= 0.0 ) {
+			pivots.mediumPivots.clear();
+			return false;
+		}
+		pivots.mediumPivots.push_back( point );
+	}
+	return true;
+}
+
+bool LightSampler::SampleEquiangularPivot(
+	const VolumeEmissionPivotState& pivots,
+	const Scalar xi,
+	Point3& pivot,
+	Scalar& selectionPdf
+	) const
+{
+	selectionPdf = 0.0;
+	if( !equiangularPivotDistributionValid ||
+		!equiangularPivotAlias.IsValid() ||
+		pivots.mediumPivots.size() != volumeEmissionMedia.size() ) return false;
+	const unsigned int entry = equiangularPivotAlias.Sample( xi );
+	selectionPdf = static_cast<Scalar>( equiangularPivotAlias.Pdf(entry) );
+	if( selectionPdf <= 0.0 ) return false;
+	if( entry < positionalLightIndices.size() ) {
+		pivot = GetPositionalLightPosition( entry );
+		return true;
+	}
+	const unsigned int mediumIndex = entry -
+		static_cast<unsigned int>( positionalLightIndices.size() );
+	if( mediumIndex >= pivots.mediumPivots.size() ) return false;
+	pivot = pivots.mediumPivots[mediumIndex];
+	return true;
+}
+
+Scalar LightSampler::GetEquiangularPivotPower(
+	const unsigned int index
+	) const
+{
+	if( index < positionalLightBandPowers.size() ) {
+		return positionalLightBandPowers[index];
+	}
+	const unsigned int mediumIndex = index -
+		static_cast<unsigned int>( positionalLightBandPowers.size() );
+	return mediumIndex < volumeEmissionPowerProxies.size()
+		? volumeEmissionPowerProxies[mediumIndex] : 0.0;
 }
 
 Scalar LightSampler::EvaluateVolumeDirectLightingNM(

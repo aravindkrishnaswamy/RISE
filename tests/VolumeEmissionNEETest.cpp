@@ -213,6 +213,7 @@ namespace
 			return value;
 		}
 		Point2 Get2D() override { return Point2( Get1D(), Get1D() ); }
+		unsigned int Consumed() const { return index; }
 	private:
 		std::vector<Scalar> values;
 		unsigned int index;
@@ -1194,6 +1195,72 @@ namespace
 		return scene;
 	}
 
+	void TestIndependentPivotVectorAndPowerMixture()
+	{
+		std::cout << "TestIndependentPivotVectorAndPowerMixture" << std::endl;
+		const std::string scene = GlobalMediumScene() +
+			"omni_light\n{\nname key\npower 3\ncolor 0.8 0.3 0.1\nposition 2 0 0\n}\n";
+		IJobPriv* job = LoadScene( scene );
+		IRayCaster* caster = nullptr;
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(&caster,false,0,*shader,true) && caster )
+				caster->AttachScene( job->GetScene() );
+		}
+		const RayCaster* concrete = dynamic_cast<const RayCaster*>(caster);
+		const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
+		const IMedium* fire = job ? job->GetScene()->GetGlobalMedium() : nullptr;
+		const ILightManager::LightsList* sceneLights = job ?
+			&job->GetScene()->GetLights()->getLights() : nullptr;
+		Check( lights && fire && sceneLights && sceneLights->size()==1,
+			"point-light plus flame pivot fixture prepares" );
+		if( lights && fire && sceneLights && sceneLights->size()==1 ) {
+			Check( lights->IsEquiangularPivotDistributionValid() &&
+				lights->GetEquiangularPivotEntryCount()==2,
+				"one positional light and one emissive medium form two pivot entries" );
+			const Scalar lightPower = (*sceneLights)[0]->EstimateVisibleBandPower();
+			const Scalar mediumPower = fire->GetThermalEmissionPowerProxy();
+			const Scalar totalPower = lightPower + mediumPower;
+			CheckRelative( lights->GetEquiangularPivotPower(0), lightPower, 1e-15,
+				"positional pivot uses visible-band power rather than RGB exitance" );
+			CheckRelative( lights->GetEquiangularPivotPower(1), mediumPower, 1e-15,
+				"medium pivot uses the 4-pi-s-squared thermal power proxy" );
+			CheckRelative( lights->GetEquiangularPivotSelectionPdf(0),
+				lightPower/totalPower, 2e-15,
+				"positional pivot pmf is normalized in the shared watt measure" );
+			CheckRelative( lights->GetEquiangularPivotSelectionPdf(1),
+				mediumPower/totalPower, 2e-15,
+				"medium pivot pmf is normalized in the shared watt measure" );
+
+			FixedSampler sampler( {
+				0.11, 0.23, 0.31, 0.41, 0.53,
+				0.67, 0.73, 0.79, 0.83, 0.89, 0.97 } );
+			VolumeEmissionPivotState pivots;
+			const bool pivoted = lights->SampleVolumeEmissionPivots(sampler,pivots);
+			Check( pivoted && pivots.mediumPivots.size()==1,
+				"pivot vector draws one unconditional point per emissive medium" );
+			VolumeEmissionSample endpoint;
+			const bool endpointSampled = lights->SampleVolumeEmission(sampler,endpoint);
+			Check( endpointSampled && sampler.Consumed()==11,
+				"NEE endpoint consumes a distinct draw after the complete pivot vector" );
+			if( pivoted && endpointSampled ) {
+				const Vector3 delta = Vector3Ops::mkVector3(
+					endpoint.point, pivots.mediumPivots[0] );
+				Check( Vector3Ops::Magnitude(delta) > 1e-12,
+					"auxiliary medium pivot and NEE endpoint are different random variables" );
+			}
+
+			Point3 selectedPivot;
+			Scalar selectedPdf = 0.0;
+			const bool selected = lights->SampleEquiangularPivot(
+				pivots, 0.37, selectedPivot, selectedPdf );
+			Check( selected && selectedPdf > 0.0,
+				"combined power distribution selects a retained shared pivot" );
+		}
+		safe_release( caster );
+		safe_release( job );
+	}
+
 	void TestOpaqueGeometricVisibility()
 	{
 		std::cout << "TestOpaqueGeometricVisibility" << std::endl;
@@ -1338,6 +1405,7 @@ int main()
 	TestScaleSafeCrossMediumNormalization();
 	TestLabeledMultiMediumDensity();
 	TestInactiveNestedLabelReturnsZero();
+	TestIndependentPivotVectorAndPowerMixture();
 	TestOpaqueGeometricVisibility();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
