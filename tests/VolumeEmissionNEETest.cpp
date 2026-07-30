@@ -860,6 +860,17 @@ namespace
 		safe_release( underflowOrder );
 	}
 
+	void TestPositiveSupportUnderflowRejection()
+	{
+		std::cout << "TestPositiveSupportUnderflowRejection" << std::endl;
+		IMedium* medium = CreateUniformFire(
+			1.0e-200, 1800.0, 2,
+			Point3(0,0,0), Point3(1.0e-50,1.0e-50,1.0e-50), 1.0 );
+		Check( medium == nullptr,
+			"positive subnormal thermal support cannot silently become a zero strategy" );
+		safe_release( medium );
+	}
+
 	void TestSupportInflationAtBoundary()
 	{
 		std::cout << "TestSupportInflationAtBoundary" << std::endl;
@@ -1322,6 +1333,7 @@ int main()
 	TestTinyFiniteBBoxDensityFormulation();
 	TestRepresentedBinVolumeNormalization();
 	TestAnisotropicBinVolumeFormulation();
+	TestPositiveSupportUnderflowRejection();
 	TestSupportInflationAtBoundary();
 	TestScaleSafeCrossMediumNormalization();
 	TestLabeledMultiMediumDensity();

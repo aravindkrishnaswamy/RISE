@@ -52,6 +52,21 @@ namespace RISE
 		std::memcpy( &bits, &materialised, sizeof( bits ) );
 		return bits == 0x7FF0000000000000ULL;
 	}
+
+	//! Returns true iff @a value is either signed representation of zero.
+	//! The volatile materialisation is required for the same -ffast-math
+	//! reason as IsFiniteDouble: a floating comparison may assume that a
+	//! positive product cannot underflow to zero.
+	inline bool IsZeroDouble( const double value )
+	{
+		static_assert( sizeof( double ) == sizeof( std::uint64_t ),
+			"IsZeroDouble requires an IEEE-754 binary64 double" );
+		volatile double barrier = value;
+		const double materialised = barrier;
+		std::uint64_t bits = 0;
+		std::memcpy( &bits, &materialised, sizeof( bits ) );
+		return (bits & 0x7FFFFFFFFFFFFFFFULL) == 0;
+	}
 }
 
 #endif

@@ -36,9 +36,9 @@ namespace
 		Scalar mantissa = 1.0;
 		int exponent = 0;
 		for( const Scalar factor : factors ) {
-			if( factor == 0.0 ) return 0.0;
+			if( RISE::IsZeroDouble(factor) ) return 0.0;
 			if( factor < 0.0 || !RISE::IsFiniteDouble(factor) ) {
-				return std::numeric_limits<Scalar>::quiet_NaN();
+				return -1.0;
 			}
 			int factorExponent = 0;
 			const Scalar factorMantissa = std::frexp( factor, &factorExponent );
@@ -46,7 +46,8 @@ namespace
 			mantissa = std::frexp( mantissa*factorMantissa, &adjustment );
 			exponent += factorExponent + adjustment;
 		}
-		return std::ldexp( mantissa, exponent );
+		const Scalar result = std::ldexp( mantissa, exponent );
+		return RISE::IsZeroDouble(result) ? -1.0 : result;
 	}
 
 	static unsigned int HalfOpenBinIndex(
@@ -1690,13 +1691,15 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 						}
 					}
 				}
-				const Scalar proposal = binVolume * proposalAverage;
+				const Scalar proposal = proposalAverage > 0.0 ?
+					StablePositiveProduct( {binVolume,proposalAverage} ) : 0.0;
 				const Scalar upper = EmissionBinUpperBound( x, y, z );
 				const Scalar weight = (Scalar(1.0) - supportMix) * proposal +
 					supportMix * upper;
 				if( !RISE::IsFiniteDouble( proposal ) || proposal < 0.0 ||
 					!RISE::IsFiniteDouble( upper ) || upper < 0.0 ||
-					!RISE::IsFiniteDouble( weight ) || weight < 0.0 ) return false;
+					!RISE::IsFiniteDouble( weight ) || weight < 0.0 ||
+					((proposal > 0.0 || upper > 0.0) && RISE::IsZeroDouble(weight)) ) return false;
 
 				const unsigned int binIndex = EmissionBinIndex( x, y, z );
 				m_emissionBinWeights[binIndex] = static_cast<double>( weight );
