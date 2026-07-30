@@ -61,7 +61,7 @@ namespace
 		const Scalar lower = minimum + Scalar(binIndex)*binSize;
 		const Scalar upper = binIndex + 1u == binCount ? maximum :
 			minimum + Scalar(binIndex+1u)*binSize;
-		Scalar coordinate = minimum + (Scalar(binIndex)+sample)*binSize;
+		Scalar coordinate = lower + sample*(upper-lower);
 		if( coordinate < lower ) coordinate = lower;
 		if( binIndex + 1u < binCount && coordinate >= upper ) {
 			coordinate = std::nextafter( upper, lower );
@@ -86,6 +86,30 @@ namespace
 			previous = boundary;
 		}
 		return true;
+	}
+
+	static Scalar RepresentedBinVolume(
+		const Point3& minimum,
+		const Point3& maximum,
+		const Vector3& binSize,
+		const unsigned int x,
+		const unsigned int y,
+		const unsigned int z,
+		const unsigned int nx,
+		const unsigned int ny,
+		const unsigned int nz
+		)
+	{
+		const Scalar x0 = minimum.x + Scalar(x)*binSize.x;
+		const Scalar y0 = minimum.y + Scalar(y)*binSize.y;
+		const Scalar z0 = minimum.z + Scalar(z)*binSize.z;
+		const Scalar x1 = x + 1u == nx ? maximum.x :
+			minimum.x + Scalar(x+1u)*binSize.x;
+		const Scalar y1 = y + 1u == ny ? maximum.y :
+			minimum.y + Scalar(y+1u)*binSize.y;
+		const Scalar z1 = z + 1u == nz ? maximum.z :
+			minimum.z + Scalar(z+1u)*binSize.z;
+		return (x1-x0)*(y1-y0)*(z1-z0);
 	}
 
 	class ConstituentHGPhaseClosure :
@@ -1430,10 +1454,9 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	  sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0
 		  ? m_hotAbsorptionMass633 / (1.0 - sootAlbedoHot)
 		  : 0.0 ),
-  m_coolExtinctionMass633( smokeKmCarbon ),
-  m_emissionBinSize( 0, 0, 0 ),
-  m_emissionBinVolume( 0.0 ),
-  m_thermalEmissionImportance( 0.0 ),
+	  m_coolExtinctionMass633( smokeKmCarbon ),
+	  m_emissionBinSize( 0, 0, 0 ),
+	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
   m_valid( false )
 {
@@ -1569,7 +1592,9 @@ Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
 	const Scalar planckPeakNM = fmax( Scalar(380.0), fmin( Scalar(780.0), wienPeakNM ) );
 	const Scalar planckMax = PlanckSpectralRadianceNM(
 		planckPeakNM, maxTemperature );
-	return m_emissionBinVolume * Scalar(400.0) * m_sceneUnitMeters *
+	return RepresentedBinVolume( m_bboxMin, m_bboxMax, m_emissionBinSize,
+		x, y, z, m_volWidth, m_volHeight, m_volDepth ) *
+		Scalar(400.0) * m_sceneUnitMeters *
 		maxCarbon * absorptionMax * planckMax;
 }
 
@@ -1582,11 +1607,11 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 		m_bboxExtent.x / Scalar(m_volWidth),
 		m_bboxExtent.y / Scalar(m_volHeight),
 		m_bboxExtent.z / Scalar(m_volDepth) );
-	m_emissionBinVolume = m_emissionBinSize.x *
-		m_emissionBinSize.y * m_emissionBinSize.z;
 	m_thermalEmissionImportance = 0.0;
 	m_minPositiveThermalEmissionPdf = 0.0;
-	if( !RISE::IsFiniteDouble( m_emissionBinVolume ) || m_emissionBinVolume <= 0.0 ) {
+	if( !RISE::IsFiniteDouble(m_emissionBinSize.x) || m_emissionBinSize.x <= 0.0 ||
+		!RISE::IsFiniteDouble(m_emissionBinSize.y) || m_emissionBinSize.y <= 0.0 ||
+		!RISE::IsFiniteDouble(m_emissionBinSize.z) || m_emissionBinSize.z <= 0.0 ) {
 		return false;
 	}
 	if( !HasRepresentableBinInteriors( m_bboxMin.x, m_bboxMax.x,
@@ -1618,14 +1643,25 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 					m_bboxMin.x + Scalar(x) * m_emissionBinSize.x,
 					m_bboxMin.y + Scalar(y) * m_emissionBinSize.y,
 					m_bboxMin.z + Scalar(z) * m_emissionBinSize.z );
+				const Point3 binMax(
+					x + 1u == m_volWidth ? m_bboxMax.x :
+						m_bboxMin.x + Scalar(x+1u) * m_emissionBinSize.x,
+					y + 1u == m_volHeight ? m_bboxMax.y :
+						m_bboxMin.y + Scalar(y+1u) * m_emissionBinSize.y,
+					z + 1u == m_volDepth ? m_bboxMax.z :
+						m_bboxMin.z + Scalar(z+1u) * m_emissionBinSize.z );
+				const Vector3 representedSize = Vector3Ops::mkVector3( binMax, binMin );
+				const Scalar binVolume = representedSize.x * representedSize.y *
+					representedSize.z;
+				if( !RISE::IsFiniteDouble(binVolume) || binVolume <= 0.0 ) return false;
 				Scalar proposalAverage = 0.0;
 				for( unsigned int gz = 0; gz < 2; ++gz ) {
 					for( unsigned int gy = 0; gy < 2; ++gy ) {
 						for( unsigned int gx = 0; gx < 2; ++gx ) {
 							const Point3 samplePoint(
-								binMin.x + spatialNodes[gx] * m_emissionBinSize.x,
-								binMin.y + spatialNodes[gy] * m_emissionBinSize.y,
-								binMin.z + spatialNodes[gz] * m_emissionBinSize.z );
+								binMin.x + spatialNodes[gx] * representedSize.x,
+								binMin.y + spatialNodes[gy] * representedSize.y,
+								binMin.z + spatialNodes[gz] * representedSize.z );
 							proposalAverage += GaussLegendre21::IntegrateVisibleBand(
 								[this, &samplePoint]( const Scalar nm ) {
 									return GetThermalEmissionNM( samplePoint, nm );
@@ -1633,7 +1669,7 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 						}
 					}
 				}
-				const Scalar proposal = m_emissionBinVolume * proposalAverage;
+				const Scalar proposal = binVolume * proposalAverage;
 				const Scalar upper = EmissionBinUpperBound( x, y, z );
 				const Scalar weight = (Scalar(1.0) - supportMix) * proposal +
 					supportMix * upper;
@@ -1644,9 +1680,9 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 				const unsigned int binIndex = EmissionBinIndex( x, y, z );
 				m_emissionBinWeights[binIndex] = static_cast<double>( weight );
 				const Point3 center(
-					binMin.x + Scalar(0.5) * m_emissionBinSize.x,
-					binMin.y + Scalar(0.5) * m_emissionBinSize.y,
-					binMin.z + Scalar(0.5) * m_emissionBinSize.z );
+					binMin.x + Scalar(0.5) * representedSize.x,
+					binMin.y + Scalar(0.5) * representedSize.y,
+					binMin.z + Scalar(0.5) * representedSize.z );
 				unsigned int cx = 0, cy = 0, cz = 0;
 				if( !m_pMajorantGrid->WorldToCell( center, cx, cy, cz ) ) return false;
 				const unsigned int cellIndex = cz * m_pMajorantGrid->GetGridX() *
@@ -1673,8 +1709,16 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 				static_cast<double>(m_thermalEmissionImportance);
 			if( m_emissionBinWeights[i] > 0.0 &&
 				m_emissionBinProbabilities[i] <= 0.0 ) return false;
+			const unsigned int xy = m_volWidth * m_volHeight;
+			const unsigned int z = i / xy;
+			const unsigned int rem = i - z*xy;
+			const unsigned int y = rem / m_volWidth;
+			const unsigned int x = rem - y*m_volWidth;
+			const Scalar binVolume = RepresentedBinVolume(
+				m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+				m_volWidth, m_volHeight, m_volDepth );
 			const Scalar density = static_cast<Scalar>(
-				m_emissionBinProbabilities[i] ) / m_emissionBinVolume;
+				m_emissionBinProbabilities[i] ) / binVolume;
 			if( !RISE::IsFiniteDouble(density) || density < 0.0 ||
 				(m_emissionBinProbabilities[i] > 0.0 && density <= 0.0) ) return false;
 			if( density > 0.0 &&
@@ -1905,16 +1949,17 @@ Scalar MultichannelHeterogeneousMedium::ThermalEmissionPdf(
 	const Point3& point
 	) const
 {
-	if( !m_valid || m_thermalEmissionImportance <= 0.0 ||
-		m_emissionBinVolume <= 0.0 ) return 0.0;
+	if( !m_valid || m_thermalEmissionImportance <= 0.0 ) return 0.0;
 	unsigned int x = 0, y = 0, z = 0;
 	if( !EmissionBinAtPoint( point, x, y, z ) ) return 0.0;
 	// Divide the pre-normalized q_v by V_v.  Keeping q_v as constructed state
 	// prevents fast-math reassociation back into weight/(W_m*V_v), whose
 	// denominator can underflow for a tiny but otherwise valid finite bbox.
+	const Scalar binVolume = RepresentedBinVolume(
+		m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+		m_volWidth, m_volHeight, m_volDepth );
 	return static_cast<Scalar>(
-		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] ) /
-		m_emissionBinVolume;
+		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] ) / binVolume;
 }
 
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionBinProbability(

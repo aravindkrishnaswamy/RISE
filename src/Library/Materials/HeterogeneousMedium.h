@@ -328,7 +328,6 @@ namespace RISE
 		std::vector<double> m_emissionBinWeights;
 		std::vector<double> m_emissionBinProbabilities;
 		Vector3 m_emissionBinSize;
-		Scalar m_emissionBinVolume;
 		Scalar m_thermalEmissionImportance;
 		Scalar m_minPositiveThermalEmissionPdf;
 		bool m_valid;

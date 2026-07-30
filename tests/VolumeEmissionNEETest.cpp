@@ -168,6 +168,20 @@ namespace
 		~ProbabilityUnderflowCarbonPainter() override = default;
 	};
 
+	class OffsetStepCarbonPainter :
+		public virtual IScalarPainter,
+		public virtual Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( ri.ptCoord.x < 1.0e16+8.0 ? 0.1 : 0.4 );
+		}
+		bool HasPerChannelVariation() const override { return false; }
+	protected:
+		~OffsetStepCarbonPainter() override = default;
+	};
+
 	class SpectralResponseBSDF :
 		public virtual IBSDF,
 		public virtual Reference
@@ -777,6 +791,44 @@ namespace
 		safe_release( temperature );
 	}
 
+	void TestRepresentedBinVolumeNormalization()
+	{
+		std::cout << "TestRepresentedBinVolumeNormalization" << std::endl;
+		OffsetStepCarbonPainter* carbon = new OffsetStepCarbonPainter();
+		IScalarPainter* temperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &temperature, 1800.0 );
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature, 2, 2, 2,
+			Point3(1.0e16,0,0), Point3(1.0e16+14.0,1,1), 1.0,
+			0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( created && fire,
+			"unequal represented-width emission-bin fixture builds" );
+		if( fire ) {
+			Scalar integral = 0.0;
+			for( unsigned int z = 0; z < 2; ++z ) {
+				for( unsigned int y = 0; y < 2; ++y ) {
+					const Scalar py = Scalar(y)*0.5 + 0.25;
+					const Scalar pz = Scalar(z)*0.5 + 0.25;
+					integral += fire->ThermalEmissionPdf(
+						Point3(1.0e16+2.0,py,pz) ) * (8.0*0.5*0.5);
+					integral += fire->ThermalEmissionPdf(
+						Point3(1.0e16+10.0,py,pz) ) * (6.0*0.5*0.5);
+				}
+			}
+			CheckRelative( integral, 1.0, 3e-14,
+				"piecewise density normalizes over unequal represented bin volumes" );
+			Check( fire->GetThermalEmissionBinProbability(0,0,0) !=
+				fire->GetThermalEmissionBinProbability(1,0,0),
+				"offset normalization fixture has nonuniform bin probabilities" );
+		}
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
 	void TestSupportInflationAtBoundary()
 	{
 		std::cout << "TestSupportInflationAtBoundary" << std::endl;
@@ -1237,6 +1289,7 @@ int main()
 	TestSampledBoundaryOwnership();
 	TestSceneUnitInvariantImportance();
 	TestTinyFiniteBBoxDensityFormulation();
+	TestRepresentedBinVolumeNormalization();
 	TestSupportInflationAtBoundary();
 	TestScaleSafeCrossMediumNormalization();
 	TestLabeledMultiMediumDensity();
