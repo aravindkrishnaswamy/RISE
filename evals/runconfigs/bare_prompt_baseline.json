@@ -3,12 +3,9 @@
     "evals/scenarios/bare_prompt_build_courtyard.json",
     "evals/scenarios/build_ambiguous_scene.json"
   ],
+  "//": "Gemini-only by user decision (2026-07-29): the full hosted+local matrix is too expensive/slow for this baseline, local models are deficient on build tasks, and gemini-3.5-flash is the same instrument every manual run of the 72-log arc was measured on -- so single-provider results stay comparable to that prior data. Re-widen deliberately if a cross-provider claim is ever needed.",
   "providers": [
-    { "provider": "anthropic", "model": "claude-opus-4-8", "keyEnvVar": "ANTHROPIC_API_KEY" },
-    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
-    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" },
-    { "provider": "xai", "model": "grok-4.5", "keyEnvVar": "XAI_API_KEY" },
-    { "provider": "local", "model": "qwen3.6:27b" }
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
   ],
   "repeats": 3,
   "runDir": "evals/runs/bare_prompt_baseline"

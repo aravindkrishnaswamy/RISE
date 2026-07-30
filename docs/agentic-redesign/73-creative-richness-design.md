@@ -254,11 +254,16 @@ non-uniform painters, ≥3 distinct geometry kinds, and ≥1 advanced modeling
 verb. This doubles as the red-proof: mutate the fixture to uniformcolor-only
 (or all-box geometry) and the new ops must fail it.
 
-**Baseline protocol:** run at pre-change HEAD, hosted 4 + qwen3.6, N=3,
-serialized (wall-time comparability), `build_ambiguous_scene` re-run in the
-same batch as the counterweight. Expected result: distinct-painter count ~0,
-pass@1 near 0%. That is the point — this is a headroom scenario, like
-`multi_step_build` at 21%.
+**Baseline protocol (narrowed to gemini-only, user decision 2026-07-29):**
+run at the P0 commit, `gemini-3.5-flash` alone, N=3, serialized;
+`build_ambiguous_scene` re-run in the same batch as the counterweight. The
+full hosted+local matrix was judged too expensive/slow, local models
+deficient on build tasks. Single-provider is an accepted trade: gemini-3.5-
+flash is the same instrument the entire 72-log arc was measured on, so
+before/after deltas remain valid; what is lost is any cross-provider claim
+("half the hosted providers" criteria below reduce to gemini-specific
+medians). Expected result: distinct-painter count ~0, pass@1 near 0%. That
+is the point — this is a headroom scenario, like `multi_step_build` at 21%.
 
 ### P1 — B1: re-anchor the four uniformcolor-only skills (+ C1, same commit)
 
@@ -407,9 +412,9 @@ the implementation-review-loop to zero P1.
 
 **Success criteria, stated before the first run:**
 
-- **P1 succeeds** if median distinct-non-uniform-painter count goes 0 → ≥2 on
-  at least half the hosted providers, with `askUserMax` and
-  `build_ambiguous_scene` both still green.
+- **P1 succeeds** if the gemini-3.5-flash median distinct-non-uniform-painter
+  count goes 0 → ≥2 (gemini-only baseline per the narrowed protocol above),
+  with `askUserMax` and `build_ambiguous_scene` both still green.
 - **Geometry (scope expansion):** the baseline's `geometry_kinds` /
   `advanced_geometry` metric columns are the decision input, not a target —
   if median distinct geometry kinds is already ≥3 on hosted providers, the
