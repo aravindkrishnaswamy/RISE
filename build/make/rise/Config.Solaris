@@ -17,7 +17,7 @@ CXX = g++
 CPPFLAGS = -I$(PATHLIBRARY) 
 
 # This set of flags is for Solaris g++ 3.0, removes the schedule-insns flag.  
-CXXFLAGS = -O3 -ffast-math -fcse-skip-blocks -frerun-loop-opt -funroll-loops
+CXXFLAGS = -O3 -ffast-math -fno-finite-math-only -fcse-skip-blocks -frerun-loop-opt -funroll-loops
 
 # For debugging information
 # CXXFLAGS = -ggdb

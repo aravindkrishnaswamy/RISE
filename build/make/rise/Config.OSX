@@ -68,7 +68,22 @@ CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_
 # treats C++17 attributes as extensions when the standard isn't C++17,
 # producing `-Wc++17-attribute-extensions` warnings.  Linux already pins
 # gnu++17 in Config.Linux; OSX matches.
-CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
+#
+# -fno-finite-math-only: infs/nans are used in intersection math.  The
+# BVH slab test (Acceleration/BVH.h) computes (bbox - origin) * invDir,
+# where invDir is +/-Inf for an axis-parallel ray, and relies on IEEE
+# Inf/NaN propagation through min/max for correctness on those rays.
+# -ffast-math's implied -ffinite-math-only (plus -fno-signed-zeros)
+# lets the optimiser assume that never happens, and additionally folds
+# every std::isfinite / std::isnan guard in the tree to a constant --
+# which has produced both dead guards and false-green tests.  Android
+# already builds with this flag for the same reason (see
+# build/cmake/rise-android/CMakeLists.txt); Linux and MSVC never
+# enabled fast-math at all, so this also aligns macOS's FP semantics
+# with every other platform.  Measured cost is small; see
+# docs/INTEGRATOR_BUGFIX_FINDINGS.md "Diagnostic note - macOS -ffast-math".
+#
+CXXFLAGS = -O3 -flto -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb
