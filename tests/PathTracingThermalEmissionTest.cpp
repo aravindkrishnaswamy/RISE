@@ -1069,6 +1069,42 @@ namespace
 		std::filesystem::remove( scenePath );
 	}
 
+	void TestFlameOnlySceneActivatesCombinedEquiangularSampler()
+	{
+		std::cout << "TestFlameOnlySceneActivatesCombinedEquiangularSampler" << std::endl;
+		Fixture fixture;
+		Check( fixture.Initialize("flame_only_equiangular",1.0,1.0,false),
+			"flame-only equiangular fixture initializes without positional lights" );
+		if( !fixture.job || !fixture.caster || !fixture.integrator ) return;
+
+		UnboundedDistanceProbeMedium* probe = new UnboundedDistanceProbeMedium();
+		fixture.job->GetScene()->SetGlobalMedium( probe );
+		const RasterizerState rast = { 0, 0 };
+		const Ray ray( Point3(0,0,0), Vector3(0,0,1) );
+
+		RandomNumberGenerator ptRng( 0x71u );
+		RuntimeContext ptRc( ptRng, RuntimeContext::PASS_NORMAL, false );
+		IndependentSampler ptSampler( ptRng );
+		fixture.integrator->IntegrateRayNM(
+			ptRc, rast, ray, 500.0, *fixture.job->GetScene(),
+			*fixture.caster, ptSampler, nullptr, nullptr );
+		Check( probe->plainCalls == 0,
+			"PT flame-only segment enters the combined equiangular mixture" );
+
+		probe->plainCalls = 0;
+		probe->mixedCalls = 0;
+		RandomNumberGenerator casterRng( 0x72u );
+		RuntimeContext casterRc( casterRng, RuntimeContext::PASS_NORMAL, false );
+		IRayCaster::RAY_STATE state;
+		Scalar value = 0.0;
+		fixture.caster->CastRayNM(
+			casterRc, rast, ray, value, state, 500.0, nullptr, nullptr );
+		Check( probe->plainCalls == 0,
+			"RayCaster flame-only segment enters the combined equiangular mixture" );
+
+		safe_release( probe );
+	}
+
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
@@ -1852,6 +1888,7 @@ int main()
 	TestEquiangularMixtureUsesItsActualDistanceDensity();
 	TestEquiangularBoundednessAndCollinearFallback();
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
+	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestDirectPelEntryRejectsFire();
 	TestBoundedObjectFireRejectsShaderDispatchPel();

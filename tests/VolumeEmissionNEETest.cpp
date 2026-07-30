@@ -32,6 +32,7 @@
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Utilities/Color/RGBSpectra.h"
+#include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
@@ -1195,6 +1196,143 @@ namespace
 		return scene;
 	}
 
+	std::string ScaledMixedPivotScene(
+		const Scalar sceneUnitMeters,
+		const Scalar coordinateScale
+		)
+	{
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\nscene_options\n{\nscene_unit " <<
+			sceneUnitMeters << "\n}\nstandard_shader\n{\nname global\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue 1e-12\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min " << -coordinateScale << " " <<
+			-coordinateScale << " " << -coordinateScale << "\nbbox_max " <<
+			coordinateScale << " " << coordinateScale << " " << coordinateScale <<
+			"\nsoot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\n"
+			"soot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium fire\n}\nomni_light\n{\nname key\n"
+			"power 3\ncolor 0.8 0.3 0.1\nposition " << 2.0*coordinateScale <<
+			" 0 0\n}\n";
+		return scene.str();
+	}
+
+	void TestCombinedPivotSceneUnitInvariance()
+	{
+		std::cout << "TestCombinedPivotSceneUnitInvariance" << std::endl;
+		IJobPriv* meterJob = LoadScene( ScaledMixedPivotScene(1.0,1.0) );
+		IJobPriv* centimeterJob = LoadScene( ScaledMixedPivotScene(0.01,100.0) );
+		IRayCaster* meterCaster = nullptr;
+		IRayCaster* centimeterCaster = nullptr;
+		if( meterJob ) {
+			IShader* shader = meterJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(
+				&meterCaster,false,0,*shader,true) && meterCaster ) {
+				meterCaster->AttachScene( meterJob->GetScene() );
+			}
+		}
+		if( centimeterJob ) {
+			IShader* shader = centimeterJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(
+				&centimeterCaster,false,0,*shader,true) && centimeterCaster ) {
+				centimeterCaster->AttachScene( centimeterJob->GetScene() );
+			}
+		}
+		const RayCaster* meterConcrete =
+			dynamic_cast<const RayCaster*>(meterCaster);
+		const RayCaster* centimeterConcrete =
+			dynamic_cast<const RayCaster*>(centimeterCaster);
+		const LightSampler* meter = meterConcrete ?
+			meterConcrete->GetLightSampler() : nullptr;
+		const LightSampler* centimeter = centimeterConcrete ?
+			centimeterConcrete->GetLightSampler() : nullptr;
+		Check( meter && centimeter && meter->GetEquiangularPivotEntryCount()==2 &&
+			centimeter->GetEquiangularPivotEntryCount()==2,
+			"mixed metre/centimetre pivot fixtures prepare the same two labels" );
+		if( meter && centimeter && meter->GetEquiangularPivotEntryCount()==2 &&
+			centimeter->GetEquiangularPivotEntryCount()==2 ) {
+			for( unsigned int i = 0; i < 2; ++i ) {
+				CheckRelative( centimeter->GetEquiangularPivotSelectionPdf(i),
+					meter->GetEquiangularPivotSelectionPdf(i), 3e-14,
+					"mixed light/medium pivot PMF is scene-unit invariant" );
+			}
+
+			const std::vector<Scalar> draws = {
+				0.11,0.23,0.31,0.41,0.53,0.67,0.73,0.79 };
+			FixedSampler meterSampler(draws);
+			FixedSampler centimeterSampler(draws);
+			VolumeEmissionPivotState meterPivots;
+			VolumeEmissionPivotState centimeterPivots;
+			const bool sampledPivots =
+				meter->SampleVolumeEmissionPivots(meterSampler,meterPivots) &&
+				centimeter->SampleVolumeEmissionPivots(
+					centimeterSampler,centimeterPivots);
+			Check( sampledPivots && meterPivots.mediumPivots.size()==1 &&
+				centimeterPivots.mediumPivots.size()==1,
+				"paired scene-unit fixtures retain one shared-U medium pivot" );
+			if( sampledPivots ) {
+				const Point3& meterMediumPivot = meterPivots.mediumPivots[0];
+				const Point3& centimeterMediumPivot = centimeterPivots.mediumPivots[0];
+				CheckRelative( centimeterMediumPivot.x, 100.0*meterMediumPivot.x,
+					3e-14, "medium pivot x coordinate scales by 100" );
+				CheckRelative( centimeterMediumPivot.y, 100.0*meterMediumPivot.y,
+					3e-14, "medium pivot y coordinate scales by 100" );
+				CheckRelative( centimeterMediumPivot.z, 100.0*meterMediumPivot.z,
+					3e-14, "medium pivot z coordinate scales by 100" );
+
+				Point3 meterSelected;
+				Point3 centimeterSelected;
+				Scalar meterSelectionPdf = 0.0;
+				Scalar centimeterSelectionPdf = 0.0;
+				const Scalar entryXi = 0.73;
+				const bool selected = meter->SampleEquiangularPivot(
+					meterPivots,entryXi,meterSelected,meterSelectionPdf) &&
+					centimeter->SampleEquiangularPivot(
+						centimeterPivots,entryXi,centimeterSelected,
+						centimeterSelectionPdf);
+				Check( selected, "paired scene-unit fixtures select the same pivot label" );
+				if( selected ) {
+					CheckRelative( centimeterSelectionPdf,meterSelectionPdf,3e-14,
+						"selected pivot label has the same probability" );
+					CheckRelative( centimeterSelected.x,100.0*meterSelected.x,3e-14,
+						"selected pivot x coordinate scales by 100" );
+					CheckRelative( centimeterSelected.y,100.0*meterSelected.y,3e-14,
+						"selected pivot y coordinate scales by 100" );
+					CheckRelative( centimeterSelected.z,100.0*meterSelected.z,3e-14,
+						"selected pivot z coordinate scales by 100" );
+					const Ray meterRay(Point3(0,0,-3),Vector3(0,0,1));
+					const Ray centimeterRay(Point3(0,0,-300),Vector3(0,0,1));
+					const EquiangularSampling::Sample meterSample =
+						EquiangularSampling::SampleDistance(
+							meterRay,meterSelected,0.0,600.0/100.0,true,0.37);
+					const EquiangularSampling::Sample centimeterSample =
+						EquiangularSampling::SampleDistance(
+							centimeterRay,centimeterSelected,0.0,600.0,true,0.37);
+					CheckRelative( centimeterSample.t,100.0*meterSample.t,5e-14,
+						"paired equiangular sample distance scales by 100" );
+					CheckRelative( centimeterSample.pdf*100.0,meterSample.pdf,5e-14,
+						"paired equiangular sample PDF carries the inverse-length Jacobian" );
+					const Scalar meterQuery = 2.25;
+					const Scalar meterDensity = meter->EquiangularDistancePdf(
+						meterPivots,meterRay,0.0,6.0,true,meterQuery);
+					const Scalar centimeterDensity = centimeter->EquiangularDistancePdf(
+						centimeterPivots,centimeterRay,0.0,600.0,true,
+						100.0*meterQuery);
+					CheckRelative( centimeterDensity*100.0,meterDensity,5e-14,
+						"complete fixed-U mixture density carries the inverse-length Jacobian" );
+				}
+			}
+		}
+		safe_release( meterCaster );
+		safe_release( centimeterCaster );
+		safe_release( meterJob );
+		safe_release( centimeterJob );
+	}
+
 	void TestIndependentPivotVectorAndPowerMixture()
 	{
 		std::cout << "TestIndependentPivotVectorAndPowerMixture" << std::endl;
@@ -1256,6 +1394,34 @@ namespace
 				pivots, 0.37, selectedPivot, selectedPdf );
 			Check( selected && selectedPdf > 0.0,
 				"combined power distribution selects a retained shared pivot" );
+
+			const Ray ray( Point3(0,0,-3), Vector3(0,0,1) );
+			const Scalar tMin = 0.0;
+			const Scalar tMax = 6.0;
+			const Scalar t = 2.25;
+			const Scalar expectedDensity =
+				lights->GetEquiangularPivotSelectionPdf(0) *
+					EquiangularSampling::Pdf(
+						ray, lights->GetPositionalLightPosition(0),
+						tMin, tMax, true, t ) +
+				lights->GetEquiangularPivotSelectionPdf(1) *
+					EquiangularSampling::Pdf(
+						ray, pivots.mediumPivots[0],
+						tMin, tMax, true, t );
+			CheckRelative( lights->EquiangularDistancePdf(
+				pivots, ray, tMin, tMax, true, t ), expectedDensity, 2e-15,
+				"fixed-U distance density sums every light and medium pivot entry" );
+
+			Scalar integral = 0.0;
+			const unsigned int bins = 20000;
+			const Scalar dt = (tMax-tMin)/static_cast<Scalar>(bins);
+			for( unsigned int i = 0; i < bins; ++i ) {
+				integral += lights->EquiangularDistancePdf(
+					pivots, ray, tMin, tMax, true,
+					tMin+(static_cast<Scalar>(i)+0.5)*dt ) * dt;
+			}
+			CheckRelative( integral, 1.0, 2e-7,
+				"combined fixed-U equiangular density is normalized" );
 		}
 		safe_release( caster );
 		safe_release( job );
@@ -1406,6 +1572,7 @@ int main()
 	TestLabeledMultiMediumDensity();
 	TestInactiveNestedLabelReturnsZero();
 	TestIndependentPivotVectorAndPowerMixture();
+	TestCombinedPivotSceneUnitInvariance();
 	TestOpaqueGeometricVisibility();
 	TestStandaloneEstimatorFormula();
 	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;

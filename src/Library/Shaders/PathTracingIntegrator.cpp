@@ -382,7 +382,9 @@ namespace
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
 
-		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS = pLS &&
+			pLS->IsEquiangularPivotDistributionValid() &&
+			pLS->GetEquiangularPivotEntryCount() > 0;
 		if( !useEquiangularMIS )
 		{
 			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
@@ -448,20 +450,15 @@ namespace
 			return out;
 		}
 
-		// Select one positional light proportional to exitance.
-		const unsigned int nPosLights = pLS->GetPositionalLightCount();
-		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
-		unsigned int selectedLight = 0;
-		{
-			const Scalar xiLight = sampler.Get1D();
-			Scalar cumulative = 0;
-			for( unsigned int i = 0; i < nPosLights; i++ )
-			{
-				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-				if( xiLight <= cumulative ) { selectedLight = i; break; }
-			}
+		VolumeEmissionPivotState pivots;
+		Point3 selectedPivot;
+		Scalar selectedPivotPdf = 0.0;
+		if( !pLS->SampleVolumeEmissionPivots(sampler,pivots) ||
+			!pLS->SampleEquiangularPivot(
+				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
+			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
+			return out;
 		}
-		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
 
 		const Scalar xiStrategy = sampler.Get1D();
 
@@ -476,14 +473,8 @@ namespace
 			if( out.scattered )
 			{
 				const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
-				Scalar pdf_eq = 0;
-				for( unsigned int i = 0; i < nPosLights; i++ )
-				{
-					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-					pdf_eq += pSel * EquiangularSampling::Pdf(
-						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, true, out.t );
-				}
+				const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+					pivots, ray, eqTNear, eqTFar, true, out.t );
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
 			}
@@ -503,7 +494,7 @@ namespace
 			// Unlike delta tracking, equiangular ONLY proposes scatter events.
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, true, sampler.Get1D() );
+					ray, selectedPivot, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -515,14 +506,8 @@ namespace
 				{
 					out.scattered = true;
 					const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
-					Scalar pdf_eq = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-						pdf_eq += pSel * EquiangularSampling::Pdf(
-							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, true, out.t );
-					}
+					const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+						pivots, ray, eqTNear, eqTFar, true, out.t );
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 					out.useExplicitThroughput = true;
 				}
@@ -569,7 +554,9 @@ namespace
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
 
-		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS = pLS &&
+			pLS->IsEquiangularPivotDistributionValid() &&
+			pLS->GetEquiangularPivotEntryCount() > 0;
 		if( !useEquiangularMIS )
 		{
 			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
@@ -632,19 +619,16 @@ namespace
 			return out;
 		}
 
-		const unsigned int nPosLights = pLS->GetPositionalLightCount();
-		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
-		unsigned int selectedLight = 0;
-		{
-			const Scalar xiLight = sampler.Get1D();
-			Scalar cumulative = 0;
-			for( unsigned int i = 0; i < nPosLights; i++ )
-			{
-				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-				if( xiLight <= cumulative ) { selectedLight = i; break; }
-			}
+		VolumeEmissionPivotState pivots;
+		Point3 selectedPivot;
+		Scalar selectedPivotPdf = 0.0;
+		if( !pLS->SampleVolumeEmissionPivots(sampler,pivots) ||
+			!pLS->SampleEquiangularPivot(
+				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
+			out.t = pMedium->SampleDistanceNM(
+				ray, maxDist, nm, sampler, out.scattered );
+			return out;
 		}
-		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
 
 		const Scalar xiStrategy = sampler.Get1D();
 
@@ -659,14 +643,8 @@ namespace
 			{
 				const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 					ray, out.t, true, maxDist, nm );
-				Scalar pdf_eq = 0;
-				for( unsigned int i = 0; i < nPosLights; i++ )
-				{
-					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-					pdf_eq += pSel * EquiangularSampling::Pdf(
-						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, true, out.t );
-				}
+				const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+					pivots, ray, eqTNear, eqTFar, true, out.t );
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.logCombinedPdf = PTLogBalancedDistanceMixture(
 					pMedium->EvalLogDistancePdfNM(
@@ -686,7 +664,7 @@ namespace
 		{
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, true, sampler.Get1D() );
+					ray, selectedPivot, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -699,14 +677,8 @@ namespace
 					out.scattered = true;
 					const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 						ray, out.t, true, maxDist, nm );
-					Scalar pdf_eq = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-						pdf_eq += pSel * EquiangularSampling::Pdf(
-							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, true, out.t );
-					}
+					const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+						pivots, ray, eqTNear, eqTFar, true, out.t );
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 					out.logCombinedPdf = PTLogBalancedDistanceMixture(
 						pMedium->EvalLogDistancePdfNM(

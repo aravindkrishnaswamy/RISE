@@ -32,6 +32,7 @@
 #include "../Utilities/IORStack.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
+#include "../Utilities/EquiangularSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2113,6 +2114,35 @@ bool LightSampler::SampleEquiangularPivot(
 	if( mediumIndex >= pivots.mediumPivots.size() ) return false;
 	pivot = pivots.mediumPivots[mediumIndex];
 	return true;
+}
+
+Scalar LightSampler::EquiangularDistancePdf(
+	const VolumeEmissionPivotState& pivots,
+	const Ray& ray,
+	const Scalar tMin,
+	const Scalar tMax,
+	const bool segmentBounded,
+	const Scalar t
+	) const
+{
+	if( !equiangularPivotDistributionValid ||
+		!equiangularPivotAlias.IsValid() ||
+		pivots.mediumPivots.size() != volumeEmissionMedia.size() ) return 0.0;
+
+	Scalar density = 0.0;
+	const unsigned int positionalCount = static_cast<unsigned int>(
+		positionalLightIndices.size() );
+	const unsigned int entryCount = equiangularPivotAlias.Size();
+	for( unsigned int i = 0; i < entryCount; ++i ) {
+		const Point3& pivot = i < positionalCount
+			? GetPositionalLightPosition(i)
+			: pivots.mediumPivots[i-positionalCount];
+		const Scalar selectionPdf = static_cast<Scalar>(
+			equiangularPivotAlias.Pdf(i) );
+		density += selectionPdf * EquiangularSampling::Pdf(
+			ray, pivot, tMin, tMax, segmentBounded, t );
+	}
+	return RISE::IsFiniteDouble(density) && density >= 0.0 ? density : 0.0;
 }
 
 Scalar LightSampler::GetEquiangularPivotPower(

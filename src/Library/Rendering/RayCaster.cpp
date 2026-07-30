@@ -942,13 +942,18 @@ bool RayCaster::CastRayImpl_(
 		// Reference: Kulla, Fajardo, "Importance Sampling Techniques
 		// for Path Tracing in Participating Media", EGSR 2012.
 		// ----------------------------------------------------------------
-		const bool useEquiangularMIS = (pLightSampler &&
-			pLightSampler->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS = pLightSampler &&
+			pLightSampler->IsEquiangularPivotDistributionValid() &&
+			pLightSampler->GetEquiangularPivotEntryCount() > 0;
+		VolumeEmissionPivotState equiangularPivots;
+		const bool equiangularPivotsReady = useEquiangularMIS &&
+			pLightSampler->SampleVolumeEmissionPivots(
+				mediumSampler, equiangularPivots );
 		Scalar combinedPdf = 0;		// Deterministic MIS denominator
 		bool useExplicitThroughput = false;
 		bool equiangularZeroContrib = false;	// True when equiangular strategy samples zero density
 
-		if( useEquiangularMIS )
+		if( equiangularPivotsReady )
 		{
 			// Equiangular sampling requires an explicitly bounded segment.  A
 			// surface hit bounds it directly; otherwise a bounded medium AABB may.
@@ -1011,24 +1016,19 @@ bool RayCaster::CastRayImpl_(
 			}
 			else
 			{
-				// Select one positional light proportional to exitance
-				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
-				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
-				unsigned int selectedLight = 0;
+				Point3 selectedPivot;
+				Scalar selectedPivotPdf = 0.0;
+				const bool selectedPivotOk = pLightSampler->SampleEquiangularPivot(
+					equiangularPivots, mediumSampler.Get1D(), selectedPivot,
+					selectedPivotPdf );
+				const Scalar xiStrategy = selectedPivotOk ? mediumSampler.Get1D() : 0.0;
+
+				if( !selectedPivotOk )
 				{
-					const Scalar xiLight = mediumSampler.Get1D();
-					Scalar cumulative = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
-						if( xiLight <= cumulative ) { selectedLight = i; break; }
-					}
+					t_m = pMedium->SampleDistance(
+						ray, maxDist, mediumSampler, scattered );
 				}
-				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
-
-				const Scalar xiStrategy = mediumSampler.Get1D();
-
-				if( xiStrategy < 0.5 )
+				else if( xiStrategy < 0.5 )
 				{
 					// Delta tracking strategy
 					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdf(
@@ -1045,15 +1045,8 @@ bool RayCaster::CastRayImpl_(
 						// comment for rationale.
 						const Scalar pdf_dt = pMedium->EvalDistancePdf(
 							ray, t_m, true, maxDist );
-						Scalar pdf_eq = 0;
-						for( unsigned int i = 0; i < nPosLights; i++ )
-						{
-							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-								/ totalPosExitance;
-							pdf_eq += pSel * EquiangularSampling::Pdf(
-								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, true, t_m );
-						}
+						const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+							equiangularPivots, ray, eqTNear, eqTFar, true, t_m );
 
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput = true;
@@ -1076,7 +1069,7 @@ bool RayCaster::CastRayImpl_(
 					// NOT fall through to the surface/transmission path.
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
-							ray, lightPos, eqTNear, eqTFar,
+							ray, selectedPivot, eqTNear, eqTFar,
 							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
@@ -1091,15 +1084,8 @@ bool RayCaster::CastRayImpl_(
 
 							const Scalar pdf_dt = pMedium->EvalDistancePdf(
 								ray, t_m, true, maxDist );
-							Scalar pdf_eq = 0;
-							for( unsigned int i = 0; i < nPosLights; i++ )
-							{
-								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-									/ totalPosExitance;
-								pdf_eq += pSel * EquiangularSampling::Pdf(
-									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, true, t_m );
-							}
+							const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+								equiangularPivots, ray, eqTNear, eqTFar, true, t_m );
 
 							combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 							useExplicitThroughput = true;
@@ -1708,14 +1694,19 @@ bool RayCaster::CastRayNMImpl_(
 		Scalar t_m = 0;
 
 		// Equiangular MIS (spectral variant, see RGB path for details)
-		const bool useEquiangularMIS_NM = (pLightSampler &&
-			pLightSampler->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS_NM = pLightSampler &&
+			pLightSampler->IsEquiangularPivotDistributionValid() &&
+			pLightSampler->GetEquiangularPivotEntryCount() > 0;
+		VolumeEmissionPivotState equiangularPivots_NM;
+		const bool equiangularPivotsReady_NM = useEquiangularMIS_NM &&
+			pLightSampler->SampleVolumeEmissionPivots(
+				mediumSampler, equiangularPivots_NM );
 		Scalar combinedPdf_NM = 0;
 		bool useExplicitThroughput_NM = false;
 		bool equiangularZeroContrib_NM = false;
 		Scalar logCombinedPdf_NM = 0.0;
 
-		if( useEquiangularMIS_NM )
+		if( equiangularPivotsReady_NM )
 		{
 			bool equiangularSegmentBounded = bHit;
 			Scalar eqTNear = 0;
@@ -1767,23 +1758,19 @@ bool RayCaster::CastRayNMImpl_(
 			}
 			else
 			{
-				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
-				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
-				unsigned int selectedLight = 0;
+				Point3 selectedPivot;
+				Scalar selectedPivotPdf = 0.0;
+				const bool selectedPivotOk = pLightSampler->SampleEquiangularPivot(
+					equiangularPivots_NM, mediumSampler.Get1D(), selectedPivot,
+					selectedPivotPdf );
+				const Scalar xiStrategy = selectedPivotOk ? mediumSampler.Get1D() : 0.0;
+
+				if( !selectedPivotOk )
 				{
-					const Scalar xiLight = mediumSampler.Get1D();
-					Scalar cumulative = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
-						if( xiLight <= cumulative ) { selectedLight = i; break; }
-					}
+					t_m = pMedium->SampleDistanceNM(
+						ray, maxDist, nm, mediumSampler, scattered );
 				}
-				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
-
-				const Scalar xiStrategy = mediumSampler.Get1D();
-
-				if( xiStrategy < 0.5 )
+				else if( xiStrategy < 0.5 )
 				{
 					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdfNM(
 						ray, maxDist, nm, mediumSampler );
@@ -1794,15 +1781,8 @@ bool RayCaster::CastRayNMImpl_(
 					{
 						const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 							ray, t_m, true, maxDist, nm );
-						Scalar pdf_eq = 0;
-						for( unsigned int i = 0; i < nPosLights; i++ )
-						{
-							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-								/ totalPosExitance;
-							pdf_eq += pSel * EquiangularSampling::Pdf(
-								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, true, t_m );
-						}
+						const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+							equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						logCombinedPdf_NM = LogBalancedDistanceMixture(
 							pMedium->EvalLogDistancePdfNM(
@@ -1820,7 +1800,7 @@ bool RayCaster::CastRayNMImpl_(
 				{
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
-							ray, lightPos, eqTNear, eqTFar,
+							ray, selectedPivot, eqTNear, eqTFar,
 							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
@@ -1835,15 +1815,8 @@ bool RayCaster::CastRayNMImpl_(
 
 							const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 								ray, t_m, true, maxDist, nm );
-							Scalar pdf_eq = 0;
-							for( unsigned int i = 0; i < nPosLights; i++ )
-							{
-								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-									/ totalPosExitance;
-								pdf_eq += pSel * EquiangularSampling::Pdf(
-									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, true, t_m );
-							}
+							const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+								equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 
 							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 							logCombinedPdf_NM = LogBalancedDistanceMixture(

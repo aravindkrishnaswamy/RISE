@@ -496,6 +496,19 @@ namespace RISE
 				Scalar& selectionPdf
 				) const;
 
+			/// Evaluate the complete positional-light/medium equiangular distance
+			/// mixture conditioned on the already-drawn medium pivot vector U.
+			/// This is the one density used by both distance-sampling branches and,
+			/// later, by both sides of the volume-emission family MIS partition.
+			Scalar EquiangularDistancePdf(
+				const VolumeEmissionPivotState& pivots,
+				const Ray& ray,
+				const Scalar tMin,
+				const Scalar tMax,
+				const bool segmentBounded,
+				const Scalar t
+				) const;
+
 			unsigned int GetEquiangularPivotEntryCount() const
 			{
 				return equiangularPivotAlias.Size();
