@@ -534,8 +534,12 @@ int main()
 		             worstHecht, measMin, measMax, lo, hi );
 
 		// Grazing-angle conditioning: as θ -> 90° the result must stay
-		// finite, TMM must track Airy, and R -> 1.  (Exactly 90° is a
-		// documented degenerate input -- η_p = N/0 -- and is NOT sampled.)
+		// finite, TMM must track Airy, and R -> 1.  (Exactly 90° USED to be a
+		// documented degenerate input -- η_p = N/0.  Since the 2026-07-29
+		// reformulation it returns a finite R = 1 on every topology measured
+		// EXCEPT a stack whose film index equals the ambient's, where that film
+		// is itself at its own critical angle at grazing.  Still NOT sampled
+		// here -- see the residual note in thinfilm/TmmReference.h.)
 		const Stack g = MakeSingleFilmStack(
 			MakeIndex( 1.0, 0.0 ), MakeIndex( 2.40, 0.0 ), 120.0, MakeIndex( 2.74, 3.81 ) );
 		double worstGraz = 0.0;
@@ -551,6 +555,145 @@ int main()
 		Check( worstGraz < 1e-9, "grazing: TMM == Airy approaching 90 deg" );
 		Check( Rlast > 0.999, "grazing: R -> 1 as theta -> 90 deg" );
 		std::printf( "  grazing worst |TMM-Airy| = %.3e ; R(89.999 deg) = %.6f\n", worstGraz, Rlast );
+	}
+
+	// ------------------------------------------------------------------
+	// [8/8] Degenerate cos == 0 geometries (2026-07-30).
+	//
+	// These pin behaviour that the 2026-07-29/30 reformulation CLAIMED but
+	// that nothing exercised.  Before the sinc-based layer matrix every case
+	// below was NaN; the claims were made from one-off probes, which is not a
+	// regression guard.  All three sub-blocks are RED against the pre-fix
+	// evaluator.
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[8/8] Degenerate cos == 0 geometries (exactly grazing / film at own critical)\n" );
+
+		// (a) EXACTLY theta = 90 deg.  Previously documented as a permanent
+		// degeneracy ("R_p is NaN at 90 deg precisely").  It must now be
+		// finite with R -> 1 for every topology, INCLUDING a film whose index
+		// equals the ambient's -- that film is itself at its own critical
+		// angle at grazing, which is the case that reopened the degeneracy.
+		{
+			const double h = M_PI / 2.0;
+			struct { const char* tag; Stack st; } cases[] = {
+				{ "bare glass->air",
+				  MakeBareStack( MakeIndex(1.5,0.0), MakeIndex(1.0,0.0) ) },
+				{ "bare air->glass",
+				  MakeBareStack( MakeIndex(1.0,0.0), MakeIndex(1.5,0.0) ) },
+				{ "air/oxide/glass",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(2.0,0.0), 200.0, MakeIndex(1.5,0.0) ) },
+				{ "glass/airgap/glass (FTIR)",
+				  MakeSingleFilmStack( MakeIndex(1.5,0.0), MakeIndex(1.0,0.0), 200.0, MakeIndex(1.5,0.0) ) },
+				{ "air/absorbing film/glass",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(2.0,3.0), 100.0, MakeIndex(1.5,0.0) ) },
+				{ "air/AIR-INDEX film/glass (film at own crit)",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(1.0,0.0), 120.0, MakeIndex(1.5,0.0) ) },
+			};
+			for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
+				const ReflectanceResult t = TmmReflectance( cases[i].st, 550.0, h );
+				Check( PhysicallyValid( t ), "exactly 90 deg: TMM finite and in [0,1]" );
+				Check( std::fabs( t.Unpolarized() - 1.0 ) < 1e-4,
+				       "exactly 90 deg: R -> 1" );
+			}
+		}
+
+		// (b) A FILM sitting exactly at ITS OWN critical angle.  This is the
+		// geometry that was NaN in BOTH evaluators, by two different
+		// mechanisms (eta_p = Inf for p; -i sinD/eta = 0/0 for s).  Require
+		// finite, in-range, AND continuous with the two-sided limit -- a
+		// clamp would satisfy finiteness but not continuity.
+		{
+			struct { const char* tag; double n0, n1, ns; } cs[] = {
+				{ "glass/airgap/glass", 1.5, 1.0, 1.5 },
+				{ "oil/MgF2/glass",     1.5, 1.38, 1.5 },
+				{ "glass/airgap/metal", 1.7, 1.0, 1.5 },
+			};
+			double worstJump = 0.0;
+			for( size_t i = 0; i < sizeof(cs)/sizeof(cs[0]); ++i ) {
+				// cos of the incidence angle at which the FILM is critical:
+				// n0 sin(theta) == n1  =>  cos = sqrt(1 - (n1/n0)^2)
+				const double ratio = cs[i].n1 / cs[i].n0;
+				const double cosC  = std::sqrt( 1.0 - ratio * ratio );
+				const double thC   = std::acos( cosC );
+				const Stack st = MakeSingleFilmStack(
+					MakeIndex( cs[i].n0, 0.0 ), MakeIndex( cs[i].n1, 0.0 ),
+					200.0, MakeIndex( cs[i].ns, 0.0 ) );
+
+				const ReflectanceResult at = TmmReflectance( st, 550.0, thC );
+				Check( PhysicallyValid( at ),
+				       "film at own critical angle: TMM finite and in [0,1]" );
+
+				// Continuity: the value at the singular point must sit between
+				// the two one-sided limits, not merely be finite.
+				const ReflectanceResult lo = TmmReflectance( st, 550.0, thC - 1e-9 );
+				const ReflectanceResult hi = TmmReflectance( st, 550.0, thC + 1e-9 );
+				Check( PhysicallyValid( lo ) && PhysicallyValid( hi ),
+				       "film at own critical angle: neighbourhood finite" );
+				const double jump =
+					std::max( std::fabs( at.Unpolarized() - lo.Unpolarized() ),
+					          std::fabs( at.Unpolarized() - hi.Unpolarized() ) );
+				worstJump = std::max( worstJump, jump );
+				Check( jump < 1e-6,
+				       "film at own critical angle: CONTINUOUS with two-sided limit" );
+
+				// The Airy CLOSED FORM is genuinely undefined here -- 0/0,
+				// because r01 == -r1s and delta == 0 make both the numerator
+				// and the denominator vanish, and the cancellation is
+				// structural (no factoring removes it; the true limit depends
+				// on d through sinc).  Pin that as a PROPERTY of the closed
+				// form, because it is exactly why production pairs Airy with
+				// the TMM instead of using Airy alone: see
+				// ThinFilm.h SingleFilmReflectanceForPol, and the
+				// production-side finiteness assertion in
+				// ThinFilmProductionTest.
+				const ReflectanceResult ay = AiryReflectance( st, 550.0, thC );
+				Check( !PhysicallyValid( ay ),
+				       "film at own critical angle: Airy CLOSED FORM is undefined (0/0) "
+				       "-- documented; production pairs it with the TMM" );
+			}
+			std::printf( "  worst |R(crit) - R(crit +/- 1e-9)| = %.3e\n", worstJump );
+		}
+
+		// (c) Pin the p-polarization sign of InterfaceReflection.
+		//
+		// The Airy<->TMM agreement test CANNOT catch this: R = |r|^2, and
+		// negating BOTH r01 and r1s leaves the Airy denominator
+		// (1 + r01 r1s phi) invariant, so a whole-branch p sign flip passes
+		// 6086/6086 (verified by mutation during review).  The reformulation
+		// introduced that degree of freedom, so pin it directly against the
+		// closed-form Fresnel amplitude, sign included.
+		{
+			const double n0 = 1.0, n1 = 1.5;
+			double worstS = 0.0, worstP = 0.0;
+			for( size_t ti = 0; ti < sizeof(kThetaDeg)/sizeof(kThetaDeg[0]); ++ti ) {
+				const double th = kThetaDeg[ti] * kDeg;
+				const double c0 = std::cos( th );
+				const double s1 = ( n0 / n1 ) * std::sin( th );
+				const double c1 = std::sqrt( 1.0 - s1 * s1 );
+
+				// Textbook amplitude coefficients in the SAME (Macleod
+				// admittance) convention the evaluator uses.
+				const double rs = ( n0 * c0 - n1 * c1 ) / ( n0 * c0 + n1 * c1 );
+				const double rp = ( n0 * c1 - n1 * c0 ) / ( n0 * c1 + n1 * c0 );
+
+				const Complex gs = detail::InterfaceReflection(
+					MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolS );
+				const Complex gp = detail::InterfaceReflection(
+					MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolP );
+
+				worstS = std::max( worstS, std::fabs( gs.real() - rs ) );
+				worstP = std::max( worstP, std::fabs( gp.real() - rp ) );
+				Check( std::fabs( gs.imag() ) < 1e-15 && std::fabs( gp.imag() ) < 1e-15,
+				       "p-sign pin: lossless interface gives real amplitudes" );
+			}
+			Check( worstS < 1e-14, "p-sign pin: s amplitude matches closed form (SIGNED)" );
+			Check( worstP < 1e-14, "p-sign pin: p amplitude matches closed form (SIGNED)" );
+			std::printf( "  signed amplitude match: worst |s| = %.3e, worst |p| = %.3e\n",
+			             worstS, worstP );
+		}
 	}
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";

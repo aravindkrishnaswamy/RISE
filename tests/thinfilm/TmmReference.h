@@ -79,13 +79,20 @@
 //        frustrated-TIR gap and an absorbing film, and at exactly the
 //        critical angle for both a bare interface and a stack with a film.
 //        R -> 1 is the correct limit in every one of those cases.
-//        RESIDUAL: a FILM sitting exactly at ITS OWN critical angle is
-//        still NaN (measured) -- the layer loop's `etaj` is the one
-//        admittance not carried pre-scaled, and clearing it needs a
-//        running scale factor threaded through the matrix product.  Scope:
-//        this N-layer path only; the single-film Airy form in
-//        AiryReference.h has no `etaj` and is unaffected.  No test
-//        exercises that geometry.  Prior to the 2026-07-29
+//        RESIDUAL (characterisation CORRECTED 2026-07-30): any medium
+//        OTHER than the ambient/substrate endpoints with cos == 0 exactly
+//        still yields NaN -- a FILM at ITS OWN critical angle, and also at
+//        EXACTLY grazing when a film index equals the ambient's.  So the
+//        theta = 90 deg closure above does NOT generalise to every stack.
+//        BOTH forms are affected, by different mechanisms: here, `etaj` is
+//        infinite for p (N/0) but ZERO for s (N*0), the s NaN being
+//        a01 = -i sinD/etaj = 0/0 -- so pre-scaling `etaj` is a no-op for
+//        s.  The Airy form in AiryReference.h NaNs too: at cos1 == 0,
+//        r01 == -r1s and delta == 0 make its quotient 0/0.  The fix is
+//        NOT a running scale factor (that claim was wrong): write the
+//        off-diagonals as products with sinc(delta) = sin(delta)/delta,
+//        which is finite for both polarizations at cos == 0.  No test
+//        exercises the geometry yet.  Prior to the 2026-07-29
 //        reformulation θ = 90° and the critical angle were BOTH NaN; the
 //        critical-angle case was a live ThinFilmTMMTest failure once
 //        -fno-finite-math-only stopped the optimiser from folding it.
@@ -163,15 +170,6 @@ namespace RISE
 				return PickForwardCos( N, root );
 			}
 
-			//! Tilted optical admittance for the chosen polarization.
-			//!   η_s = N cosθ ;  η_p = N / cosθ
-			inline Complex Admittance( const Complex& N, const Complex& cosTheta, Polarization pol )
-			{
-				if( pol == ePolS ) {
-					return N * cosTheta;
-				}
-				return N / cosTheta;
-			}
 
 			//! Amplitude reflection coefficient at an a -> b interface, in a form
 			//! that never divides by cosθ:
@@ -189,6 +187,19 @@ namespace RISE
 				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
 				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
 				return ( a - b ) / ( a + b );
+			}
+
+			//! sin(z)/z with its REMOVABLE singularity at z = 0 evaluated
+			//! analytically (the limit is exactly 1).  Not a threshold fudge: below
+			//! the cut the Taylor series IS the exact double value (first omitted
+			//! term z^6/5040 < 1e-27 at |z| = 1e-4), so both branches are exact.
+			inline Complex Sinc( const Complex& z )
+			{
+				if( std::abs( z ) < 1e-4 ) {
+					const Complex z2 = z * z;
+					return Complex( 1.0, 0.0 ) - z2 / 6.0 + ( z2 * z2 ) / 120.0;
+				}
+				return std::sin( z ) / z;
 			}
 
 			//! Polarization scale that clears the 1/cosθ in η_p.  η * scale is
@@ -242,22 +253,27 @@ namespace RISE
 				const double dj = stack.films[j].thickness_nm;
 
 				const Complex cosj = CosThetaInMedium( Nj, sinInvariant );
-				const Complex etaj = Admittance( Nj, cosj, pol );
-
-				// Phase thickness δj = (2π/λ) Nj dj cosθj.
-				const Complex delta = Complex( twoPi * dj / lambda_nm, 0.0 ) * Nj * cosj;
-
-				const Complex cosD = std::cos( delta );
-				const Complex sinD = std::sin( delta );
+				// Layer matrix written so NO term divides by cos.  sind = delta*sinc(delta),
+				// and delta = kd*Nj*cosj carries exactly ONE factor of cos:
+				//   s (eta = N cos):  delta/eta = kd         delta*eta = kd N^2 cos^2
+				//   p (eta = N/cos):  delta/eta = kd cos^2   delta*eta = kd N^2
+				// Finite for BOTH polarizations at cos == 0 (a film at its own critical
+				// angle), where the old sind/eta form gave Inf (p) or 0/0 (s).
+				const double  kd = twoPi * dj / lambda_nm;
+				const Complex delta = Complex( kd, 0.0 ) * Nj * cosj;
+				const Complex cosD  = std::cos( delta );
+				const Complex sincD = Sinc( delta );
+				const Complex cos2  = cosj * cosj;
+				const Complex Nj2   = Nj * Nj;
+				const Complex deltaOverEta  = ( pol == ePolS ) ? Complex( kd, 0.0 )
+				                                              : Complex( kd, 0.0 ) * cos2;
+				const Complex deltaTimesEta = ( pol == ePolS ) ? Complex( kd, 0.0 ) * Nj2 * cos2
+				                                              : Complex( kd, 0.0 ) * Nj2;
 				const Complex negI( 0.0, -1.0 );
 
-				// Layer (Abelès characteristic) matrix Mj, in the e^{+iδ}-
-				// forward / e^{-iωt} convention:
-				//   Mj = [[ cosδ,        -i sinδ / η ],
-				//         [ -i η sinδ,    cosδ       ]]
 				const Complex a00 = cosD;
-				const Complex a01 = negI * sinD / etaj;
-				const Complex a10 = negI * etaj * sinD;
+				const Complex a01 = negI * sincD * deltaOverEta;
+				const Complex a10 = negI * sincD * deltaTimesEta;
 				const Complex a11 = cosD;
 
 				// M <- M * Mj (right-multiply: ambient-side layers applied

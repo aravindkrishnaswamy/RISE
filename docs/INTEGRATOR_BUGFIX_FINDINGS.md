@@ -616,15 +616,59 @@ purpose (keeping the Snell invariant strictly below 1, a representability
 property of `SnellInvariant` itself). The clamp was **not** removed; that would
 be an unrelated behaviour change.
 
-**Known residual (scoped):** a *film* sitting exactly at its own critical angle
-still produces NaN (measured) — `etaj` in the layer loop is the one admittance
-not carried pre-scaled, and clearing it needs a running scale factor threaded
-through the matrix product. **This affects only the N-layer TMM path**
-(`ReflectanceConductorStack` → `DielectricSPF`'s `ar_layer` multi-layer
-coatings). The single-film **Airy** path used by GGX `fresnel_mode thinfilm` has
-no `etaj` and is unaffected — so no shipped single-film thin-film material can
-hit it. No test exercises that geometry; the residual is commented at the line
-that carries it in [ThinFilm.h](../src/Library/Utilities/ThinFilm.h). The pre-existing
+**Known residual — characterisation CORRECTED 2026-07-30 (the version of this
+paragraph written on 2026-07-29 was wrong in four ways; the numerical-review
+lens caught all four).**
+
+The residual class is **any medium other than the ambient/substrate endpoints
+having cos θ == 0 exactly**. That happens when a *film* sits at its own critical
+angle, and *also at exactly grazing* whenever a film index equals the ambient's
+— so the θ = 90° closure claimed above does **not** generalise to every stack.
+
+1. **Scope: BOTH production paths are affected, not just the N-layer one.** The
+   earlier text said the single-film Airy path used by GGX `fresnel_mode
+   thinfilm` "has no `etaj` and is unaffected — so no shipped single-film
+   thin-film material can hit it." **That was false, and it was a false SAFETY
+   claim about a shipping path.** Verified directly against
+   `ThinFilm::ReflectanceConductor` (the entry point `GGXBRDF.cpp` /
+   `GGXSPF.cpp` call): glass/air-gap/glass at the film's own critical angle
+   returns **NaN**. Different mechanism — at `cos1 == 0`,
+   `InterfaceReflection` gives `r01 == −r1s` and `δ == 0`, so the Airy quotient
+   is **0/0**. The NaN then survives the `[0,1]` guards (`NaN < 0` and
+   `NaN > 1` are both false) and reaches the BRDF; via
+   `ReflectanceConductorRGBSpectral` one bad wavelength poisons the whole XYZ
+   accumulation.
+2. **Mechanism is polarization-dependent.** For p, `etaj` is infinite (`N/0`);
+   for s it is **zero** (`N*0`) and the NaN is `a01 = −i·sinδ/etaj = 0/0`. So
+   the "pre-scale `etaj`" remedy the earlier text prescribed is a **no-op for
+   s** and would have shipped a half-fix.
+3. **"Clearing it needs a running scale factor threaded through the matrix
+   product" was false.** A local reformulation exists: write the off-diagonals
+   as products with `sinc(δ) = sin δ / δ` rather than quotients. `δ` carries
+   exactly one factor of `cos`, so `δ/η` and `δ·η` are both finite for **both**
+   polarizations at `cos == 0` — no division by `cos`, no running scale.
+   Validated in review against a scratch copy: `ThinFilmTMMTest` 6086/6086
+   unchanged, worst deviation from the shipped form **8.9e-16**, and the
+   degenerate geometries become finite *and continuous* with their two-sided
+   limits to 12 digits. **NOT YET APPLIED** — see the go-forward note below.
+4. **Reachability** is narrow but nonzero: a `nextafter` scan found 3 NaN among
+   8001 consecutive `cosI` doubles around the critical value, and `ambientIOR`
+   is not pinned to 1 for nested dielectrics. No test exercises the geometry.
+
+**Undisclosed regression found by the same review (now disclosed):** the
+pre-existing thick-absorber overflow caveat is **NOT** unchanged by this work,
+and the "verified finite at 10 µm and NaN from 50 µm, exactly the documented
+threshold" line was a two-point check that could not resolve the cliff. By
+80-step bisection the cliff is at **~10.25 µm**, not 50 µm, and it is
+**flag-dependent**: under the shipped flags `-ffast-math` implies
+`-fcx-limited-range`, so `std::complex` division uses the unscaled `c²+d²`, and
+the new form's final denominator `|η0·B ± C|` is larger than the old form's
+`|B|` by roughly a factor `|η0|`. A random hunt over 800k stacks found **37
+cases where the NEW form is NaN and the OLD form was finite** (none the other
+way); under strict IEEE both give 0. All 37 sit inside the already-documented
+thick-absorber regime and the shipped single-film path uses Airy, so this is a
+bounded headroom loss rather than a new production defect — but it is a real
+cost of the reformulation and was previously claimed as "did not change it". The pre-existing
 thick-absorber overflow caveat (matrix entries grow like e^{|Im δ|}; NaN from
 d ≳ 50 µm at k = 3) is **unchanged** by this work — verified finite at 10 µm
 and NaN at 50 µm, exactly the documented threshold.

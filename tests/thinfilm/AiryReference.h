@@ -57,7 +57,7 @@
 #include <cassert>
 
 #include "ThinFilmStack.h"
-#include "TmmReference.h"		// reuse detail::CosThetaInMedium / Admittance / Polarization
+#include "TmmReference.h"		// reuse detail::CosThetaInMedium / InterfaceReflection / Polarization
 
 namespace RISE
 {

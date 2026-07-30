@@ -415,6 +415,61 @@ int main()
 		std::printf( "  checked %d points; worst |stack - airy| = %.3e (tol %.0e)\n", n, worst, 1e-11 );
 	}
 
+	// ------------------------------------------------------------------
+	// Degenerate cos == 0: the SHIPPED single-film path must stay finite
+	// (2026-07-30).
+	//
+	// ThinFilm::ReflectanceConductor is what GGX `fresnel_mode thinfilm`
+	// calls (GGXBRDF.cpp / GGXSPF.cpp).  At exactly the FILM's own critical
+	// angle the Airy closed form it used is 0/0, and the resulting NaN
+	// survives the [0,1] clamps (NaN < 0 and NaN > 1 are both false) and
+	// reaches the BRDF -- via the RGB-spectral integral one bad wavelength
+	// poisons the whole XYZ accumulation.  This was live until 2026-07-30 and
+	// was masked before that by -ffast-math folding the finiteness guards.
+	//
+	// RED against the pre-fix evaluator (returns nan for all three stacks).
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[Degenerate] shipped single-film path at a film's own critical angle\n" );
+		struct { const char* tag; double n0, n1, ns; } cs[] = {
+			{ "glass/airgap/glass", 1.5, 1.00, 1.5 },
+			{ "oil/MgF2/glass",    1.5, 1.38, 1.5 },
+			{ "glass/airgap/metal",1.7, 1.00, 1.5 },
+		};
+		double worstJump = 0.0;
+		for( size_t i = 0; i < sizeof(cs)/sizeof(cs[0]); ++i ) {
+			const double ratio = cs[i].n1 / cs[i].n0;
+			const double cosC  = std::sqrt( 1.0 - ratio * ratio );
+
+			const RISE::Scalar R = RISE::ThinFilm::ReflectanceConductor(
+				cosC, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+			Check( std::isfinite( R ), "shipped path finite at film's own critical angle" );
+			Check( R >= 0.0 && R <= 1.0, "shipped path in [0,1] at film's own critical angle" );
+
+			// Continuity, not just finiteness -- a clamp would pass the above.
+			const RISE::Scalar lo = RISE::ThinFilm::ReflectanceConductor(
+				cosC - 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+			const RISE::Scalar hi = RISE::ThinFilm::ReflectanceConductor(
+				cosC + 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+			const double jump = std::max( std::fabs( R - lo ), std::fabs( R - hi ) );
+			worstJump = std::max( worstJump, jump );
+			Check( jump < 1e-6, "shipped path CONTINUOUS across the film's critical angle" );
+		}
+
+		// The pairing must not cost thick-absorber headroom: Airy has to stay
+		// the PRIMARY form (the TMM overflows from d ~ 2e4 nm at k = 3, where
+		// Airy is still finite past 1e6 nm), so a thick absorbing film must
+		// still evaluate finite.
+		for( double d = 1e3; d <= 1e6; d *= 10.0 ) {
+			const RISE::Scalar R = RISE::ThinFilm::ReflectanceConductor(
+				0.866, 550.0, 1.0, 0.0, 2.0, 3.0, d, 1.5, 0.0 );
+			Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
+			       "thick absorbing film still finite (Airy remains the primary form)" );
+		}
+		std::printf( "  worst |R(crit) - R(crit +/- 1e-9)| = %.3e ; thick-absorber headroom intact\n",
+		             worstJump );
+	}
+
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
 	return ( s_fail == 0 ) ? 0 : 1;
 }

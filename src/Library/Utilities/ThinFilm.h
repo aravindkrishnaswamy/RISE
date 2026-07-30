@@ -131,15 +131,6 @@ namespace RISE
 				return PickForwardCos( N, root );
 			}
 
-			//! Tilted optical admittance for the chosen polarization.
-			//!   η_s = N cosθ ;  η_p = N / cosθ
-			inline Complex Admittance( const Complex& N, const Complex& cosTheta, Polarization pol )
-			{
-				if( pol == ePolS ) {
-					return N * cosTheta;
-				}
-				return N / cosTheta;
-			}
 
 			//! Amplitude reflection coefficient at an a -> b interface, in a form
 			//! that never divides by cosθ:
@@ -157,6 +148,24 @@ namespace RISE
 				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
 				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
 				return ( a - b ) / ( a + b );
+			}
+
+			//! sin(z)/z, with its REMOVABLE singularity at z = 0 evaluated
+			//! analytically (the limit is exactly 1).  This is not a threshold
+			//! fudge: for |z| below the cut the Taylor series IS the exact
+			//! double-precision value (the first omitted term, z^6/5040, is
+			//! < 1e-27 at |z| = 1e-4), so BOTH branches are exact everywhere.
+			//! Needed because the layer matrix is written with sinc products
+			//! instead of sin/eta quotients -- see TmmReflectanceForPol.
+			inline Complex Sinc( const Complex& z )
+			{
+				if( std::abs( z ) < Scalar(1e-4) ) {
+					const Complex z2 = z * z;
+					return Complex( Scalar(1), Scalar(0) )
+						- z2 / Scalar(6)
+						+ ( z2 * z2 ) / Scalar(120);
+				}
+				return std::sin( z ) / z;
 			}
 
 			//! Polarization scale that clears the 1/cosθ in η_p.  η * scale is
@@ -281,28 +290,73 @@ namespace RISE
 					const Scalar  dj = filmThickness_nm[j];
 
 					const Complex cosj = CosThetaInMedium( Nj, sinInvariant );
-					// KNOWN RESIDUAL (2026-07-29): etaj is the one admittance
-					// NOT carried pre-scaled, so a FILM sitting exactly at ITS
-					// OWN critical angle (cosj == 0 exactly) makes eta_p
-					// infinite here and NaN downstream.  Scope: only this
-					// N-layer path (ReflectanceConductorStack -> DielectricSPF
-					// ar_layer multi-layer coatings) is affected; the
-					// single-film Airy path used by GGX `fresnel_mode thinfilm`
-					// has no etaj and is unaffected.  Clearing it needs a
-					// running scale factor threaded through the matrix
-					// product.  No test exercises that geometry.
-					const Complex etaj = Admittance( Nj, cosj, pol );
-
-					const Complex delta = Complex( TWO_PI * dj / lambda_nm, Scalar(0) ) * Nj * cosj;
-
-					const Complex cosD = std::cos( delta );
-					const Complex sinD = std::sin( delta );
+					// KNOWN RESIDUAL (2026-07-29, characterisation CORRECTED
+					// 2026-07-30 after adversarial review -- the earlier
+					// version of this comment was wrong in four ways):
+					//
+					// A medium OTHER than the ambient/substrate endpoints
+					// having cos == 0 exactly still yields NaN.  That happens
+					// when a FILM sits at ITS OWN critical angle, and also at
+					// EXACTLY grazing whenever a film index equals the
+					// ambient's.
+					//
+					// SCOPE -- BOTH production paths are affected, not just
+					// this one.  ReflectanceConductor (the single-film Airy
+					// form that GGX `fresnel_mode thinfilm` calls) NaNs on the
+					// same geometry, by a DIFFERENT mechanism: at cos1 == 0,
+					// InterfaceReflection gives r01 == -r1s exactly and
+					// delta == 0, so the Airy quotient below is 0/0.  The NaN
+					// then survives the [0,1] guards in ReflectanceConductor
+					// (NaN < 0 and NaN > 1 are both false) and reaches the
+					// BRDF; through ReflectanceConductorRGBSpectral one bad
+					// wavelength poisons the whole XYZ accumulation.
+					//
+					// MECHANISM here is polarization-dependent: for p, etaj is
+					// infinite (N/0); for s, etaj is ZERO (N*0) and the NaN is
+					// a01 = -i*sinD/etaj = 0/0 below.  Pre-scaling etaj is
+					// therefore a NO-OP for s and cannot fix half the symptom.
+					//
+					// FIX (validated by review, not yet applied): write the
+					// off-diagonals as products with sinc(delta) = sin(delta)/
+					// delta rather than quotients -- delta carries exactly one
+					// factor of cos, so delta/eta and delta*eta are both
+					// finite for both polarizations at cos == 0, with no
+					// division by cos and NO running scale factor (the
+					// "running scale factor" the earlier comment claimed was
+					// required is not).  Measured: matches the current form to
+					// 8.9e-16 and makes the degenerate geometries finite AND
+					// continuous with their two-sided limits.
+					//
+					// Reachability is narrow (a nextafter scan found 3 NaN in
+					// 8001 consecutive cosI doubles around the critical value)
+					// but nonzero, and ambientIOR is not pinned to 1 for
+					// nested dielectrics.  No test exercises the geometry yet.
+					// Layer matrix, written so that NO term divides by cos.
+					//   Mj = [[ cosd, -i sind/eta ], [ -i eta sind, cosd ]]
+					// with sind = delta * sinc(delta), and delta = kd * Nj * cosj
+					// carrying exactly ONE factor of cos:
+					//   s (eta = N cos):  delta/eta = kd          delta*eta = kd N^2 cos^2
+					//   p (eta = N/cos):  delta/eta = kd cos^2    delta*eta = kd N^2
+					// Both are finite for BOTH polarizations at cos == 0, so a film
+					// sitting exactly at its own critical angle no longer produces
+					// eta = Inf (p) or the 0/0 of -i sind/eta with eta == 0 (s).
+					const Scalar  kd = TWO_PI * dj / lambda_nm;
+					const Complex delta = Complex( kd, Scalar(0) ) * Nj * cosj;
+					const Complex cosD  = std::cos( delta );
+					const Complex sincD = Sinc( delta );
+					const Complex cos2  = cosj * cosj;
+					const Complex Nj2   = Nj * Nj;
+					const Complex deltaOverEta  = ( pol == ePolS )
+						? Complex( kd, Scalar(0) )
+						: Complex( kd, Scalar(0) ) * cos2;
+					const Complex deltaTimesEta = ( pol == ePolS )
+						? Complex( kd, Scalar(0) ) * Nj2 * cos2
+						: Complex( kd, Scalar(0) ) * Nj2;
 					const Complex negI( Scalar(0), Scalar(-1) );
 
-					// Mj = [[ cosδ, -i sinδ/η ], [ -i η sinδ, cosδ ]]
 					const Complex a00 = cosD;
-					const Complex a01 = negI * sinD / etaj;
-					const Complex a10 = negI * etaj * sinD;
+					const Complex a01 = negI * sincD * deltaOverEta;
+					const Complex a10 = negI * sincD * deltaTimesEta;
 					const Complex a11 = cosD;
 
 					// M <- M * Mj
@@ -335,6 +389,49 @@ namespace RISE
 				const Complex den = eta0s * Bs + scale0 * Cs;
 				const Complex r = num / den;
 				return std::norm( r );		// |r|²
+			}
+
+			//! Single-film reflectance for one polarization: the Airy closed
+			//! form, falling back to the 1-layer sinc TMM where Airy is
+			//! UNDEFINED.
+			//!
+			//! A threshold-free pairing of two EXACT forms, not a fudge.
+			//! Their failure modes are disjoint and each covers the other's
+			//! (both measured):
+			//!
+			//!   * Airy is 0/0 at EXACTLY the film's own critical angle
+			//!     (cos_film == 0 makes r01 == -r1s and delta == 0; the
+			//!     cancellation is structural, so no factoring removes it).
+			//!     It is otherwise accurate right up to that point --
+			//!     agreement with the TMM is 1e-16..1e-11 for cos offsets
+			//!     from 1e-2 down to 1e-14 -- so there is no wide
+			//!     ill-conditioned band that would need a threshold.
+			//!   * The TMM layer matrix grows like e^{|Im delta|}, so it
+			//!     overflows on thick strongly-absorbing films (measured NaN
+			//!     from d ~ 2e4 nm at k = 3) where Airy stays finite past
+			//!     1e6 nm.  So the TMM must NOT become the primary form.
+			//!
+			//! Hence: try Airy; if it did not produce a finite value the
+			//! geometry is the degenerate one, where the TMM is defined.
+			//!
+			//! NOTE std::isfinite is load-bearing here and WORKS -- macOS
+			//! pairs -fno-finite-math-only since 2026-07-29.  Under the old
+			//! bare -ffast-math it would have been folded to `true` and this
+			//! fallback would have been DEAD CODE.
+			inline Scalar SingleFilmReflectanceForPol(
+				const Complex& N0, const Complex& N1, const Complex& Ns,
+				Scalar thickness_nm, Scalar lambda_nm,
+				const Complex& sinInvariant,
+				Polarization pol )
+			{
+				const Scalar airy = AiryReflectanceForPol(
+					N0, N1, Ns, thickness_nm, lambda_nm, sinInvariant, pol );
+				if( std::isfinite( airy ) ) { return airy; }
+
+				const Complex film[1]  = { N1 };
+				const Scalar  thick[1] = { thickness_nm };
+				return TmmReflectanceForPol(
+					N0, film, thick, 1, Ns, lambda_nm, sinInvariant, pol );
 			}
 		}
 
@@ -374,9 +471,9 @@ namespace RISE
 
 			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
-			const Scalar Rs = detail::AiryReflectanceForPol(
+			const Scalar Rs = detail::SingleFilmReflectanceForPol(
 				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolS );
-			const Scalar Rp = detail::AiryReflectanceForPol(
+			const Scalar Rp = detail::SingleFilmReflectanceForPol(
 				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolP );
 
 			// R is mathematically in [0,1] for a passive stack; clamp only
@@ -399,9 +496,9 @@ namespace RISE
 		{
 			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
-			const Scalar Rs = detail::AiryReflectanceForPol(
+			const Scalar Rs = detail::SingleFilmReflectanceForPol(
 				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolS );
-			const Scalar Rp = detail::AiryReflectanceForPol(
+			const Scalar Rp = detail::SingleFilmReflectanceForPol(
 				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolP );
 
 			Scalar R = Scalar(0.5) * ( Rs + Rp );
