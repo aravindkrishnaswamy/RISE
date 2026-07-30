@@ -21,9 +21,22 @@
 //    which is the same ratio with the cosθ factors cleared:
 //      s: (Na cosa - Nb cosb)/(Na cosa + Nb cosb)
 //      p: (Na cosb - Nb cosa)/(Na cosb + Nb cosa)
-//    Algebraically identical, but finite when a cosθ is exactly 0 (exactly
-//    at the critical angle, or exactly grazing), where it gives |r| = 1
-//    instead of Inf/Inf = NaN.
+//    Algebraically identical, but finite when an ENDPOINT cosθ (ambient or
+//    substrate) is exactly 0, where it gives |r| = 1 instead of
+//    Inf/Inf = NaN.
+//
+//    DEGENERACY, and why this file does NOT divide at each interface first:
+//    when the FILM's own cosθ is exactly 0 (the film at its own critical
+//    angle; also exactly grazing when the film index equals the ambient's)
+//    the textbook quotient (r01 + r1s φ)/(1 + r01 r1s φ) is 0/0 -- r01 == ∓1
+//    exactly and δ == 0, so both sides vanish.  Dividing at each interface
+//    destroys the common 2·N1·cos1 factor that makes the limit well defined,
+//    and the failure is SILENT rather than loud: with any absorbing medium
+//    below the film the two vanishing quantities are equal-but-nonzero, so
+//    the quotient returns exactly 1 (a perfect mirror).  This file therefore
+//    keeps the interfaces in cleared (numerator, denominator) form and
+//    factors 2·N1·cos1 out analytically.  Pinned by ThinFilmTMMTest [8/8](b)
+//    on ABSORBING substrates.
 //
 //    SIGN CONVENTION: e^{-iωt} time dependence (Born & Wolf / Macleod).
 //    cosθ is the forward-travelling root (Im(δ1) >= 0 for an absorbing
@@ -95,20 +108,32 @@ namespace RISE
 			// InterfaceReflection is the admittance ratio (η_a - η_b)/(η_a + η_b)
 			// with the cosθ factors cleared, so a medium sitting exactly at the
 			// critical angle (cosθ = 0, infinite η_p) gives |r| = 1 instead of NaN.
-			const Complex r01 = InterfaceReflection( N0, cos0, N1, cos1, pol );
-			const Complex r1s = InterfaceReflection( N1, cos1, Ns, cosS, pol );
+			// Airy summation with the vanishing cos_film FACTORED OUT rather
+			// than divided away.  Dividing at each interface first (the
+			// textbook r01/r1s form) destroys the common 2 N1 cos1 factor and
+			// makes the quotient 0/0 when the FILM is at its own critical
+			// angle -- and for any absorbing medium below the film the two
+			// vanishing quantities are equal-but-nonzero, so it silently
+			// returns exactly 1 (a perfect mirror) rather than NaN.
+			// With (a1,b1) ambient<->film, (a2,b2) film<->substrate, (p,q)
+			// ambient<->substrate, and E(z) = (e^z - 1)/z at z = 2i*delta:
+			//   num = 2 N1 cos1 [ (p-q) + i kd (a2-b2)(a1+b1) E ]
+			//   den = 2 N1 cos1 [ (p+q) + i kd (a1-b1)(a2-b2) E ]
+			// The 2 N1 cos1 cancels exactly.
+			Complex a1, b1, a2, b2, p, q;
+			InterfaceTerms( N0, cos0, N1, cos1, pol, a1, b1 );
+			InterfaceTerms( N1, cos1, Ns, cosS, pol, a2, b2 );
+			InterfaceTerms( N0, cos0, Ns, cosS, pol, p,  q  );
 
-			// Phase thickness δ1 = (2π/λ) N1 d1 cosθ1 (matches the TMM
-			// layer matrix).
-			const double twoPi = 2.0 * 3.14159265358979323846;
-			const Complex delta = Complex( twoPi * d1 / lambda_nm, 0.0 ) * N1 * cos1;
+			const double  twoPi = 2.0 * 3.14159265358979323846;
+			const double  kd    = twoPi * d1 / lambda_nm;
+			const Complex delta = Complex( kd, 0.0 ) * N1 * cos1;
+			const Complex E     = ExpM1OverZ( Complex( 0.0, 2.0 ) * delta );
+			const Complex ikd( 0.0, kd );
 
-			// e^{+2iδ1} (forward-decaying round-trip phase; see header).
-			const Complex i( 0.0, 1.0 );
-			const Complex phase = std::exp( 2.0 * i * delta );
-
-			const Complex r = ( r01 + r1s * phase ) / ( Complex( 1.0, 0.0 ) + r01 * r1s * phase );
-			return std::norm( r );
+			const Complex num = ( p - q ) + ikd * ( a2 - b2 ) * ( a1 + b1 ) * E;
+			const Complex den = ( p + q ) + ikd * ( a1 - b1 ) * ( a2 - b2 ) * E;
+			return std::norm( num / den );
 		}
 
 		//! s, p, and unpolarized single-film Airy reflectance.

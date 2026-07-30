@@ -83,8 +83,13 @@ CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_
 #   2. The optimiser otherwise assumes finiteness in code that genuinely
 #      can produce Inf/NaN at runtime (HDR readers, degenerate PDFs,
 #      the thin-film TMM at a critical angle -- see below).
-#   3. It lets the finite-sentinel workarounds above stop being
-#      load-bearing, and stops new ones from being needed.
+#   3. It stops NEW finite-sentinel workarounds from being needed.
+#      NOTE the EXISTING ones stay load-bearing for an independent reason:
+#      a real +/-inf invDir would make (bound - origin) * invDir = 0*inf =
+#      NaN for a ray parallel to and on a slab plane, and the slab
+#      rejection `tmin > tymax || tymin > tmax` is FALSE for NaN, so the
+#      slab would be silently ACCEPTED.  Restoring infinity() is MORE
+#      hazardous now, not less.
 # It earned this immediately: it surfaced a real Inf/Inf = NaN bug in the
 # thin-film TMM at exactly the critical angle (fixed in the same branch).
 # Android already builds with this flag; Linux and MSVC never enabled

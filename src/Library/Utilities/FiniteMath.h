@@ -33,11 +33,15 @@ namespace RISE
 	//! and it survives a future -Ofast (which re-implies -ffast-math and thus
 	//! -ffinite-math-only) anywhere in the build.
 	//!
-	//! It is NOT free: measured at 0.38-0.40 ns/call versus 0.01 ns for
-	//! std::isfinite (~35-39x), because the volatile barrier forces a stack
-	//! round-trip and blocks vectorisation of the enclosing loop.  That is
-	//! immaterial at current call-site density, but a per-sample site in a
-	//! genuinely hot loop should now prefer plain std::isfinite.
+	//! It is NOT free, but the cost is modest: re-measured 2026-07-30 at
+	//! ~0.38 ns/call versus ~0.21 ns for std::isfinite, over the same data in
+	//! the same TU under production flags -- about 2x (an independent
+	//! measurement got ~2.9x; both are small single digits).  An earlier
+	//! draft of this comment claimed ~35-39x from a microbenchmark whose
+	//! std::isfinite loop had plainly been optimised away (0.01 ns/call is
+	//! ~0.04 cycles); that figure is RETRACTED.  The barrier forces a stack
+	//! round-trip and blocks vectorisation, so a per-sample site in a
+	//! genuinely hot loop may still prefer plain std::isfinite.
 	//! See docs/INTEGRATOR_BUGFIX_FINDINGS.md "SUPERSEDED 2026-07-29".
 	inline bool IsFiniteDouble( const double value )
 	{

@@ -2043,8 +2043,9 @@ namespace RISE
 							// std::isfinite was dead code under
 							// -ffinite-math-only; that is no longer true
 							// (macOS pairs -fno-finite-math-only since
-							// 2026-07-29), and the 'samples' parse in
-							// the render dispatch above).
+							// 2026-07-29).  See the 'samples' parse in
+							// the render dispatch above, which uses the
+							// canonical RISE::IsFiniteDouble.
 							const double sd = sv->asNumber();
 							if( !( sd >= -2147483648.0 && sd <= 2147483647.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );

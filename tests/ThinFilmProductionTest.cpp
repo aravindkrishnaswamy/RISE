@@ -431,10 +431,18 @@ int main()
 	// ------------------------------------------------------------------
 	{
 		std::printf( "\n[Degenerate] shipped single-film path at a film's own critical angle\n" );
-		struct { const char* tag; double n0, n1, ns; } cs[] = {
-			{ "glass/airgap/glass", 1.5, 1.00, 1.5 },
-			{ "oil/MgF2/glass",    1.5, 1.38, 1.5 },
-			{ "glass/airgap/metal",1.7, 1.00, 1.5 },
+		// MUST include ABSORBING substrates -- see the note in
+		// ThinFilmTMMTest [8/8](b).  With k == 0 below the film the degenerate
+		// Airy quotient is a loud 0/0; with ANY absorption the pre-factoring
+		// implementation returned a SILENT, finite, wrong 1.0 (a perfect
+		// mirror; error up to 0.477 on Ti) on exactly the air/oxide/metal
+		// stack this feature exists for.  A lossless-only set misses that.
+		struct { const char* tag; double n0, n1, ns, ks; } cs[] = {
+			{ "glass/airgap/glass (lossless)", 1.5,  1.00, 1.5,   0.0  },
+			{ "oil/MgF2/glass (lossless)",     1.5,  1.38, 1.5,   0.0  },
+			{ "glass/airgap/SILVER",           1.5,  1.00, 0.144, 3.28 },
+			{ "glass/MgF2/ALUMINIUM",          1.5,  1.38, 1.02,  6.62 },
+			{ "enamel/airgap/TITANIUM",        1.52, 1.00, 2.74,  3.81 },
 		};
 		double worstJump = 0.0;
 		for( size_t i = 0; i < sizeof(cs)/sizeof(cs[0]); ++i ) {
@@ -442,15 +450,28 @@ int main()
 			const double cosC  = std::sqrt( 1.0 - ratio * ratio );
 
 			const RISE::Scalar R = RISE::ThinFilm::ReflectanceConductor(
-				cosC, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+				cosC, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, cs[i].ks );
 			Check( std::isfinite( R ), "shipped path finite at film's own critical angle" );
 			Check( R >= 0.0 && R <= 1.0, "shipped path in [0,1] at film's own critical angle" );
 
+			// The single-film path must equal the N-layer path there.  This is
+			// the assertion that catches a SILENT wrong value: finiteness and
+			// range both passed while the evaluator returned a perfect-mirror
+			// 1.0 instead of 0.886.
+			RISE::ThinFilm::Complex f1[1] =
+				{ RISE::ThinFilm::detail::MakeIndex( cs[i].n1, 0.0 ) };
+			RISE::Scalar d1[1] = { 200.0 };
+			const RISE::Scalar Rstack = RISE::ThinFilm::ReflectanceConductorStack(
+				cosC, 550.0, RISE::ThinFilm::detail::MakeIndex( cs[i].n0, 0.0 ),
+				f1, d1, 1, RISE::ThinFilm::detail::MakeIndex( cs[i].ns, cs[i].ks ) );
+			Check( std::fabs( R - Rstack ) < 1e-9,
+			       "shipped single-film == N-layer at the film's critical angle" );
+
 			// Continuity, not just finiteness -- a clamp would pass the above.
 			const RISE::Scalar lo = RISE::ThinFilm::ReflectanceConductor(
-				cosC - 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+				cosC - 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, cs[i].ks );
 			const RISE::Scalar hi = RISE::ThinFilm::ReflectanceConductor(
-				cosC + 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, 0.0 );
+				cosC + 1e-9, 550.0, cs[i].n0, 0.0, cs[i].n1, 0.0, 200.0, cs[i].ns, cs[i].ks );
 			const double jump = std::max( std::fabs( R - lo ), std::fabs( R - hi ) );
 			worstJump = std::max( worstJump, jump );
 			Check( jump < 1e-6, "shipped path CONTINUOUS across the film's critical angle" );

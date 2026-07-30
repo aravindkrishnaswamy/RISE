@@ -672,7 +672,7 @@ protected:
 //!
 //! Calibration: `mAccMin`/`mAccMax` are atomic accumulators (CAS-loop
 //! min/max on std::atomic<double>, seeded with FINITE sentinels --
-//! 1e300 / -1e300, NEVER infinity; an inf-seeded reduction miscompiles
+//! 1e300 / -1e300, NEVER infinity; an inf-seeded reduction miscompiled
 //! under this repo's -ffast-math + LTO build, see CLAUDE.md) that every
 //! Shade/ShadeNM call on the CURRENT pass folds its hit distance into.
 //! `PreparePass`, called once per pass (single-threaded, BEFORE the

@@ -954,7 +954,8 @@ static void TestDielectricAtPerturbedHits()
 //! Materialize a Scalar from raw IEEE-754 bits at RUNTIME, through a
 //! volatile so the compiler cannot constant-fold it: under -ffast-math
 //! clang treats std::numeric_limits quiet_NaN()/infinity() as poison
-//! and folds them at compile time (-Wnan-infinity-disabled), so the
+//! and folds them at compile time (-Wnan-infinity-disabled -- which, measured 2026-07-30, does NOT fire under the
+	// shipped -ffast-math -fno-finite-math-only; this describes the pre-2026-07-29 build), so the
 //! NaN would never reach the constructor under test.
 static Scalar BitsToScalar( unsigned long long bits )
 {

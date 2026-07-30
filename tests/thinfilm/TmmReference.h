@@ -63,11 +63,15 @@
 //    push the oracle harder):
 //      * Very thick STRONGLY-absorbing films overflow this matrix form:
 //        the layer-matrix entries grow like e^{|Im δ|}, and for
-//        d * k / λ large enough (empirically d >~ 50 µm at k = 3) both
-//        Bs and Cs overflow to inf and the r numerator/denominator become
-//        NaN.  (Measured: still exactly this threshold -- finite at
-//        d = 10 µm, NaN from d = 50 µm -- the scaled assembly did not
-//        change it.)  The Airy form in
+//        d * k / λ large enough (measured cliff ~1.0e4 nm, i.e. ~10.25 µm,
+//        at k = 3 under the shipped -ffast-math flags) both Bs and Cs
+//        overflow to inf and the r numerator/denominator become NaN.
+//        NOTE the 2026-07-29 scaled assembly REDUCED this headroom by
+//        roughly |eta0| versus the old Y = C/B form (37 of 800k random
+//        stacks regress from finite to NaN; under strict IEEE neither form
+//        does).  An earlier note here claimed ~50 µm and "the scaled
+//        assembly did not change it" -- both wrong, from a two-point check
+//        that could not resolve the cliff.  The Airy form in
 //        AiryReference.h stays finite there (its e^{+2iδ} underflows to 0),
 //        so prefer Airy for extreme thick-absorber queries.  Single-film
 //        production use lifts the Airy form anyway (see design doc §7).
@@ -79,20 +83,19 @@
 //        frustrated-TIR gap and an absorbing film, and at exactly the
 //        critical angle for both a bare interface and a stack with a film.
 //        R -> 1 is the correct limit in every one of those cases.
-//        RESIDUAL (characterisation CORRECTED 2026-07-30): any medium
-//        OTHER than the ambient/substrate endpoints with cos == 0 exactly
-//        still yields NaN -- a FILM at ITS OWN critical angle, and also at
-//        EXACTLY grazing when a film index equals the ambient's.  So the
-//        theta = 90 deg closure above does NOT generalise to every stack.
-//        BOTH forms are affected, by different mechanisms: here, `etaj` is
-//        infinite for p (N/0) but ZERO for s (N*0), the s NaN being
-//        a01 = -i sinD/etaj = 0/0 -- so pre-scaling `etaj` is a no-op for
-//        s.  The Airy form in AiryReference.h NaNs too: at cos1 == 0,
-//        r01 == -r1s and delta == 0 make its quotient 0/0.  The fix is
-//        NOT a running scale factor (that claim was wrong): write the
-//        off-diagonals as products with sinc(delta) = sin(delta)/delta,
-//        which is finite for both polarizations at cos == 0.  No test
-//        exercises the geometry yet.  Prior to the 2026-07-29
+//        DEGENERACY (closed 2026-07-30): cos == 0 in a NON-ENDPOINT
+//        medium -- a film at its own critical angle, and also exactly
+//        grazing when a film index equals the ambient's -- was NaN in both
+//        evaluators, by two mechanisms (the p admittance N/cos was
+//        infinite; the s one was ZERO, making -i sinD/eta a 0/0).  Closed
+//        by the sinc layer matrix below.  The Airy form in
+//        AiryReference.h was ALSO 0/0 there while it divided at each
+//        interface first (r01 == -r1s, delta == 0); it now factors the
+//        vanishing 2*N1*cos1 out of the quotient and is total too.  An
+//        earlier note here claimed that cancellation was "structural, so
+//        no factoring removes it" -- that was WRONG, disproved
+//        constructively.  Both forms now agree at the degeneracy
+//        (ThinFilmTMMTest [8/8](b), on ABSORBING substrates).
 //        reformulation θ = 90° and the critical angle were BOTH NaN; the
 //        critical-angle case was a live ThinFilmTMMTest failure once
 //        -fno-finite-math-only stopped the optimiser from folding it.
@@ -193,6 +196,21 @@ namespace RISE
 			//! analytically (the limit is exactly 1).  Not a threshold fudge: below
 			//! the cut the Taylor series IS the exact double value (first omitted
 			//! term z^6/5040 < 1e-27 at |z| = 1e-4), so both branches are exact.
+
+			//! The CLEARED (numerator, denominator) pair of an a -> b
+			//! interface; InterfaceReflection() is exactly (a-b)/(a+b) of
+			//! these.  Exposed so the Airy form can factor the vanishing cos
+			//! out of its quotient instead of dividing it away first.
+			inline void InterfaceTerms(
+				const Complex& Na, const Complex& cosa,
+				const Complex& Nb, const Complex& cosb,
+				Polarization pol, Complex& a, Complex& b )
+			{
+				a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
+				b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
+			}
+
+
 			inline Complex Sinc( const Complex& z )
 			{
 				if( std::abs( z ) < 1e-4 ) {
@@ -200,6 +218,24 @@ namespace RISE
 					return Complex( 1.0, 0.0 ) - z2 / 6.0 + ( z2 * z2 ) / 120.0;
 				}
 				return std::sin( z ) / z;
+			}
+
+			//! (e^z - 1)/z, entire, limit exactly 1 at z = 0.  Uses the
+			//! cancellation-free identity (e^z-1)/z = e^{z/2} sinh(z/2)/(z/2)
+			//! with sinh(w)/w = Sinc(i*w).  The naive (exp(z)-1)/z loses the
+			//! result to cancellation for small |z| (1.08e-12 vs 2.2e-16,
+			//! measured) -- see ThinFilm.h for the full note.
+			inline Complex ExpM1OverZ( const Complex& z )
+			{
+				// See ThinFilm.h for the full note: direct form above |z| = 1
+				// (the only one that survives a thick absorbing film, where
+				// the identity would give 0 * inf = NaN), cancellation-free
+				// identity below it.
+				if( std::abs( z ) > 1.0 ) {
+					return ( std::exp( z ) - Complex( 1.0, 0.0 ) ) / z;
+				}
+				const Complex half = z / 2.0;
+				return std::exp( half ) * Sinc( Complex( 0.0, 1.0 ) * half );
 			}
 
 			//! Polarization scale that clears the 1/cosθ in η_p.  η * scale is
