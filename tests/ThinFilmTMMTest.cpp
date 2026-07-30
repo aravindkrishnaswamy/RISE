@@ -4,6 +4,18 @@
 //    thin-film optics reference (the ground-truth oracle for the
 //    thin-film interference feature, docs/THIN_FILM_INTERFERENCE.md).
 //
+//    SCOPE -- read this before citing this file as a pin.  This binary
+//    tests the ORACLE ONLY.  It includes tests/thinfilm/* and runs under
+//    `using namespace RISE::ThinFilmReference`; it never includes
+//    src/Library/Utilities/ThinFilm.h, so every `detail::` name below
+//    resolves to the oracle's copy and NOTHING here constrains production.
+//    That distinction was not academic: production comments used to cite
+//    [8/8](d) as pinning the production Sinc / ExpM1OverZ, and stubbing the
+//    PRODUCTION Sinc to a constant 1 below its cut was demonstrated to
+//    survive all five production-header binaries.  The production twins of
+//    these assertions live in ThinFilmProductionTest ([Helpers], [Branch],
+//    [Thick], [Truth]), which does include the production header.
+//
 //    There is NO renderer integration here and NO dependency on
 //    external n,k data files -- every stack is a synthetic / textbook
 //    construction.  The tests verify the reference against closed-form
@@ -482,6 +494,53 @@ int main()
 		Check( Rthick > 1.0 - 1e-4,    "frustrated TIR: thick gap -> full TIR" );
 		std::printf( "  frustrated TIR: R(5nm)=%.5f  R(1000nm)=%.5f ; worst |TMM-Airy|=%.3e\n",
 		             Rthin, Rthick, worstFTIR );
+
+		// THICK evanescent gaps.  The sweep above stops at 1000 nm, far short
+		// of where a wrong evanescent branch actually shows: picking the
+		// GROWING root makes |e^{+2i delta}| diverge, and the onset is
+		// d ~ 4 um.  Reverting this file's PickForwardCos to the pre-2026-07-30
+		// Re-first rule was verified by mutation to pass the ENTIRE rest of
+		// this binary (6138/0); these rows are what kill that mutant.  Beyond
+		// critical with no absorption in the gap, R is exactly 1 at any gap
+		// thickness and whatever sits below never sees any light.
+		{
+			double worstThick = 0.0;
+			bool   allFinite = true;
+			const double thickNm[] = { 4e3, 1e4, 1e5, 1e6, 1e7 };
+			const struct { const char* tag; double ns, ks; } below[] = {
+				{ "glass",    1.5,   0.0  },
+				{ "silver",   0.144, 3.28 },
+				{ "titanium", 2.74,  3.81 },
+			};
+			for( size_t bi = 0; bi < sizeof(below)/sizeof(below[0]); ++bi ) {
+				for( size_t gi = 0; gi < sizeof(thickNm)/sizeof(thickNm[0]); ++gi ) {
+					const Stack st = MakeSingleFilmStack(
+						MakeIndex( 1.50, 0.0 ), MakeIndex( 1.00, 0.0 ), thickNm[gi],
+						MakeIndex( below[bi].ns, below[bi].ks ) );
+					const ReflectanceResult t = TmmReflectance( st, 550.0, 60.0 * kDeg );
+					const ReflectanceResult a = AiryReflectance( st, 550.0, 60.0 * kDeg );
+					if( !PhysicallyValid( t ) || !PhysicallyValid( a ) ) allFinite = false;
+					worstThick = std::max( worstThick, std::fabs( t.Unpolarized() - 1.0 ) );
+					worstThick = std::max( worstThick, std::fabs( a.Unpolarized() - 1.0 ) );
+				}
+			}
+			Check( allFinite, "thick evanescent gap: TMM and Airy both finite and in [0,1]" );
+			Check( worstThick < 1e-9,
+			       "thick evanescent gap: R == 1 exactly (kills the growing-root branch mutant)" );
+
+			// And the invariant the branch rule exists to guarantee.
+			bool allDecay = true;
+			for( double n0 = 1.0; n0 <= 2.61; n0 += 0.1 )
+			for( double n1 = 0.2; n1 <= 3.01; n1 += 0.1 )
+			for( double th = 0.0; th <= 89.9 * kDeg; th += 3.0 * kDeg ) {
+				const Complex N0 = MakeIndex( n0, 0.0 );
+				const Complex N1 = MakeIndex( n1, 0.0 );
+				const Complex si = N0 * std::sin( th );
+				if( ( N1 * detail::CosThetaInMedium( N1, si ) ).imag() < 0.0 ) allDecay = false;
+			}
+			Check( allDecay, "oracle forward root DECAYS: Im(N cos) >= 0 for every medium" );
+			std::printf( "  thick evanescent gaps to 1e7 nm: worst |R - 1| = %.3e\n", worstThick );
+		}
 	}
 
 	//------------------------------------------------------------------
@@ -561,12 +620,17 @@ int main()
 	// [8/8] Degenerate cos == 0 geometries (2026-07-30).
 	//
 	// These pin behaviour that the 2026-07-29/30 reformulation CLAIMED but
-	// that nothing exercised.  Before the sinc-based layer matrix every case
+	// that nothing exercised.  Before the reformulated layer matrix every case
 	// below was NaN; the claims were made from one-off probes, which is not a
 	// regression guard.  All four sub-blocks -- (a) exactly 90 deg,
 	// (b) film at its own critical angle, (d) the removable-singularity
 	// helpers, (c) the p-polarization sign -- are RED against the pre-fix
-	// evaluator.
+	// ORACLE.
+	//
+	// THEY PIN THE ORACLE, NOT PRODUCTION.  Every `detail::` name here is
+	// RISE::ThinFilmReference::detail (see the SCOPE note in the file header).
+	// The production twins are ThinFilmProductionTest [Helpers] and [Branch];
+	// production comments must cite THOSE, not these.
 	// ------------------------------------------------------------------
 	{
 		std::printf( "\n[8/8] Degenerate cos == 0 geometries (exactly grazing / film at own critical)\n" );
@@ -678,6 +742,18 @@ int main()
 		// the series branch is only ever entered at delta == 0 exactly, where
 		// every candidate agrees.  The helpers are load-bearing for the
 		// degeneracy fix, so pin them where they actually differ.
+		//
+		// TWO LIMITS OF THIS BLOCK, both closed by ThinFilmProductionTest
+		// [Helpers] rather than here:
+		//  * It binds the ORACLE's helpers only.  The production Sinc stub
+		//    mutant survives this test 6138/0.
+		//  * "long-double reference" is NOT higher precision on arm64 macOS,
+		//    where sizeof(long double) == 8 -- the same type as the value
+		//    under test.  What this cross-check pins is the FORMULA (an
+		//    independent series / direct evaluation) and the branch
+		//    continuity, NOT accuracy beyond double.  [Helpers] supplies the
+		//    genuinely-higher-precision pin, against mpmath constants computed
+		//    at 50 decimal digits.
 		{
 			double worstSinc = 0.0, worstE = 0.0;
 			// |z| straddling the 1e-4 cut, including well inside the series
@@ -693,7 +769,9 @@ int main()
 					const double th = phase * ( M_PI / 4.0 );
 					const Complex z( mags[i] * std::cos( th ), mags[i] * std::sin( th ) );
 
-					// Reference, evaluated in long double.  The form must be
+					// Reference, evaluated in long double -- which on arm64
+					// macOS IS double (see the note above), so this pins the
+					// FORMULA, not extra precision.  The form must be
 					// chosen per magnitude for the REFERENCE too: an 8-term
 					// series is exact for small |z| but its own truncation
 					// error is O(1) by |z| = 5, while the direct long-double
@@ -731,8 +809,8 @@ int main()
 						std::abs( std::complex<long double>( gotE.real(), gotE.imag() ) - eRef ) );
 				}
 			}
-			Check( worstSinc < 1e-15, "Sinc matches an 8-term long-double reference across the cut" );
-			Check( worstE   < 1e-15, "ExpM1OverZ matches an 8-term long-double reference across the cut" );
+			Check( worstSinc < 1e-15, "oracle Sinc matches an independent 8-term series/direct reference across the cut" );
+			Check( worstE   < 1e-15, "oracle ExpM1OverZ matches an independent 8-term series/direct reference across the cut" );
 
 			// Both are exactly 1 at z == 0 (the analytic limit), and CONTINUOUS
 			// across the branch switch -- a stub that returns 1 everywhere
@@ -775,10 +853,11 @@ int main()
 				const double rs = ( n0 * c0 - n1 * c1 ) / ( n0 * c0 + n1 * c1 );
 				const double rp = ( n0 * c1 - n1 * c0 ) / ( n0 * c1 + n1 * c0 );
 
-				// Target detail::InterfaceTerms -- the helper the SHIPPED
-				// evaluator actually uses.  An earlier version of this pin
-				// targeted detail::InterfaceReflection, which production no
-				// longer calls at all, so it was pinning dead code.
+				// Target detail::InterfaceTerms -- the helper the evaluator
+				// actually uses (an earlier version of this pin targeted
+				// detail::InterfaceReflection, which is called nowhere, so it
+				// pinned dead code).  NOTE this is the ORACLE's InterfaceTerms;
+				// the production twin is ThinFilmProductionTest [Branch](c).
 				Complex as, bs, ap, bp;
 				detail::InterfaceTerms( MakeIndex(n0,0.0), Complex(c0,0.0),
 					MakeIndex(n1,0.0), Complex(c1,0.0), ePolS, as, bs );

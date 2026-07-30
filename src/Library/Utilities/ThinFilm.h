@@ -25,13 +25,23 @@
 //
 //      * Complex index  N = n + i*k,  k >= 0 for an absorbing medium.
 //      * Time dependence e^{-iωt} (Born & Wolf / Macleod).
-//      * cosθ in each medium is the FORWARD-TRAVELLING root:
-//        Re(N cosθ) > 0, tie-broken by Im(N cosθ) > 0.  At normal
-//        incidence this keeps cosθ = +1 even for an absorbing medium;
-//        a naive "Im(N cosθ) >= 0 else negate" rule wrongly flips it.
+//      * cosθ in each medium is the FORWARD-TRAVELLING root: the
+//        DECAYING one, Im(N cosθ) > 0, tie-broken by Re(N cosθ) > 0 for
+//        a lossless medium at a propagating angle (where Im is exactly
+//        0 and neither root decays).  Testing Im FIRST is load-bearing,
+//        not stylistic: the Im == 0 tie-break is exact, whereas Re == 0
+//        never fires in floating point -- see PickForwardCos for the
+//        measurement and for what testing Re first cost.  At normal
+//        incidence this keeps cosθ = +1 even for an absorbing medium
+//        (Im(η) = k > 0, so the root is kept, not flipped); the naive
+//        "Im(N cosθ) >= 0 else negate" rule that DOES wrongly flip it
+//        differs in using >= and so negates the exact-zero case.
 //      * Per-polarization tilted admittance:  η_s = N cosθ ;  η_p = N/cosθ.
 //      * Phase thickness  δ = (2π/λ) N d cosθ  (complex if the film
-//        absorbs); the forward wave decays, Im(δ) >= 0.
+//        absorbs); the forward wave decays, Im(δ) >= 0.  That invariant
+//        is ENFORCED by the branch rule above and is what keeps both
+//        evaluators overflow-free: every exponential they form is
+//        e^{+2iδ}, of modulus <= 1.  It did NOT hold before 2026-07-30.
 //      * Single-film Airy:
 //          r = ( r01 + r1s e^{+2iδ1} ) / ( 1 + r01 r1s e^{+2iδ1} )
 //        with r_ab = (η_a - η_b)/(η_a + η_b), evaluated via
@@ -107,17 +117,83 @@ namespace RISE
 				return Complex( n, k >= Scalar(0) ? k : -k );
 			}
 
-			//! Picks the FORWARD-TRAVELLING cosθ root.  A wave is forward if
-			//! its tilted admittance η = N cosθ carries energy into the
-			//! medium: Re(N cosθ) > 0, or (Re == 0 and Im(N cosθ) > 0) for a
-			//! purely evanescent wave.  Otherwise the other root is taken.
-			//! (Byrnes' `tmm` is_forward_angle / Born & Wolf / Macleod.)
+			//! Picks the FORWARD-TRAVELLING cosθ root: the DECAYING one.
+			//!
+			//! A passive medium cannot amplify, so of the two candidate roots
+			//! ±cosθ the forward one is the one whose tilted admittance
+			//! η = N cosθ has Im(η) > 0 (the wave e^{i(2π/λ)N cosθ z} decays
+			//! into the medium).  Im(η) is exactly 0 in one case only -- a
+			//! LOSSLESS medium at a PROPAGATING angle, where neither root
+			//! decays -- and there the forward root is instead the one that
+			//! carries energy inward, Re(η) > 0.  Hence: test Im, tie-break
+			//! on Re.
+			//!
+			//! THE ORDER IS LOAD-BEARING, and the reason is a floating-point
+			//! asymmetry, not a physical one.  Both `Im(η) > 0` and
+			//! `Re(η) > 0` select the same (first-quadrant) root for a
+			//! passive stack, so a reader may reasonably ask why the tests are
+			//! not interchangeable.  They are not, because each rule falls
+			//! back to a tie-break whose "== 0" test must actually FIRE:
+			//!   * Im(η) == 0 is EXACT.  Real arithmetic propagates an
+			//!     exactly-zero imaginary part through complex ×, ÷ and −,
+			//!     and the one step that manufactures a component out of
+			//!     nothing -- std::sqrt of a negative real, evaluated as
+			//!     polar(r, ±π/2) -- manufactures the REAL part
+			//!     (r·cos(π/2) ~ 6.1e-17) while leaving the imaginary part
+			//!     r·sin(±π/2) = ∓r exact.  Measured: 1,224,959 exact
+			//!     firings in 4,000,000 evaluations.
+			//!   * Re(η) == 0 never fires WHERE IT WOULD BE NEEDED -- i.e.
+			//!     for an evanescent medium, which is the case a Re-first
+			//!     rule delegates to it: 0 firings of the same 4,000,000, and
+			//!     0 over the 16,814 evanescent media of the regression grid,
+			//!     because of that same 6.1e-17 residue.  It fires only when
+			//!     η is exactly 0 -- a medium exactly AT its critical angle,
+			//!     where both roots are 0 and the choice is immaterial
+			//!     (3 of 39,501 on that grid).
+			//! So testing Re first leaves the evanescent branch to be decided
+			//! by the SIGN OF A ROUND-OFF RESIDUE.  That is what this function
+			//! did before 2026-07-30, and it chose the GROWING root:
+			//! Im(δ) < 0, |e^{+2iδ}| → ∞, contradicting this file's own
+			//! invariant ("the forward wave decays, Im(δ) >= 0").  Measured on
+			//! the shipped evaluator over 3,000,000 adversarial stacks:
+			//! 206,884 non-finite per-polarization Airy values, and -- the
+			//! class no finiteness guard can catch -- SILENT wrong values
+			//! where the p-polarization Airy returns exactly 0.  Worked
+			//! example from that fuzz: ambient n0 = 2.2636308289185867, film
+			//! n1 = 0.44278123514951256, d = 6884.8552408452115 nm, substrate
+			//! 2.9724385231768848 + 5.140684523956045i,
+			//! cosθ = 0.33415816796736975, λ = 510.88126972901341 nm gave
+			//! R = 0.49999999999999994 where the 120-dps truth is exactly 1
+			//! (the film is evanescent: this is total internal reflection).
+			//!
+			//! The order is also the PORTABLE one.  A std::sqrt(complex)
+			//! implementation that returns an exact (0, ±r) for a negative
+			//! real (rather than the polar form) makes Re(η) == 0 fire too --
+			//! but it never makes Im(η) == 0 fire spuriously, so decaying-
+			//! first stays correct under both.  Re-first is correct only
+			//! under the former, which is why it broke silently here.
+			//!
+			//! DOMAIN.  This is the forward root of a PASSIVE stack
+			//! (Re N > 0, Im N >= 0) illuminated from a NON-ABSORBING
+			//! ambient, where the root always lands in the closed first
+			//! quadrant and the two rules agree.  With an ABSORBING ambient
+			//! (k0 > 0) the incident wave is inhomogeneous, the root can land
+			//! in the second quadrant (decaying but carrying energy
+			//! backwards), and the stack is no longer passive: the 120-dps
+			//! reference itself returns R > 1 there (measured 1.093 and
+			//! 1.287 on two such stacks).  Decaying-first keeps the evaluator
+			//! TOTAL in that regime -- every exponential stays of modulus
+			//! <= 1 -- and the [0,1] clamp in the public entry points reports
+			//! the saturated 1.  That is a documented domain limit, not a
+			//! physical answer; see ReflectanceConductor.  Byrnes' `tmm`
+			//! rejects an absorbing incident medium outright for the same
+			//! reason.
 			inline Complex PickForwardCos( const Complex& N, const Complex& cosCandidate )
 			{
 				const Complex eta = N * cosCandidate;
 				const bool forward =
-					( eta.real() > Scalar(0) ) ||
-					( eta.real() == Scalar(0) && eta.imag() > Scalar(0) );
+					( eta.imag() > Scalar(0) ) ||
+					( eta.imag() == Scalar(0) && eta.real() > Scalar(0) );
 				return forward ? cosCandidate : -cosCandidate;
 			}
 
@@ -139,8 +215,11 @@ namespace RISE
 			//! fudge: for |z| below the cut the Taylor series IS the exact
 			//! double-precision value (the first omitted term, z^6/5040, is
 			//! < 1e-27 at |z| = 1e-4), so BOTH branches are exact everywhere.
-			//! Needed because the layer matrix is written with sinc products
-			//! instead of sin/eta quotients -- see TmmReflectanceForPol.
+			//! Sole consumer is ExpM1OverZ's cancellation-free branch, via
+			//! sinh(w)/w = Sinc(i*w).  (Until 2026-07-30 the N-layer layer
+			//! matrix also called it directly, for sind = delta*sinc(delta);
+			//! that matrix is now written in the exponent-factored form and
+			//! reuses ExpM1OverZ instead -- see TmmReflectanceForPol.)
 			inline Complex Sinc( const Complex& z )
 			{
 				if( std::abs( z ) < Scalar(1e-4) ) {
@@ -217,17 +296,43 @@ namespace RISE
 				return N0 * s0;
 			}
 
-			//! Single-film Airy reflectance for one polarization.  This is
-			//! the closed form lifted from AiryReference.h, the partner of
-			//! the N-layer TMM (they agree to ~machine epsilon by design).
+			//! Phase-thickness coefficient kd = 2*pi*d/lambda, with a NEGATIVE
+			//! thickness normalized to 0.
+			//!
+			//! This is a DOMAIN normalization, not a fudge factor and not an
+			//! epsilon: the boundary is exactly 0, and a film of negative
+			//! thickness is not a physical object.  Mapping it to 0 is the
+			//! continuous d -> 0+ limit, i.e. the bare substrate.
+			//!
+			//! It is load-bearing because kd is the ONE input that can defeat
+			//! the decaying-root guarantee.  PickForwardCos returns
+			//! Im(N cos) >= 0 unconditionally, so
+			//!     Im(delta) = kd * Im(N cos) >= 0   <=>   kd >= 0,
+			//! and |e^{+2i delta}| <= 1 -- which is what both evaluators rely
+			//! on to stay overflow-free -- holds exactly on that condition.
+			//! With kd < 0 the round trip genuinely DIVERGES: no reformulation
+			//! can return a finite value, because there is no finite value to
+			//! return.  Measured NaN from both evaluators at d = -1e5 nm
+			//! through an evanescent film.
+			//!
+			//! Reachable: GGXBRDF / GGXSPF read the film thickness from an
+			//! IScalarPainter, so any painter whose value can go negative
+			//! arrives here.  Pinned by ThinFilmProductionTest [Domain].
+			inline Scalar PhaseCoefficient( Scalar thickness_nm, Scalar lambda_nm )
+			{
+				const Scalar d = ( thickness_nm > Scalar(0) ) ? thickness_nm : Scalar(0);
+				return TWO_PI * d / lambda_nm;
+			}
 
-			//! The CLEARED numerator/denominator pair of an a -> b interface:
-			//! The amplitude ratio is (a - b)/(a + b) of these; callers keep the
-			//! PAIR rather than the ratio so a vanishing cos can be factored
-			//! out before dividing (see AiryReflectanceForPol).
-			//! Exposed separately so the Airy form can factor the vanishing
-			//! cos out of its quotient instead of dividing first and losing
-			//! the information (see AiryReflectanceForPol).
+			//! The CLEARED (numerator, denominator) pair of an a -> b
+			//! interface; the amplitude ratio is (a - b)/(a + b) of these.
+			//! Callers keep the PAIR rather than the ratio so that a vanishing
+			//! cos can be factored out BEFORE dividing -- dividing first
+			//! destroys the common factor that makes the limit well defined.
+			//! See AiryReflectanceForPol.
+			//!
+			//!   s: (Na cosa - Nb cosb)/(Na cosa + Nb cosb)
+			//!   p: (Na cosb - Nb cosa)/(Na cosb + Nb cosa)
 			inline void InterfaceTerms(
 				const Complex& Na, const Complex& cosa,
 				const Complex& Nb, const Complex& cosb,
@@ -253,17 +358,26 @@ namespace RISE
 			//!             2.2e-16 for the identity.
 			//!   |z| >  1 : the DIRECT form.  Cancellation is negligible
 			//!             (relative error ~eps/|z|), and it is the only form
-			//!             that survives a thick absorbing film: there Im(z)
-			//!             is large, exp(z) decays to 0 and the result tends
-			//!             to -1/z, whereas the identity evaluates
-			//!             0 * inf = NaN.  Using the identity everywhere
-			//!             turned ThinFilmProductionTest's thick-absorber
-			//!             assertions RED (2 failures, deterministic).
+			//!             that survives a thick absorbing or evanescent
+			//!             layer.  Both callers pass z = 2i*delta, so
+			//!             Re(z) = -2*Im(delta) <= 0 -- guaranteed non-
+			//!             positive by the decaying forward root
+			//!             (PickForwardCos) -- and for a thick layer Re(z) is
+			//!             large and NEGATIVE: exp(z) decays to 0 and the
+			//!             result tends to -1/z, whereas the identity
+			//!             evaluates 0 * inf = NaN.  Using the identity
+			//!             everywhere turned ThinFilmProductionTest's
+			//!             thick-absorber assertions RED (2 failures,
+			//!             deterministic).
 			//!
-			//! Both branches agree to ~1e-16 at the switch.  Pinned by
-			//! ThinFilmTMMTest [8/8](d) (accuracy, against an 8-term
-			//! long-double reference) and ThinFilmProductionTest's
-			//! thick-absorber assertions (finiteness).
+			//! Both branches agree to ~1e-16 at the switch.  Pinned ON THIS
+			//! (production) DEFINITION by ThinFilmProductionTest [Helpers],
+			//! which checks accuracy against 50-dps mpmath constants,
+			//! continuity across both domain switches, and kills the
+			//! constant-1 stub mutant; and by [Thick] (finiteness).
+			//! ThinFilmTMMTest [8/8](d) pins the ORACLE's copy in
+			//! tests/thinfilm/TmmReference.h and binds nothing here -- that
+			//! test never includes this header.
 			inline Complex ExpM1OverZ( const Complex& z )
 			{
 				// |z| > 1: the direct form.  Cancellation is negligible here
@@ -327,7 +441,7 @@ namespace RISE
 				InterfaceTerms( N1, cos1, Ns, cosS, pol, a2, b2 );
 				InterfaceTerms( N0, cos0, Ns, cosS, pol, p,  q  );
 
-				const Scalar  kd    = TWO_PI * thickness_nm / lambda_nm;
+				const Scalar  kd    = PhaseCoefficient( thickness_nm, lambda_nm );
 				const Complex delta = Complex( kd, Scalar(0) ) * N1 * cos1;
 				const Complex E     = ExpM1OverZ( Complex( Scalar(0), Scalar(2) ) * delta );
 				const Complex ikd( Scalar(0), kd );
@@ -363,36 +477,61 @@ namespace RISE
 					const Scalar  dj = filmThickness_nm[j];
 
 					const Complex cosj = CosThetaInMedium( Nj, sinInvariant );
-					// cos == 0 in a NON-ENDPOINT medium -- a film at its own
-					// critical angle, and also exactly grazing when a film
-					// index equals the ambient's -- was NaN in BOTH evaluators
-					// until 2026-07-30.  In THIS (TMM) evaluator by two
-					// mechanisms: the p-polarization admittance N/cos was
-					// infinite, and the s-polarization one was ZERO, making
-					// -i*sinD/eta a 0/0.  (The Airy form failed differently --
-					// 0/0 algebraically, but a SILENT finite 1.0 on any
-					// absorbing substrate; see AiryReflectanceForPol.)
-					// -ffast-math had masked both.
+					// TWO degeneracies live in this loop.  The layer matrix
+					// below is TOTAL against both, and against both by its
+					// algebraic FORM -- there is no guard, threshold or
+					// fallback here.
 					//
-					// CLOSED here by the sinc layer matrix immediately below
-					// (which removed the admittance from this loop entirely),
-					// and in the single-film path by the FACTORED Airy form --
-					// not by the pairing, which is defence in depth only.
-					// Pinned by ThinFilmTMMTest [8/8] and
-					// ThinFilmProductionTest's [Degenerate] block.
-					// Layer matrix, written so that NO term divides by cos.
+					// (1) cos == 0 in a NON-ENDPOINT medium: a film at its own
+					// critical angle, and also exactly grazing when a film
+					// index equals the ambient's.  The textbook layer matrix
 					//   Mj = [[ cosd, -i sind/eta ], [ -i eta sind, cosd ]]
-					// with sind = delta * sinc(delta), and delta = kd * Nj * cosj
-					// carrying exactly ONE factor of cos:
-					//   s (eta = N cos):  delta/eta = kd          delta*eta = kd N^2 cos^2
-					//   p (eta = N/cos):  delta/eta = kd cos^2    delta*eta = kd N^2
-					// Both are finite for BOTH polarizations at cos == 0, so a film
-					// sitting exactly at its own critical angle no longer produces
-					// eta = Inf (p) or the 0/0 of -i sind/eta with eta == 0 (s).
-					const Scalar  kd = TWO_PI * dj / lambda_nm;
+					// is Inf for p (eta = N/cos -> Inf) and 0/0 for s
+					// (eta = N cos -> 0, so -i sind/eta is 0/0).  Both were
+					// NaN until 2026-07-30, masked before that by -ffast-math.
+					// Cured by never forming eta at all: delta = kd*Nj*cosj
+					// carries exactly ONE factor of cos, so the only two
+					// combinations that appear are
+					//   s (eta = N cos):  delta/eta = kd        delta*eta = kd N^2 cos^2
+					//   p (eta = N/cos):  delta/eta = kd cos^2  delta*eta = kd N^2
+					// and BOTH are finite at cos == 0 for BOTH polarizations.
+					//
+					// (2) OVERFLOW on a thick ABSORBING or EVANESCENT layer.
+					// cosd and sind each grow like e^{|Im delta|} and reach Inf
+					// -- measured from d ~ 1e4 nm at k = 3 -- after which the
+					// r numerator and denominator are both Inf and r is NaN.
+					// This is what made ReflectanceConductorStack non-total
+					// (329,823 of 3,000,000 adversarial stacks, and a
+					// parser-legal 3-layer ar_layer coating).  Cured by
+					// factoring the growing exponential out of the layer
+					// ANALYTICALLY.  With phi = e^{+2i delta}, whose modulus is
+					// <= 1 because the forward root decays (PickForwardCos):
+					//   cosd     = (e^{-i delta}/2) (1 + phi)
+					//   -i sind  = (e^{-i delta}/2) (1 - phi)
+					// so  Mj = (e^{-i delta}/2) * Mhat_j  with
+					//   Mhat_j = [[ 1+phi, (1-phi)/eta ], [ eta(1-phi), 1+phi ]].
+					// The dropped factor is a SCALAR on the whole layer, hence
+					// on the whole product M, and the reflectance
+					//   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
+					// is homogeneous of degree 0 in M, so it cancels EXACTLY.
+					// Mhat is not a rescaling heuristic or an approximation --
+					// it is a different, equally valid representative of the
+					// same projective quantity, and it is what makes this path
+					// total rather than merely lucky.
+					//
+					// Finally (1 - phi) = -(e^z - 1) = -z E(z) at z = 2i delta,
+					// with E = ExpM1OverZ, so the off-diagonals reuse the
+					// cleared products from (1) directly:
+					//   Mhat01 = -2i (delta/eta) E    Mhat10 = -2i (delta*eta) E
+					// E is bounded for Re(z) <= 0 (it tends to -1/z), so every
+					// entry of Mhat stays O(1) however thick the layer is.
+					// Pinned by ThinFilmProductionTest [Helpers], [Degenerate]
+					// and [Thick] and by ThinFilmTMMTest [8/8].
+					const Scalar  kd = PhaseCoefficient( dj, lambda_nm );
 					const Complex delta = Complex( kd, Scalar(0) ) * Nj * cosj;
-					const Complex cosD  = std::cos( delta );
-					const Complex sincD = Sinc( delta );
+					const Complex z     = Complex( Scalar(0), Scalar(2) ) * delta;
+					const Complex phi   = std::exp( z );		// |phi| <= 1
+					const Complex E     = ExpM1OverZ( z );		// (phi - 1)/z
 					const Complex cos2  = cosj * cosj;
 					const Complex Nj2   = Nj * Nj;
 					const Complex deltaOverEta  = ( pol == ePolS )
@@ -401,12 +540,12 @@ namespace RISE
 					const Complex deltaTimesEta = ( pol == ePolS )
 						? Complex( kd, Scalar(0) ) * Nj2 * cos2
 						: Complex( kd, Scalar(0) ) * Nj2;
-					const Complex negI( Scalar(0), Scalar(-1) );
+					const Complex negTwoI( Scalar(0), Scalar(-2) );
 
-					const Complex a00 = cosD;
-					const Complex a01 = negI * sincD * deltaOverEta;
-					const Complex a10 = negI * sincD * deltaTimesEta;
-					const Complex a11 = cosD;
+					const Complex a00 = Complex( Scalar(1), Scalar(0) ) + phi;
+					const Complex a01 = negTwoI * deltaOverEta  * E;
+					const Complex a10 = negTwoI * deltaTimesEta * E;
+					const Complex a11 = a00;
 
 					// M <- M * Mj
 					const Complex n00 = m00 * a00 + m01 * a10;
@@ -442,66 +581,44 @@ namespace RISE
 
 			//! Single-film reflectance for one polarization.
 			//!
-			//! Primary form is the FACTORED Airy summation, which is total at
-			//! cos_film == 0 (it factors the vanishing 2*N1*cos1 out of the
-			//! quotient instead of dividing it away).  Airy is kept primary
-			//! because the N-layer TMM overflows on thick strongly-absorbing
-			//! films (measured NaN from d ~ 1.0e4 nm at k = 3) where Airy is
-			//! finite past 1e6 nm.
+			//! Primary form is the FACTORED Airy summation, which factors the
+			//! vanishing 2*N1*cos1 out of the quotient instead of dividing it
+			//! away and is therefore total at cos_film == 0.
 			//!
-			//! The TMM fallback is DEFENCE IN DEPTH for the case where Airy
-			//! does not produce a finite value at all.  It is NOT the
-			//! degeneracy fix, and it must not be relied on as one:
-			//! `isfinite` was tried as the degeneracy trigger on 2026-07-30
-			//! and is provably the WRONG predicate -- with the unfactored
-			//! quotient and any absorbing medium below the film, the
+			//! Airy is primary for COST, not for range: one complex exp plus
+			//! one ExpM1OverZ, where the N-layer path additionally builds and
+			//! multiplies a 2x2 matrix per film.  Until 2026-07-30 it was
+			//! primary for RANGE -- the N-layer TMM overflowed on thick
+			//! strongly-absorbing films from d ~ 1e4 nm at k = 3.  That is NO
+			//! LONGER TRUE: the exponent-factored layer matrix in
+			//! TmmReflectanceForPol is total, measured finite for both forms
+			//! over 4,000,000 stacks with |N| in 1e-3..1e3 and thickness to
+			//! 1e12 nm.  Do not restore the old rationale.
+			//!
+			//! The TMM fallback below is DEFENCE IN DEPTH for the case where
+			//! Airy does not produce a finite value at all.  It is MEASURED
+			//! DEAD: 0 firings over 7,000,000 adversarial stacks in two
+			//! distributions (3,000,000 in the shipped index range with
+			//! thickness to 1e5 nm, plus the 4,000,000 above).  It is kept
+			//! because it costs one predictable branch per polarization and
+			//! degrades a future regression to a second, independently
+			//! derived algebra instead of poisoning a whole spectral
+			//! accumulation.  The property that makes it dead is GATED, not
+			//! merely asserted: ThinFilmProductionTest [Thick].
+			//!
+			//! It is NOT the degeneracy fix, and it must not be relied on as
+			//! one: `isfinite` was tried as the degeneracy trigger on
+			//! 2026-07-30 and is provably the WRONG predicate -- with the
+			//! unfactored quotient and any absorbing medium below the film the
 			//! degenerate case is finite and exactly 1.0 (a perfect mirror,
 			//! wrong by up to 0.477 on Ti), so the fallback never fires and
-			//! the error is silent.  The fix had to be in the FORMULATION,
-			//! not the trigger.  Pinned by ThinFilmTMMTest [8/8](b) and
-			//! ThinFilmProductionTest [Degenerate], both of which now use
-			//! ABSORBING substrates for exactly this reason.
-			//!
-			//! ⚠ KNOWN DEFECT, NOT GUARDED -- ROOT CAUSE IDENTIFIED
-			//! (measured 2026-07-30; an earlier version of this note
-			//! UNDERSTATED it, see below).
-			//!
-			//! PickForwardCos (:115) selects the GROWING evanescent root:
-			//! for an evanescent film (ambient n > film n, beyond critical)
-			//! Im(N1*cos1) < 0, so Im(delta) < 0 and the round-trip factor
-			//! GROWS with thickness -- contradicting this file's own stated
-			//! invariant at :34 ("the forward wave decays, Im(delta) >= 0").
-			//! The Re(eta)==0 tie-break at :120 is dead code: it fired 0
-			//! times in 4,000,000 evaluations (the residue is ~6.3e-17, never
-			//! exactly 0).
-			//!
-			//! Consequences, BOTH reachable through the public API:
-			//!   * NON-FINITE: 186,413 of 3,000,000 adversarial cases.  Onset
-			//!     is d ~ 4 um -- NOT the 40-50 um an earlier draft of this
-			//!     note claimed from a single stack.
-			//!   * FINITE BUT WRONG (the dangerous class, which that draft
-			//!     omitted entirely): the p-polarization Airy can return
-			//!     EXACTLY 0, so the isfinite fallback below never fires.
-			//!     Measured R = 0.4999999999999999 where the 120-dps truth
-			//!     is 1.0.
-			//!
-			//! FIX (validated by review, NOT YET APPLIED): select the
-			//! DECAYING root -- Im(N cos) > 0, tie-broken by Re(N cos) > 0.
-			//! Measured 0 of 3,000,000 non-finite with worst-case accuracy
-			//! unchanged, and all thin-film tests green.  Strictly only FILM
-			//! media need the decaying rule (both the Airy quotient and the
-			//! sinc layer matrix are provably invariant under cos_j -> -cos_j);
-			//! endpoints need Re > 0.  Deferred as its own change because it
-			//! alters branch selection for every medium.
-			//!
-			//! Shipped scenes use 40-220 nm films and are unaffected;
-			//! triggering needs ambient n > film n AND d >~ 4 um, which
-			//! nothing currently validates.
-			//!
-			//! Note also that the thick-absorber comparison above (TMM NaN
-			//! from ~1.0e4 nm, Airy finite past 1e6 nm) is specific to the
-			//! ABSORBING-film regime; it does not hold for the lossless
-			//! evanescent case just described.
+			//! the error is silent.  The SAME trap recurred independently in
+			//! the cosθ branch rule: the growing evanescent root made the
+			//! p-polarization Airy return exactly 0, giving R = 0.5 where the
+			//! truth was 1 (see PickForwardCos).  Twice now the fix has had to
+			//! be in the FORMULATION, not the trigger.  Pinned by
+			//! ThinFilmProductionTest [Degenerate] and [Truth], both of which
+			//! use ABSORBING substrates for exactly this reason.
 			inline Scalar SingleFilmReflectanceForPol(
 				const Complex& N0, const Complex& N1, const Complex& Ns,
 				Scalar thickness_nm, Scalar lambda_nm,
@@ -532,7 +649,16 @@ namespace RISE
 		//!                     in [0,1] (NOT the geometric-normal cosine).
 		//! \param wavelength_nm hero wavelength, nm.
 		//! \param n0           ambient real index (N0 = n0 + i k0; air = 1+0i).
-		//! \param k0           ambient extinction.
+		//! \param k0           ambient extinction.  The supported domain is a
+		//!                     NON-ABSORBING ambient, k0 == 0 (air, glass,
+		//!                     enamel -- every shipped caller).  k0 > 0 makes
+		//!                     the incident wave inhomogeneous and the stack
+		//!                     non-passive; the exact 120-dps reference itself
+		//!                     returns R > 1 there (measured 1.093, 1.287).
+		//!                     The evaluator stays TOTAL for such input and
+		//!                     the clamp below reports the saturated 1, but
+		//!                     that is a saturation, not a physical answer.
+		//!                     See detail::PickForwardCos.
 		//! \param n1           film real index (N1 = n1 + i k1; the oxide).
 		//! \param k1           film extinction (k1>0 absorbing).
 		//! \param thickness_nm physical film thickness, nm.
@@ -591,11 +717,29 @@ namespace RISE
 			return R;
 		}
 
-		//! General N-layer unpolarized reflectance (the documented
-		//! multi-oxide extension point).  `nFilms` must be in [0, kMaxFilms];
+		//! General N-layer unpolarized reflectance: the documented
+		//! multi-oxide extension point, and what a multi-layer `ar_layer`
+		//! coating evaluates through.  `nFilms` must be in [0, kMaxFilms];
 		//! `filmIndex` / `filmThickness_nm` are caller-owned arrays of that
-		//! length (ambient -> substrate order).  With nFilms == 1 this is
-		//! algebraically the Airy single-film result.  Allocation-free.
+		//! length (ambient -> substrate order).  Allocation-free.
+		//!
+		//! With nFilms == 1 this is ALGEBRAICALLY the Airy single-film
+		//! result, and agrees with it numerically: measured worst
+		//! |stack - single| = 7.6e-12 over 3,000,000 adversarial stacks,
+		//! typical ~1e-16.  The worst cases are ~100-um films whose phase
+		//! exceeds 1e6 rad, where both forms lose the same argument-reduction
+		//! precision and each is within 6e-12 of the 120-dps truth; the
+		//! shipped 5-400 nm range agrees to ~1e-16.
+		//!
+		//! That equivalence was FALSE before 2026-07-30, in both directions:
+		//! the two disagreed by up to 0.74 where both were finite, and this
+		//! path returned NaN on 329,823 of those same 3,000,000 stacks --
+		//! including a parser-legal three-layer `ar_layer` coating
+		//! (1.38/100nm, 2.1+0.6i/100000nm, 1.46/90nm on air->glass) -- because
+		//! the layer matrix overflowed on the thick absorbing layer.  The NaN
+		//! survived the [0,1] clamp below, since NaN < 0 and NaN > 1 are both
+		//! false.  See TmmReflectanceForPol for the reformulation that closed
+		//! it.
 		inline Scalar ReflectanceConductorStack(
 			Scalar cosThetaI,
 			Scalar wavelength_nm,

@@ -606,7 +606,9 @@ Note this is a *different* degeneracy from the grazing-incidence one that
 multiplied through by `cos0·cosS`, which clears every `1/cosθ`; the common
 factor cancels, so it is algebraically identical wherever the old form was
 finite and yields |r| = 1 exactly at the critical angle. See
-`InterfaceReflection` / `AdmittanceScale` / `ScaledAdmittance` in
+`AdmittanceScale` / `ScaledAdmittance` (this line used to also name
+`InterfaceReflection`, which has never existed in that header; the interface
+helper is `InterfaceTerms`) in
 [ThinFilm.h](../src/Library/Utilities/ThinFilm.h) and the mirrored oracles in
 `tests/thinfilm/`.
 
@@ -634,13 +636,14 @@ remedy that is a no-op for s, and asserted a fix would need a running scale
 factor. The numerical-review lens refuted all three.)
 
 **Closed by two changes:**
-1. **A `sinc(δ)` layer matrix.** `δ = kd·N·cos` carries exactly one factor of
+1. **A cos-free layer matrix.** `δ = kd·N·cos` carries exactly one factor of
    `cos`, so `δ/η` and `δ·η` are finite for *both* polarizations
    (`s: kd`, `kd·N²·cos²`; `p: kd·cos²`, `kd·N²`). This removed the admittance
    from the layer loop entirely, and `detail::Admittance()` was deleted for
-   want of callers. `sinc`'s singularity is *removable* (analytic value 1), and
-   below the series cut the Taylor form is the exact double — so this is a
-   principled series cut, not a threshold.
+   want of callers. (As first written this used `sinδ = δ·sinc(δ)`; the
+   2026-07-30 exponent-factored form below replaced `sinc` with the same
+   `ExpM1OverZ` the Airy path uses. The cos-clearing argument is unchanged —
+   only the exponential handling differs.)
 2. **A re-derived, FACTORED Airy form** (2026-07-30). Keeping each interface as
    a cleared (numerator, denominator) pair lets the vanishing `2·N1·cos1` factor
    out analytically, so the single-film form is total at `cos_film == 0` too.
@@ -653,9 +656,12 @@ factor. The numerical-review lens refuted all three.)
    to 0.477 on Ti — so the fallback never fires and the error is SILENT. The
    pairing survives only as defence in depth and must never be relied on as the
    degeneracy trigger.
-   Airy stays **primary** deliberately: the TMM overflows on thick absorbers
-   (~1.0e4 nm at k = 3) where Airy is finite past 1e6 nm, so replacing rather
-   than pairing would have traded a measure-zero NaN for a real regression.
+   Airy stays **primary** deliberately — but the reason recorded here
+   ("the TMM overflows on thick absorbers ~1.0e4 nm at k = 3 where Airy is
+   finite past 1e6 nm") **expired on 2026-07-30**, when the exponent-factored
+   layer matrix removed that overflow. Airy is primary for **cost** now: one
+   complex `exp` plus one `ExpM1OverZ`, versus a 2×2 matrix build and multiply
+   per film. See the P1-B entry below.
 
 All three shipped entry points are covered: `ReflectanceConductor` (both
 overloads) and `ReflectanceConductorRGBSpectral`. The RGB one was **missed by
@@ -667,10 +673,17 @@ Pinned by `ThinFilmTMMTest` [8/8] (exactly 90° across six topologies; the
 film-at-own-critical geometry finite, in range **and continuous** with its
 two-sided limit; the p-sign against the signed closed form) and
 `ThinFilmProductionTest`'s [Degenerate] block (the shipped scalar path, plus
-thick-absorber assertions pinning Airy as primary).
+thick-absorber assertions).
+
+⚠ **`ThinFilmTMMTest` binds the ORACLE ONLY** — it includes `tests/thinfilm/*`
+under `using namespace RISE::ThinFilmReference` and never includes
+`src/Library/Utilities/ThinFilm.h`. Any production claim citing it as a pin was
+citing the wrong binary; see the P1-C entry below. Production-binding
+assertions live in `ThinFilmProductionTest`.
 
 
-**Undisclosed regression found by the same review (now disclosed):** the
+**Undisclosed regression found by the same review (now disclosed — and since
+CLOSED, see the P1-B entry below, which removed the overflow entirely):** the
 pre-existing thick-absorber overflow caveat is **NOT** unchanged by this work,
 and the "verified finite at 10 µm and NaN from 50 µm, exactly the documented
 threshold" line was a two-point check that could not resolve the cliff. By
@@ -684,6 +697,143 @@ way); under strict IEEE both give 0. All 37 sit inside the already-documented
 thick-absorber regime and the shipped single-film path uses Airy, so this is a
 bounded headroom loss rather than a new production defect — but it is a real
 cost of the reformulation and was previously claimed as "did not change it".
+
+---
+
+### Three open P1s from the 2026-07-29/30 review loop — ALL CLOSED 2026-07-30
+
+The three defects that round 3 disclosed rather than fixed. Every number below
+is measured; the independent reference throughout is an **mpmath evaluation at
+120 decimal digits** of the plain textbook Airy quotient and the plain textbook
+characteristic matrix (at 120 dps the quantities that make the double evaluator
+degenerate are merely small, not zero, so the naive forms are accurate — which
+is exactly what makes it independent). Its two algebras self-agree to 3.1e-119,
+and it reproduces the reviewer's independently-obtained figures exactly.
+
+**P1-A — `PickForwardCos` selected the GROWING evanescent root.** The rule
+tested `Re(η) > 0` first, with an `Re(η) == 0` tie-break for the evanescent
+case. That tie-break is **dead code where it is needed**: `std::sqrt` of a negative
+real is evaluated as `polar(r, ±π/2)`, leaving `Re = r·cos(π/2) ≈ 6.1e-17` — 0
+firings for an evanescent medium in 4,000,000 evaluations (it fires only when
+`η` is exactly 0, at a medium's own critical angle, where both roots are 0 and
+the choice is immaterial). So the branch was decided by the sign of a round-off
+residue, and it picked the root with `Im(δ) < 0`, i.e. `|e^{+2iδ}| → ∞` —
+contradicting `ThinFilm.h`'s own stated invariant.
+
+The fix is the **decaying** root: `Im(η) > 0`, tie-broken by `Re(η) > 0`. The
+order is load-bearing and the justification is a floating-point asymmetry, not
+a physical one — `Im(η) == 0` is **exact** (real arithmetic propagates exact
+zero imaginary parts; the one step that manufactures a component out of nothing
+manufactures the *real* one), measured 1,224,959 exact firings in the same
+4,000,000. It is also the portable order: under a `std::sqrt(complex)` that
+returns an exact `(0, ±r)` instead of the polar form, `Re == 0` fires too and
+Re-first appears to work — which is why this broke silently.
+
+Measured on the shipped evaluator over 3,000,000 adversarial stacks, before →
+after: non-finite per-polarization Airy **206,884 → 0**; out-of-range
+`ReflectanceConductor` **141,728 → 0**; the silent class where a p-polarization
+Airy returns exactly 0 **21 → 0**. On a 4,000-stack grid scored against the
+120-dps reference: non-finite **138 → 0**, and — the number that matters —
+worst error among the *finite* values **0.3276 → 7.8e-13**. Worked example:
+ambient 2.2636308289185867, evanescent film 0.44278123514951256,
+d = 6884.8552408452115 nm, substrate 2.9724385231768848 + 5.140684523956045i
+returned **0.49999999999999994** where the truth is exactly **1**.
+
+Applied **globally**, not only to films. The task framing suggested films alone
+need the decaying rule (the Airy quotient and the layer matrix are both
+invariant under `cos_j → −cos_j` — true, and verified). But the measurement
+shows the global form is the *correct* rule rather than a safe over-reach: for
+a passive stack the two rules never disagree (0 disagreements in 4,000,000 with
+a non-absorbing ambient), and where they do disagree — an absorbing ambient —
+the decaying rule is the one that keeps the evaluator total. Role-dependence
+would have bought nothing and cost a branch on medium role.
+
+**P1-B — `ReflectanceConductorStack` was non-total and its equivalence claim
+was false.** The doc comment claimed "with `nFilms == 1` this is algebraically
+the Airy single-film result". Measured: **329,823 NaN of the same 3,000,000**,
+and **52 finite cases disagreeing by up to 0.74**. Reachable through
+parser-legal `ar_layer`: the 3-layer coating `1.38/100 nm`,
+`2.1+0.6i/100000 nm`, `1.46/90 nm` on air→glass returned NaN, which survives
+the `[0,1]` clamp (`NaN < 0` and `NaN > 1` are both false).
+
+Root cause was **not** the missing Airy pairing the disclosure suggested — it
+was overflow. `cosδ` and `sinδ` each grow like `e^{|Im δ|}`. Fixed by factoring
+that exponential out of the layer **analytically**:
+
+    Mⱼ = (e^{−iδⱼ}/2)·M̂ⱼ ,   M̂ⱼ = [[1+φ, (1−φ)/ηⱼ], [ηⱼ(1−φ), 1+φ]] ,  φ = e^{+2iδⱼ}
+
+`|φ| ≤ 1` because the forward root decays (P1-A is a prerequisite), and the
+dropped scalar cancels **exactly**, because `r = (η₀B − C)/(η₀B + C)` with
+`[B;C] = M[1;η_s]` is homogeneous of degree 0 in `M`. `M̂` is not a rescaling
+heuristic — it is a different, equally valid representative of the same
+projective quantity. Writing `(1−φ) = −z·E(z)` at `z = 2iδ` with
+`E = ExpM1OverZ` reuses the same cleared `δ/η`, `δ·η` products, so `M̂` stays
+finite at `cosθ = 0` too, and `Sinc` drops out of the layer loop (it survives
+inside `ExpM1OverZ`).
+
+After: **0 non-finite of 3,000,000**; single-vs-stack worst disagreement
+**0.744 → 7.6e-12** (typical ~1e-16; the worst cases are ~100 µm films whose
+phase exceeds 1e6 rad, where both forms lose the same argument-reduction
+precision and each is within 6e-12 of the 120-dps truth). The cited
+counter-example now returns 0.35449755010853973 against a truth of
+0.35449755010854007, and the 3-layer `ar_layer` stack 0.014823504562343591
+against 0.014823504562343579. So the equivalence claim is now **true**, stated
+with its measured bound rather than asserted.
+
+**This also retires the thick-absorber caveat above.** Over 4,000,000 stacks
+with `|N|` in 1e-3..1e3 and thickness to **1e12 nm**, both forms are finite
+everywhere (0 non-finite, versus 947,323 for Airy and 1,553,854 for the TMM on
+the same inputs pre-fix). The "cliff at ~10.25 µm", the "37 of 800k regressions
+from the scaled assembly", and "prefer Airy for extreme thick-absorber queries"
+are all **history**. Airy remains the single-film production form for **cost**.
+
+**P1-C — `ThinFilmTMMTest` is ORACLE-ONLY, so its cited pins bound nothing in
+production.** It includes only `tests/thinfilm/*` and runs under
+`using namespace RISE::ThinFilmReference`, so every `detail::` name resolves to
+the oracle copy. Production comments nevertheless cited `[8/8](d)` as pinning
+the production `Sinc` / `ExpM1OverZ`. **Demonstrated by mutation:** stubbing the
+*production* `Sinc` to a constant 1 below its cut passed all five
+production-header binaries *and* `ThinFilmTMMTest` (6138/0).
+
+Fixed by adding four production-binding blocks to `ThinFilmProductionTest`
+(which does include the production header):
+
+| block | binds |
+|---|---|
+| `[Helpers]` | production `Sinc` / `ExpM1OverZ` against **mpmath constants at 50 dps**, across both branch switches, plus explicit stub-mutant kills |
+| `[Branch]` | the decay invariant `Im(N cosθ) ≥ 0` over 31,059 media; the tie-break liveness measurement; the p-polarization sign against the signed closed form; a film whose index equals the ambient's at grazing |
+| `[Thick]` | both forms finite to d = 1e12 nm, and multi-layer `ar_layer` stacks with thick absorbers — this is the **gate** for the "the `isfinite` fallback is dead" and "the N-layer path is total" claims, which would otherwise be prose |
+| `[Truth]` | absolute values against the 120-dps reference, including the P1-A silent-wrong case and the P1-B counter-examples |
+
+Mutation-verified after the fix: the production `Sinc` stub now **dies** (8
+failures), as does reverting `PickForwardCos` to Re-first (6) and reverting the
+layer matrix to the overflowing `cosδ`/`sincδ` form (6).
+
+**A second, unreported instance of the same defect was found while fixing
+this:** the *oracle's* own `PickForwardCos` was equally unpinned — reverting it
+to Re-first passed `ThinFilmTMMTest` 6138/0, because `[6/7]`'s frustrated-TIR
+sweep stops at 1000 nm and the branch bug does not bite until ~4 µm. Since the
+oracle is the ground truth `ThinFilmProductionTest` compares against, a
+silently-wrong oracle is the more dangerous of the two. `[6/7]` now sweeps
+evanescent gaps to 1e7 nm over three substrates and asserts the decay
+invariant; both oracle mutants die.
+
+**Also corrected in `[8/8](d)`:** the "long-double reference" is not higher
+precision on arm64 macOS, where `sizeof(long double) == 8` — the same type as
+the value under test. That cross-check pins the *formula* and the branch
+continuity, never accuracy beyond double. The genuinely-higher-precision pin is
+`[Helpers]`, against mpmath at 50 dps. The claimed margin has been removed
+rather than restated.
+
+**Residual, disclosed and bounded.** With an **absorbing ambient** (`k₀ > 0`)
+the incident wave is inhomogeneous and the stack is not passive: the 120-dps
+reference itself returns `R > 1` (measured 1.093 and 1.287). The evaluator is
+**total** there — the decaying rule keeps every exponential of modulus ≤ 1 —
+and the `[0,1]` clamp reports the saturated 1, but that is a saturation, not a
+physical answer. This is a domain limit, not a defect: Byrnes' `tmm` rejects an
+absorbing incident medium outright. No shipped caller supplies one (the ambient
+is air, glass or enamel), and it is now documented on the `k0` parameter of
+`ReflectanceConductor` and in `PickForwardCos`.
 
 **Flag surface (all four sites).** `-ffast-math` had only ever been in the
 make build and the two Xcode **Opto** configurations, so the picture was more

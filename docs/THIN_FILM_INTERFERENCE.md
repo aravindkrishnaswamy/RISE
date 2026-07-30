@@ -119,9 +119,28 @@ Implement **both** the characteristic-matrix TMM (general, N-layer) and the clos
 single-film sum, and assert they agree. The two-implementation cross-check is the point: it
 catches the classic p-polarization sign-convention bugs a single implementation can't.
 
+> **CORRECTED 2026-07-30 — read this before the code block below.** The
+> forward-root rule stated in this section was **backwards**, and shipped that
+> way: it tested `Re(N·cosθ)` first. The `Re == 0` tie-break that rule needs for
+> the evanescent case **never fires where it is needed** (0 firings for an
+> evanescent medium in 4,000,000 evaluations — `std::sqrt` of a negative real
+> leaves a ~6.1e-17 real residue; it fires only when `η` is exactly 0, at a
+> medium's own critical angle, where both roots are 0 anyway),
+> so the branch was decided by the sign of that residue and selected the
+> **growing** root. Measured consequence on the shipped evaluator over
+> 3,000,000 adversarial stacks: 206,884 non-finite results, plus silent
+> finite-but-wrong ones (an evanescent film returning `R = 0.5` where the truth
+> is exactly 1). The correct rule is the **decaying** root: `Im(N·cosθ) > 0`,
+> tie-broken by `Re(N·cosθ) > 0` — testing `Im` FIRST, because *its* zero is
+> exact (1,224,959 exact firings in the same 4,000,000). See
+> `detail::PickForwardCos` in
+> [ThinFilm.h](../src/Library/Utilities/ThinFilm.h) for the derivation and
+> `ThinFilmProductionTest` `[Branch]` for the gate.
+
 Conventions: complex index `N = n + i·k`, `k ≥ 0` (absorbing); time convention so absorbing
 media decay (`e^{−iωt}`; Born & Wolf / Macleod). Take the **forward-travelling** `cosθ` root —
-`Re(N·cosθ) > 0`, tie-broken by `Im(N·cosθ) > 0` — which keeps `cosθ = +1` at normal incidence
+the **decaying** one, `Im(N·cosθ) > 0`, tie-broken by `Re(N·cosθ) > 0` for a lossless medium at
+a propagating angle — which keeps `cosθ = +1` at normal incidence
 even for an absorbing medium. **The cosθ-branch, the matrix off-diagonal sign, and the Airy
 round-trip exponent below must be mutually consistent**: pairing a forward-root branch with the
 opposite-convention `+i sinδ` matrix / `e^{−2iδ}` Airy factor produces a *growing* wave and
@@ -130,7 +149,7 @@ is built to catch. (Verified by the P1-A reference; see `tests/thinfilm/TmmRefer
 
 ```
 Media: 0 = ambient (air, N₀=1), 1..M = films, s = substrate (semi-infinite conductor).
-Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), forward root Re(Nⱼcosθⱼ)>0 (tie Im>0)
+Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), forward root Im(Nⱼcosθⱼ)>0 (tie Re>0)
 Admittance:   ηⱼ(s) = Nⱼ cosθⱼ ;   ηⱼ(p) = Nⱼ / cosθⱼ        (per-polarization)
 Phase:        δⱼ = (2π/λ) Nⱼ dⱼ cosθⱼ                        (complex if film absorbs)
 
@@ -139,10 +158,31 @@ TMM (per pol):  Mⱼ = [[cosδⱼ, −i sinδⱼ/ηⱼ], [−i ηⱼ sinδⱼ, c
                 (Y = C/B ELIMINATED 2026-07-29: every term is carried pre-scaled
                  by 1 (s) / cosθ (p), so no 1/cosθ appears and cosθ = 0 — exactly
                  at the critical angle, or exactly grazing — yields |r| = 1
-                 instead of Inf/Inf = NaN.  See ThinFilm.h InterfaceReflection /
-                 AdmittanceScale / ScaledAdmittance.)
+                 instead of Inf/Inf = NaN.  See ThinFilm.h AdmittanceScale /
+                 ScaledAdmittance.  An earlier version of this line also cited
+                 `InterfaceReflection`, which has never existed in ThinFilm.h;
+                 the interface helper is `InterfaceTerms`.)
+                Mⱼ IS NOT EVALUATED AS WRITTEN (2026-07-30).  cosδ and sinδ each
+                 grow like e^{|Im δ|} and overflow on a thick absorbing or
+                 evanescent layer, which made the N-layer entry point non-total
+                 (329,823 NaN of 3,000,000 adversarial stacks, incl. a
+                 parser-legal 3-layer `ar_layer` coating).  Both implementations
+                 factor the growing exponential out analytically:
+                   Mⱼ = (e^{−iδⱼ}/2)·M̂ⱼ ,  M̂ⱼ = [[1+φ, (1−φ)/ηⱼ], [ηⱼ(1−φ), 1+φ]]
+                 with φ = e^{+2iδⱼ}, |φ| ≤ 1 for the decaying root.  The dropped
+                 scalar cancels EXACTLY because r is homogeneous of degree 0 in
+                 M.  Writing (1−φ) = −z·E(z) at z = 2iδ, E = (e^z−1)/z, reuses
+                 the same cleared δ/η and δ·η products, so M̂ is finite at
+                 cosθ = 0 as well.  Measured total to d = 1e12 nm.
 Airy (1 film):  r = (r₀₁ + r₁s e^{+2iδ₁}) / (1 + r₀₁ r₁s e^{+2iδ₁}) ;  R = |r|²
                 with r_{ab} = (η_a − η_b)/(η_a + η_b)  (per-pol admittances)
+                ALSO NOT EVALUATED AS WRITTEN (2026-07-30): dividing at each
+                 interface first destroys the common 2·N₁·cos₁ factor, and when
+                 the FILM is at its own critical angle the quotient is 0/0 —
+                 silently returning exactly 1 (a perfect mirror, wrong by up to
+                 0.477 on Ti) on any absorbing substrate.  Both implementations
+                 keep each interface as a cleared (numerator, denominator) pair
+                 (`InterfaceTerms`) and factor 2·N₁·cos₁ out analytically.
 Unpolarized:    R = ½(R_s + R_p)
 ```
 
@@ -154,6 +194,19 @@ TMM with M=1 reduces algebraically to the Airy result → they must match to ~ma
 - **Quarter-wave AR (exact):** lossless `n₁` on lossless `n₂` in air, `d = λ₀/(4n₁)` at normal
   incidence → `R = ((n₀n₂ − n₁²)/(n₀n₂ + n₁²))²`, and `R = 0` when `n₁ = √(n₀n₂)`. Unambiguous.
 - **Energy / physical sanity:** `R ∈ [0,1]` ∀(λ,θ,d); correct branch cuts for absorbing media.
+- **A 120-decimal-digit mpmath evaluation** of the plain textbook Airy quotient and the plain
+  textbook characteristic matrix. At 120 dps the quantities that make the double evaluator
+  degenerate are merely *small*, not zero, so the naive forms are accurate — which is what makes
+  it an independent oracle. `ThinFilmProductionTest` `[Truth]` and `[Helpers]` carry absolute
+  values derived from it. **This anchor is load-bearing:** finiteness and range checks are NOT
+  sufficient here, because the two worst thin-film defects found to date (the unfactored Airy
+  0/0, and the growing evanescent root) both returned *finite, in-range, wrong* values.
+
+**DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
+shipped caller. With `k₀ > 0` the incident wave is inhomogeneous, the stack is no longer passive,
+and the 120-dps reference itself returns `R > 1` (measured 1.093, 1.287). The evaluators stay
+total there and the `[0,1]` clamp reports the saturated 1, but that is a saturation, not a
+physical answer. (Byrnes' `tmm` rejects an absorbing incident medium outright.)
 
 Reference code uses `std::complex<double>` (clarity over speed; this is the oracle). Written
 N-layer so graded/multi-oxide is a future special-case, not a rewrite.

@@ -41,10 +41,16 @@
 //    on ABSORBING substrates.
 //
 //    SIGN CONVENTION: e^{-iωt} time dependence (Born & Wolf / Macleod).
-//    cosθ is the forward-travelling root (Im(δ1) >= 0 for an absorbing
-//    film), so the round-trip phase factor e^{+2iδ1} DECAYS with
-//    thickness -- a thick absorbing film correctly tends to the bare
-//    top-interface reflectance r01.  The e^{-2iδ} form written in the
+//    cosθ is the forward-travelling root -- the DECAYING one, so Im(δ) >= 0
+//    in EVERY medium, not just an absorbing film -- and the round-trip
+//    phase factor e^{+2iδ1} therefore has modulus <= 1 and decays with
+//    thickness: a thick absorbing film correctly tends to the bare
+//    top-interface reflectance r01, and an evanescent film (a frustrated-TIR
+//    gap) tends to R = 1.  That invariant only became TRUE on 2026-07-30:
+//    before then PickForwardCos tested Re(η) first with a tie-break that
+//    never fired, so for an evanescent film it selected the GROWING root and
+//    e^{+2iδ1} diverged (onset d ~ 4 µm).  See TmmReference.h
+//    PickForwardCos.  The e^{-2iδ} form written in the
 //    design doc belongs to the opposite phase convention and GROWS for
 //    absorbing films; see TmmReference.h header for the full discussion.
 //
@@ -124,8 +130,7 @@ namespace RISE
 			InterfaceTerms( N1, cos1, Ns, cosS, pol, a2, b2 );
 			InterfaceTerms( N0, cos0, Ns, cosS, pol, p,  q  );
 
-			const double  twoPi = 2.0 * 3.14159265358979323846;
-			const double  kd    = twoPi * d1 / lambda_nm;
+			const double  kd    = PhaseCoefficient( d1, lambda_nm );
 			const Complex delta = Complex( kd, 0.0 ) * N1 * cos1;
 			const Complex E     = ExpM1OverZ( Complex( 0.0, 2.0 ) * delta );
 			const Complex ikd( 0.0, kd );
