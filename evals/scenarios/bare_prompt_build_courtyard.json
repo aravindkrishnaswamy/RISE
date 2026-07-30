@@ -1,0 +1,120 @@
+{
+  "id": "bare_prompt_build_courtyard",
+  "title": "Bare build prompt -- material AND geometry richness without elicitation",
+  "//": "Material/geometry-richness P0 headroom scenario (docs/agentic-redesign/73-creative-richness-design.md). A truly bare prompt -- no 'make it look nice' nudge -- against the shipping empty starter scene. Measures whether the agent reaches for spatially-varying painters, the scalar-pipe, and non-primitive geometry verbs on an unprompted build, without ever blocking on style questions (askUserMax tolerates at most one ask; ask_user stays reserved for material/subject AMBIGUITY per build_ambiguous_scene, not style taste). objects_reaching_kinds is a MEASUREMENT, not an anti-adversarial gate -- it defeats a single-decoy gaming pattern (all diversity bound to one hidden object) but a determined multi-decoy scene can still pass every CST-side checkpoint here; the render-side closer is the deferred A2/P3 detector. Geometry checkpoints (geometry_kinds/advanced_geometry) have NO reachability guard at all -- a tiny decoy chunk per missing kind satisfies them; disclosed deliberately rather than papered over, since requiring 2+ advanced-geometry objects would over-prescribe legitimate scenes.",
+  "scene": {
+    "path": "scenes/Templates/empty_starter.RISEscene"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Build me a courtyard."
+  ],
+  "budgets": {
+    "//": "Matches the furnished build-scenario family (build_ambiguous_scene et al). Deliberately loose: a budget-exhausted run would be indistinguishable from the flat-materials signal this scenario exists to measure; efficiency stays visible via the report's toolCalls/wall columns.",
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/bare_prompt_build_courtyard.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 40
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "painter",
+      "exclude": [
+        "uniformcolor_painter",
+        "scalar_painter"
+      ],
+      "distinctMin": 2,
+      "weight": 2,
+      "metricLabel": "painter_kinds"
+    },
+    {
+      "kind": "document",
+      "op": "no_orphan_chunks",
+      "category": "painter"
+    },
+    {
+      "kind": "document",
+      "op": "any_param_references_kind",
+      "referencedKind": "scalar_painter",
+      "weight": 0.5
+    },
+    {
+      "kind": "document",
+      "op": "objects_reaching_kinds",
+      "category": "painter",
+      "exclude": [
+        "uniformcolor_painter",
+        "scalar_painter"
+      ],
+      "min": 2,
+      "weight": 1.5,
+      "metricLabel": "textured_objects"
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "geometry",
+      "distinctMin": 3,
+      "weight": 1.5,
+      "metricLabel": "geometry_kinds"
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": [
+        "sdf_geometry",
+        "sweep_geometry",
+        "displaced_geometry"
+      ],
+      "distinctMin": 1,
+      "weight": 1,
+      "metricLabel": "advanced_geometry"
+    },
+    {
+      "kind": "render",
+      "samples": 512,
+      "width": 32,
+      "height": 24,
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "askUserMax": 1
+    },
+    {
+      "kind": "finalText",
+      "containsAny": [
+        "stone",
+        "wood",
+        "marble",
+        "brick",
+        "moss",
+        "tile",
+        "weather",
+        "grain",
+        "texture",
+        "material"
+      ],
+      "weight": 0.5
+    }
+  ]
+}

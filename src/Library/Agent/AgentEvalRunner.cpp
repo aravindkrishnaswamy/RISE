@@ -30,6 +30,8 @@
 #include "../SceneEditor/SceneEditController.h"    // propose-mode mock-Owner: the unstarted headless controller ProposePatch stages against
 #include "../Interfaces/IRasterImageReader.h"      // image-reconstruction Wave 2: render "compareToImage" decodes a reference PNG (brings RISEColor + COLOR_SPACE via Color.h)
 #include "../RISE_API.h"                           // image-reconstruction Wave 2: RISE_API_CreatePNGReader / RISE_API_CreateCompatibleMemoryBuffer -- decode a PNG through RISE's OWN reader (png_painter's decoder)
+#include "../Parsers/ChunkDescriptor.h"             // material-richness P0: ChunkCategory -- the "category" filter form of distinct_chunk_kinds/no_orphan_chunks
+#include "../SceneEditor/ChunkDescriptorRegistry.h" // material-richness P0: RISE::DescriptorForKeyword -- resolves a chunk's ChunkCategory without re-walking CreateAllChunkParsers()
 
 #include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
@@ -554,11 +556,14 @@ namespace RISE
 			//! optional non-empty "timeParam" (defaults to "time" at check time).
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
-				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam" };
+				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam",
+					"kindSuffix", "category", "rootKind" };
 				for( const char* f : kStringFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
 				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
 				if( !RequireArrayOfType( cp, "referencedKinds", JsonValue::Type::String, scenarioId, idx, "referencedKinds", err ) ) return false;
+				if( !RequireArrayOfType( cp, "kinds", JsonValue::Type::String, scenarioId, idx, "kinds", err ) ) return false;
+				if( !RequireArrayOfType( cp, "exclude", JsonValue::Type::String, scenarioId, idx, "exclude", err ) ) return false;
 
 				const std::string op = ( cp.has( "op" ) && cp.get( "op" ).isString() ) ? cp.get( "op" ).asString() : std::string();
 				if( op == "chunk_count" ) {
@@ -567,6 +572,75 @@ namespace RISE
 				} else if( op == "param_range" ) {
 					if( !RequireArrayOfType( cp, "min", JsonValue::Type::Number, scenarioId, idx, "min", err ) ) return false;
 					if( !RequireArrayOfType( cp, "max", JsonValue::Type::Number, scenarioId, idx, "max", err ) ) return false;
+				}
+
+				// material-richness P0: distinct_chunk_kinds / no_orphan_chunks share
+				// one filter shape -- EXACTLY ONE of "kindSuffix"/"kinds"/"category"
+				// (mirrors CheckerCollectKindFilterMatches's runtime re-check).
+				// distinct_chunk_kinds additionally requires a numeric "distinctMin"
+				// (a checkpoint with no floor asserts nothing); "distinctMax", when
+				// present, must be a number.  any_param_references_kind requires a
+				// non-empty "referencedKind" (the kStringFields loop above already
+				// caught a wrong-TYPED value; this catches missing/empty).
+				// objects_reaching_kinds (review-round-1 P1-b anti-gaming op) shares
+				// the SAME filter shape (it filters what the closure must REACH) plus
+				// a required "min" / optional "max" pair, same shape as
+				// distinctMin/distinctMax.
+				if( op == "distinct_chunk_kinds" || op == "no_orphan_chunks" || op == "objects_reaching_kinds" ) {
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op '" + op + "'";
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+					const int nSet = ( hasSuffix ? 1 : 0 ) + ( hasKinds ? 1 : 0 ) + ( hasCategory ? 1 : 0 );
+					if( nSet != 1 ) {
+						err = pfx + " requires EXACTLY ONE of \"kindSuffix\"/\"kinds\"/\"category\"";
+						return false;
+					}
+					if( op == "distinct_chunk_kinds" ) {
+						if( !cp.has( "distinctMin" ) || !cp.get( "distinctMin" ).isNumber() ) {
+							err = pfx + " REQUIRES a numeric \"distinctMin\""; return false;
+						}
+						// Bounds are INCLUSIVE at check time.  Guard signs and ordering
+						// here (mirrors param_series_orbit's minKeyframes floor): a
+						// negative distinctMin makes the checkpoint vacuously pass on
+						// any document -- the opposite of a fail-safe default -- and an
+						// inverted min/max pair can never pass at all.
+						if( cp.get( "distinctMin" ).asNumber() < 0 ) {
+							err = pfx + " \"distinctMin\" must be >= 0 (a distinct-kind COUNT can never be negative)"; return false;
+						}
+						if( cp.has( "distinctMax" ) ) {
+							if( !cp.get( "distinctMax" ).isNumber() ) {
+								err = pfx + " \"distinctMax\", when present, must be a number"; return false;
+							}
+							if( cp.get( "distinctMax" ).asNumber() < cp.get( "distinctMin" ).asNumber() ) {
+								err = pfx + " \"distinctMax\" must be >= \"distinctMin\" (an inverted band can never pass)"; return false;
+							}
+						}
+					} else if( op == "objects_reaching_kinds" ) {
+						if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() ) {
+							err = pfx + " REQUIRES a numeric \"min\""; return false;
+						}
+						// Same INCLUSIVE-bounds / sign / ordering guards as distinctMin/
+						// distinctMax above -- a negative min is vacuous, an inverted
+						// band can never pass.
+						if( cp.get( "min" ).asNumber() < 0 ) {
+							err = pfx + " \"min\" must be >= 0 (a chunk COUNT can never be negative)"; return false;
+						}
+						if( cp.has( "max" ) ) {
+							if( !cp.get( "max" ).isNumber() ) {
+								err = pfx + " \"max\", when present, must be a number"; return false;
+							}
+							if( cp.get( "max" ).asNumber() < cp.get( "min" ).asNumber() ) {
+								err = pfx + " \"max\" must be >= \"min\" (an inverted band can never pass)"; return false;
+							}
+						}
+					}
+				} else if( op == "any_param_references_kind" ) {
+					if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() || cp.get( "referencedKind" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "] op 'any_param_references_kind' REQUIRES a non-empty string \"referencedKind\"";
+						return false;
+					}
 				}
 
 				// ANY-OF-KIND guard: for the three TARGET-based ops, a missing/
@@ -1187,12 +1261,18 @@ namespace RISE
 			//! missing/wrong-typed "kind" is caught elsewhere, at
 			//! CheckOneCheckpoint's RUNTIME dispatch, as a malformed/failed
 			//! checkpoint) plus the "weight" field every kind shares
-			//! (CheckScenario's own reader).  An unrecognized kind name is
+			//! (CheckScenario's own reader), plus the OPTIONAL "metricLabel"
+			//! string every kind shares too (geometry scope expansion) --
+			//! type-checked generically here since a checkpoint of ANY kind may
+			//! in principle carry one, even though today only two "document" ops
+			//! (distinct_chunk_kinds / objects_reaching_kinds) ever populate a
+			//! metricValue for it to label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
 			//! loudly at runtime ("unknown checkpoint kind").
 			bool ValidateCheckpointFieldTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "weight", JsonValue::Type::Number, scenarioId, idx, "weight", err ) ) return false;
+				if( !RequireFieldType( cp, "metricLabel", JsonValue::Type::String, scenarioId, idx, "metricLabel", err ) ) return false;
 				if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() ) return true;
 				const std::string kind = cp.get( "kind" ).asString();
 				if( kind == "document" )    return ValidateDocumentCheckpointTypes( cp, idx, scenarioId, err );
@@ -1448,6 +1528,43 @@ namespace RISE
 					// silently-weakened) assertion.
 					if( !ValidateCheckpointFieldTypes( cps.at( i ), i, out.id, err ) ) return false;
 				}
+
+				// Geometry scope expansion / metric labeling: every METRIC-CARRYING
+				// checkpoint (today: "document" ops "distinct_chunk_kinds" and
+				// "objects_reaching_kinds" -- the two CheckOneCheckpoint populates
+				// CheckOutcome::metricValue from) resolves to an EFFECTIVE label --
+				// its explicit "metricLabel" string when present and non-empty, else
+				// its "op" name (so a single such checkpoint needs no metricLabel at
+				// all).  Two metric-carrying checkpoints in the SAME scenario that
+				// resolve to the same effective label is a load-time HARD ERROR: with
+				// only one metric-carrying op, eval_report.py pooling every
+				// metricValue in a group was a documented latent limitation; with more
+				// than one, silently blending two unrelated measurements (e.g.
+				// painter-kind diversity and geometry-kind diversity) into one mean
+				// would be actively misleading.  This mirrors ValidateCheckpointFieldTypes'
+				// per-checkpoint pass but is necessarily a SECOND, cross-checkpoint
+				// pass over the same array.
+				{
+					std::set<std::string> seenMetricLabels;
+					for( std::size_t i = 0; i < cps.size(); ++i ) {
+						const JsonValue& cp = cps.at( i );
+						const std::string cpKind = ( cp.has( "kind" ) && cp.get( "kind" ).isString() ) ? cp.get( "kind" ).asString() : std::string();
+						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
+						const bool carriesMetric = cpKind == "document" && ( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" );
+						if( !carriesMetric ) continue;
+						std::string label = cpOp;
+						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
+							label = cp.get( "metricLabel" ).asString();
+						if( !seenMetricLabels.insert( label ).second ) {
+							err = "scenario '" + out.id + "': checkpoints[" + std::to_string( i ) + "] op '" + cpOp +
+							      "' resolves to metricLabel '" + label + "' -- already used by an earlier metric-carrying "
+							      "checkpoint in this scenario.  Give each metric-carrying checkpoint a distinct \"metricLabel\" "
+							      "(without it, eval_report.py would silently blend two unrelated metrics into one mean)";
+							return false;
+						}
+					}
+				}
+
 				out.checkpoints = cps;   // carried OPAQUELY -- E3 interprets kinds
 			}
 
@@ -3550,8 +3667,13 @@ namespace RISE
 
 				//! The pass/fail + explanation a single checkpoint-kind handler
 				//! returns; CheckOneCheckpoint folds this into an
-				//! AgentEvalCheckpointResult (adding kind/weight).
-				struct CheckOutcome { bool passed; std::string detail; };
+				//! AgentEvalCheckpointResult (adding kind/weight).  `hasMetricValue`/
+				//! `metricValue` are an OPTIONAL numeric payload -- populated only by
+				//! "distinct_chunk_kinds" (the distinct-painter-kind count) so the
+				//! richness signal is a trend line, not just pass/fail; every other
+				//! op leaves hasMetricValue false (the aggregate-init default), and
+				//! CheckOneCheckpoint/CheckScenario thread it through unchanged.
+				struct CheckOutcome { bool passed; std::string detail; bool hasMetricValue = false; double metricValue = 0.0; };
 
 				//----------------------------------------------------------
 				// CST helpers.  AgentSession.cpp has near-identical local
@@ -3806,6 +3928,154 @@ namespace RISE
 					return out;
 				}
 
+				//! Collect (NodeId, NodeRef) for EVERY top-level chunk whose keyword is
+				//! EXACTLY `kind` -- the identity-preserving sibling of
+				//! CheckerCollectChunksOfKind (which discards the NodeId).  Backs
+				//! "any_param_references_kind": probing RISE::Cst::ReferenceGraph::
+				//! dependents needs the chunk's OWN NodeId, not just its NodeRef.
+				std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> CheckerCollectChunkIdsOfKind( const Document& doc, const std::string& kind )
+				{
+					std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> out;
+					const int n = RISE::Cst::DocItemCount( doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						if( item->role != kind ) continue;
+						out.emplace_back( id, item );
+					}
+					return out;
+				}
+
+				//! Map a "category" filter string to its ChunkCategory -- the exact
+				//! lowercase name set SchemaGen.cpp's (unexported, TU-local)
+				//! CategoryName emits for a Reference param's `references` array, kept
+				//! in sync by hand since the two TUs don't share a symbol.  Returns
+				//! false for an unrecognized name (a load-validated op should never
+				//! reach this, but a hand-built checkpoint must still refuse loudly
+				//! rather than silently matching nothing).
+				bool CheckerCategoryFromName( const std::string& name, ChunkCategory& out )
+				{
+					static const std::pair<const char*, ChunkCategory> kNames[] = {
+						{ "painter",           ChunkCategory::Painter },
+						{ "function",          ChunkCategory::Function },
+						{ "material",          ChunkCategory::Material },
+						{ "camera",            ChunkCategory::Camera },
+						{ "film",              ChunkCategory::Film },
+						{ "geometry",          ChunkCategory::Geometry },
+						{ "modifier",          ChunkCategory::Modifier },
+						{ "medium",            ChunkCategory::Medium },
+						{ "object",            ChunkCategory::Object },
+						{ "shaderop",          ChunkCategory::ShaderOp },
+						{ "shader",            ChunkCategory::Shader },
+						{ "rasterizer",        ChunkCategory::Rasterizer },
+						{ "rasterizer_output", ChunkCategory::RasterizerOutput },
+						{ "light",             ChunkCategory::Light },
+						{ "photon_map",        ChunkCategory::PhotonMap },
+						{ "photon_gather",     ChunkCategory::PhotonGather },
+						{ "irradiance_cache",  ChunkCategory::IrradianceCache },
+						{ "animation",         ChunkCategory::Animation },
+						{ "scene_variant",     ChunkCategory::SceneVariant },
+					};
+					for( const auto& kv : kNames ) {
+						if( name == kv.first ) { out = kv.second; return true; }
+					}
+					return false;
+				}
+
+				//! Shared filter for "distinct_chunk_kinds"/"no_orphan_chunks":
+				//! collect (NodeId, NodeRef) for every top-level chunk that matches
+				//! EXACTLY ONE of {"kindSuffix" (a keyword SUFFIX match, e.g.
+				//! "_painter"), "kinds" (an explicit keyword allow-list), "category"
+				//! (a ChunkCategory resolved per-chunk via RISE::DescriptorForKeyword)},
+				//! minus any keyword listed in the optional "exclude" array.
+				//!
+				//! WHY "category" exists alongside "kindSuffix": the design's working
+				//! assumption -- "every ChunkCategory::Painter keyword ends in
+				//! `_painter`" -- is FALSE.  `expression_function2d` (
+				//! ChunkParserRegistry.cpp) is registered under ChunkCategory::Painter
+				//! but its keyword carries no "_painter" suffix (it is the in-scene-
+				//! scripted math-expression painter, deliberately named after what it
+				//! IS rather than what category it is in).  A suffix-only filter would
+				//! silently exclude it from both the diversity count and the orphan
+				//! sweep.  "category":"painter" is therefore the form actually used by
+				//! evals/scenarios/bare_prompt_build_courtyard.json's two filtered
+				//! checkpoints -- "kindSuffix"/"kinds" stay available for callers that
+				//! want the cheaper, registry-free suffix match on a category known to
+				//! be suffix-complete.
+				bool CheckerCollectKindFilterMatches( const Document& doc, const JsonValue& cp, const std::string& opName,
+				                                      std::vector<std::pair<RISE::Cst::NodeId, NodeRef>>& out, std::string& errOut )
+				{
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+					const int nSet = ( hasSuffix ? 1 : 0 ) + ( hasKinds ? 1 : 0 ) + ( hasCategory ? 1 : 0 );
+					if( nSet != 1 ) {
+						errOut = opName + ": requires EXACTLY ONE of \"kindSuffix\"/\"kinds\"/\"category\"";
+						return false;
+					}
+
+					std::string suffix;
+					std::vector<std::string> kinds;
+					ChunkCategory wantCategory = ChunkCategory::Painter;
+					if( hasSuffix ) {
+						suffix = cp.get( "kindSuffix" ).asString();
+					} else if( hasKinds ) {
+						const JsonValue& arr = cp.get( "kinds" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() || arr.at( i ).asString().empty() ) {
+								errOut = opName + ": \"kinds\"[" + std::to_string( i ) + "] must be a non-empty string";
+								return false;
+							}
+							kinds.push_back( arr.at( i ).asString() );
+						}
+					} else {
+						const std::string catName = cp.get( "category" ).asString();
+						if( !CheckerCategoryFromName( catName, wantCategory ) ) {
+							errOut = opName + ": unknown \"category\" '" + catName + "'";
+							return false;
+						}
+					}
+
+					std::set<std::string> exclude;
+					if( cp.has( "exclude" ) && cp.get( "exclude" ).isArray() ) {
+						const JsonValue& arr = cp.get( "exclude" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() ) {
+								errOut = opName + ": \"exclude\"[" + std::to_string( i ) + "] must be a string";
+								return false;
+							}
+							exclude.insert( arr.at( i ).asString() );
+						}
+					}
+
+					out.clear();
+					const int n = RISE::Cst::DocItemCount( doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						const std::string& role = item->role;
+
+						bool matches = false;
+						if( hasSuffix ) {
+							matches = role.size() >= suffix.size() &&
+								role.compare( role.size() - suffix.size(), suffix.size(), suffix ) == 0;
+						} else if( hasKinds ) {
+							matches = std::find( kinds.begin(), kinds.end(), role ) != kinds.end();
+						} else {
+							const ChunkDescriptor* d = RISE::DescriptorForKeyword( role.c_str() );
+							matches = d && d->category == wantCategory;
+						}
+						if( !matches ) continue;
+						if( exclude.count( role ) ) continue;
+						out.emplace_back( id, item );
+					}
+					return true;
+				}
+
 				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
 				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
 				//! deliberately NOT named "kind": that name is already the top-level
@@ -3856,6 +4126,41 @@ namespace RISE
 				//! maxRadiusRatio?} (any-of-kind only) proves a single timeline's
 				//! keyframe track is a camera ORBIT rather than accepting two
 				//! independent existentials.
+				//!
+				//! material-richness P0 additions (geometry scope expansion added the
+				//! FOURTH, review-round-1 P1-b) -- all four are thin layers over
+				//! RISE::Cst::BuildReferenceGraph (CheckerCollectKindFilterMatches /
+				//! CheckerCollectChunkIdsOfKind), never a new document-wide scan:
+				//! {op:"distinct_chunk_kinds",kindSuffix?|kinds?|category?,exclude?,
+				//! distinctMin,distinctMax?} counts UNIQUE chunk keywords matching
+				//! the filter (a SUFFIX match, an explicit keyword list, or a
+				//! registry-resolved ChunkCategory -- exactly one of the three),
+				//! minus "exclude", and grades against distinctMin/distinctMax (both
+				//! bounds INCLUSIVE; loader enforces distinctMin >= 0 and
+				//! distinctMax >= distinctMin); it is
+				//! one of TWO ops that populate CheckOutcome::metricValue (the
+				//! distinct count; the metric's effective LABEL -- "metricLabel" when
+				//! present, else the op name -- is loader-guarded against collision,
+				//! see LoadEvalScenario's metricLabel dedupe pass).
+				//! {op:"any_param_references_kind",referencedKind}
+				//! passes iff a chunk of that kind exists AND has >=1 referrer
+				//! anywhere in the document (the FORWARD-existential sibling of
+				//! param_references_kind, which needs a known target).
+				//! {op:"no_orphan_chunks",kindSuffix?|kinds?|category?,exclude?}
+				//! passes iff EVERY chunk matching the filter has >=1 referrer
+				//! (vacuously true when zero chunks match -- absence is
+				//! distinct_chunk_kinds' job).  "category" exists because not every
+				//! ChunkCategory::Painter keyword ends in "_painter" --
+				//! `expression_function2d` is the counterexample -- see
+				//! CheckerCollectKindFilterMatches's doc.
+				//! {op:"objects_reaching_kinds",rootKind?="standard_object",
+				//! kindSuffix?|kinds?|category?,exclude?,min,max?} (review-round-1
+				//! P1-b) counts root-kind chunks whose forward reference CLOSURE
+				//! reaches >=1 chunk matching the filter -- the anti-decoy-gaming
+				//! mitigation distinct_chunk_kinds/no_orphan_chunks cannot express
+				//! (both only see EXISTENCE + boundness, not WHICH object a binding
+				//! reaches); grades the qualifying-root count against min/max (both
+				//! bounds INCLUSIVE); the OTHER metricValue emitter.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -4336,6 +4641,216 @@ namespace RISE
 								", time span " + std::to_string( times.front() ) + ".." + std::to_string( times.back() ) };
 						};
 						return runAssertion( "param_series_orbit", res, evalChunk );
+					}
+
+					// distinct_chunk_kinds: {kindSuffix?|kinds?|category?, exclude?,
+					// distinctMin, distinctMax?} -- material-richness P0.  Counts the
+					// number of UNIQUE chunk KEYWORDS present in the document among
+					// those matching the filter (CheckerCollectKindFilterMatches),
+					// minus exclusions, and grades against distinctMin (required) /
+					// distinctMax (optional).  Layered entirely over the existing
+					// CST walk (CheckerCollectKindFilterMatches); no new document-wide
+					// scan.  Populates CheckOutcome::metricValue with the count -- the
+					// ONE op that does, per the material-richness P0 design (a trend
+					// line, not just pass/fail).
+					if( op == "distinct_chunk_kinds" ) {
+						if( !cp.has( "distinctMin" ) || !cp.get( "distinctMin" ).isNumber() )
+							return { false, "distinct_chunk_kinds requires numeric \"distinctMin\"" };
+						const long distinctMin = static_cast<long>( cp.get( "distinctMin" ).asNumber() );
+						const bool hasMax = cp.has( "distinctMax" ) && cp.get( "distinctMax" ).isNumber();
+						const long distinctMax = hasMax ? static_cast<long>( cp.get( "distinctMax" ).asNumber() ) : 0;
+
+						std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> matches;
+						std::string filterErr;
+						if( !CheckerCollectKindFilterMatches( doc, cp, "distinct_chunk_kinds", matches, filterErr ) )
+							return { false, filterErr };
+
+						std::set<std::string> distinctKinds;
+						for( const auto& kv : matches ) distinctKinds.insert( kv.second->role );
+						const long count = static_cast<long>( distinctKinds.size() );
+
+						std::string kindsList;
+						for( const std::string& k : distinctKinds ) { if( !kindsList.empty() ) kindsList += ", "; kindsList += k; }
+
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = static_cast<double>( count );
+						if( count < distinctMin ) {
+							oc.passed = false;
+							oc.detail = "distinct_chunk_kinds: " + std::to_string( count ) + " distinct kind(s) [" + kindsList +
+								"] < distinctMin " + std::to_string( distinctMin );
+							return oc;
+						}
+						if( hasMax && count > distinctMax ) {
+							oc.passed = false;
+							oc.detail = "distinct_chunk_kinds: " + std::to_string( count ) + " distinct kind(s) [" + kindsList +
+								"] > distinctMax " + std::to_string( distinctMax );
+							return oc;
+						}
+						oc.passed = true;
+						oc.detail = "distinct_chunk_kinds: " + std::to_string( count ) + " distinct kind(s) found: [" + kindsList + "]";
+						return oc;
+					}
+
+					// any_param_references_kind: {referencedKind} -- material-richness
+					// P0, the FORWARD direction of the missing primitive (the existing
+					// param_references_kind needs a known TARGET+param; this needs
+					// none).  Passes iff a chunk with role == referencedKind exists AND
+					// has >=1 referrer in RISE::Cst::BuildReferenceGraph(doc).dependents
+					// (some param, somewhere in the document, names it).
+					if( op == "any_param_references_kind" ) {
+						if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() || cp.get( "referencedKind" ).asString().empty() )
+							return { false, "any_param_references_kind requires a non-empty string \"referencedKind\"" };
+						const std::string kind = cp.get( "referencedKind" ).asString();
+
+						const std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> chunks = CheckerCollectChunkIdsOfKind( doc, kind );
+						if( chunks.empty() )
+							return { false, "any_param_references_kind: no chunk of kind '" + kind + "' exists in the document" };
+
+						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
+						for( const auto& kv : chunks ) {
+							const auto it = graph.dependents.find( kv.first );
+							if( it != graph.dependents.end() && !it->second.empty() ) {
+								const std::string nm = CheckerChunkName( kv.second );
+								return { true, "any_param_references_kind: '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
+									"' (kind '" + kind + "') has " + std::to_string( it->second.size() ) + " referrer(s)" };
+							}
+						}
+						return { false, "any_param_references_kind: " + std::to_string( chunks.size() ) + " chunk(s) of kind '" +
+							kind + "' exist, but NONE has a referrer (all orphaned)" };
+					}
+
+					// no_orphan_chunks: {kindSuffix?|kinds?|category?, exclude?} --
+					// material-richness P0, the REVERSE direction: every chunk matching
+					// the filter must have >=1 referrer in the reference graph's
+					// dependents.  This is also the anti-gaming guard for
+					// distinct_chunk_kinds -- a painter chunk inserted but never bound
+					// scores nothing.  VACUOUSLY PASSES when zero chunks match the
+					// filter (absence of a kind is distinct_chunk_kinds' job, not
+					// this op's -- a scene with no matching chunks at all has, by
+					// definition, no orphans among them).
+					if( op == "no_orphan_chunks" ) {
+						std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> matches;
+						std::string filterErr;
+						if( !CheckerCollectKindFilterMatches( doc, cp, "no_orphan_chunks", matches, filterErr ) )
+							return { false, filterErr };
+						if( matches.empty() )
+							return { true, "no_orphan_chunks: no chunk matched the filter -- vacuously satisfied "
+								"(absence is distinct_chunk_kinds' job, not this op's)" };
+
+						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
+						std::vector<std::string> orphans;
+						for( const auto& kv : matches ) {
+							const auto it = graph.dependents.find( kv.first );
+							if( it == graph.dependents.end() || it->second.empty() ) {
+								const std::string nm = CheckerChunkName( kv.second );
+								orphans.push_back( "'" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) + "' (kind '" + kv.second->role + "')" );
+							}
+						}
+						if( !orphans.empty() ) {
+							std::string detail = "no_orphan_chunks: " + std::to_string( orphans.size() ) + " of " +
+								std::to_string( matches.size() ) + " matched chunk(s) unreferenced: ";
+							for( std::size_t i = 0; i < orphans.size(); ++i ) { if( i ) detail += ", "; detail += orphans[i]; }
+							return { false, detail };
+						}
+						return { true, "no_orphan_chunks: all " + std::to_string( matches.size() ) + " matched chunk(s) have >=1 referrer" };
+					}
+
+					// objects_reaching_kinds: {rootKind?="standard_object",
+					// kindSuffix?|kinds?|category?, exclude?, min, max?} -- review-round-1
+					// P1-b anti-gaming mitigation.  distinct_chunk_kinds/no_orphan_chunks
+					// only prove a qualifying chunk EXISTS and is bound to SOMETHING; they
+					// cannot see whether the binding is to a decoy object (e.g. every
+					// diverse painter bound onto one hidden 0.001-unit box at
+					// position 1000 1000 1000, while every VISIBLE surface stays
+					// uniformcolor).  This op counts root-kind chunks (default
+					// "standard_object") whose forward reference CLOSURE -- BFS over the
+					// SAME reference graph, i.e. object -> material -> painter -> nested
+					// painter/function chains -- reaches >=1 chunk matching the filter.
+					// The forward adjacency is the graph's OWN "dependents" reverse
+					// adjacency INVERTED (dependents: target -> {referrers}; forwardAdj:
+					// referrer -> {targets}) -- no second reference trace, and the closure
+					// walk is guarded by a per-root visited set (painter graphs can in
+					// principle cycle via user error; must not hang).  Grades the
+					// qualifying-root COUNT against min (required) / max (optional), both
+					// bounds INCLUSIVE.  Honest residual caveat: this is a CST-side check
+					// -- it cannot see render visibility, so a determined MULTI-decoy scene
+					// (>= min hidden decoys) still passes; that closer is deferred
+					// (A2/P3, docs/agentic-redesign/73-creative-richness-design.md).
+					// Populates CheckOutcome::metricValue too (the qualifying-root count)
+					// -- trivial once the BFS already computes it, and this op is also,
+					// deliberately, the exact object->material->painter scan the deferred
+					// P2 flatness advisory would need.
+					if( op == "objects_reaching_kinds" ) {
+						if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() )
+							return { false, "objects_reaching_kinds requires numeric \"min\"" };
+						const long minCount = static_cast<long>( cp.get( "min" ).asNumber() );
+						const bool hasMax = cp.has( "max" ) && cp.get( "max" ).isNumber();
+						const long maxCount = hasMax ? static_cast<long>( cp.get( "max" ).asNumber() ) : 0;
+
+						const std::string rootKind = ( cp.has( "rootKind" ) && cp.get( "rootKind" ).isString() && !cp.get( "rootKind" ).asString().empty() )
+							? cp.get( "rootKind" ).asString() : std::string( "standard_object" );
+
+						std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> filterMatches;
+						std::string filterErr;
+						if( !CheckerCollectKindFilterMatches( doc, cp, "objects_reaching_kinds", filterMatches, filterErr ) )
+							return { false, filterErr };
+						std::set<RISE::Cst::NodeId> qualifying;
+						for( const auto& kv : filterMatches ) qualifying.insert( kv.first );
+
+						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
+						std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId>> forwardAdj;
+						for( const auto& kv : graph.dependents )
+							for( const RISE::Cst::NodeId referrer : kv.second )
+								forwardAdj[referrer].insert( kv.first );
+
+						const std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> roots = CheckerCollectChunkIdsOfKind( doc, rootKind );
+
+						long reachingCount = 0;
+						std::vector<std::string> reachingNames;
+						for( const auto& rootKv : roots ) {
+							std::set<RISE::Cst::NodeId> visited;
+							std::vector<RISE::Cst::NodeId> queue;
+							visited.insert( rootKv.first );
+							queue.push_back( rootKv.first );
+							bool reaches = false;
+							for( std::size_t qi = 0; qi < queue.size() && !reaches; ++qi ) {
+								const auto it = forwardAdj.find( queue[qi] );
+								if( it == forwardAdj.end() ) continue;
+								for( const RISE::Cst::NodeId next : it->second ) {
+									if( qualifying.count( next ) ) { reaches = true; break; }
+									if( visited.insert( next ).second ) queue.push_back( next );
+								}
+							}
+							if( reaches ) {
+								++reachingCount;
+								const std::string nm = CheckerChunkName( rootKv.second );
+								reachingNames.push_back( nm.empty() ? std::string( "<unnamed>" ) : nm );
+							}
+						}
+
+						std::string namesList;
+						for( const std::string& n : reachingNames ) { if( !namesList.empty() ) namesList += ", "; namesList += n; }
+
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = static_cast<double>( reachingCount );
+						if( reachingCount < minCount ) {
+							oc.passed = false;
+							oc.detail = "objects_reaching_kinds: " + std::to_string( reachingCount ) + " of " + std::to_string( roots.size() ) +
+								" '" + rootKind + "' chunk(s) reach a qualifying chunk [" + namesList + "] < min " + std::to_string( minCount );
+							return oc;
+						}
+						if( hasMax && reachingCount > maxCount ) {
+							oc.passed = false;
+							oc.detail = "objects_reaching_kinds: " + std::to_string( reachingCount ) + " of " + std::to_string( roots.size() ) +
+								" '" + rootKind + "' chunk(s) reach a qualifying chunk [" + namesList + "] > max " + std::to_string( maxCount );
+							return oc;
+						}
+						oc.passed = true;
+						oc.detail = "objects_reaching_kinds: " + std::to_string( reachingCount ) + " of " + std::to_string( roots.size() ) +
+							" '" + rootKind + "' chunk(s) reach a qualifying chunk [" + namesList + "]";
+						return oc;
 					}
 
 					return { false, "document checkpoint: unknown op '" + op + "'" };
@@ -6048,6 +6563,19 @@ namespace RISE
 					const CheckOutcome oc = CheckOneCheckpoint( cp, handle );
 					r.passed = oc.passed;
 					r.detail = oc.detail;
+					r.hasMetricValue = oc.hasMetricValue;
+					r.metricValue = oc.metricValue;
+					// Geometry scope expansion: the metric's EFFECTIVE label, resolved
+					// the SAME way LoadEvalScenario's dedupe pass resolves it (explicit
+					// "metricLabel" when present and non-empty, else "op") -- only
+					// meaningful (and only set) when this checkpoint actually carries a
+					// metric.
+					if( r.hasMetricValue ) {
+						r.metricLabel = ( cp.isObject() && cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() &&
+							!cp.get( "metricLabel" ).asString().empty() )
+							? cp.get( "metricLabel" ).asString()
+							: ( ( cp.isObject() && cp.has( "op" ) && cp.get( "op" ).isString() ) ? cp.get( "op" ).asString() : std::string() );
+					}
 
 					weightSum += r.weight;
 					if( r.passed ) passSum += r.weight;
@@ -6130,6 +6658,17 @@ namespace RISE
 						o.set( "passed", JsonValue::MakeBool( c.passed ) );
 						o.set( "weight", JsonValue::MakeNumber( c.weight ) );
 						o.set( "detail", JsonValue::MakeString( c.detail ) );
+						// material-richness P0: metricValue is OMITTED entirely when
+						// unset (the established convention -- see AgentRpc.cpp's
+						// empty-skill-index "note" key -- rather than serialized as a
+						// misleading 0.0 for every non-metric-carrying checkpoint).
+						// metricLabel (geometry scope expansion) rides ALONGSIDE it --
+						// emitted only when metricValue is, since an unset metric has no
+						// label to carry.
+						if( c.hasMetricValue ) {
+							o.set( "metricValue", JsonValue::MakeNumber( c.metricValue ) );
+							if( !c.metricLabel.empty() ) o.set( "metricLabel", JsonValue::MakeString( c.metricLabel ) );
+						}
 						arr.push_back( o );
 					}
 					root.set( "checkpoints", arr );

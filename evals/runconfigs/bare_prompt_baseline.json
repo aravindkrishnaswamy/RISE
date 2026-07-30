@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "anthropic", "model": "claude-opus-4-8", "keyEnvVar": "ANTHROPIC_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "xai", "model": "grok-4.5", "keyEnvVar": "XAI_API_KEY" },
+    { "provider": "local", "model": "qwen3.6:27b" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_baseline"
+}

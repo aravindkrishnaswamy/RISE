@@ -771,6 +771,25 @@ namespace RISE
 			bool        passed = false;
 			double      weight = 1.0;   //!< the checkpoint's "weight" field (default 1.0; clamped to >= 0)
 			std::string detail;    //!< a human-readable explanation -- ALWAYS filled, pass or fail (never silent)
+			//! OPTIONAL numeric payload (material-richness P0; geometry scope
+			//! expansion 2026-07-29 added the SECOND emitter): populated by the
+			//! "distinct_chunk_kinds" and "objects_reaching_kinds" document ops
+			//! (a distinct-kind count / a qualifying-root count respectively), so
+			//! richness is a trend line in results.jsonl / eval_report.py, not
+			//! just pass/fail.  hasMetricValue is false (and metricValue
+			//! meaningless) for every other checkpoint.
+			bool        hasMetricValue = false;
+			double      metricValue = 0.0;
+			//! The metric's EFFECTIVE label (geometry scope expansion): the
+			//! checkpoint's explicit "metricLabel" string when present and
+			//! non-empty, else its "op" name.  Set ONLY when hasMetricValue is
+			//! true (empty otherwise) -- eval_report.py aggregates metricValue
+			//! PER LABEL, never pooled across labels, so a scenario carrying more
+			//! than one metric-emitting checkpoint doesn't silently blend two
+			//! unrelated measurements into one mean.  LoadEvalScenario hard-errors
+			//! at load time if two metric-carrying checkpoints in one scenario
+			//! resolve to the same effective label.
+			std::string metricLabel;
 		};
 
 		//! The result of checking one scenario's checkpoints[] against a
