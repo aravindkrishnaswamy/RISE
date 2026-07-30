@@ -576,6 +576,10 @@ namespace
 		Check( created && fire, "17-bin nonuniform boundary fixture builds" );
 		bool foundThirdBoundary = false;
 		bool densityMatchesSelectedBin = true;
+		unsigned int selectedCellRoll = 0u;
+		unsigned int selectedBinRoll = 0u;
+		unsigned int selectedY = 0u;
+		unsigned int selectedZ = 0u;
 		if( fire ) {
 			const Scalar binVolume = (1.0/17.0)*0.5*0.5;
 			for( unsigned int cellRoll = 0; cellRoll < 256 && !foundThirdBoundary;
@@ -592,9 +596,11 @@ namespace
 						std::llround(point.x*17.0) );
 					if( selectedX != 3u ) continue;
 					foundThirdBoundary = true;
-					const unsigned int selectedY = std::min(
+					selectedCellRoll = cellRoll;
+					selectedBinRoll = binRoll;
+					selectedY = std::min(
 						static_cast<unsigned int>(point.y*2.0), 1u );
-					const unsigned int selectedZ = std::min(
+					selectedZ = std::min(
 						static_cast<unsigned int>(point.z*2.0), 1u );
 					const Scalar expectedPdf =
 						fire->GetThermalEmissionBinProbability(
@@ -611,6 +617,25 @@ namespace
 			"fixed-zero spatial draw reaches the lower face of nonuniform bin three" );
 		Check( densityMatchesSelectedBin,
 			"sampled and evaluated density retain the selected half-open bin at its lower face" );
+		bool upperRoundingMatchesSelectedBin = false;
+		if( fire && foundThirdBoundary ) {
+			FixedSampler sampler( {
+				(Scalar(selectedCellRoll)+0.5)/256.0,
+				(Scalar(selectedBinRoll)+0.5)/256.0,
+				std::nextafter(Scalar(1.0),Scalar(0.0)), 0.5, 0.5 } );
+			Point3 point;
+			Scalar sampledPdf = 0.0;
+			const Scalar expectedPdf = fire->GetThermalEmissionBinProbability(
+				3u,selectedY,selectedZ ) / ((1.0/17.0)*0.5*0.5);
+			upperRoundingMatchesSelectedBin =
+				fire->SampleThermalEmission(sampler,point,sampledPdf) &&
+				point.x < 4.0/17.0 &&
+				std::fabs(sampledPdf-expectedPdf) <= 2e-14*expectedPdf &&
+				std::fabs(fire->ThermalEmissionPdf(point)-expectedPdf) <=
+					2e-14*expectedPdf;
+		}
+		Check( upperRoundingMatchesSelectedBin,
+			"maximal [0,1) draw stays inside its selected nonuniform bin" );
 		safe_release( medium );
 		safe_release( carbon );
 		safe_release( temperature );
@@ -710,6 +735,13 @@ namespace
 		Check( unrepresentable == nullptr,
 			"medium construction rejects a bbox whose q_v per-volume density overflows" );
 		safe_release( unrepresentable );
+
+		IMedium* collapsedBoundary = CreateUniformFire(
+			0.2, 1800.0, 2, Point3(1.0e16,0,0),
+			Point3(1.0e16+2.0,1,1), 1.0 );
+		Check( collapsedBoundary == nullptr,
+			"medium construction rejects a bin with no representable spatial interior" );
+		safe_release( collapsedBoundary );
 
 		ExtremeContrastCarbonPainter* contrast = new ExtremeContrastCarbonPainter();
 		IScalarPainter* temperature = nullptr;

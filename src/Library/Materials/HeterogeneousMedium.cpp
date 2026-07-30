@@ -49,6 +49,44 @@ namespace
 		return lower;
 	}
 
+	static Scalar SampleHalfOpenBinCoordinate(
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binIndex,
+		const unsigned int binCount,
+		const Scalar sample
+		)
+	{
+		const Scalar lower = minimum + Scalar(binIndex)*binSize;
+		const Scalar upper = binIndex + 1u == binCount ? maximum :
+			minimum + Scalar(binIndex+1u)*binSize;
+		Scalar coordinate = minimum + (Scalar(binIndex)+sample)*binSize;
+		if( coordinate < lower ) coordinate = lower;
+		if( binIndex + 1u < binCount && coordinate >= upper ) {
+			coordinate = std::nextafter( upper, lower );
+		}
+		if( coordinate > maximum ) coordinate = maximum;
+		return coordinate;
+	}
+
+	static bool HasStrictlyIncreasingBinBoundaries(
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binCount
+		)
+	{
+		Scalar previous = minimum;
+		for( unsigned int i = 1u; i <= binCount; ++i ) {
+			const Scalar boundary = i == binCount ? maximum :
+				minimum + Scalar(i)*binSize;
+			if( !(boundary > previous) ) return false;
+			previous = boundary;
+		}
+		return true;
+	}
+
 	class ConstituentHGPhaseClosure :
 		public virtual IPhaseFunction,
 		public virtual Implementation::Reference
@@ -1550,6 +1588,12 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 	if( !RISE::IsFiniteDouble( m_emissionBinVolume ) || m_emissionBinVolume <= 0.0 ) {
 		return false;
 	}
+	if( !HasStrictlyIncreasingBinBoundaries( m_bboxMin.x, m_bboxMax.x,
+		m_emissionBinSize.x, m_volWidth ) ||
+		!HasStrictlyIncreasingBinBoundaries( m_bboxMin.y, m_bboxMax.y,
+		m_emissionBinSize.y, m_volHeight ) ||
+		!HasStrictlyIncreasingBinBoundaries( m_bboxMin.z, m_bboxMax.z,
+		m_emissionBinSize.z, m_volDepth ) ) return false;
 
 	const unsigned int binCount = m_volWidth * m_volHeight * m_volDepth;
 	m_emissionBinWeights.assign( binCount, 0.0 );
@@ -1846,9 +1890,12 @@ bool MultichannelHeterogeneousMedium::SampleThermalEmission(
 	const unsigned int y = rem / m_volWidth;
 	const unsigned int x = rem - y * m_volWidth;
 	point = Point3(
-		m_bboxMin.x + (Scalar(x) + sampler.Get1D()) * m_emissionBinSize.x,
-		m_bboxMin.y + (Scalar(y) + sampler.Get1D()) * m_emissionBinSize.y,
-		m_bboxMin.z + (Scalar(z) + sampler.Get1D()) * m_emissionBinSize.z );
+		SampleHalfOpenBinCoordinate( m_bboxMin.x, m_bboxMax.x,
+			m_emissionBinSize.x, x, m_volWidth, sampler.Get1D() ),
+		SampleHalfOpenBinCoordinate( m_bboxMin.y, m_bboxMax.y,
+			m_emissionBinSize.y, y, m_volHeight, sampler.Get1D() ),
+		SampleHalfOpenBinCoordinate( m_bboxMin.z, m_bboxMax.z,
+			m_emissionBinSize.z, z, m_volDepth, sampler.Get1D() ) );
 	pdf = ThermalEmissionPdf( point );
 	return pdf > 0.0 && RISE::IsFiniteDouble( pdf );
 }
