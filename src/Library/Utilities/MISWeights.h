@@ -53,16 +53,52 @@ namespace RISE
 		bool competitionAvailable;
 		bool continuationSingular;
 		const Implementation::VolumeEmissionPivotState* pivots;
+		Scalar directionPdf;
+		Scalar logBoundarySurvival;
+		Scalar distanceOffset;
 
 		VolumeEmissionSegmentState(
 			const bool competitionAvailable_ = false,
 			const bool continuationSingular_ = false,
-			const Implementation::VolumeEmissionPivotState* pivots_ = 0 ) :
+			const Implementation::VolumeEmissionPivotState* pivots_ = 0,
+			const Scalar directionPdf_ = 0.0,
+			const Scalar logBoundarySurvival_ = 0.0,
+			const Scalar distanceOffset_ = 0.0 ) :
 			competitionAvailable( competitionAvailable_ ),
 			continuationSingular( continuationSingular_ ),
-			pivots( pivots_ )
+			pivots( pivots_ ),
+			directionPdf( directionPdf_ ),
+			logBoundarySurvival( logBoundarySurvival_ ),
+			distanceOffset( distanceOffset_ )
 		{}
 	};
+
+	/// Preserve the originating strategy while crossing one exact null
+	/// boundary.  No-event probabilities accumulate in log space so a long
+	/// enclosure chain cannot silently lose its proposal density to an
+	/// intermediate product underflow.
+	inline VolumeEmissionSegmentState AdvanceVolumeEmissionSegmentState(
+		const VolumeEmissionSegmentState& state,
+		const Scalar noEventProbability,
+		const Scalar segmentDistance
+		)
+	{
+		Scalar nextLogSurvival = -RISE_INFINITY;
+		Scalar nextDistanceOffset = RISE_INFINITY;
+		if( RISE::IsFiniteDouble(state.logBoundarySurvival) &&
+			RISE::IsFiniteDouble(noEventProbability) &&
+			RISE::IsFiniteDouble(state.distanceOffset) &&
+			RISE::IsFiniteDouble(segmentDistance) &&
+			noEventProbability > 0.0 && noEventProbability <= 1.0 &&
+			state.distanceOffset >= 0.0 && segmentDistance >= 0.0 ) {
+			nextLogSurvival = state.logBoundarySurvival + log(noEventProbability);
+			nextDistanceOffset = state.distanceOffset + segmentDistance;
+		}
+		return VolumeEmissionSegmentState(
+			state.competitionAvailable, state.continuationSingular,
+			state.pivots, state.directionPdf, nextLogSurvival,
+			nextDistanceOffset );
+	}
 
 	inline const VolumeEmissionSegmentState*& ActiveVolumeEmissionSegmentState()
 	{
@@ -165,6 +201,45 @@ namespace RISE
 				log(boundarySurvival) - 2.0*log(distance);
 			const Scalar result = exp(logDensity);
 			return RISE::IsFiniteDouble(result) && result > 0.0 ? result : 0.0;
+		}
+
+		/// Log-survival sibling used by a marched chain of exact null
+		/// boundaries. Invalid/empty support fails closed to zero.
+		inline Scalar VolumeEmissionMarchDensityFromLogSurvival(
+			const Scalar directionPdf,
+			const Scalar distancePdf,
+			const Scalar distance,
+			const Scalar logBoundarySurvival
+			)
+		{
+			if( !RISE::IsFiniteDouble(directionPdf) ||
+				!RISE::IsFiniteDouble(distancePdf) ||
+				!RISE::IsFiniteDouble(distance) ||
+				!RISE::IsFiniteDouble(logBoundarySurvival) ||
+				directionPdf <= 0.0 || distancePdf <= 0.0 || distance <= 0.0 ||
+				logBoundarySurvival > 0.0 ) return 0.0;
+			const Scalar logDensity = log(directionPdf) + log(distancePdf) +
+				logBoundarySurvival - 2.0*log(distance);
+			const Scalar result = exp(logDensity);
+			return RISE::IsFiniteDouble(result) && result > 0.0 ? result : 0.0;
+		}
+
+		/// Evaluate the arriving march density at a collision on the current
+		/// segment.  The radius is measured from the originating vertex, not
+		/// from the most recent null boundary.
+		inline Scalar VolumeEmissionMarchDensityAtCollision(
+			const VolumeEmissionSegmentState& state,
+			const Scalar distancePdf,
+			const Scalar segmentDistance
+			)
+		{
+			if( !RISE::IsFiniteDouble(state.distanceOffset) ||
+				!RISE::IsFiniteDouble(segmentDistance) ||
+				state.distanceOffset < 0.0 || segmentDistance <= 0.0 ) return 0.0;
+			return VolumeEmissionMarchDensityFromLogSurvival(
+				state.directionPdf, distancePdf,
+				state.distanceOffset+segmentDistance,
+				state.logBoundarySurvival );
 		}
 
 		/// Balance heuristic weight: w = pa / (pa + pb)

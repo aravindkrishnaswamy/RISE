@@ -320,6 +320,42 @@ static void TestVolumeEmissionFamilyPartition()
 		CurrentVolumeEmissionSegmentState();
 	Check(!restoredDefault.competitionAvailable && !restoredDefault.continuationSingular,
 		"completed request-local scope restores camera defaults");
+	const VolumeEmissionSegmentState proposalState(true,false,0,0.25,0.0);
+	const VolumeEmissionSegmentState oneBoundary =
+		AdvanceVolumeEmissionSegmentState(proposalState,0.5,1.25);
+	const VolumeEmissionSegmentState twoBoundaries =
+		AdvanceVolumeEmissionSegmentState(oneBoundary,0.5,2.75);
+	Check(ApproxEqual(twoBoundaries.directionPdf,0.25,TOL) &&
+		ApproxEqual(exp(twoBoundaries.logBoundarySurvival),0.25,TOL) &&
+		ApproxEqual(twoBoundaries.distanceOffset,4.0,TOL),
+		"null-boundary advancement preserves p_omega and accumulates no-event atoms and distance");
+	const Scalar logDensity = MISWeights::VolumeEmissionMarchDensityFromLogSurvival(
+		twoBoundaries.directionPdf,0.5,2.0,twoBoundaries.logBoundarySurvival);
+	const Scalar productDensity = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,2.0,0.25);
+	Check(ApproxEqual(logDensity,productDensity,TOL),
+		"log-space boundary survival gives the pinned p_omega p_t product over r squared");
+	const Scalar collisionDensity =
+		MISWeights::VolumeEmissionMarchDensityAtCollision(
+			twoBoundaries,0.5,2.0);
+	const Scalar expectedCollisionDensity = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,6.0,0.25);
+	Check(ApproxEqual(collisionDensity,expectedCollisionDensity,TOL),
+		"collision density uses distance from the originating vertex across all boundaries");
+	VolumeEmissionSegmentState deepChain = proposalState;
+	for(unsigned int i=0;i<2000;++i) {
+		deepChain = AdvanceVolumeEmissionSegmentState(deepChain,0.5,1.0);
+	}
+	Check(std::isfinite(deepChain.logBoundarySurvival) &&
+		ApproxEqual(deepChain.logBoundarySurvival,2000.0*log(0.5),1e-9) &&
+		deepChain.distanceOffset==2000.0,
+		"long null-boundary chains retain every no-event atom and complete path length");
+	const VolumeEmissionSegmentState impossibleBoundary =
+		AdvanceVolumeEmissionSegmentState(proposalState,0.0,1.0);
+	Check(MISWeights::VolumeEmissionMarchDensityFromLogSurvival(
+		impossibleBoundary.directionPdf,0.5,2.0,
+		impossibleBoundary.logBoundarySurvival)==0.0,
+		"zero-probability boundary survival removes march support");
 	{
 		const VolumeEmissionSegmentStateScope temporaryScope(
 			VolumeEmissionSegmentState(true,true) );

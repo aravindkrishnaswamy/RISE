@@ -1852,6 +1852,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 
 	const LightSampler* pLS = caster.GetLightSampler();
+	VolumeEmissionSegmentState activeVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
 
 #ifdef RISE_ENABLE_OPENPGL
 	const bool useGuidingPathSegments = rc.pGuidingField &&
@@ -1934,6 +1936,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			rejectZeroDistanceBoundary = false;
 
 			bool bHit = ri.geometric.bHit;
+			Scalar segmentNoEventProbability = 1.0;
 
 			// Medium transport
 			const IObject* pMediumObject = 0;
@@ -1952,11 +1955,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					result = result + throughput * additiveEmission;
 				}
 				IndependentSampler mediumSampler( rc.random );
-				const VolumeEmissionSegmentState volumeSegmentState =
-					CurrentVolumeEmissionSegmentState();
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 					pCurrentMedium, currentRay, maxDist, bHit, pLS,
-					volumeSegmentState.pivots, mediumSampler, tag );
+					activeVolumeSegmentState.pivots, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -2167,6 +2168,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 					currentRay = Ray( scatterPt, wi );
+					activeVolumeSegmentState = VolumeEmissionSegmentState();
 					bsdfPdf = effectivePdf;
 					considerEmission = true;
 					volumeBounces++;
@@ -2184,6 +2186,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pCurrentMedium, currentRay, maxDist, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
+					segmentNoEventProbability = pSurvival;
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 				else if( !scattered && !bHit )
@@ -2206,6 +2209,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// A null boundary is part of this same transport segment: it has no
 			// vertex, emission/shading lookup, depth increment, or roulette event.
 			if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				activeVolumeSegmentState = AdvanceVolumeEmissionSegmentState(
+					activeVolumeSegmentState,segmentNoEventProbability,
+					ri.geometric.surfaceRange);
 				ContinueAcrossNullBoundary(
 					ri, currentRay, iorStack, rejectZeroDistanceBoundary );
 				depthIncrement = 0;
@@ -3050,6 +3056,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 
 				currentRay = pS->ray;
+				activeVolumeSegmentState = VolumeEmissionSegmentState();
 				currentRay.Advance( 1e-8 );
 
 				if( pS->ior_stack ) {
@@ -3606,6 +3613,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 
 			currentRay = traceRay;
+			activeVolumeSegmentState = VolumeEmissionSegmentState();
 			currentRay.Advance( 1e-8 );
 
 			if( traceIorStack != &iorStack ) {

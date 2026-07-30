@@ -915,6 +915,8 @@ bool RayCaster::CastRayImpl_(
 	// consume it (surface-hit / escape) live outside the if(pMedium) block.
 	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
 	Scalar noScatterPdfScale = 1.0;
+	const VolumeEmissionSegmentState incomingVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
 
 	if( pMedium )
 	{
@@ -946,11 +948,9 @@ bool RayCaster::CastRayImpl_(
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots;
-		const VolumeEmissionSegmentState volumeSegmentState =
-			CurrentVolumeEmissionSegmentState();
 		const bool equiangularPivotsReady = useEquiangularMIS &&
 			pLightSampler->ResolveVolumeEmissionPivots(
-				mediumSampler, volumeSegmentState.pivots, equiangularPivots );
+				mediumSampler, incomingVolumeSegmentState.pivots, equiangularPivots );
 		Scalar combinedPdf = 0;		// Deterministic MIS denominator
 		bool useExplicitThroughput = false;
 		bool equiangularZeroContrib = false;	// True when equiangular strategy samples zero density
@@ -1391,22 +1391,32 @@ bool RayCaster::CastRayImpl_(
 			const Ray nextRay = ContinueExactNullBoundaryRay(
 				ray, ri.geometric.surfaceRange );
 
-			RISEPel downstream( 0, 0, 0 );
-			Scalar downstreamDistance = 0;
-			const bool downstreamHit = CastRayImpl_(
-				rc, rast, nextRay, downstream, rs, &downstreamDistance,
-				pRadianceMap, nextStack, true );
-			OffsetCapturedPrimaryAOVDepth(
-				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
-
 			RISEPel survival( 1, 1, 1 );
+			Scalar noEventProbability = 1.0;
 			if( pMedium ) {
+				noEventProbability = noScatterPdfScale * pMedium->EvalDistancePdf(
+					ray, ri.geometric.surfaceRange, false,
+					ri.geometric.surfaceRange );
 				survival = RayCasterSurvivalWeight(
 					pMedium->EvalTransmittance( ray, ri.geometric.surfaceRange ),
-					noScatterPdfScale * pMedium->EvalDistancePdf(
-						ray, ri.geometric.surfaceRange, false,
-						ri.geometric.surfaceRange ) );
+					noEventProbability );
 			}
+			const VolumeEmissionSegmentState downstreamVolumeSegmentState =
+				AdvanceVolumeEmissionSegmentState(
+					incomingVolumeSegmentState,noEventProbability,
+					ri.geometric.surfaceRange);
+			RISEPel downstream( 0, 0, 0 );
+			Scalar downstreamDistance = 0;
+			bool downstreamHit = false;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(
+					downstreamVolumeSegmentState);
+				downstreamHit = CastRayImpl_(
+					rc, rast, nextRay, downstream, rs, &downstreamDistance,
+					pRadianceMap, nextStack, true );
+			}
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
 			const RISEPel segmentSource = pMedium ? c : RISEPel( 0, 0, 0 );
 			c = segmentSource + survival * downstream;
 			if( rrCompensation != 1.0 ) c = c * rrCompensation;
@@ -1671,6 +1681,8 @@ bool RayCaster::CastRayNMImpl_(
 	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
 	Scalar noScatterPdfScale_NM = 1.0;
 	Scalar additiveEmissionNM = 0.0;
+	const VolumeEmissionSegmentState incomingVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
 
 	if( pMedium )
 	{
@@ -1700,11 +1712,10 @@ bool RayCaster::CastRayNMImpl_(
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots_NM;
-		const VolumeEmissionSegmentState volumeSegmentState =
-			CurrentVolumeEmissionSegmentState();
 		const bool equiangularPivotsReady_NM = useEquiangularMIS_NM &&
 			pLightSampler->ResolveVolumeEmissionPivots(
-				mediumSampler, volumeSegmentState.pivots, equiangularPivots_NM );
+				mediumSampler, incomingVolumeSegmentState.pivots,
+				equiangularPivots_NM );
 		Scalar combinedPdf_NM = 0;
 		bool useExplicitThroughput_NM = false;
 		bool equiangularZeroContrib_NM = false;
@@ -2053,24 +2064,34 @@ bool RayCaster::CastRayNMImpl_(
 			const Ray nextRay = ContinueExactNullBoundaryRay(
 				ray, ri.geometric.surfaceRange );
 
-			Scalar downstream = 0.0;
-			Scalar downstreamDistance = 0.0;
-			const bool downstreamHit = CastRayNMImpl_(
-				rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
-				pRadianceMap, nextStack, true );
-			OffsetCapturedPrimaryAOVDepth(
-				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
-
 			Scalar survival = 1.0;
+			Scalar noEventProbability = 1.0;
 			if( pMedium ) {
 				const Scalar Tr = pMedium->EvalTransmittanceNM(
 					ray, ri.geometric.surfaceRange, nm );
-				const Scalar pSurvival = noScatterPdfScale_NM *
+				noEventProbability = noScatterPdfScale_NM *
 					pMedium->EvalDistancePdfNM(
 						ray, ri.geometric.surfaceRange, false,
 						ri.geometric.surfaceRange, nm );
-				survival = pSurvival > 0.0 ? Tr / pSurvival : 0.0;
+				survival = noEventProbability > 0.0 ?
+					Tr / noEventProbability : 0.0;
 			}
+			const VolumeEmissionSegmentState downstreamVolumeSegmentState =
+				AdvanceVolumeEmissionSegmentState(
+					incomingVolumeSegmentState,noEventProbability,
+					ri.geometric.surfaceRange);
+			Scalar downstream = 0.0;
+			Scalar downstreamDistance = 0.0;
+			bool downstreamHit = false;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(
+					downstreamVolumeSegmentState);
+				downstreamHit = CastRayNMImpl_(
+					rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
+					pRadianceMap, nextStack, true );
+			}
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
 			c = additiveEmissionNM +
 				rrContinuationCompensation * survival * downstream;
 			if( distance ) {
