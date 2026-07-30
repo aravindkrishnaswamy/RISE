@@ -737,3 +737,23 @@ it was already tried and refuted here.
   conversion-basis nuance (withheld soot energy is mostly recovered at
   burnout; the permanent deficit is condensables + escapes).
 
+- **r39 (2026-07-29):** pinned the null boundary's repository realization —
+  the fifth implementation-agent stop, and like the others a genuine gap:
+  §7.2.2 specified the class behaviorally ("dedicated interface class,
+  unit deterministic transmission, no shading/depth/roulette") but the only
+  in-tree candidate, `NullMaterial`/`"none"`, is *terminating* (no SPF ⇒
+  the integrator breaks the path) and is the renderer-wide default
+  sentinel, so repurposing it (agent option 1) would silently make every
+  default-material object a pass-through. Option 3 (a non-material boundary
+  interface) invents an object/parser model for one class. **Adopted the
+  agent's option 2:** a distinct exact type `NullBoundaryMaterial` with
+  `RISE_API_CreateNullBoundaryMaterial`, an `IJob` wrapper, and a
+  `null_boundary_material` chunk; `"none"` unchanged. The design now also
+  pins the traversal semantics both transport surfaces must implement:
+  exact-dynamic-type check (subclasses are not null boundaries, matching
+  the allowlist posture); same ray, no depth/roulette/shading/emission;
+  medium-stack transition as the only effect via the existing
+  innermost-exclusive walk; no IOR-stack entry (IOR-matched by
+  definition); and class-level transparency to shadow and volume-NEE rays
+  independent of shadow flags.
+

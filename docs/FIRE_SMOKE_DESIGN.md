@@ -2736,10 +2736,29 @@ families reach emission at a point y from vertex x:
     direction unchanged yet attenuates or reflects march paths, and NEE
     passing without that factor would be biased): **unit deterministic
     transmission; no reflection lobe, no absorption/tint, no emission, no
-    shading, no depth increment, no roulette event**. Only a null
-    boundary stays inside the march chain — preserving the originating
-    vertex's NEE state, direction density, and survival atoms — and only
-    a null boundary passes volume NEE (attenuation via the medium walk).
+    shading, no depth increment, no roulette event**. **Concrete realization
+    (r39 — the class was specified behaviorally but had no repository
+    construct; the existing `NullMaterial`/`"none"` sentinel is
+    *terminating*, not traversable, and repurposing it would silently turn
+    every default-material object into a pass-through):** a distinct
+    **`NullBoundaryMaterial`** — new exact type alongside `NullMaterial`,
+    with `RISE_API_CreateNullBoundaryMaterial`, an `IJob` wrapper, and a
+    `null_boundary_material` scene chunk; `NullMaterial`/`"none"` keeps its
+    terminating semantics unchanged. Both transport surfaces special-case
+    the **exact dynamic type** (subclasses are not null boundaries — the
+    same exact-type posture as the continuation-closure allowlist): on
+    hitting geometry whose material is exactly `NullBoundaryMaterial`, the
+    ray continues with the same direction and parameterization, no depth
+    increment, no roulette event, no shading or emission lookup, and **the
+    medium-stack transition is the only effect** (the object's
+    `interior_medium` pushes/pops per the existing innermost-exclusive
+    walk; no IOR change — a null boundary is IOR-matched by definition, so
+    it never enters the IOR stack). Shadow and volume-NEE rays treat it as
+    fully transparent by *class*, independent of `casts_shadows`/
+    `transparent_shadows` flags. Only a null boundary stays inside the
+    march chain — preserving the originating vertex's NEE state, direction
+    density, and survival atoms — and only a null boundary passes volume
+    NEE (attenuation via the medium walk).
     **Every non-null interface blocks volume NEE and terminates march
     support — no exceptions** (round 4 killed r8's equal-transfer option
     for straight-through tinted transmitters: equal factors do NOT fix
