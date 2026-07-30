@@ -514,3 +514,36 @@ breadth to lift the floor above 1 — generic uniformcolor→procedural
 conversion is now the least urgent third. Success bar restated: scalar-pipe
 ≥1/3 runs, advanced-geometry ≥2/3 runs, painter_kinds floor ≥2 in every run,
 `build_ambiguous_scene` unmoved.
+
+---
+
+## 7. P1 outcome (2026-07-30, commit 526f6f99, 3 runs post-skill-re-anchor)
+
+| bar (from §6) | result | verdict |
+|---|---|---|
+| painter_kinds floor ≥2 every run | 3, 2, 3 (was floor 1, median 2) | **MET** — floor lifted |
+| scalar-pipe ≥1/3 runs | **0/3** (0/12 lifetime) | **FAILED** |
+| advanced geometry ≥2/3 runs | **0/3** (2/12 lifetime) | **FAILED** |
+| build_ambiguous_scene unmoved | ask-side 3/3 asked (≥ baseline 2/3); pass@1 noisy on its own tight luma/center-pixel bands at N=3 | guard HELD |
+
+**The reading:** snippet re-anchoring moved exactly what models copy —
+painter families (floor 1→2, breadth up) — and moved NEITHER mechanism-
+adoption deficit, despite the skills now carrying prominent, execution-
+validated scalar-pipe examples and pre-existing sdf/sweep recipes that
+trajectories prove the model reads. This is §5.1 quantified: examples move
+copying; they do not move mechanism adoption. Prose/example levers are now
+measured at their ceiling for this problem.
+
+**P2 re-target (design amendment, needs user sign-off):** A1-as-approved
+counts surfaces bound to uniformcolor — but colour flatness is now a
+SOLVED problem (floor 2 post-P1); as approved, the advisory would fire
+rarely and address yesterday's deficit. The same mechanism, same carriers
+(beauty render + validate), same `objects_reaching_kinds` scan should
+instead report the two MEASURED deficits as observed state:
+- "all {n} materials use constant roughness — no spatially-varying
+  scalar_painter is bound anywhere" (the 0/12 deficit), and
+- a one-line geometry census ("{n} objects: {k} box, {m} sphere…; no
+  sdf/sweep/displaced forms") for the 2/12 deficit,
+with the same escape clause and skill pointer. Everything else in the §2
+P2 spec (engine-side scan, fire thresholds, anti-churn clause, red-proof
+tests) carries over unchanged.
