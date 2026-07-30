@@ -687,3 +687,25 @@ it was already tried and refuted here.
   path to the bar its output actually claims. Pel claimed preview and was
   being gated as if it claimed predictive.
 
+- **r37 (2026-07-29):** pinned the wavelength quadrature — a debt from the
+  r11–r31 loop that an internal round-4 review had flagged as
+  referenced-but-unspecified and graded P2; the Phase-B implementation agent
+  proved it P1 with numbers (for B_λ(1800 K)·(500/λ) over [380,780] nm: a
+  10-bin left rule gives 909.99, a 40-bin left rule 1044.04, the true
+  integral 1090.41 — a ~20 % spread in CDF weights, selection pmfs, and
+  labeled densities across plausible readings). All three values reproduced
+  independently before adoption. **Decision (the agent's option 1):** the
+  single-interval 21-point Gauss–Legendre rule mapped onto [380, 780] nm,
+  using the binary64 node/weight table already in `MicrofacetEnergyLUT.h`,
+  promoted to a shared utility. Verified: the table matches true GL nodes to
+  all printed digits, and the rule matches a high-resolution reference to
+  ~10⁻¹³ for the smooth thermal integrands this CDF admits (ε_chem is
+  excluded from Φ by design). The pin includes a one-rule-everywhere
+  requirement — Ĩ_v, W_m/A_m, and `EstimateVisibleBandPower()` share one
+  implementation, since these numbers enter as ratios and a mixed-rule
+  implementation biases the partition even when each rule alone is
+  accurate — and a scope caveat that the accuracy claim does not extend to
+  narrow-band SPDs. Process note: the P2 grade in round 4 was wrong
+  precisely because 'reference-only' specifications look harmless until
+  someone has to compute with them.
+

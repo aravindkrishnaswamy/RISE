@@ -2759,7 +2759,26 @@ estimate
 
 > Ĩ_v = V_v ∫ ε̃_thermal,v(λ)dλ.
 
-over the camera-visible band. This is an importance approximation, not a
+**The pinned wavelength quadrature is defined here** (r37 — it was named in
+r11–r31 but never specified, leaving a ~20 % spread across plausible
+readings: for B_λ(1800 K)·(500/λ) over the band, a 10-bin left rule gives
+909.99, a 40-bin left rule 1044.04, and the true integral 1090.41): the
+**single-interval 21-point Gauss–Legendre rule mapped onto [380, 780] nm**,
+using the binary64 node/weight table already in `MicrofacetEnergyLUT.h`
+(promoted to a shared utility — one table, no per-call recomputation, no
+second copy). For the smooth integrands this CDF admits — power-law σ_a
+times Planck; ε_chem is excluded from Φ by §7.2.3 — the rule matches a
+high-resolution reference to ~10⁻¹³ relative. **One rule, everywhere it
+matters:** the per-bin proposal above, the medium band powers W_m/A_m, and
+`EstimateVisibleBandPower()` for positional lights must all evaluate through
+the same shared implementation, because these numbers form a *ratio* (the
+selection pmf and the labeled densities) — a mixed-rule implementation
+biases the partition even when each rule alone is accurate. Scope caveat:
+the accuracy claim is for smooth integrands only; if a future band integral
+ever includes a narrow-band SPD (chem lines), this rule does not extend to
+it automatically.
+
+The proposal is taken over the camera-visible band. This is an importance approximation, not a
 radiometric integral used in the contribution. The channel/temperature
 interval bounds also produce a finite conservative emissive-power upper bound
 U_v over the same bin and band. A center bin intersects halves of as many as
@@ -2834,7 +2853,8 @@ positional-light/medium mixture with coefficients a_i and a_m. Entries use
 explicit nonnegative **importance proxies with watt dimensions**, not claimed
 exact powers: A_m=4πs²W_m for a medium (including §7.2.3's support inflation),
 and A_i=`EstimateVisibleBandPower()` for a positional light, both using the
-pinned 380–780 nm quadrature. Positional lights integrate their full spatial/
+pinned 380–780 nm quadrature (the 21-point Gauss–Legendre rule defined in
+§7.2.3 — one shared implementation, never a per-caller re-derivation). Positional lights integrate their full spatial/
 directional emission; spectral lights integrate their actual SPD, while legacy
 RGB lights integrate the renderer's versioned RGB→spectrum reconstruction. The current
 `MaxValue(radiantExitance())` weight is not comparable and is retired for this
