@@ -237,6 +237,69 @@ static void TestGuidingSelectedMixturePdf()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 8: Phase-B thermal-volume NEE/march family partition
+//////////////////////////////////////////////////////////////////////
+static void TestVolumeEmissionFamilyPartition()
+{
+	std::cout << "Test 8: VolumeEmission family partition" << std::endl;
+
+	const Scalar pV = 3.0;
+	const Scalar pMarch = 4.0;
+	const Scalar wNee = MISWeights::VolumeEmissionNEEFamilyWeight(pV,pMarch);
+	const Scalar wMarch = MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,true,false);
+	Check(ApproxEqual(wNee,9.0/25.0,TOL),
+		"NEE family gets pV^2/(pV^2+pMarch^2)");
+	Check(ApproxEqual(wMarch,16.0/25.0,TOL),
+		"march family gets pMarch^2/(pMarch^2+pV^2)");
+	Check(ApproxEqual(wNee+wMarch,1.0,TOL),
+		"competing NEE and march family weights sum to one");
+
+	Check(MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,false,false)==1.0,
+		"camera or NEE-disabled march keeps weight one");
+	Check(MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,true,true)==1.0,
+		"sampled singular continuation keeps march weight one");
+	Check(MISWeights::VolumeEmissionNEEFamilyWeight(pV,0.0)==1.0,
+		"structurally absent march gives NEE weight one");
+
+	const Scalar density = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,2.0,0.125);
+	Check(ApproxEqual(density,0.00390625,TOL),
+		"march density includes direction, p_t, inverse-square, and chain survival");
+	Check(MISWeights::VolumeEmissionMarchDensity(0.25,0.5,2.0,0.0)==0.0,
+		"zero boundary survival removes march support");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		0.25,1.0e200,1.0e200,1.0),2.5e-201,2.5e-211),
+		"march density preserves a representable result when distance squared overflows");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		1.0e200,1.0e200,1.0e200,1.0),1.0,1e-12),
+		"march density cancels overflowing numerator and denominator scales");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		1.0e-200,1.0e-200,1.0e-200,1.0),1.0,1e-12),
+		"march density cancels underflowing numerator and denominator scales");
+
+	const Scalar extremeNee = MISWeights::VolumeEmissionNEEFamilyWeight(
+		1.0e300,1.0e-300);
+	const Scalar extremeMarch = MISWeights::VolumeEmissionMarchFamilyWeight(
+		1.0e-300,1.0e300,true,false);
+	Check(std::isfinite(extremeNee) && extremeNee==1.0,
+		"NEE family weight stays finite for extreme density ratios");
+	Check(std::isfinite(extremeMarch) && extremeMarch==0.0,
+		"march family weight stays finite for extreme density ratios");
+
+	IRayCaster::RAY_STATE state;
+	Check(!state.volumeCompetitionAvailable && !state.volumeContinuationSingular,
+		"new segment state defaults to camera/unsupported weight-one semantics");
+	state.volumeCompetitionAvailable = true;
+	state.volumeContinuationSingular = false;
+	const IRayCaster::RAY_STATE copied(state);
+	Check(copied.volumeCompetitionAvailable && !copied.volumeContinuationSingular,
+		"two-bit volume partition state survives ordinary ray-state copying");
+}
+
+//////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
 int main()
@@ -250,6 +313,7 @@ int main()
 	TestPowerHeuristic();
 	TestExtremeRatios();
 	TestGuidingSelectedMixturePdf();
+	TestVolumeEmissionFamilyPartition();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

@@ -35,11 +35,71 @@
 #define MIS_WEIGHTS_
 
 #include "Math3D/Math3D.h"
+#include "FiniteMath.h"
 
 namespace RISE
 {
 	namespace MISWeights
 	{
+		/// Power-2 family weight with stable ratio scaling.  This is the
+		/// NEE-side weight for thermal-volume emission when both pV and pMarch
+		/// describe the same endpoint in scene-volume measure.
+		inline Scalar VolumeEmissionNEEFamilyWeight(
+			const Scalar pV,
+			const Scalar pMarch
+			)
+		{
+			if( !RISE::IsFiniteDouble(pV) || pV <= 0.0 ) return 0.0;
+			if( !RISE::IsFiniteDouble(pMarch) || pMarch <= 0.0 ) return 1.0;
+			if( pV >= pMarch ) {
+				const Scalar ratio = pMarch/pV;
+				return 1.0/(1.0+ratio*ratio);
+			}
+			const Scalar ratio = pV/pMarch;
+			return ratio*ratio/(1.0+ratio*ratio);
+		}
+
+		/// March-side thermal-emission weight.  The two explicit state bits are
+		/// the complete selection rule: camera/unsupported paths and sampled
+		/// delta lobes remain weight 1; only an attempted competing NEE strategy
+		/// against a non-singular continuation takes the complementary power-2
+		/// family weight.
+		inline Scalar VolumeEmissionMarchFamilyWeight(
+			const Scalar pMarch,
+			const Scalar pV,
+			const bool competitionAvailable,
+			const bool continuationSingular
+			)
+		{
+			if( !competitionAvailable || continuationSingular ) return 1.0;
+			return VolumeEmissionNEEFamilyWeight(pMarch,pV);
+		}
+
+		/// Convert a direction×distance march proposal to scene-volume measure.
+		/// Boundary survival is proposal probability, distinct from physical
+		/// transmittance.  Invalid or empty support fails closed to zero.
+		inline Scalar VolumeEmissionMarchDensity(
+			const Scalar directionPdf,
+			const Scalar distancePdf,
+			const Scalar distance,
+			const Scalar boundarySurvival
+			)
+		{
+			if( !RISE::IsFiniteDouble(directionPdf) ||
+				!RISE::IsFiniteDouble(distancePdf) ||
+				!RISE::IsFiniteDouble(distance) ||
+				!RISE::IsFiniteDouble(boundarySurvival) ||
+				directionPdf <= 0.0 || distancePdf <= 0.0 || distance <= 0.0 ||
+				boundarySurvival <= 0.0 ) return 0.0;
+			// Compose in exponent space so scene-unit changes cannot overflow or
+			// underflow an intermediate product when the final density is still
+			// representable.
+			const Scalar logDensity = log(directionPdf) + log(distancePdf) +
+				log(boundarySurvival) - 2.0*log(distance);
+			const Scalar result = exp(logDensity);
+			return RISE::IsFiniteDouble(result) && result > 0.0 ? result : 0.0;
+		}
+
 		/// Balance heuristic weight: w = pa / (pa + pb)
 		///
 		/// \param pa  PDF of the technique being weighted
