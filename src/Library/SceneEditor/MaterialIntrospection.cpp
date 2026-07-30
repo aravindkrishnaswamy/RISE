@@ -20,6 +20,7 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Materials/Material.h"   // NullMaterial — Job's default-registered "none" material
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/DielectricMaterial.h"
@@ -175,6 +176,7 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	// objects fall back to when their `material` chunk arg was
 	// omitted.  Surface it explicitly so the user sees a meaningful
 	// type instead of "(unknown type)".
+	if( IsExactNullBoundaryMaterial( &material ) )                                      return String( "Null Medium Boundary" );
 	if( dynamic_cast<const NullMaterial*>( &material ) )                                return String( "None (default)" );
 	if( dynamic_cast<const LambertianMaterial*>( &material ) )                          return String( "Lambertian" );
 	if( dynamic_cast<const PolishedMaterial*>( &material ) )                            return String( "Polished" );

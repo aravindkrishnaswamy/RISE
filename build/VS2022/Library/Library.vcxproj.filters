@@ -714,6 +714,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianBRDF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
@@ -1897,6 +1900,9 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\Material.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.h">

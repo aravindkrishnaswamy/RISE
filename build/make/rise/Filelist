@@ -186,6 +186,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
+	$(PATHLIBRARY)Materials/NullBoundaryMaterial.cpp						\
 	$(PATHLIBRARY)Materials/LambertianSPF.cpp								\
 	$(PATHLIBRARY)Materials/LambertianEmitter.cpp							\
 	$(PATHLIBRARY)Materials/OrenNayarBRDF.cpp								\

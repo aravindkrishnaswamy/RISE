@@ -3777,6 +3777,14 @@ namespace RISE
 			const double /*smoke_g_carbon*/
 			) { return false; }
 
+		//! Adds a unit-transmission medium boundary distinct from the
+		//! terminating "none" material.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddNullBoundaryMaterial(
+			const char* /*name*/					///< [in] Name of the material
+			) { return false; }
+
 	};
 
 

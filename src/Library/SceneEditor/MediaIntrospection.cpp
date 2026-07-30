@@ -11,6 +11,9 @@
 //    read-only with an explanatory note: changing its max-coefficient
 //    bounds without rebuilding the majorant grid would desync delta
 //    tracking, and the volume data + bbox were baked at construction.
+//    Enclosure is intentionally not a medium slot: media are shared assets,
+//    while a null boundary is authored as an object's exact
+//    NullBoundaryMaterial plus that object's interior_medium binding.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

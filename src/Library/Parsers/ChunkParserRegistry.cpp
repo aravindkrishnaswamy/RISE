@@ -3084,6 +3084,29 @@ namespace RISE
 			// Materials
 			//////////////////////////////////////////
 
+			struct NullBoundaryMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.AddNullBoundaryMaterial( bag.GetString( "name" ).c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "null_boundary_material";
+						cd.category = ChunkCategory::Material;
+						cd.description = "Unit-transmission medium boundary with no optical or shading response.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true; p.description = "Unique material name"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct LambertianMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -10129,6 +10152,7 @@ namespace RISE
 		add( "piecewise_linear_function2d",           new PiecewiseLinearFunction2DChunkParser() );
 
 		// Materials
+		add( "null_boundary_material",                 new NullBoundaryMaterialAsciiChunkParser() );
 		add( "lambertian_material",                   new LambertianMaterialAsciiChunkParser() );
 		add( "perfectreflector_material",             new PerfectReflectorMaterialAsciiChunkParser() );
 		add( "perfectrefractor_material",             new PerfectRefractorMaterialAsciiChunkParser() );

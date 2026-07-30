@@ -167,6 +167,26 @@ namespace RISE
 			//! ends up being.
 			void ResolveXrayView_( RayIntersection& ri ) const;
 
+			//! Internal same-segment continuations used only when traversing an
+			//! exact NullBoundaryMaterial.  skipEntryGates prevents a boundary
+			//! crossing from becoming a second depth/roulette event.
+			bool CastRayImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, RISEPel& c, const RAY_STATE& rs,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+			bool CastRayNMImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+			bool CastRayHWSSImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar c[SampledWavelengths::N],
+				const RAY_STATE& rs, SampledWavelengths& swl,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+
 		public:
 			RayCaster(
 				const bool seeRadianceMap,

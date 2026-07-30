@@ -231,6 +231,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HomogeneousMedium.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IMaterial.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\MultipoleDiffusion.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongSPF.cpp" />
@@ -730,6 +731,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\LambertianMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\LambertianSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\Material.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarSPF.h" />

@@ -19,6 +19,7 @@
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IEmitter.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 #include "../Utilities/GeometricUtilities.h"
@@ -481,6 +482,7 @@ LightSampler::LightSampler() :
   lightSampleRRThreshold( 0 ),
   bSceneHasObjectMedia( false ),
   bSceneHasObjectFireMedia( false ),
+  bSceneHasNullBoundaries( false ),
   volumeEmissionDistributionValid( true ),
   pLightBVH( 0 ),
   bUseLightBVH( false ),
@@ -732,14 +734,16 @@ void LightSampler::Prepare(
 	// evaluation is skipped entirely.
 	bSceneHasObjectMedia = false;
 	bSceneHasObjectFireMedia = false;
+	bSceneHasNullBoundaries = false;
 	volumeEmissionMedia.clear();
 	{
 		struct MediaScan : public IEnumCallback<IObject>
 		{
 			bool found;
 			bool foundFire;
+			bool foundNullBoundary;
 			std::vector<const IMedium*> emitters;
-			MediaScan() : found(false), foundFire(false) {}
+			MediaScan() : found(false), foundFire(false), foundNullBoundary(false) {}
 			void AddEmitter( const IMedium* medium )
 			{
 				if( !medium || medium->GetThermalEmissionImportance() <= 0.0 ) return;
@@ -751,6 +755,9 @@ void LightSampler::Prepare(
 			}
 			bool operator()( const IObject& obj )
 			{
+				if( IsExactNullBoundaryMaterial( obj.GetMaterial() ) ) {
+					foundNullBoundary = true;
+				}
 				const IMedium* medium = obj.GetInteriorMedium();
 				if( medium ) {
 					found = true;
@@ -766,6 +773,7 @@ void LightSampler::Prepare(
 		scene.GetObjects()->EnumerateObjects( scan );
 		bSceneHasObjectMedia = scan.found;
 		bSceneHasObjectFireMedia = scan.foundFire;
+		bSceneHasNullBoundaries = scan.foundNullBoundary;
 		const IMedium* globalMedium = scene.GetGlobalMedium();
 		scan.AddEmitter( globalMedium );
 		volumeEmissionMedia.swap( scan.emitters );

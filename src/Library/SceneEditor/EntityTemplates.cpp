@@ -266,6 +266,26 @@ namespace
 	// -------------------------------------------------------------
 	// Materials (each bundles the small painter(s) its slots need)
 	// -------------------------------------------------------------
+	const EntityTemplateDef& NullBoundaryMaterialTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Material;
+			t.label = "Null Medium Boundary";
+			t.baseName = "medium_boundary";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"null_boundary_material\n"
+				"{\n"
+				"name @NAME@\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
 	const EntityTemplateDef& LambertianMaterialTemplate()
 	{
 		static const EntityTemplateDef d = []{
@@ -702,7 +722,7 @@ namespace
 			&SphereObjectTemplate(), &BoxObjectTemplate(), &CylinderObjectTemplate(), &InfinitePlaneObjectTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kMaterial = {
-			&LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(),
+			&NullBoundaryMaterialTemplate(), &LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(),
 			&GGXMaterialTemplate(), &PerfectRefractorMaterialTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kPainter = {

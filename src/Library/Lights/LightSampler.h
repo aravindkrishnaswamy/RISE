@@ -207,6 +207,7 @@ namespace RISE
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
+			bool						bSceneHasNullBoundaries;	///< True if any object uses the exact null-boundary material
 			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
 			AliasTable					volumeEmissionAlias;	///< q_m^V proportional to W_m
 			bool						volumeEmissionDistributionValid;
@@ -524,6 +525,11 @@ namespace RISE
 			/// evaluation — when false, all shadow transmittance calls
 			/// are skipped.
 			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+
+			/// Root transport stacks need containment seeding only when an exact
+			/// null boundary exists. Keeping this cached preserves legacy camera
+			/// stack initialization byte-for-byte for all other scenes.
+			bool SceneHasNullBoundaries() const { return bSceneHasNullBoundaries; }
 
 			/// Fire disables hero-wavelength medium transport until Phase D.
 			/// Cached during Prepare so HWSS routing never scans objects per sample.

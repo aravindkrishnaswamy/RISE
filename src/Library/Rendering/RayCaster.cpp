@@ -22,6 +22,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
@@ -31,6 +32,7 @@
 #include "../Utilities/Optics.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 
 #define ENABLE_MAX_RECURSION
@@ -68,6 +70,7 @@ namespace
 		const RayIntersection& ri )
 	{
 		if( !rc.pAOV || rc.pAOV->primaryDepthCaptured ) return;
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) return;
 		rc.pAOV->primaryDepthCaptured = true;
 		rc.pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
 		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
@@ -85,6 +88,18 @@ namespace
 				? ri.pMaterial->GetBSDF()->albedo( aovGeom )
 				: RISEPel( 1, 1, 1 ) );
 		rc.pAOV->valid = true;
+	}
+
+	inline void OffsetCapturedPrimaryAOVDepth(
+		const RuntimeContext& rc,
+		const Scalar distance,
+		const bool unresolvedAtEntry
+		)
+	{
+		if( unresolvedAtEntry && rc.pAOV &&
+			rc.pAOV->primaryDepthCaptured && rc.pAOV->depth > 0.0 ) {
+			rc.pAOV->depth += distance;
+		}
 	}
 
 	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
@@ -747,6 +762,9 @@ bool RayCaster::CastRay(
 			) const
 {
 	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
 	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, ior_stack );
 }
 
@@ -761,6 +779,24 @@ bool RayCaster::CastRay(
 			const IORStack& ior_stack							///< [in/out] Index of refraction stack
 			) const
 {
+	return CastRayImpl_( rc, rast, ray, c, rs, distance, pRadianceMap,
+		ior_stack, false );
+}
+
+bool RayCaster::CastRayImpl_(
+			const RuntimeContext& rc,
+			const RasterizerState& rast,
+			const Ray& ray,
+			RISEPel& c,
+			const RAY_STATE& rs,
+			Scalar* distance,
+			const IRadianceMap* pRadianceMap,
+			const IORStack& ior_stack,
+			const bool skipEntryGates
+			) const
+{
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
 	// Fire has no Pel transport until Phase-A step 7.  Diagnose before
 	// recursion/RR gates so every RGB entry route fails loudly.
 	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
@@ -777,7 +813,7 @@ bool RayCaster::CastRay(
 	}
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( !skipEntryGates && rs.depth > nMaxRecursions )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -791,7 +827,7 @@ bool RayCaster::CastRay(
 	// intersection work, compensate the returned radiance after.
 	Scalar rrCompensation = 1.0;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
@@ -807,13 +843,15 @@ bool RayCaster::CastRay(
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	pScene->GetObjects()->IntersectRay( ri, true, true, skipEntryGates );
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
 	}
@@ -833,7 +871,8 @@ bool RayCaster::CastRay(
 		// eRayView's "hide luminaires" preview setting even though a
 		// directly-visible emitter at the same spot would be suppressed.
 		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
 				bHit = bShowLuminaires;
 			}
 		}
@@ -879,7 +918,10 @@ bool RayCaster::CastRay(
 
 	if( pMedium )
 	{
-		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 
 		IndependentSampler mediumSampler( rc.random );
 		bool scattered = false;
@@ -1324,7 +1366,7 @@ bool RayCaster::CastRay(
 			// Use midpoint of the segment for coefficient evaluation,
 			// which is a better approximation than ray origin for
 			// heterogeneous media where density varies spatially.
-			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
+			const Scalar segDist = bHit ? maxDist : Scalar(1000.0);
 			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
 			const MediumCoefficients coeff = pMedium->GetCoefficients( midPt );
 			if( ColorMath::MaxValue( coeff.emission ) > 0 )
@@ -1354,6 +1396,41 @@ bool RayCaster::CastRay(
 
 	if( bHit )
 	{
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			IORStack nextStack( ior_stack );
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				ray, ri.geometric.surfaceRange );
+
+			RISEPel downstream( 0, 0, 0 );
+			Scalar downstreamDistance = 0;
+			const bool downstreamHit = CastRayImpl_(
+				rc, rast, nextRay, downstream, rs, &downstreamDistance,
+				pRadianceMap, nextStack, true );
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+
+			RISEPel survival( 1, 1, 1 );
+			if( pMedium ) {
+				survival = RayCasterSurvivalWeight(
+					pMedium->EvalTransmittance( ray, ri.geometric.surfaceRange ),
+					noScatterPdfScale * pMedium->EvalDistancePdf(
+						ray, ri.geometric.surfaceRange, false,
+						ri.geometric.surfaceRange ) );
+			}
+			const RISEPel segmentSource = pMedium ? c : RISEPel( 0, 0, 0 );
+			c = segmentSource + survival * downstream;
+			if( rrCompensation != 1.0 ) c = c * rrCompensation;
+
+			if( distance ) {
+				*distance = downstreamDistance >= RISE_INFINITY
+					? RISE_INFINITY
+					: ri.geometric.surfaceRange + downstreamDistance;
+			}
+			return downstreamHit || ColorMath::MaxValue( segmentSource ) != 0.0;
+		}
+
 		// If there is an intersection modifier, then get it to modify
 		// the intersection information
 		if( ri.pModifier ) {
@@ -1472,6 +1549,9 @@ bool RayCaster::CastRayNM(
 	) const
 {
 	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
 	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, ior_stack );
 }
 
@@ -1489,6 +1569,25 @@ bool RayCaster::CastRayNM(
 	const IORStack& ior_stack							///< [in/out] Index of refraction stack
 	) const
 {
+	return CastRayNMImpl_( rc, rast, ray, c, rs, nm, distance,
+		pRadianceMap, ior_stack, false );
+}
+
+bool RayCaster::CastRayNMImpl_(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& ray,
+	Scalar& c,
+	const RAY_STATE& rs,
+	const Scalar nm,
+	Scalar* distance,
+	const IRadianceMap* pRadianceMap,
+	const IORStack& ior_stack,
+	const bool skipEntryGates
+	) const
+{
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
 	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
 	const bool carriesMediumSource = entryMedium &&
 		( entryMedium->IsFireMedium() ||
@@ -1496,7 +1595,7 @@ bool RayCaster::CastRayNM(
 			entryMedium->GetCoefficientsNM( ray.origin, nm ).emission != 0.0 );
 	bool depthGateDeferredForEmission = false;
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( !skipEntryGates && rs.depth > nMaxRecursions )
 	{
 		if( carriesMediumSource ) {
 			depthGateDeferredForEmission = true;
@@ -1515,7 +1614,7 @@ bool RayCaster::CastRayNM(
 	Scalar rrContinuationCompensation = 1.0;
 	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
@@ -1534,13 +1633,15 @@ bool RayCaster::CastRayNM(
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	pScene->GetObjects()->IntersectRay( ri, true, true, skipEntryGates );
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
 	}
@@ -1554,7 +1655,8 @@ bool RayCaster::CastRayNM(
 		// Re-apply the same luminaire-suppression check to the RESOLVED
 		// hit -- see CastRay's identical call site for the rationale.
 		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
 				bHit = bShowLuminaires;
 			}
 		}
@@ -1584,7 +1686,10 @@ bool RayCaster::CastRayNM(
 
 	if( pMedium )
 	{
-		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 
 		IndependentSampler mediumSampler( rc.random );
 		Scalar segmentStart = 0.0;
@@ -1962,6 +2067,41 @@ bool RayCaster::CastRayNM(
 	}
 
 	if( bHit ) {
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			IORStack nextStack( ior_stack );
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				ray, ri.geometric.surfaceRange );
+
+			Scalar downstream = 0.0;
+			Scalar downstreamDistance = 0.0;
+			const bool downstreamHit = CastRayNMImpl_(
+				rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
+				pRadianceMap, nextStack, true );
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+
+			Scalar survival = 1.0;
+			if( pMedium ) {
+				const Scalar Tr = pMedium->EvalTransmittanceNM(
+					ray, ri.geometric.surfaceRange, nm );
+				const Scalar pSurvival = noScatterPdfScale_NM *
+					pMedium->EvalDistancePdfNM(
+						ray, ri.geometric.surfaceRange, false,
+						ri.geometric.surfaceRange, nm );
+				survival = pSurvival > 0.0 ? Tr / pSurvival : 0.0;
+			}
+			c = additiveEmissionNM +
+				rrContinuationCompensation * survival * downstream;
+			if( distance ) {
+				*distance = downstreamDistance >= RISE_INFINITY
+					? RISE_INFINITY
+					: ri.geometric.surfaceRange + downstreamDistance;
+			}
+			return downstreamHit || additiveEmissionNM != 0.0;
+		}
+
 		// If there is an intersection modifier, then get it to modify
 		// the intersection information
 		if( ri.pModifier ) {
@@ -2090,7 +2230,37 @@ bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
 		return false;
 	}
 
-	return pScene->GetObjects()->IntersectShadowRay( ray, dHowFar, true, true );
+	// Walk closest hits so an exact NullBoundaryMaterial is transparent by
+	// class even when its object authors casts_shadows=TRUE.  Ordinary objects
+	// retain the historical casts_shadows behavior.  The absolute-parameter
+	// progress rule has no crossing cap and cannot silently darken a valid
+	// chain of null enclosures.
+	Scalar segmentStart = 0.0;
+	for( ;; )
+	{
+		if( !(segmentStart < dHowFar) ) return false;
+		const Ray segmentRay( ray.PointAtLength( segmentStart ), ray.Dir() );
+		RayIntersection ri( segmentRay, nullRasterizerState );
+		ri.geometric.minimumSurfaceRange =
+			std::nextafter( segmentStart, dHowFar ) - segmentStart;
+		pScene->GetObjects()->IntersectRay( ri, true, true, true );
+		if( !ri.geometric.bHit || ri.geometric.surfaceRange >= dHowFar - segmentStart ) {
+			return false;
+		}
+
+		const Scalar boundary = segmentStart + ri.geometric.surfaceRange;
+		if( !std::isfinite( boundary ) || !(boundary > segmentStart) ) {
+			GlobalLog()->PrintEasyError(
+				"RayCaster::CastShadowRay: malformed or non-progressing boundary hit" );
+			return true;
+		}
+
+		if( !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pObject && ri.pObject->DoesCastShadows() ) {
+			return true;
+		}
+		segmentStart = boundary;
+	}
 }
 
 // ================================================================
@@ -2170,15 +2340,24 @@ bool RayCaster::CastShadowRayTransmittance(
 	// GetSpecularInfo IOR-side logic uses containsCurrent() so we keep
 	// the stack's current-object pointer in sync as we cross.
 	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
 
 	Point3 origin = ray.origin;
 	Scalar remaining = dHowFar;
+	bool rejectZeroDistanceBoundary = false;
 
-	for( unsigned int crossing = 0; crossing < kMaxCrossings; crossing++ )
+	for( unsigned int crossing = 0; crossing < kMaxCrossings; )
 	{
 		Ray segRay( origin, dir );
 		RayIntersection ri( segRay, nullRasterizerState );
-		pScene->GetObjects()->IntersectRay( ri, true, true, false );
+		if( rejectZeroDistanceBoundary ) {
+			ri.geometric.minimumSurfaceRange = 0.0;
+		}
+		pScene->GetObjects()->IntersectRay(
+			ri, true, true, rejectZeroDistanceBoundary );
+		rejectZeroDistanceBoundary = false;
 
 		if( !ri.geometric.bHit || ri.geometric.range >= remaining )
 		{
@@ -2191,6 +2370,17 @@ bool RayCaster::CastShadowRayTransmittance(
 		// is a perfect-specular transmissive dielectric we can pass
 		// through, or an occluder that fully blocks.
 		ior_stack.SetCurrentObject( ri.pObject );
+
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			const Scalar advance = ri.geometric.surfaceRange;
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, ior_stack );
+			origin = segRay.PointAtLength( advance );
+			remaining -= advance;
+			if( remaining <= 0.0 ) return false;
+			rejectZeroDistanceBoundary = true;
+			continue;
+		}
 
 		SpecularInfo info;
 		if( ri.pMaterial )
@@ -2327,6 +2517,7 @@ bool RayCaster::CastShadowRayTransmittance(
 			// Stepped at or past the light — nothing more occludes.
 			return false;
 		}
+		++crossing;
 	}
 
 	// Crossing cap reached — conservatively report blocked.
@@ -2602,6 +2793,32 @@ bool RayCaster::CastRayHWSS(
 	const IORStack& ior_stack
 	) const
 {
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() &&
+		pScene && !ior_stack.topObject() ) {
+		IORStack seededStack( ior_stack );
+		IORStackSeeding::SeedFromPoint( seededStack, ray.origin, *pScene );
+		return CastRayHWSSImpl_( rc, rast, ray, c, rs, swl, distance,
+			pRadianceMap, seededStack, false );
+	}
+	return CastRayHWSSImpl_( rc, rast, ray, c, rs, swl, distance,
+		pRadianceMap, ior_stack, false );
+}
+
+bool RayCaster::CastRayHWSSImpl_(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& ray,
+	Scalar c[SampledWavelengths::N],
+	const RAY_STATE& rs,
+	SampledWavelengths& swl,
+	Scalar* distance,
+	const IRadianceMap* pRadianceMap,
+	const IORStack& ior_stack,
+	const bool skipEntryGates
+	) const
+{
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		c[i] = 0;
 
@@ -2617,8 +2834,9 @@ bool RayCaster::CastRayHWSS(
 			c[i] = 0;
 			if( !swl.terminated[i] )
 			{
-				bool hit = CastRayNM( rc, rast, ray, c[i], rs,
-					swl.lambda[i], distance, pRadianceMap, ior_stack );
+				bool hit = CastRayNMImpl_( rc, rast, ray, c[i], rs,
+					swl.lambda[i], distance, pRadianceMap, ior_stack,
+					skipEntryGates );
 				if( hit ) anyHit = true;
 			}
 		}
@@ -2626,7 +2844,7 @@ bool RayCaster::CastRayHWSS(
 	}
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( !skipEntryGates && rs.depth > nMaxRecursions )
 		return false;
 #endif
 
@@ -2635,7 +2853,7 @@ bool RayCaster::CastRayHWSS(
 	// which does its own RR).
 	Scalar rrCompensation = 1.0;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive )
@@ -2648,13 +2866,15 @@ bool RayCaster::CastRayHWSS(
 	RayIntersection ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	pScene->GetObjects()->IntersectRay( ri, true, true, skipEntryGates );
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
 	}
@@ -2671,7 +2891,8 @@ bool RayCaster::CastRayHWSS(
 		// Re-apply the same luminaire-suppression check to the RESOLVED
 		// hit -- see CastRay's identical call site for the rationale.
 		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
 				bHit = bShowLuminaires;
 			}
 		}
@@ -2680,6 +2901,31 @@ bool RayCaster::CastRayHWSS(
 	bool bReturn = false;
 
 	if( bHit ) {
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			IORStack nextStack( ior_stack );
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				ray, ri.geometric.surfaceRange );
+
+			Scalar downstream[SampledWavelengths::N];
+			Scalar downstreamDistance = 0.0;
+			const bool downstreamHit = CastRayHWSSImpl_(
+				rc, rast, nextRay, downstream, rs, swl, &downstreamDistance,
+				pRadianceMap, nextStack, true );
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+			for( unsigned int i = 0; i < SampledWavelengths::N; ++i ) {
+				c[i] = downstream[i] * rrCompensation;
+			}
+			if( distance ) {
+				*distance = downstreamDistance >= RISE_INFINITY
+					? RISE_INFINITY
+					: ri.geometric.surfaceRange + downstreamDistance;
+			}
+			return downstreamHit;
+		}
+
 		// Intersection modifier
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );

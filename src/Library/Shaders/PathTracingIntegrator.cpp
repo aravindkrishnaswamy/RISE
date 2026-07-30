@@ -23,6 +23,7 @@
 #include "../Utilities/BSSRDFSampling.h"
 #include "../Utilities/RandomWalkSSS.h"
 #include "../Utilities/MediumTracking.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/PathVertexEval.h"
@@ -44,6 +45,7 @@
 // UniformColorPainter wrapped by a LambertianBRDF/LambertianSPF pair.
 #include "../Materials/LambertianBRDF.h"
 #include "../Materials/LambertianSPF.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Painters/UniformColorPainter.h"
 
 using namespace RISE;
@@ -64,6 +66,66 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 
 namespace
 {
+	inline void ContinueAcrossNullBoundary(
+		const RayIntersection& ri,
+		Ray& ray,
+		IORStack& stack,
+		bool& rejectZeroDistanceBoundary )
+	{
+		Implementation::ApplyExactNullBoundaryTransition(
+			ri.pMaterial, ri.pObject, stack );
+		ray = Implementation::ContinueExactNullBoundaryRay(
+			ri.geometric.ray, ri.geometric.surfaceRange );
+		rejectZeroDistanceBoundary = true;
+	}
+
+	inline bool ResolvePrimaryAOVSurface(
+		const RayIntersection& initialHit,
+		const RasterizerState& rast,
+		const IScene& scene,
+		RayIntersection& resolvedHit,
+		Scalar& resolvedDepth
+		)
+	{
+		resolvedHit = initialHit;
+		resolvedDepth = initialHit.geometric.bHit
+			? initialHit.geometric.range : Scalar( 0 );
+		Scalar traversed = 0.0;
+
+		while( resolvedHit.geometric.bHit &&
+			IsExactNullBoundaryMaterial( resolvedHit.pMaterial ) )
+		{
+			const Scalar boundary = resolvedHit.geometric.surfaceRange;
+			if( !std::isfinite( boundary ) || !(boundary > 0.0) ) {
+				GlobalLog()->PrintEasyError(
+					"PathTracingIntegrator: malformed null boundary while resolving primary AOV" );
+				resolvedHit.geometric.bHit = false;
+				resolvedDepth = 0.0;
+				return false;
+			}
+
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				resolvedHit.geometric.ray, boundary );
+			const Scalar nextTraversed = traversed + boundary;
+			if( !std::isfinite( nextTraversed ) || nextTraversed < traversed ) {
+				GlobalLog()->PrintEasyError(
+					"PathTracingIntegrator: non-progressing null boundary while resolving primary AOV" );
+				resolvedHit.geometric.bHit = false;
+				resolvedDepth = 0.0;
+				return false;
+			}
+			traversed = nextTraversed;
+
+			resolvedHit = RayIntersection( nextRay, rast );
+			resolvedHit.geometric.minimumSurfaceRange = 0.0;
+			scene.GetObjects()->IntersectRay( resolvedHit, true, true, true );
+		}
+
+		resolvedDepth = resolvedHit.geometric.bHit
+			? traversed + resolvedHit.geometric.range : Scalar( 0 );
+		return resolvedHit.geometric.bHit;
+	}
+
 	inline unsigned int EffectivePathTracingMaxDepth( const RuntimeContext& rc,
 	                                                  unsigned int configured )
 	{
@@ -1757,6 +1819,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// record so this same loop performs intersection AND medium transport on
 	// that immediately-following segment.
 	bool needsIntersection = !ri.geometric.bHit;
+	bool rejectZeroDistanceBoundary = false;
 
 	// Firefly tracing: assigns a monotonically increasing per-pixel sample
 	// ID so the output log can be grouped by sample.  Only enabled when
@@ -1817,8 +1880,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// caller that never calls the setter.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
-	for( unsigned int depth = startDepth; ; depth++ )
+	unsigned int depthIncrement = 1;
+	bool continueSameTransportSegment = false;
+	for( unsigned int depth = startDepth; ; depth += depthIncrement )
 	{
+		depthIncrement = 1;
 		// A spectral continuation segment is transport, not a new continuation
 		// decision: even when the preceding vertex consumed the final path-depth
 		// slot, §7.1 requires its additive source and any finite thermal collision
@@ -1856,7 +1922,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 		}
 
-		sampler.StartStream( 16 + depth );
+		if( !continueSameTransportSegment ) {
+			sampler.StartStream( 16 + depth );
+		}
+		continueSameTransportSegment = false;
 
 		// ============================================================
 		// Intersection + medium transport (skipped for first iteration
@@ -1866,7 +1935,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			if( rejectZeroDistanceBoundary ) {
+				ri.geometric.minimumSurfaceRange = 0.0;
+			}
+			scene.GetObjects()->IntersectRay(
+				ri, true, true, rejectZeroDistanceBoundary );
+			rejectZeroDistanceBoundary = false;
 
 			bool bHit = ri.geometric.bHit;
 
@@ -1877,7 +1951,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				const Scalar maxDist = bHit
+					? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+						? ri.geometric.surfaceRange : ri.geometric.range )
+					: RISE_INFINITY;
 				if constexpr ( !Traits::is_pel ) {
 					const Scalar additiveEmission = PTFullSegmentAdditiveEmissionNM(
 						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
@@ -2110,9 +2187,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
 					// double-count attenuation.
 					const Value Tr = PTEvalTransmittance<Tag>(
-						pCurrentMedium, currentRay, ri.geometric.range, tag );
+						pCurrentMedium, currentRay, maxDist, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-						pCurrentMedium, currentRay, ri.geometric.range, tag );
+						pCurrentMedium, currentRay, maxDist, tag );
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 				else if( !scattered && !bHit )
@@ -2130,6 +2207,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pCurrentMedium, currentRay, maxDist, tag );
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
+			}
+
+			// A null boundary is part of this same transport segment: it has no
+			// vertex, emission/shading lookup, depth increment, or roulette event.
+			if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				ContinueAcrossNullBoundary(
+					ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+				depthIncrement = 0;
+				continueSameTransportSegment = true;
+				continue;
 			}
 
 			// The one spectral transport-only iteration ends after its medium
@@ -2231,6 +2318,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 		}
 		needsIntersection = true;
+
+		// The caller-provided first hit did not pass through the intersection
+		// branch above, so handle the exact null-boundary type here as well.
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+			ContinueAcrossNullBoundary(
+				ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+			depthIncrement = 0;
+			continueSameTransportSegment = true;
+			continue;
+		}
 
 		// ============================================================
 		// Surface hit processing
@@ -3712,6 +3809,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	}
 
 	IORStack iorStack( 1.0 );
+	const LightSampler* rootLights = caster.GetLightSampler();
+	if( rootLights && rootLights->SceneHasNullBoundaries() ) {
+		IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	}
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
@@ -3722,8 +3823,26 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// traversal.  Never replace this camera-ray range with a later
 		// bounce segment.
 		if( pAOV ) {
+			RayIntersection aovHit( ri );
+			Scalar aovDepth = 0.0;
+			ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
 			pAOV->primaryDepthCaptured = true;
-			pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+			pAOV->depth = aovDepth;
+
+			const bool aovUseFirstHit =
+				( rc.aovPrefilterMode == OidnPrefilter::Fast );
+			if( aovHit.geometric.bHit && aovUseFirstHit )
+			{
+				RayIntersectionGeometric aovGeom( aovHit.geometric );
+				if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
+				pAOV->normal = aovGeom.vNormal;
+				pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
+					? pClayBRDF->albedo( aovGeom )
+					: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
+						? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
+						: RISEPel( 1, 1, 1 ) );
+				pAOV->valid = true;
+			}
 		}
 	}
 
@@ -3740,34 +3859,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
 	// AOV recording is compiled in for both AOV-capable tags: Pel and NM.
 	// Callers that did not request auxiliaries pass a null PixelAOV.
-	if constexpr ( Traits::supports_aov )
-	{
-		const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
-		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
-		{
-			RayIntersectionGeometric aovGeom( ri.geometric );
-			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
-			pAOV->normal = aovGeom.vNormal;
-			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
-			// under mClayOverride every surface's REFLECTANCE is the
-			// substituted clay BRDF (see SetClayOverride's doc) -- the
-			// albedo AOV captured here for OIDN must match, or the
-			// DENOISED clay output reacquires the authored material's
-			// colouration via OIDN's albedo-guided filtering, defeating
-			// the mode's material-independence contract exactly where
-			// users look at it (the variant pipeline runs with OIDN on).
-			// This is the FAST-prefilter hook (camera ray's first hit,
-			// evaluated before IntegrateFromHit's loop ever substitutes
-			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
-			// already reads the loop-local `pBRDF`, which IS already
-			// clay-substituted there, so only this site needed the fix.
-			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( aovGeom ) :
-				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
-					: RISEPel( 1, 1, 1 ) );
-			pAOV->valid = true;
-		}
-	}
+	// Fast AOV capture above resolves through any leading exact null-boundary
+	// chain without changing the transport intersection or stack.
 
 	// Medium transport for first bounce
 	const IObject* pMediumObject = 0;
@@ -3784,7 +3877,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = ri.geometric.bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		if constexpr ( !Traits::is_pel ) {
 			mediumSource = mediumSource + PTFullSegmentAdditiveEmissionNM(
@@ -4015,9 +4111,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// monochrome/NM homogeneous) rather than Tr, which would double-count
 			// attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>(
-				pCurrentMedium, cameraRay, ri.geometric.range, tag );
+				pCurrentMedium, cameraRay, maxDist, tag );
 			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-				pCurrentMedium, cameraRay, ri.geometric.range, tag );
+				pCurrentMedium, cameraRay, maxDist, tag );
 
 			if( !ri.geometric.bHit ) {
 				return Traits::zero();
@@ -4272,6 +4368,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// mode skips this and records at the first non-delta scatter below.
 	// Albedo/normal are wavelength-independent, so the hero bundle records once.
 	if( pAOV && !pAOV->valid && firstHit.geometric.bHit &&
+		!IsExactNullBoundaryMaterial( firstHit.pMaterial ) &&
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
@@ -4395,6 +4492,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
+	bool rejectZeroDistanceBoundary = false;
 
 	// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin of
 	// the Pel/NM loop's `bPassedThroughSpecular` -- tracks whether the
@@ -4414,8 +4512,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// was also a hardcoded literal 128; see SetMaxPathDepth's doc.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
-	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
+	unsigned int depthIncrement = 1;
+	bool continueSameTransportSegment = false;
+	for( unsigned int depth = startDepth; depth < maxDepth; depth += depthIncrement )
 	{
+		depthIncrement = 1;
 		// Runaway-throughput guard -- see RGB IntegrateFromHit.  HWSS
 		// carries per-wavelength throughput in throughputComp[]; take
 		// the max across the bundle.
@@ -4432,7 +4533,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 
-		sampler.StartStream( 16 + depth );
+		if( !continueSameTransportSegment ) {
+			sampler.StartStream( 16 + depth );
+		}
+		continueSameTransportSegment = false;
 
 		// ============================================================
 		// Intersection + medium transport (spectral, hero drives)
@@ -4441,7 +4545,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			if( rejectZeroDistanceBoundary ) {
+				ri.geometric.minimumSurfaceRange = 0.0;
+			}
+			scene.GetObjects()->IntersectRay(
+				ri, true, true, rejectZeroDistanceBoundary );
+			rejectZeroDistanceBoundary = false;
 
 			bool bHit = ri.geometric.bHit;
 
@@ -4451,7 +4560,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				const Scalar maxDist = bHit
+					? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+						? ri.geometric.surfaceRange : ri.geometric.range )
+					: RISE_INFINITY;
 				Scalar additiveStart = 0.0;
 				Scalar additiveEnd = 0.0;
 				if( PTMediumSegmentInterval(
@@ -4545,14 +4657,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// mirrors the non-HWSS PTSurvivalWeight scalar sites (~3376).
 					const Scalar pSurvivalHero = mso.noScatterPdfScale *
 						pCurrentMedium->EvalDistancePdfNM(
-							currentRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
+							currentRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
 							continue;
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
-							currentRay, ri.geometric.range, swl.lambda[w] );
+							currentRay, maxDist, swl.lambda[w] );
 						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
@@ -4574,6 +4686,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
+			}
+
+			if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				ContinueAcrossNullBoundary(
+					ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+				depthIncrement = 0;
+				continueSameTransportSegment = true;
+				continue;
 			}
 
 			if( !bHit )
@@ -4648,6 +4768,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 		needsIntersection = true;
+
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+			ContinueAcrossNullBoundary(
+				ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+			depthIncrement = 0;
+			continueSameTransportSegment = true;
+			continue;
+		}
 
 		// ============================================================
 		// Surface hit processing (HWSS)
@@ -5212,6 +5340,10 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	}
 
 	IORStack iorStack( 1.0 );
+	const LightSampler* rootLights = caster.GetLightSampler();
+	if( rootLights && rootLights->SceneHasNullBoundaries() ) {
+		IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	}
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
@@ -5220,18 +5352,20 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
+		RayIntersection aovHit( ri );
+		Scalar aovDepth = 0.0;
+		ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
 		pAOV->primaryDepthCaptured = true;
-		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
-	}
-	if( pAOV && ri.geometric.bHit ) {
-		if( !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Fast ) {
-			RayIntersectionGeometric aovGeom( ri.geometric );
-			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+		pAOV->depth = aovDepth;
+		if( !pAOV->valid && aovHit.geometric.bHit &&
+			rc.aovPrefilterMode == OidnPrefilter::Fast ) {
+			RayIntersectionGeometric aovGeom( aovHit.geometric );
+			if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
 			pAOV->normal = aovGeom.vNormal;
 			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
 				? pClayBRDF->albedo( aovGeom )
-				: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
+				: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
+					? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
 					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
@@ -5272,7 +5406,10 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = ri.geometric.bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		Scalar additiveStart = 0.0;
 		Scalar additiveEnd = 0.0;
@@ -5398,13 +5535,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			// non-HWSS camera surface site at ~3376.
 			const Scalar pSurvivalHero = mso.noScatterPdfScale *
 				pCurrentMedium->EvalDistancePdfNM(
-					cameraRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
+					cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 			Scalar Tr[SampledWavelengths::N];
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
 				Tr[w] = swl.terminated[w] ? 0 :
 					pCurrentMedium->EvalTransmittanceNM(
-						cameraRay, ri.geometric.range, swl.lambda[w] );
+						cameraRay, maxDist, swl.lambda[w] );
 			}
 
 			IntegrateFromHitHWSS( rc, rast, ri, swl, scene, caster,

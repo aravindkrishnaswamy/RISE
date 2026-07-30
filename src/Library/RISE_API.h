@@ -616,6 +616,14 @@ namespace RISE
 								IMaterial** ppi				///< [out] Pointer to recieve the material
 								);
 
+	//! Creates an exact null medium boundary.  Unlike NullMaterial/"none",
+	//! this material is traversed with unit transmission and changes only the
+	//! ray's medium-enclosure state.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNullBoundaryMaterial(
+								IMaterial** ppi				///< [out] Pointer to receive the material
+								);
+
 	//! Creates Lambertian material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLambertianMaterial(

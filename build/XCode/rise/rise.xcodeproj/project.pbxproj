@@ -1568,6 +1568,10 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
 		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */; };
@@ -2723,6 +2727,8 @@
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
+		A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NullBoundaryMaterial.h; sourceTree = "<group>"; };
+		A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NullBoundaryMaterial.cpp; sourceTree = "<group>"; };
 		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
 		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
 		F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AOVBuffers.h; sourceTree = "<group>"; };
@@ -3435,6 +3441,8 @@
 				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
 				F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */,
 				F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */,
+				A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */,
+				A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */,
 				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
 				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
 				F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */,
@@ -4738,6 +4746,7 @@
 				F27F0BEF069C42910069C9E5 /* TGAReader.h in Headers */,
 				F27F0BF1069C42910069C9E5 /* TGAWriter.h in Headers */,
 				F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */,
+				A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */,
 				F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */,
 				F27F0BF2069C42910069C9E5 /* TIFFCommon.h in Headers */,
 				F27F0BF4069C42910069C9E5 /* TIFFReader.h in Headers */,
@@ -5285,6 +5294,7 @@
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
 				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
@@ -6197,6 +6207,8 @@
 				F24B741D2F52A632008304C4 /* HermiteInterpolator.h in Sources */,
 				F24B741E2F52A632008304C4 /* IORStack.h in Sources */,
 				F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */,
+				A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
 				F24B741F2F52A632008304C4 /* LoadLibrary.h in Sources */,
 				F24B74202F52A632008304C4 /* Log.cpp in Sources */,
 				F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */,

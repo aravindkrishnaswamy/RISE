@@ -67,11 +67,10 @@
 //    pathological ray, which the rest of the path walk then corrects
 //    as it enters/exits real boundaries.
 //
-//    The probe only considers materials whose GetSpecularInfo
-//    reports canRefract=true.  Pure reflectors (mirrors) and
-//    lambertian surfaces are skipped — they are not media and their
-//    "interior" is not a place rays travel through with a different
-//    IOR.
+//    The probe considers optical boundaries whose GetSpecularInfo reports
+//    canRefract=true and exact NullBoundaryMaterial objects.  The former
+//    seed both stacks; the latter seed enclosure only.  Pure reflectors and
+//    ordinary non-refractive surfaces are skipped.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 23, 2026
@@ -91,6 +90,7 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/SpecularInfo.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Intersection/RayIntersection.h"
 
 namespace RISE
@@ -147,6 +147,7 @@ namespace RISE
 			struct Entry {
 				const IObject* pObj;
 				Scalar ior;
+				bool optical;
 				int parity;
 				int firstExitStep;  // probe step of FIRST exit, for stack-order sort
 			};
@@ -186,13 +187,23 @@ namespace RISE
 
 				if( ri.pObject && ri.pMaterial )
 				{
-					// Only track refractive materials — pure reflectors
-					// (mirrors) and Lambertian surfaces have no "interior"
-					// the ray travels through with a different IOR.
-					IORStack queryStack( Scalar( 1.0 ) );
-					const SpecularInfo info =
-						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
-					if( info.valid && info.canRefract && info.ior > 0 )
+					const bool nullBoundary =
+						Implementation::IsExactNullBoundaryMaterial( ri.pMaterial );
+					Scalar boundaryIOR = 1.0;
+					bool opticalBoundary = false;
+					bool supportedBoundary = nullBoundary;
+					if( !nullBoundary )
+					{
+						IORStack queryStack( Scalar( 1.0 ) );
+						const SpecularInfo info =
+							ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
+						if( info.valid && info.canRefract && info.ior > 0 ) {
+							boundaryIOR = info.ior;
+							opticalBoundary = true;
+							supportedBoundary = true;
+						}
+					}
+					if( supportedBoundary )
 					{
 						// Find or create per-object entry.  Linear scan is
 						// fine — kMaxNestingDepth is 8.
@@ -206,7 +217,8 @@ namespace RISE
 						if( !e && containingCount < kMaxNestingDepth ) {
 							e = &containing[containingCount++];
 							e->pObj = ri.pObject;
-							e->ior = info.ior;
+							e->ior = boundaryIOR;
+							e->optical = opticalBoundary;
 							e->parity = 0;
 							e->firstExitStep = -1;
 						}
@@ -262,7 +274,11 @@ namespace RISE
 			}
 			for( std::size_t i = 0; i < orderedCount; i++ ) {
 				stack.SetCurrentObject( ordered[i]->pObj );
-				stack.push( ordered[i]->ior );
+				if( ordered[i]->optical ) {
+					stack.push( ordered[i]->ior );
+				} else {
+					stack.pushEnclosure();
+				}
 			}
 		}
 	}

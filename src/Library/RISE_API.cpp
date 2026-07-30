@@ -1625,6 +1625,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Materials/Material.h"
+#include "Materials/NullBoundaryMaterial.h"
 #include "Materials/LambertianMaterial.h"
 #include "Materials/LambertianLuminaireMaterial.h"
 #include "Materials/PhongLuminaireMaterial.h"
@@ -1668,6 +1669,19 @@ namespace RISE
 
 		(*ppi) = new NullMaterial();
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null material" );
+		return true;
+	}
+
+	bool RISE_API_CreateNullBoundaryMaterial(
+		IMaterial** ppi
+		)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new NullBoundaryMaterial();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null boundary material" );
 		return true;
 	}
 

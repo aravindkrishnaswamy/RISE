@@ -1737,6 +1737,13 @@ namespace RISE
 			const double smoke_g_carbon
 			);
 
+		//! Adds a unit-transmission medium boundary distinct from "none".
+		//! Appended beside IJob's corresponding ABI-tail extension.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddNullBoundaryMaterial(
+			const char* name					///< [in] Name of the material
+			);
+
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		bool SetGlobalMedium(

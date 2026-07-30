@@ -17,6 +17,7 @@ set(RISE_LIB "${CMAKE_CURRENT_LIST_DIR}/../../../src/Library")
 set(RISE_LIB_SOURCES
     # SRCLIBINTERFACES
     "${RISE_LIB}/Materials/IMaterial.cpp"
+    "${RISE_LIB}/Materials/NullBoundaryMaterial.cpp"
 
     # SRCLIBUTILITIES
     "${RISE_LIB}/Utilities/Color/Color.cpp"

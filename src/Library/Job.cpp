@@ -2805,6 +2805,20 @@ bool Job::AddBlendPainter(
 //
 
 
+//! Creates a unit-transmission medium boundary
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddNullBoundaryMaterial(
+	const char* name
+	)
+{
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateNullBoundaryMaterial( &pMaterial );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
+
 //! Creates Lambertian material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddLambertianMaterial(

@@ -285,3 +285,4 @@ SetProgressIfCurrent
 ExchangeProgress
 ApplyCstCameraPoseEditWithBasis
 AddMultichannelHeterogeneousMedium
+AddNullBoundaryMaterial
