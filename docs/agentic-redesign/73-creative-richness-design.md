@@ -591,3 +591,49 @@ note only ever arrives at the verification tail.
 4. **Stop here**: painter richness floor 1→3 and median 2→3 are real,
    shipped, measured wins; the scalar pipe and advanced-geometry verbs
    may simply not be bare-prompt behaviors worth forcing.
+
+---
+
+## 9. Cross-model probe (2026-07-30, qwen3.6:27b local, thinking recorded)
+
+Per the user's modification of §8 option 3: a local thinking model whose
+chain-of-thought lands in the trajectory (`message.reasoning`), so note
+reaction is observable directly instead of inferred. 3 runs, ~54 min each.
+
+**The model dismissed the note IN WRITING, twice, with the same triage
+frame:**
+
+> r1: "The full candidate validated clean - no errors. The 'note' about
+> scalar_painter is just a design suggestion, not an error."
+
+> r3: "The scene validates cleanly - no errors or warnings beyond the
+> expected design note about scalar textures (which is a feature
+> suggestion, not an issue)."
+
+r3's "the EXPECTED design note" is habituation: by its 16th firing the
+note is ambient. r1 fired the note 30 times (qwen render-spams; 90 tool
+calls) — repetition converts advice into wallpaper, not action. Scalar
+adoption 0/3 (0/18 lifetime across both models); r3 built a 65-object
+scene with 14 painters, every one uniformcolor.
+
+**Conclusion: not flash-specific.** Two models, one written confession of
+the shared triage rule: *models act on errors; they skim suggestions.*
+The §5.1 refinement (blocking facts vs advice) is now directly evidenced,
+not just inferred. The empty-index note worked because the model was
+BLOCKED (it needed the index); derive diagnostics work because they are
+in the errors list. This note is neither.
+
+**Recommended next (P2.b, one small slice):** move the same two facts
+into `validate`'s diagnostics array as an advisory-severity entry
+(e.g. code `DESIGN_SCALAR_PIPE_UNUSED`, severity info) — the exact list
+qwen consulted ("validated clean - no errors") before moving on. Keep
+the render-result note as-is (harmless, and the GUI may surface it).
+Measure once more on both instruments; if diagnostic framing also fails,
+stop — the painter-floor win is banked and further forcing is not worth
+the ladder.
+
+Caveat to carry into P2.b: no escape-clause slot exists in the
+diagnostics shape, so a deliberately-flat scene will carry a permanent
+info diagnostic — the message text must self-disarm ("intentional flat
+styling: ignore") and the severity must stay below anything the GUI
+badges as a problem.
