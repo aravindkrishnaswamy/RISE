@@ -563,7 +563,9 @@ int main()
 	// These pin behaviour that the 2026-07-29/30 reformulation CLAIMED but
 	// that nothing exercised.  Before the sinc-based layer matrix every case
 	// below was NaN; the claims were made from one-off probes, which is not a
-	// regression guard.  All three sub-blocks are RED against the pre-fix
+	// regression guard.  All four sub-blocks -- (a) exactly 90 deg,
+	// (b) film at its own critical angle, (d) the removable-singularity
+	// helpers, (c) the p-polarization sign -- are RED against the pre-fix
 	// evaluator.
 	// ------------------------------------------------------------------
 	{
@@ -598,9 +600,12 @@ int main()
 			}
 		}
 
-		// (b) A FILM sitting exactly at ITS OWN critical angle.  This is the
-		// geometry that was NaN in BOTH evaluators, by two different
-		// mechanisms (eta_p = Inf for p; -i sinD/eta = 0/0 for s).  Require
+		// (b) A FILM sitting exactly at ITS OWN critical angle.  The TMM was
+		// NaN here (eta_p = Inf for p; -i sinD/eta = 0/0 for s).  The Airy
+		// closed form was 0/0 ALGEBRAICALLY but only produced a NaN on a
+		// LOSSLESS stack -- with any absorption below the film it returned a
+		// silent, finite, WRONG 1.0, which is why the absorbing rows below
+		// are the ones that matter.  Require
 		// finite, in-range, AND continuous with the two-sided limit -- a
 		// clamp would satisfy finiteness but not continuity.
 		{
@@ -748,7 +753,7 @@ int main()
 			             worstSinc, worstE );
 		}
 
-		// (c) Pin the p-polarization sign of InterfaceReflection.
+		// (c) Pin the p-polarization sign of the interface terms.
 		//
 		// The Airy<->TMM agreement test CANNOT catch this: R = |r|^2, and
 		// negating BOTH r01 and r1s leaves the Airy denominator
@@ -770,12 +775,17 @@ int main()
 				const double rs = ( n0 * c0 - n1 * c1 ) / ( n0 * c0 + n1 * c1 );
 				const double rp = ( n0 * c1 - n1 * c0 ) / ( n0 * c1 + n1 * c0 );
 
-				const Complex gs = detail::InterfaceReflection(
-					MakeIndex(n0,0.0), Complex(c0,0.0),
-					MakeIndex(n1,0.0), Complex(c1,0.0), ePolS );
-				const Complex gp = detail::InterfaceReflection(
-					MakeIndex(n0,0.0), Complex(c0,0.0),
-					MakeIndex(n1,0.0), Complex(c1,0.0), ePolP );
+				// Target detail::InterfaceTerms -- the helper the SHIPPED
+				// evaluator actually uses.  An earlier version of this pin
+				// targeted detail::InterfaceReflection, which production no
+				// longer calls at all, so it was pinning dead code.
+				Complex as, bs, ap, bp;
+				detail::InterfaceTerms( MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolS, as, bs );
+				detail::InterfaceTerms( MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolP, ap, bp );
+				const Complex gs = ( as - bs ) / ( as + bs );
+				const Complex gp = ( ap - bp ) / ( ap + bp );
 
 				worstS = std::max( worstS, std::fabs( gs.real() - rs ) );
 				worstP = std::max( worstP, std::fabs( gp.real() - rp ) );

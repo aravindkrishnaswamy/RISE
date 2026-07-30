@@ -427,7 +427,9 @@ int main()
 	// poisons the whole XYZ accumulation.  This was live until 2026-07-30 and
 	// was masked before that by -ffast-math folding the finiteness guards.
 	//
-	// RED against the pre-fix evaluator (returns nan for all three stacks).
+	// RED against the pre-fix evaluator: nan on the two LOSSLESS stacks, and a
+	// silent finite 1.0 on the three ABSORBING ones (five stacks total).  The
+	// absorbing rows are the ones that matter -- see the note on cs[] below.
 	// ------------------------------------------------------------------
 	{
 		std::printf( "\n[Degenerate] shipped single-film path at a film's own critical angle\n" );
@@ -478,7 +480,7 @@ int main()
 		}
 
 		// The pairing must not cost thick-absorber headroom: Airy has to stay
-		// the PRIMARY form (the TMM overflows from d ~ 2e4 nm at k = 3, where
+		// the PRIMARY form (the TMM overflows from d ~ 1.0e4 nm at k = 3, where
 		// Airy is still finite past 1e6 nm), so a thick absorbing film must
 		// still evaluate finite.
 		for( double d = 1e3; d <= 1e6; d *= 10.0 ) {

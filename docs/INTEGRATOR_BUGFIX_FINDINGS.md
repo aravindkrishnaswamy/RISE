@@ -518,7 +518,9 @@ again, and the `volatile`-laundering / finite-threshold workarounds described
 above are no longer required. [FiniteMath.h](../src/Library/Utilities/FiniteMath.h)'s
 `IsFiniteDouble` stays in tree with its ~73 call sites, kept for uniformity and
 `-Ofast` resistance rather than for correctness — but it is **not** free:
-measured **0.38–0.40 ns/call vs ~0.01 ns for `std::isfinite` (~35–39×)**,
+measured **~0.38 ns/call vs ~0.21 ns for `std::isfinite` (~2×)** — an earlier
+draft claimed ~35–39× from a microbenchmark whose `std::isfinite` loop had been
+optimised away (0.01 ns/call is ~0.04 cycles); that figure is retracted —
 because the `volatile` barrier forces a stack round-trip and blocks
 vectorization of the enclosing loop. At current call-site density that is well
 under the +2.7 % measured below, but **part of that 2.7 % is recoverable** by
@@ -587,8 +589,11 @@ ray" — that is **FALSE and has been corrected**: RISE never produces an Inf
 not `inf`. So `0.0 * inf` never arises in the slab test and the kernel never
 "relied" on the flag. The real justification is the one above plus the next
 paragraph: guards and tests that are live rather than folded, the optimiser no
-longer assuming finiteness in code that *can* produce Inf at runtime, and the
-finite-sentinel workarounds ceasing to be load-bearing.
+longer assuming finiteness in code that *can* produce Inf at runtime, and NEW finite-sentinel workarounds ceasing to be needed. The **existing**
+sentinels stay load-bearing for an independent reason: a real `±inf` `invDir`
+makes `(bound − origin) * invDir` = `0*inf` = NaN for a ray parallel to and on a
+slab plane, and the rejection `tmin > tymax || tymin > tmax` is FALSE for NaN,
+so the slab would be silently ACCEPTED. Do **not** restore `infinity()`.
 
 **It caught a real bug within one test run.** `ThinFilmTMMTest` went red
 immediately (3/3 FAIL with the flag, 3/3 PASS without — deterministic): at
@@ -636,11 +641,18 @@ factor. The numerical-review lens refuted all three.)
    want of callers. `sinc`'s singularity is *removable* (analytic value 1), and
    below the series cut the Taylor form is the exact double — so this is a
    principled series cut, not a threshold.
-2. **An Airy-primary / TMM-fallback pairing** (`SingleFilmReflectanceForPol`),
-   because the Airy *closed form* remains 0/0 there by construction
-   (`r01 == −r1s`, `δ == 0`; the cancellation is structural and no factoring
-   removes it). The trigger is `if( std::isfinite( airy ) )` — threshold-free,
-   and only possible because this branch restored working `std::isfinite`.
+2. **A re-derived, FACTORED Airy form** (2026-07-30). Keeping each interface as
+   a cleared (numerator, denominator) pair lets the vanishing `2·N1·cos1` factor
+   out analytically, so the single-film form is total at `cos_film == 0` too.
+   ⚠ The 2026-07-29 version of this item claimed "the cancellation is structural
+   and no factoring removes it" and closed the degeneracy with an
+   `isfinite`-triggered Airy/TMM pairing. **Both were wrong.** The claim was
+   disproved constructively; and `isfinite` is the wrong predicate, because with
+   the unfactored quotient and any absorbing medium below the film the
+   degenerate case is finite and exactly **1.0** — a perfect mirror, wrong by up
+   to 0.477 on Ti — so the fallback never fires and the error is SILENT. The
+   pairing survives only as defence in depth and must never be relied on as the
+   degeneracy trigger.
    Airy stays **primary** deliberately: the TMM overflows on thick absorbers
    (~1.0e4 nm at k = 3) where Airy is finite past 1e6 nm, so replacing rather
    than pairing would have traded a measure-zero NaN for a real regression.
@@ -689,7 +701,10 @@ enabled fast-math at all, and Android already used
 - the three **project-level** configs were `GCC_OPTIMIZATION_LEVEL = fast`
   (i.e. `-Ofast`, which *implies* `-ffast-math`) — inert because both targets
   override it, but a landmine; pinned to `3`
-- `Config.SGI` / `Config.Solaris` (legacy) matched for consistency
+- `Config.SGI` / `Config.Solaris` are **deliberately NOT changed**: they target
+  g++ 2.95.4 and 3.0, which predate `-ffinite-math-only` (~GCC 3.3), so the flag
+  would be an unrecognized-option hard error. An earlier pass added it "for
+  consistency"; that was reverted.
 
 **Process gap this exposed:** the release DMG is built from configuration
 **Opto** ([create_macos_release.sh](../scripts/create_macos_release.sh)) while

@@ -174,23 +174,6 @@ namespace RISE
 			}
 
 
-			//! Amplitude reflection coefficient at an a -> b interface, in a form
-			//! that never divides by cosθ:
-			//!   s: (Na cosa - Nb cosb) / (Na cosa + Nb cosb)
-			//!   p: (Na cosb - Nb cosa) / (Na cosb + Nb cosa)
-			//! Both are the admittance ratio (ηa - ηb)/(ηa + ηb) with the common
-			//! cosa*cosb factor cleared, so they stay finite and correct when
-			//! EITHER cosθ is exactly 0 -- i.e. exactly at the critical angle,
-			//! where the result is |r| = 1 (total internal reflection).
-			inline Complex InterfaceReflection(
-				const Complex& Na, const Complex& cosa,
-				const Complex& Nb, const Complex& cosb,
-				Polarization pol )
-			{
-				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
-				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
-				return ( a - b ) / ( a + b );
-			}
 
 			//! sin(z)/z with its REMOVABLE singularity at z = 0 evaluated
 			//! analytically (the limit is exactly 1).  Not a threshold fudge: below
@@ -198,8 +181,7 @@ namespace RISE
 			//! term z^6/5040 < 1e-27 at |z| = 1e-4), so both branches are exact.
 
 			//! The CLEARED (numerator, denominator) pair of an a -> b
-			//! interface; InterfaceReflection() is exactly (a-b)/(a+b) of
-			//! these.  Exposed so the Airy form can factor the vanishing cos
+			//! interface; the amplitude ratio is (a-b)/(a+b) of these.  Exposed so the Airy form can factor the vanishing cos
 			//! out of its quotient instead of dividing it away first.
 			inline void InterfaceTerms(
 				const Complex& Na, const Complex& cosa,

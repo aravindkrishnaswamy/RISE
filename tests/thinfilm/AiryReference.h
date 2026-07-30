@@ -17,8 +17,10 @@
 //
 //    and η_s = N cosθ, η_p = N / cosθ, δ1 = (2π/λ) N1 d1 cosθ1.
 //
-//    Those coefficients are EVALUATED via detail::InterfaceReflection,
-//    which is the same ratio with the cosθ factors cleared:
+//    Those coefficients are NOT evaluated as written.  This file keeps each
+//    interface as a cleared (numerator, denominator) PAIR via
+//    detail::InterfaceTerms and factors the vanishing 2*N1*cos1 out of the
+//    quotient -- see the DEGENERACY note below.  The cleared ratio is:
 //      s: (Na cosa - Nb cosb)/(Na cosa + Nb cosb)
 //      p: (Na cosb - Nb cosa)/(Na cosb + Nb cosa)
 //    Algebraically identical, but finite when an ENDPOINT cosθ (ambient or
@@ -48,7 +50,7 @@
 //
 //    IMPORTANT: this file deliberately reuses the SAME cosθ-branch and
 //    admittance helpers as TmmReference.h (detail::CosThetaInMedium,
-//    detail::InterfaceReflection) so the two implementations cannot drift apart
+//    detail::InterfaceTerms, detail::ExpM1OverZ) so the two implementations cannot drift apart
 //    in their conventions -- the whole value of the Airy<->TMM agreement
 //    test is that they share conventions but compute by different
 //    algebra.  Only the e^{+2iδ} sign convention is restated here; it
@@ -70,7 +72,7 @@
 #include <cassert>
 
 #include "ThinFilmStack.h"
-#include "TmmReference.h"		// reuse detail::CosThetaInMedium / InterfaceReflection / Polarization
+#include "TmmReference.h"		// reuse detail::CosThetaInMedium / InterfaceTerms / ExpM1OverZ / Polarization
 
 namespace RISE
 {
@@ -104,10 +106,7 @@ namespace RISE
 			const Complex cos1 = CosThetaInMedium( N1, sinInvariant );
 			const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
 
-			// Fresnel amplitude reflection coefficients at each interface.
-			// InterfaceReflection is the admittance ratio (η_a - η_b)/(η_a + η_b)
-			// with the cosθ factors cleared, so a medium sitting exactly at the
-			// critical angle (cosθ = 0, infinite η_p) gives |r| = 1 instead of NaN.
+
 			// Airy summation with the vanishing cos_film FACTORED OUT rather
 			// than divided away.  Dividing at each interface first (the
 			// textbook r01/r1s form) destroys the common 2 N1 cos1 factor and

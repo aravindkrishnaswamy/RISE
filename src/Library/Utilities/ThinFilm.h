@@ -35,8 +35,9 @@
 //      * Single-film Airy:
 //          r = ( r01 + r1s e^{+2iδ1} ) / ( 1 + r01 r1s e^{+2iδ1} )
 //        with r_ab = (η_a - η_b)/(η_a + η_b), evaluated via
-//        InterfaceReflection (the same ratio with the cosθ factors
-//        cleared, so it stays finite when a cosθ is exactly 0).
+//        the FACTORED form (InterfaceTerms + ExpM1OverZ), which keeps
+//        each interface as a cleared (numerator, denominator) pair and
+//        factors the vanishing 2*N1*cos1 out analytically.
 //        The e^{+2iδ1} (NOT
 //        e^{-2iδ1}) sign is the one that makes a thick absorbing film
 //        decay to the bare top-interface reflectance r01.  Pairing the
@@ -132,23 +133,6 @@ namespace RISE
 			}
 
 
-			//! Amplitude reflection coefficient at an a -> b interface, in a form
-			//! that never divides by cosθ:
-			//!   s: (Na cosa - Nb cosb) / (Na cosa + Nb cosb)
-			//!   p: (Na cosb - Nb cosa) / (Na cosb + Nb cosa)
-			//! Both are the admittance ratio (ηa - ηb)/(ηa + ηb) with the common
-			//! cosa*cosb factor cleared, so they stay finite and correct when
-			//! EITHER cosθ is exactly 0 -- i.e. exactly at the critical angle,
-			//! where the result is |r| = 1 (total internal reflection).
-			inline Complex InterfaceReflection(
-				const Complex& Na, const Complex& cosa,
-				const Complex& Nb, const Complex& cosb,
-				Polarization pol )
-			{
-				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
-				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
-				return ( a - b ) / ( a + b );
-			}
 
 			//! sin(z)/z, with its REMOVABLE singularity at z = 0 evaluated
 			//! analytically (the limit is exactly 1).  This is not a threshold
@@ -199,7 +183,7 @@ namespace RISE
 			//! p-polarization admittance η_p = N/cosθ is infinite and the
 			//! then-current Fresnel form (η_a-η_b)/(η_a+η_b) evaluated to
 			//! Inf/Inf = NaN.  That is NO LONGER the behaviour: the Fresnel
-			//! coefficients now go through InterfaceReflection and the
+			//! coefficients now go through the factored form (InterfaceTerms) and the
 			//! N-layer assembly carries pre-scaled admittances, so cosθ = 0
 			//! yields the correct R -> 1 limit directly (measured, for a
 			//! bare interface either direction, a dielectric film, an
@@ -238,7 +222,9 @@ namespace RISE
 			//! the N-layer TMM (they agree to ~machine epsilon by design).
 
 			//! The CLEARED numerator/denominator pair of an a -> b interface:
-			//! InterfaceReflection() is exactly (a - b)/(a + b) of these.
+			//! The amplitude ratio is (a - b)/(a + b) of these; callers keep the
+			//! PAIR rather than the ratio so a vanishing cos can be factored
+			//! out before dividing (see AiryReflectanceForPol).
 			//! Exposed separately so the Airy form can factor the vanishing
 			//! cos out of its quotient instead of dividing first and losing
 			//! the information (see AiryReflectanceForPol).
@@ -380,15 +366,19 @@ namespace RISE
 					// cos == 0 in a NON-ENDPOINT medium -- a film at its own
 					// critical angle, and also exactly grazing when a film
 					// index equals the ambient's -- was NaN in BOTH evaluators
-					// until 2026-07-30, by two different mechanisms: the
-					// p-polarization admittance N/cos was infinite, and the
-					// s-polarization one was ZERO, making -i*sinD/eta a 0/0.
-					// -ffast-math had masked it.
+					// until 2026-07-30.  In THIS (TMM) evaluator by two
+					// mechanisms: the p-polarization admittance N/cos was
+					// infinite, and the s-polarization one was ZERO, making
+					// -i*sinD/eta a 0/0.  (The Airy form failed differently --
+					// 0/0 algebraically, but a SILENT finite 1.0 on any
+					// absorbing substrate; see AiryReflectanceForPol.)
+					// -ffast-math had masked both.
 					//
-					// CLOSED by the sinc layer matrix immediately below (which
-					// removed the admittance from this loop entirely) plus the
-					// Airy<->TMM pairing in SingleFilmReflectanceForPol, and
-					// pinned by ThinFilmTMMTest [8/8] and
+					// CLOSED here by the sinc layer matrix immediately below
+					// (which removed the admittance from this loop entirely),
+					// and in the single-film path by the FACTORED Airy form --
+					// not by the pairing, which is defence in depth only.
+					// Pinned by ThinFilmTMMTest [8/8] and
 					// ThinFilmProductionTest's [Degenerate] block.
 					// Layer matrix, written so that NO term divides by cos.
 					//   Mj = [[ cosd, -i sind/eta ], [ -i eta sind, cosd ]]
@@ -471,6 +461,47 @@ namespace RISE
 			//! not the trigger.  Pinned by ThinFilmTMMTest [8/8](b) and
 			//! ThinFilmProductionTest [Degenerate], both of which now use
 			//! ABSORBING substrates for exactly this reason.
+			//!
+			//! ⚠ KNOWN DEFECT, NOT GUARDED -- ROOT CAUSE IDENTIFIED
+			//! (measured 2026-07-30; an earlier version of this note
+			//! UNDERSTATED it, see below).
+			//!
+			//! PickForwardCos (:115) selects the GROWING evanescent root:
+			//! for an evanescent film (ambient n > film n, beyond critical)
+			//! Im(N1*cos1) < 0, so Im(delta) < 0 and the round-trip factor
+			//! GROWS with thickness -- contradicting this file's own stated
+			//! invariant at :34 ("the forward wave decays, Im(delta) >= 0").
+			//! The Re(eta)==0 tie-break at :120 is dead code: it fired 0
+			//! times in 4,000,000 evaluations (the residue is ~6.3e-17, never
+			//! exactly 0).
+			//!
+			//! Consequences, BOTH reachable through the public API:
+			//!   * NON-FINITE: 186,413 of 3,000,000 adversarial cases.  Onset
+			//!     is d ~ 4 um -- NOT the 40-50 um an earlier draft of this
+			//!     note claimed from a single stack.
+			//!   * FINITE BUT WRONG (the dangerous class, which that draft
+			//!     omitted entirely): the p-polarization Airy can return
+			//!     EXACTLY 0, so the isfinite fallback below never fires.
+			//!     Measured R = 0.4999999999999999 where the 120-dps truth
+			//!     is 1.0.
+			//!
+			//! FIX (validated by review, NOT YET APPLIED): select the
+			//! DECAYING root -- Im(N cos) > 0, tie-broken by Re(N cos) > 0.
+			//! Measured 0 of 3,000,000 non-finite with worst-case accuracy
+			//! unchanged, and all thin-film tests green.  Strictly only FILM
+			//! media need the decaying rule (both the Airy quotient and the
+			//! sinc layer matrix are provably invariant under cos_j -> -cos_j);
+			//! endpoints need Re > 0.  Deferred as its own change because it
+			//! alters branch selection for every medium.
+			//!
+			//! Shipped scenes use 40-220 nm films and are unaffected;
+			//! triggering needs ambient n > film n AND d >~ 4 um, which
+			//! nothing currently validates.
+			//!
+			//! Note also that the thick-absorber comparison above (TMM NaN
+			//! from ~1.0e4 nm, Airy finite past 1e6 nm) is specific to the
+			//! ABSORBING-film regime; it does not hold for the lossless
+			//! evanescent case just described.
 			inline Scalar SingleFilmReflectanceForPol(
 				const Complex& N0, const Complex& N1, const Complex& Ns,
 				Scalar thickness_nm, Scalar lambda_nm,
@@ -726,10 +757,12 @@ namespace RISE
 				const Complex Ns = detail::MakeIndex( n2, k2 );
 				const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
-				// Must go through the PAIRED evaluator, not the bare Airy form:
-				// at a film's own critical angle Airy is 0/0, and a per-wavelength
-				// NaN passes the [0,1] clamp below (NaN<0 and NaN>1 are both
-				// false) and poisons the whole Xn/Yn/Zn accumulation.
+				// Goes through SingleFilmReflectanceForPol so the RGB path shares
+				// the scalar path's defence-in-depth fallback.  The degeneracy
+				// itself is handled inside the FACTORED Airy form; this call site
+				// matters because a per-wavelength non-finite value would pass the
+				// [0,1] clamp below (NaN<0 and NaN>1 are both false) and poison the
+				// whole Xn/Yn/Zn accumulation.
 				const Scalar Rs = detail::SingleFilmReflectanceForPol(
 					N0, N1, Ns, thickness_nm, nm, sinInv, ePolS );
 				const Scalar Rp = detail::SingleFilmReflectanceForPol(
