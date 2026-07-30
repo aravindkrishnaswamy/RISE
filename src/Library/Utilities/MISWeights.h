@@ -70,9 +70,10 @@ namespace RISE
 	public:
 		explicit VolumeEmissionSegmentStateScope(
 			const VolumeEmissionSegmentState& state ) :
+			state_( state ),
 			pPrevious_( ActiveVolumeEmissionSegmentState() )
 		{
-			ActiveVolumeEmissionSegmentState() = &state;
+			ActiveVolumeEmissionSegmentState() = &state_;
 		}
 
 		~VolumeEmissionSegmentStateScope()
@@ -86,6 +87,7 @@ namespace RISE
 			const VolumeEmissionSegmentStateScope& ) = delete;
 
 	private:
+		const VolumeEmissionSegmentState state_;
 		const VolumeEmissionSegmentState* const pPrevious_;
 	};
 

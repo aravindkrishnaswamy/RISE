@@ -320,6 +320,15 @@ static void TestVolumeEmissionFamilyPartition()
 		CurrentVolumeEmissionSegmentState();
 	Check(!restoredDefault.competitionAvailable && !restoredDefault.continuationSingular,
 		"completed request-local scope restores camera defaults");
+	{
+		const VolumeEmissionSegmentStateScope temporaryScope(
+			VolumeEmissionSegmentState(true,true) );
+		const VolumeEmissionSegmentState copiedTemporary =
+			CurrentVolumeEmissionSegmentState();
+		Check(copiedTemporary.competitionAvailable &&
+			copiedTemporary.continuationSingular,
+			"scope owns an immutable copy when constructed from a temporary");
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
