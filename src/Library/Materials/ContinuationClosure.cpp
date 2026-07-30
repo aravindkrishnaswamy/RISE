@@ -287,13 +287,29 @@ namespace
 		{
 			const Scalar pdf = Pdf(mask,direction);
 			if( pdf <= 0.0 ) return 0.0;
-			const Scalar magnitude = ThroughputMagnitude(
-				ScatterThroughput(mask,direction,pdf));
-			if( !FiniteNonnegative(magnitude) || magnitude <= NEARZERO ) return 0.0;
+			if( !PassesDeterministicContinuationGate(mask,direction,pdf) ) return 0.0;
 			if( pathState.pathDepth < pathState.rrMinDepth ) return 1.0;
 			const Scalar denominator = r_max(pathState.importance,pathState.rrThreshold);
 			if( !RISE::IsFiniteDouble(denominator) || denominator <= 0.0 ) return 0.0;
+			const Scalar magnitude = ThroughputMagnitude(
+				ScatterThroughput(mask,direction,pdf));
 			return r_min(Scalar(1.0),pathState.importance*magnitude/denominator);
+		}
+
+		bool PassesDeterministicContinuationGate(
+			const unsigned int mask, const Vector3& direction,
+			const Scalar pdf ) const
+		{
+			if( pdf <= 0.0 ) return false;
+			const Scalar magnitude = ThroughputMagnitude(
+				ScatterThroughput(mask,direction,pdf));
+			return FiniteNonnegative(magnitude) && magnitude > NEARZERO;
+		}
+
+		Scalar MarchPdf( const unsigned int mask, const Vector3& direction ) const
+		{
+			const Scalar pdf = Pdf(mask,direction);
+			return PassesDeterministicContinuationGate(mask,direction,pdf) ? pdf : 0.0;
 		}
 
 		Scalar ReachPdf( const unsigned int mask, const Vector3& direction ) const
@@ -358,6 +374,8 @@ namespace
 		{ return Pdf(mask,direction); }
 		Scalar PdfReachMarginal( unsigned int mask, const Vector3& direction ) const override
 		{ return ReachPdf(mask,direction); }
+		Scalar PdfMarchMarginal( unsigned int mask, const Vector3& direction ) const override
+		{ return MarchPdf(mask,direction); }
 		bool SampleSubset(
 			unsigned int mask, Scalar xiLobe, const Point2& xiDirection,
 			Scalar xiRoulette, bool applyRoulette,
@@ -372,7 +390,7 @@ namespace
 			sample.response = Evaluate(mask,direction);
 			sample.pdf = Pdf(mask,direction);
 			sample.throughput = ScatterThroughput(mask,direction,sample.pdf);
-			if( ThroughputMagnitude(sample.throughput) <= NEARZERO ) {
+			if( !PassesDeterministicContinuationGate(mask,direction,sample.pdf) ) {
 				sample.survivalProbability = 0.0;
 				sample.reachPdf = 0.0;
 				return true;
@@ -420,6 +438,8 @@ namespace
 		{ return Pdf(mask,direction); }
 		Scalar PdfReachMarginal( unsigned int mask, const Vector3& direction ) const override
 		{ return ReachPdf(mask,direction); }
+		Scalar PdfMarchMarginal( unsigned int mask, const Vector3& direction ) const override
+		{ return MarchPdf(mask,direction); }
 		bool SampleSubset(
 			unsigned int mask, Scalar xiLobe, const Point2& xiDirection,
 			Scalar xiRoulette, bool applyRoulette,
@@ -434,7 +454,7 @@ namespace
 			sample.response = Evaluate(mask,direction);
 			sample.pdf = Pdf(mask,direction);
 			sample.throughput = ScatterThroughput(mask,direction,sample.pdf);
-			if( ThroughputMagnitude(sample.throughput) <= NEARZERO ) {
+			if( !PassesDeterministicContinuationGate(mask,direction,sample.pdf) ) {
 				sample.survivalProbability = 0.0;
 				sample.reachPdf = 0.0;
 				return true;

@@ -408,6 +408,9 @@ namespace
 			CreateLambertianContinuationClosurePel(ri,RISEPel(0.5),rr);
 		if( closure ) {
 			const Scalar pdf = INV_PI;
+			CheckNear(closure->PdfMarchMarginal(
+				eContinuationLobeDiffuse,Vector3(0,0,1)),pdf,1e-15,
+				"ordinary terminal march density omits RR but keeps deterministic support");
 			CheckNear(closure->PdfReachMarginal(
 				eContinuationLobeDiffuse,Vector3(0,0,1)),pdf*0.25,1e-15,
 				"reach density includes the exact RR survival mass");
@@ -440,6 +443,9 @@ namespace
 		if( pelClosure ) {
 			const unsigned int diffuse = eContinuationLobeDiffuse;
 			const Vector3 direction(0,0,1);
+			CheckNear(pelClosure->PdfMarchMarginal(diffuse,direction),
+				INV_PI,1e-15,
+				"Pel ordinary terminal march density omits RR but keeps deterministic support");
 			CheckNear(pelClosure->PdfReachMarginal(diffuse,direction),
 				INV_PI*0.25,1e-15,
 				"Pel reach density includes the exact RR survival mass");
@@ -722,9 +728,15 @@ namespace
 		Check(pel && pel->PdfReachMarginal(
 			eContinuationLobeDiffuse,direction)==0.0,
 			"Pel deterministic zero gate removes march reach density before RR");
+		Check(pel && pel->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel deterministic zero gate removes terminal roulette-free march density");
 		Check(nm && nm->PdfReachMarginal(
 			eContinuationLobeDiffuse,direction)==0.0,
 			"NM deterministic zero gate removes march reach density before RR");
+		Check(nm && nm->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM deterministic zero gate removes terminal roulette-free march density");
 		if( pel ) {
 			ContinuationSamplePel regular, terminal;
 			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);

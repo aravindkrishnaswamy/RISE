@@ -110,6 +110,10 @@ namespace RISE
 			unsigned int mask, Scalar xiLobe, const Point2& xiDirection,
 			Scalar xiRoulette, bool applyRoulette,
 			ContinuationSamplePel& sample ) const = 0;
+		/// Terminal source-only directional density: deterministic continuation
+		/// gates are applied, but ordinary Russian roulette is not.
+		virtual Scalar PdfMarchMarginal(
+			unsigned int mask, const Vector3& direction ) const = 0;
 	};
 
 	class IContinuationClosureNM : public virtual IReference
@@ -134,6 +138,10 @@ namespace RISE
 			unsigned int mask, Scalar xiLobe, const Point2& xiDirection,
 			Scalar xiRoulette, bool applyRoulette,
 			ContinuationSampleNM& sample ) const = 0;
+		/// Terminal source-only directional density: deterministic continuation
+		/// gates are applied, but ordinary Russian roulette is not.
+		virtual Scalar PdfMarchMarginal(
+			unsigned int mask, const Vector3& direction ) const = 0;
 	};
 
 	namespace Implementation
