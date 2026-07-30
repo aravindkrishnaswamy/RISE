@@ -547,3 +547,47 @@ instead report the two MEASURED deficits as observed state:
 with the same escape clause and skill pointer. Everything else in the §2
 P2 spec (engine-side scan, fire thresholds, anti-churn clause, red-proof
 tests) carries over unchanged.
+
+---
+
+## 8. P2 outcome (2026-07-30, commit 9b3f19a6, 3 runs with the advisory live)
+
+| §6 bar | result | verdict |
+|---|---|---|
+| scalar-pipe ≥1/3 | **0/3** (0/15 lifetime) | **FAILED** |
+| advanced geometry ≥2/3 | 1/3 (natural rate; census clause never fired in that run — the sdf was authored unprompted at construction time) | **FAILED** |
+| painter floor ≥2 | 3, 3, 3 — floor AND median now 3 | exceeded (P1's lever, still compounding) |
+| ambiguity guard | 2/3 asked — historical form | HELD |
+
+**Trajectory forensics (the §6.3 discipline applied to our own feature):**
+the note FIRED in every run (render + validate carriers, transport
+verified), was first seen with 1–5 actionable calls remaining (r1: five
+calls after first note; r3: four), and the model acted on it **zero
+times**. Two prior mechanism successes (empty-index note, derive
+diagnostics) were BLOCKING facts — the model could not proceed without
+addressing them. This note is non-blocking advice competing with
+end-of-build momentum, and its own anti-churn escape clause licenses
+ignoring it. **Refined §5.1 model: models fix facts that block; they
+skim advice that doesn't.** Also structural: all construction precedes
+the first render (the 72-log's unlanded render-cadence item), so the
+note only ever arrives at the verification tail.
+
+**Where this leaves the ladder** (decision points, not decisions):
+1. **Diagnostic-framing hypothesis**: same fact, surfaced as a
+   `validate` Info-severity diagnostic (a to-fix list entry) instead of
+   a note field — §5.1's strongest row is "models fix derive
+   diagnostics every time". Cheap to test; risks churn on deliberately
+   simple scenes (the escape clause doesn't fit the diagnostics shape).
+2. **Render-cadence gate** (72-log item 1, structural): refuse an
+   oversized first `insert_chunks` before any render — moves the note
+   mid-build. Weakened as a pure theory by r1/r3 (turns remained,
+   unused), but earlier arrival + repetition may compound.
+3. **Instrument limitation, honestly**: all 15 runs are
+   gemini-3.5-flash (user's cost decision, §"Baseline protocol"). The
+   ask-scenario board showed large cross-model behavioral spreads;
+   scalar-pipe adoption may differ on stronger models. One hosted
+   opus/gpt spot-check (~6 runs) would disambiguate "advice ignored by
+   models generally" from "advice ignored by flash".
+4. **Stop here**: painter richness floor 1→3 and median 2→3 are real,
+   shipped, measured wins; the scalar pipe and advanced-geometry verbs
+   may simply not be bare-prompt behaviors worth forcing.
