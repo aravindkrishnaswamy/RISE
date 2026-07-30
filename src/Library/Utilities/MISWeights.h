@@ -144,6 +144,22 @@ namespace RISE
 
 	namespace MISWeights
 	{
+		struct LogDensity
+		{
+			bool hasSupport;
+			Scalar value;
+
+			LogDensity( const bool hasSupport_ = false, const Scalar value_ = 0.0 ) :
+				hasSupport( hasSupport_ ), value( value_ )
+			{}
+		};
+
+		inline LogDensity MakeLogDensity( const Scalar density )
+		{
+			return RISE::IsFiniteDouble(density) && density > 0.0 ?
+				LogDensity(true,log(density)) : LogDensity();
+		}
+
 		/// Power-2 family weight with stable ratio scaling.  This is the
 		/// NEE-side weight for thermal-volume emission when both pV and pMarch
 		/// describe the same endpoint in scene-volume measure.
@@ -176,6 +192,36 @@ namespace RISE
 		{
 			if( !competitionAvailable || continuationSingular ) return 1.0;
 			return VolumeEmissionNEEFamilyWeight(pMarch,pV);
+		}
+
+		/// Power-heuristic weight for densities that share an arbitrarily small
+		/// common scale. Form the ratio before exponentiation so a deep
+		/// null-boundary chain cannot erase both techniques.
+		inline Scalar VolumeEmissionFamilyWeightFromLogDensities(
+			const LogDensity& sampled,
+			const LogDensity& other
+			)
+		{
+			if( !sampled.hasSupport ||
+				!RISE::IsFiniteDouble(sampled.value) ) return 0.0;
+			if( !other.hasSupport || !RISE::IsFiniteDouble(other.value) ) return 1.0;
+			if( sampled.value >= other.value ) {
+				const Scalar ratio = exp(other.value-sampled.value);
+				return 1.0/(1.0+ratio*ratio);
+			}
+			const Scalar ratio = exp(sampled.value-other.value);
+			return ratio*ratio/(1.0+ratio*ratio);
+		}
+
+		inline Scalar VolumeEmissionMarchFamilyWeightFromLogDensities(
+			const LogDensity& logPMarch,
+			const LogDensity& logPV,
+			const bool competitionAvailable,
+			const bool continuationSingular
+			)
+		{
+			if( !competitionAvailable || continuationSingular ) return 1.0;
+			return VolumeEmissionFamilyWeightFromLogDensities(logPMarch,logPV);
 		}
 
 		/// Convert a direction×distance march proposal to scene-volume measure.
@@ -240,6 +286,31 @@ namespace RISE
 				state.directionPdf, distancePdf,
 				state.distanceOffset+segmentDistance,
 				state.logBoundarySurvival );
+		}
+
+		/// Return the complete march proposal in log scene-volume measure.
+		/// Keeping this logarithmic through MIS avoids exponentiating a common
+		/// tiny scale shared with the labeled volume-emission density.
+		inline LogDensity VolumeEmissionMarchLogDensityAtCollision(
+			const VolumeEmissionSegmentState& state,
+			const Scalar logDistancePdf,
+			const Scalar segmentDistance
+			)
+		{
+			if( !RISE::IsFiniteDouble(state.directionPdf) ||
+				!RISE::IsFiniteDouble(logDistancePdf) ||
+				!RISE::IsFiniteDouble(state.logBoundarySurvival) ||
+				!RISE::IsFiniteDouble(state.distanceOffset) ||
+				!RISE::IsFiniteDouble(segmentDistance) ||
+				state.directionPdf <= 0.0 || state.logBoundarySurvival > 0.0 ||
+				state.logBoundarySurvival <= -RISE_INFINITY ||
+				state.distanceOffset < 0.0 || state.distanceOffset >= RISE_INFINITY ||
+				segmentDistance <= 0.0 ) return LogDensity();
+			const Scalar distance = state.distanceOffset+segmentDistance;
+			if( !RISE::IsFiniteDouble(distance) || distance <= 0.0 ) return LogDensity();
+			const Scalar result = log(state.directionPdf) + logDistancePdf +
+				state.logBoundarySurvival - 2.0*log(distance);
+			return RISE::IsFiniteDouble(result) ? LogDensity(true,result) : LogDensity();
 		}
 
 		/// Balance heuristic weight: w = pa / (pa + pb)

@@ -1980,8 +1980,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				{
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
 					if constexpr ( !Traits::is_pel ) {
-						const Scalar thermalEmission = PTEventThermalEmissionNM(
+						Scalar thermalEmission = PTEventThermalEmissionNM(
 							*pCurrentMedium, currentRay, maxDist, t_m, tag.nm, mso );
+						if( thermalEmission != 0.0 &&
+							activeVolumeSegmentState.competitionAvailable ) {
+							const Scalar logDistancePdf = mso.useExplicitThroughput ?
+								mso.logCombinedPdf : pCurrentMedium->EvalLogDistancePdfNM(
+									currentRay,t_m,true,maxDist,tag.nm);
+							const MISWeights::LogDensity logPMarch =
+								MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+									activeVolumeSegmentState,logDistancePdf,t_m);
+							const Scalar pV = pLS ? pLS->VolumeEmissionPdf(
+								*pCurrentMedium,scatterPt) : 0.0;
+							const MISWeights::LogDensity logPV =
+								MISWeights::MakeLogDensity(pV);
+							thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+								logPMarch,logPV,
+								activeVolumeSegmentState.competitionAvailable,
+								activeVolumeSegmentState.continuationSingular);
+						}
 						result = result + throughput * thermalEmission;
 					}
 
@@ -3912,8 +3929,25 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
 			if constexpr ( !Traits::is_pel ) {
-				mediumSource = mediumSource + PTEventThermalEmissionNM(
+				Scalar thermalEmission = PTEventThermalEmissionNM(
 					*pCurrentMedium, cameraRay, maxDist, t_m, tag.nm, mso );
+				if( thermalEmission != 0.0 &&
+					volumeSegmentState.competitionAvailable ) {
+					const Scalar logDistancePdf = mso.useExplicitThroughput ?
+						mso.logCombinedPdf : pCurrentMedium->EvalLogDistancePdfNM(
+							cameraRay,t_m,true,maxDist,tag.nm);
+					const MISWeights::LogDensity logPMarch =
+						MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+							volumeSegmentState,logDistancePdf,t_m);
+					const Scalar pV = pLS ? pLS->VolumeEmissionPdf(
+						*pCurrentMedium,scatterPt) : 0.0;
+					const MISWeights::LogDensity logPV =
+						MISWeights::MakeLogDensity(pV);
+					thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+						logPMarch,logPV,volumeSegmentState.competitionAvailable,
+						volumeSegmentState.continuationSingular);
+				}
+				mediumSource = mediumSource + thermalEmission;
 				// The collision emits independently of the scatter-continuation
 				// budget.  Apply the camera-first cap only after that score.
 				if( stabilityConfig.maxVolumeBounce == 0 ) {

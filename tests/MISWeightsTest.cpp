@@ -342,6 +342,26 @@ static void TestVolumeEmissionFamilyPartition()
 		0.25,0.5,6.0,0.25);
 	Check(ApproxEqual(collisionDensity,expectedCollisionDensity,TOL),
 		"collision density uses distance from the originating vertex across all boundaries");
+	const MISWeights::LogDensity logCollisionDensity =
+		MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+			twoBoundaries,log(0.5),2.0);
+	Check(logCollisionDensity.hasSupport &&
+		ApproxEqual(exp(logCollisionDensity.value),expectedCollisionDensity,TOL),
+		"log-distance collision density equals the ordinary representable formulation");
+	const Scalar pVAtCollision = 0.125;
+	const Scalar weightedMarch =
+		MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+			logCollisionDensity,MISWeights::MakeLogDensity(pVAtCollision),true,false);
+	const Scalar weightedNee = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+		MISWeights::MakeLogDensity(pVAtCollision),logCollisionDensity);
+	Check(ApproxEqual(weightedMarch+weightedNee,1.0,TOL),
+		"collision-consumed march density is complementary to the labeled NEE density");
+	const Scalar commonTinyMarch =
+		MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+			MISWeights::LogDensity(true,-1400.0),
+			MISWeights::LogDensity(true,-1400.0),true,false);
+	Check(ApproxEqual(commonTinyMarch,0.5,TOL),
+		"common-scale densities remain balanced after both ordinary values underflow");
 	VolumeEmissionSegmentState deepChain = proposalState;
 	for(unsigned int i=0;i<2000;++i) {
 		deepChain = AdvanceVolumeEmissionSegmentState(deepChain,0.5,1.0);
@@ -356,6 +376,9 @@ static void TestVolumeEmissionFamilyPartition()
 		impossibleBoundary.directionPdf,0.5,2.0,
 		impossibleBoundary.logBoundarySurvival)==0.0,
 		"zero-probability boundary survival removes march support");
+	Check(!MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+		impossibleBoundary,log(0.5),1.0).hasSupport,
+		"zero-probability boundary survival has no log-domain march support");
 	{
 		const VolumeEmissionSegmentStateScope temporaryScope(
 			VolumeEmissionSegmentState(true,true) );

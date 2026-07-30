@@ -1889,6 +1889,22 @@ bool RayCaster::CastRayNMImpl_(
 					}
 				}
 			}
+			if( thermalEmission != 0.0 &&
+				incomingVolumeSegmentState.competitionAvailable ) {
+				const Scalar logDistancePdf = useExplicitThroughput_NM ?
+					logCombinedPdf_NM : pMedium->EvalLogDistancePdfNM(
+						ray,t_m,true,maxDist,nm);
+				const MISWeights::LogDensity logPMarch =
+					MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+						incomingVolumeSegmentState,logDistancePdf,t_m);
+				const Scalar pV = pLightSampler ?
+					pLightSampler->VolumeEmissionPdf(*pMedium,scatterPt) : 0.0;
+				const MISWeights::LogDensity logPV = MISWeights::MakeLogDensity(pV);
+				thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+					logPMarch,logPV,
+					incomingVolumeSegmentState.competitionAvailable,
+					incomingVolumeSegmentState.continuationSingular);
+			}
 
 			// Score medium sources before recursion-depth and RR termination.
 			// Those gates suppress surface/scattering continuation, not the

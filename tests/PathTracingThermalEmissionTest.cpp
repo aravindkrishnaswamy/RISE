@@ -42,6 +42,7 @@
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/MISWeights.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #ifdef RISE_ENABLE_OPENPGL
 	#include "../src/Library/Utilities/PathGuidingField.h"
@@ -229,6 +230,22 @@ namespace
 					*job->GetScene(), *caster, sampler, nullptr, nullptr );
 			}
 			return sum / Scalar( kSamples );
+		}
+
+		Scalar MeanRayCasterNMWithSegmentState(
+			const unsigned int seed, const Scalar nm,
+			const VolumeEmissionSegmentState& segmentState ) const
+		{
+			const VolumeEmissionSegmentStateScope stateScope(segmentState);
+			return MeanRayCasterNM(seed,nm);
+		}
+
+		Scalar MeanPathTracingNMWithSegmentState(
+			const unsigned int seed, const Scalar nm,
+			const VolumeEmissionSegmentState& segmentState ) const
+		{
+			const VolumeEmissionSegmentStateScope stateScope(segmentState);
+			return MeanPathTracingNM(seed,nm);
 		}
 
 		void MeanPathTracingHWSS(
@@ -1126,6 +1143,47 @@ namespace
 			"primary scattering collision emits, then maxVolumeBounce=0 suppresses continuation" );
 	}
 
+	void TestCollisionEmissionConsumesMarchCompetitionState()
+	{
+		std::cout << "TestCollisionEmissionConsumesMarchCompetitionState" << std::endl;
+		Fixture fixture;
+		Check( fixture.Initialize("collision_mis_state",1.0,1.0,false),
+			"collision MIS state fixture initializes" );
+		if( !fixture.integrator || !fixture.caster ) return;
+
+		const Scalar nm = 500.0;
+		const unsigned int seed = 0x6d157a7eu;
+		const Scalar baselinePT = fixture.MeanPathTracingNM(seed,nm);
+		const Scalar baselineRC = fixture.MeanRayCasterNM(seed,nm);
+		const VolumeEmissionSegmentState singularCompetition(
+			true,true,nullptr,0.25,0.0,0.0);
+		const Scalar singularPT = fixture.MeanPathTracingNMWithSegmentState(
+			seed,nm,singularCompetition);
+		const Scalar singularRC = fixture.MeanRayCasterNMWithSegmentState(
+			seed,nm,singularCompetition);
+		Check( singularPT==baselinePT && singularRC==baselineRC,
+			"sampled-delta competition leaves collision emission at weight one" );
+
+		const VolumeEmissionSegmentState continuousCompetition(
+			true,false,nullptr,0.25,0.0,0.0);
+		const Scalar weightedPT = fixture.MeanPathTracingNMWithSegmentState(
+			seed,nm,continuousCompetition);
+		const Scalar weightedRC = fixture.MeanRayCasterNMWithSegmentState(
+			seed,nm,continuousCompetition);
+		if( !(weightedPT > 0.0 && weightedPT < baselinePT &&
+			weightedRC > 0.0 && weightedRC < baselineRC) ||
+			!NearRelative(weightedPT,weightedRC,0.012) ) {
+			std::cout << "  baseline PT/RC=" << baselinePT << "/" << baselineRC
+				<< " weighted PT/RC=" << weightedPT << "/" << weightedRC
+				<< std::endl;
+		}
+		Check( weightedPT > 0.0 && weightedPT < baselinePT &&
+			weightedRC > 0.0 && weightedRC < baselineRC,
+			"continuous competing segments apply a nontrivial march-family weight" );
+		Check( NearRelative(weightedPT,weightedRC,0.012),
+			"PT and RayCaster consume the same collision-side march partition" );
+	}
+
 	void TestDirectPelEntryRejectsFire()
 	{
 		std::cout << "TestDirectPelEntryRejectsFire" << std::endl;
@@ -1890,6 +1948,7 @@ int main()
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
+	TestCollisionEmissionConsumesMarchCompetitionState();
 	TestDirectPelEntryRejectsFire();
 	TestBoundedObjectFireRejectsShaderDispatchPel();
 	TestPostScatterSegmentRunsMediumTransport();
