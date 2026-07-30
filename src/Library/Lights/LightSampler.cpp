@@ -186,6 +186,12 @@ struct ShadowTransmittanceNM
 	}
 };
 
+enum ShadowBoundaryPolicy
+{
+	eShadowBoundaryIgnoreGeometry,
+	eShadowBoundaryExactNullOnly
+};
+
 template<typename Evaluator>
 bool AccumulateShadowMediumSegment(
 	const Evaluator& evaluator,
@@ -223,7 +229,8 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	const Evaluator& evaluator,
 	typename Evaluator::Value& outTr,
 	const IORStack* pOriginStack,
-	const IMedium** pEndpointMedium
+	const IMedium** pEndpointMedium,
+	const ShadowBoundaryPolicy boundaryPolicy = eShadowBoundaryIgnoreGeometry
 	)
 {
 	typename Evaluator::Value Tr = evaluator.Identity();
@@ -244,14 +251,15 @@ bool EvaluateShadowMediumTransmittanceImpl(
 	const IObjectManager* pObjects = pScene->GetObjects();
 
 	// Quick exit: no media anywhere
-	if( !pOriginMedium && !pGlobalMedium && !bSceneHasObjectMedia ) {
+	if( boundaryPolicy==eShadowBoundaryIgnoreGeometry &&
+		!pOriginMedium && !pGlobalMedium && !bSceneHasObjectMedia ) {
 		outTr = Tr;
 		return true;
 	}
 
 	// Fast path: no per-object media in scene, just apply
 	// origin/global medium for the full distance.
-	if( !bSceneHasObjectMedia ) {
+	if( boundaryPolicy==eShadowBoundaryIgnoreGeometry && !bSceneHasObjectMedia ) {
 		const IMedium* pMedium = pOriginMedium ? pOriginMedium : pGlobalMedium;
 		if( pMedium ) {
 			if( !AccumulateShadowMediumSegment(
@@ -367,6 +375,15 @@ bool EvaluateShadowMediumTransmittanceImpl(
 				"EvaluateShadowMediumTransmittance: malformed or non-progressing boundary hit (start %.17g, local %.17g, absolute %.17g)",
 				segStart, ri.geometric.range, boundaryDist );
 			return false;
+		}
+		if( boundaryPolicy==eShadowBoundaryExactNullOnly &&
+			!IsExactNullBoundaryMaterial(ri.pMaterial) ) {
+			// Volume-emission NEE and its march competitor have common support
+			// only through exact null boundaries.  Shadow flags and transparent-
+			// shadow settings are deliberately irrelevant here: every other
+			// interface terminates the originating vertex's strategy family.
+			outTr = evaluator.Zero();
+			return true;
 		}
 
 		const Scalar segLen = boundaryDist - segStart;
@@ -2162,9 +2179,7 @@ Scalar LightSampler::EvaluateVolumeDirectLightingNM(
 	const RayIntersectionGeometric& ri,
 	const IBSDF& receiver,
 	const Scalar nm,
-	const IRayCaster& caster,
 	ISampler& sampler,
-	const IObject* pShadingObject,
 	const IMedium* pMedium,
 	const bool isVolumeScatter,
 	const IObject* pMediumObject,
@@ -2184,17 +2199,12 @@ Scalar LightSampler::EvaluateVolumeDirectLightingNM(
 	if( receiverCosine <= 0.0 ) return 0.0;
 
 	const Ray shadowRay( ri.ptIntersection, direction );
-	if( (!pShadingObject || pShadingObject->DoesReceiveShadows()) &&
-		caster.CastShadowRay( shadowRay, std::nextafter(distance, Scalar(0.0)) ) ) {
-		return 0.0;
-	}
-
 	Scalar transmittance = 0.0;
 	const IMedium* endpointMedium = 0;
 	if( !EvaluateShadowMediumTransmittanceImpl(
 		shadowRay, distance, pMedium, pMediumObject, pPreparedScene,
 		bSceneHasObjectMedia, ShadowTransmittanceNM(nm), transmittance,
-		pMediumStack, &endpointMedium ) ) return 0.0;
+		pMediumStack, &endpointMedium, eShadowBoundaryExactNullOnly ) ) return 0.0;
 	// Innermost-exclusive support: an outer medium's labeled draw can land
 	// inside a nested medium.  It remains a valid sample at the original pdf,
 	// but its contribution is zero rather than being renormalized.

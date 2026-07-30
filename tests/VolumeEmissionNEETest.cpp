@@ -1100,23 +1100,25 @@ namespace
 	{
 		return
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
-			"scalar_painter\n{\nname carbon\nvalue 0.1\n}\n"
+			"null_boundary_material\n{\nname medium_boundary\n}\n"
+			"scalar_painter\n{\nname carbon_outer\nvalue 0.01\n}\n"
+			"scalar_painter\n{\nname carbon_inner\nvalue 0.03\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
-			"multichannel_heterogeneous_medium\n{\nname outer_fire\nchannel_carbon painter carbon\n"
+			"multichannel_heterogeneous_medium\n{\nname outer_fire\nchannel_carbon painter carbon_outer\n"
 			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
 			"bbox_min -2 -2 -2\nbbox_max 2 2 2\nsoot_em 0.26\nsoot_density 1800\n"
 			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
-			"multichannel_heterogeneous_medium\n{\nname inner_fire\nchannel_carbon painter carbon\n"
+			"multichannel_heterogeneous_medium\n{\nname inner_fire\nchannel_carbon painter carbon_inner\n"
 			"channel_temperature painter temperature\nbake_resolution 4 4 4\n"
 			"bbox_min -0.5 -0.5 -0.5\nbbox_max 0.5 0.5 0.5\nsoot_em 0.26\nsoot_density 1800\n"
 			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
 			"box_geometry\n{\nname outer_geom\nwidth 4\nheight 4\ndepth 4\n}\n"
 			"box_geometry\n{\nname inner_geom\nwidth 1\nheight 1\ndepth 1\n}\n"
-			"standard_object\n{\nname outer_box\ngeometry outer_geom\nmaterial none\n"
+			"standard_object\n{\nname outer_box\ngeometry outer_geom\nmaterial medium_boundary\n"
 			"interior_medium outer_fire\ncasts_shadows FALSE\n}\n"
-			"standard_object\n{\nname inner_box\ngeometry inner_geom\nmaterial none\n"
+			"standard_object\n{\nname inner_box\ngeometry inner_geom\nmaterial medium_boundary\n"
 			"interior_medium inner_fire\ncasts_shadows FALSE\n}\n";
 	}
 
@@ -1134,13 +1136,18 @@ namespace
 		const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
 		const IObject* outerObject = job ?
 			job->GetScene()->GetObjects()->GetItem("outer_box") : nullptr;
+		const IObject* innerObject = job ?
+			job->GetScene()->GetObjects()->GetItem("inner_box") : nullptr;
 		const IMedium* outer = outerObject ? outerObject->GetInteriorMedium() : nullptr;
-		Check( lights && outer && lights->GetVolumeEmissionMediumCount() == 2,
+		const IMedium* inner = innerObject ? innerObject->GetInteriorMedium() : nullptr;
+		Check( lights && outer && inner && lights->GetVolumeEmissionMediumCount() == 2,
 			"nested fixture prepares both labeled emissive media" );
-		std::vector<Scalar> replayValues;
+		std::vector<Scalar> inactiveReplayValues;
+		std::vector<Scalar> activeReplayValues;
 		Point3 inactivePoint;
-		if( lights && outer ) {
-			for( unsigned int seed = 1; seed <= 4096 && replayValues.empty(); ++seed ) {
+		if( lights && outer && inner ) {
+			for( unsigned int seed = 1; seed <= 4096 &&
+				(inactiveReplayValues.empty() || activeReplayValues.empty()); ++seed ) {
 				RecordingSampler sampler( seed );
 				VolumeEmissionSample endpoint;
 				if( lights->SampleVolumeEmission(sampler,endpoint) &&
@@ -1148,34 +1155,83 @@ namespace
 					std::fabs(endpoint.point.x) < 0.5 &&
 					std::fabs(endpoint.point.y) < 0.5 &&
 					std::fabs(endpoint.point.z) < 0.5 ) {
-					replayValues = sampler.Values();
+					inactiveReplayValues = sampler.Values();
 					inactivePoint = endpoint.point;
+				}
+				if( endpoint.pMedium == inner && activeReplayValues.empty() ) {
+					activeReplayValues = sampler.Values();
 				}
 			}
 		}
-		Check( !replayValues.empty() && outer &&
+		Check( !inactiveReplayValues.empty() && outer &&
 			lights->VolumeEmissionPdf(*outer,inactivePoint) > 0.0,
 			"outer labeled density remains positive inside the nested medium" );
-		if( !replayValues.empty() && lights && caster ) {
+		Check( !activeReplayValues.empty(),
+			"nested fixture finds an endpoint labeled with the active inner medium" );
+		if( !inactiveReplayValues.empty() && !activeReplayValues.empty() &&
+			lights && caster && outer && inner ) {
 			const RasterizerState rast = {0,0};
 			const Ray viewRay( Point3(-3,0,0), Vector3(-1,0,0) );
 			RayIntersectionGeometric ri( viewRay, rast );
 			ri.ptIntersection = Point3(-3,0,0);
 			ri.vNormal = Vector3(1,0,0);
 			SpectralResponseBSDF* unit = new SpectralResponseBSDF();
-			FixedSampler sampler( replayValues );
+			FixedSampler sampler( inactiveReplayValues );
 			const Scalar contribution = lights->EvaluateVolumeDirectLightingNM(
-				ri, *unit, 550.0, *caster, sampler, nullptr,
+				ri, *unit, 550.0, sampler,
 				nullptr, true, nullptr, nullptr );
 			Check( contribution == 0.0,
-				"inactive outer-medium endpoint returns zero without density renormalization" );
+				"outer label inside nested exact-null medium returns zero after stack resolution" );
+
+			FixedSampler endpointSampler( activeReplayValues );
+			VolumeEmissionSample endpoint;
+			const bool endpointSampled = lights->SampleVolumeEmission(
+				endpointSampler, endpoint );
+			Vector3 direction = endpointSampled ? Vector3Ops::mkVector3(
+				endpoint.point, ri.ptIntersection ) : Vector3(0,0,0);
+			const Scalar distance = endpointSampled ?
+				Vector3Ops::NormalizeMag(direction) : 0.0;
+			const Scalar tOuter = endpointSampled ? 1.0/direction.x : 0.0;
+			const Scalar tInner = endpointSampled ? 2.5/direction.x : 0.0;
+			Scalar expected = 0.0;
+			if( endpointSampled && endpoint.pMedium==inner &&
+				distance > tInner && tInner > tOuter ) {
+				const Ray outerRay(
+					Ray(ri.ptIntersection,direction).PointAtLength(tOuter), direction );
+				const Ray innerRay(
+					Ray(ri.ptIntersection,direction).PointAtLength(tInner), direction );
+				const Scalar transmittance = outer->EvalDistancePdfNM(
+					outerRay,tInner-tOuter,false,tInner-tOuter,550.0) *
+					inner->EvalDistancePdfNM(
+						innerRay,distance-tInner,false,distance-tInner,550.0);
+				expected = 0.8 * transmittance *
+					inner->GetThermalEmissionNM(endpoint.point,550.0) /
+					(distance*distance*endpoint.pdf);
+			}
+			Scalar activeContribution = 0.0;
+			const unsigned int trials = 20000;
+			for( unsigned int i = 0; i < trials; ++i ) {
+				FixedSampler activeSampler( activeReplayValues );
+				activeContribution += lights->EvaluateVolumeDirectLightingNM(
+					ri, *unit, 550.0, activeSampler,
+					nullptr, true, nullptr, nullptr );
+			}
+			activeContribution /= static_cast<Scalar>(trials);
+			Check( expected > 0.0,
+				"nested exact-null reference has positive piecewise attenuation" );
+			CheckRelative( activeContribution, expected, 0.02,
+				"nested exact-null walk applies outer then inner attenuation and active label" );
 			safe_release( unit );
 		}
 		safe_release( caster );
 		safe_release( job );
 	}
 
-	std::string GlobalMediumScene( const bool addOpaqueBlocker = false )
+	std::string GlobalMediumScene(
+		const bool addBlocker = false,
+		const bool castsShadows = true,
+		const bool exactNullBoundary = false
+		)
 	{
 		std::string scene =
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
@@ -1187,11 +1243,16 @@ namespace
 			"soot_albedo_hot 0.1\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
 			"global_medium\n{\nmedium fire\n}\n";
-		if( addOpaqueBlocker ) {
+		if( addBlocker ) {
+			if( exactNullBoundary ) {
+				scene += "null_boundary_material\n{\nname medium_boundary\n}\n";
+			}
 			scene +=
 				"box_geometry\n{\nname blocker_geom\nwidth 4\nheight 4\ndepth 0.1\n}\n"
-				"standard_object\n{\nname blocker\ngeometry blocker_geom\nmaterial none\n"
-				"position 0 0 -0.5\ncasts_shadows TRUE\n}\n";
+				"standard_object\n{\nname blocker\ngeometry blocker_geom\nmaterial ";
+			scene += exactNullBoundary ? "medium_boundary\n" : "none\n";
+			scene += "position 0 0 -0.5\ncasts_shadows ";
+			scene += castsShadows ? "TRUE\n}\n" : "FALSE\n}\n";
 		}
 		return scene;
 	}
@@ -1432,8 +1493,14 @@ namespace
 		std::cout << "TestOpaqueGeometricVisibility" << std::endl;
 		IJobPriv* clearJob = LoadScene( GlobalMediumScene(false) );
 		IJobPriv* blockedJob = LoadScene( GlobalMediumScene(true) );
+		IJobPriv* shadowDisabledJob = LoadScene(
+			GlobalMediumScene(true,false,false) );
+		IJobPriv* nullBoundaryJob = LoadScene(
+			GlobalMediumScene(true,false,true) );
 		IRayCaster* clearCaster = nullptr;
 		IRayCaster* blockedCaster = nullptr;
+		IRayCaster* shadowDisabledCaster = nullptr;
+		IRayCaster* nullBoundaryCaster = nullptr;
 		if( clearJob ) {
 			IShader* shader = clearJob->GetShaders()->GetItem("global");
 			if( shader && RISE_API_CreateRayCaster(&clearCaster,false,0,*shader,true) && clearCaster )
@@ -1444,12 +1511,32 @@ namespace
 			if( shader && RISE_API_CreateRayCaster(&blockedCaster,false,0,*shader,true) && blockedCaster )
 				blockedCaster->AttachScene( blockedJob->GetScene() );
 		}
+		if( shadowDisabledJob ) {
+			IShader* shader = shadowDisabledJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(
+				&shadowDisabledCaster,false,0,*shader,true) && shadowDisabledCaster )
+				shadowDisabledCaster->AttachScene( shadowDisabledJob->GetScene() );
+		}
+		if( nullBoundaryJob ) {
+			IShader* shader = nullBoundaryJob->GetShaders()->GetItem("global");
+			if( shader && RISE_API_CreateRayCaster(
+				&nullBoundaryCaster,false,0,*shader,true) && nullBoundaryCaster )
+				nullBoundaryCaster->AttachScene( nullBoundaryJob->GetScene() );
+		}
 		const RayCaster* clearConcrete = dynamic_cast<const RayCaster*>(clearCaster);
 		const RayCaster* blockedConcrete = dynamic_cast<const RayCaster*>(blockedCaster);
 		const LightSampler* clearLights = clearConcrete ? clearConcrete->GetLightSampler() : nullptr;
 		const LightSampler* blockedLights = blockedConcrete ? blockedConcrete->GetLightSampler() : nullptr;
-		Check( clearLights && blockedLights,
-			"paired clear and opaque-blocked estimator fixtures prepare" );
+		const RayCaster* shadowDisabledConcrete =
+			dynamic_cast<const RayCaster*>(shadowDisabledCaster);
+		const RayCaster* nullBoundaryConcrete =
+			dynamic_cast<const RayCaster*>(nullBoundaryCaster);
+		const LightSampler* shadowDisabledLights = shadowDisabledConcrete
+			? shadowDisabledConcrete->GetLightSampler() : nullptr;
+		const LightSampler* nullBoundaryLights = nullBoundaryConcrete
+			? nullBoundaryConcrete->GetLightSampler() : nullptr;
+		Check( clearLights && blockedLights && shadowDisabledLights && nullBoundaryLights,
+			"clear, ordinary-interface, and exact-null visibility fixtures prepare" );
 
 		std::vector<Scalar> replayValues;
 		if( clearLights ) {
@@ -1463,7 +1550,8 @@ namespace
 		Check( !replayValues.empty(),
 			"visibility fixture finds an endpoint beyond the blocker plane" );
 		if( !replayValues.empty() && clearLights && blockedLights &&
-			clearCaster && blockedCaster && clearJob && blockedJob ) {
+			shadowDisabledLights && nullBoundaryLights && clearJob && blockedJob &&
+			shadowDisabledJob && nullBoundaryJob ) {
 			const RasterizerState rast = {0,0};
 			const Ray viewRay( Point3(0,0,-1), Vector3(0,0,-1) );
 			RayIntersectionGeometric ri( viewRay, rast );
@@ -1472,22 +1560,40 @@ namespace
 			SpectralResponseBSDF* response = new SpectralResponseBSDF();
 			FixedSampler clearSampler( replayValues );
 			const Scalar clearContribution = clearLights->EvaluateVolumeDirectLightingNM(
-				ri, *response, 550.0, *clearCaster, clearSampler, nullptr,
+				ri, *response, 550.0, clearSampler,
 				clearJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
 			FixedSampler blockedSampler( replayValues );
 			const Scalar blockedContribution = blockedLights->EvaluateVolumeDirectLightingNM(
-				ri, *response, 550.0, *blockedCaster, blockedSampler, nullptr,
+				ri, *response, 550.0, blockedSampler,
 				blockedJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
+			FixedSampler shadowDisabledSampler( replayValues );
+			const Scalar shadowDisabledContribution =
+				shadowDisabledLights->EvaluateVolumeDirectLightingNM(
+					ri, *response, 550.0, shadowDisabledSampler,
+					shadowDisabledJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
+			FixedSampler nullBoundarySampler( replayValues );
+			const Scalar nullBoundaryContribution =
+				nullBoundaryLights->EvaluateVolumeDirectLightingNM(
+					ri, *response, 550.0, nullBoundarySampler,
+					nullBoundaryJob->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
 			Check( clearContribution > 0.0,
 				"unobstructed paired endpoint contributes positive volume NEE" );
 			Check( blockedContribution == 0.0,
 				"opaque geometry supplies the estimator visibility factor" );
+			Check( shadowDisabledContribution == 0.0,
+				"non-null interface blocks volume NEE independent of casts_shadows" );
+			CheckRelative( nullBoundaryContribution, clearContribution, 2e-14,
+				"exact null boundary passes volume NEE independent of casts_shadows" );
 			safe_release( response );
 		}
 		safe_release( clearCaster );
 		safe_release( blockedCaster );
+		safe_release( shadowDisabledCaster );
+		safe_release( nullBoundaryCaster );
 		safe_release( clearJob );
 		safe_release( blockedJob );
+		safe_release( shadowDisabledJob );
+		safe_release( nullBoundaryJob );
 	}
 
 	void TestStandaloneEstimatorFormula()
@@ -1532,7 +1638,7 @@ namespace
 				SpectralResponseBSDF* unit = new SpectralResponseBSDF();
 				FixedSampler estimatorSampler( randomValues );
 				const Scalar actual = lights->EvaluateVolumeDirectLightingNM(
-					ri, *unit, nm, *caster, estimatorSampler, nullptr,
+					ri, *unit, nm, estimatorSampler,
 					job->GetScene()->GetGlobalMedium(), false, nullptr, nullptr );
 				Check( walked, "standalone estimator uses the complete shadow-medium walk" );
 				CheckRelative( actual, expected, 2e-14,
@@ -1540,7 +1646,7 @@ namespace
 
 				FixedSampler volumeEstimatorSampler( randomValues );
 				const Scalar volumeActual = lights->EvaluateVolumeDirectLightingNM(
-					ri, *unit, nm, *caster, volumeEstimatorSampler, nullptr,
+					ri, *unit, nm, volumeEstimatorSampler,
 					job->GetScene()->GetGlobalMedium(), true, nullptr, nullptr );
 				const Scalar volumeExpected = expected /
 					Vector3Ops::Dot(direction,ri.vNormal);
