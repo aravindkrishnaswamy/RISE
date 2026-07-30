@@ -29,6 +29,26 @@ using namespace RISE;
 
 namespace
 {
+	static unsigned int HalfOpenBinIndex(
+		const Scalar value,
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binCount
+		)
+	{
+		if( value >= maximum ) return binCount - 1u;
+		unsigned int lower = 0u;
+		unsigned int upper = binCount;
+		while( lower + 1u < upper ) {
+			const unsigned int middle = lower + (upper-lower)/2u;
+			const Scalar boundary = minimum + Scalar(middle)*binSize;
+			if( value < boundary ) upper = middle;
+			else lower = middle;
+		}
+		return lower;
+	}
+
 	class ConstituentHGPhaseClosure :
 		public virtual IPhaseFunction,
 		public virtual Implementation::Reference
@@ -1462,12 +1482,12 @@ bool MultichannelHeterogeneousMedium::EmissionBinAtPoint(
 		point.y < m_bboxMin.y || point.y > m_bboxMax.y ||
 		point.z < m_bboxMin.z || point.z > m_bboxMax.z ) return false;
 
-	const Scalar fx = (point.x - m_bboxMin.x) / m_emissionBinSize.x;
-	const Scalar fy = (point.y - m_bboxMin.y) / m_emissionBinSize.y;
-	const Scalar fz = (point.z - m_bboxMin.z) / m_emissionBinSize.z;
-	x = fx >= Scalar(m_volWidth) ? m_volWidth - 1u : static_cast<unsigned int>( floor(fx) );
-	y = fy >= Scalar(m_volHeight) ? m_volHeight - 1u : static_cast<unsigned int>( floor(fy) );
-	z = fz >= Scalar(m_volDepth) ? m_volDepth - 1u : static_cast<unsigned int>( floor(fz) );
+	x = HalfOpenBinIndex( point.x, m_bboxMin.x, m_bboxMax.x,
+		m_emissionBinSize.x, m_volWidth );
+	y = HalfOpenBinIndex( point.y, m_bboxMin.y, m_bboxMax.y,
+		m_emissionBinSize.y, m_volHeight );
+	z = HalfOpenBinIndex( point.z, m_bboxMin.z, m_bboxMax.z,
+		m_emissionBinSize.z, m_volDepth );
 	return true;
 }
 

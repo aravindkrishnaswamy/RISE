@@ -560,6 +560,62 @@ namespace
 		safe_release( temperature );
 	}
 
+	void TestSampledBoundaryOwnership()
+	{
+		std::cout << "TestSampledBoundaryOwnership" << std::endl;
+		RampCarbonPainter* carbon = new RampCarbonPainter();
+		IScalarPainter* temperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &temperature, 1800.0 );
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature, 17, 2, 2,
+			Point3(0,0,0), Point3(1,1,1), 1.0,
+			0.26, 1800.0, 0.1, 0.5, 8.7, 1.2, 0.6, 0.6 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( created && fire, "17-bin nonuniform boundary fixture builds" );
+		bool foundThirdBoundary = false;
+		bool densityMatchesSelectedBin = true;
+		if( fire ) {
+			const Scalar binVolume = (1.0/17.0)*0.5*0.5;
+			for( unsigned int cellRoll = 0; cellRoll < 256 && !foundThirdBoundary;
+				++cellRoll ) {
+				for( unsigned int binRoll = 0; binRoll < 256; ++binRoll ) {
+					FixedSampler sampler( {
+						(Scalar(cellRoll)+0.5)/256.0,
+						(Scalar(binRoll)+0.5)/256.0,
+						0.0, 0.5, 0.5 } );
+					Point3 point;
+					Scalar sampledPdf = 0.0;
+					if( !fire->SampleThermalEmission(sampler,point,sampledPdf) ) continue;
+					const unsigned int selectedX = static_cast<unsigned int>(
+						std::llround(point.x*17.0) );
+					if( selectedX != 3u ) continue;
+					foundThirdBoundary = true;
+					const unsigned int selectedY = std::min(
+						static_cast<unsigned int>(point.y*2.0), 1u );
+					const unsigned int selectedZ = std::min(
+						static_cast<unsigned int>(point.z*2.0), 1u );
+					const Scalar expectedPdf =
+						fire->GetThermalEmissionBinProbability(
+							selectedX,selectedY,selectedZ ) / binVolume;
+					densityMatchesSelectedBin =
+						std::fabs(sampledPdf-expectedPdf) <= 2e-14*expectedPdf &&
+						std::fabs(fire->ThermalEmissionPdf(point)-expectedPdf) <=
+							2e-14*expectedPdf;
+					break;
+				}
+			}
+		}
+		Check( foundThirdBoundary,
+			"fixed-zero spatial draw reaches the lower face of nonuniform bin three" );
+		Check( densityMatchesSelectedBin,
+			"sampled and evaluated density retain the selected half-open bin at its lower face" );
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
 	void TestSceneUnitInvariantImportance()
 	{
 		std::cout << "TestSceneUnitInvariantImportance" << std::endl;
@@ -1139,6 +1195,7 @@ int main()
 	TestSharedVisibleBandRule();
 	TestCDFNormalizationSamplingAndOwnership();
 	TestNonuniformTwoLevelDistribution();
+	TestSampledBoundaryOwnership();
 	TestSceneUnitInvariantImportance();
 	TestTinyFiniteBBoxDensityFormulation();
 	TestSupportInflationAtBoundary();
