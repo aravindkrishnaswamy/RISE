@@ -829,6 +829,37 @@ namespace
 		safe_release( temperature );
 	}
 
+	void TestAnisotropicBinVolumeFormulation()
+	{
+		std::cout << "TestAnisotropicBinVolumeFormulation" << std::endl;
+		IMedium* overflowOrder = CreateUniformFire(
+			0.2, 1800.0, 2, Point3(0,0,0),
+			Point3(1.0e200,1.0e200,1.0e-200), 1.0 );
+		IMedium* underflowOrder = CreateUniformFire(
+			0.2, 1800.0, 2, Point3(0,0,0),
+			Point3(1.0e-200,1.0e-200,1.0e200), 1.0 );
+		MultichannelHeterogeneousMedium* overflowFire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( overflowOrder );
+		MultichannelHeterogeneousMedium* underflowFire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( underflowOrder );
+		Check( overflowFire && underflowFire,
+			"finite anisotropic bin volumes build in both multiplication orders" );
+		if( overflowFire ) {
+			const Point3 center(2.5e199,2.5e199,2.5e-201);
+			CheckRelative( overflowFire->ThermalEmissionPdf(center) *
+				(8.0*1.25e199), 1.0, 4e-14,
+				"overflow-prone anisotropic represented-bin density normalizes" );
+		}
+		if( underflowFire ) {
+			const Point3 center(2.5e-201,2.5e-201,2.5e199);
+			CheckRelative( underflowFire->ThermalEmissionPdf(center) *
+				(8.0*1.25e-201), 1.0, 4e-14,
+				"underflow-prone anisotropic represented-bin density normalizes" );
+		}
+		safe_release( overflowOrder );
+		safe_release( underflowOrder );
+	}
+
 	void TestSupportInflationAtBoundary()
 	{
 		std::cout << "TestSupportInflationAtBoundary" << std::endl;
@@ -1290,6 +1321,7 @@ int main()
 	TestSceneUnitInvariantImportance();
 	TestTinyFiniteBBoxDensityFormulation();
 	TestRepresentedBinVolumeNormalization();
+	TestAnisotropicBinVolumeFormulation();
 	TestSupportInflationAtBoundary();
 	TestScaleSafeCrossMediumNormalization();
 	TestLabeledMultiMediumDensity();

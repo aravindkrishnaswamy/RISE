@@ -29,6 +29,26 @@ using namespace RISE;
 
 namespace
 {
+	static Scalar StablePositiveProduct(
+		const std::initializer_list<Scalar>& factors
+		)
+	{
+		Scalar mantissa = 1.0;
+		int exponent = 0;
+		for( const Scalar factor : factors ) {
+			if( factor == 0.0 ) return 0.0;
+			if( factor < 0.0 || !RISE::IsFiniteDouble(factor) ) {
+				return std::numeric_limits<Scalar>::quiet_NaN();
+			}
+			int factorExponent = 0;
+			const Scalar factorMantissa = std::frexp( factor, &factorExponent );
+			int adjustment = 0;
+			mantissa = std::frexp( mantissa*factorMantissa, &adjustment );
+			exponent += factorExponent + adjustment;
+		}
+		return std::ldexp( mantissa, exponent );
+	}
+
 	static unsigned int HalfOpenBinIndex(
 		const Scalar value,
 		const Scalar minimum,
@@ -109,7 +129,7 @@ namespace
 			minimum.y + Scalar(y+1u)*binSize.y;
 		const Scalar z1 = z + 1u == nz ? maximum.z :
 			minimum.z + Scalar(z+1u)*binSize.z;
-		return (x1-x0)*(y1-y0)*(z1-z0);
+		return StablePositiveProduct( {x1-x0,y1-y0,z1-z0} );
 	}
 
 	class ConstituentHGPhaseClosure :
@@ -1592,10 +1612,10 @@ Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
 	const Scalar planckPeakNM = fmax( Scalar(380.0), fmin( Scalar(780.0), wienPeakNM ) );
 	const Scalar planckMax = PlanckSpectralRadianceNM(
 		planckPeakNM, maxTemperature );
-	return RepresentedBinVolume( m_bboxMin, m_bboxMax, m_emissionBinSize,
-		x, y, z, m_volWidth, m_volHeight, m_volDepth ) *
-		Scalar(400.0) * m_sceneUnitMeters *
-		maxCarbon * absorptionMax * planckMax;
+	return StablePositiveProduct( {
+		RepresentedBinVolume( m_bboxMin, m_bboxMax, m_emissionBinSize,
+			x, y, z, m_volWidth, m_volHeight, m_volDepth ),
+		Scalar(400.0), m_sceneUnitMeters, maxCarbon, absorptionMax, planckMax } );
 }
 
 bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
@@ -1651,8 +1671,9 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 					z + 1u == m_volDepth ? m_bboxMax.z :
 						m_bboxMin.z + Scalar(z+1u) * m_emissionBinSize.z );
 				const Vector3 representedSize = Vector3Ops::mkVector3( binMax, binMin );
-				const Scalar binVolume = representedSize.x * representedSize.y *
-					representedSize.z;
+				const Scalar binVolume = RepresentedBinVolume(
+					m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+					m_volWidth, m_volHeight, m_volDepth );
 				if( !RISE::IsFiniteDouble(binVolume) || binVolume <= 0.0 ) return false;
 				Scalar proposalAverage = 0.0;
 				for( unsigned int gz = 0; gz < 2; ++gz ) {
