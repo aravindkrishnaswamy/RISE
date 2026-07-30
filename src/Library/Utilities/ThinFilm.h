@@ -34,7 +34,10 @@
 //        absorbs); the forward wave decays, Im(δ) >= 0.
 //      * Single-film Airy:
 //          r = ( r01 + r1s e^{+2iδ1} ) / ( 1 + r01 r1s e^{+2iδ1} )
-//        with r_ab = (η_a - η_b)/(η_a + η_b).  The e^{+2iδ1} (NOT
+//        with r_ab = (η_a - η_b)/(η_a + η_b), evaluated via
+//        InterfaceReflection (the same ratio with the cosθ factors
+//        cleared, so it stays finite when a cosθ is exactly 0).
+//        The e^{+2iδ1} (NOT
 //        e^{-2iδ1}) sign is the one that makes a thick absorbing film
 //        decay to the bare top-interface reflectance r01.  Pairing the
 //        opposite-sign factor with this forward-root branch produces a
@@ -138,24 +141,66 @@ namespace RISE
 				return N / cosTheta;
 			}
 
+			//! Amplitude reflection coefficient at an a -> b interface, in a form
+			//! that never divides by cosθ:
+			//!   s: (Na cosa - Nb cosb) / (Na cosa + Nb cosb)
+			//!   p: (Na cosb - Nb cosa) / (Na cosb + Nb cosa)
+			//! Both are the admittance ratio (ηa - ηb)/(ηa + ηb) with the common
+			//! cosa*cosb factor cleared, so they stay finite and correct when
+			//! EITHER cosθ is exactly 0 -- i.e. exactly at the critical angle,
+			//! where the result is |r| = 1 (total internal reflection).
+			inline Complex InterfaceReflection(
+				const Complex& Na, const Complex& cosa,
+				const Complex& Nb, const Complex& cosb,
+				Polarization pol )
+			{
+				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
+				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
+				return ( a - b ) / ( a + b );
+			}
+
+			//! Polarization scale that clears the 1/cosθ in η_p.  η * scale is
+			//! finite for both polarizations:
+			//!   s: scale = 1,     η*scale = N cosθ
+			//!   p: scale = cosθ,  η*scale = N
+			//! Used by the N-layer matrix assembly, where the admittances enter
+			//! linearly and a common scale factor cancels in the final ratio.
+			inline Complex AdmittanceScale( const Complex& cosTheta, Polarization pol )
+			{
+				return ( pol == ePolS ) ? Complex( Scalar(1), Scalar(0) ) : cosTheta;
+			}
+
+			//! η pre-multiplied by AdmittanceScale(): finite even at cosθ = 0.
+			inline Complex ScaledAdmittance( const Complex& N, const Complex& cosTheta, Polarization pol )
+			{
+				return ( pol == ePolS ) ? N * cosTheta : N;
+			}
+
 			//! The Snell invariant s = N0 sinθ0 from the ambient index and
 			//! the incidence cosine.  The ambient is taken real for the
 			//! shipped air/oxide/metal stack, but the math is uniform in
 			//! Complex.  sinθ0 is recovered as sqrt(1 - cos²) (avoids an
 			//! acos/sin round-trip on the hot path).
 			//!
-			//! cosThetaI is clamped to [kGrazingCosFloor, 1].  The lower
-			//! bound is a small POSITIVE floor, not 0: at EXACTLY grazing
-			//! (cosθ = 0) every medium's cosθ is 0, so the p-polarization
-			//! admittance η_p = N/cosθ is infinite and the Fresnel
-			//! coefficient r_ab = (η_a-η_b)/(η_a+η_b) evaluates to
-			//! Inf/Inf = NaN.  That is the documented θ = 90° degeneracy of
-			//! the oracle (TmmReference.h header), a non-physical input the
-			//! renderer never produces (an edge-on microfacet has zero
-			//! projected area and is rejected upstream).  Clamping the cosine
-			//! to a small positive floor keeps cosθ nonzero in every medium,
-			//! so the hot path returns the correct well-conditioned grazing
-			//! LIMIT (R -> 1) instead of NaN, even if a caller passes cosθ=0.
+			//! cosThetaI is clamped to [kGrazingCosFloor, 1], a small
+			//! POSITIVE floor rather than 0.
+			//!
+			//! HISTORICAL NOTE (updated 2026-07-29): this clamp originally
+			//! existed because at EXACTLY grazing (cosθ = 0) the
+			//! p-polarization admittance η_p = N/cosθ is infinite and the
+			//! then-current Fresnel form (η_a-η_b)/(η_a+η_b) evaluated to
+			//! Inf/Inf = NaN.  That is NO LONGER the behaviour: the Fresnel
+			//! coefficients now go through InterfaceReflection and the
+			//! N-layer assembly carries pre-scaled admittances, so cosθ = 0
+			//! yields the correct R -> 1 limit directly (measured, for a
+			//! bare interface either direction, a dielectric film, an
+			//! FTIR gap and an absorbing film).
+			//!
+			//! The clamp is KEPT as belt-and-braces and for the SECOND
+			//! reason below (it keeps the Snell invariant strictly < 1,
+			//! which is a representability property of THIS function, not
+			//! of the downstream assembly).  An edge-on microfacet has zero
+			//! projected area and is rejected upstream anyway.
 			//!
 			//! The floor is 1e-6, NOT NEARZERO (1e-12): the invariant is
 			//! built from sqrt(1 - cos²), and for cos <~ sqrt(eps_double)
@@ -188,14 +233,12 @@ namespace RISE
 				const Complex cos1 = CosThetaInMedium( N1, sinInvariant );
 				const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
 
-				const Complex eta0 = Admittance( N0, cos0, pol );
-				const Complex eta1 = Admittance( N1, cos1, pol );
-				const Complex etaS = Admittance( Ns, cosS, pol );
-
-				// Fresnel amplitude reflection coefficients at each interface,
-				// in admittance form r_ab = (η_a - η_b)/(η_a + η_b).
-				const Complex r01 = ( eta0 - eta1 ) / ( eta0 + eta1 );
-				const Complex r1s = ( eta1 - etaS ) / ( eta1 + etaS );
+				// Fresnel amplitude reflection coefficients at each interface.
+				// InterfaceReflection is the admittance ratio (η_a - η_b)/(η_a + η_b)
+				// with the cosθ factors cleared, so a medium sitting exactly at the
+				// critical angle (cosθ = 0, infinite η_p) gives |r| = 1 instead of NaN.
+				const Complex r01 = InterfaceReflection( N0, cos0, N1, cos1, pol );
+				const Complex r1s = InterfaceReflection( N1, cos1, Ns, cosS, pol );
 
 				// Phase thickness δ1 = (2π/λ) N1 d1 cosθ1.
 				const Complex delta = Complex( TWO_PI * thickness_nm / lambda_nm, Scalar(0) ) * N1 * cos1;
@@ -224,7 +267,6 @@ namespace RISE
 				Polarization pol )
 			{
 				const Complex cos0 = CosThetaInMedium( N0, sinInvariant );
-				const Complex eta0 = Admittance( N0, cos0, pol );
 
 				// Characteristic matrix M = Π Mj, ambient -> substrate order.
 				Complex m00( Scalar(1), Scalar(0) ), m01( Scalar(0), Scalar(0) );
@@ -260,14 +302,24 @@ namespace RISE
 				}
 
 				const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
-				const Complex etaS = Admittance( Ns, cosS, pol );
+				// [B; C] = M * [1; eta_s], carried PRE-SCALED by AdmittanceScale(cosS)
+				// so an infinite eta_s -- cosTheta_s = 0, i.e. EXACTLY at the critical
+				// angle -- never enters the arithmetic.  Bs = B*scaleS, Cs = C*scaleS.
+				const Complex scaleS = AdmittanceScale( cosS, pol );
+				const Complex etaSs  = ScaledAdmittance( Ns, cosS, pol );
+				const Complex Bs = m00 * scaleS + m01 * etaSs;
+				const Complex Cs = m10 * scaleS + m11 * etaSs;
 
-				// [B; C] = M * [1; η_s] ;  Y = C/B.
-				const Complex B = m00 * Complex( Scalar(1), Scalar(0) ) + m01 * etaS;
-				const Complex C = m10 * Complex( Scalar(1), Scalar(0) ) + m11 * etaS;
-				const Complex Y = C / B;
-
-				const Complex r = ( eta0 - Y ) / ( eta0 + Y );
+				// r = (eta0 B - C)/(eta0 B + C) -- the Y-free form -- multiplied through
+				// by scale0*scaleS so no term ever needs a 1/cosTheta.  That common
+				// factor cancels in the ratio, so this is algebraically identical to
+				// (eta0 - Y)/(eta0 + Y) wherever the latter is finite, and additionally
+				// correct at the critical angle, where it yields |r| = 1 exactly.
+				const Complex scale0 = AdmittanceScale( cos0, pol );
+				const Complex eta0s  = ScaledAdmittance( N0, cos0, pol );
+				const Complex num = eta0s * Bs - scale0 * Cs;
+				const Complex den = eta0s * Bs + scale0 * Cs;
+				const Complex r = num / den;
 				return std::norm( r );		// |r|²
 			}
 		}

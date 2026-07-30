@@ -17,6 +17,14 @@
 //
 //    and η_s = N cosθ, η_p = N / cosθ, δ1 = (2π/λ) N1 d1 cosθ1.
 //
+//    Those coefficients are EVALUATED via detail::InterfaceReflection,
+//    which is the same ratio with the cosθ factors cleared:
+//      s: (Na cosa - Nb cosb)/(Na cosa + Nb cosb)
+//      p: (Na cosb - Nb cosa)/(Na cosb + Nb cosa)
+//    Algebraically identical, but finite when a cosθ is exactly 0 (exactly
+//    at the critical angle, or exactly grazing), where it gives |r| = 1
+//    instead of Inf/Inf = NaN.
+//
 //    SIGN CONVENTION: e^{-iωt} time dependence (Born & Wolf / Macleod).
 //    cosθ is the forward-travelling root (Im(δ1) >= 0 for an absorbing
 //    film), so the round-trip phase factor e^{+2iδ1} DECAYS with
@@ -27,7 +35,7 @@
 //
 //    IMPORTANT: this file deliberately reuses the SAME cosθ-branch and
 //    admittance helpers as TmmReference.h (detail::CosThetaInMedium,
-//    detail::Admittance) so the two implementations cannot drift apart
+//    detail::InterfaceReflection) so the two implementations cannot drift apart
 //    in their conventions -- the whole value of the Airy<->TMM agreement
 //    test is that they share conventions but compute by different
 //    algebra.  Only the e^{+2iδ} sign convention is restated here; it
@@ -83,14 +91,12 @@ namespace RISE
 			const Complex cos1 = CosThetaInMedium( N1, sinInvariant );
 			const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
 
-			const Complex eta0 = Admittance( N0, cos0, pol );
-			const Complex eta1 = Admittance( N1, cos1, pol );
-			const Complex etaS = Admittance( Ns, cosS, pol );
-
-			// Fresnel amplitude reflection coefficients at each interface,
-			// in admittance form r_ab = (η_a - η_b)/(η_a + η_b).
-			const Complex r01 = ( eta0 - eta1 ) / ( eta0 + eta1 );
-			const Complex r1s = ( eta1 - etaS ) / ( eta1 + etaS );
+			// Fresnel amplitude reflection coefficients at each interface.
+			// InterfaceReflection is the admittance ratio (η_a - η_b)/(η_a + η_b)
+			// with the cosθ factors cleared, so a medium sitting exactly at the
+			// critical angle (cosθ = 0, infinite η_p) gives |r| = 1 instead of NaN.
+			const Complex r01 = InterfaceReflection( N0, cos0, N1, cos1, pol );
+			const Complex r1s = InterfaceReflection( N1, cos1, Ns, cosS, pol );
 
 			// Phase thickness δ1 = (2π/λ) N1 d1 cosθ1 (matches the TMM
 			// layer matrix).

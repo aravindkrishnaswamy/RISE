@@ -500,3 +500,113 @@ IEEE-bit checks that `-ffinite-math-only` cannot DCE (re-arms the guards at ~0 %
 perf; does not remove the optimizer's finiteness assumption); or (b) a
 **targeted per-TU** flag (uncertain — the intersection TUs that need it are also
 the costly ones). **DECISION 2026-06-04: leave as-is (documented).** The glass_pavilion "Inf" was root-caused to the EXRReader FP16 read bug, not an integrator Inf, so the concrete motivation to re-arm the guards evaporated; the debt is latent with no confirmed production harm. Revisit only if a real integrator Inf/NaN ever surfaces (instrument with finite-threshold checks, not isfinite, per the note above).
+
+### ⚠ SUPERSEDED 2026-07-29 — `-fno-finite-math-only` is now ON everywhere
+
+**The 2026-06-04 "leave as-is" decision above is reversed, and its measured
+table and its cost attribution are both WRONG.** `-fno-finite-math-only` now
+ships in every macOS build configuration; `std::isfinite` / `std::isnan` work
+again, and the `volatile`-laundering / finite-threshold workarounds described
+above are no longer required (they remain harmless, and
+[FiniteMath.h](../src/Library/Utilities/FiniteMath.h)'s `IsFiniteDouble` stays
+in tree with its ~75 call sites).
+
+**What was wrong with the old measurement.** Re-measured with the same
+interleaved-ABBA protocol at 8–12 pairs per workload, plus a **CPU-time**
+metric (`ru_utime + ru_stime`, near-deterministic for a fixed workload where
+wall clock is not):
+
+| workload | wall Δ | CPU Δ | verdict |
+|---|---|---|---|
+| BVH-traversal-heavy (aphrodite mesh @ 700 spp) | −0.02 % (±1.10 SE) | **−0.48 %** (±1.39 SE, 0.3σ) | **no measurable cost** |
+| shading-heavy (irradiance_cache_torture) | +2.61 % (±0.34 SE) | **+2.69 %** (±0.25 SE, 11.0σ) | **real, ~2.7 %** |
+
+The old table has the two workloads' verdicts **backwards**. The claim that
+"the ~3 % BVH cost is the NaN-aware ray-box / ray-tri min/max the flag
+re-enables" is false: the hot BVH4 traversal uses hand-written SIMD
+intrinsics (`vminq_f32` / `_mm_min_ps`, [BVH.h](../src/Library/Acceleration/BVH.h)
+`IntersectNode`) whose NaN semantics are fixed in hardware and **cannot** be
+altered by `-ffinite-math-only`, so the flag was never buying anything in that
+kernel. The real cost is scalar shading math. The old +3.23 % was almost
+certainly session drift — an 8-pair wall-clock run on the same scene
+reproduced +4.60 % ±3.46 (1.3σ) and then −0.02 % ±1.10 on replication.
+
+**Why the cost is worth paying.** `-ffast-math` does not merely disable the
+*guards*; it changes arithmetic the code depends on. Direct probe, runtime
+values the compiler cannot fold:
+
+| build | `isnan(0/0)` | `isfinite(1/0)` | `isnan(0.0 * inf)` |
+|---|---|---|---|
+| `-ffast-math` | 0 | 1 | **0** |
+| `+ -fno-finite-math-only` | 1 | 0 | **1** |
+
+Column 3 is the BVH slab test's own expression — for an axis-parallel ray
+`invDir` is ±Inf, and `-ffast-math` (plus its implied `-fno-signed-zeros`)
+licenses the optimiser to assume that never happens.
+
+**It caught a real bug within one test run.** `ThinFilmTMMTest` went red
+immediately (3/3 FAIL with the flag, 3/3 PASS without — deterministic): at
+EXACTLY the critical angle the transmitted medium's cosθ is exactly 0, so
+η_p = N/cosθ is infinite and `(η0 − Y)/(η0 + Y)` evaluates Inf/Inf = NaN.
+Note this is a *different* degeneracy from the grazing-incidence one that
+`ThinFilm.h`'s `kGrazingCosFloor` already guarded — at the critical angle the
+*incident* cosine is ~0.745, nowhere near that floor. Fixed by reformulation
+(not a clamp): the reflectance is assembled as `r = (η0·B − C)/(η0·B + C)`
+multiplied through by `cos0·cosS`, which clears every `1/cosθ`; the common
+factor cancels, so it is algebraically identical wherever the old form was
+finite and yields |r| = 1 exactly at the critical angle. See
+`InterfaceReflection` / `AdmittanceScale` / `ScaledAdmittance` in
+[ThinFilm.h](../src/Library/Utilities/ThinFilm.h) and the mirrored oracles in
+`tests/thinfilm/`.
+
+**Bonus, measured after the fact:** the same reformulation also closes the
+*grazing* degeneracy that `TmmReference.h` had documented as permanent ("R_p is
+NaN at θ = 90° precisely"). At exactly θ = 90° the scaled assembly now returns
+R_s = R_p = 1 (finite, and the correct limit) for a bare interface in either
+direction, a dielectric film, a frustrated-TIR gap and an absorbing film. This
+makes `ThinFilm.h`'s `kGrazingCosFloor` clamp no longer load-bearing *for NaN
+avoidance* — it is retained as belt-and-braces and for its second, separate
+purpose (keeping the Snell invariant strictly below 1, a representability
+property of `SnellInvariant` itself). The clamp was **not** removed; that would
+be an unrelated behaviour change.
+
+**Known residual:** a *film* sitting exactly at its own critical angle still
+produces NaN (measured) — `etaj` in the layer loop is the one admittance not
+carried pre-scaled, and clearing it needs a running scale factor threaded
+through the matrix product. No test exercises that geometry. The pre-existing
+thick-absorber overflow caveat (matrix entries grow like e^{|Im δ|}; NaN from
+d ≳ 50 µm at k = 3) is **unchanged** by this work — verified finite at 10 µm
+and NaN at 50 µm, exactly the documented threshold.
+
+**Flag surface (all four sites).** `-ffast-math` had only ever been in the
+make build and the two Xcode **Opto** configurations, so the picture was more
+uneven than the note above implied: Linux (`Config.Linux`) and MSVC never
+enabled fast-math at all, and Android already used
+`-ffast-math -fno-finite-math-only`. Now updated:
+
+- [Config.OSX](../build/make/rise/Config.OSX) (`Config.specific` symlinks to it)
+- all **8** target-level `OTHER_CPLUSPLUSFLAGS` blocks in
+  [project.pbxproj](../build/XCode/rise/rise.xcodeproj/project.pbxproj) — stated
+  explicitly in every configuration, not just the two that had `-ffast-math`,
+  so no config can pick finite-math-only up from an inherited setting or the
+  Xcode "Relax IEEE Compliance" checkbox (`OTHER_CPLUSPLUSFLAGS` lands after
+  setting-derived flags, so it wins)
+- the three **project-level** configs were `GCC_OPTIMIZATION_LEVEL = fast`
+  (i.e. `-Ofast`, which *implies* `-ffast-math`) — inert because both targets
+  override it, but a landmine; pinned to `3`
+- `Config.SGI` / `Config.Solaris` (legacy) matched for consistency
+
+**Process gap this exposed:** the release DMG is built from configuration
+**Opto** ([create_macos_release.sh](../scripts/create_macos_release.sh)) while
+the documented warning gate in [AGENTS.md](../AGENTS.md) builds **Deployment**.
+Before this change those two configs had *different* FP semantics — Deployment
+was IEEE-correct and Opto was not — so an Inf/NaN bug could pass every local
+check and ship. Worth keeping in mind for any future per-configuration flag.
+
+**Verification:** make build warning-free; `run_all_tests.sh` **220/220**;
+Xcode `RISE-GUI`/Deployment, `RISE-GUI-Opto`/Opto and `rise`/Deployment all
+BUILD SUCCEEDED with 0 warnings; rendered output unchanged (an A-vs-B image
+diff is *smaller* than the same-binary A-vs-A control, i.e. within the
+renderer's own run-to-run nondeterminism). `AgentRenderAsyncTest` failed once
+during this work and is a **pre-existing flake**, not flag-related (passes 3/3
+both with and without the flag, and in the final full suite).

@@ -16,8 +16,16 @@
 //      Layer matrix: Mj = [[ cosδj,        -i sinδj / ηj ],
 //                          [ -i ηj sinδj,   cosδj        ]]
 //      Stack:        M = M1 * M2 * ... * MM  (ambient -> substrate order)
-//      Admittance:   [B; C] = M * [1; η_s] ;  Y = C / B
-//      Reflectance:  r = (η0 - Y) / (η0 + Y) ;  R = |r|^2
+//      Admittance:   [B; C] = M * [1; η_s]
+//      Reflectance:  r = (η0 B - C) / (η0 B + C) ;  R = |r|^2
+//
+//    The reflectance is assembled in that Y-free form, and every term is
+//    carried PRE-SCALED by AdmittanceScale() (1 for s, cosθ for p) so the
+//    1/cosθ in η_p is cleared.  Reflectance depends only on RATIOS of
+//    admittances, so the common scale cancels -- the result is
+//    algebraically identical to the textbook Y = C/B form wherever that is
+//    finite, and additionally FINITE where it is not (see the degeneracy
+//    notes below).
 //
 //    With M = 1 layer this reduces algebraically to the Airy summation in
 //    AiryReference.h; the test asserts they agree to ~machine epsilon,
@@ -55,17 +63,30 @@
 //    push the oracle harder):
 //      * Very thick STRONGLY-absorbing films overflow this matrix form:
 //        the layer-matrix entries grow like e^{|Im δ|}, and for
-//        d * k / λ large enough (empirically d >~ 50 µm at k = 3) both B
-//        and C overflow to inf and Y = C/B becomes NaN.  The Airy form in
+//        d * k / λ large enough (empirically d >~ 50 µm at k = 3) both
+//        Bs and Cs overflow to inf and the r numerator/denominator become
+//        NaN.  (Measured: still exactly this threshold -- finite at
+//        d = 10 µm, NaN from d = 50 µm -- the scaled assembly did not
+//        change it.)  The Airy form in
 //        AiryReference.h stays finite there (its e^{+2iδ} underflows to 0),
 //        so prefer Airy for extreme thick-absorber queries.  Single-film
 //        production use lifts the Airy form anyway (see design doc §7).
-//      * Exactly grazing incidence θ = 90° is degenerate: cosθ = 0 makes
-//        η_p = N/cosθ infinite, so R_p is NaN at θ = 90° precisely.  This
-//        is a non-physical input (a ray in the surface plane); the limit
-//        θ -> 90° is well-conditioned and R -> 1 as expected.  Callers
-//        should pass θ < 90° (the renderer never evaluates a BRDF at
-//        exactly grazing).
+//      * Exactly grazing incidence θ = 90° and exactly the critical angle
+//        both drive some medium's cosθ to exactly 0, which makes the
+//        UNSCALED η_p = N/cosθ infinite.  The pre-scaled assembly above
+//        handles both: measured R_s = R_p = 1 (finite) at θ = 90° for a
+//        bare interface in either direction, a dielectric film, a
+//        frustrated-TIR gap and an absorbing film, and at exactly the
+//        critical angle for both a bare interface and a stack with a film.
+//        R -> 1 is the correct limit in every one of those cases.
+//        RESIDUAL: a FILM sitting exactly at ITS OWN critical angle is
+//        still NaN (measured) -- the layer loop's `etaj` is the one
+//        admittance not carried pre-scaled, and clearing it needs a
+//        running scale factor threaded through the matrix product.  No
+//        test exercises that geometry.  Prior to the 2026-07-29
+//        reformulation θ = 90° and the critical angle were BOTH NaN; the
+//        critical-angle case was a live ThinFilmTMMTest failure once
+//        -fno-finite-math-only stopped the optimiser from folding it.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -149,6 +170,41 @@ namespace RISE
 				}
 				return N / cosTheta;
 			}
+
+			//! Amplitude reflection coefficient at an a -> b interface, in a form
+			//! that never divides by cosθ:
+			//!   s: (Na cosa - Nb cosb) / (Na cosa + Nb cosb)
+			//!   p: (Na cosb - Nb cosa) / (Na cosb + Nb cosa)
+			//! Both are the admittance ratio (ηa - ηb)/(ηa + ηb) with the common
+			//! cosa*cosb factor cleared, so they stay finite and correct when
+			//! EITHER cosθ is exactly 0 -- i.e. exactly at the critical angle,
+			//! where the result is |r| = 1 (total internal reflection).
+			inline Complex InterfaceReflection(
+				const Complex& Na, const Complex& cosa,
+				const Complex& Nb, const Complex& cosb,
+				Polarization pol )
+			{
+				const Complex a = ( pol == ePolS ) ? Na * cosa : Na * cosb;
+				const Complex b = ( pol == ePolS ) ? Nb * cosb : Nb * cosa;
+				return ( a - b ) / ( a + b );
+			}
+
+			//! Polarization scale that clears the 1/cosθ in η_p.  η * scale is
+			//! finite for both polarizations:
+			//!   s: scale = 1,     η*scale = N cosθ
+			//!   p: scale = cosθ,  η*scale = N
+			//! Used by the N-layer matrix assembly, where the admittances enter
+			//! linearly and a common scale factor cancels in the final ratio.
+			inline Complex AdmittanceScale( const Complex& cosTheta, Polarization pol )
+			{
+				return ( pol == ePolS ) ? Complex( 1.0, 0.0 ) : cosTheta;
+			}
+
+			//! η pre-multiplied by AdmittanceScale(): finite even at cosθ = 0.
+			inline Complex ScaledAdmittance( const Complex& N, const Complex& cosTheta, Polarization pol )
+			{
+				return ( pol == ePolS ) ? N * cosTheta : N;
+			}
 		}
 
 		//! Computes the single-polarization reflectance of the stack at
@@ -170,7 +226,6 @@ namespace RISE
 
 			// cosθ and admittance in the ambient.
 			const Complex cos0 = CosThetaInMedium( N0, sinInvariant );
-			const Complex eta0 = Admittance( N0, cos0, pol );
 
 			// Characteristic matrix of the whole film stack, M = Π Mj,
 			// accumulated in ambient -> substrate order.  Start from the
@@ -218,17 +273,24 @@ namespace RISE
 			// Substrate admittance.
 			const Complex Ns = stack.substrateIndex;
 			const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
-			const Complex etaS = Admittance( Ns, cosS, pol );
+			// [B; C] = M * [1; η_s], carried PRE-SCALED by AdmittanceScale(cosS)
+			// so an infinite η_s -- cosθ_s = 0, i.e. EXACTLY at the critical
+			// angle -- never enters the arithmetic.  Bs = B*scaleS, Cs = C*scaleS.
+			const Complex scaleS = AdmittanceScale( cosS, pol );
+			const Complex etaSs  = ScaledAdmittance( Ns, cosS, pol );
+			const Complex Bs = m00 * scaleS + m01 * etaSs;
+			const Complex Cs = m10 * scaleS + m11 * etaSs;
 
-			// [B; C] = M * [1; η_s].
-			const Complex B = m00 * Complex( 1.0, 0.0 ) + m01 * etaS;
-			const Complex C = m10 * Complex( 1.0, 0.0 ) + m11 * etaS;
-
-			// Input optical admittance Y = C / B.
-			const Complex Y = C / B;
-
-			// Amplitude reflection coefficient and reflectance.
-			const Complex r = ( eta0 - Y ) / ( eta0 + Y );
+			// r = (η0 B - C)/(η0 B + C) -- the Y-free form -- multiplied through
+			// by scale0*scaleS so no term ever needs a 1/cosθ.  That common
+			// factor cancels in the ratio, so this is algebraically identical to
+			// (η0 - Y)/(η0 + Y) wherever the latter is finite, and additionally
+			// correct at the critical angle, where it yields |r| = 1 exactly.
+			const Complex scale0 = AdmittanceScale( cos0, pol );
+			const Complex eta0s  = ScaledAdmittance( N0, cos0, pol );
+			const Complex num = eta0s * Bs - scale0 * Cs;
+			const Complex den = eta0s * Bs + scale0 * Cs;
+			const Complex r = num / den;
 			return std::norm( r );		// |r|^2
 		}
 
