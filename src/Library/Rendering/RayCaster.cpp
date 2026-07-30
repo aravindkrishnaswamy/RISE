@@ -950,10 +950,9 @@ bool RayCaster::CastRayImpl_(
 
 		if( useEquiangularMIS )
 		{
-			// Clip equiangular range to medium bounds.
-			// For bounded media (heterogeneous), use the medium's AABB
-			// to set the integration domain.  For unbounded global media,
-			// use [0, maxDist].
+			// Equiangular sampling requires an explicitly bounded segment.  A
+			// surface hit bounds it directly; otherwise a bounded medium AABB may.
+			bool equiangularSegmentBounded = bHit;
 			Scalar eqTNear = 0;
 			Scalar eqTFar = maxDist;
 			{
@@ -1000,11 +999,12 @@ bool RayCaster::CastRayImpl_(
 					{
 						eqTNear = fmax( 0.0, tEntry );
 						eqTFar = fmin( maxDist, tExit );
+						equiangularSegmentBounded = true;
 					}
 				}
 			}
 
-			if( eqTFar <= eqTNear )
+			if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 			{
 				// Medium AABB doesn't intersect ray — fall back to plain delta tracking
 				t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
@@ -1052,7 +1052,7 @@ bool RayCaster::CastRayImpl_(
 								/ totalPosExitance;
 							pdf_eq += pSel * EquiangularSampling::Pdf(
 								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, t_m );
+								eqTNear, eqTFar, true, t_m );
 						}
 
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
@@ -1077,7 +1077,7 @@ bool RayCaster::CastRayImpl_(
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
 							ray, lightPos, eqTNear, eqTFar,
-							mediumSampler.Get1D() );
+							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
 					if( t_m > eqTNear && t_m < maxDist )
@@ -1098,7 +1098,7 @@ bool RayCaster::CastRayImpl_(
 									/ totalPosExitance;
 								pdf_eq += pSel * EquiangularSampling::Pdf(
 									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, t_m );
+									eqTNear, eqTFar, true, t_m );
 							}
 
 							combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
@@ -1717,6 +1717,7 @@ bool RayCaster::CastRayNMImpl_(
 
 		if( useEquiangularMIS_NM )
 		{
+			bool equiangularSegmentBounded = bHit;
 			Scalar eqTNear = 0;
 			Scalar eqTFar = maxDist;
 			{
@@ -1755,11 +1756,12 @@ bool RayCaster::CastRayNMImpl_(
 					if( aabbHit && tEntry < tExit ) {
 						eqTNear = fmax( 0.0, tEntry );
 						eqTFar = fmin( maxDist, tExit );
+						equiangularSegmentBounded = true;
 					}
 				}
 			}
 
-			if( eqTFar <= eqTNear )
+			if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 			{
 				t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
 			}
@@ -1799,7 +1801,7 @@ bool RayCaster::CastRayNMImpl_(
 								/ totalPosExitance;
 							pdf_eq += pSel * EquiangularSampling::Pdf(
 								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, t_m );
+								eqTNear, eqTFar, true, t_m );
 						}
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						logCombinedPdf_NM = LogBalancedDistanceMixture(
@@ -1819,7 +1821,7 @@ bool RayCaster::CastRayNMImpl_(
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
 							ray, lightPos, eqTNear, eqTFar,
-							mediumSampler.Get1D() );
+							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
 					if( t_m > eqTNear && t_m < maxDist )
@@ -1840,7 +1842,7 @@ bool RayCaster::CastRayNMImpl_(
 									/ totalPosExitance;
 								pdf_eq += pSel * EquiangularSampling::Pdf(
 									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, t_m );
+									eqTNear, eqTFar, true, t_m );
 							}
 
 							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;

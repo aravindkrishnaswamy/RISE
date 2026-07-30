@@ -368,6 +368,7 @@ namespace
 		const IMedium* pMedium,
 		const Ray& ray,
 		const Scalar maxDist,
+		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS,
 		ISampler& sampler					///< Independent medium sampler (not the path QMC sampler)
 		)
@@ -388,9 +389,9 @@ namespace
 			return out;
 		}
 
-		// Clip equiangular range to medium AABB (unbounded global media
-		// return false from GetBoundingBox and are integrated over
-		// [0, maxDist]).
+		// Equiangular sampling requires an explicitly bounded segment.  A
+		// surface hit bounds it directly; otherwise a bounded medium AABB may.
+		bool equiangularSegmentBounded = surfaceBounded;
 		Scalar eqTNear = 0;
 		Scalar eqTFar = maxDist;
 		{
@@ -435,11 +436,12 @@ namespace
 				{
 					eqTNear = fmax( 0.0, tEntry );
 					eqTFar = fmin( maxDist, tExit );
+					equiangularSegmentBounded = true;
 				}
 			}
 		}
 
-		if( eqTFar <= eqTNear )
+		if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 		{
 			// Medium AABB does not intersect the ray segment — plain delta tracking.
 			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
@@ -480,7 +482,7 @@ namespace
 					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
 					pdf_eq += pSel * EquiangularSampling::Pdf(
 						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, out.t );
+						eqTNear, eqTFar, true, out.t );
 				}
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
@@ -501,7 +503,7 @@ namespace
 			// Unlike delta tracking, equiangular ONLY proposes scatter events.
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+					ray, lightPos, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -519,7 +521,7 @@ namespace
 						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
 						pdf_eq += pSel * EquiangularSampling::Pdf(
 							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, out.t );
+							eqTNear, eqTFar, true, out.t );
 					}
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 					out.useExplicitThroughput = true;
@@ -552,6 +554,7 @@ namespace
 		const IMedium* pMedium,
 		const Ray& ray,
 		const Scalar maxDist,
+		const bool surfaceBounded,
 		const Scalar nm,
 		const Implementation::LightSampler* pLS,
 		ISampler& sampler
@@ -573,6 +576,7 @@ namespace
 			return out;
 		}
 
+		bool equiangularSegmentBounded = surfaceBounded;
 		Scalar eqTNear = 0;
 		Scalar eqTFar = maxDist;
 		{
@@ -617,11 +621,12 @@ namespace
 				{
 					eqTNear = fmax( 0.0, tEntry );
 					eqTFar = fmin( maxDist, tExit );
+					equiangularSegmentBounded = true;
 				}
 			}
 		}
 
-		if( eqTFar <= eqTNear )
+		if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 		{
 			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
 			return out;
@@ -660,7 +665,7 @@ namespace
 					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
 					pdf_eq += pSel * EquiangularSampling::Pdf(
 						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, out.t );
+						eqTNear, eqTFar, true, out.t );
 				}
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.logCombinedPdf = PTLogBalancedDistanceMixture(
@@ -681,7 +686,7 @@ namespace
 		{
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+					ray, lightPos, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -700,7 +705,7 @@ namespace
 						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
 						pdf_eq += pSel * EquiangularSampling::Pdf(
 							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, out.t );
+							eqTNear, eqTFar, true, out.t );
 					}
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 					out.logCombinedPdf = PTLogBalancedDistanceMixture(
@@ -1304,19 +1309,24 @@ namespace
 	template<class Tag>
 	inline MediumSampleOutcome PTSampleMediumDistance(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS, ISampler& sampler, const Tag& tag );
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<PelTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS, ISampler& sampler, const PelTag& )
-	{ return SampleDistanceWithEquiangularMIS( pMedium, ray, maxDist, pLS, sampler ); }
+	{ return SampleDistanceWithEquiangularMIS(
+		pMedium, ray, maxDist, surfaceBounded, pLS, sampler ); }
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS, ISampler& sampler, const NMTag& tag )
-	{ return SampleDistanceWithEquiangularMIS_NM( pMedium, ray, maxDist, tag.nm, pLS, sampler ); }
+	{ return SampleDistanceWithEquiangularMIS_NM(
+		pMedium, ray, maxDist, surfaceBounded, tag.nm, pLS, sampler ); }
 
 	// In-scattered radiance (NEE) at a medium scatter point.
 	template<class Tag>
@@ -1962,7 +1972,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler, tag );
+					pCurrentMedium, currentRay, maxDist, bHit, pLS, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -3888,7 +3898,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		}
 		IndependentSampler mediumSampler( rc.random );
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
+			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
+			pLS, mediumSampler, tag );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -4584,7 +4595,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// combinedPdf is in distance measure (wavelength-independent
 				// for equiangular; hero-driven for delta tracking).
 				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-					pCurrentMedium, currentRay, maxDist, heroNM, pLS, mediumSampler );
+					pCurrentMedium, currentRay, maxDist, bHit,
+					heroNM, pLS, mediumSampler );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -5431,7 +5443,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// in distance measure (hero-driven delta tracking + wavelength-
 		// independent equiangular).
 		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-			pCurrentMedium, cameraRay, maxDist, heroNM, pLS, mediumSampler );
+			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
+			heroNM, pLS, mediumSampler );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -79,6 +80,20 @@ namespace
 	{
 		const Scalar scale = std::fmax( std::fabs( expected ), Scalar( 1e-300 ) );
 		return std::fabs( actual - expected ) <= tolerance * scale;
+	}
+
+	Scalar IntegrateEquiangularPdf(
+		const Ray& ray, const Point3& pivot, const Scalar tNear,
+		const Scalar tFar, const unsigned int intervals )
+	{
+		const Scalar step = (tFar-tNear) / static_cast<Scalar>( intervals );
+		Scalar integral = 0.0;
+		for( unsigned int i = 0; i < intervals; ++i ) {
+			const Scalar t = tNear+(static_cast<Scalar>(i)+0.5)*step;
+			integral += EquiangularSampling::Pdf(
+				ray, pivot, tNear, tFar, true, t ) * step;
+		}
+		return integral;
 	}
 
 	Scalar HotAbsorptionMass633()
@@ -708,6 +723,62 @@ namespace
 		~LogTailFireMedium() override = default;
 	};
 
+	class UnboundedDistanceProbeMedium : public LogTailFireMedium
+	{
+	public:
+		mutable unsigned int plainCalls;
+		mutable unsigned int mixedCalls;
+		UnboundedDistanceProbeMedium() : plainCalls(0), mixedCalls(0) {}
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM result;
+			result.sigma_t = 0.0;
+			result.sigma_s = 0.0;
+			result.emission = 0.0;
+			return result;
+		}
+		Scalar SampleDistanceNM(
+			const Ray&, const Scalar maxDist, const Scalar,
+			ISampler&, bool& scattered ) const override
+		{
+			++plainCalls;
+			scattered = false;
+			return maxDist;
+		}
+		DistanceSample SampleDistanceWithPdfNM(
+			const Ray&, const Scalar maxDist, const Scalar,
+			ISampler& ) const override
+		{
+			++mixedCalls;
+			DistanceSample result;
+			result.t = maxDist;
+			result.scattered = false;
+			result.pdf = 1.0;
+			return result;
+		}
+		Scalar EvalDistancePdfNM(
+			const Ray&, const Scalar, const bool,
+			const Scalar, const Scalar ) const override
+		{
+			return 1.0;
+		}
+		Scalar EvalLogDistancePdfNM(
+			const Ray&, const Scalar, const bool,
+			const Scalar, const Scalar ) const override
+		{
+			return 0.0;
+		}
+		bool GetBoundingBox( Point3&, Point3& ) const override { return false; }
+		bool IsFireMedium() const override { return false; }
+		Scalar GetThermalEmissionNM( const Point3&, const Scalar ) const override
+		{
+			return 0.0;
+		}
+	protected:
+		~UnboundedDistanceProbeMedium() override = default;
+	};
+
 	void TestNMAbsoluteParityAndSceneUnits()
 	{
 		std::cout << "TestNMAbsoluteParityAndSceneUnits" << std::endl;
@@ -764,6 +835,238 @@ namespace
 		const Scalar measured = fixture.MeanPathTracingNM( 0xe9a117u, nm );
 		Check( NearRelative( measured, expected, 0.018 ),
 			"PT thermal score uses the active DT/equiangular mixture density" );
+	}
+
+	void TestEquiangularBoundednessAndCollinearFallback()
+	{
+		std::cout << "TestEquiangularBoundednessAndCollinearFallback" << std::endl;
+		const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		const Scalar tNear = 0.0;
+		const Scalar tFar = 10.0;
+		const Scalar threshold = 32.0 *
+			std::sqrt( std::numeric_limits<Scalar>::epsilon() ) * (tFar-tNear);
+		const Point3 onRay( 0, 0, 5 );
+		const EquiangularSampling::Sample onRaySample =
+			EquiangularSampling::SampleDistance(
+				ray, onRay, tNear, tFar, true, 0.63 );
+		Check( NearRelative( onRaySample.t, 6.3, 1e-14 ) &&
+			NearRelative( onRaySample.pdf, 0.1, 1e-14 ) &&
+			NearRelative( IntegrateEquiangularPdf(
+				ray, onRay, tNear, tFar, 1000 ), 1.0, 1e-14 ),
+			"on-ray bounded segment has a finite normalized uniform density" );
+
+		const Point3 underThreshold( 0.5*threshold, 0, 5 );
+		const EquiangularSampling::Sample uniformSample =
+			EquiangularSampling::SampleDistance(
+				ray, underThreshold, tNear, tFar, true, 0.37 );
+		Check( NearRelative( uniformSample.t, 3.7, 1e-14 ) &&
+			NearRelative( uniformSample.pdf, 0.1, 1e-14 ) &&
+			NearRelative( uniformSample.pdf, EquiangularSampling::Pdf(
+				ray, underThreshold, tNear, tFar, true, uniformSample.t ), 1e-14 ),
+			"near-collinear bounded segment uses the shared uniform Sample/Pdf branch" );
+
+		const Point3 overThreshold( 2.0*threshold, 0, 5 );
+		const EquiangularSampling::Sample angularSample =
+			EquiangularSampling::SampleDistance(
+				ray, overThreshold, tNear, tFar, true, 0.37 );
+		Check( angularSample.pdf > 0.0 &&
+			!NearRelative( angularSample.pdf, 0.1, 1e-6 ) &&
+			NearRelative( angularSample.pdf, EquiangularSampling::Pdf(
+				ray, overThreshold, tNear, tFar, true, angularSample.t ), 1e-12 ),
+			"above-threshold segment uses one robust geometry in Sample and Pdf" );
+
+		const Scalar unboundedFar = RISE_INFINITY;
+		const EquiangularSampling::Sample unboundedSample =
+			EquiangularSampling::SampleDistance(
+				ray, Point3( 1, 0, 5 ), tNear, unboundedFar, false, 0.5 );
+		Check( unboundedSample.pdf == 0.0 && EquiangularSampling::Pdf(
+			ray, Point3( 1, 0, 5 ), tNear, unboundedFar, false, 5.0 ) == 0.0,
+			"explicitly unbounded segment cannot enter the equiangular technique" );
+
+		Check( NearRelative( IntegrateEquiangularPdf(
+			ray, Point3( 3, 0, 4 ), tNear, tFar, 200000 ), 1.0, 2e-10 ),
+			"bounded equiangular PDF integrates to one" );
+		const Ray largeRay(
+			Point3( 1e200, -2e200, 3e200 ), Vector3( 0, 0, 1 ) );
+		const Point3 largePivot( 1.3e200, -2e200, 3.4e200 );
+		const EquiangularSampling::Sample largeSample =
+			EquiangularSampling::SampleDistance(
+				largeRay, largePivot, 0.0, 1e200, true, 0.37 );
+		Check( largeSample.pdf > 0.0 &&
+			NearRelative( largeSample.pdf, EquiangularSampling::Pdf(
+				largeRay, largePivot, 0.0, 1e200, true, largeSample.t ), 1e-12 ) &&
+			NearRelative( IntegrateEquiangularPdf(
+				largeRay, largePivot, 0.0, 1e200, 200000 ), 1.0, 2e-10 ),
+			"equiangular Sample/Pdf stays normalized above square-overflow scale" );
+
+		const Ray tinyRay( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		const Point3 tinyPivot( 1e-201, 0, 5e-201 );
+		const EquiangularSampling::Sample tinySample =
+			EquiangularSampling::SampleDistance(
+				tinyRay, tinyPivot, 0.0, 1e-200, true, 0.63 );
+		Check( tinySample.pdf > 0.0 &&
+			!NearRelative( tinySample.pdf, 1e200, 1e-6 ) &&
+			NearRelative( tinySample.pdf, EquiangularSampling::Pdf(
+				tinyRay, tinyPivot, 0.0, 1e-200, true, tinySample.t ), 1e-12 ) &&
+			NearRelative( IntegrateEquiangularPdf(
+				tinyRay, tinyPivot, 0.0, 1e-200, 200000 ), 1.0, 2e-10 ),
+			"equiangular Sample/Pdf stays normalized below square-underflow scale" );
+
+		const Point3 farPivot( 1e6, 0, 1e12 );
+		const EquiangularSampling::Sample farSample =
+			EquiangularSampling::SampleDistance(
+				ray, farPivot, 0.0, 1.0, true, 0.37 );
+		Check( farSample.pdf > 0.0 &&
+			NearRelative( farSample.t, 0.37, 1e-9 ) &&
+			NearRelative( farSample.pdf, EquiangularSampling::Pdf(
+				ray, farPivot, 0.0, 1.0, true, farSample.t ), 1e-12 ) &&
+			NearRelative( IntegrateEquiangularPdf(
+				ray, farPivot, 0.0, 1.0, 200000 ), 1.0, 2e-10 ),
+			"far-pivot short segment avoids angular-span cancellation" );
+
+		const Scalar dualLength = 1e-308;
+		const Point3 dualScalePivot( 1e10, 0, 1e16 );
+		const EquiangularSampling::Sample dualScaleSample =
+			EquiangularSampling::SampleDistance(
+				ray, dualScalePivot, 0.0, dualLength, true, 0.37 );
+		const Scalar dualMidPdf = EquiangularSampling::Pdf(
+			ray, dualScalePivot, 0.0, dualLength, true, 0.5*dualLength );
+		Check( dualScaleSample.pdf > 0.0 && dualMidPdf > 0.0 &&
+			NearRelative( dualScaleSample.t/dualLength, 0.37, 1e-12 ) &&
+			NearRelative( dualScaleSample.pdf, EquiangularSampling::Pdf(
+				ray, dualScalePivot, 0.0, dualLength,
+				true, dualScaleSample.t ), 1e-12 ) &&
+			NearRelative( dualMidPdf*dualLength, 1.0, 1e-12 ),
+			"mixed-scale angular span retains its normalized binary exponent" );
+
+		const Point3 scaleBasePivot( 1e8, 0, 2e14 );
+		const Point3 scaleTinyPivot( 1e-300, 0, 2e-294 );
+		const Scalar scaleTinyLength = 1e-308;
+		const Scalar quantiles[] = { 0.1, 0.37, 0.5, 0.83 };
+		bool scaleInvariant = true;
+		for( const Scalar xi : quantiles ) {
+			const EquiangularSampling::Sample base =
+				EquiangularSampling::SampleDistance(
+					ray, scaleBasePivot, 0.0, 1.0, true, xi );
+			const EquiangularSampling::Sample scaled =
+				EquiangularSampling::SampleDistance(
+					ray, scaleTinyPivot, 0.0, scaleTinyLength, true, xi );
+			scaleInvariant = scaleInvariant && base.pdf > 0.0 && scaled.pdf > 0.0 &&
+				NearRelative( scaled.t/scaleTinyLength, base.t, 1e-12 ) &&
+				NearRelative( scaled.pdf*scaleTinyLength, base.pdf, 1e-12 );
+		}
+		Check( scaleInvariant,
+			"equiangular CDF quantiles and density are invariant at 1e-308 scale" );
+
+		const Scalar subnormalSpanLength = 5e-10;
+		const Point3 subnormalSpanPivot( 1e302, 0, 1e308 );
+		bool subnormalSpanCorrect = true;
+		for( const Scalar xi : quantiles ) {
+			const EquiangularSampling::Sample sample =
+				EquiangularSampling::SampleDistance(
+					ray, subnormalSpanPivot, 0.0,
+					subnormalSpanLength, true, xi );
+			subnormalSpanCorrect = subnormalSpanCorrect && sample.pdf > 0.0 &&
+				NearRelative( sample.t/subnormalSpanLength, xi, 1e-12 ) &&
+				NearRelative( sample.pdf*subnormalSpanLength, 1.0, 1e-12 ) &&
+				NearRelative( sample.pdf, EquiangularSampling::Pdf(
+					ray, subnormalSpanPivot, 0.0, subnormalSpanLength,
+					true, sample.t ), 1e-12 );
+		}
+		Check( subnormalSpanCorrect,
+			"subnormal nonzero angular span preserves fractional CDF quantiles" );
+
+		const Scalar boundaryLength = 2.23e6;
+		const Scalar boundaryXi = 3.0/9007199254740992.0;
+		const EquiangularSampling::Sample boundarySample =
+			EquiangularSampling::SampleDistance(
+				ray, subnormalSpanPivot, 0.0, boundaryLength,
+				true, boundaryXi );
+		Check( boundarySample.pdf > 0.0 &&
+			NearRelative( boundarySample.t/(boundaryXi*boundaryLength), 1.0, 1e-12 ) &&
+			NearRelative( boundarySample.pdf*boundaryLength, 1.0, 1e-12 ) &&
+			NearRelative( boundarySample.pdf, EquiangularSampling::Pdf(
+				ray, subnormalSpanPivot, 0.0, boundaryLength,
+				true, boundarySample.t ), 1e-12 ),
+			"subnormal fractional span preserves a 53-bit sampler quantile" );
+
+		const Scalar oppositeLength = 1e308;
+		const Point3 oppositePivot( 1e302, 0, -1e308 );
+		const EquiangularSampling::Sample oppositeSample =
+			EquiangularSampling::SampleDistance(
+				ray, oppositePivot, 0.0, oppositeLength, true, 0.37 );
+		Check( oppositeSample.pdf > 0.0 &&
+			std::isfinite(oppositeSample.t) &&
+			NearRelative( oppositeSample.pdf, EquiangularSampling::Pdf(
+				ray, oppositePivot, 0.0, oppositeLength,
+				true, oppositeSample.t ), 1e-12 ) &&
+			NearRelative( IntegrateEquiangularPdf(
+				ray, oppositePivot, 0.0, oppositeLength, 200000 ),
+				1.0, 2e-10 ),
+			"finite opposite-sign offsets remain normalized without overflow" );
+	}
+
+	void TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll()
+	{
+		std::cout << "TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_pt_unbounded_equiangular_" +
+				std::to_string( static_cast<int>( ::getpid() ) ) + ".RISEscene" );
+		{
+			std::ofstream output( scenePath );
+			output <<
+				"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+				"omni_light\n{\nname pivot\npower 1\ncolor 1 1 1\nposition 1 0 5\n}\n";
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		PathTracingIntegrator* integrator = nullptr;
+		UnboundedDistanceProbeMedium* medium = new UnboundedDistanceProbeMedium();
+		Check( RISE_CreateJobPriv( &job ) && job &&
+			job->LoadAsciiSceneViaCst( scenePath.string().c_str() ),
+			"unbounded equiangular-disable fixture initializes" );
+		if( job ) {
+			job->GetScene()->SetGlobalMedium( medium );
+			IShader* shader = job->GetShaders()->GetItem( "global" );
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster, false, 0, *shader, true ) && caster,
+				"unbounded equiangular-disable caster initializes" );
+			if( caster ) caster->AttachScene( job->GetScene() );
+			integrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(), StabilityConfig() );
+		}
+
+		if( integrator && caster && job ) {
+			RandomNumberGenerator rng( 0x42u );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			IndependentSampler sampler( rng );
+			const RasterizerState rast = { 0, 0 };
+			integrator->IntegrateRayNM(
+				rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 500.0,
+				*job->GetScene(), *caster, sampler, nullptr, nullptr );
+			Check( medium->plainCalls == 1 && medium->mixedCalls == 0,
+				"PT unbounded global DBL_MAX segment takes pure DT before technique roll" );
+
+			medium->plainCalls = 0;
+			medium->mixedCalls = 0;
+			RandomNumberGenerator casterRng( 0x43u );
+			RuntimeContext casterRc(
+				casterRng, RuntimeContext::PASS_NORMAL, false );
+			IRayCaster::RAY_STATE state;
+			Scalar value = 0.0;
+			caster->CastRayNM(
+				casterRc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+				value, state, 500.0, nullptr, nullptr );
+			Check( medium->plainCalls == 1 && medium->mixedCalls == 0,
+				"RayCaster unbounded global DBL_MAX segment takes pure DT before technique roll" );
+		}
+
+		safe_release( integrator );
+		safe_release( caster );
+		safe_release( job );
+		safe_release( medium );
+		std::filesystem::remove( scenePath );
 	}
 
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
@@ -1093,7 +1396,7 @@ namespace
 			const Scalar pdfDt = LogTailFireMedium::SigmaT() * std::exp( -99.0 );
 			const Scalar pdfEq = EquiangularSampling::Pdf(
 				ray, Point3( 1e-10, 0, 0 ), 0.0,
-				1.1 * eventDistance, eventDistance );
+				1.1 * eventDistance, true, eventDistance );
 			const Scalar expected = pdfDt / ( 0.5 * pdfDt + 0.5 * pdfEq );
 			Check( pdfDt < 1e-30 && pdfEq < 1e-30,
 				"both tau-tail proposal densities are materially below the old floor" );
@@ -1547,6 +1850,8 @@ int main()
 	TestNMAbsoluteParityAndSceneUnits();
 	TestHWSSRequestedUsesPerWavelengthFallback();
 	TestEquiangularMixtureUsesItsActualDistanceDensity();
+	TestEquiangularBoundednessAndCollinearFallback();
+	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestDirectPelEntryRejectsFire();
 	TestBoundedObjectFireRejectsShaderDispatchPel();
