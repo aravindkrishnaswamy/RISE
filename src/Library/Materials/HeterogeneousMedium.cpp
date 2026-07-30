@@ -70,7 +70,7 @@ namespace
 		return coordinate;
 	}
 
-	static bool HasStrictlyIncreasingBinBoundaries(
+	static bool HasRepresentableBinInteriors(
 		const Scalar minimum,
 		const Scalar maximum,
 		const Scalar binSize,
@@ -81,7 +81,8 @@ namespace
 		for( unsigned int i = 1u; i <= binCount; ++i ) {
 			const Scalar boundary = i == binCount ? maximum :
 				minimum + Scalar(i)*binSize;
-			if( !(boundary > previous) ) return false;
+			if( !(boundary > previous) ||
+				!(std::nextafter(previous,boundary) < boundary) ) return false;
 			previous = boundary;
 		}
 		return true;
@@ -1588,11 +1589,11 @@ bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
 	if( !RISE::IsFiniteDouble( m_emissionBinVolume ) || m_emissionBinVolume <= 0.0 ) {
 		return false;
 	}
-	if( !HasStrictlyIncreasingBinBoundaries( m_bboxMin.x, m_bboxMax.x,
+	if( !HasRepresentableBinInteriors( m_bboxMin.x, m_bboxMax.x,
 		m_emissionBinSize.x, m_volWidth ) ||
-		!HasStrictlyIncreasingBinBoundaries( m_bboxMin.y, m_bboxMax.y,
+		!HasRepresentableBinInteriors( m_bboxMin.y, m_bboxMax.y,
 		m_emissionBinSize.y, m_volHeight ) ||
-		!HasStrictlyIncreasingBinBoundaries( m_bboxMin.z, m_bboxMax.z,
+		!HasRepresentableBinInteriors( m_bboxMin.z, m_bboxMax.z,
 		m_emissionBinSize.z, m_volDepth ) ) return false;
 
 	const unsigned int binCount = m_volWidth * m_volHeight * m_volDepth;

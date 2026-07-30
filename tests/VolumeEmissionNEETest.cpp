@@ -743,6 +743,13 @@ namespace
 			"medium construction rejects a bin with no representable spatial interior" );
 		safe_release( collapsedBoundary );
 
+		IMedium* adjacentBoundaries = CreateUniformFire(
+			0.2, 1800.0, 2, Point3(1.0e16,0,0),
+			Point3(1.0e16+4.0,1,1), 1.0 );
+		Check( adjacentBoundaries == nullptr,
+			"medium construction rejects adjacent boundaries with no interior value" );
+		safe_release( adjacentBoundaries );
+
 		ExtremeContrastCarbonPainter* contrast = new ExtremeContrastCarbonPainter();
 		IScalarPainter* temperature = nullptr;
 		RISE_API_CreateUniformScalarPainter( &temperature, 1800.0 );
