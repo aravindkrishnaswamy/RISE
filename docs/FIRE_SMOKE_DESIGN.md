@@ -2672,17 +2672,48 @@ families reach emission at a point y from vertex x:
     It need not integrate to one. The later continuation must call
     `SampleSubset` on this same closure/A and use its roulette atom and survival compensation; a future random
     choice or gate that is not evaluable from the record is forbidden. If A is
-    empty, or every r_ℓ is zero in direction ω, p_ω,reach(ω)=0. Volume NEE may
-    still run at that terminal vertex and then has no march competitor.
+    empty, or every r_ℓ is zero in direction ω, p_ω,reach(ω)=0.
 
-    Mixed-lobe caps require an additive support split, not one weight on the
-    full BSDF. Define f_A=Σ_{ℓ∈A}f_ℓ and f_D as the remaining direct-connection
-    response. NEE evaluates f_A with the family MIS weight against
-    p_ω,reach and evaluates f_D as a separate NEE-only, weight-1 term; the
-    continuation evaluates f_A against the full allowed-lobe marginal, never a
-    sampled labeled component. When A is empty the whole NEE response is f_D
-    and has weight 1. This preserves direct lighting at a terminal vertex
-    without pretending a capped continuation exists.
+    **Two availability sets, one rule (r42 — r41's terminal clause and this
+    bullet used one set for two different questions):**
+    - **A_vertex** — the set above: lobes the continuation may sample *and
+      process a downstream vertex from*. Every cap applies: total/path
+      depth, per-type limits, deterministic roulette gates.
+    - **A_march** — lobes that may launch the path-final **source-only
+      segment**: identical to A_vertex except the **total/path-depth cap is
+      ignored**; per-type caps and deterministic zero gates still exclude
+      their lobes. At every non-terminal vertex A_march = A_vertex and
+      nothing below changes anything.
+
+    The §7.1 source-before-depth rule is scoped by A_march: at a vertex
+    terminal *because of the total/path cap*, the outgoing direction is
+    sampled from A_march's renormalized masses and the segment is marched
+    for source pickup only — its density is the ordinary
+    p_ω = Σ_{ℓ∈A_march} s_ℓ^{A_march}·p_ℓ(ω) **without roulette-survival
+    factors** (there is no continuation to survive), times p_t/r² and the
+    survival factors of the chain as usual. A **per-type-capped lobe is in
+    neither set** — its response is NEE-only f_D at weight 1, it launches
+    no source-only segment, and it contributes no march density; that is
+    the pinned mixed-lobe design, deliberately unchanged (a capped lobe
+    exists to stop paying for a lobe class, and its emission coverage is
+    NEE's job). If A_march is also empty, no segment is sampled and volume
+    NEE has no march competitor (weight 1) — the only *cap-derived*
+    p_march = 0 case, and it is empty-support, not a sampled-strategy
+    contradiction.
+
+    Mixed-lobe caps require an additive support split, not one weight on
+    the full BSDF — and **the split is governed by A_march** (at
+    non-terminal vertices that is A_vertex, i.e. exactly the previous
+    rule). Define f_A=Σ_{ℓ∈A_march}f_ℓ and f_D as the remaining
+    direct-connection response. NEE evaluates f_A with the family MIS
+    weight against the march density actually in play (p_ω,reach at
+    non-terminal vertices; the roulette-free terminal p_ω above at
+    total-depth vertices) and evaluates f_D as a separate NEE-only,
+    weight-1 term; the continuation evaluates f_A against the full
+    allowed-lobe marginal, never a sampled labeled component. When A_march
+    is empty the whole NEE response is f_D and has weight 1. This preserves
+    direct lighting at a terminal vertex without pretending a capped
+    continuation exists.
   - **p_ω is the actual direction proposal — with the ordering and
     RIS constraints that make that evaluable** (second external round):
     volume NEE runs at the scatter vertex *before* the guided continuation
@@ -2819,15 +2850,20 @@ families reach emission at a point y from vertex x:
     (σ_t·exp(−τ)) or the 50/50 balance mixture (§5.1) — evaluated
     deterministically via `EvalDeterministicOpticalDepth`, the same
     deterministic-denominator discipline the existing MIS uses.
-  - **Terminal-depth vertices** (r41): a total/path-depth or per-type lobe
+  - **Terminal-depth vertices** (r41, rescoped r42): a **total/path-depth**
     cap forbids processing any *downstream vertex*, not the outgoing
     segment itself — per the §7.1 source-before-depth rule, the terminal
-    direction and distance are still sampled and the segment is still
-    marched for source pickup. p_march on that segment is therefore the
-    ordinary nonzero p_ω·p_t/r² with its survival factors, and the
-    NEE-vs-march partition applies unchanged. "p_march = 0" situations are
-    *structural* only — beyond a non-null interface, outside the chain's
-    support — never a consequence of a depth cap.
+    direction is sampled from **A_march** (the availability set that
+    ignores the total/path cap but honors per-type caps — see the
+    availability bullet) and the segment is marched for source pickup.
+    p_march on that segment is the ordinary nonzero density stated there,
+    and the NEE-vs-march partition applies unchanged. **Per-type lobe caps
+    are NOT terminal-segment cases** (r41 overreached by naming them): a
+    per-type-capped lobe is in neither availability set, launches no
+    segment, and contributes through the NEE-only f_D term at weight 1.
+    "p_march = 0" situations are *structural* — beyond a non-null
+    interface, outside the chain's support, or empty A_march — never a
+    consequence of the total/path cap alone.
 - **Volume NEE**: p_V(y) from 7.2.3.
 
 **BSSRDF/SSS containment.** “Eligible vertex” in this arc excludes the two
@@ -3139,16 +3175,15 @@ medium case**, and **forced step-cap continuation** past the ratio
 tracker's 1024-step budget — §7.2.1's no-silent-caps replacement walk)
 and the **allowlisted Lambertian/Oren–Nayar/Isotropic-Phong NEE-on-vs-off
 equality tests** (§7.2.2's direction-independent lobe preselection). Terminal total/path
-depth and each per-type lobe cap are forced separately: volume NEE remains
-on, and **the terminal source-only segment keeps its genuine nonzero
-p_march** (r41 — the earlier "impossible continuation has p_march=0" wording
-contradicted the source-before-depth rule, which deliberately samples and
-marches the terminal outgoing segment for emission; a sampled strategy's
-density is by definition nonzero). What terminal depth forbids is the
-**downstream vertex** — no scatter, surface, or environment event is
-processed beyond it — so the segment contributes source pickup only, its
-emission competes with NEE under the standard partition at the actual
-p_march, and NEE-on/off high-spp references agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
+depth and each per-type lobe cap are forced separately, and they gate
+**different mechanisms** (r42): the total/path-depth case must show the
+terminal source-only segment sampled from A_march with its genuine nonzero
+p_march competing against NEE (what the cap forbids is the downstream
+vertex — no scatter, surface, or environment event beyond it), while the
+per-type case must show the capped lobe in *neither* availability set —
+no source-only segment, no march density, its response confined to the
+NEE-only weight-1 f_D term. Both cases: NEE-on/off high-spp references
+agree. Mixed allowed+capped lobes additionally gate the f_A/f_D additive split,
 roulette probabilities 0, (0,1), and 1, pdf normalization including its
 survival mass, and recorded-proposal/throughput agreement. Using the uncapped
 full-lobe marginal or omitting roulette survival is RED.

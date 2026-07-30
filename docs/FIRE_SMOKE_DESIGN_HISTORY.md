@@ -802,3 +802,28 @@ it was already tried and refuted here.
   split (26208c16) and exact NullBoundaryMaterial (2a422986), both
   reviewed to zero P1 with 232/232 and 233/233 suites.
 
+- **r42 (2026-07-30):** resolved the collision between r41's terminal rule
+  and the pinned f_A/f_D mixed-lobe design — the agent's eighth stop, and
+  rooted in an r41 overreach: r41 wrote "total/path-depth **or per-type
+  lobe cap**" into the terminal source-only-segment rule, but the reviewed
+  availability spec deliberately puts a per-type-capped lobe *outside* the
+  sampleable set with its response confined to the NEE-only weight-1 f_D
+  term. Worse, the availability spec's own definition ("A = lobes the
+  later continuation may sample") made even *total* depth empty A,
+  contradicting r41's nonzero-p_march rule from the other side. **Fix — the
+  agent's option-1 mechanism with option-2 semantics:** two availability
+  sets. A_vertex (the old A, every cap applied) governs downstream-vertex
+  processing; A_march (identical except the total/path cap is ignored;
+  per-type caps still exclude) governs the path-final source-only segment,
+  whose density is the A_march marginal *without roulette-survival factors*
+  (nothing to survive). A per-type-capped lobe is in **neither** set — it
+  exists to stop paying for a lobe class, and its emission coverage is
+  NEE's job. The f_A/f_D split is now governed by A_march, which equals
+  A_vertex at every non-terminal vertex, so the entire construction reduces
+  to the previous spec everywhere except path-final vertices. Cap-derived
+  p_march = 0 exists only as empty-A_march (empty support, not a
+  sampled-strategy contradiction). The agent's literal option 1 (capped
+  lobes keep march support mid-path) was declined: it would revise the
+  extensively reviewed mixed-lobe gate to buy marginal variance on emission
+  NEE already covers, at per-vertex cost the caps exist to remove.
+
