@@ -472,3 +472,45 @@ anyway. But P2's scope stays v1-simple in that world.
   the checker ops run on the post-run document like every existing op.
 - No claim survives one manual run: every phase re-runs the scenario matrix,
   and the checkpoint metrics (not vibes) decide whether the phase held.
+
+---
+
+## 6. Baseline outcome (2026-07-29, gemini-3.5-flash only, 9 bare-prompt runs across 3 calibration passes)
+
+**Anchor (v3, final calibration):** pass@1 0/3, meanCkpt **0.903**, all runs
+terminal `final_text` (never budget); metric columns: `painter_kinds` 2.00,
+`geometry_kinds` 4.67, `advanced_geometry` 0.33, `textured_objects` 27.33.
+Counterweight `build_ambiguous_scene`: 66.7% pass, 2/3 asked — byte-for-byte
+the epoch-11 gemini form; the ask-side guard is healthy and unmoved.
+Archived v1 (pre-recalibration) rows: `evals/runs/archive/bare_prompt_baseline_v1_luma_artifact`.
+
+**Calibration artifacts the baseline itself surfaced (the §6.3 lesson, again):**
+1. `meanLumaMax 0.35` was an indoor ceiling; courtyards are outdoor and render
+   legitimately at 0.67–0.82 → widened to 0.9 (blown-out is ~1.0).
+2. `standard_object max:40` failed the single richest run of all nine (a
+   50-object, 7-painter-kind courtyard) — ambition, not runaway; budgets catch
+   true runaways → widened to 100.
+
+**Real findings (stable across all 9 runs, band-independent):**
+- **The "impoverished prior" premise is partially STALE.** Bare-prompt painter
+  diversity is median 2 distinct non-uniform kinds (spread 1–7), not ~0 — the
+  prior arc's `procedural-textures` skill (48f68963) is already working. §0's
+  "flat uniformcolor surfaces" framing over-states today's failure mode.
+- **Scalar-pipe use: 0 of 9 runs.** Not one `scalar_painter` chunk ever. THE
+  confirmed deficit.
+- **Advanced geometry verbs: 2 of 9 runs.** `sdf_geometry`/`sweep_geometry`/
+  `displaced_geometry` almost never reached for. The second confirmed deficit.
+- **Geometry-kind diversity: healthy (4–5).** Per §3's decision rule the
+  geometry-DIVERSITY halves of P1/P2 are DROPPED as a non-problem; the
+  geometry story narrows to advanced verbs only.
+- **Variance is the other headline:** painter_kinds 1→7 across identical
+  prompts. Raising the FLOOR (the 1-kind runs) matters as much as the median.
+
+**P1 re-target (supersedes the §2 P1 emphasis):** B1's snippet re-anchoring
+should lean on (a) spatially-varying `scalar_painter` examples (roughness/
+displacement via `expression_function2d` — the 0/9 deficit), (b) SDF/sweep
+forms where object shape warrants (the 2/9 deficit), and (c) painter-family
+breadth to lift the floor above 1 — generic uniformcolor→procedural
+conversion is now the least urgent third. Success bar restated: scalar-pipe
+≥1/3 runs, advanced-geometry ≥2/3 runs, painter_kinds floor ≥2 in every run,
+`build_ambiguous_scene` unmoved.
