@@ -97,6 +97,9 @@ namespace RISE
 			//! instance so a debug render identifies the degraded vertex class
 			//! without flooding the log from every sample.
 			mutable std::atomic<bool>	mUnsupportedContinuationDiagnosticEmitted;
+			mutable std::atomic<bool>	mUnsupportedFallbackSegmentObserved;
+			mutable std::atomic<bool>	mUnsupportedFallbackSegmentCompeted;
+			mutable std::atomic<bool>	mUnsupportedFallbackEndpointAttempted;
 
 			//! Shared clay reflectance state for `clay_lights`: a mid-grey
 			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
@@ -175,6 +178,18 @@ namespace RISE
 			//! This is diagnostic state only; no transport decision reads it.
 			bool UnsupportedContinuationDiagnosticEmitted() const {
 				return mUnsupportedContinuationDiagnosticEmitted.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackSegmentObserved() const {
+				return mUnsupportedFallbackSegmentObserved.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackSegmentCompeted() const {
+				return mUnsupportedFallbackSegmentCompeted.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackEndpointAttempted() const {
+				return mUnsupportedFallbackEndpointAttempted.load(
 					std::memory_order_relaxed );
 			}
 

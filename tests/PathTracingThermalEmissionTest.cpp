@@ -4075,25 +4075,55 @@ namespace
 							static_cast<Scalar>(variance>0.0 ? variance : 0.0)
 						};
 					};
+					auto momentsShader = [&]( const IRayCaster& route,
+						const unsigned int seed ) {
+						RandomNumberGenerator rng(seed);
+						RuntimeContext rc(
+							rng,RuntimeContext::PASS_NORMAL,false);
+						IRayCaster::RAY_STATE state;
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							Scalar value = 0.0;
+							route.CastRayNM(
+								rc,rast,ray,value,state,500.0,nullptr,nullptr);
+							sum += value;
+							sumSquares += static_cast<long double>(value)*value;
+						}
+						const long double count =
+							static_cast<long double>(samples);
+						const long double mean = sum/count;
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						return SampleMoments{
+							static_cast<Scalar>(mean),
+							static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+						};
+					};
+					auto agreesWithinSixSE = [&]( const SampleMoments& a,
+						const SampleMoments& b ) {
+						const Scalar standardError = std::sqrt(
+							(a.variance+b.variance)/
+							static_cast<Scalar>(samples));
+						return a.mean>0.0 && b.mean>0.0 && standardError>0.0 &&
+							std::fabs(a.mean-b.mean)<=6.0*standardError;
+					};
+					SampleMoments pureOnBatches[3];
 					bool allBatchesAgree = true;
 					for( unsigned int batch=0; batch<3; ++batch ) {
 						const unsigned int seedBase = 0xf44bac1u +
 							thisFixture*0x101u + batch*0x10001u;
 						const SampleMoments neeOn =
 							momentsPT(*neeCaster,seedBase);
+						pureOnBatches[batch] = neeOn;
 						const SampleMoments neeOff =
 							momentsPT(*marchOnlyCaster,seedBase+0x5bd1u);
-						const Scalar standardError = std::sqrt(
-							(neeOn.variance+neeOff.variance)/
-							static_cast<Scalar>(samples));
-						const bool agrees = neeOn.mean>0.0 && neeOff.mean>0.0 &&
-							standardError>0.0 &&
-							std::fabs(neeOn.mean-neeOff.mean)<=6.0*standardError;
+						const bool agrees = agreesWithinSixSE(neeOn,neeOff);
 						if( !agrees ) {
 							std::cout << "  " << fixtureName << " batch " << batch <<
 								" means=" << neeOn.mean << "/" << neeOff.mean <<
 								" variances=" << neeOn.variance << "/" <<
-								neeOff.variance << " SE=" << standardError << std::endl;
+								neeOff.variance << std::endl;
 						}
 						allBatchesAgree = allBatchesAgree && agrees;
 					}
@@ -4107,6 +4137,38 @@ namespace
 						capture->LastMatch() == diagnostic,
 						(std::string(fixtureName) +
 							" fallback emits the exact user-visible diagnostic once").c_str() );
+					Check( integrator->UnsupportedFallbackSegmentObserved() &&
+						!integrator->UnsupportedFallbackSegmentCompeted() &&
+						!integrator->UnsupportedFallbackEndpointAttempted(),
+						(std::string(fixtureName) +
+							" fallback outgoing segment is observed with no competitor or endpoint draw").c_str() );
+
+					const unsigned int diagnosticsBeforeShader =
+						capture->MatchCount();
+					bool allShaderBatchesAgree = true;
+					for( unsigned int batch=0; batch<3; ++batch ) {
+						const unsigned int seedBase = 0x44d15a1u +
+							thisFixture*0x211u + batch*0x20003u;
+						const SampleMoments shaderOn =
+							momentsShader(*neeCaster,seedBase);
+						const SampleMoments shaderOff =
+							momentsShader(*marchOnlyCaster,seedBase+0x9e37u);
+						const bool agrees = agreesWithinSixSE(shaderOn,shaderOff) &&
+							agreesWithinSixSE(shaderOn,pureOnBatches[batch]);
+						if( !agrees ) {
+							std::cout << "  " << fixtureName << " shader batch " << batch <<
+								" on/off/pure=" << shaderOn.mean << "/" <<
+								shaderOff.mean << "/" << pureOnBatches[batch].mean << std::endl;
+						}
+						allShaderBatchesAgree = allShaderBatchesAgree && agrees;
+					}
+					Check( allShaderBatchesAgree,
+						(std::string(fixtureName) +
+							" shader-dispatch NEE-on/off fallback agrees with the pure-integrator route").c_str() );
+					Check( capture->MatchCount() == diagnosticsBeforeShader+1 &&
+						capture->LastMatch() == diagnostic,
+						(std::string(fixtureName) +
+							" shader-dispatch fallback emits its own exact one-shot diagnostic").c_str() );
 					if( selfAttesting ) {
 						Check( selfAttesting->ClosureCalls() == callsBeforeRender,
 							"central allowlist rejects the mismatched custom material before virtual closure construction" );

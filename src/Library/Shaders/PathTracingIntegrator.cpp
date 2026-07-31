@@ -1734,6 +1734,9 @@ PathTracingIntegrator::PathTracingIntegrator(
   mClayOverride( false ),
   mFirePelDiagnosticEmitted( false ),
   mUnsupportedContinuationDiagnosticEmitted( false ),
+  mUnsupportedFallbackSegmentObserved( false ),
+  mUnsupportedFallbackSegmentCompeted( false ),
+  mUnsupportedFallbackEndpointAttempted( false ),
   pClayPainter( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
@@ -2513,6 +2516,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		ContinuationClosureNMGuard surfaceClosureGuard;
 		ContinuationAvailability surfaceAvailability;
 		bool surfaceClosureActive = false;
+		bool surfaceUnsupportedFallback = false;
 		bool surfaceVolumeNEECompetes = false;
 		bool surfaceVolumeEndpointAttempted = false;
 		if constexpr ( Traits::is_nm ) {
@@ -2528,6 +2532,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
 			if( !materialSupported &&
 				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
+				surfaceUnsupportedFallback = true;
 				bool expected = false;
 				if( mUnsupportedContinuationDiagnosticEmitted.compare_exchange_strong(
 					expected,true,std::memory_order_relaxed) ) {
@@ -3241,6 +3246,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 				currentRay = pS->ray;
 				activeVolumeSegmentState = VolumeEmissionSegmentState();
+				if constexpr ( Traits::is_nm ) {
+					if( surfaceUnsupportedFallback ) {
+						mUnsupportedFallbackSegmentObserved.store(
+							true,std::memory_order_relaxed);
+						if( activeVolumeSegmentState.competitionAvailable ) {
+							mUnsupportedFallbackSegmentCompeted.store(
+								true,std::memory_order_relaxed);
+						}
+						if( surfaceVolumeEndpointAttempted ) {
+							mUnsupportedFallbackEndpointAttempted.store(
+								true,std::memory_order_relaxed);
+						}
+					}
+				}
 				currentRay.Advance( 1e-8 );
 
 				if( pS->ior_stack ) {
@@ -3874,6 +3893,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			currentRay = traceRay;
 			activeVolumeSegmentState = VolumeEmissionSegmentState();
+			if constexpr ( Traits::is_nm ) {
+				if( surfaceUnsupportedFallback ) {
+					mUnsupportedFallbackSegmentObserved.store(
+						true,std::memory_order_relaxed);
+					if( activeVolumeSegmentState.competitionAvailable ) {
+						mUnsupportedFallbackSegmentCompeted.store(
+							true,std::memory_order_relaxed);
+					}
+					if( surfaceVolumeEndpointAttempted ) {
+						mUnsupportedFallbackEndpointAttempted.store(
+							true,std::memory_order_relaxed);
+					}
+				}
+			}
 			currentRay.Advance( 1e-8 );
 
 			if( traceIorStack != &iorStack ) {
