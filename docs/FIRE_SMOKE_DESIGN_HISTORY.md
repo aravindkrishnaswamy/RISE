@@ -861,3 +861,20 @@ it was already tried and refuted here.
   agent's own analysis, correct). Also fixed a duplicated clause the
   original sentence split left behind.
 
+- **r45 (2026-07-31):** phase-split the SSS predictive gate — the agent's
+  eleventh stop, and the same defect class as r44 one sentence further
+  down: §7.2.2 demanded "Predictive Phase B rejects ... with
+  `sss_volume_nee_unsupported`" and §7.2.7 demanded predictive rejection
+  plus unknown-dependency preflight, while the fidelity seam those require
+  is Phase C (verified: no fidelity identifiers in the tree; the r44 split
+  covered only the adjacent unsupported-material sentence). Adopted the
+  agent's option 1, identical in shape to r44: Phase B owns the
+  classification (SSS materials, both named shader ops,
+  unknown-nested-dependency-as-SSS) and the preview containment fixtures;
+  Phase C re-gates the identical fixtures demanding pre-worker fail-closed
+  rejection. **Because this class bit twice, r45 adds the general rule to
+  §7.2.7**: every predictive-mode rejection demanded anywhere in §7.2 is a
+  Phase-C re-gate of a Phase-B preview fixture — no Phase-B gate depends
+  on the seam, no fixture is written twice. A sweep of §7.2 confirmed the
+  two SSS sites were the last instances.
+

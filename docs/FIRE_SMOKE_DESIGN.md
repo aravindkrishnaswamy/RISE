@@ -2871,9 +2871,13 @@ post-BSSRDF entry sites (diffusion-profile and random-walk SSS). Those sites
 have a joint spatial/directional continuation measure that the closure above
 does not model. The transitive shader/SPF dependency walk required by §10.3
 also classifies `SubSurfaceScatteringShaderOp` and
-`DonnerJensenSkinSSSShaderOp` as nonlocal SSS. Predictive Phase B therefore
-rejects any render-reachable SSS material **or either shader op** with
-`sss_volume_nee_unsupported`; unknown nested shader dependency is fail-closed.
+`DonnerJensenSkinSSSShaderOp` as nonlocal SSS. **The r44 phase split applies
+here too (r45)**: the *classification* — recognizing render-reachable SSS
+materials and both shader ops, with unknown nested dependencies treated as
+SSS — is the Phase-B deliverable, driving the preview containment below;
+the predictive-mode rejection with `sss_volume_nee_unsupported` and the
+fail-closed unknown-dependency *preflight* are Phase C, re-gating the same
+fixtures once the fidelity seam exists.
 In preview, both BSSRDF-entry NEE
 sites hard-disable **volume** NEE (ordinary surface-light NEE is unchanged),
 draw no flame pivot/endpoint, and initialize the recursively launched child
@@ -3232,10 +3236,19 @@ guide sample count must remain zero and the retained phase-closure Pdf must
 match every recorded p_ω,reach. Separate
 diffusion-profile and random-walk SSS preview fixtures assert zero volume-NEE
 attempts at BSSRDF entry, a fresh child competition state, and NEE-on/off
-agreement; enabling SSS in predictive mode must return
-`sss_volume_nee_unsupported`.
-Equivalent fixtures cover nested calls from both named SSS shader ops and
-unknown-dependency fail-closed preflight.
+agreement, with equivalent fixtures for nested calls from both named SSS
+shader ops — **all Phase B**. The predictive-mode demands (enabling SSS in
+predictive returns `sss_volume_nee_unsupported`; unknown-dependency
+preflight fails closed) are **Phase C re-gates of these identical
+fixtures** (r45, per the r44 split).
+
+**Class rule (r45, after this pattern bit twice):** every predictive-mode
+rejection demanded anywhere in §7.2 is a **Phase-C re-gate of a Phase-B
+preview fixture** — Phase B builds the classification and the preview
+containment with NEE-on/off equality and a debug diagnostic; Phase C
+re-runs the identical fixture list against the fidelity seam demanding
+pre-worker fail-closed rejection with the named reason code. No Phase-B
+gate depends on the seam, and no fixture is written twice.
 **Configuration matrix** (second external round): every equality gate
 above re-runs across guiding on/off, RIS enabled at *non-competing*
 vertices on/off (RIS at competing vertices is forbidden outright — an
