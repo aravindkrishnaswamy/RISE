@@ -472,3 +472,215 @@ anyway. But P2's scope stays v1-simple in that world.
   the checker ops run on the post-run document like every existing op.
 - No claim survives one manual run: every phase re-runs the scenario matrix,
   and the checkpoint metrics (not vibes) decide whether the phase held.
+
+---
+
+## 6. Baseline outcome (2026-07-29, gemini-3.5-flash only, 9 bare-prompt runs across 3 calibration passes)
+
+**Anchor (v3, final calibration):** pass@1 0/3, meanCkpt **0.903**, all runs
+terminal `final_text` (never budget); metric columns: `painter_kinds` 2.00,
+`geometry_kinds` 4.67, `advanced_geometry` 0.33, `textured_objects` 27.33.
+Counterweight `build_ambiguous_scene`: 66.7% pass, 2/3 asked — byte-for-byte
+the epoch-11 gemini form; the ask-side guard is healthy and unmoved.
+Archived v1 (pre-recalibration) rows: `evals/runs/archive/bare_prompt_baseline_v1_luma_artifact`.
+
+**Calibration artifacts the baseline itself surfaced (the §6.3 lesson, again):**
+1. `meanLumaMax 0.35` was an indoor ceiling; courtyards are outdoor and render
+   legitimately at 0.67–0.82 → widened to 0.9 (blown-out is ~1.0).
+2. `standard_object max:40` failed the single richest run of all nine (a
+   50-object, 7-painter-kind courtyard) — ambition, not runaway; budgets catch
+   true runaways → widened to 100.
+
+**Real findings (stable across all 9 runs, band-independent):**
+- **The "impoverished prior" premise is partially STALE.** Bare-prompt painter
+  diversity is median 2 distinct non-uniform kinds (spread 1–7), not ~0 — the
+  prior arc's `procedural-textures` skill (48f68963) is already working. §0's
+  "flat uniformcolor surfaces" framing over-states today's failure mode.
+- **Scalar-pipe use: 0 of 9 runs.** Not one `scalar_painter` chunk ever. THE
+  confirmed deficit.
+- **Advanced geometry verbs: 2 of 9 runs.** `sdf_geometry`/`sweep_geometry`/
+  `displaced_geometry` almost never reached for. The second confirmed deficit.
+- **Geometry-kind diversity: healthy (4–5).** Per §3's decision rule the
+  geometry-DIVERSITY halves of P1/P2 are DROPPED as a non-problem; the
+  geometry story narrows to advanced verbs only.
+- **Variance is the other headline:** painter_kinds 1→7 across identical
+  prompts. Raising the FLOOR (the 1-kind runs) matters as much as the median.
+
+**P1 re-target (supersedes the §2 P1 emphasis):** B1's snippet re-anchoring
+should lean on (a) spatially-varying `scalar_painter` examples (roughness/
+displacement via `expression_function2d` — the 0/9 deficit), (b) SDF/sweep
+forms where object shape warrants (the 2/9 deficit), and (c) painter-family
+breadth to lift the floor above 1 — generic uniformcolor→procedural
+conversion is now the least urgent third. Success bar restated: scalar-pipe
+≥1/3 runs, advanced-geometry ≥2/3 runs, painter_kinds floor ≥2 in every run,
+`build_ambiguous_scene` unmoved.
+
+---
+
+## 7. P1 outcome (2026-07-30, commit 526f6f99, 3 runs post-skill-re-anchor)
+
+| bar (from §6) | result | verdict |
+|---|---|---|
+| painter_kinds floor ≥2 every run | 3, 2, 3 (was floor 1, median 2) | **MET** — floor lifted |
+| scalar-pipe ≥1/3 runs | **0/3** (0/12 lifetime) | **FAILED** |
+| advanced geometry ≥2/3 runs | **0/3** (2/12 lifetime) | **FAILED** |
+| build_ambiguous_scene unmoved | ask-side 3/3 asked (≥ baseline 2/3); pass@1 noisy on its own tight luma/center-pixel bands at N=3 | guard HELD |
+
+**The reading:** snippet re-anchoring moved exactly what models copy —
+painter families (floor 1→2, breadth up) — and moved NEITHER mechanism-
+adoption deficit, despite the skills now carrying prominent, execution-
+validated scalar-pipe examples and pre-existing sdf/sweep recipes that
+trajectories prove the model reads. This is §5.1 quantified: examples move
+copying; they do not move mechanism adoption. Prose/example levers are now
+measured at their ceiling for this problem.
+
+**P2 re-target (design amendment, needs user sign-off):** A1-as-approved
+counts surfaces bound to uniformcolor — but colour flatness is now a
+SOLVED problem (floor 2 post-P1); as approved, the advisory would fire
+rarely and address yesterday's deficit. The same mechanism, same carriers
+(beauty render + validate), same `objects_reaching_kinds` scan should
+instead report the two MEASURED deficits as observed state:
+- "all {n} materials use constant roughness — no spatially-varying
+  scalar_painter is bound anywhere" (the 0/12 deficit), and
+- a one-line geometry census ("{n} objects: {k} box, {m} sphere…; no
+  sdf/sweep/displaced forms") for the 2/12 deficit,
+with the same escape clause and skill pointer. Everything else in the §2
+P2 spec (engine-side scan, fire thresholds, anti-churn clause, red-proof
+tests) carries over unchanged.
+
+---
+
+## 8. P2 outcome (2026-07-30, commit 9b3f19a6, 3 runs with the advisory live)
+
+| §6 bar | result | verdict |
+|---|---|---|
+| scalar-pipe ≥1/3 | **0/3** (0/15 lifetime) | **FAILED** |
+| advanced geometry ≥2/3 | 1/3 (natural rate; census clause never fired in that run — the sdf was authored unprompted at construction time) | **FAILED** |
+| painter floor ≥2 | 3, 3, 3 — floor AND median now 3 | exceeded (P1's lever, still compounding) |
+| ambiguity guard | 2/3 asked — historical form | HELD |
+
+**Trajectory forensics (the §6.3 discipline applied to our own feature):**
+the note FIRED in every run (render + validate carriers, transport
+verified), was first seen with 1–5 actionable calls remaining (r1: five
+calls after first note; r3: four), and the model acted on it **zero
+times**. Two prior mechanism successes (empty-index note, derive
+diagnostics) were BLOCKING facts — the model could not proceed without
+addressing them. This note is non-blocking advice competing with
+end-of-build momentum, and its own anti-churn escape clause licenses
+ignoring it. **Refined §5.1 model: models fix facts that block; they
+skim advice that doesn't.** Also structural: all construction precedes
+the first render (the 72-log's unlanded render-cadence item), so the
+note only ever arrives at the verification tail.
+
+**Where this leaves the ladder** (decision points, not decisions):
+1. **Diagnostic-framing hypothesis**: same fact, surfaced as a
+   `validate` Info-severity diagnostic (a to-fix list entry) instead of
+   a note field — §5.1's strongest row is "models fix derive
+   diagnostics every time". Cheap to test; risks churn on deliberately
+   simple scenes (the escape clause doesn't fit the diagnostics shape).
+2. **Render-cadence gate** (72-log item 1, structural): refuse an
+   oversized first `insert_chunks` before any render — moves the note
+   mid-build. Weakened as a pure theory by r1/r3 (turns remained,
+   unused), but earlier arrival + repetition may compound.
+3. **Instrument limitation, honestly**: all 15 runs are
+   gemini-3.5-flash (user's cost decision, §"Baseline protocol"). The
+   ask-scenario board showed large cross-model behavioral spreads;
+   scalar-pipe adoption may differ on stronger models. One hosted
+   opus/gpt spot-check (~6 runs) would disambiguate "advice ignored by
+   models generally" from "advice ignored by flash".
+4. **Stop here**: painter richness floor 1→3 and median 2→3 are real,
+   shipped, measured wins; the scalar pipe and advanced-geometry verbs
+   may simply not be bare-prompt behaviors worth forcing.
+
+---
+
+## 9. Cross-model probe (2026-07-30, qwen3.6:27b local, thinking recorded)
+
+Per the user's modification of §8 option 3: a local thinking model whose
+chain-of-thought lands in the trajectory (`message.reasoning`), so note
+reaction is observable directly instead of inferred. 3 runs, ~54 min each.
+
+**The model dismissed the note IN WRITING, twice, with the same triage
+frame:**
+
+> r1: "The full candidate validated clean - no errors. The 'note' about
+> scalar_painter is just a design suggestion, not an error."
+
+> r3: "The scene validates cleanly - no errors or warnings beyond the
+> expected design note about scalar textures (which is a feature
+> suggestion, not an issue)."
+
+r3's "the EXPECTED design note" is habituation: by its 16th firing the
+note is ambient. r1 fired the note 30 times (qwen render-spams; 90 tool
+calls) — repetition converts advice into wallpaper, not action. Scalar
+adoption 0/3 (0/18 lifetime across both models); r3 built a 65-object
+scene with 14 painters, every one uniformcolor.
+
+**Conclusion: not flash-specific.** Two models, one written confession of
+the shared triage rule: *models act on errors; they skim suggestions.*
+The §5.1 refinement (blocking facts vs advice) is now directly evidenced,
+not just inferred. The empty-index note worked because the model was
+BLOCKED (it needed the index); derive diagnostics work because they are
+in the errors list. This note is neither.
+
+**Recommended next (P2.b, one small slice):** move the same two facts
+into `validate`'s diagnostics array as an advisory-severity entry
+(e.g. code `DESIGN_SCALAR_PIPE_UNUSED`, severity info) — the exact list
+qwen consulted ("validated clean - no errors") before moving on. Keep
+the render-result note as-is (harmless, and the GUI may surface it).
+Measure once more on both instruments; if diagnostic framing also fails,
+stop — the painter-floor win is banked and further forcing is not worth
+the ladder.
+
+Caveat to carry into P2.b: no escape-clause slot exists in the
+diagnostics shape, so a deliberately-flat scene will carry a permanent
+info diagnostic — the message text must self-disarm ("intentional flat
+styling: ignore") and the severity must stay below anything the GUI
+badges as a problem.
+
+---
+
+## 10. P2.b outcome and ARC CLOSE (2026-07-30, commit af764f67 measured)
+
+| instrument | scalar adoption | exposure to the diagnostics |
+|---|---|---|
+| gemini-3.5-flash (3 runs) | **0/3** | seen every run (1–2 validate results each) |
+| qwen3.6:27b (3 runs) | **0/3** | r1/r2 NEVER called validate (zero exposure); r3 saw it twice, zero reasoning engagement |
+
+**Lifetime: 0/24 runs ever bound a scalar_painter**, across two models, two
+framings (note, Info diagnostic), two carriers (render, validate), and up
+to 30 exposures in a single run. gemini's runs are the clean test — full
+exposure, zero action. qwen's add a structural lesson: moving the fact
+from render results (which a render-spamming agent sees 10–57×/run) to
+validate-only (0–2×/run) REDUCED reach; carrier choice must follow the
+agent's actual tool habits, not our notion of "the right moment".
+
+**Per the §9 pre-committed decision rule: STOP.** Scalar-pipe and
+advanced-geometry adoption on bare prompts is not purchasable with
+result-payload scaffolding at reasonable cost for current models. The
+next plausible lever class (schema-structural: a required parameter, a
+material template that ships a scalar slot pre-bound) changes the
+product's authoring surface, not the agent's guidance — out of this
+arc's scope and worth its own design if ever wanted.
+
+### What the arc banked (all shipped, measured, zero-P1 reviewed)
+- **Painter richness floor 1→3, median 2→3** on bare prompts (P1 skills;
+  confirmed still holding at painter_kinds=2.0 floor under P2.b's runs).
+- **Permanent measurement infrastructure**: 4 checker ops, per-label
+  metric columns, the bare-prompt scenario + counterweight pairing, and
+  a three-instrument comparison discipline (before/after runDirs).
+- **The design-note + Info-diagnostics plumbing**: truthful, tested,
+  harmless; left in tree deliberately — zero runtime cost, and a
+  stronger future model may act where these did not (re-measure with
+  the same runconfigs when the model roster changes).
+- **A mechanism law, twice evidenced and once confessed in writing**:
+  models act on facts that BLOCK (errors, empty prerequisites); they
+  habituate to advice regardless of framing, severity vocabulary,
+  or repetition. Prose ≈ 50%; examples move copying; advice moves
+  nothing; structure moves behavior. (§5.1 → §8 → §9 → here.)
+
+### Ask-side, final state
+`build_ambiguous_scene` held its epoch-11 form through every phase
+(2/3–3/3 asked). The tension the arc opened with — "more creative" vs
+"asks more questions" — closed exactly as designed in §1: richer
+defaults landed without a single unwanted question appearing.

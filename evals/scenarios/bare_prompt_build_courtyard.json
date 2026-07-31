@@ -1,7 +1,7 @@
 {
   "id": "bare_prompt_build_courtyard",
   "title": "Bare build prompt -- material AND geometry richness without elicitation",
-  "//": "Material/geometry-richness P0 headroom scenario (docs/agentic-redesign/73-creative-richness-design.md). A truly bare prompt -- no 'make it look nice' nudge -- against the shipping empty starter scene. Measures whether the agent reaches for spatially-varying painters, the scalar-pipe, and non-primitive geometry verbs on an unprompted build, without ever blocking on style questions (askUserMax tolerates at most one ask; ask_user stays reserved for material/subject AMBIGUITY per build_ambiguous_scene, not style taste). objects_reaching_kinds is a MEASUREMENT, not an anti-adversarial gate -- it defeats a single-decoy gaming pattern (all diversity bound to one hidden object) but a determined multi-decoy scene can still pass every CST-side checkpoint here; the render-side closer is the deferred A2/P3 detector. Geometry checkpoints (geometry_kinds/advanced_geometry) have NO reachability guard at all -- a tiny decoy chunk per missing kind satisfies them; disclosed deliberately rather than papered over, since requiring 2+ advanced-geometry objects would over-prescribe legitimate scenes.",
+  "//": "Material/geometry-richness P0 headroom scenario (docs/agentic-redesign/73-creative-richness-design.md). A truly bare prompt -- no 'make it look nice' nudge -- against the shipping empty starter scene. Measures whether the agent reaches for spatially-varying painters, the scalar-pipe, and non-primitive geometry verbs on an unprompted build, without ever blocking on style questions (askUserMax tolerates at most one ask; ask_user stays reserved for material/subject AMBIGUITY per build_ambiguous_scene, not style taste). objects_reaching_kinds is a MEASUREMENT, not an anti-adversarial gate -- it defeats a single-decoy gaming pattern (all diversity bound to one hidden object) but a determined multi-decoy scene can still pass every CST-side checkpoint here; the render-side closer is the deferred A2/P3 detector. Geometry checkpoints (geometry_kinds/advanced_geometry) have NO reachability guard at all -- a tiny decoy chunk per missing kind satisfies them; disclosed deliberately rather than papered over, since requiring 2+ advanced-geometry objects would over-prescribe legitimate scenes. Render ceiling recalibrated 0.35->0.9 after the first baseline: courtyards are OUTDOOR scenes and gemini legitimately renders them at meanLuma 0.67-0.82; the ceiling exists to catch blown-out exposure (~1.0), not daylight. Object ceiling 40->100 after baseline v2: a 50-object, 7-painter-kind courtyard is ambition, not runaway (budgets catch true runaways).",
   "scene": {
     "path": "scenes/Templates/empty_starter.RISEscene"
   },
@@ -24,7 +24,7 @@
       "op": "chunk_count",
       "chunkKind": "standard_object",
       "min": 3,
-      "max": 40
+      "max": 100
     },
     {
       "kind": "document",
@@ -87,7 +87,7 @@
       "width": 32,
       "height": 24,
       "meanLumaMin": 0.015,
-      "meanLumaMax": 0.35,
+      "meanLumaMax": 0.9,
       "channelBalanceMax": 4.0
     },
     {

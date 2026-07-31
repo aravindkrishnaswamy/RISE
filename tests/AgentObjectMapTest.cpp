@@ -1489,6 +1489,17 @@ static std::string ReadImageReq( double id, const std::string& extraParamsJson )
 static void RunInlineRenderImageTest()
 {
 	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	// Review P3-5 (fixture-coupling): the exact-key-set assertion below
+	// (b) depends on kScene3 tripping design-note condition A (3 bare
+	// spheres, no scalar_painter chunk).  Assert that PRECONDITION
+	// directly and FIRST, on the raw scene text, so if a future edit to
+	// kScene3 (e.g. adding a fourth sphere, or binding a scalar_painter)
+	// stops it tripping the condition, THIS assertion fails with a
+	// self-explaining message instead of the exact-key-count assertion
+	// failing 40 lines below with only a byte-count mismatch to go on.
+	Check( !AgentSession::ComputeDesignNote( kScene3 ).empty(),
+	       "PRECONDITION: kScene3 trips design-note condition A (3 standard_object, "
+	       "no scalar_painter) -- the exact-key-set assertion below depends on this" );
 	const std::string scenePath = WriteTemp( "rise_inline_img.RISEscene", kScene3 );
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "inline-image scene loads" ); return; }
@@ -1507,12 +1518,19 @@ static void RunInlineRenderImageTest()
 		       !r.has( "imageWidth" ) && !r.has( "imageHeight" ),
 		       "MONEY (b): omitting imageMaxEdge carries NO image fields at all" );
 		// The full key set, so a future edit cannot quietly add or drop a
-		// field on the no-parameter path either.
+		// field on the no-parameter path either.  Creative-richness P2:
+		// `note` NOW belongs in this exact set -- kScene3 has exactly 3
+		// standard_object chunks and NO scalar_painter chunk anywhere, so
+		// this plain PRODUCTION render trips design-note condition A
+		// (scalar-pipe unused) and the key is populated, not omitted.  A
+		// scene that didn't trip either condition would omit it instead
+		// (see the dedicated design-note carrier test below for that half).
 		static const char* const kPlainKeys[] = {
 			"ok", "width", "height", "meanR", "meanG", "meanB", "integrator",
 			"previewWidth", "previewHeight", "cameraOverridden", "message",
 			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
-			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes" };
+			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes",
+			"note" };
 		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
 		bool allPresent = true;
 		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
@@ -1520,6 +1538,9 @@ static void RunInlineRenderImageTest()
 		       "MONEY (b): the no-parameter result key set is EXACTLY today's " +
 		       std::to_string( nPlain ) + " fields (got " +
 		       std::to_string( r.members().size() ) + ")" );
+		Check( r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "the design note fires condition A (scalar-pipe unused) on kScene3's 3 bare spheres" );
 	}
 
 	// (a) IDENTITY: inline bytes == read_image at the same bound.
@@ -1880,6 +1901,106 @@ static void RunDriverAsyncInlineImageTest()
 	std::remove( scenePath.c_str() );
 }
 
+//----------------------------------------------------------------------
+// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// by sec 7): the observed-state design note is a BEAUTY-render-only carrier
+// -- populated on "production"/"draft" renderMode, NEVER on "objectmap".
+// kScene3 (3 bare spheres, uniformcolor_painter only, no scalar_painter
+// anywhere) trips design-note condition A, so this is also the MONEY
+// red-proof that the render carrier and the objectmap exclusion actually
+// hold over the wire, on the SAME session/scene/Job -- not just in the
+// AgentSession struct field (RunInlineRenderImageTest above already pins
+// the struct-level key-set for the production case; this test is the
+// dedicated three-way comparison plus the negative/clean-scene control).
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier (P2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "design-note scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "design-note session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (a) PRODUCTION render: note present, names the fired condition.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+		       "production render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "MONEY (a): a PRODUCTION render carries the design note (condition A: 3 bare "
+		       "spheres, no scalar_painter anywhere)" );
+	}
+
+	// (b) DRAFT render, SAME scene: note present too.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"quality\":\"draft\"" ) ), env, err ),
+	       "draft render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "draft",
+		       "draft render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos,
+		       "MONEY (b): a DRAFT render ALSO carries the design note (same fired condition)" );
+	}
+
+	// (c) OBJECTMAP render, the SAME scene/session/Job: note is ABSENT --
+	// deliberately NEVER attached to a segmentation render (sec 2 P2: the
+	// note is anchored to "the model just looked at its finished work",
+	// which an identity map is not).
+	Check( JsonParse( rpc.HandleLine( RenderReq( 3, "\"mode\":\"objectmap\"" ) ), env, err ),
+	       "objectmap render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "objectmap",
+		       "objectmap render of the SAME kScene3 scene succeeds" );
+		Check( !r.has( "note" ),
+		       "MONEY (c): an OBJECTMAP render of the SAME triggering scene carries NO `note` "
+		       "key at all (never objectmap/view modes, only production/draft)" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2 negative control: a scene BELOW the design-note
+// object-count gate (kSceneEmissive has exactly 2 standard_object -- below
+// BOTH condition A's >=3 and condition B's >=4) must omit `note` entirely
+// even on a genuine PRODUCTION render, proving the render carrier does not
+// fire unconditionally.
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierCleanSceneTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier -- clean scene control ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote_clean.RISEscene", kSceneEmissive );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "clean-control scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "clean-control session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses (clean-control scene)" );
+	const JsonValue& r = env.get( "result" );
+	Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+	       "production render of the 2-object clean-control scene succeeds" );
+	Check( !r.has( "note" ),
+	       "MONEY: a PRODUCTION render of a scene BELOW the object-count gate (2 < 3) omits "
+	       "`note` entirely -- the carrier does not fire unconditionally" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1902,6 +2023,8 @@ int main()
 	RunVerticalAsymmetryTest();
 	RunInlineRenderImageTest();
 	RunDriverAsyncInlineImageTest();
+	RunDesignNoteRenderCarrierTest();
+	RunDesignNoteRenderCarrierCleanSceneTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

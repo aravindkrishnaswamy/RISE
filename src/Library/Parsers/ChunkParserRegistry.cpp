@@ -2842,8 +2842,8 @@ namespace RISE
 						cd.description = "View-angle-dependent colour: interpolates from colora at GRAZING incidence to colorb at NORMAL incidence, on |dot(view, normal)| + `bias`.  Soap film, beetle shell, oil slick, pearlescent paint.  A cheap look-alike only -- the physical thin-film model is ggx_material with fresnel_mode thinfilm.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour"; }
-						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour (selected as |dot(view, normal)| approaches 0)"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour (selected as |dot(view, normal)| approaches 1)"; }
 						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "Added to |dot(view, normal)| before the interpolation is clamped to [0,1]: positive pushes the whole surface toward colorb"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();

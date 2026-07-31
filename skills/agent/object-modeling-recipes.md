@@ -167,8 +167,28 @@ uniformcolor_painter
 
 uniformcolor_painter
 {
-	name	pnt_mug
-	color	0.85 0.85 0.9
+	name	pnt_mug_lo
+	color	0.75 0.78 0.86
+}
+
+uniformcolor_painter
+{
+	name	pnt_mug_hi
+	color	0.94 0.94 0.98
+}
+
+# Billowy-but-clumpy blend reads as a mottled ceramic glaze rather than
+# a flat-painted mug.
+perlinworley3d_painter
+{
+	name			pnt_mug
+	colora			pnt_mug_lo
+	colorb			pnt_mug_hi
+	octaves			3
+	persistence		0.55
+	worley_jitter	1.0
+	blend			0.5
+	scale			6.0 6.0 6.0
 }
 
 lambertian_material
@@ -327,8 +347,27 @@ uniformcolor_painter
 
 uniformcolor_painter
 {
-	name	pnt_wood
+	name	pnt_wood_pale
 	color	0.55 0.35 0.18
+}
+
+uniformcolor_painter
+{
+	name	pnt_wood_dark
+	color	0.24 0.12 0.045
+}
+
+# Anisotropic scale (tight across the plank, loose along it) reads as
+# grain, not noise -- see procedural-textures for the full nested
+# fibre+ring recipe.
+perlin3d_painter
+{
+	name		pnt_wood
+	colora		pnt_wood_pale
+	colorb		pnt_wood_dark
+	octaves		4
+	persistence	0.65
+	scale		9.0 1.0 0.45
 }
 
 lambertian_material
@@ -337,10 +376,38 @@ lambertian_material
 	reflectance	pnt_floor
 }
 
-lambertian_material
+uniformcolor_painter
+{
+	name	pnt_wood_spec
+	color	0.4 0.4 0.4
+}
+
+# SCALAR pipe: varnish sheen worn thinner near the edges from handling.
+expression_function2d
+{
+	name	fn_wood_wear
+	param	bands 1.0
+	def		s abs( u * bands - 0.5 )
+	expr	smoothstep( 0.1, 0.5, s )
+}
+
+scalar_painter
+{
+	name		sp_wood_wear
+	function2d	fn_wood_wear
+	scale		0.45
+	bias		0.03
+}
+
+ggx_material
 {
 	name		mat_wood
-	reflectance	pnt_wood
+	rd			pnt_wood
+	rs			pnt_wood_spec
+	alphax		sp_wood_wear
+	alphay		sp_wood_wear
+	ior			1.5
+	extinction	0.0
 }
 
 infiniteplane_geometry
@@ -498,14 +565,52 @@ uniformcolor_painter
 
 uniformcolor_painter
 {
-	name	pnt_metal
-	color	0.2 0.2 0.22
+	name	pnt_metal_dark
+	color	0.12 0.12 0.14
 }
 
 uniformcolor_painter
 {
-	name	pnt_shade
-	color	0.9 0.85 0.7
+	name	pnt_metal_light
+	color	0.32 0.32 0.36
+}
+
+# Directional streaks read as brushed metal on the base and pole.
+gabor3d_painter
+{
+	name			pnt_metal
+	colora			pnt_metal_dark
+	colorb			pnt_metal_light
+	frequency		8.0
+	bandwidth		1.5
+	orientation		0 1 0
+	impulse_density	4.0
+	scale			3.0 3.0 3.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_shade_pale
+	color	0.94 0.9 0.78
+}
+
+uniformcolor_painter
+{
+	name	pnt_shade_warm
+	color	0.82 0.72 0.5
+}
+
+# Warped noise reads as dyed-fabric mottle rather than a flat shade.
+domainwarp3d_painter
+{
+	name			pnt_shade
+	colora			pnt_shade_pale
+	colorb			pnt_shade_warm
+	octaves			3
+	persistence		0.6
+	warp_amplitude	2.5
+	warp_levels		2
+	scale			4.0 4.0 4.0
 }
 
 lambertian_material
@@ -514,10 +619,36 @@ lambertian_material
 	reflectance	pnt_floor
 }
 
-lambertian_material
+uniformcolor_painter
+{
+	name	pnt_metal_spec
+	color	0.55 0.55 0.58
+}
+
+# SCALAR pipe: banded machining marks around the base and pole.
+expression_function2d
+{
+	name	fn_metal_wear
+	param	bands 10.0
+	def		s sin( u * bands * tau )
+	expr	smoothstep( -0.4, 0.4, s )
+}
+
+scalar_painter
+{
+	name		sp_metal_wear
+	function2d	fn_metal_wear
+	scale		0.12
+	bias		0.03
+}
+
+ggx_material
 {
 	name		mat_metal
-	reflectance	pnt_metal
+	rd			pnt_metal
+	rs			pnt_metal_spec
+	alphax		sp_metal_wear
+	alphay		sp_metal_wear
 }
 
 lambertian_material

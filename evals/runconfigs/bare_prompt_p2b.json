@@ -1,0 +1,11 @@
+{
+  "//": "P2.b (diagnostic-framing) measurement, gemini instrument. Same scenario, fresh runDir; the treatment is DESIGN_* info diagnostics in validate results replacing validate's note (render note unchanged). Decision rule (73-creative-richness-design.md paragraph 9): if scalar-pipe adoption stays 0, STOP -- the painter-floor win is banked and further scaffolding is not worth the ladder.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_p2b"
+}

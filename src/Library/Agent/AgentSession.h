@@ -889,6 +889,18 @@ namespace RISE
 			bool                       perceptionAvailable = false;
 			std::uint64_t              perceptionPersistentBytes = 0;
 			std::uint64_t              perceptionAuxiliaryPeakBytes = 0;
+			//! Creative-richness P2 ADDITIVE wire field: the observed-state
+			//! "design note" (AgentSession::ComputeDesignNote), populated
+			//! ONLY on a successful ("ok") beauty render whose `renderMode`
+			//! is "production" or "draft" -- NEVER "objectmap" or a view
+			//! mode (see RenderCore_'s population site for why: those are
+			//! diagnostic/segmentation renders, not the "the model just
+			//! looked at its finished work" moment the note is anchored
+			//! to). EMPTY (and omitted from the wire result entirely,
+			//! same convention as AgentSkillResult::note) whenever the scan
+			//! finds neither measured deficit, or the render did not
+			//! qualify for the scan at all.
+			std::string                note;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -1506,6 +1518,27 @@ namespace RISE
 			//! no scene loaded) must be able to `validate` a candidate BEFORE
 			//! any head exists.  Identical result to `Validate()`.
 			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
+
+			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			//! RE-TARGETED by sec 7): the shared engine-side "design note"
+			//! scan.  STATELESS, like ValidateText above -- parses
+			//! `documentText` to its own throwaway CST and reports the two
+			//! MEASURED bare-prompt deficits as observed state: (A) 3+
+			//! `standard_object` chunks with no `scalar_painter` chunk
+			//! anywhere in the document (the scalar-pipe-unused deficit,
+			//! 0/12 lifetime baseline runs); (B) 4+ `standard_object` chunks
+			//! with no `sdf_geometry`/`sweep_geometry`/`displaced_geometry`
+			//! chunk anywhere (the no-advanced-geometry deficit, 2/12
+			//! lifetime).  Returns EMPTY when neither fires -- carriers
+			//! (AgentSession::RenderCore_'s render-result population, and
+			//! AgentRpc.cpp's `validate` handler) must omit their `note`
+			//! wire field entirely in that case, mirroring the `read_skill`
+			//! empty-index `note` convention (AgentSkillResult::note).
+			//! Firing one or both conditions returns ONE combined
+			//! "DESIGN NOTE: ..." string carrying every firing clause plus
+			//! a load-bearing anti-churn escape clause.  See
+			//! AgentSession.cpp for the exact scan and wording.
+			static std::string ComputeDesignNote( const std::string& documentText );
 
 			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
 			//! ValidateText (references NO member state; exposed static so the

@@ -483,8 +483,26 @@ uniformcolor_painter
 
 uniformcolor_painter
 {
+	name	pnt_block_lo
+	color	0.55 0.42 0.22
+}
+
+uniformcolor_painter
+{
+	name	pnt_block_hi
+	color	0.85 0.72 0.42
+}
+
+# Blobby cellular noise reads as aggregate/stone rather than a flat
+# painted block.
+worley3d_painter
+{
 	name	pnt_block
-	color	0.75 0.6 0.3
+	colora	pnt_block_lo
+	colorb	pnt_block_hi
+	jitter	1.0
+	output	f1
+	scale	5.0 5.0 5.0
 }
 
 lambertian_material
