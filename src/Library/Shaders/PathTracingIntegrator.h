@@ -101,6 +101,20 @@ namespace RISE
 			mutable std::atomic<bool>	mUnsupportedFallbackSegmentCompeted;
 			mutable std::atomic<bool>	mUnsupportedFallbackEndpointAttempted;
 
+			//! Phase-B medium-vertex gate witnesses.  These observe the actual
+			//! values used by continuation construction; transport never reads
+			//! them.  A competing vertex must force effective guide alpha and
+			//! guide sample count to zero, while the stored march direction
+			//! density must be the retained phase-closure Pdf times the exact
+			//! roulette-survival mass (or just phase Pdf for A_march terminals).
+			mutable std::atomic<unsigned long long>	mCompetingMediumVertexCount;
+			mutable std::atomic<bool>				mCompetingMediumGuideAlphaNonzero;
+			mutable std::atomic<unsigned long long>	mCompetingMediumGuideSampleCount;
+			mutable std::atomic<bool>				mCompetingMediumReachPdfMismatch;
+			mutable std::atomic<bool>				mCompetingMediumZeroSurvivalObserved;
+			mutable std::atomic<bool>				mCompetingMediumIntermediateSurvivalObserved;
+			mutable std::atomic<bool>				mCompetingMediumUnitSurvivalObserved;
+
 			//! Shared clay reflectance state for `clay_lights`: one synthetic
 			//! mid-grey LambertianMaterial built by CreateClayOverrideMaterial.
 			//! Its BRDF and SPF pointers are borrowed from that one material, so
@@ -196,6 +210,33 @@ namespace RISE
 			bool UnsupportedFallbackEndpointAttempted() const {
 				return mUnsupportedFallbackEndpointAttempted.load(
 					std::memory_order_relaxed );
+			}
+			unsigned long long CompetingMediumVertexCount() const {
+				return mCompetingMediumVertexCount.load(std::memory_order_relaxed);
+			}
+			bool CompetingMediumGuideAlphaNonzero() const {
+				return mCompetingMediumGuideAlphaNonzero.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumGuideSampleCount() const {
+				return mCompetingMediumGuideSampleCount.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumReachPdfMismatch() const {
+				return mCompetingMediumReachPdfMismatch.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumZeroSurvivalObserved() const {
+				return mCompetingMediumZeroSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumIntermediateSurvivalObserved() const {
+				return mCompetingMediumIntermediateSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumUnitSurvivalObserved() const {
+				return mCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
 			}
 
 			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).

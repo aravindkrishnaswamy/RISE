@@ -1691,6 +1691,13 @@ PathTracingIntegrator::PathTracingIntegrator(
   mUnsupportedFallbackSegmentObserved( false ),
   mUnsupportedFallbackSegmentCompeted( false ),
   mUnsupportedFallbackEndpointAttempted( false ),
+  mCompetingMediumVertexCount( 0 ),
+  mCompetingMediumGuideAlphaNonzero( false ),
+  mCompetingMediumGuideSampleCount( 0 ),
+  mCompetingMediumReachPdfMismatch( false ),
+  mCompetingMediumZeroSurvivalObserved( false ),
+  mCompetingMediumIntermediateSurvivalObserved( false ),
+  mCompetingMediumUnitSurvivalObserved( false ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
   pClayMaterial( 0 )
@@ -2027,6 +2034,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pLS->GetVolumeEmissionMediumCount() > 0 &&
 						MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 							*pCurrentMedium);
+#ifdef RISE_ENABLE_OPENPGL
+					const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+						0.0 : rc.guidingAlpha;
+					if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+						mCompetingMediumGuideAlphaNonzero.store(
+							true,std::memory_order_relaxed);
+					}
+#endif
 					const MediumContinuationAvailability mediumAvailability =
 						ResolveMediumContinuationAvailability(
 							depth+1 < maxDepth,volumeBounces,stabilityConfig);
@@ -2052,6 +2067,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							PathTransportUtilities::RussianRouletteSurvivalProbability(
 								depth+volumeBounces,rrMinDepth,rrThreshold,
 								PTSurvivalMagnitude(throughput),importance);
+						if( volumeNEECompetes && pPhase ) {
+							mCompetingMediumVertexCount.fetch_add(
+								1,std::memory_order_relaxed);
+							if( mediumAvailability.vertexAllowed ) {
+								if( counterfactualRRSurvival == 0.0 ) {
+									mCompetingMediumZeroSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								} else if( counterfactualRRSurvival == 1.0 ) {
+									mCompetingMediumUnitSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								} else {
+									mCompetingMediumIntermediateSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								}
+							}
+						}
 						if( volumeNEECompetes && pPhase ) {
 							pLS->SampleVolumeEmissionVertex(
 								sampler,activeVolumeVertexSample);
@@ -2104,9 +2135,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// and learned volume distribution.  Mirrors the surface
 					// guiding path.  Falls through to pure phase sampling
 					// when the field has no volume data at this position.
-					if( !volumeNEECompetes && rc.pGuidingField &&
+					if( rc.pGuidingField &&
 						rc.pGuidingField->IsTrained() &&
-						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
+						volumeGuidingAlpha > 0 && depth <= rc.maxGuidingDepth )
 					{
 						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandle;
 						if( rc.pGuidingField->InitVolumeDistribution(
@@ -2118,10 +2149,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									volGuideHandle, wo, meanCosine );
 							}
 
-							const Scalar alpha = rc.guidingAlpha;
+							const Scalar alpha = volumeGuidingAlpha;
 							const Scalar xiG = sampler.Get1D();
 							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 							{
+								if( volumeNEECompetes ) {
+									mCompetingMediumGuideSampleCount.fetch_add(
+										1,std::memory_order_relaxed);
+								}
 								Scalar guidePdf = 0;
 								const Point2 xi2D( sampler.Get1D(), sampler.Get1D() );
 								const Vector3 guidedDir =
@@ -2211,6 +2246,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					const Scalar marchDirectionPdf =
 						mediumAvailability.vertexAllowed ?
 							phasePdf*counterfactualRRSurvival : phasePdf;
+					if( volumeNEECompetes ) {
+						const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+						const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
+							retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
+						if( retainedPhasePdf != phasePdf ||
+							marchDirectionPdf != expectedReachPdf ) {
+							mCompetingMediumReachPdfMismatch.store(
+								true,std::memory_order_relaxed);
+						}
+					}
 					activeVolumeSegmentState = VolumeEmissionSegmentState(
 						volumeEndpointAttempted,false,
 						volumeEndpointAttempted && activeVolumeVertexSample.HasPivots() ?
@@ -4172,6 +4217,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				pLS->GetVolumeEmissionMediumCount() > 0 &&
 				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 					*pCurrentMedium);
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+				0.0 : rc.guidingAlpha;
+			if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+				mCompetingMediumGuideAlphaNonzero.store(
+					true,std::memory_order_relaxed);
+			}
+#endif
 			const MediumContinuationAvailability mediumAvailability =
 				ResolveMediumContinuationAvailability(
 					1 < EffectivePathTracingMaxDepth(rc,mMaxPathDepth),0,
@@ -4187,13 +4240,36 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			const IPhaseFunction* pPhase = phaseClosure.Get();
 			VolumeEmissionVertexSample volumeVertexSample;
 			bool volumeEndpointAttempted = false;
+			Scalar counterfactualRRSurvival = 1.0;
 			if constexpr ( !Traits::is_pel ) {
+				counterfactualRRSurvival =
+					PathTransportUtilities::RussianRouletteSurvivalProbability(
+						0,stabilityConfig.rrMinDepth,
+						stabilityConfig.rrThreshold,
+						PTSurvivalMagnitude(medWeight),1.0);
+				if( volumeNEECompetes && pPhase ) {
+					mCompetingMediumVertexCount.fetch_add(
+						1,std::memory_order_relaxed);
+					if( mediumAvailability.vertexAllowed ) {
+						if( counterfactualRRSurvival == 0.0 ) {
+							mCompetingMediumZeroSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						} else if( counterfactualRRSurvival == 1.0 ) {
+							mCompetingMediumUnitSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						} else {
+							mCompetingMediumIntermediateSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						}
+					}
+				}
 				if( volumeNEECompetes && pPhase ) {
 					pLS->SampleVolumeEmissionVertex(sampler,volumeVertexSample);
 					volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
 					const Scalar volumeLd =
 						pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
-							scatterPt,wo,*pPhase,mediumAvailability,1.0,tag.nm,
+							scatterPt,wo,*pPhase,mediumAvailability,
+							counterfactualRRSurvival,tag.nm,
 							volumeVertexSample,pCurrentMedium,pMediumObject,&iorStack);
 					result = result + medWeight*volumeLd;
 				}
@@ -4256,9 +4332,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// and continuation density; otherwise the first visible fire scatter
 			// silently bypasses guiding while later scatters do not.
 			if constexpr ( !Traits::is_pel ) {
-					if( !volumeNEECompetes && rc.pGuidingField &&
+					if( rc.pGuidingField &&
 						rc.pGuidingField->IsTrained() &&
-					rc.guidingAlpha > 0 )
+						volumeGuidingAlpha > 0 )
 				{
 					static thread_local Implementation::GuidingVolumeDistributionHandle
 						cameraVolumeGuideHandle;
@@ -4271,10 +4347,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 								cameraVolumeGuideHandle, wo, meanCosine );
 						}
 
-						const Scalar alpha = rc.guidingAlpha;
+						const Scalar alpha = volumeGuidingAlpha;
 						if( PathTransportUtilities::ShouldUseGuidedSample(
 								alpha, sampler.Get1D() ) )
 						{
+							if( volumeNEECompetes ) {
+								mCompetingMediumGuideSampleCount.fetch_add(
+									1,std::memory_order_relaxed);
+							}
 							Scalar guidePdf = 0;
 							const Vector3 guidedDir = rc.pGuidingField->SampleVolume(
 								cameraVolumeGuideHandle,
@@ -4314,6 +4394,22 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			} else {
 				volThroughput = medWeight * phaseVal / effectivePdf;
 			}
+			if constexpr ( !Traits::is_pel ) {
+				if( mediumAvailability.vertexAllowed ) {
+					// Sample the exact survival mass already recorded in the
+					// NEE-vs-march density. Recomputing it from volThroughput
+					// would use the separately rounded
+					// (medWeight*phaseVal)/phasePdf value and can differ by an
+					// ULP even for a normalized phase closure.
+					if( sampler.Get1D() >= counterfactualRRSurvival ) {
+						return result;
+					}
+					if( counterfactualRRSurvival < 1.0 ) {
+						volThroughput = PTDivByScalar(
+							volThroughput,counterfactualRRSurvival);
+					}
+				}
+			}
 
 			const Ray scatteredRay( scatterPt, wi );
 			if constexpr ( Traits::is_pel ) {
@@ -4350,11 +4446,24 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					// Its un-hit record makes the first loop iteration sample this
 					// segment's medium before looking for a surface or environment.
 					RayIntersection continuation( scatteredRay, rast );
+					const Scalar marchDirectionPdf =
+						mediumAvailability.vertexAllowed ?
+							phasePdf*counterfactualRRSurvival : phasePdf;
+					if( volumeNEECompetes ) {
+						const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+						const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
+							retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
+						if( retainedPhasePdf != phasePdf ||
+							marchDirectionPdf != expectedReachPdf ) {
+							mCompetingMediumReachPdfMismatch.store(
+								true,std::memory_order_relaxed);
+						}
+					}
 					const VolumeEmissionSegmentState downstreamVolumeState(
 						volumeEndpointAttempted,false,
 						volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
 							&volumeVertexSample.Pivots() : 0,
-						phasePdf,0.0,0.0);
+						marchDirectionPdf,0.0,0.0);
 					Value continuationResult;
 					{
 						const VolumeEmissionSegmentStateScope volumeStateScope(

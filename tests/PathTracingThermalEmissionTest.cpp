@@ -42,6 +42,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
@@ -3656,6 +3657,9 @@ namespace
 		IRayCaster* terminalCaster = nullptr;
 		PathTracingIntegrator* cappedIntegrator = nullptr;
 		PathTracingIntegrator* terminalIntegrator = nullptr;
+		PathTracingIntegrator* rrOneIntegrator = nullptr;
+		PathTracingIntegrator* rrIntermediateIntegrator = nullptr;
+		PathTracingIntegrator* rrZeroIntegrator = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"isolated smoke receiver and off-axis fire fixture loads" );
@@ -3677,9 +3681,28 @@ namespace
 			terminalIntegrator = new PathTracingIntegrator(
 				ManifoldSolverConfig(),terminalConfig);
 			terminalIntegrator->SetMaxPathDepth(1);
+			StabilityConfig rrOneConfig;
+			rrOneConfig.maxVolumeBounce = 2;
+			rrOneIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),rrOneConfig);
+			rrOneIntegrator->SetMaxPathDepth(2);
+			StabilityConfig rrIntermediateConfig = rrOneConfig;
+			rrIntermediateConfig.rrMinDepth = 0;
+			rrIntermediateConfig.rrThreshold = 1.0;
+			rrIntermediateIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),rrIntermediateConfig);
+			rrIntermediateIntegrator->SetMaxPathDepth(2);
+			StabilityConfig rrZeroConfig = rrOneConfig;
+			rrZeroConfig.rrMinDepth = 0;
+			rrZeroConfig.rrThreshold =
+				std::numeric_limits<Scalar>::max();
+			rrZeroIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),rrZeroConfig);
+			rrZeroIntegrator->SetMaxPathDepth(2);
 		}
 
-		if( job && caster && terminalCaster && cappedIntegrator && terminalIntegrator ) {
+		if( job && caster && terminalCaster && cappedIntegrator && terminalIntegrator &&
+			rrOneIntegrator && rrIntermediateIntegrator && rrZeroIntegrator ) {
 			const Scalar nm = 500.0;
 			const unsigned int samples = 320000;
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
@@ -3727,6 +3750,81 @@ namespace
 			// one; the terminal A_march density must omit that varying factor.
 			const Scalar terminalOnRC = meanRC(
 				*terminalCaster,0,0x7e2d02u,0.05);
+			const Scalar rrOneOn = meanPT(
+				*rrOneIntegrator,*caster,0x220001u);
+			const Scalar rrIntermediateOn = meanPT(
+				*rrIntermediateIntegrator,*caster,0x220002u);
+			IsotropicPhaseFunction* weakPhase = new IsotropicPhaseFunction();
+			HomogeneousMedium* weakSupportedSmoke = new HomogeneousMedium(
+				RISEPel(0.9,0.9,0.9),RISEPel(1e-16,1e-16,1e-16),*weakPhase);
+			job->GetScene()->SetGlobalMedium(weakSupportedSmoke);
+			const Scalar rrZeroOn = meanPT(
+				*rrZeroIntegrator,*caster,0x220003u);
+			job->GetScene()->SetGlobalMedium(supportedSmoke);
+
+#ifdef RISE_ENABLE_OPENPGL
+			PathGuidingConfig guidingConfig;
+			guidingConfig.enabled = true;
+			PathGuidingField* guiding = new PathGuidingField(
+				guidingConfig,Point3(-2,-2,-2),Point3(2,2,3));
+			guiding->BeginTrainingIteration();
+			const Vector3 trainingDirections[] = {
+				Vector3(1,0,0),Vector3(-1,0,0),Vector3(0,1,0),
+				Vector3(0,-1,0),Vector3(0,0,1),Vector3(0,0,-1)
+			};
+			for( unsigned int i=0; i<192; ++i ) {
+				guiding->AddVolumeSample(
+					Point3(0,0,0.25),trainingDirections[i%6],
+					1.0,1.0/FOUR_PI,1.0,false);
+			}
+			guiding->EndTrainingIteration();
+			Check(guiding->IsTrained(),
+				"isolated smoke receiver volume guide trains");
+			auto meanPTGuidingRequested = [&](
+				PathTracingIntegrator& integrator,
+				const unsigned int seed,
+				Scalar& nextRandom ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				rc.pGuidingField = guiding;
+				rc.guidingAlpha = 0.75;
+				rc.guidingLearnedAlpha = false;
+				rc.maxGuidingDepth = 8;
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator.IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),*caster,sampler,
+						nullptr,nullptr);
+				}
+				nextRandom = rng.CanonicalRandom();
+				return sum/static_cast<Scalar>(samples);
+			};
+			Scalar guidedNext = 0.0;
+			const Scalar guidingRequestedOn = meanPTGuidingRequested(
+				*terminalIntegrator,0x220004u,guidedNext);
+			RandomNumberGenerator unguidedRng(0x220004u);
+			RuntimeContext unguidedRc(
+				unguidedRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler unguidedSampler(unguidedRng);
+			Scalar unguidedSum = 0.0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				unguidedSum += terminalIntegrator->IntegrateRayNM(
+					unguidedRc,rast,ray,nm,*job->GetScene(),*caster,
+					unguidedSampler,nullptr,nullptr);
+			}
+			const Scalar guidingNotRequestedOn =
+				unguidedSum/static_cast<Scalar>(samples);
+			const Scalar unguidedNext = unguidedRng.CanonicalRandom();
+			if( guidingRequestedOn!=guidingNotRequestedOn || guidedNext!=unguidedNext ) {
+				std::cout << "  guiding requested/off=" << guidingRequestedOn << "/" <<
+					guidingNotRequestedOn << " next=" << guidedNext << "/" <<
+					unguidedNext << std::endl;
+			}
+			Check(NearRelative(guidingRequestedOn,guidingNotRequestedOn,0.01) &&
+				guidedNext==unguidedNext,
+				"competing smoke vertex keeps guiding-on/off response and RNG stream aligned");
+#endif
 
 			IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
 			UnsupportedHomogeneousSmoke* unsupportedSmoke =
@@ -3740,6 +3838,18 @@ namespace
 			// cap at the reached fire collision so it is the same source-only
 			// brute-force family without the volume-NEE estimator.
 			const Scalar terminalOffRC = meanRC(*caster,63,0x7e2d04u);
+			const Scalar rrOneOff = meanPT(
+				*rrOneIntegrator,*caster,0x220011u);
+			const Scalar rrIntermediateOff = meanPT(
+				*rrIntermediateIntegrator,*caster,0x220012u);
+			// With r=0, the march family has empty support.  Compare the
+			// resulting weight-1 NEE-only term to the ordinary-survival
+			// brute-force reference, as for the per-type-capped f_D gate.
+			UnsupportedHomogeneousSmoke* weakUnsupportedSmoke =
+				new UnsupportedHomogeneousSmoke(*weakPhase,0.9,1e-16);
+			job->GetScene()->SetGlobalMedium(weakUnsupportedSmoke);
+			const Scalar rrZeroReference = meanPT(
+				*rrOneIntegrator,*caster,0x220013u);
 			job->GetScene()->SetGlobalMedium(supportedSmoke);
 
 			if( !(cappedOnPT > 0.0 && cappedOnRC > 0.0 &&
@@ -3765,14 +3875,63 @@ namespace
 				"total-depth A_march NEE-on and pure-march references agree" );
 			Check( NearRelative(terminalOnPT,terminalOnRC,0.08),
 				"PT and RayCaster agree on the terminal source-only MIS partition" );
+			Check(rrOneOn>0.0 && rrOneOff>0.0 &&
+				NearRelative(rrOneOn,rrOneOff,0.08),
+				"isolated smoke NEE-on/off agree at roulette survival one");
+			Check(rrIntermediateOn>0.0 && rrIntermediateOff>0.0 &&
+				NearRelative(rrIntermediateOn,rrIntermediateOff,0.12),
+				"isolated smoke NEE-on/off agree at intermediate roulette survival");
+			Check(rrZeroOn>0.0 && rrZeroReference>0.0 &&
+				NearRelative(rrZeroOn,rrZeroReference,0.12),
+				"zero-survival smoke response is NEE-only at weight one and matches brute force");
+			Check(rrOneIntegrator->CompetingMediumVertexCount()>0 &&
+				rrIntermediateIntegrator->CompetingMediumVertexCount()>0 &&
+				rrZeroIntegrator->CompetingMediumVertexCount()>0 &&
+				!rrOneIntegrator->CompetingMediumReachPdfMismatch() &&
+				!rrIntermediateIntegrator->CompetingMediumReachPdfMismatch() &&
+				!rrZeroIntegrator->CompetingMediumReachPdfMismatch(),
+				"every recorded competing smoke p_omega,reach uses the retained phase-closure Pdf");
+			if( rrOneIntegrator->CompetingMediumReachPdfMismatch() ||
+				rrIntermediateIntegrator->CompetingMediumReachPdfMismatch() ||
+				rrZeroIntegrator->CompetingMediumReachPdfMismatch() ||
+				!rrOneIntegrator->CompetingMediumUnitSurvivalObserved() ||
+				!rrIntermediateIntegrator->CompetingMediumIntermediateSurvivalObserved() ||
+				!rrZeroIntegrator->CompetingMediumZeroSurvivalObserved() ) {
+				std::cout << "  RR witnesses mismatch=" <<
+					rrOneIntegrator->CompetingMediumReachPdfMismatch() << "/" <<
+					rrIntermediateIntegrator->CompetingMediumReachPdfMismatch() << "/" <<
+					rrZeroIntegrator->CompetingMediumReachPdfMismatch() <<
+					" unit=" << rrOneIntegrator->CompetingMediumUnitSurvivalObserved() <<
+					" mid=" << rrIntermediateIntegrator->CompetingMediumIntermediateSurvivalObserved() <<
+					" zero=" << rrZeroIntegrator->CompetingMediumZeroSurvivalObserved() <<
+					std::endl;
+			}
+			Check(!rrOneIntegrator->CompetingMediumGuideAlphaNonzero() &&
+				rrOneIntegrator->CompetingMediumGuideSampleCount()==0 &&
+				!terminalIntegrator->CompetingMediumGuideAlphaNonzero() &&
+				terminalIntegrator->CompetingMediumGuideSampleCount()==0,
+				"competing smoke vertices retain effective guide alpha and sample count zero");
+			Check(rrOneIntegrator->CompetingMediumUnitSurvivalObserved() &&
+				rrIntermediateIntegrator->CompetingMediumIntermediateSurvivalObserved() &&
+				rrZeroIntegrator->CompetingMediumZeroSurvivalObserved(),
+				"isolated smoke gate observes exact roulette survival one, intermediate, and zero");
 
+#ifdef RISE_ENABLE_OPENPGL
+			safe_release(guiding);
+#endif
+			safe_release(weakUnsupportedSmoke);
 			safe_release(unsupportedSmoke);
+			safe_release(weakSupportedSmoke);
+			safe_release(weakPhase);
 			safe_release(phase);
 			safe_release(supportedSmoke);
 		}
 
 		safe_release(terminalIntegrator);
 		safe_release(cappedIntegrator);
+		safe_release(rrZeroIntegrator);
+		safe_release(rrIntermediateIntegrator);
+		safe_release(rrOneIntegrator);
 		safe_release(terminalCaster);
 		safe_release(caster);
 		safe_release(job);
