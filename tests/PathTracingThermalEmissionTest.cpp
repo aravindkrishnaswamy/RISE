@@ -38,6 +38,7 @@
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
+#include "../src/Library/Materials/PerfectRefractorMaterial.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEdit.h"
@@ -2779,6 +2780,396 @@ namespace
 		safe_release(marchOnlyCaster);
 	}
 
+	void TestFlameBehindGlassIsMarchOnly()
+	{
+		std::cout << "TestFlameBehindGlassIsMarchOnly" << std::endl;
+		auto sceneText = []( const bool includeGlass ) {
+			const Scalar carbon =
+				5.0*kTargetSigmaSI/HotAbsorptionMass633();
+			std::ostringstream scene;
+			scene << std::setprecision(17) <<
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\nname global\n"
+				"shaderop DefaultPathTracing\n}\n"
+				"uniformcolor_painter\n{\nname white\n"
+				"color 0.8 0.8 0.8\n}\n"
+				"uniformcolor_painter\n{\nname clear_glass\n"
+				"color 1 1 1\n}\n"
+				"scalar_painter\n{\nname glass_ior\nvalue 1.5\n}\n"
+				"lambertian_material\n{\nname receiver\n"
+				"reflectance white\n}\n"
+				"perfectrefractor_material\n{\nname glass\n"
+				"refractance clear_glass\nior glass_ior\n}\n"
+				"scalar_painter\n{\nname carbon\nvalue " <<
+				carbon << "\n}\n"
+				"scalar_painter\n{\nname temperature\nvalue 2600\n}\n"
+				"multichannel_heterogeneous_medium\n{\nname fire\n"
+				"channel_carbon painter carbon\n"
+				"channel_temperature painter temperature\n"
+				"bake_resolution 4 4 4\n"
+				"bbox_min 1.1 -0.25 -1.4\n"
+				"bbox_max 1.5 0.25 -1.1\n"
+				"soot_em 0.26\nsoot_density 1800\n"
+				"soot_albedo_hot 0\nsoot_g_hot 0.5\n"
+				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"global_medium\n{\nmedium fire\n}\n";
+			if( includeGlass ) {
+				scene <<
+					"sphere_geometry\n{\nname glass_geometry\n"
+					"radius 0.42\n}\n"
+					"standard_object\n{\nname glass_barrier\n"
+					"geometry glass_geometry\nmaterial glass\n"
+					"position 0.65 0.12 -0.65\n"
+					"casts_shadows FALSE\n}\n";
+			}
+			scene <<
+				"box_geometry\n{\nname receiver_geometry\n"
+				"width 8\nheight 8\ndepth 0.2\n}\n"
+				"standard_object\n{\nname receiver_wall\n"
+				"geometry receiver_geometry\nmaterial receiver\n"
+				"position 0 0 0\n}\n";
+			return scene.str();
+		};
+
+		const std::filesystem::path glassPath =
+			std::filesystem::temp_directory_path() /
+			( "rise_fire_behind_glass_" +
+				std::to_string(static_cast<int>(::getpid())) +
+				".RISEscene" );
+		const std::filesystem::path clearPath =
+			std::filesystem::temp_directory_path() /
+			( "rise_fire_without_glass_" +
+				std::to_string(static_cast<int>(::getpid())) +
+				".RISEscene" );
+		{
+			std::ofstream output(glassPath);
+			output << sceneText(true);
+		}
+		{
+			std::ofstream output(clearPath);
+			output << sceneText(false);
+		}
+
+		IJobPriv* glassJob = nullptr;
+		IJobPriv* clearJob = nullptr;
+		IRayCaster* glassNEECaster = nullptr;
+		IRayCaster* glassMarchCaster = nullptr;
+		IRayCaster* clearNEECaster = nullptr;
+		Check( RISE_CreateJobPriv(&glassJob) && glassJob &&
+			glassJob->LoadAsciiSceneViaCst(
+				glassPath.string().c_str()) &&
+			RISE_CreateJobPriv(&clearJob) && clearJob &&
+			clearJob->LoadAsciiSceneViaCst(
+				clearPath.string().c_str()),
+			"glass-blocked and unobstructed fire fixtures load" );
+		if( glassJob ) {
+			IShader* shader =
+				glassJob->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+					&glassNEECaster,false,8,*shader,true) &&
+				glassNEECaster,
+				"glass fire NEE route prepares" );
+			if( glassNEECaster ) {
+				glassNEECaster->AttachScene(glassJob->GetScene());
+			}
+			const IMedium* preparedFire =
+				glassJob->GetScene()->GetGlobalMedium();
+			if( preparedFire ) preparedFire->addref();
+			IsotropicPhaseFunction* vacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(
+					*vacuumPhase,0.0,0.0);
+			glassJob->GetScene()->SetGlobalMedium(vacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+					&glassMarchCaster,false,8,*shader,true) &&
+				glassMarchCaster,
+				"glass fire march reference prepares without a thermal CDF" );
+			if( glassMarchCaster ) {
+				glassMarchCaster->AttachScene(glassJob->GetScene());
+			}
+			glassJob->GetScene()->SetGlobalMedium(preparedFire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			safe_release(preparedFire);
+		}
+		if( clearJob ) {
+			IShader* shader =
+				clearJob->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+					&clearNEECaster,false,8,*shader,true) &&
+				clearNEECaster,
+				"unobstructed fire NEE route prepares" );
+			if( clearNEECaster ) {
+				clearNEECaster->AttachScene(clearJob->GetScene());
+			}
+		}
+
+		const LightSampler* glassLights = glassNEECaster ?
+			glassNEECaster->GetLightSampler() : nullptr;
+		const LightSampler* marchLights = glassMarchCaster ?
+			glassMarchCaster->GetLightSampler() : nullptr;
+		const IObject* glassObject = glassJob ?
+			glassJob->GetScene()->GetObjects()->GetItem(
+				"glass_barrier") : nullptr;
+		const IMaterial* glassMaterial =
+			glassObject ? glassObject->GetMaterial() : nullptr;
+		const Point3 receiver(0,0,-0.1);
+		const Point3 fireCenter(1.3,0,-1.25);
+		const Point3 glassCenter(0.65,0.12,-0.65);
+		Vector3 centerDirection =
+			Vector3Ops::mkVector3(fireCenter,receiver);
+		const Scalar centerDistance =
+			Vector3Ops::Magnitude(centerDirection);
+		centerDirection = Vector3Ops::Normalize(centerDirection);
+		const Scalar along = Vector3Ops::Dot(
+			Vector3Ops::mkVector3(glassCenter,receiver),
+			centerDirection);
+		const Point3 closest =
+			Point3Ops::mkPoint3(
+				receiver,centerDirection*along);
+		const Scalar glassOffset = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3(closest,glassCenter));
+		const bool exactGlass = glassMaterial &&
+			typeid(*glassMaterial)==typeid(PerfectRefractorMaterial);
+		const bool fixtureAuthentic = glassLights &&
+			glassLights->GetVolumeEmissionMediumCount()==1 &&
+			marchLights &&
+			marchLights->GetVolumeEmissionMediumCount()==0 &&
+			exactGlass &&
+			along>0.0 && along<centerDistance &&
+			glassOffset>0.05 && glassOffset<0.42;
+		if( !fixtureAuthentic ) {
+			std::cout << "  glass fixture counts=" <<
+				(glassLights ?
+					glassLights->GetVolumeEmissionMediumCount() : 999) <<
+				"/" << (marchLights ?
+					marchLights->GetVolumeEmissionMediumCount() : 999) <<
+				" exact=" << exactGlass <<
+				" along/distance=" << along << "/" <<
+				centerDistance << " offset=" << glassOffset <<
+				std::endl;
+		}
+		Check( fixtureAuthentic,
+			"the live fire endpoint lies behind an exact off-axis direction-bending glass barrier" );
+
+		if( glassJob && clearJob && glassNEECaster &&
+			glassMarchCaster && clearNEECaster ) {
+			struct SampleMoments
+			{
+				Scalar mean;
+				Scalar variance;
+				unsigned int positive;
+			};
+			const unsigned int samples = 2000000;
+			const Scalar nm = 500.0;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			StabilityConfig config;
+			config.maxDiffuseBounce = 1;
+			PathTracingIntegrator* integrator =
+				new PathTracingIntegrator(
+					ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(6);
+			auto momentsPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				unsigned int positive = 0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					const Scalar value = integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*glassJob->GetScene(),
+						route,sampler,nullptr,nullptr);
+					sum += value;
+					sumSquares +=
+						static_cast<long double>(value)*value;
+					if( value>0.0 ) ++positive;
+				}
+				const long double count =
+					static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(
+						variance>0.0 ? variance : 0.0),
+					positive
+				};
+			};
+			auto momentsShader = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				unsigned int positive = 0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+					sumSquares +=
+						static_cast<long double>(value)*value;
+					if( value>0.0 ) ++positive;
+				}
+				const long double count =
+					static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(
+						variance>0.0 ? variance : 0.0),
+					positive
+				};
+			};
+			auto withinSixStandardErrors = [&]( const SampleMoments& a,
+				const SampleMoments& b ) {
+				const Scalar standardError = std::sqrt(
+					(a.variance+b.variance)/
+					static_cast<Scalar>(samples));
+				return standardError>0.0 &&
+					std::fabs(a.mean-b.mean)<=
+						6.0*standardError;
+			};
+
+			const SampleMoments ptOn =
+				momentsPT(*glassNEECaster,0x61a5501u);
+			const SampleMoments ptOff =
+				momentsPT(*glassMarchCaster,0x61a5502u);
+			const SampleMoments shaderOn =
+				momentsShader(*glassNEECaster,0x61a5503u);
+			const SampleMoments shaderOff =
+				momentsShader(*glassMarchCaster,0x61a5504u);
+			std::cout << "  glass march-only PT on/off=" <<
+				ptOn.mean << "/" << ptOff.mean <<
+				" shader on/off=" << shaderOn.mean << "/" <<
+				shaderOff.mean << " positives=" <<
+				ptOn.positive << "/" << ptOff.positive << " " <<
+				shaderOn.positive << "/" << shaderOff.positive <<
+				std::endl;
+			Check( ptOn.positive>1000 && ptOff.positive>1000 &&
+				shaderOn.positive>1000 && shaderOff.positive>1000,
+				"refracted march paths reach the fire with nontrivial support in both entry routes" );
+			Check( withinSixStandardErrors(ptOn,ptOff) &&
+				withinSixStandardErrors(shaderOn,shaderOff),
+				"flame behind glass is march-only and NEE-on/off agree within MC noise" );
+			Check( withinSixStandardErrors(ptOn,shaderOn),
+				"both PT entry routes agree on refracted march-only fire" );
+
+			StabilityConfig cappedConfig;
+			cappedConfig.maxDiffuseBounce = 0;
+			PathTracingIntegrator* cappedIntegrator =
+				new PathTracingIntegrator(
+					ManifoldSolverConfig(),cappedConfig);
+			cappedIntegrator->SetMaxPathDepth(6);
+			const unsigned int activationSamples = 4096;
+			auto cappedMeanPT = [&]( IJobPriv& job,
+				const IRayCaster& route, const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0;
+					i<activationSamples; ++i ) {
+					sum += cappedIntegrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job.GetScene(),
+						route,sampler,nullptr,nullptr);
+				}
+				return sum/
+					static_cast<Scalar>(activationSamples);
+			};
+			const Scalar cappedGlassPT = cappedMeanPT(
+				*glassJob,*glassNEECaster,0x61a5505u);
+			const Scalar cappedClearPT = cappedMeanPT(
+				*clearJob,*clearNEECaster,0x61a5506u);
+
+			PathTracingShaderOp* cappedShaderOp =
+				new PathTracingShaderOp(
+					ManifoldSolverConfig(),cappedConfig);
+			cappedShaderOp->SetMaxPathDepth(6);
+			std::vector<IShaderOp*> cappedOps;
+			cappedOps.push_back(cappedShaderOp);
+			StandardShader* cappedShader =
+				new StandardShader(cappedOps);
+			IRayCaster* cappedGlassCaster = nullptr;
+			IRayCaster* cappedClearCaster = nullptr;
+			Check( RISE_API_CreateRayCaster(
+					&cappedGlassCaster,false,8,
+					*cappedShader,true) &&
+				cappedGlassCaster &&
+				RISE_API_CreateRayCaster(
+					&cappedClearCaster,false,8,
+					*cappedShader,true) &&
+				cappedClearCaster,
+				"capped glass and clear shader routes initialize" );
+			if( cappedGlassCaster ) {
+				cappedGlassCaster->AttachScene(
+					glassJob->GetScene());
+			}
+			if( cappedClearCaster ) {
+				cappedClearCaster->AttachScene(
+					clearJob->GetScene());
+			}
+			auto cappedMeanShader = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				Scalar sum = 0.0;
+				for( unsigned int i=0;
+					i<activationSamples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/
+					static_cast<Scalar>(activationSamples);
+			};
+			const Scalar cappedGlassShader = cappedGlassCaster ?
+				cappedMeanShader(
+					*cappedGlassCaster,0x61a5507u) : 1.0;
+			const Scalar cappedClearShader = cappedClearCaster ?
+				cappedMeanShader(
+					*cappedClearCaster,0x61a5508u) : 0.0;
+			std::cout << "  capped glass/clear PT=" <<
+				cappedGlassPT << "/" << cappedClearPT <<
+				" shader=" << cappedGlassShader << "/" <<
+				cappedClearShader << std::endl;
+			Check( cappedGlassPT==0.0 &&
+				cappedGlassShader==0.0 &&
+				cappedClearPT>0.0 && cappedClearShader>0.0,
+				"the endpoint estimator is live at the receiver but exact glass blocks it in both routes" );
+
+			safe_release(cappedGlassCaster);
+			safe_release(cappedClearCaster);
+			safe_release(cappedShader);
+			safe_release(cappedShaderOp);
+			safe_release(cappedIntegrator);
+			safe_release(integrator);
+		}
+
+		safe_release(clearNEECaster);
+		safe_release(glassMarchCaster);
+		safe_release(glassNEECaster);
+		safe_release(clearJob);
+		safe_release(glassJob);
+		std::filesystem::remove(clearPath);
+		std::filesystem::remove(glassPath);
+	}
+
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
@@ -4314,6 +4705,7 @@ int main()
 	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
 	TestThinEmitterSheetAtGrazingAngles();
 	TestCameraPrimaryDirectViewKeepsWeightOne();
+	TestFlameBehindGlassIsMarchOnly();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestHollowCavityFullSphereVolumeNEEEquality();
