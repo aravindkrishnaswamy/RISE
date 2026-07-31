@@ -1,0 +1,69 @@
+{
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
+ "closure_paths": [
+  "owner library pulls (Samaniego 1995; Markstein 1985 series; Koseki & Yumoto 1988; SFPE Ch.36; Thomsen 2017)",
+  "OWNER RULING: does a computed, uncertainty-propagated bound over published inputs qualify as SS7.0's 'pinned measurement'?",
+  "else: a modest calibrated visible-band radiometry lab measurement (refutes the no-lab-work hypothesis)"
+ ],
+ "compiled": "2026-07-31",
+ "computed_ratio_matrix_percent": {
+  "1e-4/Teff1150": 76,
+  "1e-4/Teff970": 791,
+  "1e-6_unsourced/Teff1150": 0.76
+ },
+ "criterion": "SS7.0: 95%-confidence upper bound on chemiluminescent power below BOTH (i) 1% of the fuel/case's measured 380-780nm radiant power AND (ii) the absolute radiance gate's uncertainty at every gated wavelength",
+ "denominator_inputs": {
+  "D_vis_fraction_of_HRR": {
+   "basis": "chi_r x soot-weighted visible fraction at T_eff",
+   "range": [
+    1.3e-05,
+    0.00013
+   ]
+  },
+  "T_eff_K": {
+   "basis": "sigma*T^4 from measured luminous-zone emissive power 50-100 kW/m2 (NISTIR 6546 pp.7-10)",
+   "range": [
+    970,
+    1150
+   ]
+  },
+  "caveat": "T_eff from total emissive power underweights small bright 1300-1500K regions that dominate the VISIBLE; missing measurement is exactly a per-wavelength one",
+  "chi_r": {
+   "fit": "0.35*exp(-0.05*D_m)",
+   "range": [
+    0.3,
+    0.4
+   ],
+   "source": "McGrattan, Baum & Hamins NISTIR 6546 (2000) Eq.3 Fig.3 pp.4-5 (open, read); underlying Koseki & Yumoto 1988 PAYWALLED"
+  }
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "ebf3660812b87084a0d15562ebbbb5fec0e9ec0676b647d8f24434a2f9d456a6",
+ "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
+ "notes": [
+  "large sooty pools are dim in the visible per unit HRR; bound is FURTHER from closure than the candle's"
+ ],
+ "numerator_inputs": {
+  "classic_1e-4": {
+   "source": "Samaniego, Egolfopoulos & Bowman 1995, Combust. Sci. Technol. 109:183-203 (owner library pull)",
+   "status": "PAYWALLED-UNVERIFIED",
+   "value": "~1e-4 of HRR"
+  },
+  "diffusion_flame_specific": {
+   "note": "No published measurement of total visible chem power for diffusion flames. Computable route: Slack & Grillo 1985 CO2* kinetics (via Nori & Seitzman AIAA 2008-953 Eq.3) + Jin et al. 2020 ACS Omega 5:15922 calibrated CH*/OH* fields (figures only)",
+   "value": null
+  },
+  "open_upper_bound": {
+   "basis": "reaction-zone radiative loss, LEAN PREMIXED",
+   "source": "Samaniego, CTR Annual Research Briefs 1994, Table 2 p.31 (open, read)",
+   "value": "0.4-2.5e-3 of HRR"
+  }
+ },
+ "record_kind": "chem_negligibility_bound",
+ "record_name": "chem-negligibility-heptane_pool-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "status": "NOT_CLOSEABLE_FROM_OPEN_LITERATURE",
+ "verdict": "INDETERMINATE at the 1% threshold: defensible open-literature bound fails by ~2 orders; plausible unverified estimates straddle 1%. Not a 95%-confidence record in either direction.",
+ "version": "v1-draft"
+}

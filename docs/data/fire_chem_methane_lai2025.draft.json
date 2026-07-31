@@ -1,0 +1,45 @@
+{
+ "author_contact": {
+  "draft_in": "docs/FIRE_CHEM_RECORDS_V1.md SS2.4",
+  "requests": [
+   "calibrated data cubes or per-band integrated numbers behind Fig.8c",
+   "numeric band-integration bounds per band",
+   "scaling factor + etendue geometry for radiance conversion",
+   "end-to-end uncertainty budget",
+   "any sub-418nm measurements (CH* 390, CO2* continuum)"
+  ],
+  "to": "Xuanqi Liu (corresponding, CUMT); cc Willmott, Zhang (Sheffield)"
+ },
+ "band_coverage": {
+  "C2_swan": "yes, five sequences resolved",
+  "CH_390": "NO (below 418nm cutoff)",
+  "CH_431": true,
+  "CO2_continuum": "NO (never decomposed; 250-418nm outside range)",
+  "H2O": "quantified instead"
+ },
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
+ "compiled": "2026-07-31",
+ "criteria_evaluation": {
+  "absolute_integrated_band_power": "FIGURE-LEVEL ONLY (Fig.6b spectrum in W at Phi=1.35; Fig.8c per-band vs Phi); instrument-etendue power, not source radiance",
+  "geometry_corrections": "PARTIAL (source-size/FOV/flat-field/wavelength calibrations characterized; NO Abel inversion; no solid-angle conversion)",
+  "normalization_interval_per_band": "NOT STATED (SS2.3 references HITRAN-identified intervals, bounds nowhere given; authors plausibly have them)",
+  "paired_HRR": "NOT MEASURED (global HRR computable from flows for Phi<=1; rich cases have unpartitionable post-flame burning)",
+  "spatial_or_state_coordinates": "SATISFIED (Fig.8a,b per-band 2D maps at each Phi; Fig.9 ratio maps; Fig.5 segmentation)"
+ },
+ "dataset": {
+  "citation": "Lai, Liu, Davies, Fisk, Wang, Meng, Yang, Yang, Hobbs, Zhang, Willmott, 'A Novel Method for Spectral and Spatial Characterisation of Flames Using a Custom-Developed Hyperspectral Imaging System', Fuel 393:135057 (2025), DOI 10.1016/j.fuel.2025.135057",
+  "conditions": "premixed laminar CH4-air Bunsen, 14.5mm nozzle; CH4 0.5 L/min; twelve Phi 0.79-2.36",
+  "data_release": "NONE - figures only; no supplement, no dataset link, no data-availability statement in accepted MS",
+  "instrument": "hyperspectral imaging 418-708nm, 0.334nm FWHM; absolute W via Si-photodiode radiometer transfer (Eqs.5-7)",
+  "open_copy": "White Rose Research Online eprint 235078 (accepted MS, CC-BY 4.0); publisher version paywalled",
+  "uncertainty": "radiometer circuit <2.5% (SS2.2.2); NO end-to-end radiometric budget"
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "6778750ca4e8b69f41da179077dec1ac40c674a19bd160b661b054980e9821cb",
+ "record_kind": "chem_dataset_evaluation",
+ "record_name": "chem-methane-lai2025-evaluation",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "verdict": "ADOPTABLE WITH AUTHOR CONTACT for CH*(431) and C2* Swan channels ONLY. Author contact cannot supply CH* B-X 390nm or the CO2* continuum - a second UV-extended source is required regardless. Whether a two-channel record + separately sourced CO2* model satisfies SS12 Q1 for methane is an owner design decision.",
+ "version": "v1-draft"
+}
