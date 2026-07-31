@@ -1265,14 +1265,20 @@ namespace RISE
 					// necessarily a constant -- and names the material KINDS
 					// that actually carry a roughness slot, rather than
 					// implying every material in the scene has one.
-					// Round-3 review P1 fix: name ONLY materials whose roughness
-					// slots are Reference-kind and so genuinely accept a
-					// scalar_painter (ggx_material and
-					// ward_anisotropic_material alphax/alphay).
-					// pbr_metallic_roughness_material's `roughness` and
-					// cooktorrance's slot are baked ValueKind::Double scalars
-					// -- naming them here would teach a binding the parser
-					// rejects.
+					// Round-3 review P1 fix named only ggx/ward here on the
+					// claim that pbr_metallic_roughness's `roughness` and
+					// cooktorrance's `facets` are baked ValueKind::Double.
+					// CORRECTION (2026-07-31, 74-creative-richness-arc-log.md
+					// sec 4.3 correction note): that claim is FALSE -- both
+					// are Reference-kind painter slots (since 64ca16bc,
+					// 2026-04-30) and the parser accepts a painter binding.
+					// The note text below therefore steers to the
+					// HIGHER-friction path and omits the cheapest true one
+					// (bind a painter to pbr `roughness` directly).  The text
+					// is deliberately left as shipped: it is measured-inert
+					// (0/24) and any wording change is a behavioural variable
+					// that belongs to a measured arc-75 phase, not a comment
+					// fix.
 					note += " the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
 						"so any physical-scalar material parameter (roughness, displacement) is a "
 						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "

@@ -145,6 +145,17 @@ sentence a model will read gets the same adversarial truth pass as code,
 INCLUDING sentences the supervisor wrote into a fix brief; fresh-reviewer
 rounds after fixes are what caught the supervisor-introduced defect.
 
+> **⚠ CORRECTION (2026-07-31, arc-75 pre-design forensics):** the round-3
+> reviewer's "fix" was itself wrong, and nobody truth-reviewed the
+> reviewer. `pbr_metallic_roughness_material.roughness`/`.metallic` and
+> `cooktorrance_material.facets` are **Reference-kind painter slots**
+> (ChunkParserRegistry.cpp:3958-3959, cooktorrance facets descriptor) and
+> have been since the glTF Phase 2/3 work (`64ca16bc`, 2026-04-30) — the
+> parser accepts a painter binding on all of them; the only Double-kind
+> roughness params in the registry are the three SSS skin materials. The
+> "only ggx/ward" claim was false when written. See §5's corrected
+> bindability bullet for the true map and the consequence.
+
 ### 4.4 The design's own premise was stale before it was measured
 
 The design opened from the 72-log's "bare prompts produce flat uniformcolor
@@ -216,12 +227,24 @@ the agent's measured tool habits, not our notion of the right moment.**
   for mechanism adoption is schema-structural — a required parameter, a
   material template with a scalar slot pre-bound — i.e. a product
   authoring-surface change needing its own design arc.
-- **Scalar-pipe bindability is per-slot, not per-material:** only
-  `ggx_material` / `ward_anisotropic_material` expose Reference-kind
-  roughness slots (`alphax`/`alphay`) that accept a `scalar_painter`;
-  `pbr_metallic_roughness_material.roughness` and cooktorrance's slot are
-  baked `ValueKind::Double` — the scalar pipe cannot vary them. Any text
-  naming materials for scalar work must respect this split.
+- **Scalar-pipe bindability — CORRECTED 2026-07-31 (the bullet previously
+  here was FALSE; see the §4.3 correction note):** all mainstream
+  microsurface slots are painter-bindable, and have been since 2026-04-30
+  (`64ca16bc`): `pbr_metallic_roughness_material.roughness`/`.metallic`
+  ("painter reference or scalar string", auto-promoted; composes GGX α
+  internally), `ggx_material`/`ward_anisotropic_material` `alphax`/`alphay`,
+  and `cooktorrance_material.facets` are ALL `ValueKind::Reference`. Only
+  the three SSS skin materials bake roughness as `Double`. Consequence for
+  the arc's verdict: the 0/24 behavioral result stands (arc-75 forensics
+  confirmed every roughness/metallic binding in all 24 runs is a numeric
+  constant — 0/24 on the CONSTRUCT too), but the P1 worked examples were
+  aimed at the highest-friction path (switch material family to ggx + learn
+  scalar_painter + function2d) while the lowest-friction path (bind a
+  painter to the pbr `roughness` slot models already write `0.5` into every
+  run) was never exampled and never measured — the eval's
+  `any_param_references_kind: scalar_painter` checkpoint cannot see it.
+  The shipped advisory text (AgentSession.cpp `ComputeDesignNoteFromDoc_`)
+  steers to ggx/ward only, on the strength of the false claim.
 - **`expression_function2d` is the ONE Painter-category chunk without the
   `_painter` suffix** (36 registered painters) — why the checker ops use a
   registry-resolved `category` filter, not a suffix.
