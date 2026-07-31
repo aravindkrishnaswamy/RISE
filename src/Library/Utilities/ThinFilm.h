@@ -18,9 +18,20 @@
 //        ReflectanceConductor            149.9 -> 154.2 ns/call   +2.9 %
 //        ReflectanceConductorStack n=1   202.7 -> 209.4 ns/call   +3.3 %
 //        ReflectanceConductorStack n=2   267.4 -> 280.2 ns/call   +4.8 %
-//    It buys totality: 465,046 of 3,000,000 adversarial stacks were NaN
-//    before and none are now, and the worst error among the values that
-//    WERE finite fell from 0.796 to 4.8e-15.  The cost is the decaying-root
+//    Workload (it matters, and no benchmark for it lives in the repo -- so
+//    this table is reproducible only from the recipe): 200,000 calls per
+//    rep sweeping cos over [0.05, 0.95], lambda over [380, 780] and
+//    thickness over [40, 340] nm, air ambient / n=2.4 film / 2.5+3i
+//    substrate.  Confining the sweep to the full shipped 5-400 nm range
+//    moves the n=2 figure to about +10 %, because thickness decides which
+//    ExpM1OverZ branch each layer takes; treat these as one point, not a
+//    bound.
+//
+//    It buys totality: out-of-range results from ReflectanceConductor fell
+//    from 141,728 of 3,000,000 adversarial stacks to 0, and on a
+//    4,000-stack grid scored against a 120-dps reference the worst error
+//    among the values that were already FINITE fell from 0.3276 to
+//    7.8e-13.  The cost is the decaying-root
 //    branch rule (which no longer short-circuits on its first test, because
 //    a lossless medium's Im is exactly 0) plus per-medium input
 //    normalization.  Two things were tried and are recorded so they are not
@@ -51,9 +62,12 @@
 //        never fires in floating point -- see PickForwardCos for the
 //        measurement and for what testing Re first cost.  At normal
 //        incidence this keeps cosθ = +1 even for an absorbing medium
-//        (Im(η) = k > 0, so the root is kept, not flipped); the naive
-//        "Im(N cosθ) >= 0 else negate" rule that DOES wrongly flip it
-//        differs in using >= and so negates the exact-zero case.
+//        (Im(η) = k > 0, so the root is kept, not flipped).  This file
+//        used to add that a naive "Im(N cosθ) >= 0 else negate" rule
+//        "wrongly flips it" there; that is FALSE and was never measured
+//        -- for N = 2.5 + 3i at normal incidence Im(η) = 3 > 0, so that
+//        rule keeps +1 too.  The claim has been removed rather than
+//        replaced with another unverified taxonomy of wrong rules.
 //      * Per-polarization tilted admittance:  η_s = N cosθ ;  η_p = N/cosθ.
 //      * Phase thickness  δ = (2π/λ) N d cosθ  (complex if the film
 //        absorbs); the forward wave decays, Im(δ) >= 0.  That invariant
@@ -142,10 +156,17 @@ namespace RISE
 			//!     is the SILENT one this file has been bitten by twice: the
 			//!     per-polarization reflectances exceed 1 and the [0,1] clamp
 			//!     in the public entry points launders them into a plausible
-			//!     saturated 1.0.  Measured on a 300 nm film over silver:
-			//!     k1 = -0.5 gives R_s = 4.69, R_p = 17.69; n1 = -1.4 gives
-			//!     R_s = 3.92, R_p = 48.81.  Folded to |n| + i|k|, the passive
-			//!     twin.
+			//!     saturated 1.0.  Measured on ONE stack -- glass ambient,
+			//!     film |N1| = 1.4 + 0.5i at 300 nm, silver substrate,
+			//!     cosθ = 0.5, λ = 550 nm -- the passive sign gives
+			//!     R_s = 0.217, R_p = 0.0547, while EITHER flipped sign gives
+			//!     R_s = 4.61, R_p = 18.31.  Note "either": R is exactly
+			//!     invariant under N -> -N (both components), so (1.4, -0.5)
+			//!     and (-1.4, +0.5) are the same point and necessarily agree;
+			//!     an earlier version of this note quoted two different
+			//!     numbers for them, from two different stacks.  Folding to
+			//!     |n| + i|k| recovers the passive value for all four sign
+			//!     combinations.
 			//!   * N == 0 is not a medium at all: the Snell step divides by
 			//!     it, so cosθ and everything downstream is NaN -- and that
 			//!     NaN survives the clamp (NaN < 0 and NaN > 1 are both
@@ -158,33 +179,102 @@ namespace RISE
 			//!     a physical answer, exactly like the cosθ clamp in
 			//!     SnellInvariant.  A NaN index normalizes the same way.
 			//!
-			//! ⚠ RESIDUAL, measured, NOT closed: a merely TINY index still
-			//! NaNs -- n1 <~ 1e-100 under the shipped -ffast-math (which
-			//! implies -fcx-limited-range, so std::complex division is the
-			//! naive (ac+bd, bc-ad)/(c²+d²) and c²+d² underflows), or
-			//! <~ 1e-154 under strict IEEE.  No threshold is used here because
-			//! any threshold would be exactly the magic epsilon this file
-			//! refuses; the principled fix is to reformulate CosThetaInMedium
-			//! around η² = N² - s² (which is finite and well conditioned for
-			//! tiny N, and is also the identity the branch-rule proof in
-			//! PickForwardCos rests on) rather than dividing by N.  Not done
-			//! here: it touches every cosθ in the file, and 1e-100 is ~100
-			//! decades below any refractive index that is scene data, whereas
-			//! exactly 0 -- a black texel -- is not.  Pinned by
-			//! ThinFilmProductionTest [Domain].
-			inline Complex PhysicalIndex( const Complex& N )
+			//! ⚠ RESIDUAL, measured, NOT closed: a merely TINY index is still
+			//! wrong, and it fails DIFFERENTLY under the two flag sets.
+			//! Bisected on air / (film n1) 120 nm / 2.5+3i at cosθ = 0.7:
+			//!   * shipped flags (-ffast-math implies -fcx-limited-range, so
+			//!     std::complex division is the naive
+			//!     (ac+bd, bc-ad)/(c²+d²)): NaN below n1 = 1e-77.03.  The
+			//!     mechanism is OVERFLOW, not underflow -- the p-polarization
+			//!     interface products grow like 1/n1, so c²+d² exceeds the
+			//!     double range.  (An earlier version of this note said
+			//!     "1e-100" and "underflows"; both were wrong, and neither
+			//!     was measured here.)
+			//!   * strict IEEE: NOT NaN.  It returns a plausible finite value
+			//!     -- the BARE-stack reflectance, i.e. the film silently
+			//!     vanishes -- from 1e-78 all the way to about 1e-154, where
+			//!     it finally becomes NaN.  That is the silent
+			//!     finite-but-wrong class again, and it is the reason a NaN
+			//!     count is the wrong instrument for this envelope.
+			//! No threshold is used, because any threshold here is exactly the
+			//! magic epsilon this file refuses.  The principled fix is to
+			//! reformulate CosThetaInMedium around η² = N² - s² (finite and
+			//! well conditioned for tiny N, and the identity the branch-rule
+			//! proof in PickForwardCos already rests on) instead of dividing
+			//! by N.  Not done: it touches every cosθ in the file, and ~77
+			//! decades below any refractive index that is scene data is not
+			//! scene data, whereas exactly 0 -- a black texel -- is, and that
+			//! case IS closed.  Pinned by ThinFilmProductionTest [Domain].
+			//! True iff N cannot serve as a medium index at all: either
+			//! component non-finite, or the magnitude exactly 0.
+			//!
+			//! Note n == 0 with k > 0 is NOT degenerate -- that is a
+			//! legitimate strongly-absorbing medium (silver is n = 0.144), and
+			//! an earlier version of this predicate, written as
+			//! `!(|n| > 0) && !(|k| > 0)`, got the OTHER half wrong: being a
+			//! conjunction it passed every MIXED case through untouched, so
+			//! (NaN, 3), (1.5, NaN), (+inf, 0) and (1.5, +inf) all reached the
+			//! math and returned NaN -- through the ambient, film and
+			//! substrate alike, and through every entry point including the
+			//! RGB preview.  Testing finiteness FIRST is what covers them.
+			inline bool IsDegenerateIndex( const Complex& N )
 			{
-				const Scalar n = std::fabs( N.real() );
-				const Scalar k = std::fabs( N.imag() );
-				// Written so a NaN component normalizes to vacuum too.
-				if( !( n > Scalar(0) ) && !( k > Scalar(0) ) ) {
-					return Complex( Scalar(1), Scalar(0) );
+				if( !std::isfinite( N.real() ) || !std::isfinite( N.imag() ) ) {
+					return true;
 				}
-				return Complex( n, k );
+				return ( N.real() == Scalar(0) && N.imag() == Scalar(0) );
 			}
 
-			//! Builds a normalized complex index from real n and extinction k.
-			//! See PhysicalIndex for what "normalized" means and why.
+			//! Normalizes an ENDPOINT (ambient or substrate) index.  A
+			//! degenerate one becomes vacuum: an endpoint cannot be omitted --
+			//! the stack has to have something on both sides -- so vacuum is
+			//! the only stand-in available.
+			inline Complex PhysicalIndex( const Complex& N )
+			{
+				if( IsDegenerateIndex( N ) ) {
+					return Complex( Scalar(1), Scalar(0) );
+				}
+				return Complex( std::fabs( N.real() ), std::fabs( N.imag() ) );
+			}
+
+			//! Normalizes a FILM's (index, thickness) pair.
+			//!
+			//! A degenerate film index makes the layer ABSENT -- vacuum index
+			//! AND zero thickness -- and NOT a vacuum FILM.  That distinction
+			//! is not pedantic; getting it wrong was a live defect between the
+			//! round-2 and round-3 reviews of 2026-07-30:
+			//!
+			//! substituting vacuum alone inserts a real AIR LAYER of the
+			//! authored thickness.  Under an ambient DENSER than air -- glass
+			//! or enamel, two thirds of this evaluator's own documented
+			//! supported set -- that layer sits past the critical angle and
+			//! total-internal-reflects, so a black `film_ior` texel rendered
+			//! as a MIRROR.  Measured on glass / (n1 = 0, d = 400 nm) /
+			//! (1.8 + 0.15i) at cosθ = 0.6: R = 0.9931 where omitting the
+			//! layer gives 0.0239 -- error 0.969, and up to 0.984 across real
+			//! metal substrates.  Finite, in range, and FURTHER from any
+			//! defensible answer than the NaN it replaced.  In an AIR ambient
+			//! the two agree exactly, which is how it survived a review round.
+			//!
+			//! Absent is also the rule PhaseCoefficient already applies one
+			//! helper away, for the same reason: it is the continuous limit of
+			//! the layer not being there.  Pinned by
+			//! ThinFilmProductionTest [Domain], whose rows deliberately use a
+			//! DENSE ambient -- in air the assertion proves nothing.
+			inline void NormalizeFilm( Complex& N, Scalar& thickness_nm )
+			{
+				if( IsDegenerateIndex( N ) ) {
+					N = Complex( Scalar(1), Scalar(0) );
+					thickness_nm = Scalar(0);
+					return;
+				}
+				N = Complex( std::fabs( N.real() ), std::fabs( N.imag() ) );
+			}
+
+			//! Builds a normalized ENDPOINT index from real n and extinction k.
+			//! See PhysicalIndex for what "normalized" means and why; for a
+			//! FILM use NormalizeFilm, which additionally zeroes the thickness
+			//! of a degenerate layer instead of turning it into an air gap.
 			inline Complex MakeIndex( Scalar n, Scalar k )
 			{
 				return PhysicalIndex( Complex( n, k ) );
@@ -275,9 +365,13 @@ namespace RISE
 			//! quadrant and the two rules agree.  With an ABSORBING ambient
 			//! (k0 > 0) the incident wave is inhomogeneous, the root can land
 			//! in the second quadrant (decaying but carrying energy
-			//! backwards), and the stack is no longer passive: the 120-dps
-			//! reference itself returns R > 1 there (measured 1.093 and
-			//! 1.287 on two such stacks).  Decaying-first keeps the evaluator
+			//! backwards), and the stack is no longer passive: the
+			//! unclamped per-polarization mean exceeds 1 on 59 % of a
+			//! 4,000-stack sample and reaches 1516 there -- so the error the
+			//! clamp conceals is effectively UNBOUNDED, and the maximum is
+			//! whatever the sampling distribution happens to reach.  (Two
+			//! earlier figures, 1.093 and 1.287, were the first two samples
+			//! taken and badly understated it.)  Decaying-first keeps the evaluator
 			//! TOTAL in that regime -- every exponential stays of modulus
 			//! <= 1 -- and the [0,1] clamp in the public entry points reports
 			//! the saturated 1.  That is a documented domain limit, not a
@@ -286,15 +380,15 @@ namespace RISE
 			//! reason.
 			inline Complex PickForwardCos( const Complex& N, const Complex& cosCandidate )
 			{
-				// NOTE the strict `>` in the tie-break.  Relaxing it to `>=`
-				// is equivalent ONLY for the candidates CosThetaInMedium
-				// actually supplies (a principal root, so Re >= 0); over
-				// arbitrary candidates the two predicates disagree whenever
-				// Im(η) == 0 and Re(η) < 0, i.e. on every backward-propagating
-				// lossless candidate.  This function's contract is defined for
-				// arbitrary candidates -- ThinFilmProductionTest [Branch](b2)
-				// feeds it constructed ones -- so the strict form is the
-				// correct one, not merely the incumbent.
+				// The `>` in the tie-break could equally be `>=`: measured
+				// over constructed candidates, the two predicates differ on
+				// exactly the cases where η == 0 (including its signed-zero
+				// variants) and nowhere else -- and there BOTH candidate roots
+				// are 0, so the choice is immaterial.  For Im(η) == 0 with
+				// Re(η) < 0 they agree (both negate).  Mutating `>` to `>=`
+				// therefore survives every test, correctly.  An earlier
+				// version of this comment claimed the opposite and cited
+				// [Branch](b2) as pinning it; that was wrong in both halves.
 				const Complex eta = N * cosCandidate;
 				// Left as the literal disjunction.  A select form
 				//   ( Im == 0 ) ? ( Re > 0 ) : ( Im > 0 )
@@ -407,17 +501,33 @@ namespace RISE
 
 			inline Complex SnellInvariant( const Complex& N0, Scalar cosThetaI )
 			{
+				// Negated form, so a NaN cosine normalizes to the floor too:
+				// `c < floor` lets NaN straight through, which is exactly the
+				// asymmetry PhaseCoefficient was corrected for.  (No live call
+				// site is known to produce one -- GGXBRDF's half-vector sits
+				// behind a geometric-horizon gate and DielectricSPF's cosine
+				// is a plain dot product -- so this is defence in depth rather
+				// than a reachable bug.)
 				Scalar c = cosThetaI;
-				if( c < kGrazingCosFloor ) c = kGrazingCosFloor;
-				if( c > Scalar(1) )        c = Scalar(1);
+				if( !( c > kGrazingCosFloor ) ) c = kGrazingCosFloor;
+				if( c > Scalar(1) )             c = Scalar(1);
 				const Scalar s0 = std::sqrt( Scalar(1) - c * c );
 				return N0 * s0;
 			}
 
 			//! Phase-thickness coefficient kd = 2*pi*d/lambda, normalized so a
 			//! layer whose phase is not a POSITIVE FINITE number contributes
-			//! none (kd = 0, i.e. the layer is absent -- the continuous
-			//! d -> 0+ limit, which is the bare stack without it).
+			//! none (kd = 0: the layer is absent).
+			//!
+			//! For kd < 0 that IS the continuous limit -- the nearest
+			//! representable stack is the one without the layer.  For
+			//! kd = +inf it is NOT: the limit there is the THICK one (on
+			//! air / (2.1+0.6i) / silver, d = 1e6 nm gives 0.169 where absent
+			//! gives 0.951).  Mapping both to absent is a deliberate choice of
+			//! one rule over two, because an infinite optical thickness is not
+			//! scene data in either direction and one rule is easier to reason
+			//! about than a split one.  Said plainly here so the choice is
+			//! visible instead of hidden behind the word "limit".
 			//!
 			//! The condition is on kd itself, not on d.  An earlier version of
 			//! this helper normalized only the thickness and claimed thickness
@@ -796,8 +906,10 @@ namespace RISE
 		//!                     NON-ABSORBING ambient, k0 == 0 (air, glass,
 		//!                     enamel -- every shipped caller).  k0 > 0 makes
 		//!                     the incident wave inhomogeneous and the stack
-		//!                     non-passive; the exact 120-dps reference itself
-		//!                     returns R > 1 there (measured 1.093, 1.287).
+		//!                     non-passive; R exceeds 1 on 59 % of a
+		//!                     4,000-stack sample, reaching 1516, so the
+		//!                     error the clamp hides is effectively
+		//!                     unbounded.
 		//!                     The evaluator stays TOTAL for such input and
 		//!                     the clamp below reports the saturated 1, but
 		//!                     that is a saturation, not a physical answer.
@@ -819,15 +931,17 @@ namespace RISE
 			Scalar n2, Scalar k2 )
 		{
 			const Complex N0 = detail::MakeIndex( n0, k0 );
-			const Complex N1 = detail::MakeIndex( n1, k1 );
 			const Complex Ns = detail::MakeIndex( n2, k2 );
+			Complex N1 = Complex( n1, k1 );
+			Scalar  d  = thickness_nm;
+			detail::NormalizeFilm( N1, d );
 
 			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 			const Scalar Rs = detail::SingleFilmReflectanceForPol(
-				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolS );
+				N0, N1, Ns, d, wavelength_nm, sinInv, ePolS );
 			const Scalar Rp = detail::SingleFilmReflectanceForPol(
-				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolP );
+				N0, N1, Ns, d, wavelength_nm, sinInv, ePolP );
 
 			// R is mathematically in [0,1] for a passive stack; clamp only
 			// to defend against FP round-off pushing it a hair past the
@@ -851,15 +965,17 @@ namespace RISE
 			// MakeIndex; normalize here or an amplifying / zero index reaches
 			// the math unchecked (see detail::PhysicalIndex).
 			const Complex N0 = detail::PhysicalIndex( n0 );
-			const Complex N1 = detail::PhysicalIndex( n1 );
 			const Complex Ns = detail::PhysicalIndex( ns );
+			Complex N1 = n1;
+			Scalar  d  = thickness_nm;
+			detail::NormalizeFilm( N1, d );
 
 			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 			const Scalar Rs = detail::SingleFilmReflectanceForPol(
-				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolS );
+				N0, N1, Ns, d, wavelength_nm, sinInv, ePolS );
 			const Scalar Rp = detail::SingleFilmReflectanceForPol(
-				N0, N1, Ns, thickness_nm, wavelength_nm, sinInv, ePolP );
+				N0, N1, Ns, d, wavelength_nm, sinInv, ePolP );
 
 			Scalar R = Scalar(0.5) * ( Rs + Rp );
 			if( R < Scalar(0) ) R = Scalar(0);
@@ -878,8 +994,10 @@ namespace RISE
 		//! |stack - single| = 7.6e-12 over 3,000,000 adversarial stacks,
 		//! typical ~1e-16.  The worst cases are ~100-um films whose phase
 		//! exceeds 1e6 rad, where both forms lose the same argument-reduction
-		//! precision and each is within 6e-12 of the 120-dps truth; the
-		//! shipped 5-400 nm range agrees to ~1e-16.
+		//! precision and each is within 6e-12 of the 120-dps truth.
+		//! Confined to the shipped 5-400 nm range the worst is 6.6e-15 over
+		//! 1,000,000 stacks (an earlier note said ~1e-16, which was the
+		//! typical case rather than the worst).
 		//!
 		//! That equivalence was FALSE before 2026-07-30, in both directions:
 		//! the two disagreed by up to 0.74 where both were finite, and this
@@ -909,16 +1027,19 @@ namespace RISE
 			const Complex N0 = detail::PhysicalIndex( n0 );
 			const Complex Ns = detail::PhysicalIndex( ns );
 			Complex normFilm[kMaxFilms];
+			Scalar  normThick[kMaxFilms];
 			for( int j = 0; j < nFilms; ++j ) {
-				normFilm[j] = detail::PhysicalIndex( filmIndex[j] );
+				normFilm[j]  = filmIndex[j];
+				normThick[j] = filmThickness_nm[j];
+				detail::NormalizeFilm( normFilm[j], normThick[j] );
 			}
 
 			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 			const Scalar Rs = detail::TmmReflectanceForPol(
-				N0, normFilm, filmThickness_nm, nFilms, Ns, wavelength_nm, sinInv, ePolS );
+				N0, normFilm, normThick, nFilms, Ns, wavelength_nm, sinInv, ePolS );
 			const Scalar Rp = detail::TmmReflectanceForPol(
-				N0, normFilm, filmThickness_nm, nFilms, Ns, wavelength_nm, sinInv, ePolP );
+				N0, normFilm, normThick, nFilms, Ns, wavelength_nm, sinInv, ePolP );
 
 			Scalar R = Scalar(0.5) * ( Rs + Rp );
 			if( R < Scalar(0) ) R = Scalar(0);
@@ -1058,8 +1179,10 @@ namespace RISE
 				stackAt( nm, n0, k0, n1, k1, n2, k2 );
 
 				const Complex N0 = detail::MakeIndex( n0, k0 );
-				const Complex N1 = detail::MakeIndex( n1, k1 );
 				const Complex Ns = detail::MakeIndex( n2, k2 );
+				Complex N1 = Complex( n1, k1 );
+				Scalar  dLam = thickness_nm;
+				detail::NormalizeFilm( N1, dLam );
 				const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 				// Goes through SingleFilmReflectanceForPol so the RGB path shares
@@ -1076,9 +1199,9 @@ namespace RISE
 				// construction (detail::PhysicalIndex, detail::PhaseCoefficient).
 				// The routing is consistency with the scalar path, not a guard.
 				const Scalar Rs = detail::SingleFilmReflectanceForPol(
-					N0, N1, Ns, thickness_nm, nm, sinInv, ePolS );
+					N0, N1, Ns, dLam, nm, sinInv, ePolS );
 				const Scalar Rp = detail::SingleFilmReflectanceForPol(
-					N0, N1, Ns, thickness_nm, nm, sinInv, ePolP );
+					N0, N1, Ns, dLam, nm, sinInv, ePolP );
 				Scalar R = Scalar( 0.5 ) * ( Rs + Rp );
 				if( R < Scalar( 0 ) ) R = Scalar( 0 );
 				if( R > Scalar( 1 ) ) R = Scalar( 1 );

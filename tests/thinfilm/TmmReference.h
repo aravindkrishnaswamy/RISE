@@ -77,17 +77,33 @@
 //        non-finite, versus 1,553,854 for the old matrix on the same
 //        inputs).  Airy remains the single-film production form for COST,
 //        not range (design doc §7).
-//        ⚠ THE ENVELOPE IS THE CLAIM -- "total" is NOT.  Far outside it a
-//        cliff remains, from a DIFFERENT mechanism: -ffast-math implies
-//        -fcx-limited-range, so std::complex division is the naive
-//        (ac+bd, bc-ad)/(c²+d²) and the c²+d² term itself overflows once
-//        |denominator| exceeds ~1.34e154.  Measured on 600,000 8-layer
-//        stacks with |N| in 1e-20..1e20: 4,540 NaN under the shipped
-//        flags, 0 under strict IEEE, and 0 with -fno-cx-limited-range.
-//        The least extreme failure needed |log10 n| ~ 13.2 with all 8
-//        layers; at 4 layers, at 2 layers, or with |N| <= 1e12, none was
-//        found in 3,000,000 each.  `ar_layer` bounds n > 0 and the layer
-//        count but places no MAGNITUDE cap, so this is reachable in
+//        ⚠ THE ENVELOPE IS THE CLAIM -- "total" is NOT, and the failure
+//        outside it is not confined to NaN.  Two mechanisms remain far
+//        outside: -ffast-math implies -fcx-limited-range, so std::complex
+//        division is the naive (ac+bd, bc-ad)/(c²+d²) and that c²+d² can
+//        overflow; and for a very small index the interface products grow
+//        like 1/n, which overflows the same term.  Measured here, 1,000,000
+//        random stacks per row, |N| log-uniform, thickness 1e-1..1e6 nm:
+//
+//            layers   |N| range       shipped flags   strict IEEE
+//              8      1e-20..1e20        26931            1055
+//              4      1e-20..1e20         1055             521
+//              2      1e-20..1e20          486             244
+//              8      1e-12..1e12            1               0
+//              8      1e-3 ..1e3             0               0
+//
+//        So: the shipped-index envelope is clean, and NOTHING outside it
+//        is -- not two layers, and not strict IEEE.  An earlier version of
+//        this note claimed "at 4 layers, at 2 layers, or with |N| <= 1e12,
+//        none was found in 3,000,000 each" and "0 under strict IEEE"; the
+//        table above is this file's own measurement and contradicts all of
+//        those.  They were quoted from a review rather than re-derived.
+//        Worse, outside the envelope the failure is sometimes SILENT: under
+//        strict IEEE a film index below ~1e-78 returns the bare-stack
+//        reflectance -- the layer simply vanishes -- and only becomes NaN
+//        below ~1e-154.  A NaN count is the wrong instrument for this
+//        region.  `ar_layer` bounds n > 0, thickness > 0 and the layer
+//        count, but places no MAGNITUDE cap, so this is reachable in
 //        principle by a pathological scene and unreachable by a physical
 //        one.
 //      * Exactly grazing incidence θ = 90° and exactly the critical angle
@@ -238,17 +254,27 @@ namespace RISE
 				return std::sin( z ) / z;
 			}
 
-			//! Phase-thickness coefficient kd = 2*pi*d/lambda, with a NEGATIVE
-			//! thickness normalized to 0 (the continuous d -> 0+ limit, i.e.
-			//! the bare substrate).  A domain normalization, not an epsilon:
-			//! kd >= 0 is exactly the condition under which the decaying root
-			//! gives Im(delta) >= 0 and hence |e^{+2i delta}| <= 1, which is
-			//! what keeps both evaluators overflow-free.  See production
-			//! ThinFilm.h PhaseCoefficient.
+			//! Phase-thickness coefficient kd = 2*pi*d/lambda, normalized so a
+			//! layer whose phase is not a POSITIVE FINITE number contributes
+			//! none.  kd >= 0 is exactly the condition under which the
+			//! decaying root gives Im(delta) >= 0 and hence
+			//! |e^{+2i delta}| <= 1, which is what keeps both evaluators
+			//! overflow-free.  Kept in step with production ThinFilm.h
+			//! PhaseCoefficient, whose comment carries the derivation.
+			//!
+			//! The test is on kd, NOT on thickness.  An earlier version here
+			//! normalized only a negative thickness while citing production's
+			//! rule -- which by then had already been corrected, because
+			//! lambda_nm is just as unvalidated and lambda < 0 flips the sign
+			//! of kd exactly as d < 0 does.  Measured on this oracle before
+			//! the correction: air / (2.1+0.6i, 300 nm) / silver at
+			//! cosTheta = 0.7 and lambda = -550 returned R = 8.3737 -- the
+			//! growing-wave failure the condition exists to prevent, from the
+			//! file that is supposed to be the ground truth.
 			inline double PhaseCoefficient( double thickness_nm, double lambda_nm )
 			{
-				const double d = ( thickness_nm > 0.0 ) ? thickness_nm : 0.0;
-				return 2.0 * 3.14159265358979323846 * d / lambda_nm;
+				const double kd = 2.0 * 3.14159265358979323846 * thickness_nm / lambda_nm;
+				return ( kd > 0.0 && std::isfinite( kd ) ) ? kd : 0.0;
 			}
 
 			//! (e^z - 1)/z, entire, limit exactly 1 at z = 0.  TWO forms, and

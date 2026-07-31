@@ -875,7 +875,7 @@ all seven thin-film binaries):
 - `kGrazingCosFloor` — the header spends ~25 lines arguing it must be `1e-6` and
   specifically not `NEARZERO`, yet mutating it to `1e-12` **or to `0`** changed
   nothing any test could see, while measurably collapsing `R(cos=1e-9)` from
-  `0.99999235932627673` to exactly `1`. Now bracketed from both sides by
+  `0.99999235932627695` to exactly `1`. Now bracketed from both sides by
   `[Invariant]`(c).
 - `MakeIndex`'s `|k|` fold — and this one was worse than untested: the **Complex
   overloads bypassed `MakeIndex` entirely**, so a negative extinction reached the
@@ -897,10 +897,15 @@ neither benign: the RGB path yields a NaN pixel, the spectral path goes
 *silently black*, because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
 
 **Residual that remains open, measured and deliberately not closed:** a merely
-*tiny* index still NaNs — `n1 ≲ 1e-100` under the shipped `-ffast-math` (which
+*tiny* index is still wrong, and it fails **differently under the two flag
+sets** — bisected in-repo, not quoted. Under the shipped `-ffast-math` (which
 implies `-fcx-limited-range`, so complex division is the naive
-`(ac+bd, bc−ad)/(c²+d²)` and `c²+d²` underflows), or `≲ 1e-154` under strict
-IEEE. No threshold was introduced, because any threshold here is exactly the
+`(ac+bd, bc−ad)/(c²+d²)`) it is NaN below `n1 = 1e-77.03`, by **overflow** —
+the p-polarization interface products grow like `1/n1` until `c²+d²` leaves the
+double range. Under strict IEEE it is **not** NaN: it returns the plausible
+bare-stack reflectance, the film silently vanishing, from `1e-78` down to about
+`1e-154`. Round 2 recorded this as "`≲1e-100`" and "underflows"; both were
+wrong, and neither had been measured here. No threshold was introduced, because any threshold here is exactly the
 magic epsilon this file refuses. The named refinement is to reformulate
 `CosThetaInMedium` around `η² = N² − s²` — finite and well conditioned for tiny
 `N`, and the same identity the branch-rule proof rests on — instead of dividing
@@ -913,9 +918,25 @@ and that case *is* fixed.
 claim.** Round 1 wrote that the exponent-factored matrix has "no cliff and no
 headroom to lose". Within the measured envelope (`|N| ∈ 1e-3..1e3`, `d ≤ 1e12`
 nm) that reproduces exactly — 0 non-finite of 4,000,000, both forms, both flag
-sets. Outside it a cliff remains: 600,000 eight-layer stacks with `|N| ∈
-1e-20..1e20` gave **4,540 NaN under the shipped flags, 0 under strict IEEE, and
-0 with `-fno-cx-limited-range`**. The envelope is now stated as the claim.
+sets. Outside it a cliff remains, and round 3 showed my first characterisation
+of it was wrong in three ways. Re-measured in-repo, 1,000,000 stacks per row:
+
+| layers | \|N\| range | shipped flags | strict IEEE |
+|---|---|---|---|
+| 8 | 1e-20..1e20 | 26,931 | 1,055 |
+| 4 | 1e-20..1e20 | 1,055 | 521 |
+| 2 | 1e-20..1e20 | 486 | 244 |
+| 8 | 1e-12..1e12 | 1 | 0 |
+| 8 | 1e-3..1e3 | 0 | 0 |
+
+So it is **not** confined to eight layers, **not** confined to `|N| > 1e12`, and
+**not** absent under strict IEEE — all three of which I had asserted, quoting a
+review rather than re-deriving. Worse, the failure outside the envelope is
+sometimes **silent**: under strict IEEE a film index below ~1e-78 returns the
+bare-stack reflectance (the layer simply vanishes) and only becomes NaN below
+~1e-154. A NaN count is the wrong instrument for that region — which is this
+arc's own recurring lesson, applied to itself one round too late. The envelope
+is the claim.
 
 **Cost, previously undisclosed** (min of 30 × 200,000 calls, arm64, shipped
 flags):
