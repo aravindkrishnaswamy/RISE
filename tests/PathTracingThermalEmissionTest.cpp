@@ -731,7 +731,9 @@ namespace
 		return scene.str();
 	}
 
-	std::string SurfaceFireReceiverScene( const bool positionalLight = false )
+	std::string SurfaceFireReceiverScene(
+		const bool positionalLight = false,
+		const bool orenNayarReceiver = false )
 	{
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
 		const Point3 fireMin = positionalLight ?
@@ -742,8 +744,16 @@ namespace
 		scene << std::setprecision(17) <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
 			"shaderop DefaultPathTracing\n}\n"
-			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n"
-			"lambertian_material\n{\nname receiver\nreflectance white\n}\n"
+			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n";
+		if( orenNayarReceiver ) {
+			scene <<
+				"orennayar_material\n{\nname receiver\nreflectance white\n"
+				"roughness 1.0\n}\n";
+		} else {
+			scene <<
+				"lambertian_material\n{\nname receiver\nreflectance white\n}\n";
+		}
+		scene <<
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue " <<
 			(positionalLight ? 2600.0 : kTemperatureK) << "\n}\n"
@@ -3712,6 +3722,122 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestOrenNayarSurfaceVolumeNEEEquality()
+	{
+		std::cout << "TestOrenNayarSurfaceVolumeNEEEquality" << std::endl;
+		const std::filesystem::path scenePath =
+			std::filesystem::temp_directory_path() /
+			( "rise_oren_nayar_fire_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) +
+				".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SurfaceFireReceiverScene(false,true);
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"Oren-Nayar receiver and off-axis fire fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*shader,true) &&
+				marchOnlyCaster,
+				"Oren-Nayar brute-force caster initializes without a volume-emission CDF" );
+			if( marchOnlyCaster ) {
+				marchOnlyCaster->AttachScene(job->GetScene());
+			}
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			Check( shader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*shader,true) && neeCaster,
+				"Oren-Nayar volume-NEE caster initializes with the fire CDF" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const Scalar nm = 500.0;
+			const unsigned int samples = 240000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			StabilityConfig config;
+			config.maxDiffuseBounce = 2;
+			PathTracingIntegrator* integrator =
+				new PathTracingIntegrator(ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+			auto meanPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,
+						sampler,nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+			auto meanShaderRoute = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			const Scalar ptOn = meanPT(*neeCaster,0x0a3e0001u);
+			const Scalar ptOff = meanPT(*marchOnlyCaster,0x0a3e0002u);
+			const Scalar shaderOn =
+				meanShaderRoute(*neeCaster,0x0a3e0003u);
+			const Scalar shaderOff =
+				meanShaderRoute(*marchOnlyCaster,0x0a3e0004u);
+			if( !(ptOn>0.0 && ptOff>0.0 && shaderOn>0.0 &&
+				shaderOff>0.0 &&
+				NearRelative(ptOn,ptOff,0.08) &&
+				NearRelative(shaderOn,shaderOff,0.08)) ) {
+				std::cout << "  Oren-Nayar PT on/off=" <<
+					ptOn << "/" << ptOff << " shader on/off=" <<
+					shaderOn << "/" << shaderOff << std::endl;
+			}
+			Check( ptOn>0.0 && ptOff>0.0 &&
+				NearRelative(ptOn,ptOff,0.08),
+				"Oren-Nayar surface volume NEE and brute-force march agree through pure PT" );
+			Check( shaderOn>0.0 && shaderOff>0.0 &&
+				NearRelative(shaderOn,shaderOff,0.08),
+				"Oren-Nayar surface volume NEE and brute-force march agree through shader dispatch" );
+			Check( NearRelative(ptOn,shaderOn,0.08),
+				"Oren-Nayar surface volume NEE agrees across both PT entry routes" );
+			safe_release(integrator);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
 	void TestHollowCavityFullSphereVolumeNEEEquality()
 	{
 		std::cout << "TestHollowCavityFullSphereVolumeNEEEquality" << std::endl;
@@ -5464,6 +5590,7 @@ int main()
 	TestFlameBehindGlassIsMarchOnly();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
+	TestOrenNayarSurfaceVolumeNEEEquality();
 	TestHollowCavityFullSphereVolumeNEEEquality();
 	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
