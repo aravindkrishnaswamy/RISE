@@ -609,7 +609,7 @@ namespace RISE
 						// non-finite; classify at the STRING layer by net-magnitude
 						// sign (exponent-sign alone is spoofable -- see the helper).
 						if( !ERangeTokenIsUnderflow( tok, end ) ) {
-							return false;	// overflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+							return false;	// overflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite was unreliable under bare -ffast-math (fixed 2026-07-29; the string layer is still preferred)), mirroring the ar_layer parser
 						}
 					}
 					if( end == tok ) {
@@ -3227,7 +3227,7 @@ namespace RISE
 					}
 					for( std::size_t i = 0; i < layerLines.size(); ++i ) {
 						// Reject nan/inf spellings and non-numeric junk at the STRING
-						// layer (value-level isfinite is unreliable under -ffast-math;
+						// layer (value-level isfinite was unreliable under bare -ffast-math (fixed 2026-07-29; the string layer is still preferred);
 						// see AllTokensAreFiniteNumbers), then count + range-check the
 						// numbers (errno/ERANGE catches overflow like 1e999).
 						if( !AllTokensAreFiniteNumbers( layerLines[i].c_str() ) ) {

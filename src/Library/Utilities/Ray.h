@@ -26,8 +26,13 @@ namespace RISE
 		Vector3		m_dir;
 
 		// Precompute inverse direction for branchless slab ray-box tests.
-		// Uses a large finite value instead of infinity for near-zero
-		// direction components to remain correct under -ffast-math.
+		// Uses a large FINITE value instead of infinity for near-zero
+		// direction components.  Load-bearing, and NOT merely a fast-math
+		// workaround: with a real +/-inf, (bound - origin) * invDir is
+		// 0*inf = NaN for a ray parallel to and on a slab plane, and
+		// RayBoxIntersection's rejection `tmin > tymax || tymin > tmax` is
+		// FALSE for NaN -- so the slab would be silently ACCEPTED rather
+		// than rejected.  Do not "simplify" this to infinity().
 		void RecomputeInvDir()
 		{
 			static const Scalar SAFE_INV = Scalar(1e30);

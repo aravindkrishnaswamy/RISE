@@ -1358,7 +1358,7 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check.
 		// errno==ERANGE rejects an OVERFLOWING literal (count_u 1e400 -> inf) AT THE SOURCE -- the standard
 		// guarantees ERANGE on strtod overflow -- so the (long long) cast is never reached for a non-finite d
-		// (no reliance on an inf>1e6 compare, which is unreliable under -ffast-math).  The nan/inf char scan
+		// (no reliance on an inf>1e6 compare, which was unreliable under bare -ffast-math (fixed 2026-07-29)).  The nan/inf char scan
 		// catches an explicit "nan"/"inf" literal (strtod sets no errno for those); an expr-valued count
 		// already passed EvalExprBody's finite guard.
 		bool bad = cs.empty() || end != cs.c_str() + cs.size() || errno == ERANGE;

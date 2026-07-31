@@ -68,7 +68,37 @@ CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_
 # treats C++17 attributes as extensions when the standard isn't C++17,
 # producing `-Wc++17-attribute-extensions` warnings.  Linux already pins
 # gnu++17 in Config.Linux; OSX matches.
-CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
+#
+# -fno-finite-math-only.  NOTE: RISE does NOT rely on IEEE Inf in
+# intersection math -- every invDir producer deliberately substitutes a
+# finite sentinel precisely BECAUSE -ffinite-math-only made real Infs
+# unsafe (BVH::PrepRayFloat uses +/-FLT_MAX, Ray::RecomputeInvDir uses
+# +/-1e30, RISE_INFINITY is DBL_MAX).  The BVH4 slab kernel (RayBox4)
+# compiles to byte-identical NEON either way, so the flag costs nothing
+# there.  The reasons to enable it are:
+#   1. std::isfinite / std::isnan are otherwise folded to a constant and
+#      dead-code-eliminated tree-wide -- which produced both dead guards
+#      and false-green TESTS (a NaN-sentinel assertion that silently
+#      passed hid a real bug three times).
+#   2. The optimiser otherwise assumes finiteness in code that genuinely
+#      can produce Inf/NaN at runtime (HDR readers, degenerate PDFs,
+#      the thin-film TMM at a critical angle -- see below).
+#   3. It stops NEW finite-sentinel workarounds from being needed.
+#      NOTE the EXISTING ones stay load-bearing for an independent reason:
+#      a real +/-inf invDir would make (bound - origin) * invDir = 0*inf =
+#      NaN for a ray parallel to and on a slab plane, and the slab
+#      rejection `tmin > tymax || tymin > tmax` is FALSE for NaN, so the
+#      slab would be silently ACCEPTED.  Restoring infinity() is MORE
+#      hazardous now, not less.
+# It earned this immediately: it surfaced a real Inf/Inf = NaN bug in the
+# thin-film TMM at exactly the critical angle (fixed in the same branch).
+# Android already builds with this flag; Linux and MSVC never enabled
+# fast-math at all, so this also aligns macOS with every other platform.
+# Measured cost: +2.7% CPU on a shading-bound render, and no resolvable
+# cost on a traversal-bound one (see docs/INTEGRATOR_BUGFIX_FINDINGS.md
+# section "SUPERSEDED 2026-07-29" for the interval and the caveats).
+#
+CXXFLAGS = -O3 -flto -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb

@@ -4,6 +4,18 @@
 //    thin-film optics reference (the ground-truth oracle for the
 //    thin-film interference feature, docs/THIN_FILM_INTERFERENCE.md).
 //
+//    SCOPE -- read this before citing this file as a pin.  This binary
+//    tests the ORACLE ONLY.  It includes tests/thinfilm/* and runs under
+//    `using namespace RISE::ThinFilmReference`; it never includes
+//    src/Library/Utilities/ThinFilm.h, so every `detail::` name below
+//    resolves to the oracle's copy and NOTHING here constrains production.
+//    That distinction was not academic: production comments used to cite
+//    [8/8](d) as pinning the production Sinc / ExpM1OverZ, and stubbing the
+//    PRODUCTION Sinc to a constant 1 below its cut was demonstrated to
+//    survive all five production-header binaries.  The production twins of
+//    these assertions live in ThinFilmProductionTest ([Helpers], [Branch],
+//    [Thick], [Truth]), which does include the production header.
+//
 //    There is NO renderer integration here and NO dependency on
 //    external n,k data files -- every stack is a synthetic / textbook
 //    construction.  The tests verify the reference against closed-form
@@ -28,8 +40,10 @@
 //         the critical angle gives R == 1 exactly (lossless energy
 //         conservation), and a frustrated-TIR gap (dense/rare/dense)
 //         leaks for a thin gap but -> full TIR for a thick gap.  This
-//         exercises the EVANESCENT cosθ branch (Re(N cosθ)=0) that the
-//         absorbing-conductor stacks do not reach.
+//         exercises the EVANESCENT cosθ branch -- the one where Re(N cosθ)
+//         is zero in exact arithmetic but ~6.1e-17 in floating point, which
+//         is what made the pre-2026-07-30 branch rule pick the growing root
+//         -- that the absorbing-conductor stacks do not reach.
 //      7. Lossless thin-film thickness sweep vs an independent
 //         real-trigonometric closed form (Hecht), plus a grazing-angle
 //         conditioning check (θ -> 90° stays finite and R -> 1).  Pins
@@ -225,24 +239,33 @@ int main()
 			Check( std::fabs( Rtmm  - Rexpected ) < tol, "quarter-wave AR: TMM matches closed form" );
 			Check( std::fabs( Rairy - Rexpected ) < tol, "quarter-wave AR: Airy matches closed form" );
 
-			// Cross-check that the phase factor is really e^{-2iδ} = -1
-			// at the quarter-wave thickness (δ = π/2 at normal incidence,
-			// so 2δ = π).  We assert this indirectly: a HALF-wave film
-			// (twice the thickness, δ=π, e^{-2iδ}=+1) must reproduce the
+			// Cross-check that the round-trip phase factor is really
+			// e^{+2iδ} = -1 at the quarter-wave thickness (δ = π/2 at normal
+			// incidence, so 2δ = π).  We assert this indirectly: a HALF-wave
+			// film (twice the thickness, δ=π, e^{+2iδ}=+1) must reproduce the
 			// BARE-substrate reflectance ((n0-n2)/(n0+n2))^2, independent
-			// of n1 -- the absentee-layer property.  If e^{-2iδ} were not
+			// of n1 -- the absentee-layer property.  If e^{+2iδ} were not
 			// hitting +/-1 at these thicknesses the identity would fail.
+			//
+			// (This block said e^{-2iδ} until 2026-07-30 -- the OPPOSITE
+			// convention, the one that pairs with a +i sinδ matrix and makes
+			// absorbing films diverge, which is precisely what the Airy<->TMM
+			// cross-check exists to catch.  It went unnoticed because these
+			// stacks are lossless at normal incidence, where δ is real and
+			// e^{+2iδ} and e^{-2iδ} coincide at ±1.  The evaluators have used
+			// e^{+2iδ} throughout; see this file's header and
+			// TmmReference.h.)
 			Stack sHalf = MakeSingleFilmStack(
 				MakeIndex( n0, 0.0 ), MakeIndex( n1, 0.0 ), 2.0 * d, MakeIndex( n2, 0.0 ) );
 			const double Rhalf = TmmReflectanceUnpolarized( sHalf, lambda0, 0.0 );
 			const double bnum = n0 - n2, bden = n0 + n2;
 			const double Rbare = ( bnum / bden ) * ( bnum / bden );
 			Check( std::fabs( Rhalf - Rbare ) < tol,
-			       "half-wave absentee layer == bare substrate (confirms e^{-2iδ}=+1)" );
+			       "half-wave absentee layer == bare substrate (confirms e^{+2iδ}=+1)" );
 		}
 
 		// Perfect AR: n1 = sqrt(n0 n2) -> R == 0 exactly at the design
-		// wavelength and normal incidence.  This is the e^{-2iδ}=-1
+		// wavelength and normal incidence.  This is the e^{+2iδ}=-1
 		// destructive-interference null.
 		{
 			const double n0 = 1.0, n2 = 2.25;	// air / (n2=2.25)
@@ -418,9 +441,11 @@ int main()
 	//------------------------------------------------------------------
 	// [6/7] Total internal reflection (lossless energy conservation) and
 	//       frustrated TIR.  Exercises the EVANESCENT cosθ branch
-	//       (Re(N cosθ) = 0), which the absorbing-conductor stacks above
-	//       never reach -- a wrong evanescent branch passes [1..5] but
-	//       fails here.
+	//       (Re(N cosθ) = 0 in exact arithmetic; ~6.1e-17 in floating
+	//       point), which the absorbing-conductor stacks above never reach --
+	//       a wrong evanescent branch passes [1..5] but fails here, PROVIDED
+	//       the gap is thick enough: the thin-gap rows below do not bite
+	//       until ~4 µm, which is why the thick sweep was added.
 	//------------------------------------------------------------------
 	std::cout << "\n[6/7] Total internal reflection and frustrated TIR (evanescent branch)\n";
 	{
@@ -482,6 +507,53 @@ int main()
 		Check( Rthick > 1.0 - 1e-4,    "frustrated TIR: thick gap -> full TIR" );
 		std::printf( "  frustrated TIR: R(5nm)=%.5f  R(1000nm)=%.5f ; worst |TMM-Airy|=%.3e\n",
 		             Rthin, Rthick, worstFTIR );
+
+		// THICK evanescent gaps.  The sweep above stops at 1000 nm, far short
+		// of where a wrong evanescent branch actually shows: picking the
+		// GROWING root makes |e^{+2i delta}| diverge, and the onset is
+		// d ~ 4 um.  Reverting this file's PickForwardCos to the pre-2026-07-30
+		// Re-first rule was verified by mutation to pass the ENTIRE rest of
+		// this binary (6138/0); these rows are what kill that mutant.  Beyond
+		// critical with no absorption in the gap, R is exactly 1 at any gap
+		// thickness and whatever sits below never sees any light.
+		{
+			double worstThick = 0.0;
+			bool   allFinite = true;
+			const double thickNm[] = { 4e3, 1e4, 1e5, 1e6, 1e7 };
+			const struct { const char* tag; double ns, ks; } below[] = {
+				{ "glass",    1.5,   0.0  },
+				{ "silver",   0.144, 3.28 },
+				{ "titanium", 2.74,  3.81 },
+			};
+			for( size_t bi = 0; bi < sizeof(below)/sizeof(below[0]); ++bi ) {
+				for( size_t gi = 0; gi < sizeof(thickNm)/sizeof(thickNm[0]); ++gi ) {
+					const Stack st = MakeSingleFilmStack(
+						MakeIndex( 1.50, 0.0 ), MakeIndex( 1.00, 0.0 ), thickNm[gi],
+						MakeIndex( below[bi].ns, below[bi].ks ) );
+					const ReflectanceResult t = TmmReflectance( st, 550.0, 60.0 * kDeg );
+					const ReflectanceResult a = AiryReflectance( st, 550.0, 60.0 * kDeg );
+					if( !PhysicallyValid( t ) || !PhysicallyValid( a ) ) allFinite = false;
+					worstThick = std::max( worstThick, std::fabs( t.Unpolarized() - 1.0 ) );
+					worstThick = std::max( worstThick, std::fabs( a.Unpolarized() - 1.0 ) );
+				}
+			}
+			Check( allFinite, "thick evanescent gap: TMM and Airy both finite and in [0,1]" );
+			Check( worstThick < 1e-9,
+			       "thick evanescent gap: R == 1 exactly (kills the growing-root branch mutant)" );
+
+			// And the invariant the branch rule exists to guarantee.
+			bool allDecay = true;
+			for( double n0 = 1.0; n0 <= 2.61; n0 += 0.1 )
+			for( double n1 = 0.2; n1 <= 3.01; n1 += 0.1 )
+			for( double th = 0.0; th <= 89.9 * kDeg; th += 3.0 * kDeg ) {
+				const Complex N0 = MakeIndex( n0, 0.0 );
+				const Complex N1 = MakeIndex( n1, 0.0 );
+				const Complex si = N0 * std::sin( th );
+				if( ( N1 * detail::CosThetaInMedium( N1, si ) ).imag() < 0.0 ) allDecay = false;
+			}
+			Check( allDecay, "oracle forward root DECAYS: Im(N cos) >= 0 for every medium" );
+			std::printf( "  thick evanescent gaps to 1e7 nm: worst |R - 1| = %.3e\n", worstThick );
+		}
 	}
 
 	//------------------------------------------------------------------
@@ -534,8 +606,12 @@ int main()
 		             worstHecht, measMin, measMax, lo, hi );
 
 		// Grazing-angle conditioning: as θ -> 90° the result must stay
-		// finite, TMM must track Airy, and R -> 1.  (Exactly 90° is a
-		// documented degenerate input -- η_p = N/0 -- and is NOT sampled.)
+		// finite, TMM must track Airy, and R -> 1.  (Exactly 90° USED to be a
+		// documented degenerate input -- η_p = N/0.  It is now finite on every
+		// topology tested, INCLUDING a stack whose film index equals the
+		// ambient's -- that film is at its own critical angle at grazing, and
+		// [8/8](a) below samples exactly 90 deg for it directly.  This sweep
+		// deliberately stops at 89.999 deg to test the APPROACH.)
 		const Stack g = MakeSingleFilmStack(
 			MakeIndex( 1.0, 0.0 ), MakeIndex( 2.40, 0.0 ), 120.0, MakeIndex( 2.74, 3.81 ) );
 		double worstGraz = 0.0;
@@ -551,6 +627,269 @@ int main()
 		Check( worstGraz < 1e-9, "grazing: TMM == Airy approaching 90 deg" );
 		Check( Rlast > 0.999, "grazing: R -> 1 as theta -> 90 deg" );
 		std::printf( "  grazing worst |TMM-Airy| = %.3e ; R(89.999 deg) = %.6f\n", worstGraz, Rlast );
+	}
+
+	// ------------------------------------------------------------------
+	// [8/8] Degenerate cos == 0 geometries (2026-07-30).
+	//
+	// These pin behaviour that the 2026-07-29/30 reformulation CLAIMED but
+	// that nothing exercised.  Before the reformulated layer matrix every case
+	// below was NaN; the claims were made from one-off probes, which is not a
+	// regression guard.  All four sub-blocks -- (a) exactly 90 deg,
+	// (b) film at its own critical angle, (d) the removable-singularity
+	// helpers, (c) the p-polarization sign -- are RED against the pre-fix
+	// ORACLE.
+	//
+	// THEY PIN THE ORACLE, NOT PRODUCTION.  Every `detail::` name here is
+	// RISE::ThinFilmReference::detail (see the SCOPE note in the file header).
+	// The production twins are ThinFilmProductionTest [Helpers] and [Branch];
+	// production comments must cite THOSE, not these.
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[8/8] Degenerate cos == 0 geometries (exactly grazing / film at own critical)\n" );
+
+		// (a) EXACTLY theta = 90 deg.  Previously documented as a permanent
+		// degeneracy ("R_p is NaN at 90 deg precisely").  It must now be
+		// finite with R -> 1 for every topology, INCLUDING a film whose index
+		// equals the ambient's -- that film is itself at its own critical
+		// angle at grazing, which is the case that reopened the degeneracy.
+		{
+			const double h = M_PI / 2.0;
+			struct { const char* tag; Stack st; } cases[] = {
+				{ "bare glass->air",
+				  MakeBareStack( MakeIndex(1.5,0.0), MakeIndex(1.0,0.0) ) },
+				{ "bare air->glass",
+				  MakeBareStack( MakeIndex(1.0,0.0), MakeIndex(1.5,0.0) ) },
+				{ "air/oxide/glass",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(2.0,0.0), 200.0, MakeIndex(1.5,0.0) ) },
+				{ "glass/airgap/glass (FTIR)",
+				  MakeSingleFilmStack( MakeIndex(1.5,0.0), MakeIndex(1.0,0.0), 200.0, MakeIndex(1.5,0.0) ) },
+				{ "air/absorbing film/glass",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(2.0,3.0), 100.0, MakeIndex(1.5,0.0) ) },
+				{ "air/AIR-INDEX film/glass (film at own crit)",
+				  MakeSingleFilmStack( MakeIndex(1.0,0.0), MakeIndex(1.0,0.0), 120.0, MakeIndex(1.5,0.0) ) },
+			};
+			for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
+				const ReflectanceResult t = TmmReflectance( cases[i].st, 550.0, h );
+				Check( PhysicallyValid( t ), "exactly 90 deg: TMM finite and in [0,1]" );
+				Check( std::fabs( t.Unpolarized() - 1.0 ) < 1e-4,
+				       "exactly 90 deg: R -> 1" );
+			}
+		}
+
+		// (b) A FILM sitting exactly at ITS OWN critical angle.  The TMM was
+		// NaN here (eta_p = Inf for p; -i sinD/eta = 0/0 for s).  The Airy
+		// closed form was 0/0 ALGEBRAICALLY but only produced a NaN on a
+		// LOSSLESS stack -- with any absorption below the film it returned a
+		// silent, finite, WRONG 1.0, which is why the absorbing rows below
+		// are the ones that matter.  Require
+		// finite, in-range, AND continuous with the two-sided limit -- a
+		// clamp would satisfy finiteness but not continuity.
+		{
+			// MUST include ABSORBING substrates.  A lossless-only set is the
+			// one sub-class where a broken evaluator can still look right:
+			// with k == 0 below the film the degenerate Airy quotient is
+			// 0/0 (loudly NaN), but with ANY absorption it is
+			// equal-but-nonzero over equal-but-nonzero and silently returns
+			// exactly 1 -- a perfect mirror.  The first version of this
+			// test used k == 0 everywhere (including a stack labelled
+			// "metal") and therefore passed against an evaluator that was
+			// wrong by up to 0.477 on real metals.
+			struct { const char* tag; double n0, n1, ns, ks; } cs[] = {
+				{ "glass/airgap/glass (lossless)", 1.5,  1.0,  1.5,   0.0  },
+				{ "oil/MgF2/glass (lossless)",     1.5,  1.38, 1.5,   0.0  },
+				{ "glass/airgap/SILVER",           1.5,  1.0,  0.144, 3.28 },
+				{ "glass/MgF2/ALUMINIUM",          1.5,  1.38, 1.02,  6.62 },
+				{ "enamel/airgap/TITANIUM",        1.52, 1.0,  2.74,  3.81 },
+			};
+			double worstJump = 0.0;
+			for( size_t i = 0; i < sizeof(cs)/sizeof(cs[0]); ++i ) {
+				// cos of the incidence angle at which the FILM is critical:
+				// n0 sin(theta) == n1  =>  cos = sqrt(1 - (n1/n0)^2)
+				const double ratio = cs[i].n1 / cs[i].n0;
+				const double cosC  = std::sqrt( 1.0 - ratio * ratio );
+				const double thC   = std::acos( cosC );
+				const Stack st = MakeSingleFilmStack(
+					MakeIndex( cs[i].n0, 0.0 ), MakeIndex( cs[i].n1, 0.0 ),
+					200.0, MakeIndex( cs[i].ns, cs[i].ks ) );
+
+				const ReflectanceResult at = TmmReflectance( st, 550.0, thC );
+				Check( PhysicallyValid( at ),
+				       "film at own critical angle: TMM finite and in [0,1]" );
+
+				// Continuity: the value at the singular point must sit between
+				// the two one-sided limits, not merely be finite.
+				const ReflectanceResult lo = TmmReflectance( st, 550.0, thC - 1e-9 );
+				const ReflectanceResult hi = TmmReflectance( st, 550.0, thC + 1e-9 );
+				Check( PhysicallyValid( lo ) && PhysicallyValid( hi ),
+				       "film at own critical angle: neighbourhood finite" );
+				const double jump =
+					std::max( std::fabs( at.Unpolarized() - lo.Unpolarized() ),
+					          std::fabs( at.Unpolarized() - hi.Unpolarized() ) );
+				worstJump = std::max( worstJump, jump );
+				Check( jump < 1e-6,
+				       "film at own critical angle: CONTINUOUS with two-sided limit" );
+
+				// The Airy form must AGREE with the TMM here.  It is not
+				// undefined: the vanishing 2*N1*cos1 is factored out of the
+				// quotient analytically rather than divided away, so the
+				// limit survives.  (An earlier version of this test asserted
+				// the opposite -- that Airy is undefined here -- which was
+				// true only of the pre-factoring implementation, and only
+				// for lossless stacks; on an absorbing substrate that
+				// implementation returned a silent, finite, WRONG 1.0.)
+				const ReflectanceResult ay = AiryReflectance( st, 550.0, thC );
+				Check( PhysicallyValid( ay ),
+				       "film at own critical angle: Airy form finite (factored, not 0/0)" );
+				Check( std::fabs( ay.Unpolarized() - at.Unpolarized() ) < 1e-9,
+				       "film at own critical angle: Airy == TMM (catches the silent R=1 mirror)" );
+			}
+			std::printf( "  worst |R(crit) - R(crit +/- 1e-9)| = %.3e\n", worstJump );
+		}
+
+		// (d) Pin the removable-singularity helpers directly.
+		//
+		// Review found that a mutant making Sinc() return a constant 1 below
+		// the cut -- dropping the -z^2/6 + z^4/120 terms -- passes the ENTIRE
+		// suite, because no stack in any grid puts |delta| inside (0, 1e-4):
+		// the series branch is only ever entered at delta == 0 exactly, where
+		// every candidate agrees.  The helpers are load-bearing for the
+		// degeneracy fix, so pin them where they actually differ.
+		//
+		// TWO LIMITS OF THIS BLOCK, both closed by ThinFilmProductionTest
+		// [Helpers] rather than here:
+		//  * It binds the ORACLE's helpers only.  The production Sinc stub
+		//    mutant survives this test 6138/0.
+		//  * "long-double reference" is NOT higher precision on arm64 macOS,
+		//    where sizeof(long double) == 8 -- the same type as the value
+		//    under test.  What this cross-check pins is the FORMULA (an
+		//    independent series / direct evaluation) and the branch
+		//    continuity, NOT accuracy beyond double.  [Helpers] supplies the
+		//    genuinely-higher-precision pin, against mpmath constants computed
+		//    at 50 decimal digits.
+		{
+			double worstSinc = 0.0, worstE = 0.0;
+			// |z| straddling the 1e-4 cut, including well inside the series
+			// range where a constant-1 stub is wrong at the 1e-9 level.
+			// Straddle BOTH cuts: Sinc switches at |z| = 1e-4, and
+			// ExpM1OverZ switches at |z| = 1 (identity below, direct above --
+			// the direct form is the only one that survives a thick absorber,
+			// the identity the only one accurate for small |z|).
+			const double mags[] = { 5.0, 2.0, 1.001, 1.0, 0.999, 0.5, 1e-1,
+			                        1e-2, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 1e-6, 1e-9 };
+			for( size_t i = 0; i < sizeof(mags)/sizeof(mags[0]); ++i ) {
+				for( int phase = 0; phase < 4; ++phase ) {
+					const double th = phase * ( M_PI / 4.0 );
+					const Complex z( mags[i] * std::cos( th ), mags[i] * std::sin( th ) );
+
+					// Reference, evaluated in long double -- which on arm64
+					// macOS IS double (see the note above), so this pins the
+					// FORMULA, not extra precision.  The form must be
+					// chosen per magnitude for the REFERENCE too: an 8-term
+					// series is exact for small |z| but its own truncation
+					// error is O(1) by |z| = 5, while the direct long-double
+					// evaluation is accurate for large |z| and cancels for
+					// small |z| -- the same trade the helpers navigate.
+					std::complex<long double> zl( (long double)z.real(), (long double)z.imag() );
+					std::complex<long double> sincRef, eRef;
+					if( mags[i] <= 1e-1 ) {
+						std::complex<long double> term( 1.0L, 0.0L );
+						sincRef = std::complex<long double>( 1.0L, 0.0L );
+						for( int k = 1; k <= 8; ++k ) {      // sin(z)/z
+							term *= -( zl * zl );
+							long double f = 1.0L;
+							for( int m = 2; m <= 2*k+1; ++m ) f *= m;
+							sincRef += term / f;
+						}
+						std::complex<long double> eTerm( 1.0L, 0.0L );
+						eRef = std::complex<long double>( 1.0L, 0.0L );
+						for( int k = 1; k <= 8; ++k ) {      // (e^z-1)/z
+							eTerm *= zl;
+							long double f = 1.0L;
+							for( int m = 2; m <= k+1; ++m ) f *= m;
+							eRef += eTerm / f;
+						}
+					} else {
+						sincRef = std::sin( zl ) / zl;
+						eRef    = ( std::exp( zl ) - std::complex<long double>( 1.0L, 0.0L ) ) / zl;
+					}
+
+					const Complex gotS = detail::Sinc( z );
+					const Complex gotE = detail::ExpM1OverZ( z );
+					worstSinc = std::max( worstSinc, (double)
+						std::abs( std::complex<long double>( gotS.real(), gotS.imag() ) - sincRef ) );
+					worstE = std::max( worstE, (double)
+						std::abs( std::complex<long double>( gotE.real(), gotE.imag() ) - eRef ) );
+				}
+			}
+			Check( worstSinc < 1e-15, "oracle Sinc matches an independent 8-term series/direct reference across the cut" );
+			Check( worstE   < 1e-15, "oracle ExpM1OverZ matches an independent 8-term series/direct reference across the cut" );
+
+			// Both are exactly 1 at z == 0 (the analytic limit), and CONTINUOUS
+			// across the branch switch -- a stub that returns 1 everywhere
+			// below the cut passes the first check but fails the third.
+			Check( detail::Sinc( Complex(0,0) ) == Complex(1,0), "Sinc(0) == 1 exactly" );
+			Check( detail::ExpM1OverZ( Complex(0,0) ) == Complex(1,0), "ExpM1OverZ(0) == 1 exactly" );
+			const Complex justIn ( 9.99e-5, 0.0 ), justOut( 1.001e-4, 0.0 );
+			Check( std::abs( detail::Sinc( justIn ) - detail::Sinc( justOut ) ) < 1e-8,
+			       "Sinc continuous across the series cut" );
+			// ExpM1OverZ's |z| = 1 domain split, with a complex z so both the
+			// real and imaginary parts of the two branches must agree.
+			const Complex eIn( 0.6, 0.8 ), eOut( 0.6006, 0.8008 );   // |z| = 1 -+ 1e-3
+			Check( std::abs( detail::ExpM1OverZ( eIn ) - detail::ExpM1OverZ( eOut ) ) < 1e-3,
+			       "ExpM1OverZ continuous across the |z| = 1 domain split" );
+			Check( std::abs( detail::Sinc( Complex(1e-2,0) ) - Complex(1,0) ) > 1e-6,
+			       "Sinc is NOT a constant 1 below the cut (kills the stub mutant)" );
+			std::printf( "  Sinc worst %.3e ; ExpM1OverZ worst %.3e"
+			             " (vs an independent series/direct reference, NOT extra precision)\n",
+			             worstSinc, worstE );
+		}
+
+		// (c) Pin the p-polarization sign of the interface terms.
+		//
+		// The Airy<->TMM agreement test CANNOT catch this: R = |r|^2, and
+		// negating BOTH r01 and r1s leaves the Airy denominator
+		// (1 + r01 r1s phi) invariant, so a whole-branch p sign flip passes
+		// 6086/6086 (verified by mutation during review).  The reformulation
+		// introduced that degree of freedom, so pin it directly against the
+		// closed-form Fresnel amplitude, sign included.
+		{
+			const double n0 = 1.0, n1 = 1.5;
+			double worstS = 0.0, worstP = 0.0;
+			for( size_t ti = 0; ti < sizeof(kThetaDeg)/sizeof(kThetaDeg[0]); ++ti ) {
+				const double th = kThetaDeg[ti] * kDeg;
+				const double c0 = std::cos( th );
+				const double s1 = ( n0 / n1 ) * std::sin( th );
+				const double c1 = std::sqrt( 1.0 - s1 * s1 );
+
+				// Textbook amplitude coefficients in the SAME (Macleod
+				// admittance) convention the evaluator uses.
+				const double rs = ( n0 * c0 - n1 * c1 ) / ( n0 * c0 + n1 * c1 );
+				const double rp = ( n0 * c1 - n1 * c0 ) / ( n0 * c1 + n1 * c0 );
+
+				// Target detail::InterfaceTerms -- the helper the evaluator
+				// actually uses (an earlier version of this pin targeted
+				// detail::InterfaceReflection, which is called nowhere, so it
+				// pinned dead code).  NOTE this is the ORACLE's InterfaceTerms;
+				// the production twin is ThinFilmProductionTest [Branch](c).
+				Complex as, bs, ap, bp;
+				detail::InterfaceTerms( MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolS, as, bs );
+				detail::InterfaceTerms( MakeIndex(n0,0.0), Complex(c0,0.0),
+					MakeIndex(n1,0.0), Complex(c1,0.0), ePolP, ap, bp );
+				const Complex gs = ( as - bs ) / ( as + bs );
+				const Complex gp = ( ap - bp ) / ( ap + bp );
+
+				worstS = std::max( worstS, std::fabs( gs.real() - rs ) );
+				worstP = std::max( worstP, std::fabs( gp.real() - rp ) );
+				Check( std::fabs( gs.imag() ) < 1e-15 && std::fabs( gp.imag() ) < 1e-15,
+				       "p-sign pin: lossless interface gives real amplitudes" );
+			}
+			Check( worstS < 1e-14, "p-sign pin: s amplitude matches closed form (SIGNED)" );
+			Check( worstP < 1e-14, "p-sign pin: p amplitude matches closed form (SIGNED)" );
+			std::printf( "  signed amplitude match: worst |s| = %.3e, worst |p| = %.3e\n",
+			             worstS, worstP );
+		}
 	}
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";

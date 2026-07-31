@@ -289,6 +289,15 @@ and do not leave them behind when you finish a task.
   xcodebuild -project rise.xcodeproj -scheme RISE-GUI -configuration Deployment build 2>&1 | grep "warning:" | grep -v appintentsmetadataprocessor   # expect empty
   ```
 
+  ⚠ **`Deployment` is NOT the configuration that ships.**  The release DMG is
+  built from `Opto` (`scripts/create_macos_release.sh`, scheme `RISE-GUI-Opto`).
+  `Opto` carries `-ffast-math` and full `LLVM_LTO = YES`; `Deployment` carries
+  neither and uses `YES_THIN`.  This warning gate is fine for warnings, but
+  anything **FP- or LTO-sensitive must additionally be verified against `Opto`**
+  — historically the worst miscompiles only appeared with full LTO.  (The
+  finite-math half of that gap was closed 2026-07-29 when every configuration
+  gained `-fno-finite-math-only`; the rest of the gap remains.)
+
   Incremental builds will hide warnings on files that didn't recompile.
   When you've finished a task that touched headers or shared sources,
   always do at least one clean rebuild to surface warnings the

@@ -633,7 +633,9 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 			// identical-alpha alternative to win unconditionally.  Using
 			// `numeric_limits<double>::infinity()` is the textbook
 			// sentinel, but the build enables `-ffast-math`
-			// (-ffinite-math-only), under which `infinity()` is UB.
+			// (-ffinite-math-only), under which `infinity()` was UB.  macOS pairs
+			// -fno-finite-math-only since 2026-07-29, so it no longer is -- but the
+			// finite-sentinel convention below is repo-wide and stays.
 			// `numeric_limits<double>::max()` is the right finite-math
 			// equivalent: any real-valued error is < max, so the
 			// alternative still always wins when realcase0 != 1.  The

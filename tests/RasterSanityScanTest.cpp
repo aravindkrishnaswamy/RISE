@@ -17,8 +17,11 @@
 //    that was historically silent.  The file-write sanity scan catches
 //    this class of issue before it ships to an observer.
 //
-//    NaN / Inf detection was deliberately NOT added because RISE
-//    builds with -ffast-math which makes those predicates unreliable.
+//    NaN / Inf detection was deliberately NOT added: gross-scale corruption
+//    is immediately user-visible, while small negatives clamp silently to
+//    black.  (The older rationale -- "-ffast-math makes those predicates
+//    unreliable" -- was doubly wrong: Config.Linux never enabled fast-math,
+//    and macOS pairs -fno-finite-math-only since 2026-07-29.)
 //
 //////////////////////////////////////////////////////////////////////
 

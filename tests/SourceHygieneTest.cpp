@@ -3,13 +3,23 @@
 //  SourceHygieneTest.cpp - mechanical guardrail against the recurring
 //    "false-green test" disease.
 //
-//  RISE builds with -ffast-math (-ffinite-math-only); under it the
-//  compiler may assume no NaN/Inf and FOLD a NaN-sentinel comparison to
-//  a constant.  A test that returns std::nan("") as a "not found"
-//  sentinel and then asserts `abs(x - K) < eps` therefore silently
+//  RISE used to build with bare -ffast-math (implying -ffinite-math-only);
+//  under it the compiler may assume no NaN/Inf and FOLD a NaN-sentinel
+//  comparison to a constant.  A test that returns std::nan("") as a "not
+//  found" sentinel and then asserts `abs(x - K) < eps` therefore silently
 //  PASSES even when the lookup failed -- a false-green that hid a real
 //  bug THREE times during the snapshot/transaction work (see
 //  docs/skills/red-proof-and-test-integrity.md).
+//
+//  As of 2026-07-29 every macOS configuration also passes
+//  -fno-finite-math-only, so NaN/Inf comparisons evaluate correctly again
+//  and that specific folding no longer occurs (see
+//  docs/INTEGRATOR_BUGFIX_FINDINGS.md §"SUPERSEDED 2026-07-29").  This
+//  guardrail is deliberately KEPT anyway: it is one build-setting edit
+//  away from mattering again (a -Ofast anywhere re-implies fast-math), it
+//  still holds for compilers/platforms outside our four build systems,
+//  and a NaN used as control flow is fragile in a test regardless of
+//  whether the comparison happens to fold today.
 //
 //  This test scans every other tests/*.cpp for foldable not-found
 //  sentinels and FAILS the suite if any is found, so the disease can
@@ -63,9 +73,10 @@ static void Check( bool condition, const std::string& testName )
 	else { failCount++; std::cout << "  FAIL: " << testName << std::endl; }
 }
 
-// Forbidden -ffast-math-foldable constructs.  A NaN/Inf VALUE compiled
-// under -ffinite-math-only is undefined-ish: comparisons may fold, so it
-// must never be used as a control-flow sentinel in a test.
+// Forbidden NaN/Inf-sentinel constructs.  Under -ffinite-math-only a NaN/Inf
+// VALUE is undefined-ish and its comparisons may fold; macOS no longer sets
+// that flag (see the header), but a NaN must never be used as a control-flow
+// sentinel in a test regardless -- one -Ofast anywhere re-arms the fold.
 static const char* kForbidden[] = {
 	"std::nan(",
 	"quiet_NaN(",
