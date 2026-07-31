@@ -200,9 +200,12 @@
 //  suite was run with Json.cpp's SerializeNumber guard reverted to
 //  std::isnan/std::isinf -> exactly TWO T15 checks failed ("the
 //  non-numeric args survive ...", "the non-finite number serialized as
-//  the documented fallback 0"), proving the intrinsic guard really IS
-//  folded to dead code under the production -ffast-math flags and the
-//  literal `inf` escapes into the serialized JSON.  Round-3 additions:
+//  the documented fallback 0").  NOTE (2026-07-29): that mutation result
+//  is NO LONGER REPRODUCIBLE -- it depended on -ffinite-math-only folding
+//  the intrinsic guard to dead code, and macOS now pairs
+//  -fno-finite-math-only, so std::isnan/std::isinf work.  The T15 checks
+//  remain valid as behavioural assertions; they no longer prove anything
+//  about the intrinsic guard being folded.  Round-3 additions:
 //  (h) the suite was run with the Anthropic duplicate-tool_use-id gate
 //  disabled -> exactly FIVE T16 checks failed ("anthropic duplicate
 //  tool_use ids -> ProviderError ...", "... errorKind Provider", "the

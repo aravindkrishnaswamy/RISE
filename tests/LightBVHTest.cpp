@@ -10,7 +10,10 @@
 //
 //  Build (from project root):
 //    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include
-//        -O3 -ffast-math -funroll-loops -Wall -pedantic
+//        -O3 -ffast-math -fno-finite-math-only -funroll-loops -Wall -pedantic
+//        (-fno-finite-math-only is REQUIRED to match production since
+//         2026-07-29; without it std::isfinite/isnan fold to constants
+//         and NaN-sentinel assertions silently pass -- see CLAUDE.md.)
 //        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53
 //        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING
 //        -c tests/LightBVHTest.cpp -o tests/LightBVHTest.o

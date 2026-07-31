@@ -134,7 +134,9 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 	// mathematically undefined for a negative base with the general
 	// non-integer exponent computed above; under -ffast-math this is NOT
 	// guaranteed to produce a clean NaN (see docs/skills -- ffast-math has
-	// no reliable infinity/NaN sentinel; reject invalid inputs at the value
+	// historically no reliable infinity/NaN sentinel (pre-2026-07-29; macOS
+	// pairs -fno-finite-math-only now, so the predicates work) -- but the
+	// design below stands on its own: reject invalid inputs at the value
 	// layer, don't rely on isnan/isinf downstream).  The Ashikmin-Shirley
 	// half-vector lobe is only defined for hn (== cos(theta_h)) in [0,1];
 	// hn <= 0 has no valid reflection through this half-vector, so the

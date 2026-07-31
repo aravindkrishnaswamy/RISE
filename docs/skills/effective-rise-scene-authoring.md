@@ -372,10 +372,13 @@ object binds it.
 
 - Braces on their own lines; single-line chunks fail to parse.
 - `nan` / `inf` / non-numeric tokens in any numeric parameter
-  hard-fail at parse (text-domain validation — the build's
-  `-ffast-math` makes value-domain NaN guards unreliable, so the
-  parser is the wall).  Inline trailing `# comments` after values are
-  fine.
+  hard-fail at parse (text-domain validation — string-layer rejection
+  catches bad spellings before any conversion and is platform-independent,
+  so the parser is the wall.  Historically this was also justified by
+  `-ffast-math` making value-domain NaN guards unreliable; macOS pairs
+  `-fno-finite-math-only` since 2026-07-29 so those guards work now, but
+  the string-layer design remains correct).  Inline trailing `# comments`
+  after values are fine.
 - Unknown parameter names and unknown enum strings hard-fail with the
   chunk + line in the error.  Read the error before re-trying.
 

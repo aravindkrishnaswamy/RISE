@@ -143,15 +143,20 @@ static void TestCLIStyleOverride()
 // `NaN <= 0.0` is false (every ordered comparison with NaN is), so the
 // plain `pixelAR <= 0.0` check let NaN through and poisoned every
 // camera's projection matrix on the resync.  A std::isfinite() guard was
-// added for it -- but this library compiles with -ffast-math
-// (-> -ffinite-math-only), under which clang folds std::isfinite(x) to
-// `true` and DELETES the guard.  The guard read correctly in source and
+// added for it -- but this library then compiled with bare -ffast-math
+// (-> -ffinite-math-only), under which clang folded std::isfinite(x) to
+// `true` and DELETED the guard.  The guard read correctly in source and
 // did nothing in the binary, and nothing tested it.
 //
-// Measured on this toolchain for a noinline predicate taking a double:
+// Measured 2026-06 on this toolchain for a noinline predicate taking a
+// double, under the THEN-current flags (bare -ffast-math):
 //     !std::isfinite(v)                  rejects NaN: NO   inf: NO
 //     !(v >= -DBL_MAX && v <= DBL_MAX)               NO        YES
 //     volatile round-trip + exponent bit test        YES       YES
+//
+// SUPERSEDED 2026-07-29: macOS now also passes -fno-finite-math-only, so
+// row 1 reads YES / YES -- plain std::isfinite works.  Row 2 is unchanged
+// (the range idiom is NaN-blind by construction, not by flag).
 //
 // This test therefore exercises the SHIPPED, optimised code path.  NaN and
 // inf are produced via strtod (a runtime library call) so that the test's

@@ -200,8 +200,19 @@ Surfaced by the measurement arc; ordered by relevance to Candidate C:
 4. **BDPT α=1 coverage matte** — BDPT bakes coverage into RGB and reports α=1;
    irrelevant to over-black beauty (correct), matters only for compositing over a
    non-black background. Touches IntegratePixelRGB/splat/denoiser-AOV/VCM.
-5. **`-ffast-math` dead-guards debt** — decided leave-as-is (latent, no confirmed
-   harm); revisit only if a real integrator Inf/NaN surfaces.
+5. ~~**`-ffast-math` dead-guards debt** — decided leave-as-is (latent, no confirmed
+   harm); revisit only if a real integrator Inf/NaN surfaces.~~
+   **CLOSED 2026-07-29:** `-fno-finite-math-only` is now on in every macOS build
+   configuration, so the guards are live again. Measured cost +2.7 % CPU on a
+   shading-bound render (95 % CI [+2.14 %, +3.25 %]); on a traversal-bound one
+   the result is a WEAK NULL, not a measured zero — −0.48 % with 95 % CI
+   [−3.63 %, +2.66 %], which bounds the cost below roughly +2.7 % but does not
+   exclude it. (The earlier "+3.23 % in BVH traversal" attribution was wrong —
+   see
+   [INTEGRATOR_BUGFIX_FINDINGS.md](INTEGRATOR_BUGFIX_FINDINGS.md)
+   §"SUPERSEDED 2026-07-29"). It immediately surfaced a real masked bug (a
+   critical-angle Inf/Inf NaN in the thin-film TMM), which is the trigger
+   condition this item was waiting on.
 
 ---
 

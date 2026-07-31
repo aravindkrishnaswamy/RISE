@@ -1,5 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
+//  NOTE 2026-07-30: -ffast-math folding remarks below are historical (macOS
+//  pairs -fno-finite-math-only since 2026-07-29).  See CLAUDE.md.
+//
 //  AgentFirstSliceTest.cpp - Facet 5 (agentic surface) slice 0c: the
 //    CAPSTONE end-to-end test.
 //
@@ -36,6 +39,7 @@
 //
 //  Self-contained: an inline native-v7 scene (reused from slice 0b), OIDN
 //  off, no RISE_MEDIA_PATH.
+//
 //
 //////////////////////////////////////////////////////////////////////
 

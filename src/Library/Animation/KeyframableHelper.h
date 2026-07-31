@@ -124,7 +124,7 @@ namespace RISE
 		//! should return null (i.e. reject the edit) on false.
 		//!
 		//! IMPORTANT: this code is compiled with `-ffast-math`, which
-		//! permits the compiler to assume NaN / Inf never occur and
+		//! permitted the compiler to assume NaN / Inf never occur (bare -ffast-math; fixed 2026-07-29) and
 		//! optimise ordinary FP classification predicates to constants.
 		//! Defence-in-depth is two layers:
 		//!   1. Textual pre-check rejects "nan" / "inf" / "infinity"

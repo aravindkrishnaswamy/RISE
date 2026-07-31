@@ -36,7 +36,7 @@ namespace RISE
 			// Clamp a non-finite field value to 0 so a nan/inf never flows into a
 			// colour slot or (critically) the displacement bake, where it would
 			// corrupt a vertex.  Load-bearing only because ExpressionProgram::IsFinite
-			// is volatile-hardened to survive -ffast-math; a naive bit test folds away.
+			// is volatile-hardened; a naive bit test folded away under bare -ffast-math (fixed 2026-07-29, so it no longer would -- kept for uniformity).
 			static Scalar Safe( const Scalar v ) { return ExpressionProgram::IsFinite( v ) ? v : Scalar(0); }
 
 		public:

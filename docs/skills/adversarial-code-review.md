@@ -66,7 +66,8 @@ For any change whose correctness rests on NEW tests (editor/state work
 especially), ALWAYS include two standing lenses on top of the
 domain-specific ones:
 - **Test integrity** — does each new assertion actually FAIL without the
-  fix (RED-proven)?  Any `-ffast-math`-foldable NaN/Inf sentinel
+  fix (RED-proven)?  Any `SourceHygieneTest`-forbidden NaN/Inf sentinel (foldable under
+  `-ffinite-math-only`, which macOS no longer sets — the ban stands anyway)
   (`SourceHygieneTest` enforces this), wrong-observable assertion (e.g.
   reading `.x` when the code writes `.y`), or check the setup already
   guarantees?  This lens caught false-green tests THREE times.

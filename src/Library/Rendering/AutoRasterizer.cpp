@@ -663,7 +663,7 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 		const double be = bdpt.meanVar * bdpt.rasSeconds;
 		// σ²·T(PT) / σ²·T(BDPT) > τ_bdpt -> BDPT.  When BDPT reads
 		// noise-free at probe spp (be <= 0) it wins iff PT still carries
-		// noise — handled without forming an (under -ffast-math, UB)
+		// noise — handled without forming an (UB under bare -ffast-math; fixed 2026-07-29, convention retained)
 		// infinity by deciding the be<=0 branch directly.
 		bool   chooseBdpt;
 		double ratio = 0.0;

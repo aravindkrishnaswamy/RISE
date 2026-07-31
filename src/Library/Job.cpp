@@ -2916,7 +2916,7 @@ static IScalarPainter* ResolveScalarPainterArg(
 	// Reject non-finite SPELLINGS (nan / inf / infinity) at the STRING layer.
 	// These Reference-kind painter slots bypass the descriptor's
 	// AllTokensAreFiniteNumbers gate (it runs only for Double/Vec/UInt kinds), and
-	// value-level isfinite/isnan is unreliable under -ffast-math -- so the same
+	// value-level isfinite/isnan was unreliable under bare -ffast-math (fixed 2026-07-29; the string layer is still preferred) -- so the same
 	// spelling check must live here.  (errno==ERANGE below only catches overflow
 	// like 1e999; strtod("inf")/strtod("nan") set no errno.)  Runs AFTER the
 	// named-painter lookup above, so a painter literally named "inf" is unaffected.

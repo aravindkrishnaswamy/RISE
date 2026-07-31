@@ -1,5 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
+//  NOTE 2026-07-30: the "std::isfinite is folded, use comparisons" rationale
+//  below is historical (macOS pairs -fno-finite-math-only since 2026-07-29).
+//  The comparison-based checks are kept because they also catch out-of-range
+//  values, which a finiteness test would not.  See CLAUDE.md.
+//
 //  ThinFilmAnodizeSwatchTest.cpp - Phase-1 anodize-colour VALIDATION
 //    GATE for the thin-film interference feature
 //    (docs/THIN_FILM_INTERFERENCE.md §8/§9, piece P1-C).
@@ -39,6 +44,7 @@
 //  Tabs: 4
 //
 //  License Information: Please see the attached LICENSE.TXT file
+//
 //
 //////////////////////////////////////////////////////////////////////
 
