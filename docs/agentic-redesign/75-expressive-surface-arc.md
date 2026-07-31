@@ -276,3 +276,21 @@ main checkout after any worktree agent.  Runs: gemini via
   hallucinated `gallery` field that reportedly failed SILENTLY — spun
   off as its own investigation (agent-side insert validation vs the
   descriptor hard-fail scene loading gets).
+- **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
+  and a third first-party confirmation of the mechanism law.**  A
+  worktree-isolated investigation traced the insert path
+  (`AgentSession::InsertChunk` → `Job::ApplyCstInsertChunk` →
+  `DeriveToJob` PASS 1) and found it runs the SAME descriptor validation
+  as scene-file loading; the actual trajectory response for the
+  `gallery` inserts was a hard blocking rejection with an actionable
+  near-miss diagnostic ("`gallery` is not a valid parameter of
+  `standard_object` (did you mean 'geometry'?) -- valid parameters
+  are: ..."), and the model ACTED on it — every affected object was
+  re-inserted correctly with `geometry`; the final scene has no
+  orphans.  Existing regression coverage already red-proofs the class
+  (`AgentChunkCrudTest` R1(c)/(d)).  No code changed.  Two lessons
+  logged: (1) blocking + actionable near-miss diagnostics get acted on
+  in the wild — the strongest in-session datapoint yet for the S4
+  design shape; (2) the S0.4 audit reported a trajectory claim without
+  checking the response payload — "trajectory forensics before belief"
+  (74-log §6) applies to audit reports too, including ours.
