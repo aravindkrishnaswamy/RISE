@@ -731,9 +731,17 @@ namespace
 		return scene.str();
 	}
 
+	enum class SurfaceReceiverMaterial
+	{
+		Lambertian,
+		OrenNayar,
+		IsotropicPhong
+	};
+
 	std::string SurfaceFireReceiverScene(
 		const bool positionalLight = false,
-		const bool orenNayarReceiver = false )
+		const SurfaceReceiverMaterial receiverMaterial =
+			SurfaceReceiverMaterial::Lambertian )
 	{
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
 		const Point3 fireMin = positionalLight ?
@@ -745,10 +753,19 @@ namespace
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
 			"shaderop DefaultPathTracing\n}\n"
 			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n";
-		if( orenNayarReceiver ) {
+		if( receiverMaterial == SurfaceReceiverMaterial::OrenNayar ) {
 			scene <<
 				"orennayar_material\n{\nname receiver\nreflectance white\n"
 				"roughness 1.0\n}\n";
+		} else if(
+			receiverMaterial == SurfaceReceiverMaterial::IsotropicPhong ) {
+			scene <<
+				"uniformcolor_painter\n{\nname phong_diffuse\n"
+				"color 0.25 0.25 0.25\n}\n"
+				"uniformcolor_painter\n{\nname phong_glossy\n"
+				"color 0.75 0.75 0.75\n}\n"
+				"isotropic_phong_material\n{\nname receiver\n"
+				"rd phong_diffuse\nrs phong_glossy\nN 1.0\n}\n";
 		} else {
 			scene <<
 				"lambertian_material\n{\nname receiver\nreflectance white\n}\n";
@@ -3732,7 +3749,8 @@ namespace
 				".RISEscene" );
 		{
 			std::ofstream output(scenePath);
-			output << SurfaceFireReceiverScene(false,true);
+			output << SurfaceFireReceiverScene(
+				false,SurfaceReceiverMaterial::OrenNayar);
 		}
 
 		IJobPriv* job = nullptr;
@@ -3829,6 +3847,119 @@ namespace
 				"Oren-Nayar surface volume NEE and brute-force march agree through shader dispatch" );
 			Check( NearRelative(ptOn,shaderOn,0.08),
 				"Oren-Nayar surface volume NEE agrees across both PT entry routes" );
+			safe_release(integrator);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
+	void TestIsotropicPhongSurfaceVolumeNEEEquality()
+	{
+		std::cout << "TestIsotropicPhongSurfaceVolumeNEEEquality" << std::endl;
+		const std::filesystem::path scenePath =
+			std::filesystem::temp_directory_path() /
+			( "rise_isotropic_phong_fire_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) +
+				".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SurfaceFireReceiverScene(
+				false,SurfaceReceiverMaterial::IsotropicPhong);
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"mixed Isotropic-Phong receiver and off-axis fire fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*shader,true) &&
+				marchOnlyCaster,
+				"Isotropic-Phong brute-force caster initializes without a volume-emission CDF" );
+			if( marchOnlyCaster ) {
+				marchOnlyCaster->AttachScene(job->GetScene());
+			}
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			Check( shader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*shader,true) && neeCaster,
+				"Isotropic-Phong volume-NEE caster initializes with the fire CDF" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const Scalar nm = 500.0;
+			const unsigned int samples = 320000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			StabilityConfig config;
+			config.maxDiffuseBounce = 2;
+			config.maxGlossyBounce = 2;
+			PathTracingIntegrator* integrator =
+				new PathTracingIntegrator(ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+			auto meanPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,
+						sampler,nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+			auto meanShaderRoute = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			const Scalar ptOn = meanPT(*neeCaster,0x15070001u);
+			const Scalar ptOff = meanPT(*marchOnlyCaster,0x15070002u);
+			const Scalar shaderOn =
+				meanShaderRoute(*neeCaster,0x15070003u);
+			const Scalar shaderOff =
+				meanShaderRoute(*marchOnlyCaster,0x15070004u);
+			std::cout << "  Isotropic-Phong PT on/off=" <<
+				ptOn << "/" << ptOff << " shader on/off=" <<
+				shaderOn << "/" << shaderOff << std::endl;
+			Check( ptOn>0.0 && ptOff>0.0 &&
+				NearRelative(ptOn,ptOff,0.01),
+				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through pure PT" );
+			Check( shaderOn>0.0 && shaderOff>0.0 &&
+				NearRelative(shaderOn,shaderOff,0.01),
+				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through shader dispatch" );
+			Check( NearRelative(ptOn,shaderOn,0.01),
+				"mixed Isotropic-Phong surface volume NEE agrees across both PT entry routes" );
 			safe_release(integrator);
 		}
 
@@ -5591,6 +5722,7 @@ int main()
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestOrenNayarSurfaceVolumeNEEEquality();
+	TestIsotropicPhongSurfaceVolumeNEEEquality();
 	TestHollowCavityFullSphereVolumeNEEEquality();
 	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
