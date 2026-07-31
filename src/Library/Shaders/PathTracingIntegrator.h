@@ -101,10 +101,12 @@ namespace RISE
 			mutable std::atomic<bool>	mUnsupportedFallbackSegmentCompeted;
 			mutable std::atomic<bool>	mUnsupportedFallbackEndpointAttempted;
 
-			//! Shared clay reflectance state for `clay_lights`: a mid-grey
-			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
-			//! and a LambertianSPF, all three built ONCE in the constructor
-			//! and released in the destructor.  Stateless and read-only for
+			//! Shared clay reflectance state for `clay_lights`: one synthetic
+			//! mid-grey LambertianMaterial built by CreateClayOverrideMaterial.
+			//! Its BRDF and SPF pointers are borrowed from that one material, so
+			//! NEE evaluation, closure construction, and continuation sampling
+			//! cannot drift onto separately constructed parameter sets.  It is
+			//! stateless and read-only for
 			//! the lifetime of the integrator (no scene-derived state, no
 			//! mutation after construction), so concurrent reads from every
 			//! render-worker thread are safe with no extra synchronization --
@@ -115,27 +117,23 @@ namespace RISE
 			//! do (the flag is stamped once at pipeline construction, before
 			//! the pipeline is ever handed to the render loop) -- would still
 			//! be safe if it ever happened.
-			const IPainter*		pClayPainter;
 			const IBSDF*		pClayBRDF;
 			const ISPF*			pClaySPF;
 
-			//! P1-c fix (review-p2b): a lightweight IMaterial adapter that
-			//! wraps pClayBRDF/pClaySPF -- passed to LightSampler::
+			//! The exact synthetic LambertianMaterial passed to LightSampler::
 			//! EvaluateDirectLighting{,NM} in place of the authored
 			//! ri.pMaterial wherever the NEE eval itself already uses the
-			//! clay BRDF.  GetBSDF()/GetSPF() return pClayBRDF/pClaySPF
-			//! directly (no duplicate Lambertian pair); GetEmitter() is
+			//! clay BRDF.  GetBSDF()/GetSPF() are the pClayBRDF/pClaySPF
+			//! borrowed above (no duplicate Lambertian pair); GetEmitter() is
 			//! always null (clay never lights up -- the surface's own
 			//! emission is handled separately and is never clayed).  Pdf/
 			//! PdfNM are NOT overridden -- they inherit IMaterial's base
 			//! implementation, which delegates to GetSPF()->Pdf(...),
 			//! i.e. pClaySPF's OWN pdf formula.  That is deliberate: it
 			//! guarantees the MIS BSDF-sampling pdf used by NEE is the
-			//! EXACT SAME function as the pdf the continuation ray is
-			//! actually sampled from (pClaySPF::Scatter), by construction,
-			//! with no hand-duplicated cos/PI formula to drift out of
-			//! sync.  Built once alongside the other three clay members;
-			//! same stateless/read-only-after-construction contract.
+			//! EXACT SAME function as the pdf the continuation ray is actually
+			//! sampled from, by construction, with no hand-duplicated cos/PI
+			//! formula to drift out of sync.
 			const IMaterial*	pClayMaterial;
 
 		private:
@@ -173,6 +171,13 @@ namespace RISE
 			//! rasterizer dtor never reached 0 and the dtor never ran).
 			static long long ConstructionCount() { return sConstructionCount.load( std::memory_order_relaxed ); }
 			static long long DestructionCount() { return sDestructionCount.load( std::memory_order_relaxed ); }
+
+			//! Builds the exact synthetic material used by `clay_lights`.
+			//! The caller owns the returned reference.  Keeping this as the one
+			//! factory lets the Phase-B closure gate directly prove that the
+			//! material's response, sample, and Pdf all share one Lambertian
+			//! parameter set.
+			static const IMaterial* CreateClayOverrideMaterial();
 
 			//! Test-visible witness for the Phase-B unsupported-material fallback.
 			//! This is diagnostic state only; no transport decision reads it.

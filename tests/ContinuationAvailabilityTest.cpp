@@ -12,9 +12,13 @@
 
 #include "../src/Library/Interfaces/IContinuationClosure.h"
 #include "../src/Library/Materials/IsotropicPhongMaterial.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/OrenNayarMaterial.h"
+#include "../src/Library/Materials/PhongLuminaireMaterial.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/PathTransportUtilities.h"
@@ -120,12 +124,311 @@ namespace
 		Point2 Get2D() override { return Point2(0.0,0.0); }
 	};
 
+	class ClosureCapableUnsupportedMaterial final :
+		public virtual IMaterial,
+		public virtual Reference
+	{
+	public:
+		explicit ClosureCapableUnsupportedMaterial( IMaterial& base ) : base_(base)
+		{
+			base_.addref();
+		}
+		IBSDF* GetBSDF() const override { return base_.GetBSDF(); }
+		ISPF* GetSPF() const override { return base_.GetSPF(); }
+		IEmitter* GetEmitter() const override { return 0; }
+		const IContinuationClosurePel* MakeContinuationClosurePel(
+			const RayIntersectionGeometric& ri, const IORStack& ior,
+			const ContinuationPathState& state ) const override
+		{
+			return base_.MakeContinuationClosurePel(ri,ior,state);
+		}
+		const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri, const IORStack& ior,
+			const Scalar nm, const ContinuationPathState& state ) const override
+		{
+			return base_.MakeContinuationClosureNM(ri,ior,nm,state);
+		}
+	protected:
+		~ClosureCapableUnsupportedMaterial() override { base_.release(); }
+	private:
+		IMaterial& base_;
+	};
+
+	class DerivedLambertianLuminaireMaterial final :
+		public LambertianLuminaireMaterial
+	{
+	public:
+		DerivedLambertianLuminaireMaterial(
+			const IPainter& emission, const IMaterial& base ) :
+			LambertianLuminaireMaterial(emission,1.0,base) {}
+	protected:
+		~DerivedLambertianLuminaireMaterial() override = default;
+	};
+
+	class DerivedPhongLuminaireMaterial final :
+		public PhongLuminaireMaterial
+	{
+	public:
+		DerivedPhongLuminaireMaterial(
+			const IPainter& emission, const IScalarPainter& exponent,
+			const IMaterial& base ) :
+			PhongLuminaireMaterial(emission,1.0,exponent,base) {}
+	protected:
+		~DerivedPhongLuminaireMaterial() override = default;
+	};
+
 	const ScatteredRay* FindDiffuseRay( const ScatteredRayContainer& rays )
 	{
 		for( unsigned int i=0; i<rays.Count(); ++i ) {
 			if( rays[i].type==ScatteredRay::eRayDiffuse ) return &rays[i];
 		}
 		return 0;
+	}
+
+	void CheckClosureIdentity(
+		const IContinuationClosurePel& expected,
+		const IContinuationClosurePel& actual,
+		const char* label )
+	{
+		const unsigned int mask = expected.GetLobeMask();
+		Check(actual.GetLobeMask()==mask,label);
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.4,0.2,0.89)),
+			Vector3Ops::Normalize(Vector3(-0.3,0.6,0.74))
+		};
+		for( const Vector3& direction : directions ) {
+			CheckPelNear(actual.EvaluateSubset(mask,direction),
+				expected.EvaluateSubset(mask,direction),0.0,label);
+			CheckNear(actual.PdfMarginal(mask,direction),
+				expected.PdfMarginal(mask,direction),0.0,label);
+			CheckNear(actual.PdfReachMarginal(mask,direction),
+				expected.PdfReachMarginal(mask,direction),0.0,label);
+		}
+		const Scalar lobeSamples[] = { 0.1, 0.6, 0.95 };
+		for( unsigned int i=0; i<3; ++i ) {
+			const Point2 directionSample(0.17+0.23*i,0.81-0.19*i);
+			ContinuationSamplePel expectedSample, actualSample;
+			const bool expectedOk = expected.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,expectedSample);
+			const bool actualOk = actual.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,actualSample);
+			Check(actualOk==expectedOk,label);
+			if( expectedOk && actualOk ) {
+				CheckNear(Vector3Ops::Magnitude(
+					actualSample.ray.Dir()-expectedSample.ray.Dir()),0.0,0.0,label);
+				CheckPelNear(actualSample.response,expectedSample.response,0.0,label);
+				CheckPelNear(actualSample.throughput,expectedSample.throughput,0.0,label);
+				CheckNear(actualSample.pdf,expectedSample.pdf,0.0,label);
+				CheckNear(actualSample.reachPdf,expectedSample.reachPdf,0.0,label);
+				Check(actualSample.lobe==expectedSample.lobe &&
+					actualSample.horizonPassed==expectedSample.horizonPassed &&
+					actualSample.rouletteSurvived==expectedSample.rouletteSurvived,label);
+			}
+		}
+	}
+
+	void CheckClosureIdentity(
+		const IContinuationClosureNM& expected,
+		const IContinuationClosureNM& actual,
+		const char* label )
+	{
+		const unsigned int mask = expected.GetLobeMask();
+		Check(actual.GetLobeMask()==mask,label);
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.4,0.2,0.89)),
+			Vector3Ops::Normalize(Vector3(-0.3,0.6,0.74))
+		};
+		for( const Vector3& direction : directions ) {
+			CheckNear(actual.EvaluateSubset(mask,direction),
+				expected.EvaluateSubset(mask,direction),0.0,label);
+			CheckNear(actual.PdfMarginal(mask,direction),
+				expected.PdfMarginal(mask,direction),0.0,label);
+			CheckNear(actual.PdfReachMarginal(mask,direction),
+				expected.PdfReachMarginal(mask,direction),0.0,label);
+		}
+		const Scalar lobeSamples[] = { 0.1, 0.6, 0.95 };
+		for( unsigned int i=0; i<3; ++i ) {
+			const Point2 directionSample(0.17+0.23*i,0.81-0.19*i);
+			ContinuationSampleNM expectedSample, actualSample;
+			const bool expectedOk = expected.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,expectedSample);
+			const bool actualOk = actual.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,actualSample);
+			Check(actualOk==expectedOk,label);
+			if( expectedOk && actualOk ) {
+				CheckNear(Vector3Ops::Magnitude(
+					actualSample.ray.Dir()-expectedSample.ray.Dir()),0.0,0.0,label);
+				CheckNear(actualSample.response,expectedSample.response,0.0,label);
+				CheckNear(actualSample.throughput,expectedSample.throughput,0.0,label);
+				CheckNear(actualSample.pdf,expectedSample.pdf,0.0,label);
+				CheckNear(actualSample.reachPdf,expectedSample.reachPdf,0.0,label);
+				Check(actualSample.lobe==expectedSample.lobe &&
+					actualSample.horizonPassed==expectedSample.horizonPassed &&
+					actualSample.rouletteSurvived==expectedSample.rouletteSurvived,label);
+			}
+		}
+	}
+
+	void TestLuminaireAndClayClosureIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(0.25));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.75));
+		UniformColorPainter* emission = new UniformColorPainter(RISEPel(2.0));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		IsotropicPhongMaterial* base = new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		LambertianLuminaireMaterial* lambertWrapper =
+			new LambertianLuminaireMaterial(*emission,1.0,*base);
+		PhongLuminaireMaterial* phongWrapper =
+			new PhongLuminaireMaterial(*emission,1.0,*exponent,*base);
+
+		Check(lambertWrapper->GetBSDF()==base->GetBSDF() &&
+			lambertWrapper->GetSPF()==base->GetSPF(),
+			"Lambertian luminaire delegates the exact base response and sampler");
+		Check(phongWrapper->GetBSDF()==base->GetBSDF() &&
+			phongWrapper->GetSPF()==base->GetSPF(),
+			"Phong luminaire delegates the exact base response and sampler");
+		Check(IsExactSupportedContinuationMaterial(lambertWrapper) &&
+			IsExactSupportedContinuationMaterial(phongWrapper),
+			"both exact luminaire wrappers recursively inherit supported closure status");
+		DerivedLambertianLuminaireMaterial* derivedLambert =
+			new DerivedLambertianLuminaireMaterial(*emission,*base);
+		DerivedPhongLuminaireMaterial* derivedPhong =
+			new DerivedPhongLuminaireMaterial(*emission,*exponent,*base);
+		ClosureCapableUnsupportedMaterial* unsupportedBase =
+			new ClosureCapableUnsupportedMaterial(*base);
+		LambertianLuminaireMaterial* unsupportedLambertWrapper =
+			new LambertianLuminaireMaterial(*emission,1.0,*unsupportedBase);
+		PhongLuminaireMaterial* unsupportedPhongWrapper =
+			new PhongLuminaireMaterial(
+				*emission,1.0,*exponent,*unsupportedBase);
+		Check(!IsExactSupportedContinuationMaterial(derivedLambert) &&
+			!IsExactSupportedContinuationMaterial(derivedPhong),
+			"derived luminaire wrappers cannot inherit exact allowlist status");
+		Check(!IsExactSupportedContinuationMaterial(unsupportedLambertWrapper) &&
+			!IsExactSupportedContinuationMaterial(unsupportedPhongWrapper),
+			"exact luminaire wrappers remain unsupported over an unsupported base");
+		const RayIntersectionGeometric redRi = MakeIntersection();
+		const IORStack redIor(1.0);
+		const ContinuationPathState redState = NoRouletteState();
+		const IContinuationClosurePel* inheritedPel =
+			derivedLambert->MakeContinuationClosurePel(redRi,redIor,redState);
+		const IContinuationClosureNM* inheritedNM =
+			unsupportedPhongWrapper->MakeContinuationClosureNM(
+				redRi,redIor,550.0,redState);
+		Check(inheritedPel && inheritedNM,
+			"RED wrappers are closure-capable but rejected by the central exact allowlist");
+		safe_release(inheritedPel); safe_release(inheritedNM);
+		safe_release(unsupportedLambertWrapper);
+		safe_release(unsupportedPhongWrapper);
+		safe_release(unsupportedBase);
+		safe_release(derivedLambert); safe_release(derivedPhong);
+
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar nm = 550.0;
+		const IContinuationClosurePel* basePel =
+			base->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* baseNM =
+			base->MakeContinuationClosureNM(ri,ior,nm,state);
+		const IContinuationClosurePel* lambertPel =
+			lambertWrapper->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* lambertNM =
+			lambertWrapper->MakeContinuationClosureNM(ri,ior,nm,state);
+		const IContinuationClosurePel* phongPel =
+			phongWrapper->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* phongNM =
+			phongWrapper->MakeContinuationClosureNM(ri,ior,nm,state);
+		Check(basePel && baseNM && lambertPel && lambertNM && phongPel && phongNM,
+			"base and both luminaire delegate closures construct in Pel and NM");
+		if( basePel && lambertPel ) CheckClosureIdentity(
+			*basePel,*lambertPel,"Lambertian luminaire Pel response/sample/Pdf identity");
+		if( baseNM && lambertNM ) CheckClosureIdentity(
+			*baseNM,*lambertNM,"Lambertian luminaire NM response/sample/Pdf identity");
+		if( basePel && phongPel ) CheckClosureIdentity(
+			*basePel,*phongPel,"Phong luminaire Pel response/sample/Pdf identity");
+		if( baseNM && phongNM ) CheckClosureIdentity(
+			*baseNM,*phongNM,"Phong luminaire NM response/sample/Pdf identity");
+		safe_release(basePel); safe_release(baseNM);
+		safe_release(lambertPel); safe_release(lambertNM);
+		safe_release(phongPel); safe_release(phongNM);
+
+		const IMaterial* clay = PathTracingIntegrator::CreateClayOverrideMaterial();
+		Check(clay && typeid(*clay)==typeid(LambertianMaterial) &&
+			IsExactSupportedContinuationMaterial(clay),
+			"clay factory returns the exact allowlisted Lambertian material");
+		if( clay ) {
+			const IContinuationClosurePel* clayPel =
+				clay->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* clayNM =
+				clay->MakeContinuationClosureNM(ri,ior,nm,state);
+			Check(clayPel && clayNM,
+				"clay factory constructs coherent Pel and NM closures");
+			const Vector3 direction = Vector3Ops::Normalize(Vector3(0.3,0.4,0.866));
+			if( clayPel ) {
+				CheckPelNear(clayPel->EvaluateSubset(clayPel->GetLobeMask(),direction),
+					clay->GetBSDF()->value(direction,ri),0.0,
+					"clay Pel closure response is the factory BRDF response");
+				CheckNear(clayPel->PdfMarginal(clayPel->GetLobeMask(),direction),
+					clay->Pdf(direction,ri,ior),0.0,
+					"clay Pel closure Pdf is the factory sampler Pdf");
+				ContinuationSamplePel closureSample;
+				FixedSampler sampler;
+				ScatteredRayContainer rays;
+				const bool sampled = clayPel->SampleSubset(
+					clayPel->GetLobeMask(),0.0,Point2(0.0,0.0),0.0,false,
+					closureSample);
+				clay->GetSPF()->Scatter(ri,sampler,rays,ior);
+				const ScatteredRay* spfSample = FindDiffuseRay(rays);
+				const bool sameDirection = sampled && spfSample &&
+					Vector3Ops::Magnitude(
+						closureSample.ray.Dir()-spfSample->ray.Dir())==0.0;
+				Check(sameDirection,
+					"clay Pel closure sample direction is the factory SPF direction");
+				if( sampled && spfSample ) {
+					CheckPelNear(closureSample.throughput,spfSample->kray,0.0,
+						"clay Pel closure sample throughput is the factory SPF weight");
+					CheckNear(closureSample.pdf,spfSample->pdf,0.0,
+						"clay Pel closure sampled Pdf is the factory SPF sampled Pdf");
+				}
+			}
+			if( clayNM ) {
+				CheckNear(clayNM->EvaluateSubset(clayNM->GetLobeMask(),direction),
+					clay->GetBSDF()->valueNM(direction,ri,nm),0.0,
+					"clay NM closure response is the factory BRDF response");
+				CheckNear(clayNM->PdfMarginal(clayNM->GetLobeMask(),direction),
+					clay->PdfNM(direction,ri,nm,ior),0.0,
+					"clay NM closure Pdf is the factory sampler Pdf");
+				ContinuationSampleNM closureSample;
+				FixedSampler sampler;
+				ScatteredRayContainer rays;
+				const bool sampled = clayNM->SampleSubset(
+					clayNM->GetLobeMask(),0.0,Point2(0.0,0.0),0.0,false,
+					closureSample);
+				clay->GetSPF()->ScatterNM(ri,sampler,nm,rays,ior);
+				const ScatteredRay* spfSample = FindDiffuseRay(rays);
+				const bool sameDirection = sampled && spfSample &&
+					Vector3Ops::Magnitude(
+						closureSample.ray.Dir()-spfSample->ray.Dir())==0.0;
+				Check(sameDirection,
+					"clay NM closure sample direction is the factory SPF direction");
+				if( sampled && spfSample ) {
+					CheckNear(closureSample.throughput,spfSample->krayNM,0.0,
+						"clay NM closure sample throughput is the factory SPF weight");
+					CheckNear(closureSample.pdf,spfSample->pdf,0.0,
+						"clay NM closure sampled Pdf is the factory SPF sampled Pdf");
+				}
+			}
+			safe_release(clayPel); safe_release(clayNM);
+			safe_release(clay);
+		}
+
+		safe_release(lambertWrapper); safe_release(phongWrapper);
+		safe_release(base);
+		safe_release(rd); safe_release(rs);
+		safe_release(emission); safe_release(exponent);
 	}
 
 	void TestR42AvailabilityReductionAndCaps()
@@ -866,6 +1169,7 @@ int main()
 	TestHorizonNullAndRouletteMass();
 	TestSingleDiffuseMassAndBRDFGrazingPredicates();
 	TestMaterialResponseAndMixedSamplingIdentity();
+	TestLuminaireAndClayClosureIdentity();
 	TestPhongTiltedNormalSamplingIdentity();
 	TestDeterministicZeroContinuationGate();
 	TestInvalidParametersFailClosed();

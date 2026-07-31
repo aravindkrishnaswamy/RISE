@@ -43,9 +43,8 @@
 #endif
 // GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting): the shared
 // clay-reflectance state SetClayOverride substitutes in -- a mid-grey
-// UniformColorPainter wrapped by a LambertianBRDF/LambertianSPF pair.
-#include "../Materials/LambertianBRDF.h"
-#include "../Materials/LambertianSPF.h"
+// UniformColorPainter wrapped by one synthetic LambertianMaterial.
+#include "../Materials/LambertianMaterial.h"
 #include "../Materials/NullBoundaryMaterial.h"
 #include "../Painters/UniformColorPainter.h"
 
@@ -1655,62 +1654,6 @@ namespace
 	inline RISEPel PTMulDiv( const RISEPel& a, const Scalar b, const Scalar c ) { return a * ( b / c ); }
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
 
-	//! P1-c fix (review-p2b, `clay_lights` MIS inconsistency): a thin
-	//! IMaterial adapter over the integrator's shared pClayBRDF/pClaySPF,
-	//! passed to LightSampler::EvaluateDirectLighting{,NM} in place of
-	//! ri.pMaterial wherever the NEE eval already substitutes the clay
-	//! BRDF for the value/contribution term.  Without this, NEE evaluated
-	//! `f = clayBRDF.value(...)` (numerator) while computing the MIS
-	//! BSDF-sampling pdf from the AUTHORED material's Pdf() (denominator)
-	//! -- a mismatched pair that makes clay_lights biased AND dependent on
-	//! the hidden authored material (mirror/dielectric materials have a
-	//! near-zero or delta Pdf(), which starves or floods the NEE weight
-	//! for a surface that is visually identical clay).  GetBSDF()/GetSPF()
-	//! return the SAME pClayBRDF/pClaySPF instances every other clay call
-	//! site uses (no duplicate Lambertian pair -- see the ctor).
-	//! GetEmitter() is always null: LightSampler::EvaluateDirectLighting
-	//! only ever calls pMaterial->Pdf()/PdfNM() on this parameter (verified
-	//! by reading every pMaterial use in both EvaluateDirectLighting and
-	//! EvaluateDirectLightingNM -- LightSampler.cpp), never
-	//! pMaterial->GetEmitter() -- the surface's own emission is evaluated
-	//! separately (PART 1) against the REAL ri.pMaterial and is never
-	//! substituted, matching SetClayOverride's documented contract.  Pdf/
-	//! PdfNM are deliberately NOT overridden: IMaterial's base
-	//! implementation (Materials/IMaterial.cpp) delegates to
-	//! GetSPF()->Pdf(...)/PdfNM(...), i.e. pClaySPF's OWN pdf formula --
-	//! the EXACT function the continuation ray is actually sampled from
-	//! (pClaySPF::Scatter), so NEE's MIS weight and the BSDF-sampling
-	//! strategy's density can never drift apart.
-	class ClayNEEMaterial :
-		public virtual IMaterial,
-		public virtual Reference
-	{
-	public:
-		ClayNEEMaterial( const IBSDF* brdf, const ISPF* spf ) :
-		  pBRDF( const_cast<IBSDF*>( brdf ) ),
-		  pSPF( const_cast<ISPF*>( spf ) )
-		{}
-
-		IBSDF* GetBSDF() const override { return pBRDF; }
-		ISPF* GetSPF() const override { return pSPF; }
-		IEmitter* GetEmitter() const override { return 0; }
-
-		const IContinuationClosureNM* MakeContinuationClosureNM(
-			const RayIntersectionGeometric& ri,
-			const IORStack&, const Scalar,
-			const ContinuationPathState& pathState ) const override
-		{
-			return CreateLambertianContinuationClosureNM(
-				ri,Scalar(0.5),pathState);
-		}
-
-	protected:
-		~ClayNEEMaterial() override {}
-
-	private:
-		IBSDF* pBRDF;
-		ISPF* pSPF;
-	};
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1721,6 +1664,17 @@ namespace
 // DestructionCount()'s doc in the header.
 std::atomic<long long> PathTracingIntegrator::sConstructionCount( 0 );
 std::atomic<long long> PathTracingIntegrator::sDestructionCount( 0 );
+
+const IMaterial* PathTracingIntegrator::CreateClayOverrideMaterial()
+{
+	IPainter* painter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+	GlobalLog()->PrintNew( painter, __FILE__, __LINE__, "clay_lights neutral painter" );
+	const IMaterial* material = new LambertianMaterial( *painter );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "clay_lights material" );
+	// LambertianMaterial's BRDF and SPF each retain the painter.
+	painter->release();
+	return material;
+}
 
 PathTracingIntegrator::PathTracingIntegrator(
 	const ManifoldSolverConfig& smsConfig,
@@ -1737,7 +1691,6 @@ PathTracingIntegrator::PathTracingIntegrator(
   mUnsupportedFallbackSegmentObserved( false ),
   mUnsupportedFallbackSegmentCompeted( false ),
   mUnsupportedFallbackEndpointAttempted( false ),
-  pClayPainter( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
   pClayMaterial( 0 )
@@ -1748,49 +1701,18 @@ PathTracingIntegrator::PathTracingIntegrator(
 	}
 
 	// GUI render modes P2b `clay_lights`: built unconditionally (cheap --
-	// one painter + two thin wrapper objects) rather than lazily on first
+	// one painter plus one Lambertian material) rather than lazily on first
 	// SetClayOverride(true), so there is no first-use race to reason about.
 	// A mid-grey (0.5,0.5,0.5) albedo reflectance -- neutral clay, not
 	// pure white (would over-brighten bounce energy) or pure black (would
-	// kill it).  Refcount discipline (verified against LambertianBRDF /
-	// LambertianSPF's actual ctors, both of which addref their painter
-	// argument): `new UniformColorPainter` starts refcount 1; the BRDF
-	// wrapper's ctor addrefs it to 2; the SPF wrapper's ctor addrefs it to
-	// 3.  Deliberately NOT releasing the local `pPainter` here: the third
-	// reference IS `pClayPainter`'s own -- i.e. `new` is the acquisition
-	// for the member, matching every other raw-pointer-member-holds-a-ref
-	// idiom in this file (pSolver, etc).  The three-way symmetric release
-	// in the dtor below (BRDF, then SPF, then pClayPainter) exactly
-	// balances this ctor's three addrefs, so pClayPainter is never touched
-	// after the object it points to is freed.
-	{
-		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
-		// review-p3 P3 fix: all three are Reference-counted and each gets
-		// its own symmetric safe_release in the dtor below -- without a
-		// matching PrintNew, LOG_TRACK_MEMORY prints a spurious "Specified
-		// Allocation does not exist!" for each on teardown.
-		GlobalLog()->PrintNew( pPainter, __FILE__, __LINE__, "clay_lights neutral painter" );
-		pClayPainter = pPainter;
-		pClayBRDF = new LambertianBRDF( *pPainter );
-		GlobalLog()->PrintNew( pClayBRDF, __FILE__, __LINE__, "clay_lights BRDF" );
-		pClaySPF  = new LambertianSPF( *pPainter );
-		GlobalLog()->PrintNew( pClaySPF, __FILE__, __LINE__, "clay_lights SPF" );
-	}
-
-	// P1-c fix: the NEE-material adapter (see ClayNEEMaterial's doc above)
-	// wraps pClayBRDF/pClaySPF by raw (non-owning) pointer -- it does not
-	// addref them.  This is safe because all four clay members share one
-	// build-once/tear-down-once lifetime scoped to this integrator: nothing
-	// dereferences pClayMaterial's GetBSDF()/GetSPF() results outside of an
-	// active render, and pClayBRDF/pClaySPF are never released before
-	// pClayMaterial in the dtor below (in fact -- release order among the
-	// four is inconsequential here specifically because none of their
-	// destructors dereference each other; ClayNEEMaterial's dtor is a
-	// trivial no-op).
-	pClayMaterial = new ClayNEEMaterial( pClayBRDF, pClaySPF );
-	// review-p3 P3 fix: same tracking-asymmetry fix as the trio above --
-	// safe_release( pClayMaterial ) runs unconditionally in the dtor.
-	GlobalLog()->PrintNew( pClayMaterial, __FILE__, __LINE__, "clay_lights NEE material" );
+	// kill it).  The factory releases its initial painter reference after
+	// LambertianMaterial's BRDF and SPF have each retained it; destroying
+	// the material releases those final two references.
+	// The single factory owns the coherent BRDF/SPF/closure parameter set.
+	// pClayBRDF and pClaySPF are borrowed aliases held by pClayMaterial.
+	pClayMaterial = CreateClayOverrideMaterial();
+	pClayBRDF = pClayMaterial->GetBSDF();
+	pClaySPF = pClayMaterial->GetSPF();
 
 	sConstructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
@@ -1799,9 +1721,6 @@ PathTracingIntegrator::~PathTracingIntegrator()
 {
 	safe_release( pSolver );
 	safe_release( pClayMaterial );
-	safe_release( pClayBRDF );
-	safe_release( pClaySPF );
-	safe_release( pClayPainter );
 
 	sDestructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
