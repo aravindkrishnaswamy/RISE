@@ -37,6 +37,7 @@
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
+#include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEdit.h"
 #include "../src/Library/SceneEditor/SceneEditor.h"
@@ -388,6 +389,10 @@ namespace
 			const Ray&, const Scalar maxDist, ISampler& sampler,
 			bool& scattered ) const override
 		{
+			if( sigmaT_ <= 0.0 ) {
+				scattered = false;
+				return maxDist;
+			}
 			const Scalar t = -std::log1p(-sampler.Get1D())/sigmaT_;
 			scattered = t < maxDist;
 			return scattered ? t : maxDist;
@@ -476,9 +481,13 @@ namespace
 		return scene.str();
 	}
 
-	std::string SurfaceFireReceiverScene()
+	std::string SurfaceFireReceiverScene( const bool positionalLight = false )
 	{
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		const Point3 fireMin = positionalLight ?
+			Point3(0.05,-2.0,-2.0) : Point3(0.3,-0.45,-0.9);
+		const Point3 fireMax = positionalLight ?
+			Point3(2.5,2.0,-0.11) : Point3(1.2,0.45,-0.25);
 		std::ostringstream scene;
 		scene << std::setprecision(17) <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
@@ -486,17 +495,25 @@ namespace
 			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n"
 			"lambertian_material\n{\nname receiver\nreflectance white\n}\n"
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
-			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " <<
+			(positionalLight ? 2600.0 : kTemperatureK) << "\n}\n"
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
-			"bake_resolution 4 4 4\nbbox_min 0.3 -0.45 -0.9\n"
-			"bbox_max 1.2 0.45 -0.25\nsoot_em 0.26\nsoot_density 1800\n"
+			"bake_resolution 4 4 4\nbbox_min " << fireMin.x << " " <<
+			fireMin.y << " " << fireMin.z << "\nbbox_max " << fireMax.x << " " <<
+			fireMax.y << " " << fireMax.z <<
+			"\nsoot_em 0.26\nsoot_density 1800\n"
 			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
 			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
 			"global_medium\n{\nmedium fire\n}\n"
 			"box_geometry\n{\nname receiver_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
 			"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
 			"material receiver\nposition 0 0 0\n}\n";
+		if( positionalLight ) {
+			scene <<
+				"omni_light\n{\nname point_competitor\npower 0.001\n"
+				"color 0.000001 0.000001 0.000001\nposition -0.75 0 -0.5\n}\n";
+		}
 		return scene.str();
 	}
 
@@ -1431,12 +1448,17 @@ namespace
 			IShader* shader = job->GetShaders()->GetItem("global");
 			const IMedium* fire = job->GetScene()->GetGlobalMedium();
 			if( fire ) fire->addref();
-			job->GetScene()->SetGlobalMedium(nullptr);
+			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
 			Check( shader && RISE_API_CreateRayCaster(
 				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
 				"surface brute-force caster initializes without a volume-emission CDF" );
 			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
 			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
 			Check( shader && RISE_API_CreateRayCaster(
 				&neeCaster,false,20,*shader,true) && neeCaster,
 				"surface volume-NEE caster initializes with the fire CDF" );
@@ -1536,6 +1558,112 @@ namespace
 			safe_release(capped);
 			safe_release(terminal);
 			safe_release(ordinary);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
+	void TestPointLightFlameThreeStrategyEquality()
+	{
+		std::cout << "TestPointLightFlameThreeStrategyEquality" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_point_flame_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SurfaceFireReceiverScene(true);
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"point-light plus off-axis fire receiver fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+				"point-light reference caster prepares without the volume endpoint strategy" );
+			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			Check( shader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*shader,true) && neeCaster,
+				"point-light plus flame caster prepares all three strategy entries" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const RayCaster* concrete = dynamic_cast<const RayCaster*>(neeCaster);
+			const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
+			Check( lights && lights->GetPositionalLightCount()==1 &&
+				lights->GetVolumeEmissionMediumCount()==1 &&
+				lights->GetEquiangularPivotEntryCount()==2,
+				"production fixture contains point-light, flame-endpoint, and march families" );
+			const Scalar pointPivotPdf = lights ?
+				lights->GetEquiangularPivotSelectionPdf(0) : 0.0;
+			Check( pointPivotPdf>0.0 && pointPivotPdf<1.0,
+				"point-light and flame pivots both have nonzero production probability" );
+
+			StabilityConfig config;
+			config.maxDiffuseBounce = 2;
+			PathTracingIntegrator* integrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+			const Scalar nm = 500.0;
+			const unsigned int samples = 280000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			auto mean = [&]( const IRayCaster& route, const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			const Scalar neeOn = mean(*neeCaster,0x3a7e001u);
+			const Scalar neeOff = mean(*marchOnlyCaster,0x3a7e002u);
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			const Scalar pointOnly = mean(*marchOnlyCaster,0x3a7e003u);
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			safe_release(fire);
+			const Scalar flameOn = neeOn-pointOnly;
+			const Scalar flameOff = neeOff-pointOnly;
+			if( !(neeOn>0.0 && neeOff>0.0 && pointOnly>0.0 && flameOn>0.0 &&
+				flameOff>0.0 && NearRelative(flameOn,flameOff,0.10)) ) {
+				std::cout << "  point+flame NEE on/off=" << neeOn << "/" << neeOff <<
+					" point-only=" << pointOnly << " flame=" << flameOn << "/" <<
+					flameOff << std::endl;
+			}
+			Check( pointOnly>0.0 && flameOn>0.0 && flameOff>0.0 &&
+				NearRelative(flameOn,flameOff,0.10),
+				"point-light, flame-endpoint NEE, and conditioned march converge to one mean" );
+			safe_release(integrator);
 		}
 
 		safe_release(neeCaster);
@@ -2408,6 +2536,7 @@ int main()
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
+	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestCollisionEmissionConsumesMarchCompetitionState();
 	TestDirectPelEntryRejectsFire();

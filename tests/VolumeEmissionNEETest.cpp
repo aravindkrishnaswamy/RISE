@@ -930,6 +930,13 @@ namespace
 			"interior_medium fire_b\ncasts_shadows FALSE\n}\n";
 	}
 
+	std::string TwoMediumPointPivotScene()
+	{
+		return TwoMediumScene() +
+			"omni_light\n{\nname forced_point_pivot\npower 1e14\n"
+			"color 0.8 0.3 0.1\nposition -2 2 0\n}\n";
+	}
+
 	std::string TwoScaleMediumScene(
 		const char* sideA,
 		const char* sideB,
@@ -1505,9 +1512,12 @@ namespace
 			Point3 selectedPivot;
 			Scalar selectedPdf = 0.0;
 			const bool selected = lights->SampleEquiangularPivot(
-				pivots, 0.37, selectedPivot, selectedPdf );
-			Check( selected && selectedPdf > 0.0,
-				"combined power distribution selects a retained shared pivot" );
+				pivots, 0.0, selectedPivot, selectedPdf );
+			Check( selected && selectedPdf > 0.0 &&
+				Vector3Ops::Magnitude(Vector3Ops::mkVector3(
+					selectedPivot,lights->GetPositionalLightPosition(0)))==0.0 &&
+				vertexSample.WasEndpointAttempted(),
+				"point-light pivot label is forced while an independent flame endpoint was attempted" );
 
 			const Ray ray( Point3(0,0,-3), Vector3(0,0,1) );
 			const Scalar tMin = 0.0;
@@ -1539,6 +1549,101 @@ namespace
 		}
 		safe_release( caster );
 		safe_release( job );
+	}
+
+	void TestForcedPointPivotMarchUsesLabeledEndpointDensity()
+	{
+		std::cout << "TestForcedPointPivotMarchUsesLabeledEndpointDensity" << std::endl;
+		IJobPriv* job = LoadScene( TwoMediumPointPivotScene() );
+		IRayCaster* caster = nullptr;
+		const LightSampler* lights = PrepareLightSampler(job,caster);
+		const IObject* objectA = job ?
+			job->GetScene()->GetObjects()->GetItem("box_a") : nullptr;
+		const IMedium* fireA = objectA ? objectA->GetInteriorMedium() : nullptr;
+		Check( lights && fireA && lights->GetPositionalLightCount()==1 &&
+			lights->GetVolumeEmissionMediumCount()==2 &&
+			lights->GetEquiangularPivotEntryCount()==3,
+			"forced point-pivot fixture prepares one light and two labeled fire media" );
+		if( lights && fireA ) {
+			FixedSampler vertexSampler( {
+				0.11,0.17,0.23,0.29,0.31,
+				0.37,0.41,0.43,0.47,0.53,
+				0.59,0.61,0.67,0.71,0.73,0.79 } );
+			VolumeEmissionVertexSample vertex;
+			Check( lights->SampleVolumeEmissionVertex(vertexSampler,vertex) &&
+				vertex.WasEndpointAttempted() && vertex.HasEndpoint() &&
+				vertex.Pivots().mediumPivots.size()==2,
+				"forced point-pivot collision retains independent U and labeled Y" );
+
+			Point3 selectedPivot;
+			Scalar selectedPdf = 0.0;
+			const bool selected = lights->SampleEquiangularPivot(
+				vertex.Pivots(),0.0,selectedPivot,selectedPdf);
+			const Point3 expectedPointPivot = lights->GetPositionalLightPosition(0);
+			Check( selected && selectedPdf>0.0 &&
+				Vector3Ops::Magnitude(Vector3Ops::mkVector3(
+					selectedPivot,expectedPointPivot))==0.0,
+				"equiangular technique deterministically selects the point-light label" );
+
+			const Ray marchRay(Point3(-2.9,0,0),Vector3(1,0,0));
+			const Scalar segmentLength = 1.8;
+			const EquiangularSampling::Sample pointSample =
+				EquiangularSampling::SampleDistance(
+					marchRay,selectedPivot,0.0,segmentLength,true,0.43);
+			const Point3 collision = marchRay.PointAtLength(pointSample.t);
+			const Scalar nm = 550.0;
+			const MediumCoefficientsNM coefficients =
+				fireA->GetCoefficientsNM(collision,nm);
+			const MISWeights::LogDensity distanceDensity =
+				lights->EvaluateVolumeEmissionDistanceLogDensityNM(
+					*fireA,marchRay,segmentLength,true,&vertex.Pivots(),nm,
+					pointSample.t,true);
+			const MISWeights::LogDensity expectedDistanceDensity =
+				MISWeights::EqualMixtureLogDensity(
+					MISWeights::MakeLogDensityFromLogValue(
+						fireA->EvalLogDistancePdfNM(
+							marchRay,pointSample.t,true,segmentLength,nm)),
+					MISWeights::MakeLogDensity(lights->EquiangularDistancePdf(
+						vertex.Pivots(),marchRay,0.0,segmentLength,true,
+						pointSample.t)));
+			Check( pointSample.t>0.0 && pointSample.t<segmentLength &&
+				coefficients.sigma_t>0.0 && distanceDensity.hasSupport &&
+				expectedDistanceDensity.hasSupport,
+				"forced point-pivot proposal produces a real fire collision" );
+			CheckRelative( distanceDensity.value,expectedDistanceDensity.value,2e-14,
+				"forced collision uses the full point-plus-media distance marginal" );
+
+			const Scalar directionPdf = 0.25;
+			const MISWeights::LogDensity marchDensity(
+				true,log(directionPdf)+distanceDensity.value-
+					2.0*log(pointSample.t));
+			const Scalar perMediumPdf = fireA->ThermalEmissionPdf(collision);
+			const Scalar labeledPdf = lights->VolumeEmissionPdf(*fireA,collision);
+			const Scalar qMedium = labeledPdf/perMediumPdf;
+			const Scalar aMedium = lights->GetEquiangularPivotSelectionPdf(1);
+			CheckRelative( lights->GetEquiangularPivotPower(1),
+				fireA->GetThermalEmissionPowerProxy(),2e-15,
+				"a_m label belongs to the same fire medium as q_m^V" );
+			const Scalar marchWeight =
+				MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+					marchDensity,MISWeights::MakeLogDensity(labeledPdf),true,false);
+			const Scalar neeWeight =
+				MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+					MISWeights::MakeLogDensity(labeledPdf),marchDensity);
+			const Scalar wrongAMediumWeight =
+				MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+					marchDensity,MISWeights::MakeLogDensity(aMedium*perMediumPdf),
+					true,false);
+			Check( perMediumPdf>0.0 && labeledPdf>0.0 && qMedium>0.0 &&
+				aMedium>0.0 && std::fabs(qMedium-aMedium)>0.05,
+				"endpoint q_m^V and pivot a_m are materially different labels" );
+			CheckRelative( marchWeight+neeWeight,1.0,2e-14,
+				"forced point-pivot collision has complementary march and NEE weights" );
+			Check( std::fabs(marchWeight-wrongAMediumWeight)>0.01,
+				"substituting pivot a_m for labeled endpoint q_m^V is a RED control" );
+		}
+		safe_release(caster);
+		safe_release(job);
 	}
 
 	void TestOpaqueGeometricVisibility()
@@ -2147,6 +2252,7 @@ int main()
 	TestLabeledMultiMediumDensity();
 	TestInactiveNestedLabelReturnsZero();
 	TestIndependentPivotVectorAndPowerMixture();
+	TestForcedPointPivotMarchUsesLabeledEndpointDensity();
 	TestCombinedPivotSceneUnitInvariance();
 	TestOpaqueGeometricVisibility();
 	TestConnectionMarchDensityThroughNullBoundaries();
