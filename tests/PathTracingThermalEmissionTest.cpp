@@ -825,6 +825,50 @@ namespace
 		return scene.str();
 	}
 
+	std::string NullBoundarySurvivalScene(
+		const unsigned int segmentCount,
+		const bool downstreamEmitter,
+		const bool includePivot )
+	{
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+			"homogeneous_medium\n{\nname fog\n"
+			"absorption 0.2 0.2 0.2\nscattering 0 0 0\nphase isotropic\n}\n"
+			"null_boundary_material\n{\nname medium_boundary\n}\n"
+			;
+		if( includePivot ) {
+			scene <<
+				"omni_light\n{\nname mixture_pivot\npower 0.000000000001\n"
+				"color 1 1 1\nposition 2 0 0\n}\n";
+		}
+		for( unsigned int i = 0; i < segmentCount; ++i ) {
+			const Scalar radius = 0.35*static_cast<Scalar>(i+1);
+			scene <<
+				"sphere_geometry\n{\nname boundary_geometry_" << i <<
+				"\nradius " << radius << "\n}\n"
+				"standard_object\n{\nname boundary_object_" << i <<
+				"\ngeometry boundary_geometry_" << i <<
+				"\nmaterial medium_boundary\ninterior_medium fog\n"
+				"casts_shadows FALSE\n}\n";
+		}
+		if( downstreamEmitter ) {
+			const Scalar z = 0.35*static_cast<Scalar>(segmentCount)+0.5;
+			scene <<
+				"uniformcolor_painter\n{\nname target_exitance\n"
+				"color 1 1 1\n}\n"
+				"lambertian_luminaire_material\n{\nname target_material\n"
+				"exitance target_exitance\nscale 1\nmaterial none\n}\n"
+				"clippedplane_geometry\n{\nname target_geometry\n"
+				"pta -1 1 " << z << "\nptb 1 1 " << z <<
+				"\nptc 1 -1 " << z << "\nptd -1 -1 " << z << "\n}\n"
+				"standard_object\n{\nname target_object\n"
+				"geometry target_geometry\nmaterial target_material\n}\n";
+		}
+		return scene.str();
+	}
+
 	struct PhaseClosureAudit
 	{
 		unsigned int nextId;
@@ -3969,6 +4013,250 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestNullBoundaryMixtureSurvivalEquality()
+	{
+		std::cout << "TestNullBoundaryMixtureSurvivalEquality" << std::endl;
+		struct SurvivalStats
+		{
+			Scalar mean;
+			Scalar variance;
+			Scalar positiveFraction;
+			Scalar positiveMean;
+		};
+		const unsigned int samples = 160000;
+		const Scalar nm = 500.0;
+		const RasterizerState rast = {0,0};
+		const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+
+		for( unsigned int topology = 0; topology < 2; ++topology ) {
+			const unsigned int segmentCount = topology == 0 ? 1 : 3;
+			for( unsigned int targetKind = 0; targetKind < 2; ++targetKind ) {
+				const bool downstreamEmitter = targetKind != 0;
+				const std::filesystem::path pureScenePath =
+					std::filesystem::temp_directory_path() /
+					( "rise_null_survival_" +
+						std::to_string(segmentCount) + "_" +
+						std::to_string(targetKind) + "_" +
+						"pure_" +
+						std::to_string(static_cast<int>(::getpid())) +
+						".RISEscene" );
+				const std::filesystem::path mixtureScenePath =
+					std::filesystem::temp_directory_path() /
+					( "rise_null_survival_" +
+						std::to_string(segmentCount) + "_" +
+						std::to_string(targetKind) + "_" +
+						"mixture_" +
+						std::to_string(static_cast<int>(::getpid())) +
+						".RISEscene" );
+				{
+					std::ofstream output(pureScenePath);
+					output << NullBoundarySurvivalScene(
+						segmentCount,downstreamEmitter,false);
+				}
+				{
+					std::ofstream output(mixtureScenePath);
+					output << NullBoundarySurvivalScene(
+						segmentCount,downstreamEmitter,true);
+				}
+
+				IJobPriv* pureJob = nullptr;
+				IJobPriv* mixtureJob = nullptr;
+				IRayCaster* pureDTCaster = nullptr;
+				IRayCaster* mixtureCaster = nullptr;
+				Check( RISE_CreateJobPriv(&pureJob) && pureJob &&
+					pureJob->LoadAsciiSceneViaCst(
+						pureScenePath.string().c_str()) &&
+					RISE_CreateJobPriv(&mixtureJob) && mixtureJob &&
+					mixtureJob->LoadAsciiSceneViaCst(
+						mixtureScenePath.string().c_str()),
+					"paired null-boundary homogeneous survival fixtures load" );
+				if( pureJob ) {
+					IShader* shader =
+						pureJob->GetShaders()->GetItem("global");
+					Check( shader && RISE_API_CreateRayCaster(
+						&pureDTCaster,false,12,*shader,true) &&
+						pureDTCaster,
+						"pure-DT null-boundary caster initializes" );
+					if( pureDTCaster ) {
+						pureDTCaster->AttachScene(pureJob->GetScene());
+					}
+				}
+				if( mixtureJob ) {
+					IShader* shader =
+						mixtureJob->GetShaders()->GetItem("global");
+					Check( shader && RISE_API_CreateRayCaster(
+						&mixtureCaster,false,12,*shader,true) &&
+						mixtureCaster,
+						"50/50 null-boundary caster initializes" );
+					if( mixtureCaster ) {
+						mixtureCaster->AttachScene(
+							mixtureJob->GetScene());
+					}
+				}
+
+				IPainter* environmentPainter = nullptr;
+				IRadianceMap* environment = nullptr;
+				if( !downstreamEmitter ) {
+					Check( RISE_API_CreateUniformColorPainter(
+							&environmentPainter,RISEPel(1.0,1.0,1.0),
+							eSpectrumKind_Unbounded) &&
+						environmentPainter &&
+						RISE_API_CreateRadianceMap(
+							&environment,*environmentPainter,1.0) &&
+						environment,
+						"null-boundary survival fixture creates a constant spectral background" );
+				}
+
+				if( pureJob && mixtureJob && pureDTCaster && mixtureCaster &&
+					(downstreamEmitter || environment) ) {
+					const RayCaster* pureConcrete =
+						dynamic_cast<const RayCaster*>(pureDTCaster);
+					const RayCaster* mixtureConcrete =
+						dynamic_cast<const RayCaster*>(mixtureCaster);
+					const LightSampler* pureLights =
+						pureConcrete ? pureConcrete->GetLightSampler() : nullptr;
+					const LightSampler* mixtureLights =
+						mixtureConcrete ? mixtureConcrete->GetLightSampler() : nullptr;
+					Check( pureLights && mixtureLights &&
+						pureLights->GetEquiangularPivotEntryCount()==0 &&
+						mixtureLights->GetEquiangularPivotEntryCount()>0,
+						"paired casters select pure DT versus the 50/50 distance mixture" );
+
+					StabilityConfig config;
+					config.maxVolumeBounce = 0;
+					PathTracingIntegrator* integrator =
+						new PathTracingIntegrator(
+							ManifoldSolverConfig(),config);
+					integrator->SetMaxPathDepth(4);
+					auto measure = [&]( IJobPriv& renderJob,
+						const IRayCaster& caster, const bool purePT,
+						const unsigned int seed ) {
+						RandomNumberGenerator rng(seed);
+						RuntimeContext rc(
+							rng,RuntimeContext::PASS_NORMAL,false);
+						IndependentSampler sampler(rng);
+						IRayCaster::RAY_STATE state;
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						long double positiveSum = 0.0;
+						unsigned int positive = 0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							Scalar value = 0.0;
+							if( purePT ) {
+								value = integrator->IntegrateRayNM(
+									rc,rast,ray,nm,*renderJob.GetScene(),
+									caster,sampler,environment,nullptr);
+							} else {
+								caster.CastRayNM(
+									rc,rast,ray,value,state,nm,nullptr,
+									environment);
+							}
+							sum += value;
+							sumSquares +=
+								static_cast<long double>(value)*value;
+							if( value>0.0 ) {
+								positiveSum += value;
+								++positive;
+							}
+						}
+						const long double count =
+							static_cast<long double>(samples);
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						SurvivalStats result;
+						result.mean =
+							static_cast<Scalar>(sum/count);
+						result.variance = static_cast<Scalar>(
+							variance>0.0 ? variance : 0.0);
+						result.positiveFraction =
+							static_cast<Scalar>(positive)/samples;
+						result.positiveMean = positive ?
+							static_cast<Scalar>(
+								positiveSum/
+								static_cast<long double>(positive)) : 0.0;
+						return result;
+					};
+					auto checkRoute = [&]( const char* routeName,
+						const SurvivalStats& pure,
+						const SurvivalStats& mixed ) {
+						const Scalar combinedSE = std::sqrt(
+							(pure.variance+mixed.variance)/
+							static_cast<Scalar>(samples));
+						const Scalar survivalScale =
+							std::ldexp(Scalar(1.0),
+								-static_cast<int>(segmentCount));
+						const Scalar expectedMixedFraction =
+							pure.positiveFraction*survivalScale;
+						const Scalar fractionSE = std::sqrt(
+							(mixed.positiveFraction*
+								(1.0-mixed.positiveFraction) +
+								survivalScale*survivalScale*
+								pure.positiveFraction*
+								(1.0-pure.positiveFraction))/
+							static_cast<Scalar>(samples));
+						std::cout << "  null-" << segmentCount << " " <<
+							(downstreamEmitter ? "emitter " : "background ") <<
+							routeName << " means=" << mixed.mean << "/" <<
+							pure.mean << " positive=" <<
+							mixed.positiveFraction << "/" <<
+							pure.positiveFraction << " conditional=" <<
+							mixed.positiveMean << "/" <<
+							pure.positiveMean << std::endl;
+						Check( pure.mean>0.0 && mixed.mean>0.0 &&
+							combinedSE>0.0 &&
+							std::fabs(mixed.mean-pure.mean)<=
+								6.0*combinedSE,
+							"50/50 null-boundary survival matches pure-DT mean" );
+						Check( fractionSE>0.0 &&
+							std::fabs(
+								mixed.positiveFraction-
+								expectedMixedFraction)<=6.0*fractionSE,
+							"50/50 survivor frequency carries one half per finite null-boundary segment" );
+						Check( pure.positiveMean>0.0 &&
+							NearRelative(
+								mixed.positiveMean,
+								std::ldexp(
+									pure.positiveMean,
+									static_cast<int>(segmentCount)),
+								1e-10),
+							"surviving path divides deterministic transmittance by every no-event atom" );
+					};
+
+					const unsigned int seedBase =
+						0x9b000000u+segmentCount*0x1000u+
+						targetKind*0x100u;
+					const SurvivalStats purePT =
+						measure(*pureJob,*pureDTCaster,true,seedBase+1);
+					const SurvivalStats mixedPT =
+						measure(*mixtureJob,*mixtureCaster,true,seedBase+2);
+					const SurvivalStats pureShader =
+						measure(*pureJob,*pureDTCaster,false,seedBase+3);
+					const SurvivalStats mixedShader =
+						measure(*mixtureJob,*mixtureCaster,false,seedBase+4);
+					checkRoute("PT",purePT,mixedPT);
+					checkRoute("shader",pureShader,mixedShader);
+					const Scalar routeSE = std::sqrt(
+						(mixedPT.variance+mixedShader.variance)/
+						static_cast<Scalar>(samples));
+					Check( routeSE>0.0 &&
+						std::fabs(mixedPT.mean-mixedShader.mean)<=
+							6.0*routeSE,
+						"PT and shader entries agree after null-boundary mixture survival" );
+					safe_release(integrator);
+				}
+
+				safe_release(environment);
+				safe_release(environmentPainter);
+				safe_release(mixtureCaster);
+				safe_release(pureDTCaster);
+				safe_release(mixtureJob);
+				safe_release(pureJob);
+				std::filesystem::remove(mixtureScenePath);
+				std::filesystem::remove(pureScenePath);
+			}
+		}
+	}
+
 	void TestHollowCavityFullSphereVolumeNEEEquality()
 	{
 		std::cout << "TestHollowCavityFullSphereVolumeNEEEquality" << std::endl;
@@ -5723,6 +6011,7 @@ int main()
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestOrenNayarSurfaceVolumeNEEEquality();
 	TestIsotropicPhongSurfaceVolumeNEEEquality();
+	TestNullBoundaryMixtureSurvivalEquality();
 	TestHollowCavityFullSphereVolumeNEEEquality();
 	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
