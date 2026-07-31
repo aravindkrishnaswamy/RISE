@@ -3205,11 +3205,26 @@ Evaluate/Pdf, sampled frequencies, and IOR/path-state transitions to agree in
 Pel and NM. Grazing and glint-tilted Lambertian/Oren/Phong cases integrate the
 successful gated continuous density and add the measured horizon-null mass to
 exactly one; sampled null frequency must agree, and retry/renormalization or
-double-applying h through roulette is RED. An aggregate-BSDF or post-Scatter adapter is RED. Unsupported
-plugin material and built-in `CompositeSPF` preflight must reject predictive
-mode before sampling; their preview fallbacks run NEE-on/off equality with
-collision weight 1. A custom `IMaterial` returning an allowlisted SPF with a
-mismatched BSDF must also reject; both luminaire wrapper delegates and the clay
+double-applying h through roulette is RED. An aggregate-BSDF or post-Scatter adapter is RED. **Phase-split (r44 —
+this sentence demanded predictive-mode machinery that is a Phase-C
+deliverable, §7.0/§8; the fidelity seam does not exist in Phase B and a
+Phase-B gate may not depend on it):**
+- **Phase B gates the preview half now**: the exact-type allowlist rejects
+  unsupported plugin materials and built-in `CompositeSPF` at closure
+  construction; the fallback at such a vertex sets
+  `competitionAvailable=false`, disables volume NEE there, and uses the
+  legacy collision march at weight 1 (§7.2.2's stated preview behavior —
+  with a debug diagnostic, not a recorded reason code); NEE-on/off
+  equality runs *on that fallback*. A custom `IMaterial` returning an
+  allowlisted SPF with a mismatched BSDF takes the same fallback.
+- **Phase C re-gates the same fixtures in predictive mode**: with the
+  fidelity seam landed, unsupported-material and mismatched-BSDF preflight
+  must reject predictive mode *before any worker samples*
+  (`continuation_closure_unsupported`), fail-closed per §8. The fixture
+  list is identical; only the demanded outcome changes from
+  fallback-equality to pre-worker rejection.
+
+Both luminaire wrapper delegates and the clay
 factory must prove response/sample/Pdf identity. An isolated smoke-scatter receiver gate repeats NEE-on/off
 with volume guiding requested on/off, terminal volume/path caps, and RR survival
 0, intermediate, and 1; at a competing medium vertex the effective guide α and

@@ -841,3 +841,23 @@ it was already tried and refuted here.
   was wrong on inspection: the :3205 smoke-scatter-receiver gate is a
   mechanics axis (guiding/caps/RR at a medium vertex), not a topology.
 
+- **r44 (2026-07-31):** phase-split the §7.2.7 unsupported-material gate —
+  the agent's tenth stop: the gate demanded "reject predictive mode before
+  sampling," but predictive mode (`fidelity_mode`,
+  `render_fidelity_status`, reason codes) is a Phase-C deliverable with no
+  Phase-B existence, so a Phase-B gate depended on machinery from a later
+  phase. Verified: none of the fidelity identifiers exist under
+  src/tests/scenes; the Phase-B code implements exactly the preview half
+  (exact allowlist at closure construction; unsupported vertices fall back
+  to competitionAvailable=false + legacy collision march at weight 1).
+  **Adopted the agent's option 1**: Phase B gates the preview half now
+  (allowlist rejection at construction, the §7.2.2 fallback with a debug
+  diagnostic, NEE-on/off equality on that fallback); Phase C re-gates the
+  *identical fixture list* in predictive mode, demanding pre-worker
+  fail-closed rejection with `continuation_closure_unsupported`. Rejected:
+  pulling the fidelity seam into Phase B (far wider than the transport
+  increment), and a test-only predictive flag (would not exercise the
+  authored scene/job state or the pre-worker fail-closed path — the
+  agent's own analysis, correct). Also fixed a duplicated clause the
+  original sentence split left behind.
+
