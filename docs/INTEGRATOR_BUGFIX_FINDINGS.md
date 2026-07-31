@@ -828,7 +828,8 @@ rather than restated.
 **Residual, disclosed and bounded.** With an **absorbing ambient** (`k₀ > 0`)
 the incident wave is inhomogeneous and the stack is not passive: the 120-dps
 reference itself returns `R > 1` — measured 1.093 and 1.287 on the first two
-stacks sampled, but **288 of 400 exceed 1 and the excess reaches 59.4**, so the
+stacks sampled, and the excess is effectively **unbounded** — three independent
+samples gave maxima of 59.4, 202 and 1516, so no single figure is quoted — so the
 error the clamp conceals is *unbounded*, not the ~30 % those two figures
 suggest. The evaluator is **total** there — the decaying rule keeps every
 exponential of modulus ≤ 1 — and the `[0,1]` clamp reports the saturated 1, but
@@ -904,39 +905,30 @@ implies `-fcx-limited-range`, so complex division is the naive
 the p-polarization interface products grow like `1/n1` until `c²+d²` leaves the
 double range. Under strict IEEE it is **not** NaN: it returns the plausible
 bare-stack reflectance, the film silently vanishing, from `1e-78` down to about
-`1e-154`. Round 2 recorded this as "`≲1e-100`" and "underflows"; both were
-wrong, and neither had been measured here. No threshold was introduced, because any threshold here is exactly the
+`1e-154`. Round 2 recorded this as "`≲1e-100`" and "underflows"; both were wrong. Round 3
+then replaced the strict-IEEE half with "it silently returns the bare-stack
+value, the film vanishing" and built a lesson on it — also wrong, and never
+checked against the actual bare-stack value, which differs by 0.43. Under strict
+IEEE that case is simply **correct** (matching a 120-dps evaluation to ~4e-16).
+The same overflow bites at the large end too, from about `1e160`. No threshold was introduced, because any threshold here is exactly the
 magic epsilon this file refuses. The named refinement is to reformulate
 `CosThetaInMedium` around `η² = N² − s²` — finite and well conditioned for tiny
 `N`, and the same identity the branch-rule proof rests on — instead of dividing
 by `N`. Judged out of proportion: it touches every `cosθ` in the file, and
-`1e-100` is ~100 decades below any refractive index that is scene data, whereas
+~77 decades below any refractive index is not scene data, whereas
 exactly `0` — a black texel through an unvalidated `IScalarPainter` — is not,
 and that case *is* fixed.
 
 **The same `-fcx-limited-range` mechanism also bounds the thick-absorber
 claim.** Round 1 wrote that the exponent-factored matrix has "no cliff and no
-headroom to lose". Within the measured envelope (`|N| ∈ 1e-3..1e3`, `d ≤ 1e12`
-nm) that reproduces exactly — 0 non-finite of 4,000,000, both forms, both flag
-sets. Outside it a cliff remains, and round 3 showed my first characterisation
-of it was wrong in three ways. Re-measured in-repo, 1,000,000 stacks per row:
-
-| layers | \|N\| range | shipped flags | strict IEEE |
-|---|---|---|---|
-| 8 | 1e-20..1e20 | 26,931 | 1,055 |
-| 4 | 1e-20..1e20 | 1,055 | 521 |
-| 2 | 1e-20..1e20 | 486 | 244 |
-| 8 | 1e-12..1e12 | 1 | 0 |
-| 8 | 1e-3..1e3 | 0 | 0 |
-
-So it is **not** confined to eight layers, **not** confined to `|N| > 1e12`, and
-**not** absent under strict IEEE — all three of which I had asserted, quoting a
-review rather than re-deriving. Worse, the failure outside the envelope is
-sometimes **silent**: under strict IEEE a film index below ~1e-78 returns the
-bare-stack reflectance (the layer simply vanishes) and only becomes NaN below
-~1e-154. A NaN count is the wrong instrument for that region — which is this
-arc's own recurring lesson, applied to itself one round too late. The envelope
-is the claim.
+headroom to lose". Within the measured envelope (`|N| ∈ 1e-3..1e3`, `d ≤ 1e12` nm) that reproduces
+robustly — 0 non-finite, both forms, both flag sets, under every sampling tried.
+Outside it a cliff remains, and **two successive attempts to characterise it
+quantitatively both failed review**: the counts depend so strongly on how the
+stack is sampled (two defensible readings of the same written recipe differed by
+more than 10×, and disagreed on whether strict IEEE fails at all) that no table
+is quoted any more. The envelope is the claim; the region beyond it is disclosed
+qualitatively and is reachable only by a pathological scene.
 
 **Cost, previously undisclosed** (min of 30 × 200,000 calls, arm64, shipped
 flags):

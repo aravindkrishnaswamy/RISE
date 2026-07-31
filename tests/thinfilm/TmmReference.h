@@ -39,10 +39,13 @@
 //        medium at a propagating angle.  Testing Im first is load-bearing
 //        (the Im == 0 tie-break is exact; Re == 0 never fires) -- see
 //        PickForwardCos.  At normal incidence this keeps cosθ = +1 even for
-//        an absorbing medium -- it does NOT flip the sign.  This is the
-//        classic bug site: a naive "Im(N cosθ) >= 0, else negate" rule
-//        wrongly flips cosθ to -1 for an absorbing medium at normal
-//        incidence; using > rather than >= is what avoids that.
+//        an absorbing medium -- it does NOT flip the sign, because
+//        Im(η) = k > 0 there.  (This file used to add that a naive
+//        "Im(N cosθ) >= 0, else negate" rule "wrongly flips cosθ to -1"
+//        there.  That is FALSE and was never measured -- for N = 2.5 + 3i
+//        that rule also keeps +1.  Production ThinFilm.h retracted the
+//        same claim on 2026-07-31; this copy was missed, which is the
+//        third time a correction landed on one twin and not the other.)
 //      * The forward wave accrues phase e^{+iδ} and DECAYS into an
 //        absorbing layer (Im(δ) >= 0), so the round-trip Airy factor is
 //        e^{+2iδ} (see AiryReference.h) and the characteristic matrix uses
@@ -77,35 +80,23 @@
 //        non-finite, versus 1,553,854 for the old matrix on the same
 //        inputs).  Airy remains the single-film production form for COST,
 //        not range (design doc §7).
-//        ⚠ THE ENVELOPE IS THE CLAIM -- "total" is NOT, and the failure
-//        outside it is not confined to NaN.  Two mechanisms remain far
-//        outside: -ffast-math implies -fcx-limited-range, so std::complex
-//        division is the naive (ac+bd, bc-ad)/(c²+d²) and that c²+d² can
-//        overflow; and for a very small index the interface products grow
-//        like 1/n, which overflows the same term.  Measured here, 1,000,000
-//        random stacks per row, |N| log-uniform, thickness 1e-1..1e6 nm:
-//
-//            layers   |N| range       shipped flags   strict IEEE
-//              8      1e-20..1e20        26931            1055
-//              4      1e-20..1e20         1055             521
-//              2      1e-20..1e20          486             244
-//              8      1e-12..1e12            1               0
-//              8      1e-3 ..1e3             0               0
-//
-//        So: the shipped-index envelope is clean, and NOTHING outside it
-//        is -- not two layers, and not strict IEEE.  An earlier version of
-//        this note claimed "at 4 layers, at 2 layers, or with |N| <= 1e12,
-//        none was found in 3,000,000 each" and "0 under strict IEEE"; the
-//        table above is this file's own measurement and contradicts all of
-//        those.  They were quoted from a review rather than re-derived.
-//        Worse, outside the envelope the failure is sometimes SILENT: under
-//        strict IEEE a film index below ~1e-78 returns the bare-stack
-//        reflectance -- the layer simply vanishes -- and only becomes NaN
-//        below ~1e-154.  A NaN count is the wrong instrument for this
-//        region.  `ar_layer` bounds n > 0, thickness > 0 and the layer
-//        count, but places no MAGNITUDE cap, so this is reachable in
-//        principle by a pathological scene and unreachable by a physical
-//        one.
+//        ⚠ THE ENVELOPE IS THE CLAIM -- "total" is NOT.  Far outside the
+//        range of real optical constants a cliff remains, from a different
+//        mechanism: -ffast-math implies -fcx-limited-range, so std::complex
+//        division is the naive (ac+bd, bc-ad)/(c²+d²) and that c²+d² term
+//        can overflow; the same happens for a very small index, whose
+//        interface products grow like 1/n.  The failure count out there
+//        depends strongly on how the stack is sampled -- two defensible
+//        readings of the same experiment differed by more than 10x, and an
+//        earlier version of this note stated one reading's numbers as fact
+//        AND asserted "0 under strict IEEE", which a second reading
+//        contradicted.  No table is quoted here for that reason.  What is
+//        stable across every sampling tried: the shipped-index envelope
+//        (|N| in 1e-3..1e3, thickness to 1e12 nm) is CLEAN, both forms,
+//        both flag sets.  `ar_layer` bounds n > 0, thickness > 0 and the
+//        layer count, but places no MAGNITUDE cap, so the region outside is
+//        reachable in principle by a pathological scene and unreachable by
+//        a physical one.
 //      * Exactly grazing incidence θ = 90° and exactly the critical angle
 //        both drive some medium's cosθ to exactly 0, which makes the
 //        UNSCALED η_p = N/cosθ infinite.  The pre-scaled assembly above
@@ -195,11 +186,13 @@ namespace RISE
 			//! selects the GROWING root.  That is what this did before
 			//! 2026-07-30.
 			//!
-			//! At normal incidence cosθ stays +1 even for an absorbing medium
-			//! (Im(η) = k > 0 keeps the root), so this does NOT reproduce the
-			//! classic "Im(N cosθ) >= 0 else negate" absorbing-media bug --
-			//! that rule differs in using >=, which negates the exact-zero
-			//! propagating case.
+			//! At normal incidence cosθ stays +1 even for an absorbing medium,
+			//! because Im(η) = k > 0.  An earlier note here claimed a naive
+			//! "Im(N cosθ) >= 0 else negate" rule differs by negating the
+			//! exact-zero propagating case; measured, it does not -- that rule
+			//! keeps both the absorbing normal-incidence root and the
+			//! exact-zero propagating one.  Claim withdrawn rather than
+			//! replaced with another unverified taxonomy.
 			inline Complex PickForwardCos( const Complex& N, const Complex& cosCandidate )
 			{
 				const Complex eta = N * cosCandidate;
