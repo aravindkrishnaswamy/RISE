@@ -134,12 +134,30 @@ with anything.
 - If S3b geometry structure is ever wanted it inherits this
   scaffold-not-prefab pattern.
 
-### S3 — Geometry (start rung picked by the S0 audit)
+### S3 — Geometry (start rung picked by the S0 audit — RESULT below, §7)
 
-- **S3a** (if a compact verb exists — sweep looked ~8 lines at design
-  time): drop-in aligned example where a primitive stands in for an
-  obviously-swept/blended form.  Stop rule: `advanced_geometry` ≥2/6 →
-  bank; 0/6 → S3b decision point.
+- **S3a** (CONFIRMED by the S0.4 audit as the starting rung, verb-ranked):
+  1. `displaced_geometry` — the audit's headline: CHEAPEST verb to author
+     (11 lines / 16 tokens as a bolt-on to an existing shape; the
+     colora/colorb overhead implied by painter descriptors does NOT apply
+     to displacement sources, Job.cpp:5338) yet has ZERO code examples in
+     any skill doc and zero lifetime adoption — pure example-absence.
+     One ~11-line drop-in recipe is the S3a centrepiece.
+  2. `sweep_geometry` — the only skill example is scenario-glued (flask
+     neck, coordinates tuned to its vessel); re-anchor on the compact
+     standalone idiom that already exists in
+     `scenes/Tests/Geometry/sweep_instances.RISEscene` (2–3 point path,
+     no cross-object coordination).
+  3. `sdf_geometry` — the one verb models ALREADY reach for unprompted
+     (the only advanced verb ever inserted: 3/18 courtyard runs, always
+     freshly composed from the taught pattern, never pasted).  More
+     examples are the wrong lever here; the friction is that per-primitive
+     `a b c` semantics live only in skill prose, not in the
+     machine-readable descriptor.  Candidate structural fix (its own
+     measured variable, NOT folded into S3a): per-primitive field
+     semantics in the sdf descriptor — structure on the `read_schema`
+     carrier both models measurably read.
+  Stop rule: `advanced_geometry` ≥2/6 → bank; 0/6 → S3b decision point.
 - **S3b** (structural; needs explicit user taste sign-off before detailed
   design): parametric scaffold expansion into editable sdf/sweep chunks.
   Same stop-rule shape as S2.
@@ -240,3 +258,21 @@ main checkout after any worktree agent.  Runs: gemini via
   (param_binding, sonnet writer) + S0.4 (geometry audit, read-only) in
   flight; S0.2 (SetSkillIndex parity) and S0.3 (cozy-study scenario)
   serialized behind S0.1; anchor after gate.
+- **2026-07-31 — S0.4 geometry audit COMPLETE** (sonnet, read-only; all
+  minimal chunks parse+render-verified against `bin/rise`).  Costs:
+  sdf 6 lines/39 tokens (densest — per-primitive semantics absent from
+  the descriptor), sweep 9/25, displaced 11/16 (cheapest as a bolt-on;
+  no colour vocabulary actually required).  Census (18 courtyard runs):
+  only 3 ever inserted an advanced verb — ALWAYS `sdf_geometry`, always
+  freshly composed from the taught pattern; sweep and displaced were
+  never inserted once.  Copy-sources: sdf has one true drop-in (lamp
+  shade_taper); sweep's only example is scenario-glued;
+  displaced has ZERO examples anywhere.  Bonus first-party confirmation
+  of the mechanism law: one qwen run received the geometry-census
+  advisory 57 times and acted zero times.  S3a ordering fixed as
+  displaced-first (see §2 S3 amendment); the sdf descriptor-semantics
+  enrichment is registered as a separate structural candidate.
+  Incidental: a qwen run inserted `standard_object` chunks with a
+  hallucinated `gallery` field that reportedly failed SILENTLY — spun
+  off as its own investigation (agent-side insert validation vs the
+  descriptor hard-fail scene loading gets).
