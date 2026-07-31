@@ -80,6 +80,22 @@ namespace RISE
 			Scalar	survivalProb;	///< 1.0 if RR was not applied (depth < rrMinDepth)
 		};
 
+		/// Exact probability that the ordinary continuation roulette survives.
+		/// Kept separate from the random decision so NEE can evaluate the density
+		/// of its counterfactual march strategy before that strategy is sampled.
+		inline Scalar RussianRouletteSurvivalProbability(
+			unsigned int pathDepth,
+			unsigned int rrMinDepth,
+			Scalar rrThreshold,
+			Scalar currentThroughputMax,
+			Scalar prevThroughputMax
+			)
+		{
+			if( pathDepth < rrMinDepth ) return 1.0;
+			return r_min( Scalar(1.0),
+				currentThroughputMax / r_max( prevThroughputMax, rrThreshold ) );
+		}
+
 		/// Pure Russian roulette decision function.
 		///
 		/// Does NOT modify throughput — the caller is responsible for
@@ -107,8 +123,9 @@ namespace RISE
 
 			if( pathDepth >= rrMinDepth )
 			{
-				const Scalar rrProb = r_min( Scalar(1.0),
-					currentThroughputMax / r_max( prevThroughputMax, rrThreshold ) );
+				const Scalar rrProb = RussianRouletteSurvivalProbability(
+					pathDepth, rrMinDepth, rrThreshold,
+					currentThroughputMax, prevThroughputMax );
 				if( randomSample >= rrProb ) {
 					result.terminate = true;
 				} else if( rrProb > 0 && rrProb < 1.0 ) {

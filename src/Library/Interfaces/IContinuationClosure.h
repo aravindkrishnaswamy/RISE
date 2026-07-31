@@ -165,6 +165,11 @@ namespace RISE
 		MediumContinuationAvailability ResolveMediumContinuationAvailability(
 			bool downstreamVertexAllowedByTotalDepth,
 			unsigned int volumeBounces,
+			unsigned int maxVolumeBounces );
+
+		MediumContinuationAvailability ResolveMediumContinuationAvailability(
+			bool downstreamVertexAllowedByTotalDepth,
+			unsigned int volumeBounces,
 			const StabilityConfig& config );
 
 		bool IsExactSupportedContinuationMaterial( const IMaterial* material );

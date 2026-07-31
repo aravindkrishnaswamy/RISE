@@ -32,6 +32,7 @@
 #include "../Utilities/Profiling.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
+#include "../Interfaces/IContinuationClosure.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
 #include "../Utilities/MediumTransport.h"
 #include "../Intersection/RayIntersectionGeometric.h"
@@ -1846,6 +1847,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	const LightSampler* pLS = caster.GetLightSampler();
 	VolumeEmissionSegmentState activeVolumeSegmentState =
 		CurrentVolumeEmissionSegmentState();
+	// The iterative path keeps the sampled U/Y record alive until the outgoing
+	// segment has been marched.  VolumeEmissionSegmentState intentionally holds
+	// only a read-only pivot pointer, so stack storage inside one loop iteration
+	// would dangle on `continue`.
+	VolumeEmissionVertexSample activeVolumeVertexSample;
 
 #ifdef RISE_ENABLE_OPENPGL
 	const bool useGuidingPathSegments = rc.pGuidingField &&
@@ -1996,8 +2002,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// The collision exists, and therefore emits, independently of
 					// whether the volume-scatter continuation budget is exhausted.
-					if( !pathDepthAllowsContinuation ||
-						volumeBounces >= stabilityConfig.maxVolumeBounce ) {
+					if( !pathDepthAllowsContinuation ) {
 						break;
 					}
 
@@ -2030,18 +2035,49 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					throughput = throughput * medWeight;
 
-#ifdef RISE_ENABLE_OPENPGL
+					const bool volumeNEECompetes = !Traits::is_pel && pLS &&
+						pLS->GetVolumeEmissionMediumCount() > 0 &&
+						MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+							*pCurrentMedium);
+					const MediumContinuationAvailability mediumAvailability =
+						ResolveMediumContinuationAvailability(
+							depth+1 < maxDepth,volumeBounces,stabilityConfig);
+
+	#ifdef RISE_ENABLE_OPENPGL
 					PGLPathSegmentData* volSegment =
-						(guidingRecorder && guidingRecorder->active) ?
+						(!volumeNEECompetes && guidingRecorder && guidingRecorder->active) ?
 							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
-#endif
+	#endif
 					Scalar phaseNM = 0.0;
 					if constexpr ( !Traits::is_pel ) {
 						phaseNM = tag.nm;
 					}
 					MediumTransport::CollisionPhaseClosure phaseClosure(
-						*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel );
+						*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
+						volumeNEECompetes );
 					const IPhaseFunction* pPhase = phaseClosure.Get();
+
+					Scalar counterfactualRRSurvival = 1.0;
+					bool volumeEndpointAttempted = false;
+					if constexpr ( !Traits::is_pel ) {
+						counterfactualRRSurvival =
+							PathTransportUtilities::RussianRouletteSurvivalProbability(
+								depth+volumeBounces,rrMinDepth,rrThreshold,
+								PTSurvivalMagnitude(throughput),importance);
+						if( volumeNEECompetes && pPhase ) {
+							pLS->SampleVolumeEmissionVertex(
+								sampler,activeVolumeVertexSample);
+							volumeEndpointAttempted =
+								activeVolumeVertexSample.WasEndpointAttempted();
+							const Scalar volumeLd =
+								pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+									scatterPt,wo,*pPhase,mediumAvailability,
+									counterfactualRRSurvival,tag.nm,
+									activeVolumeVertexSample,pCurrentMedium,
+									pMediumObject,&iorStack);
+							result = result + throughput*volumeLd;
+						}
+					}
 
 					// NEE at scatter point
 					if( pLS && pPhase )
@@ -2065,6 +2101,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					if( !pPhase ) {
 						break;
 					}
+					if constexpr ( !Traits::is_pel ) {
+						if( !mediumAvailability.marchAllowed ) {
+							break;
+						}
+					}
 
 					Vector3 wi = pPhase->Sample( wo, sampler );
 					Scalar phasePdf = pPhase->Pdf( wo, wi );
@@ -2075,7 +2116,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// and learned volume distribution.  Mirrors the surface
 					// guiding path.  Falls through to pure phase sampling
 					// when the field has no volume data at this position.
-					if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+					if( !volumeNEECompetes && rc.pGuidingField &&
+						rc.pGuidingField->IsTrained() &&
 						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
 					{
 						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandle;
@@ -2138,8 +2180,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 					throughput = throughput * volScatterThroughput;
 
-					// Russian roulette on volume scatter
-					{
+					// Total/path terminal vertices launch a source-only segment and
+					// therefore have no ordinary continuation roulette event.
+					if( Traits::is_pel || !volumeNEECompetes ||
+						mediumAvailability.vertexAllowed ) {
 						const PathTransportUtilities::RussianRouletteResult rr =
 							PathTransportUtilities::EvaluateRussianRoulette(
 								depth + volumeBounces,
@@ -2177,7 +2221,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 					currentRay = Ray( scatterPt, wi );
-					activeVolumeSegmentState = VolumeEmissionSegmentState();
+					const Scalar marchDirectionPdf =
+						mediumAvailability.vertexAllowed ?
+							phasePdf*counterfactualRRSurvival : phasePdf;
+					activeVolumeSegmentState = VolumeEmissionSegmentState(
+						volumeEndpointAttempted,false,
+						volumeEndpointAttempted && activeVolumeVertexSample.HasPivots() ?
+							&activeVolumeVertexSample.Pivots() : 0,
+						marchDirectionPdf,0.0,0.0);
 					bsdfPdf = effectivePdf;
 					considerEmission = true;
 					volumeBounces++;
@@ -3940,11 +3991,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 						volumeSegmentState.continuationSingular);
 				}
 				mediumSource = mediumSource + thermalEmission;
-				// The collision emits independently of the scatter-continuation
-				// budget.  Apply the camera-first cap only after that score.
-				if( stabilityConfig.maxVolumeBounce == 0 ) {
-					return mediumSource;
-				}
 			}
 			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
 			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
@@ -3968,14 +4014,36 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
 				return result;
 			}
+			const bool volumeNEECompetes = !Traits::is_pel && pLS &&
+				pLS->GetVolumeEmissionMediumCount() > 0 &&
+				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+					*pCurrentMedium);
+			const MediumContinuationAvailability mediumAvailability =
+				ResolveMediumContinuationAvailability(
+					1 < EffectivePathTracingMaxDepth(rc,mMaxPathDepth),0,
+					stabilityConfig);
 
 			Scalar phaseNM = 0.0;
 			if constexpr ( !Traits::is_pel ) {
 				phaseNM = tag.nm;
 			}
 			MediumTransport::CollisionPhaseClosure phaseClosure(
-				*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel );
+				*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
+				volumeNEECompetes );
 			const IPhaseFunction* pPhase = phaseClosure.Get();
+			VolumeEmissionVertexSample volumeVertexSample;
+			bool volumeEndpointAttempted = false;
+			if constexpr ( !Traits::is_pel ) {
+				if( volumeNEECompetes && pPhase ) {
+					pLS->SampleVolumeEmissionVertex(sampler,volumeVertexSample);
+					volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
+					const Scalar volumeLd =
+						pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+							scatterPt,wo,*pPhase,mediumAvailability,1.0,tag.nm,
+							volumeVertexSample,pCurrentMedium,pMediumObject,&iorStack);
+					result = result + medWeight*volumeLd;
+				}
+			}
 
 			// NEE at scatter point.  GUI render modes P2b `indirect` fix
 			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
@@ -4017,6 +4085,11 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			if( !pPhase ) {
 				return result;
 			}
+			if constexpr ( !Traits::is_pel ) {
+				if( !mediumAvailability.marchAllowed ) {
+					return result;
+				}
+			}
 
 			Vector3 wi = pPhase->Sample( wo, sampler );
 			Scalar phasePdf = pPhase->Pdf( wo, wi );
@@ -4029,7 +4102,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// and continuation density; otherwise the first visible fire scatter
 			// silently bypasses guiding while later scatters do not.
 			if constexpr ( !Traits::is_pel ) {
-				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+					if( !volumeNEECompetes && rc.pGuidingField &&
+						rc.pGuidingField->IsTrained() &&
 					rc.guidingAlpha > 0 )
 				{
 					static thread_local Implementation::GuidingVolumeDistributionHandle
@@ -4117,19 +4191,29 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					0, 0, 0, 0, 1, 0,
 					pAOV, tag );
 				return result + volThroughput * hitResult;
-			} else {
-				// Start the iterative NM loop from the continuation ray itself.
-				// Its un-hit record makes the first loop iteration sample this
-				// segment's medium before looking for a surface or environment.
-				RayIntersection continuation( scatteredRay, rast );
-				Value continuationResult = IntegrateFromHitForTag<Tag>(
-					rc, rast, continuation, scene, caster,
-					sampler, pRadianceMap, 1, iorStack, effectivePdf,
-					Traits::zero(), true, 1.0,
-					IRayCaster::RAY_STATE::eRayDiffuse,
-					0, 0, 0, 0, 1, 0,
-					pAOV, tag );
-				return result + volThroughput * continuationResult;
+				} else {
+					// Start the iterative NM loop from the continuation ray itself.
+					// Its un-hit record makes the first loop iteration sample this
+					// segment's medium before looking for a surface or environment.
+					RayIntersection continuation( scatteredRay, rast );
+					const VolumeEmissionSegmentState downstreamVolumeState(
+						volumeEndpointAttempted,false,
+						volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
+							&volumeVertexSample.Pivots() : 0,
+						phasePdf,0.0,0.0);
+					Value continuationResult;
+					{
+						const VolumeEmissionSegmentStateScope volumeStateScope(
+							downstreamVolumeState);
+						continuationResult = IntegrateFromHitForTag<Tag>(
+							rc, rast, continuation, scene, caster,
+							sampler, pRadianceMap, 1, iorStack, effectivePdf,
+							Traits::zero(), true, 1.0,
+							IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, 1, 0,
+							pAOV, tag );
+					}
+					return result + volThroughput * continuationResult;
 			}
 		}
 		else if( ri.geometric.bHit )

@@ -75,7 +75,8 @@ namespace RISE
 				const IMedium& medium,
 				const Point3& scatterPoint,
 				const Scalar nm,
-				const bool spectral
+				const bool spectral,
+				const bool requireContinuationCapability = false
 				);
 			~CollisionPhaseClosure();
 

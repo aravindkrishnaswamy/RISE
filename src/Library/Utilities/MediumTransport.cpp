@@ -30,11 +30,21 @@ CollisionPhaseClosure::CollisionPhaseClosure(
 	const IMedium& medium,
 	const Point3& scatterPoint,
 	const Scalar nm,
-	const bool spectral
+	const bool spectral,
+	const bool requireContinuationCapability
 	) :
   m_pPhase( 0 ),
   m_owned( false )
 {
+	if( requireContinuationCapability )
+	{
+		if( spectral && IsContinuationPhaseClosureNMPreflightAllowlisted(medium) ) {
+			m_pPhase = medium.MakeContinuationPhaseClosureNM(scatterPoint,nm);
+			m_owned = m_pPhase != 0;
+		}
+		return;
+	}
+
 	if( medium.IsFireMedium() )
 	{
 		if( spectral ) {

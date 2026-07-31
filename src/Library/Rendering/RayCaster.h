@@ -179,7 +179,9 @@ namespace RISE
 				const RuntimeContext& rc, const RasterizerState& rast,
 				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,
 				Scalar* distance, const IRadianceMap* pRadianceMap,
-				const IORStack& ior_stack, bool skipEntryGates ) const;
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false ) const;
 			bool CastRayHWSSImpl_(
 				const RuntimeContext& rc, const RasterizerState& rast,
 				const Ray& ray, Scalar c[SampledWavelengths::N],

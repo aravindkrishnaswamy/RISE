@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Interfaces/IContinuationClosure.h"
 #include <atomic>
 #include <cstring>   // review-p2d: std::strcmp for the reserved "environment" solo name
 #include "RayCaster.h"
@@ -59,6 +60,12 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	inline Scalar RayCasterRRSurvivalProbability( const Scalar importance )
+	{
+		return importance < RC_RR_THRESHOLD && importance > 0.0 ?
+			importance / RC_RR_THRESHOLD : 1.0;
+	}
+
 	// Shader-dispatch renderers enter path tracing through RayCaster rather
 	// than PathTracingIntegrator::IntegrateRay. Capture the raw camera
 	// intersection here, before medium sampling, transparency recursion,
@@ -1569,7 +1576,9 @@ bool RayCaster::CastRayNMImpl_(
 	Scalar* distance,
 	const IRadianceMap* pRadianceMap,
 	const IORStack& ior_stack,
-	const bool skipEntryGates
+	const bool skipEntryGates,
+	const bool skipEntryRoulette,
+	const bool sourceOnlySegment
 	) const
 {
 	const bool primaryAOVUnresolvedAtEntry =
@@ -1579,11 +1588,11 @@ bool RayCaster::CastRayNMImpl_(
 		( entryMedium->IsFireMedium() ||
 			!entryMedium->IsHomogeneous() ||
 			entryMedium->GetCoefficientsNM( ray.origin, nm ).emission != 0.0 );
-	bool depthGateDeferredForEmission = false;
+	bool depthGateDeferredForEmission = sourceOnlySegment;
 #ifdef ENABLE_MAX_RECURSION
 	if( !skipEntryGates && rs.depth > nMaxRecursions )
 	{
-		if( carriesMediumSource ) {
+		if( sourceOnlySegment || carriesMediumSource ) {
 			depthGateDeferredForEmission = true;
 		} else {
 #ifdef ENABLE_TERMINATION_MESSAGES
@@ -1600,9 +1609,10 @@ bool RayCaster::CastRayNMImpl_(
 	Scalar rrContinuationCompensation = 1.0;
 	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
-	if( !skipEntryGates && rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && !skipEntryRoulette && !sourceOnlySegment &&
+		rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
-		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
+		const Scalar pSurvive = RayCasterRRSurvivalProbability(rs.importance);
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
 			if( carriesMediumSource ) {
 				rrContinuationRejected = true;
@@ -1927,24 +1937,51 @@ bool RayCaster::CastRayNMImpl_(
 				throughput = coeff.sigma_s / coeff.sigma_t;
 			}
 
-			// The fire branch can only acquire its wavelength-bound closure;
-			// CollisionPhaseClosure contains no legacy fallback for fire media.
+			static const unsigned int nMaxVolumeBounces = 64;
+			const bool volumeNEECompetes = pLightSampler &&
+				pLightSampler->GetVolumeEmissionMediumCount() > 0 &&
+				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+					*pMedium);
+			const MediumContinuationAvailability mediumAvailability =
+				ResolveMediumContinuationAvailability(
+					rs.depth < nMaxRecursions,rs.volumeBounces,nMaxVolumeBounces);
+
+			// A competing vertex acquires its exact continuation factory only
+			// after the closed exact-type preflight.  Preview-style unsupported
+			// vertices retain the legacy closure with volume NEE disabled.
 			MediumTransport::CollisionPhaseClosure phaseClosure(
-				*pMedium, scatterPt, nm, true );
+				*pMedium, scatterPt, nm, true, volumeNEECompetes );
 			const IPhaseFunction* pPhase = phaseClosure.Get();
+			const Scalar counterfactualRRSurvival =
+				RayCasterRRSurvivalProbability(rs.importance*throughput);
+			VolumeEmissionVertexSample volumeVertexSample;
+			bool volumeEndpointAttempted = false;
+			Scalar volumeLd = 0.0;
+			if( volumeNEECompetes && pPhase ) {
+				pLightSampler->SampleVolumeEmissionVertex(
+					mediumSampler,volumeVertexSample);
+				volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
+				volumeLd = pLightSampler->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+					scatterPt,wo,*pPhase,mediumAvailability,
+					counterfactualRRSurvival,nm,volumeVertexSample,pMedium,
+					pMediumObject,&ior_stack);
+			}
 
 			// NEE at scatter point
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 				scatterPt, wo, pMedium, pPhase, nm, *this, pLightSampler,
 				mediumSampler, rast, pMediumObject, &ior_stack );
+			Ld += volumeLd;
 
 			// Phase-function continuation
-			static const unsigned int nMaxVolumeBounces = 64;
 			Scalar Li = 0;
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
-				rs.volumeBounces < nMaxVolumeBounces )
+			const bool marchAllowed = volumeNEECompetes ?
+				mediumAvailability.marchAllowed :
+				(rs.depth < nMaxRecursions &&
+					rs.volumeBounces < nMaxVolumeBounces);
+			if( pPhase && marchAllowed )
 			{
 				Scalar guidingMISWeight = 1.0;
 				Scalar effectivePdf = 0;
@@ -1954,7 +1991,8 @@ bool RayCaster::CastRayNMImpl_(
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Volume guiding (spectral): one-sample MIS
-				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+				if( !volumeNEECompetes && rc.pGuidingField &&
+					rc.pGuidingField->IsTrained() &&
 					rc.guidingAlpha > 0 &&
 					rs.depth < rc.maxGuidingDepth )
 				{
@@ -2010,16 +2048,42 @@ bool RayCaster::CastRayNMImpl_(
 					rs2.volumeBounces = rs.volumeBounces + 1;
 					rs2.bsdfPdf = effectivePdf;
 
+					Scalar continuationCompensation = 1.0;
+					bool continuationSurvived = true;
+					if( volumeNEECompetes && mediumAvailability.vertexAllowed &&
+						counterfactualRRSurvival < 1.0 ) {
+						continuationSurvived = rc.random.CanonicalRandom() <
+							counterfactualRRSurvival;
+						if( continuationSurvived && counterfactualRRSurvival > 0.0 ) {
+							continuationCompensation = 1.0/counterfactualRRSurvival;
+						}
+					}
+
 					Scalar hitDist = 0;
-					CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
-						pRadianceMap, ior_stack );
+					if( continuationSurvived ) {
+						const Scalar marchDirectionPdf =
+							mediumAvailability.vertexAllowed ?
+								phasePdf*counterfactualRRSurvival : phasePdf;
+						const VolumeEmissionSegmentState downstreamVolumeState(
+							volumeEndpointAttempted,false,
+							volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
+								&volumeVertexSample.Pivots() : 0,
+							marchDirectionPdf,0.0,0.0);
+						const VolumeEmissionSegmentStateScope volumeStateScope(
+							downstreamVolumeState);
+						CastRayNMImpl_( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
+							pRadianceMap, ior_stack, false,
+							volumeNEECompetes,
+							volumeNEECompetes && !mediumAvailability.vertexAllowed );
+						Li *= continuationCompensation;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Record volume training sample (spectral path).
 				// Use effectivePdf (= combinedPdf when guiding was applied)
 				// so that weight = luminance / pdf matches the actual
 				// sampling distribution.
-					if( rc.pGuidingField &&
+					if( !volumeNEECompetes && rc.pGuidingField &&
 						rc.pGuidingField->IsCollectingTrainingSamples() &&
 						effectivePdf > NEARZERO )
 					{
@@ -2060,16 +2124,11 @@ bool RayCaster::CastRayNMImpl_(
 		if( distance ) *distance = 0.0;
 		return additiveEmissionNM != 0.0;
 	}
-	if( depthGateDeferredForEmission ) {
-		c = additiveEmissionNM;
-		if( distance ) *distance = 0.0;
-		return additiveEmissionNM != 0.0;
-	}
-
-	if( bHit ) {
-		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
-		{
-			IORStack nextStack( ior_stack );
+	if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) )
+	{
+		const bool downstreamSourceOnly = sourceOnlySegment ||
+			depthGateDeferredForEmission;
+		IORStack nextStack( ior_stack );
 			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
 			const Ray nextRay = ContinueExactNullBoundaryRay(
 				ray, ri.geometric.surfaceRange );
@@ -2098,7 +2157,8 @@ bool RayCaster::CastRayNMImpl_(
 					downstreamVolumeSegmentState);
 				downstreamHit = CastRayNMImpl_(
 					rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
-					pRadianceMap, nextStack, true );
+					pRadianceMap, nextStack, true, downstreamSourceOnly,
+					downstreamSourceOnly );
 			}
 			OffsetCapturedPrimaryAOVDepth(
 				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
@@ -2110,8 +2170,15 @@ bool RayCaster::CastRayNMImpl_(
 					: ri.geometric.surfaceRange + downstreamDistance;
 			}
 			return downstreamHit || additiveEmissionNM != 0.0;
-		}
+	}
 
+	if( depthGateDeferredForEmission ) {
+		c = additiveEmissionNM;
+		if( distance ) *distance = 0.0;
+		return additiveEmissionNM != 0.0;
+	}
+
+	if( bHit ) {
 		// If there is an intersection modifier, then get it to modify
 		// the intersection information
 		if( ri.pModifier ) {
@@ -2121,8 +2188,17 @@ bool RayCaster::CastRayNMImpl_(
 		// Set the current object on the IOR stack
 		ior_stack.SetCurrentObject( ri.pObject );
 
-		// Apply shade by calling the appropriate shader
-		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
+		// A non-null interface ends the originating medium-march strategy.
+		// Recursive surface continuations start a fresh family; carrying the
+		// phase density, pivots, or competition bit across this boundary would
+		// assign support to a march that the straight volume connection cannot
+		// follow.
+		{
+			const VolumeEmissionSegmentState resetVolumeState;
+			const VolumeEmissionSegmentStateScope volumeStateScope(
+				resetVolumeState);
+			c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
+		}
 
 		// Analog no-scatter survival: reaching this surface without a scatter
 		// event is a survival outcome whose probability already carries

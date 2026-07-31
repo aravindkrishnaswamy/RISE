@@ -36,6 +36,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Materials/IsotropicPhaseFunction.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEdit.h"
 #include "../src/Library/SceneEditor/SceneEditor.h"
@@ -350,6 +351,130 @@ namespace
 	protected:
 		~ForwardPhase() override = default;
 	};
+
+	class UnsupportedHomogeneousSmoke :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		UnsupportedHomogeneousSmoke(
+			IPhaseFunction& phase,
+			const Scalar sigmaA,
+			const Scalar sigmaS ) :
+		  pPhase_(&phase), sigmaT_(sigmaA+sigmaS), sigmaS_(sigmaS)
+		{
+			pPhase_->addref();
+		}
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients c;
+			c.sigma_t = RISEPel(sigmaT_,sigmaT_,sigmaT_);
+			c.sigma_s = RISEPel(sigmaS_,sigmaS_,sigmaS_);
+			c.emission = RISEPel(0,0,0);
+			return c;
+		}
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM c;
+			c.sigma_t = sigmaT_;
+			c.sigma_s = sigmaS_;
+			c.emission = 0.0;
+			return c;
+		}
+		const IPhaseFunction* GetPhaseFunction() const override { return pPhase_; }
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler& sampler,
+			bool& scattered ) const override
+		{
+			const Scalar t = -std::log1p(-sampler.Get1D())/sigmaT_;
+			scattered = t < maxDist;
+			return scattered ? t : maxDist;
+		}
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return SampleDistance(ray,maxDist,sampler,scattered);
+		}
+		RISEPel EvalTransmittance( const Ray&, const Scalar dist ) const override
+		{
+			const Scalar tr = std::exp(-sigmaT_*dist);
+			return RISEPel(tr,tr,tr);
+		}
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar dist, const Scalar ) const override
+		{
+			return std::exp(-sigmaT_*dist);
+		}
+		bool IsHomogeneous() const override { return true; }
+
+	protected:
+		~UnsupportedHomogeneousSmoke() override { safe_release(pPhase_); }
+
+	private:
+		IPhaseFunction* pPhase_;
+		const Scalar sigmaT_;
+		const Scalar sigmaS_;
+	};
+
+	class VolumeStateProbeShader :
+		public virtual IShader,
+		public virtual Reference
+	{
+	public:
+		mutable bool sawCompetition;
+		VolumeStateProbeShader() : sawCompetition(false) {}
+		void Shade(
+			const RuntimeContext&, const RayIntersection&, const IRayCaster&,
+			const IRayCaster::RAY_STATE&, RISEPel& c,
+			const IORStack& ) const override
+		{
+			sawCompetition = CurrentVolumeEmissionSegmentState().competitionAvailable;
+			c = sawCompetition ? RISEPel(0,0,0) : RISEPel(1,1,1);
+		}
+		Scalar ShadeNM(
+			const RuntimeContext&, const RayIntersection&, const IRayCaster&,
+			const IRayCaster::RAY_STATE&, const Scalar,
+			const IORStack& ) const override
+		{
+			sawCompetition = CurrentVolumeEmissionSegmentState().competitionAvailable;
+			return sawCompetition ? 0.0 : 1.0;
+		}
+		void ResetRuntimeData() const override {}
+
+	protected:
+		~VolumeStateProbeShader() override = default;
+	};
+
+	std::string IsolatedSmokeReceiverScene()
+	{
+		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"null_boundary_material\n{\nname medium_boundary\n}\n"
+			"homogeneous_medium\n{\nname receiver_smoke\n"
+			"absorption 0.9 0.9 0.9\nscattering 0.1 0.1 0.1\nphase isotropic\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min 0.25 -0.5 -0.5\n"
+			"bbox_max 1.25 0.5 0.5\nsoot_em 0.26\nsoot_density 1800\n"
+			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
+			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium receiver_smoke\n}\n"
+			"sphere_geometry\n{\nname fire_box_geometry\nradius 1\n}\n"
+			"standard_object\n{\nname fire_box\ngeometry fire_box_geometry\n"
+			"material medium_boundary\ninterior_medium fire\nposition 0.75 0 0\n"
+			"casts_shadows FALSE\n}\n"
+			"box_geometry\n{\nname wall_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
+			"standard_object\n{\nname wall\ngeometry wall_geometry\nmaterial none\n"
+			"position 0 0 2.1\n}\n";
+		return scene.str();
+	}
 
 	struct PhaseClosureAudit
 	{
@@ -1125,22 +1250,198 @@ namespace
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
-		Fixture fixture;
-		const Scalar albedo = 0.5;
-		Check( fixture.Initialize( "scattering_cap", 1.0, 1.0, false, albedo ),
-			"scattering fire slab initializes at maxVolumeBounce=0" );
-		if( !fixture.integrator || !fixture.Medium() ) return;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_isolated_smoke_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << IsolatedSmokeReceiverScene();
+		}
 
-		const Scalar nm = 500.0;
-		const MediumCoefficientsNM coeff = fixture.Medium()->GetCoefficientsNM(
-			Point3( 0, 0, 0.5 ), nm );
-		const Scalar sigmaA = coeff.sigma_t - coeff.sigma_s;
-		const Scalar expected = ( sigmaA / coeff.sigma_t ) *
-			PlanckSpectralRadianceNM( nm, kTemperatureK ) *
-			( -std::expm1( -coeff.sigma_t * fixture.slabLength ) );
-		const Scalar measured = fixture.MeanPathTracingNM( 0x5ca77e2u, nm );
-		Check( NearRelative( measured, expected, 0.012 ),
-			"primary scattering collision emits, then maxVolumeBounce=0 suppresses continuation" );
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		IRayCaster* terminalCaster = nullptr;
+		PathTracingIntegrator* cappedIntegrator = nullptr;
+		PathTracingIntegrator* terminalIntegrator = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"isolated smoke receiver and off-axis fire fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster,false,4,*shader,true) && caster &&
+				RISE_API_CreateRayCaster(&terminalCaster,false,1,*shader,true) &&
+				terminalCaster,
+				"isolated receiver prepares ordinary and terminal RayCasters" );
+			if( caster ) caster->AttachScene(job->GetScene());
+			if( terminalCaster ) terminalCaster->AttachScene(job->GetScene());
+			StabilityConfig cappedConfig;
+			cappedConfig.maxVolumeBounce = 0;
+			cappedIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),cappedConfig);
+			StabilityConfig terminalConfig;
+			terminalConfig.maxVolumeBounce = 2;
+			terminalIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),terminalConfig);
+			terminalIntegrator->SetMaxPathDepth(1);
+		}
+
+		if( job && caster && terminalCaster && cappedIntegrator && terminalIntegrator ) {
+			const Scalar nm = 500.0;
+			const unsigned int samples = 320000;
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			const RasterizerState rast = {0,0};
+			auto meanPT = [&]( PathTracingIntegrator& integrator,
+				const IRayCaster& route, const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator.IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+			auto meanRC = [&]( const IRayCaster& route,
+				const unsigned int volumeBounces, const unsigned int seed,
+				const Scalar importance = 1.0 ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				state.volumeBounces = volumeBounces;
+				state.importance = importance;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			const IMedium* supportedSmoke = job->GetScene()->GetGlobalMedium();
+			supportedSmoke->addref();
+			const Scalar cappedOnPT = meanPT(*cappedIntegrator,*caster,0x5ca77e2u);
+			const Scalar cappedOnRC = meanRC(*caster,64,0xca5700u);
+			const Scalar terminalOnPT = meanPT(*terminalIntegrator,*terminalCaster,0x7e2d01u);
+			// With sigma_s=0.1, importance=0.05, and the active 50/50
+			// DT/equiangular distance mixture, Tr*sigma_s/combinedPdf is
+			// positive and strictly below 0.2. The counterfactual ordinary
+			// outgoing roulette survival is therefore strictly between zero and
+			// one; the terminal A_march density must omit that varying factor.
+			const Scalar terminalOnRC = meanRC(
+				*terminalCaster,0,0x7e2d02u,0.05);
+
+			IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* unsupportedSmoke =
+				new UnsupportedHomogeneousSmoke(*phase,0.9,0.1);
+			job->GetScene()->SetGlobalMedium(unsupportedSmoke);
+			const Scalar cappedOffPT = meanPT(*cappedIntegrator,*caster,0x5ca77e2u);
+			const Scalar cappedOffRC = meanRC(*caster,64,0xca5700u);
+			const Scalar terminalOffPT = meanPT(*terminalIntegrator,*terminalCaster,0x7e2d03u);
+			// The unsupported preview reference keeps RayCaster's legacy depth
+			// semantics. Give it one ordinary scatter segment, then use the volume
+			// cap at the reached fire collision so it is the same source-only
+			// brute-force family without the volume-NEE estimator.
+			const Scalar terminalOffRC = meanRC(*caster,63,0x7e2d04u);
+			job->GetScene()->SetGlobalMedium(supportedSmoke);
+
+			if( !(cappedOnPT > 0.0 && cappedOnRC > 0.0 &&
+				terminalOffPT > 0.0 && terminalOffRC > 0.0) ) {
+				std::cout << "  capped on/off PT=" << cappedOnPT << "/" << cappedOffPT <<
+					" RC=" << cappedOnRC << "/" << cappedOffRC <<
+					" terminal on/off PT=" << terminalOnPT << "/" << terminalOffPT <<
+					" RC=" << terminalOnRC << "/" << terminalOffRC << std::endl;
+			}
+			Check( cappedOffPT==0.0 && cappedOffRC==0.0 &&
+				cappedOnPT>0.0 && cappedOnRC>0.0,
+				"per-type-capped smoke lobe is NEE-only in both production routes" );
+			Check( NearRelative(cappedOnPT,cappedOnRC,0.06),
+				"PT and RayCaster agree on the isolated per-type-capped NEE estimator" );
+			const bool terminalPartitionAgrees = terminalOffPT>0.0 && terminalOffRC>0.0 &&
+				NearRelative(terminalOnPT,terminalOffPT,0.10) &&
+				NearRelative(terminalOnRC,terminalOffRC,0.10);
+			if( !terminalPartitionAgrees ) {
+				std::cout << "  terminal on/off PT=" << terminalOnPT << "/" << terminalOffPT <<
+					" RC=" << terminalOnRC << "/" << terminalOffRC << std::endl;
+			}
+			Check( terminalPartitionAgrees,
+				"total-depth A_march NEE-on and pure-march references agree" );
+			Check( NearRelative(terminalOnPT,terminalOnRC,0.08),
+				"PT and RayCaster agree on the terminal source-only MIS partition" );
+
+			safe_release(unsupportedSmoke);
+			safe_release(phase);
+			safe_release(supportedSmoke);
+		}
+
+		safe_release(terminalIntegrator);
+		safe_release(cappedIntegrator);
+		safe_release(terminalCaster);
+		safe_release(caster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
+	void TestNonNullSurfaceClearsMediumMarchCompetition()
+	{
+		std::cout << "TestNonNullSurfaceClearsMediumMarchCompetition" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_medium_competition_surface_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output <<
+				"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+				"box_geometry\n{\nname stop_geometry\nwidth 4\nheight 4\ndepth 0.2\n}\n"
+				"standard_object\n{\nname stop\ngeometry stop_geometry\n"
+				"material none\nposition 0 0 1.1\n}\n";
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		VolumeStateProbeShader* probe = new VolumeStateProbeShader();
+		probe->addref();
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"non-null competition-boundary fixture loads" );
+		if( job ) {
+			Check( job->GetShaders()->AddItem(probe,"volume_state_probe") &&
+				job->SetObjectShader("stop","volume_state_probe"),
+				"non-null surface installs the competition-state probe shader" );
+			IShader* shader = job->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster,false,4,*shader,true) && caster,
+				"non-null competition-boundary caster initializes" );
+			if( caster ) caster->AttachScene(job->GetScene());
+		}
+
+		if( caster ) {
+			RandomNumberGenerator rng(0xfaceb00u);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			const RasterizerState rast = {0,0};
+			IRayCaster::RAY_STATE state;
+			Scalar value = 0.0;
+			const VolumeEmissionSegmentState competingState(
+				true,false,nullptr,1.0/FOUR_PI,0.0,0.0);
+			bool hit = false;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(competingState);
+				hit = caster->CastRayNM(
+					rc,rast,Ray(Point3(0,0,0),Vector3(0,0,1)),value,state,
+					500.0,nullptr,nullptr);
+			}
+			Check( hit && value==1.0 && !probe->sawCompetition,
+				"a non-null surface resets the originating medium march family before shading" );
+		}
+
+		safe_release(caster);
+		safe_release(job);
+		safe_release(probe);
+		std::filesystem::remove(scenePath);
 	}
 
 	void TestCollisionEmissionConsumesMarchCompetitionState()
@@ -1948,6 +2249,7 @@ int main()
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
+	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestCollisionEmissionConsumesMarchCompetitionState();
 	TestDirectPelEntryRejectsFire();
 	TestBoundedObjectFireRejectsShaderDispatchPel();

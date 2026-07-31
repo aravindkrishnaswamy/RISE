@@ -17,6 +17,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
 
@@ -171,6 +172,32 @@ namespace
 		mediumAvailability = ResolveMediumContinuationAvailability(false,0,mediumConfig);
 		Check( !mediumAvailability.vertexAllowed && !mediumAvailability.marchAllowed,
 			"volume per-type cap removes the medium lobe from both views" );
+	}
+
+	void TestExtractedRouletteProbabilityMatchesDecision()
+	{
+		using PathTransportUtilities::EvaluateRussianRoulette;
+		using PathTransportUtilities::RussianRouletteSurvivalProbability;
+		CheckNear( RussianRouletteSurvivalProbability(
+			2,3,0.05,0.02,0.1),1.0,0.0,
+			"roulette probability is one before the minimum depth" );
+		const Scalar intermediate = RussianRouletteSurvivalProbability(
+			3,3,0.05,0.02,0.1);
+		CheckNear( intermediate,0.2,1e-15,
+			"roulette probability exposes the exact intermediate survival mass" );
+		CheckNear( RussianRouletteSurvivalProbability(
+			3,3,0.05,0.2,0.1),1.0,0.0,
+			"roulette probability is capped at one" );
+
+		const PathTransportUtilities::RussianRouletteResult survives =
+			EvaluateRussianRoulette(3,3,0.05,0.02,0.1,0.19);
+		Check( !survives.terminate && survives.survivalProb==intermediate &&
+			std::fabs(1.0/survives.survivalProb-5.0)<=1e-15,
+			"roulette decision uses the extracted probability for survival compensation" );
+		const PathTransportUtilities::RussianRouletteResult terminates =
+			EvaluateRussianRoulette(3,3,0.05,0.02,0.1,intermediate);
+		Check( terminates.terminate && terminates.survivalProb==1.0,
+			"roulette decision retains its boundary termination convention" );
 	}
 
 	template<class Closure>
@@ -833,6 +860,7 @@ int main()
 {
 	std::cout << "Continuation Closure Phase-B Gate 3" << std::endl;
 	TestR42AvailabilityReductionAndCaps();
+	TestExtractedRouletteProbabilityMatchesDecision();
 	TestIsotropicPhongMixedSplitPelAndNM();
 	TestHorizonNormalizationPelAndNM();
 	TestHorizonNullAndRouletteMass();
