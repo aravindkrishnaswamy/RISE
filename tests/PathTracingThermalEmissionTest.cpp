@@ -959,10 +959,21 @@ namespace
 		IsotropicPhong
 	};
 
+	enum class PhaseBMatrixTopology
+	{
+		Clear,
+		NullCavity,
+		NestedSmoke,
+		OpaquePartialBlocker
+	};
+
 	std::string SurfaceFireReceiverScene(
 		const bool positionalLight = false,
 		const SurfaceReceiverMaterial receiverMaterial =
-			SurfaceReceiverMaterial::Lambertian )
+			SurfaceReceiverMaterial::Lambertian,
+		const PhaseBMatrixTopology matrixTopology =
+			PhaseBMatrixTopology::Clear,
+		const bool matrixObjectCastsShadows = true )
 	{
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
 		const Point3 fireMin = positionalLight ?
@@ -1003,10 +1014,43 @@ namespace
 			"\nsoot_em 0.26\nsoot_density 1800\n"
 			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
 			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
-			"global_medium\n{\nmedium fire\n}\n"
+			"global_medium\n{\nmedium fire\n}\n";
+		if( matrixTopology == PhaseBMatrixTopology::NullCavity ||
+			matrixTopology == PhaseBMatrixTopology::NestedSmoke ) {
+			scene <<
+				"null_boundary_material\n{\nname matrix_boundary\n}\n"
+				"homogeneous_medium\n{\nname matrix_interior\n"
+				"absorption " <<
+					(matrixTopology == PhaseBMatrixTopology::NestedSmoke ?
+						"0.35 0.35 0.35" : "0 0 0") <<
+				"\nscattering " <<
+					(matrixTopology == PhaseBMatrixTopology::NestedSmoke ?
+						"0.15 0.15 0.15" : "0 0 0") <<
+				"\nphase isotropic\n}\n";
+		} else if( matrixTopology == PhaseBMatrixTopology::OpaquePartialBlocker ) {
+			scene <<
+				"uniformcolor_painter\n{\nname matrix_black\ncolor 0 0 0\n}\n"
+				"lambertian_material\n{\nname matrix_blocker_material\n"
+				"reflectance matrix_black\n}\n";
+		}
+		scene <<
 			"box_geometry\n{\nname receiver_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
 			"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
 			"material receiver\nposition 0 0 0\n}\n";
+		if( matrixTopology != PhaseBMatrixTopology::Clear ) {
+			scene <<
+				"sphere_geometry\n{\nname matrix_geometry\nradius 0.2\n}\n"
+				"standard_object\n{\nname matrix_object\ngeometry matrix_geometry\n"
+				"material " <<
+					(matrixTopology == PhaseBMatrixTopology::OpaquePartialBlocker ?
+						"matrix_blocker_material" : "matrix_boundary") <<
+				"\nposition 0.58 0.18 -0.42\ncasts_shadows " <<
+					(matrixObjectCastsShadows ? "TRUE" : "FALSE") << "\n";
+			if( matrixTopology != PhaseBMatrixTopology::OpaquePartialBlocker ) {
+				scene << "interior_medium matrix_interior\n";
+			}
+			scene << "}\n";
+		}
 		if( positionalLight ) {
 			scene <<
 				"omni_light\n{\nname point_competitor\npower 0.001\n"
@@ -6992,6 +7036,215 @@ namespace
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
+
+	void TestPhaseBConfigurationMatrix()
+	{
+		std::cout << "TestPhaseBConfigurationMatrix" << std::endl;
+		struct MatrixRow
+		{
+			PhaseBMatrixTopology topology;
+			bool castsShadows;
+			bool transparentShadows;
+			const char* label;
+		};
+		const MatrixRow rows[] = {
+			{ PhaseBMatrixTopology::Clear, true, false, "clear" },
+			{ PhaseBMatrixTopology::NullCavity, true, false,
+				"null boundary casts-shadows on" },
+			{ PhaseBMatrixTopology::NullCavity, false, true,
+				"null boundary casts-shadows off, transparent-shadows on" },
+			{ PhaseBMatrixTopology::NestedSmoke, true, true,
+				"nested medium casts-shadows on, transparent-shadows on" },
+			{ PhaseBMatrixTopology::NestedSmoke, false, false,
+				"nested medium casts-shadows off" },
+			{ PhaseBMatrixTopology::OpaquePartialBlocker, true, true,
+				"opaque blocker casts-shadows on, transparent-shadows on" },
+			{ PhaseBMatrixTopology::OpaquePartialBlocker, false, false,
+				"opaque blocker casts-shadows off" },
+			{ PhaseBMatrixTopology::OpaquePartialBlocker, false, true,
+				"opaque blocker casts-shadows off, transparent-shadows on" }
+		};
+		const SurfaceReceiverMaterial materials[] = {
+			SurfaceReceiverMaterial::Lambertian,
+			SurfaceReceiverMaterial::OrenNayar,
+			SurfaceReceiverMaterial::IsotropicPhong
+		};
+		const char* materialNames[] = { "Lambertian", "Oren-Nayar", "Phong" };
+		struct Moments
+		{
+			Scalar mean;
+			Scalar variance;
+			unsigned int positive;
+		};
+		const unsigned int samples = 80000;
+		const Scalar nm = 500.0;
+		const RasterizerState rast = {0,0};
+		const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+		unsigned int fixtureSerial = 0;
+#ifdef RISE_ENABLE_OPENPGL
+		using MatrixGuidePtr = Implementation::PathGuidingField*;
+#else
+		using MatrixGuidePtr = void*;
+#endif
+
+		auto runFixture = [&]( const SurfaceReceiverMaterial material,
+			const MatrixRow& row,
+			MatrixGuidePtr guiding,
+			const unsigned int guidingMode,
+			const char* modeLabel ) {
+			const std::filesystem::path scenePath =
+				std::filesystem::temp_directory_path() /
+				( "rise_phase_b_matrix_" + std::to_string(static_cast<int>(::getpid())) +
+					"_" + std::to_string(fixtureSerial++) + ".RISEscene" );
+			{
+				std::ofstream output(scenePath);
+				output << SurfaceFireReceiverScene(
+					false,material,row.topology,row.castsShadows);
+			}
+			IJobPriv* job = nullptr;
+			IRayCaster* neeCaster = nullptr;
+			IRayCaster* marchOnlyCaster = nullptr;
+			const bool loaded = RISE_CreateJobPriv(&job) && job &&
+				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			if( loaded ) {
+				IShader* shader = job->GetShaders()->GetItem("global");
+				const IMedium* fire = job->GetScene()->GetGlobalMedium();
+				if( fire ) fire->addref();
+				IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+				UnsupportedHomogeneousSmoke* vacuum =
+					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+				job->GetScene()->SetGlobalMedium(vacuum);
+				if( shader && RISE_API_CreateRayCaster(
+					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster ) {
+					marchOnlyCaster->AttachScene(job->GetScene());
+				}
+				job->GetScene()->SetGlobalMedium(fire);
+				safe_release(vacuum);
+				safe_release(vacuumPhase);
+				if( shader && RISE_API_CreateRayCaster(
+					&neeCaster,false,20,*shader,true) && neeCaster ) {
+					neeCaster->AttachScene(job->GetScene());
+				}
+				safe_release(fire);
+			}
+
+			bool agrees = false;
+			bool guideWitness = true;
+			Moments on = {0,0,0};
+			Moments off = {0,0,0};
+			if( loaded && neeCaster && marchOnlyCaster ) {
+				StabilityConfig config;
+				config.maxDiffuseBounce = 2;
+				config.maxGlossyBounce = 2;
+				config.transparentShadows = row.transparentShadows;
+				PathTracingIntegrator* integrator =
+					new PathTracingIntegrator(ManifoldSolverConfig(),config);
+				integrator->SetMaxPathDepth(2);
+				auto moments = [&]( const IRayCaster& route,
+					const unsigned int seed ) {
+					RandomNumberGenerator rng(seed);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+#ifdef RISE_ENABLE_OPENPGL
+					rc.pGuidingField = guiding;
+					rc.guidingAlpha = guiding ? 0.5 : 0.0;
+					rc.guidingLearnedAlpha = false;
+					rc.maxGuidingDepth = 8;
+					rc.guidingSamplingType =
+						static_cast<GuidingSamplingType>(guidingMode);
+#else
+					(void)guiding;
+					(void)guidingMode;
+#endif
+					IndependentSampler sampler(rng);
+					long double sum = 0.0;
+					long double sumSquares = 0.0;
+					unsigned int positive = 0;
+					for( unsigned int i=0; i<samples; ++i ) {
+						const Scalar value = integrator->IntegrateRayNM(
+							rc,rast,ray,nm,*job->GetScene(),route,
+							sampler,nullptr,nullptr);
+						sum += value;
+						sumSquares += static_cast<long double>(value)*value;
+						if( value>0.0 ) ++positive;
+					}
+					const long double count = static_cast<long double>(samples);
+					const long double mean = sum/count;
+					const long double variance =
+						(sumSquares-sum*sum/count)/(count-1.0);
+					return Moments{static_cast<Scalar>(mean),
+						static_cast<Scalar>(variance>0.0 ? variance : 0.0),positive};
+				};
+				const unsigned int seedBase = 0x7b00000u + fixtureSerial*0x101u +
+					static_cast<unsigned int>(material)*0x10001u;
+				on = moments(*neeCaster,seedBase+1u);
+				off = moments(*marchOnlyCaster,seedBase+2u);
+#ifdef RISE_ENABLE_OPENPGL
+				if( guiding ) {
+					guideWitness =
+						integrator->NonCompetingSurfaceGuideInitializationCount()>0 &&
+						(guidingMode!=static_cast<unsigned int>(eGuidingRIS) ||
+							integrator->NonCompetingSurfaceRISCount()>0);
+				}
+#endif
+				const Scalar standardError = std::sqrt(
+					(on.variance+off.variance)/static_cast<Scalar>(samples));
+				agrees = guideWitness && on.mean>0.0 && off.mean>0.0 &&
+					on.positive>100 && off.positive>100 && standardError>0.0 &&
+					std::fabs(on.mean-off.mean)<=6.0*standardError;
+				safe_release(integrator);
+			}
+			if( !agrees ) {
+				std::cout << "  matrix " << materialNames[static_cast<unsigned int>(material)] <<
+					" / " << row.label << " / " << modeLabel <<
+					" means=" << on.mean << "/" << off.mean <<
+					" variances=" << on.variance << "/" << off.variance <<
+					" positives=" << on.positive << "/" << off.positive <<
+					" guideWitness=" << guideWitness << std::endl;
+			}
+			const std::string label = std::string("Phase-B matrix ") +
+				materialNames[static_cast<unsigned int>(material)] + " / " +
+				row.label + " / " + modeLabel +
+				" preserves volume-NEE versus march equality";
+			Check( agrees,label.c_str() );
+			safe_release(neeCaster);
+			safe_release(marchOnlyCaster);
+			safe_release(job);
+			std::filesystem::remove(scenePath);
+		};
+
+		for( const SurfaceReceiverMaterial material : materials ) {
+			for( const MatrixRow& row : rows ) {
+				runFixture(material,row,nullptr,0,"guiding off");
+			}
+		}
+
+#ifdef RISE_ENABLE_OPENPGL
+		PathGuidingConfig guidingConfig;
+		guidingConfig.enabled = true;
+		Implementation::PathGuidingField* guiding =
+			new Implementation::PathGuidingField(
+				guidingConfig,Point3(-2,-2,-2),Point3(2,2,1));
+		guiding->BeginTrainingIteration();
+		for( unsigned int i=0; i<512; ++i ) {
+			const Scalar phi = TWO_PI*static_cast<Scalar>(i%64)/64.0;
+			const Scalar z = -0.15-0.8*static_cast<Scalar>(i/64)/7.0;
+			const Scalar radial = std::sqrt(std::fmax(0.0,1.0-z*z));
+			guiding->AddSample(
+				Point3(0,0,-0.1),Vector3(radial*cos(phi),radial*sin(phi),z),
+				1.0,1.0/(2.0*PI),1.0,false);
+		}
+		guiding->EndTrainingIteration();
+		Check( guiding->IsTrained(),
+			"Phase-B configuration matrix surface guide trains" );
+		runFixture(SurfaceReceiverMaterial::Lambertian,rows[0],guiding,
+			static_cast<unsigned int>(eGuidingOneSampleMIS),
+			"guiding one-sample MIS requested");
+		runFixture(SurfaceReceiverMaterial::Lambertian,rows[0],guiding,
+			static_cast<unsigned int>(eGuidingRIS),
+			"guiding RIS requested at the non-competing reference vertex");
+		safe_release(guiding);
+#endif
+	}
 }
 
 int main()
@@ -7029,6 +7282,7 @@ int main()
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
 	TestSSSBSSRDFPreviewContainment();
 	TestNestedSSSShaderOpContainment();
+	TestPhaseBConfigurationMatrix();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }

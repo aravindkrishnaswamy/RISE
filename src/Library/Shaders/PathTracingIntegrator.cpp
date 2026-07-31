@@ -1699,6 +1699,8 @@ PathTracingIntegrator::PathTracingIntegrator(
   mCompetingMediumZeroSurvivalObserved( false ),
   mCompetingMediumIntermediateSurvivalObserved( false ),
   mCompetingMediumUnitSurvivalObserved( false ),
+  mNonCompetingSurfaceGuideInitializationCount( 0 ),
+  mNonCompetingSurfaceRISCount( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
   pClayMaterial( 0 )
@@ -3524,6 +3526,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					ri.geometric.ptIntersection,
 					sampler.Get1D() ) )
 				{
+					mNonCompetingSurfaceGuideInitializationCount.fetch_add(
+						1,std::memory_order_relaxed);
+					if( rc.guidingSamplingType == eGuidingRIS ) {
+						mNonCompetingSurfaceRISCount.fetch_add(
+							1,std::memory_order_relaxed);
+					}
 					if( pS->type == ScatteredRay::eRayDiffuse ) {
 						rc.pGuidingField->ApplyCosineProduct( guideDist, GuidingCosineNormal( ri.geometric ) );
 					}

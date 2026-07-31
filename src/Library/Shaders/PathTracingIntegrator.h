@@ -115,6 +115,14 @@ namespace RISE
 			mutable std::atomic<bool>				mCompetingMediumIntermediateSurvivalObserved;
 			mutable std::atomic<bool>				mCompetingMediumUnitSurvivalObserved;
 
+			//! Phase-B configuration-matrix witnesses for the non-competing
+			//! reference route.  They prove that a requested surface guide (and
+			//! its RIS mode) actually initialized rather than letting an equality
+			//! gate pass through an unnoticed guide fallback. Transport never
+			//! reads these relaxed counters.
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceGuideInitializationCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceRISCount;
+
 			//! Shared clay reflectance state for `clay_lights`: one synthetic
 			//! mid-grey LambertianMaterial built by CreateClayOverrideMaterial.
 			//! Its BRDF and SPF pointers are borrowed from that one material, so
@@ -236,6 +244,14 @@ namespace RISE
 			}
 			bool CompetingMediumUnitSurvivalObserved() const {
 				return mCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceGuideInitializationCount() const {
+				return mNonCompetingSurfaceGuideInitializationCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceRISCount() const {
+				return mNonCompetingSurfaceRISCount.load(
 					std::memory_order_relaxed);
 			}
 
