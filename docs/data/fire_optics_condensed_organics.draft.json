@@ -1,0 +1,158 @@
+{
+ "applies_to": "condensed organic aerosol constituent, c_condensed inventory (SS3.4/SS4.3); FRESH flaming-phase wood smoke",
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as a RISE-CBOR64-v1 byte string; the adopted record ID is SHA-256 of those exact CBOR bytes. The draft_record_id here covers only this JSON payload.",
+ "compiled": "2026-07-31",
+ "computed_outputs_full_mie": {
+  "extinction_angstrom_exponent_450_633": 1.78,
+  "method": "Bohren-Huffman Mie, pure-Python impl validated vs BH m=1.55 x=5.213 (Qext 3.10500 vs 3.10543), Wiscombe x=10 m=1.5+0.1i, and analytic Rayleigh limit; 80-bin lognormal quadrature",
+  "sensitivity": {
+   "k550_0.002_to_0.006_omega": [
+    0.988,
+    0.964
+   ],
+   "n_corners_kext_550": [
+    3.27,
+    4.97
+   ],
+   "size_corners_kext_550": [
+    3.95,
+    4.44
+   ]
+  },
+  "table": {
+   "columns": [
+    "lambda_nm",
+    "k_ext_m2_per_g",
+    "omega",
+    "g"
+   ],
+   "rows": [
+    [
+     380,
+     7.63,
+     0.872,
+     0.684
+    ],
+    [
+     450,
+     6.049,
+     0.94,
+     0.655
+    ],
+    [
+     550,
+     4.314,
+     0.976,
+     0.621
+    ],
+    [
+     633,
+     3.298,
+     0.974,
+     0.595
+    ],
+    [
+     780,
+     2.097,
+     0.97,
+     0.547
+    ]
+   ]
+  }
+ },
+ "conflicts_flagged": [
+  "Computed extinction Angstrom exponent 1.78 vs design SS4.3 droplet-regime prose 'n ~ 0-1, weakly chromatic': the cited FRESH size distributions (CMD 0.12um, VMD 0.26um) are smaller than the '0.1-1um dominant mass' picture; n~0-1 applies to AGED/coagulated smoke. The preset must state its fresh-smoke applicability; an aged variant would need a separate size distribution.",
+  "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
+ ],
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "9f676b48a2f21f2ee37d3f743170b5f9bca70316bb15f9feebe9847b487b2958",
+ "gaps": [
+  "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
+  "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
+  "SVOC-corrected alpha/rho(lambda): Chen & Bond Fig.11 is figure-only; digitization required if adopted",
+  "derivative enclosures: generate at freeze time"
+ ],
+ "mie_inputs": {
+  "brown_carbon_AAE": {
+   "range": [
+    6.9,
+    11.4
+   ],
+   "source": "Chen & Bond 2010 SS3.5 p.1782 (methanol extracts, R2 0.989-1.000)"
+  },
+  "density_g_cm3": {
+   "range": [
+    1.2,
+    1.4
+   ],
+   "source": "Reid 2005 II p.803 (POM ~80% of fresh smoke mass; Turpin & Lim 2001 ~1.2 for organics - cited second-hand through Reid, primary paywalled)",
+   "value": 1.3
+  },
+  "k_imag_400nm": {
+   "range": [
+    0.005,
+    0.04
+   ],
+   "source": "Chen & Bond 2010 ACP 10:1773 Table 1 p.1776 (alpha/rho methanol extracts converted at rho=1.2: 210C->0.005-0.017, 270C->0.015-0.028, 360C->0.034-0.041). NOTE title is 'wood combustion' not 'wood pyrolysis'",
+   "value": 0.02
+  },
+  "k_imag_550nm": {
+   "range": [
+    0.002,
+    0.006
+   ],
+   "source": "Sumlin et al. 2018 JQSRT 206:392 (arXiv:1712.05028) Fig.3 (kappa ~0.002 flat >=532nm, peat BrC); Chakrabarty et al. 2010 ACP 10:6363 Table 1 (tar balls 0.006 @532)",
+   "value": 0.004
+  },
+  "k_lambda_model": "power law between anchors below 532nm (AAE-consistent, exponent ~5.05); flat 0.004 above 532nm per Sumlin",
+  "n_real": {
+   "range": [
+    1.42,
+    1.55
+   ],
+   "source": "Reid et al. 2005 ACP 5:827 (Part III) SS3 p.837 (organic shell; Mulholland 1985 smoldering cellulose 1.5; closure studies 1.42-1.55)",
+   "value": 1.5
+  },
+  "size_distribution": {
+   "CMD_nm": 120,
+   "CMD_range_nm": [
+    110,
+    130
+   ],
+   "sigma_g": 1.75,
+   "sigma_g_range": [
+    1.7,
+    1.8
+   ],
+   "source": "Reid et al. 2005 ACP 5:799 (Part II) SS3 p.801, Tables 1 p.802 & 7 p.816 (fresh flaming; VMD ~0.26um cross-check)",
+   "type": "lognormal_number"
+  }
+ },
+ "record_kind": "constituent_optics",
+ "record_name": "condensed-organics-smoke-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "validation_against_independent_targets": {
+  "alpha_s_550": {
+   "computed_pure_organic": 4.21,
+   "note": "pure-organic slightly above whole-smoke (BC lowers mixture) - consistent direction; Reid III Table 5 p.843",
+   "reid_T5_whole_smoke": [
+    3.2,
+    4.0
+   ]
+  },
+  "g_550": {
+   "computed": 0.621,
+   "reid_T5": [
+    0.55,
+    0.63
+   ],
+   "verdict": "INSIDE"
+  },
+  "omega_550": {
+   "computed_pure_organic": 0.976,
+   "note": "fresh flaming WHOLE-smoke omega 0.74-0.85 (Reid III p.834) includes BC; constituent split assigns that absorption to the carbon record"
+  }
+ },
+ "version": "v1-draft"
+}

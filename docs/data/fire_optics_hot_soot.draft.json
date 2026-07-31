@@ -1,0 +1,181 @@
+{
+ "applicability_caveats": [
+  "g is a strong function of aggregate size (kRg), not a constant: fixed-g HG is a modelling choice; Pandey & Chakrabarty 2016 Opt.Lett. 41:3351 bound HG error at up to 35% in g/beta (<=8% in forcing)",
+  "RDG-FA validity: <=10% error for phase-shift parameter 2kRg|m-1|<1 (Sorensen p.668; Farias et al. 1995 JHT 117:152, open NIST copy - dominant error is m itself, not RDG-FA)",
+  "d_p young-soot range is lead-only; young/precursor soot is partially translucent (Koylu et al. 1997 CF 110:494) so TEM vs optical d_p diverge",
+  "G(kRg) Eq.35 is ~20% small at kRg>=10 (Kazakov-Frenklach via Sorensen p.655) - matters for largest overfire aggregates only"
+ ],
+ "applies_to": "hot in-flame soot constituent, f_v,hot = phi(T)*c_carbon partition (SS4.1); absorption from the E(m) record, omega/g from this record",
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
+ "compiled": "2026-07-31",
+ "computed_outputs": {
+  "spectral_overfire_dp40_N400": {
+   "columns": [
+    "lambda_nm",
+    "omega",
+    "g"
+   ],
+   "rows": [
+    [
+     380,
+     0.273,
+     0.65
+    ],
+    [
+     450,
+     0.268,
+     0.631
+    ],
+    [
+     550,
+     0.255,
+     0.604
+    ],
+    [
+     633,
+     0.241,
+     0.583
+    ],
+    [
+     780,
+     0.221,
+     0.546
+    ]
+   ]
+  },
+  "spectral_young_dp30_N50": {
+   "columns": [
+    "lambda_nm",
+    "omega",
+    "g"
+   ],
+   "rows": [
+    [
+     380,
+     0.143,
+     0.355
+    ],
+    [
+     450,
+     0.125,
+     0.295
+    ],
+    [
+     550,
+     0.101,
+     0.22
+    ],
+    [
+     633,
+     0.083,
+     0.17
+    ],
+    [
+     780,
+     0.061,
+     0.113
+    ]
+   ]
+  },
+  "young_in_flame_550nm": {
+   "g_central": 0.22,
+   "g_range": [
+    0.09,
+    0.37
+   ],
+   "omega_central": 0.1,
+   "omega_range": [
+    0.05,
+    0.16
+   ],
+   "over": "N in [30,80] x d_p in [20,35]nm"
+  }
+ },
+ "design_fixture_comparison": {
+  "g_hot_fixture_0.5": "NOT CONFIRMED for young in-flame soot: computed g(550) 0.09-0.37 (central 0.22). g~0.5-0.6 is the OVERFIRE/mature-aggregate value (computed 0.60 @550, N=400). Flagged as disagreement per instructions - not tuned. If the hot constituent is meant to model in-flame soot, g_hot should be ~0.2-0.3; the fixture's 0.5 describes mature aggregates that in this design belong to the cool-carbon phase of the phi(T) partition.",
+  "omega_hot_fixture_0.10": "CONFIRMED (central computed 0.10 for verified N=30-80 young soot)"
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "a245f14f4c54dfde3239029c796d645f2846a147a3bba3fe186e60e7ae3c0695",
+ "gaps": [
+  "per-fuel rho_sa table: Koylu & Faeth 1994a (J.Heat Transfer 116:152, ASME) PAYWALLED - owner library pull",
+  "in-flame d_p/N tables: Yazicioglu et al. CST 171:71 (2001) PAYWALLED - best closure target",
+  "validation of computed g against exact methods: Romshoo et al. 2021 ACP 21:12989 supplement (OPEN - ln g cubic fit coefficients, 192 MSTM cases) and Liu et al. 2013 AST 47:1393 (PAYWALLED, RDG-vs-GMM asymmetry comparison)"
+ ],
+ "method": "RDG-FA per Sorensen 2001 (Aerosol Sci. Tech. 35:648-687): sigma_abs^agg = N*sigma_abs^m (Eq.29); rho_sa = N*G(kRg)*(2/3)*x_p^3*(F/E) (equiv. Sorensen Eq.115 / Krishnan-Faeth Eq.17 - verified identical); G = Dobbins-Megaridis total-scattering factor (Eq.35); differential structure factor Dobbins-Megaridis (Guinier + power-law, value+slope-matched crossover at (qRg)^2=3Df/2, C~1) - Fisher-Burford and exponential forms explicitly REJECTED per Sorensen p.660 (C=2.44/2.73 at Df~1.8 over-predict large-angle scattering); g = <cos theta> over (1+cos^2)*S(q)",
+ "morphology_inputs": {
+  "D_f": {
+   "source": "Krishnan et al. 1999 via NISTGCR 00-796 Table 2 footnote",
+   "uncertainty": 0.05,
+   "value": 1.79
+  },
+  "F_over_E_measured": {
+   "anchors_nm": {
+    "351": 0.63,
+    "400": 0.75,
+    "425": 0.8,
+    "450": 0.85,
+    "480": 0.91,
+    "514": 0.98,
+    "633": 1.17
+   },
+   "source": "Krishnan & Faeth NISTGCR 00-796 Table 4 p.58 (measured, overfire, all fuels)"
+  },
+  "N_young_in_flame": {
+   "range": [
+    30,
+    80
+   ],
+   "source": "Krishnan & Faeth NISTGCR 00-796 p.84 (open, OCR-read; same-author restatement of Koylu & Faeth 1994a,b underfire data)",
+   "status": "VERIFIED"
+  },
+  "d_p_young_nm": {
+   "central": 30,
+   "range": [
+    20,
+    35
+   ],
+   "source": "lead-only (Megaridis & Dobbins CST 71:95 ~10-40nm; Sunderland/Koylu/Faeth CF 100:310 Fig.3 plots)",
+   "status": "NOT_TABLE_VERIFIED - owner decision or library pull (Yazicioglu CST 171:71 best target)"
+  },
+  "k_f_prefactor": {
+   "convention": "N = k_f*(R_g/d_p)^D_f (DIAMETER)",
+   "k0_convention": "N = k0*(R_g/a)^D_f (RADIUS)",
+   "k0_equivalent": 2.44,
+   "source": "Koylu et al. 1995 via NISTGCR 00-796; conversion k0=k_f/2^Df verified via Sorensen 2001 p.680",
+   "trap": "Sorensen's own DLCA k0=1.3+-0.2 disagrees with K&F's 2.44 by ~1.9x - unresolved in literature (Sorensen p.669); this record pins the K&F value for consistency with the K&F morphology and rho_sa validation",
+   "uncertainty": 0.5,
+   "value": 8.5
+  },
+  "soot_density_kg_m3": {
+   "source": "Wu et al. 1997 via NISTGCR 00-796 Table 2 footnote",
+   "value": 1880
+  }
+ },
+ "record_kind": "constituent_optics",
+ "record_name": "hot-soot-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "validation": {
+  "independent": "Heuser 2025 ACP Table 2 SSA(550) 0.10-0.29; Forestieri 2018 SSA(532)~0.20 - three routes agree",
+  "overfire_omega_515": {
+   "computed_per_fuel": {
+    "acetylene": 0.304,
+    "ethylene": 0.209,
+    "heptane": 0.219,
+    "toluene": 0.329
+   },
+   "measured": "K&F 1994a rho_sa 0.22-0.41 @514.5 -> omega 0.18-0.29 (abstract-level; per-fuel table PAYWALLED)",
+   "verdict": "INSIDE/AT measured band"
+  },
+  "overfire_omega_633": {
+   "computed_range": [
+    0.19,
+    0.31
+   ],
+   "measured": "Mulholland & Choi 1998 omega 0.19-0.25 (via Sorensen p.681)",
+   "verdict": "consistent"
+  }
+ },
+ "version": "v1-draft"
+}

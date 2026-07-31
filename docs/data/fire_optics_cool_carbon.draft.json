@@ -1,0 +1,78 @@
+{
+ "applies_to": "cool (post-flame) soot carbon constituent, c_carbon inventory at phi(T)~0 (SS3.4/SS4.3)",
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as a RISE-CBOR64-v1 byte string; the adopted record ID is SHA-256 of those exact CBOR bytes. The draft_record_id here covers only this JSON payload.",
+ "compiled": "2026-07-31",
+ "consistency_check_total_anchor": {
+  "arithmetic": "MAC(633) = 7.5*(550/633) = 6.52 m2/g; with omega=0.25: k_ext = 6.52/0.75 = 8.69 m2/g. Implied omega from anchor: 1 - 6.52/8.7 = 0.251 = B&B central SSA. PASSES to <1%.",
+  "mixture_dilution": "k_total = f_EC*8.7 + (1-f_EC)*k_cond(3.30 Mie) requires f_EC >= 0.80 to stay inside [7.6, 9.8]. Chen et al. 2007 (ES&T 41:4317, Table 2 p.4322) flaming ponderosa pine wood: EC/PM ~ 0.80, EC/TC ~ 0.84 at MCE 0.99 -> CONSISTENT. Field-plume BC fractions 5-9% (Reid 2005 II p.803-805) are a different (smoldering-weighted) regime where the flaming-only anchor does not apply.",
+  "statement": "SS4.3: constituent presets must be consistent with M&C 8.7+/-1.1 m2/g @633 total post-flame extinction for wood-class fuels",
+  "verdict": "PASS for wood-class flaming smoke"
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "7b95647cda6a328e77815fee3c58b1903663dacd229093cda99ce7e431516e48",
+ "gaps": [
+  "IR absorption for SS3.5 Kirchhoff emission: B&B explicitly makes no statement outside 400-700nm; the record needs the C&C dispersion (or another source) for thermal wavelengths - couples to the E(m) record's >6.4um verification",
+  "omega/g wavelength dependence beyond 633nm: assemble from RDG-FA once morphology record adopted",
+  "M&C body (per-fuel spread, coverage factor): paywalled - owner library pull",
+  "derivative enclosures for interpolation (SS12 Q2): to be generated at record-freeze time from the adopted table"
+ ],
+ "record_kind": "constituent_optics",
+ "record_name": "cool-carbon-smoke-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "traps_flagged": [
+  "Do NOT derive MAC from the refractive index via Mie/RDG: B&B SS7.5 pp.51-52 shows ~30% underprediction; pin measured MAC+SSA directly",
+  "The +/-1.2 (1sigma) and +/-1.1 (95% expanded) are different statistics"
+ ],
+ "values": {
+  "MAC_absorption_550nm_m2_per_g": {
+   "source": "Bond & Bergstrom 2006, Aerosol Sci. Tech. 40:27-67, SS7.3 p.48, SS9.1 p.58",
+   "uncertainty": 1.2,
+   "uncertainty_kind": "1 sigma of 17-study ensemble (DIFFERENT statistic from the M&C 95% bound - do not mix)",
+   "value": 7.5
+  },
+  "density_g_cm3": {
+   "range": [
+    1.7,
+    1.9
+   ],
+   "source": "B&B 2006 SS9.2 p.58",
+   "value": 1.8
+  },
+  "g_asymmetry": {
+   "range": [
+    0.51,
+    0.64
+   ],
+   "source": "RDG-FA over VERIFIED overfire morphology (Koylu-Faeth per-fuel d_p 32-51nm, N 260-552, Df 1.79, k_f 8.5 via NISTGCR 00-796 Table 2), Dobbins-Megaridis structure factor, computed at 633nm; per-fuel g(633) ethylene 0.559, heptane 0.512, acetylene 0.610, toluene 0.638. See hot-soot record for method, validation, and the fixed-g/HG caveats (g is size-dependent; HG error bound 35%)",
+   "value": 0.58
+  },
+  "k_m_extinction_633nm_m2_per_g": {
+   "source": "Mulholland & Croarkin 2000, Fire Mater. 24:227-230 (abstract verified via OpenAlex; 7 studies, 29 fuels, post-flame overventilated flaming smoke; between-lab ANOVA dominant)",
+   "uncertainty": 1.1,
+   "uncertainty_kind": "95% expanded (coverage factor k unverified - paywalled body)",
+   "value": 8.7
+  },
+  "n_spectral_exponent": {
+   "range": [
+    1.0,
+    1.2
+   ],
+   "source": "B&B 2006 SS7.6 p.53/SS9.1 p.58 (lambda^-1, visible only, +/-~0.15); Ouf et al. 2008 FSS 9:231 p.238 (632->1064nm EAE 1.03); Heuser et al. 2025 ACP 25:6407 Table 2 (EC-rich EAE 1.12-1.23); Chen et al. 2007 flaming pine ~1.18 derived",
+   "validity_nm": [
+    400,
+    700
+   ],
+   "value": 1.0
+  },
+  "omega_633nm": {
+   "range": [
+    0.2,
+    0.3
+   ],
+   "source": "Bond & Bergstrom 2006 SS9.1 p.58, Table 7 p.51 (six measured studies 0.15-0.29)",
+   "value": 0.25
+  }
+ },
+ "version": "v1-draft"
+}
