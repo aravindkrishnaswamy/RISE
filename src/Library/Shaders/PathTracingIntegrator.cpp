@@ -345,6 +345,34 @@ namespace
 			medium, ray, segmentStart, segmentEnd, nm, additiveXi );
 	}
 
+	static Scalar PTFullSegmentChemEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar segmentStart,
+		const Scalar segmentEnd,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		IndependentSampler chemSampler( random );
+		return medium.EstimateChemEmissionSegmentNM(
+			ray, segmentStart, segmentEnd, nm, chemSampler );
+	}
+
+	static Scalar PTFullSegmentChemEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( !PTMediumSegmentInterval(
+			medium, ray, maxDist, segmentStart, segmentEnd ) ) return 0.0;
+		return PTFullSegmentChemEmissionNM(
+			medium, ray, segmentStart, segmentEnd, nm, random );
+	}
+
 	static Scalar PTEventThermalEmissionNM(
 		const IMedium& medium,
 		const Ray& ray,
@@ -1985,7 +2013,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				if constexpr ( !Traits::is_pel ) {
 					const Scalar additiveEmission = PTFullSegmentAdditiveEmissionNM(
 						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
-					result = result + throughput * additiveEmission;
+					const Scalar chemEmission = PTFullSegmentChemEmissionNM(
+						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
+					result = result + throughput * ( additiveEmission + chemEmission );
 				}
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
@@ -2217,8 +2247,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// Total/path terminal vertices launch a source-only segment and
 					// therefore have no ordinary continuation roulette event.
-					if( Traits::is_pel || !volumeNEECompetes ||
-						mediumAvailability.vertexAllowed ) {
+					if( Traits::is_pel || mediumAvailability.vertexAllowed ) {
 						const PathTransportUtilities::RussianRouletteResult rr =
 							PathTransportUtilities::EvaluateRussianRoulette(
 								depth + volumeBounces,
@@ -2482,6 +2511,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// the later continuation sample.
 		ContinuationClosureNMGuard surfaceClosureGuard;
 		ContinuationAvailability surfaceAvailability;
+		bool surfaceClosureActive = false;
 		bool surfaceVolumeNEECompetes = false;
 		bool surfaceVolumeEndpointAttempted = false;
 		if constexpr ( Traits::is_nm ) {
@@ -2491,8 +2521,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pClayMaterial : ri.pMaterial;
 			const bool materialSupported = clayOverride ||
 				IsExactSupportedContinuationMaterial( continuationMaterial );
-			if( pLS && pLS->GetVolumeEmissionMediumCount() > 0 &&
-				materialSupported ) {
+			const bool hasThermalVolumeEmitter =
+				pLS && pLS->GetVolumeEmissionMediumCount() > 0;
+			const bool needsTerminalFireSegment =
+				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
+			if( materialSupported &&
+				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
 				ContinuationPathState pathState;
 				pathState.pathDepth = depth;
 				pathState.rrMinDepth = rrMinDepth;
@@ -2503,21 +2537,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						ri.geometric,iorStack,tag.nm,pathState) );
 				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
 				if( closure ) {
-					surfaceVolumeNEECompetes = true;
+					surfaceClosureActive = true;
+					surfaceVolumeNEECompetes = hasThermalVolumeEmitter;
 					surfaceAvailability = ResolveContinuationAvailability(
 						closure->GetLobeMask(),depth+1 < maxDepth,
 						diffuseBounces,glossyBounces,stabilityConfig);
-					pLS->SampleVolumeEmissionVertex(
-						sampler,activeVolumeVertexSample);
-					surfaceVolumeEndpointAttempted =
-						activeVolumeVertexSample.WasEndpointAttempted();
+					if( surfaceVolumeNEECompetes ) {
+						pLS->SampleVolumeEmissionVertex(
+							sampler,activeVolumeVertexSample);
+						surfaceVolumeEndpointAttempted =
+							activeVolumeVertexSample.WasEndpointAttempted();
+					}
 				}
 			}
 		}
 
 #ifdef RISE_ENABLE_OPENPGL
 		PGLPathSegmentData* guidingSegment =
-			(!surfaceVolumeNEECompetes && guidingRecorder && guidingRecorder->active) ?
+			(!surfaceClosureActive && guidingRecorder && guidingRecorder->active) ?
 				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
 #endif
 
@@ -3349,7 +3386,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// PART 3: BSDF sampling (continue path — iterative)
 		// ============================================================
 		if constexpr ( Traits::is_nm ) {
-			if( surfaceVolumeNEECompetes ) {
+			if( surfaceClosureActive ) {
 				if( pAOV && !pAOV->valid &&
 					rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
 					pAOV->normal = ri.geometric.vNormal;
@@ -4098,6 +4135,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		const LightSampler* pLS = caster.GetLightSampler();
 		if constexpr ( !Traits::is_pel ) {
 			mediumSource = mediumSource + PTFullSegmentAdditiveEmissionNM(
+				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
+			mediumSource = mediumSource + PTFullSegmentChemEmissionNM(
 				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
 		}
 		IndependentSampler mediumSampler( rc.random );

@@ -351,6 +351,23 @@ namespace RISE
 			const Scalar nm
 			) const { return 0; }
 
+		/// Estimate the absorption-independent chemiluminescence source over
+		/// one complete boundary-delimited medium segment.  Fire media own the
+		/// reaction-lattice proposal from §7.1 step 3; transport supplies an
+		/// independent sampler and accumulates the returned spectral-radiance
+		/// estimate at MIS weight one.  Ordinary media have no chem source.
+		///
+		/// This virtual remains at the absolute vtable tail.  The segment
+		/// endpoints are ray parameters and include the entire interval
+		/// regardless of any separately sampled collision.
+		virtual Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar nm,
+			ISampler& sampler
+			) const { return 0.0; }
+
 	};
 }
 

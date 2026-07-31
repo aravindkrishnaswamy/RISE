@@ -29,6 +29,7 @@
 #endif
 
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IShader.h"
@@ -349,6 +350,245 @@ namespace
 		{
 			return pt.z >= 0.5 && pt.z <= 1.0 ? 2.0 : 0.0;
 		}
+	};
+
+	class SyntheticChemEmissionMedium :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		mutable unsigned int segmentSamples;
+		mutable unsigned int uniformTechniqueSamples;
+		mutable unsigned int reactionTechniqueSamples;
+		mutable unsigned int supportSamples;
+
+		explicit SyntheticChemEmissionMedium(
+			const Scalar sigmaT = 0.0 ) :
+		  segmentSamples(0), uniformTechniqueSamples(0),
+		  reactionTechniqueSamples(0), supportSamples(0),
+		  sigmaT_(sigmaT)
+		{}
+
+		static Scalar ReactionStart() { return 0.45; }
+		static Scalar ReactionEnd() { return 0.55; }
+		static Scalar BandStartNM() { return 425.0; }
+		static Scalar BandEndNM() { return 435.0; }
+		static Scalar BandIntegratedSource() { return 8.0*PI; }
+
+		static Scalar SpectralSource( const Point3& point, const Scalar nm )
+		{
+			if( point.z < ReactionStart() || point.z > ReactionEnd() ||
+				nm < BandStartNM() || nm > BandEndNM() ) return 0.0;
+			const Scalar normalizedSyntheticSPD =
+				1.0/(BandEndNM()-BandStartNM());
+			return BandIntegratedSource() * normalizedSyntheticSPD / (4.0*PI);
+		}
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients result;
+			result.sigma_t = RISEPel(sigmaT_,sigmaT_,sigmaT_);
+			result.sigma_s = RISEPel(0,0,0);
+			result.emission = RISEPel(0,0,0);
+			return result;
+		}
+
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM result;
+			result.sigma_t = sigmaT_;
+			result.sigma_s = 0.0;
+			result.emission = 0.0;
+			return result;
+		}
+
+		const IPhaseFunction* GetPhaseFunction() const override { return nullptr; }
+
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler& sampler,
+			bool& scattered ) const override
+		{
+			if( sigmaT_<=0.0 ) {
+				scattered = false;
+				return maxDist;
+			}
+			const Scalar t = -std::log1p(-sampler.Get1D())/sigmaT_;
+			scattered = t<maxDist;
+			return scattered ? t : maxDist;
+		}
+
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return SampleDistance(ray,maxDist,sampler,scattered);
+		}
+
+		RISEPel EvalTransmittance(
+			const Ray&, const Scalar distance ) const override
+		{
+			const Scalar transmittance = std::exp(-sigmaT_*distance);
+			return RISEPel(transmittance,transmittance,transmittance);
+		}
+
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar distance, const Scalar ) const override
+		{
+			return std::exp(-sigmaT_*distance);
+		}
+
+		Scalar EvalDistancePdfNM(
+			const Ray&, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			return scattered
+				? sigmaT_*std::exp(-sigmaT_*t)
+				: std::exp(-sigmaT_*maxDist);
+		}
+
+		Scalar EvalLogDistancePdfNM(
+			const Ray&, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			if( scattered ) {
+				return sigmaT_>0.0
+					? std::log(sigmaT_)-sigmaT_*t
+					: -RISE_INFINITY;
+			}
+			return -sigmaT_*maxDist;
+		}
+
+		bool IsHomogeneous() const override { return false; }
+		bool IsFireMedium() const override { return true; }
+
+		bool GetBoundingBox( Point3& bbMin, Point3& bbMax ) const override
+		{
+			bbMin = Point3(-0.5,-0.5,0.0);
+			bbMax = Point3(0.5,0.5,1.0);
+			return true;
+		}
+
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar nm,
+			ISampler& sampler ) const override
+		{
+			const Scalar segmentLength = segmentEnd-segmentStart;
+			if( segmentLength<=0.0 || ray.Dir().z<=0.0 ) return 0.0;
+			const Scalar reactionStart = std::fmax(
+				segmentStart,(ReactionStart()-ray.origin.z)/ray.Dir().z);
+			const Scalar reactionEnd = std::fmin(
+				segmentEnd,(ReactionEnd()-ray.origin.z)/ray.Dir().z);
+			const Scalar reactionLength = reactionEnd-reactionStart;
+			if( reactionLength<=0.0 ) return 0.0;
+
+			++segmentSamples;
+			const bool reactionTechnique = sampler.Get1D()>=0.5;
+			const Scalar xi = sampler.Get1D();
+			const Scalar t = reactionTechnique
+				? reactionStart+xi*reactionLength
+				: segmentStart+xi*segmentLength;
+			if( reactionTechnique ) {
+				++reactionTechniqueSamples;
+			} else {
+				++uniformTechniqueSamples;
+			}
+			const bool inReactionSupport =
+				t>=reactionStart && t<=reactionEnd;
+			if( inReactionSupport ) ++supportSamples;
+
+			const Scalar qReaction = inReactionSupport
+				? 1.0/reactionLength : 0.0;
+			const Scalar qChem = 0.5/segmentLength + 0.5*qReaction;
+			const Scalar epsilonChem =
+				SpectralSource(ray.PointAtLength(t),nm);
+			const Scalar logTransmittance = EvalLogDistancePdfNM(
+				ray,t,false,t,nm);
+			return std::exp(logTransmittance)*epsilonChem/qChem;
+		}
+
+	protected:
+		~SyntheticChemEmissionMedium() override = default;
+
+	private:
+		const Scalar sigmaT_;
+	};
+
+	class TerminalChemEmissionMedium :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients result;
+			result.sigma_t = RISEPel(0,0,0);
+			result.sigma_s = RISEPel(0,0,0);
+			result.emission = RISEPel(0,0,0);
+			return result;
+		}
+
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM result;
+			result.sigma_t = 0.0;
+			result.sigma_s = 0.0;
+			result.emission = 0.0;
+			return result;
+		}
+
+		const IPhaseFunction* GetPhaseFunction() const override { return nullptr; }
+
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler&,
+			bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return SampleDistance(ray,maxDist,sampler,scattered);
+		}
+
+		RISEPel EvalTransmittance(
+			const Ray&, const Scalar ) const override
+		{
+			return RISEPel(1,1,1);
+		}
+
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar, const Scalar ) const override
+		{
+			return 1.0;
+		}
+
+		bool IsHomogeneous() const override { return false; }
+		bool IsFireMedium() const override { return true; }
+		bool GetBoundingBox( Point3&, Point3& ) const override { return false; }
+
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar,
+			const Scalar,
+			const Scalar,
+			ISampler& ) const override
+		{
+			// The camera segment approaches the receiver from z=-1.  Only the
+			// terminal Lambertian segment launched back into that hemisphere
+			// carries this synthetic source.
+			return ray.origin.z > -0.2 && ray.Dir().z < 0.0 ? 0.25 : 0.0;
+		}
+
+	protected:
+		~TerminalChemEmissionMedium() override = default;
 	};
 
 	class ForwardPhase :
@@ -738,10 +978,17 @@ namespace
 		public virtual Reference
 	{
 	public:
-		explicit TwoEventFireMedium( IPhaseFunction& phase ) : pPhase( &phase )
+		explicit TwoEventFireMedium(
+			IPhaseFunction& phase,
+			const bool chemOnlyContinuation = false ) :
+		  chemSegmentCalls( 0 ),
+		  pPhase( &phase ),
+		  chemOnlyContinuation_( chemOnlyContinuation )
 		{
 			pPhase->addref();
 		}
+
+		mutable unsigned int chemSegmentCalls;
 
 		MediumCoefficients GetCoefficients( const Point3& ) const override
 		{
@@ -807,7 +1054,23 @@ namespace
 		bool IsFireMedium() const override { return true; }
 		Scalar GetThermalEmissionNM( const Point3& pt, const Scalar ) const override
 		{
-			return pt.z > 0.5 ? 1.0 : 0.0;
+			return !chemOnlyContinuation_ && pt.z > 0.5 ? 1.0 : 0.0;
+		}
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar,
+			ISampler& ) const override
+		{
+			if( !chemOnlyContinuation_ || ray.Dir().z <= 0.0 ) return 0.0;
+			const Scalar supportStart = std::fmax(
+				segmentStart,(0.45-ray.origin.z)/ray.Dir().z);
+			const Scalar supportEnd = std::fmin(
+				segmentEnd,(0.55-ray.origin.z)/ray.Dir().z);
+			if( supportEnd <= supportStart ) return 0.0;
+			++chemSegmentCalls;
+			return 0.2*(supportEnd-supportStart);
 		}
 
 	protected:
@@ -815,6 +1078,7 @@ namespace
 
 	private:
 		IPhaseFunction* pPhase;
+		const bool chemOnlyContinuation_;
 	};
 
 	class DelayedDensityAccessor :
@@ -4105,10 +4369,12 @@ namespace
 			job->GetScene()->SetGlobalMedium( medium );
 			IShader* shader = job->GetShaders()->GetItem( "global" );
 			Check( shader && RISE_API_CreateRayCaster(
-				&caster, false, 0, *shader, true ) && caster,
+				&caster, false, 2, *shader, true ) && caster,
 				"two-event continuation caster initializes" );
 			if( caster ) caster->AttachScene( job->GetScene() );
 			StabilityConfig stability;
+			stability.rrMinDepth = 0;
+			stability.rrThreshold = 2.0;
 			stability.maxVolumeBounce = 2;
 			integrator = new PathTracingIntegrator( ManifoldSolverConfig(), stability );
 			integrator->SetMaxPathDepth( 1 );
@@ -4124,6 +4390,54 @@ namespace
 				*job->GetScene(), *caster, sampler, nullptr, nullptr );
 			Check( NearRelative( value, 1.0, 1e-13 ),
 				"path-depth-capped post-scatter segment still scores its thermal event" );
+
+			TwoEventFireMedium* chemMedium =
+				new TwoEventFireMedium( *phase, true );
+			job->GetScene()->SetGlobalMedium( chemMedium );
+			caster->AttachScene( job->GetScene() );
+
+			const Ray chemRay(
+				Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+			const RayIntersection chemEntry( chemRay, rast );
+			const IORStack chemIorStack( 1.0 );
+			bool everyTerminalChemPTSample = true;
+			for( unsigned int i = 0; i < 64; ++i ) {
+				RandomNumberGenerator chemRng( 0xc4e8c017u+i );
+				RuntimeContext chemRc(
+					chemRng, RuntimeContext::PASS_NORMAL, false );
+				IndependentSampler chemSampler( chemRng );
+				const Scalar chemPT = integrator->IntegrateFromHitNM(
+					chemRc, rast, chemEntry, 430.0,
+					*job->GetScene(), *caster, chemSampler, nullptr,
+					0, chemIorStack, 0.0, 0.0, true, 1.0,
+					IRayCaster::RAY_STATE::eRayView,
+					0, 0, 0, 0, 0, 0.0, false, false, nullptr );
+				everyTerminalChemPTSample =
+					everyTerminalChemPTSample &&
+					NearRelative( chemPT, 0.04, 1e-13 );
+			}
+
+			RandomNumberGenerator chemCasterRng( 0xc4e8c018u );
+			RuntimeContext chemCasterRc(
+				chemCasterRng, RuntimeContext::PASS_NORMAL, false );
+			IRayCaster::RAY_STATE chemState;
+			Scalar chemShader = 0.0;
+			caster->CastRayNM(
+				chemCasterRc, rast,
+				chemRay,
+				chemShader, chemState, 430.0, nullptr, nullptr );
+			if( !everyTerminalChemPTSample ||
+				!NearRelative( chemShader, 0.04, 1e-13 ) ||
+				chemMedium->chemSegmentCalls != 130 ) {
+				std::cout << "  terminal chem PT-all/shader/calls=" <<
+					everyTerminalChemPTSample << "/" << chemShader << "/" <<
+					chemMedium->chemSegmentCalls << std::endl;
+			}
+			Check( everyTerminalChemPTSample &&
+				NearRelative( chemShader, 0.04, 1e-13 ) &&
+				chemMedium->chemSegmentCalls == 130,
+				"path-depth-capped PT skips intermediate roulette and RayCaster scores the chem-only outgoing segment" );
+			safe_release( chemMedium );
 		}
 
 		safe_release( integrator );
@@ -4131,6 +4445,95 @@ namespace
 		safe_release( job );
 		safe_release( medium );
 		safe_release( phase );
+		std::filesystem::remove( scenePath );
+	}
+
+	void TestTerminalSurfaceChemSegmentSkipsRoulette()
+	{
+		std::cout << "TestTerminalSurfaceChemSegmentSkipsRoulette" << std::endl;
+		const std::filesystem::path scenePath =
+			std::filesystem::temp_directory_path() /
+			( "rise_pt_terminal_surface_chem_" +
+				std::to_string( static_cast<int>( ::getpid() ) ) +
+				".RISEscene" );
+		{
+			std::ofstream output( scenePath );
+			output <<
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\nname global\n}\n"
+				"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n"
+				"lambertian_material\n{\nname receiver\nreflectance white\n}\n"
+				"box_geometry\n{\nname receiver_geometry\n"
+				"width 8\nheight 8\ndepth 0.2\n}\n"
+				"standard_object\n{\nname receiver_wall\n"
+				"geometry receiver_geometry\nmaterial receiver\n}\n";
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		PathTracingIntegrator* integrator = nullptr;
+		TerminalChemEmissionMedium* medium =
+			new TerminalChemEmissionMedium();
+		Check( RISE_CreateJobPriv( &job ) && job &&
+			job->LoadAsciiSceneViaCst( scenePath.string().c_str() ),
+			"terminal surface chem fixture loads" );
+		if( job ) {
+			job->GetScene()->SetGlobalMedium( medium );
+			IShader* shader = job->GetShaders()->GetItem( "global" );
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster, false, 4, *shader, true ) && caster,
+				"terminal surface chem caster initializes" );
+			if( caster ) caster->AttachScene( job->GetScene() );
+			StabilityConfig stability;
+			stability.rrMinDepth = 0;
+			stability.rrThreshold = 2.0;
+			integrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(), stability );
+			integrator->SetMaxPathDepth( 1 );
+		}
+
+		if( job && caster && integrator ) {
+			const RayCaster* concrete =
+				dynamic_cast<const RayCaster*>( caster );
+			const LightSampler* lights =
+				concrete ? concrete->GetLightSampler() : nullptr;
+			Check( lights && lights->SceneHasFireMedia() &&
+				lights->GetVolumeEmissionMediumCount() == 0,
+				"terminal surface fixture is chem-only with no thermal NEE competitor" );
+
+			const RasterizerState rast = { 0, 0 };
+			const Ray ray( Point3( 0, 0, -1 ), Vector3( 0, 0, 1 ) );
+			const IPainter* white =
+				job->GetPainters()->GetItem( "white" );
+			const RayIntersectionGeometric referenceIntersection( ray, rast );
+			const Scalar expected = white ?
+				0.25*white->GetColorNM( referenceIntersection, 430.0 ) : 0.0;
+			bool everySample = true;
+			Scalar firstValue = 0.0;
+			for( unsigned int i = 0; i < 256; ++i ) {
+				RandomNumberGenerator rng( 0x57face00u+i );
+				RuntimeContext rc(
+					rng, RuntimeContext::PASS_NORMAL, false );
+				IndependentSampler sampler( rng );
+				const Scalar value = integrator->IntegrateRayNM(
+					rc, rast, ray, 430.0, *job->GetScene(), *caster,
+					sampler, nullptr, nullptr );
+				if( i == 0 ) firstValue = value;
+				everySample = everySample &&
+					NearRelative( value, expected, 1e-12 );
+			}
+			if( !everySample ) {
+				std::cout << "  terminal surface expected/first=" <<
+					expected << "/" << firstValue << std::endl;
+			}
+			Check( expected > 0.0 && everySample,
+				"terminal Lambertian A_march segment collects chem without a roulette atom when thermal NEE is absent" );
+		}
+
+		safe_release( integrator );
+		safe_release( caster );
+		safe_release( job );
+		safe_release( medium );
 		std::filesystem::remove( scenePath );
 	}
 
@@ -4476,6 +4879,359 @@ namespace
 		std::filesystem::remove( scenePath );
 	}
 
+	void TestZeroSootChemOnlyLineEstimator()
+	{
+		std::cout << "TestZeroSootChemOnlyLineEstimator" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_zero_soot_synthetic_chem_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output <<
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\nname global\n}\n"
+				"null_boundary_material\n{\nname source_seam\n}\n"
+				"sphere_geometry\n{\nname seam_geometry\nradius 0.4\n}\n"
+				"standard_object\n{\nname seam\ngeometry seam_geometry\n"
+				"material source_seam\nposition 0 0 0.5\n}\n";
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* caster = nullptr;
+		IRayCaster* rrCaster = nullptr;
+		PathTracingIntegrator* integrator = nullptr;
+		SyntheticChemEmissionMedium* medium = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"zero-soot synthetic-chem fixture initializes" );
+		if( job ) {
+			medium = new SyntheticChemEmissionMedium();
+			IObjectPriv* enclosure =
+				job->GetScene()->GetObjects()->GetItem("seam");
+			Check( enclosure && enclosure->AssignInteriorMedium(*medium),
+				"zero-soot chem source is object-bound behind a null boundary" );
+			IShader* shader = job->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+				&caster,false,0,*shader,true) && caster,
+				"zero-soot synthetic-chem caster initializes" );
+			if( caster ) caster->AttachScene(job->GetScene());
+			Check( shader && RISE_API_CreateRayCaster(
+				&rrCaster,false,4,*shader,true) && rrCaster,
+				"zero-soot roulette-branch caster initializes" );
+			if( rrCaster ) rrCaster->AttachScene(job->GetScene());
+			StabilityConfig stability;
+			stability.maxVolumeBounce = 0;
+			integrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),stability);
+		}
+
+		if( job && caster && rrCaster && integrator && medium ) {
+			const RayCaster* concrete = dynamic_cast<const RayCaster*>(caster);
+			const LightSampler* lights =
+				concrete ? concrete->GetLightSampler() : nullptr;
+			const MediumCoefficientsNM coefficients =
+				medium->GetCoefficientsNM(Point3(0,0,0.5),430.0);
+			Check( coefficients.sigma_t==0.0 && coefficients.sigma_s==0.0 &&
+				coefficients.emission==0.0 &&
+				medium->GetThermalEmissionNM(Point3(0,0,0.5),430.0)==0.0,
+				"synthetic chem source has zero soot, extinction, and Kirchhoff emission" );
+			Check( lights && lights->GetVolumeEmissionMediumCount()==0 &&
+				lights->GetEquiangularPivotEntryCount()==0,
+				"chem-only source is excluded from volume NEE and equiangular pivots" );
+
+			const Scalar nm = 430.0;
+			const Scalar expected =
+				(SyntheticChemEmissionMedium::ReactionEnd()-
+					SyntheticChemEmissionMedium::ReactionStart()) *
+				SyntheticChemEmissionMedium::BandIntegratedSource() /
+				(4.0*PI) /
+				(SyntheticChemEmissionMedium::BandEndNM()-
+					SyntheticChemEmissionMedium::BandStartNM());
+			const unsigned int samples = 120000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+
+			RandomNumberGenerator ptRng(0xc4e8001u);
+			RuntimeContext ptRc(ptRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler ptSampler(ptRng);
+			long double ptSum = 0.0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				ptSum += integrator->IntegrateRayNM(
+					ptRc,rast,ray,nm,*job->GetScene(),*caster,
+					ptSampler,nullptr,nullptr);
+			}
+
+			RandomNumberGenerator shaderRng(0xc4e8002u);
+			RuntimeContext shaderRc(
+				shaderRng,RuntimeContext::PASS_NORMAL,false);
+			RandomNumberGenerator terminalRng(0xc4e8003u);
+			RuntimeContext terminalRc(
+				terminalRng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			IRayCaster::RAY_STATE terminalState;
+			terminalState.depth = 1;
+			long double shaderSum = 0.0;
+			long double terminalSum = 0.0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				Scalar value = 0.0;
+				caster->CastRayNM(
+					shaderRc,rast,ray,value,state,nm,nullptr,nullptr);
+				shaderSum += value;
+				Scalar terminalValue = 0.0;
+				caster->CastRayNM(
+					terminalRc,rast,ray,terminalValue,terminalState,
+					nm,nullptr,nullptr);
+				terminalSum += terminalValue;
+			}
+
+			const Scalar ptMean =
+				static_cast<Scalar>(ptSum/static_cast<long double>(samples));
+			const Scalar shaderMean =
+				static_cast<Scalar>(shaderSum/static_cast<long double>(samples));
+			const Scalar terminalMean =
+				static_cast<Scalar>(terminalSum/static_cast<long double>(samples));
+			std::cout << "  zero-soot chem target/PT/shader/terminal=" << expected <<
+				"/" << ptMean << "/" << shaderMean << "/" << terminalMean <<
+				std::endl;
+			Check( NearRelative(ptMean,expected,0.012) &&
+				NearRelative(shaderMean,expected,0.012) &&
+				NearRelative(terminalMean,expected,0.012) &&
+				NearRelative(ptMean,shaderMean,0.012),
+				"zero-soot chem-only line source behind a null boundary matches its absolute spectral integral under the RayCaster depth cap and pure PT" );
+
+			RandomNumberGenerator terminalRouletteRng(0xc4e8008u);
+			RandomNumberGenerator terminalRouletteControl(0xc4e8008u);
+			terminalRouletteControl.CanonicalRandom();
+			terminalRouletteControl.CanonicalRandom();
+			terminalRouletteControl.CanonicalRandom();
+			RuntimeContext terminalRouletteRc(
+				terminalRouletteRng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE terminalRouletteState;
+			terminalRouletteState.depth = 1;
+			terminalRouletteState.importance = 0.005;
+			Scalar terminalRouletteValue = 0.0;
+			caster->CastRayNM(
+				terminalRouletteRc,rast,ray,terminalRouletteValue,
+				terminalRouletteState,nm,nullptr,nullptr);
+			const Scalar terminalRouletteNext =
+				terminalRouletteRng.CanonicalRandom();
+			const Scalar terminalRouletteControlNext =
+				terminalRouletteControl.CanonicalRandom();
+			if( terminalRouletteNext != terminalRouletteControlNext ) {
+				std::cout << "  terminal next/control RNG=" <<
+					terminalRouletteNext << "/" <<
+					terminalRouletteControlNext << std::endl;
+			}
+			Check( terminalRouletteNext == terminalRouletteControlNext,
+				"terminal RayCaster source-only segment consumes chem proposal draws but no roulette draw" );
+
+			const unsigned int rrBranchSamples = 30000;
+			unsigned int rejectedSamples = 0;
+			unsigned int survivedSamples = 0;
+			unsigned int rrSeed = 1;
+			long double rejectedSum = 0.0;
+			long double survivedSum = 0.0;
+			while( rejectedSamples<rrBranchSamples ||
+				survivedSamples<rrBranchSamples ) {
+				RandomNumberGenerator probe(rrSeed);
+				const bool rejected = probe.CanonicalRandom()>=0.5;
+				if( (rejected && rejectedSamples>=rrBranchSamples) ||
+					(!rejected && survivedSamples>=rrBranchSamples) ) {
+					++rrSeed;
+					continue;
+				}
+				RandomNumberGenerator branchRng(rrSeed++);
+				RuntimeContext branchRc(
+					branchRng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE branchState;
+				branchState.importance = 0.005;
+				Scalar value = 0.0;
+				rrCaster->CastRayNM(
+					branchRc,rast,ray,value,branchState,nm,nullptr,nullptr);
+				if( rejected ) {
+					rejectedSum += value;
+					++rejectedSamples;
+				} else {
+					survivedSum += value;
+					++survivedSamples;
+				}
+			}
+			const Scalar rejectedMean = static_cast<Scalar>(
+				rejectedSum/static_cast<long double>(rejectedSamples));
+			const Scalar survivedMean = static_cast<Scalar>(
+				survivedSum/static_cast<long double>(survivedSamples));
+			Check( rejectedSamples==rrBranchSamples &&
+				survivedSamples==rrBranchSamples &&
+				NearRelative(rejectedMean,expected,0.02) &&
+				NearRelative(survivedMean,expected,0.02),
+				"representable p=0.5 roulette rejection and survival both leave same-segment chem source unweighted across a null boundary" );
+
+			const unsigned int hwssSamples = 40000;
+			SampledWavelengths requested;
+			requested.lambda[0] = nm;
+			requested.lambda[1] = 500.0;
+			requested.lambda[2] = 600.0;
+			requested.lambda[3] = 700.0;
+			for( unsigned int w=0; w<SampledWavelengths::N; ++w ) {
+				requested.pdf[w] = 1.0/400.0;
+			}
+			RandomNumberGenerator hwssRng(0xc4e8004u);
+			RuntimeContext hwssRc(
+				hwssRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler hwssSampler(hwssRng);
+			RandomNumberGenerator casterHWSSRng(0xc4e8007u);
+			RuntimeContext casterHWSSRc(
+				casterHWSSRng,RuntimeContext::PASS_NORMAL,false);
+			long double hwssSums[SampledWavelengths::N] = {0,0,0,0};
+			long double casterHWSSSums[SampledWavelengths::N] = {0,0,0,0};
+			const IORStack hwssIorStack(1.0);
+			for( unsigned int i=0; i<hwssSamples; ++i ) {
+				SampledWavelengths swl = requested;
+				Scalar values[SampledWavelengths::N] = {0,0,0,0};
+				integrator->IntegrateRayHWSS(
+					hwssRc,rast,ray,swl,*job->GetScene(),*caster,
+					hwssSampler,nullptr,values,nullptr);
+				for( unsigned int w=0; w<SampledWavelengths::N; ++w ) {
+					hwssSums[w] += values[w];
+				}
+				SampledWavelengths casterSWL = requested;
+				Scalar casterValues[SampledWavelengths::N] = {0,0,0,0};
+				caster->CastRayHWSS(
+					casterHWSSRc,rast,ray,casterValues,terminalState,
+					casterSWL,nullptr,nullptr,hwssIorStack);
+				for( unsigned int w=0; w<SampledWavelengths::N; ++w ) {
+					casterHWSSSums[w] += casterValues[w];
+				}
+			}
+			const Scalar hwssHeroMean = static_cast<Scalar>(
+				hwssSums[0]/static_cast<long double>(hwssSamples));
+			const Scalar casterHWSSHeroMean = static_cast<Scalar>(
+				casterHWSSSums[0]/static_cast<long double>(hwssSamples));
+			Check( NearRelative(hwssHeroMean,expected,0.02) &&
+				hwssSums[1]==0.0 && hwssSums[2]==0.0 && hwssSums[3]==0.0,
+				"PT fire HWSS requests take four independent NM chem paths with wavelength-bound values" );
+			Check( NearRelative(casterHWSSHeroMean,expected,0.02) &&
+				casterHWSSSums[1]==0.0 && casterHWSSSums[2]==0.0 &&
+				casterHWSSSums[3]==0.0,
+				"RayCaster fire HWSS falls back before terminal depth and crosses an exact null boundary on four wavelength-bound NM paths" );
+
+			const unsigned int rrHWSSBranchSamples = 12000;
+			unsigned int rejectedHWSSSamples = 0;
+			unsigned int survivedHWSSSamples = 0;
+			unsigned int rrHWSSSeed = 1;
+			long double rejectedHWSSSum = 0.0;
+			long double survivedHWSSSum = 0.0;
+			while( rejectedHWSSSamples<rrHWSSBranchSamples ||
+				survivedHWSSSamples<rrHWSSBranchSamples ) {
+				RandomNumberGenerator probe(rrHWSSSeed);
+				const bool rejected = probe.CanonicalRandom()>=0.5;
+				if( (rejected && rejectedHWSSSamples>=rrHWSSBranchSamples) ||
+					(!rejected && survivedHWSSSamples>=rrHWSSBranchSamples) ) {
+					++rrHWSSSeed;
+					continue;
+				}
+				RandomNumberGenerator branchRng(rrHWSSSeed++);
+				RuntimeContext branchRc(
+					branchRng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE branchState;
+				branchState.importance = 0.005;
+				SampledWavelengths branchSWL = requested;
+				Scalar branchValues[SampledWavelengths::N] = {0,0,0,0};
+				rrCaster->CastRayHWSS(
+					branchRc,rast,ray,branchValues,branchState,
+					branchSWL,nullptr,nullptr,hwssIorStack);
+				if( rejected ) {
+					rejectedHWSSSum += branchValues[0];
+					++rejectedHWSSSamples;
+				} else {
+					survivedHWSSSum += branchValues[0];
+					++survivedHWSSSamples;
+				}
+			}
+			const Scalar rejectedHWSSMean = static_cast<Scalar>(
+				rejectedHWSSSum/
+					static_cast<long double>(rejectedHWSSSamples));
+			const Scalar survivedHWSSMean = static_cast<Scalar>(
+				survivedHWSSSum/
+					static_cast<long double>(survivedHWSSSamples));
+			Check( NearRelative(rejectedHWSSMean,expected,0.035) &&
+				NearRelative(survivedHWSSMean,expected,0.035),
+				"RayCaster fire HWSS roulette rejection and survival leave same-segment chem unweighted across an exact null boundary" );
+
+			const unsigned int expectedSegmentSamples =
+				3*samples+1+2*rrBranchSamples+
+				2*SampledWavelengths::N*hwssSamples+
+				2*SampledWavelengths::N*rrHWSSBranchSamples;
+			Check( medium->segmentSamples==expectedSegmentSamples &&
+				medium->uniformTechniqueSamples>
+					expectedSegmentSamples*45/100 &&
+				medium->reactionTechniqueSamples>
+					expectedSegmentSamples*45/100 &&
+				medium->supportSamples>expectedSegmentSamples*45/100,
+				"both halves of the pinned reaction/uniform chem proposal carry the estimate" );
+
+			SyntheticChemEmissionMedium* attenuated =
+				new SyntheticChemEmissionMedium(1.0);
+			IObjectPriv* enclosure =
+				job->GetScene()->GetObjects()->GetItem("seam");
+			Check( enclosure && enclosure->AssignInteriorMedium(*attenuated),
+				"attenuated chem reference replaces the object-bound medium" );
+			caster->AttachScene(job->GetScene());
+			const unsigned int attenuatedSamples = 160000;
+			RandomNumberGenerator attenuatedPTRng(0xc4e8005u);
+			RuntimeContext attenuatedPTRc(
+				attenuatedPTRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler attenuatedPTSampler(attenuatedPTRng);
+			RandomNumberGenerator attenuatedRCRng(0xc4e8006u);
+			RuntimeContext attenuatedRCRc(
+				attenuatedRCRng,RuntimeContext::PASS_NORMAL,false);
+			long double attenuatedPTSum = 0.0;
+			long double attenuatedRCSum = 0.0;
+			for( unsigned int i=0; i<attenuatedSamples; ++i ) {
+				attenuatedPTSum += integrator->IntegrateRayNM(
+					attenuatedPTRc,rast,ray,nm,*job->GetScene(),*caster,
+					attenuatedPTSampler,nullptr,nullptr);
+				IRayCaster::RAY_STATE attenuatedState;
+				Scalar value = 0.0;
+				caster->CastRayNM(
+					attenuatedRCRc,rast,ray,value,attenuatedState,
+					nm,nullptr,nullptr);
+				attenuatedRCSum += value;
+			}
+			const Scalar attenuatedPTMean = static_cast<Scalar>(
+				attenuatedPTSum/static_cast<long double>(attenuatedSamples));
+			const Scalar attenuatedRCMean = static_cast<Scalar>(
+				attenuatedRCSum/static_cast<long double>(attenuatedSamples));
+			const Scalar sourcePerMetre =
+				SyntheticChemEmissionMedium::BandIntegratedSource() /
+				(4.0*PI) /
+				(SyntheticChemEmissionMedium::BandEndNM()-
+					SyntheticChemEmissionMedium::BandStartNM());
+			const Scalar attenuatedExpected = sourcePerMetre*
+				(std::exp(-0.35)-std::exp(-0.45));
+			Check( NearRelative(attenuatedPTMean,attenuatedExpected,0.015) &&
+				NearRelative(attenuatedRCMean,attenuatedExpected,0.015) &&
+				NearRelative(attenuatedPTMean,attenuatedRCMean,0.015),
+				"absorption-independent chem line estimator includes deterministic transmittance in both transport entries" );
+			const RayCaster* attenuatedConcrete =
+				dynamic_cast<const RayCaster*>(caster);
+			const LightSampler* attenuatedLights =
+				attenuatedConcrete ? attenuatedConcrete->GetLightSampler() : nullptr;
+			Check( attenuatedLights &&
+				attenuatedLights->GetVolumeEmissionMediumCount()==0 &&
+				attenuatedLights->GetEquiangularPivotEntryCount()==0,
+				"attenuated chem source remains outside thermal CDF, NEE, and equiangular sampling" );
+			safe_release(attenuated);
+		}
+
+		safe_release(integrator);
+		safe_release(rrCaster);
+		safe_release(caster);
+		safe_release(medium);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
 	void TestFirePhaseClosureRoutesOneBoundInstancePerCollision()
 	{
 		std::cout << "TestFirePhaseClosureRoutesOneBoundInstancePerCollision" << std::endl;
@@ -4715,11 +5471,13 @@ int main()
 	TestDirectPelEntryRejectsFire();
 	TestBoundedObjectFireRejectsShaderDispatchPel();
 	TestPostScatterSegmentRunsMediumTransport();
+	TestTerminalSurfaceChemSegmentSkipsRoulette();
 	TestForcedNullProposalsThroughPathTracing();
 	TestOpticallyThickMixedDensityUsesLogDomain();
 	TestObjectFireRoutingCacheRefreshesAfterBinding();
 	TestLegacySceneEditorMediumUndoRefreshesCache();
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
+	TestZeroSootChemOnlyLineEstimator();
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;

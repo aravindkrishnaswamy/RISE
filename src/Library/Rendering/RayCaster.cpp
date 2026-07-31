@@ -1578,28 +1578,21 @@ bool RayCaster::CastRayNMImpl_(
 	const IORStack& ior_stack,
 	const bool skipEntryGates,
 	const bool skipEntryRoulette,
-	const bool sourceOnlySegment
+	const bool sourceOnlySegment,
+	Scalar* sameSegmentMediumSource
 	) const
 {
+	if( sameSegmentMediumSource ) *sameSegmentMediumSource = 0.0;
 	const bool primaryAOVUnresolvedAtEntry =
 		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
-	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
-	const bool carriesMediumSource = entryMedium &&
-		( entryMedium->IsFireMedium() ||
-			!entryMedium->IsHomogeneous() ||
-			entryMedium->GetCoefficientsNM( ray.origin, nm ).emission != 0.0 );
 	bool depthGateDeferredForEmission = sourceOnlySegment;
 #ifdef ENABLE_MAX_RECURSION
 	if( !skipEntryGates && rs.depth > nMaxRecursions )
 	{
-		if( sourceOnlySegment || carriesMediumSource ) {
-			depthGateDeferredForEmission = true;
-		} else {
-#ifdef ENABLE_TERMINATION_MESSAGES
-			GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
-#endif
-			return false;
-		}
+		// The current ray may begin in vacuum and cross an exact null boundary
+		// into a source-carrying enclosure.  Intersect before terminating so
+		// that same-segment enclosure transitions remain observable.
+		depthGateDeferredForEmission = true;
 	}
 #endif
 
@@ -1610,15 +1603,15 @@ bool RayCaster::CastRayNMImpl_(
 	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
 	if( !skipEntryGates && !skipEntryRoulette && !sourceOnlySegment &&
+		!depthGateDeferredForEmission &&
 		rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = RayCasterRRSurvivalProbability(rs.importance);
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
-			if( carriesMediumSource ) {
-				rrContinuationRejected = true;
-			} else {
-				return false;
-			}
+			// As with the depth gate, a source can begin only after an exact
+			// null-boundary transition.  Defer the rejected continuation until
+			// the first real downstream vertex.
+			rrContinuationRejected = true;
 		} else {
 			rrContinuationCompensation = 1.0 / pSurvive;
 		}
@@ -1701,6 +1694,9 @@ bool RayCaster::CastRayNMImpl_(
 				? 0.0 : rc.random.CanonicalRandom();
 			additiveEmissionNM = FullSegmentAdditiveEmissionNM(
 				*pMedium, ray, segmentStart, segmentEnd, nm, additiveXi );
+			IndependentSampler chemSampler( rc.random );
+			additiveEmissionNM += pMedium->EstimateChemEmissionSegmentNM(
+				ray, segmentStart, segmentEnd, nm, chemSampler );
 		}
 		bool scattered = false;
 		Scalar t_m = 0;
@@ -1860,12 +1856,13 @@ bool RayCaster::CastRayNMImpl_(
 			t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
 		}
 
-		if( equiangularZeroContrib_NM )
-		{
-			c = additiveEmissionNM;
-			if( distance ) *distance = 0;
-			return c != 0.0;
-		}
+			if( equiangularZeroContrib_NM )
+			{
+				c = additiveEmissionNM;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+				if( distance ) *distance = 0;
+				return c != 0.0;
+			}
 
 		if( scattered )
 		{
@@ -1915,11 +1912,13 @@ bool RayCaster::CastRayNMImpl_(
 			// existence of this finite-event source sample.
 			if( rrContinuationRejected ) {
 				c = additiveEmissionNM + thermalEmission;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
 				if( distance ) *distance = t_m;
 				return c != 0.0;
 			}
 			if( depthGateDeferredForEmission ) {
 				c = additiveEmissionNM + thermalEmission;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
 				if( distance ) *distance = t_m;
 				return c != 0.0;
 			}
@@ -2110,6 +2109,9 @@ bool RayCaster::CastRayNMImpl_(
 
 			c = additiveEmissionNM + thermalEmission +
 				rrContinuationCompensation * throughput * (Ld + Li);
+			if( sameSegmentMediumSource ) {
+				*sameSegmentMediumSource = additiveEmissionNM + thermalEmission;
+			}
 
 			if( distance ) {
 				*distance = t_m;
@@ -2119,15 +2121,10 @@ bool RayCaster::CastRayNMImpl_(
 		}
 	}
 
-	if( rrContinuationRejected ) {
-		c = additiveEmissionNM;
-		if( distance ) *distance = 0.0;
-		return additiveEmissionNM != 0.0;
-	}
 	if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) )
 	{
 		const bool downstreamSourceOnly = sourceOnlySegment ||
-			depthGateDeferredForEmission;
+			depthGateDeferredForEmission || rrContinuationRejected;
 		IORStack nextStack( ior_stack );
 			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
 			const Ray nextRay = ContinueExactNullBoundaryRay(
@@ -2150,6 +2147,7 @@ bool RayCaster::CastRayNMImpl_(
 					incomingVolumeSegmentState,noEventProbability,
 					ri.geometric.surfaceRange);
 			Scalar downstream = 0.0;
+			Scalar downstreamSameSegmentSource = 0.0;
 			Scalar downstreamDistance = 0.0;
 			bool downstreamHit = false;
 			{
@@ -2158,12 +2156,18 @@ bool RayCaster::CastRayNMImpl_(
 				downstreamHit = CastRayNMImpl_(
 					rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
 					pRadianceMap, nextStack, true, downstreamSourceOnly,
-					downstreamSourceOnly );
+					downstreamSourceOnly, &downstreamSameSegmentSource );
 			}
 			OffsetCapturedPrimaryAOVDepth(
 				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
-			c = additiveEmissionNM +
-				rrContinuationCompensation * survival * downstream;
+			const Scalar localSameSegmentSource = additiveEmissionNM +
+				survival * downstreamSameSegmentSource;
+			c = localSameSegmentSource +
+				rrContinuationCompensation * survival *
+					( downstream - downstreamSameSegmentSource );
+			if( sameSegmentMediumSource ) {
+				*sameSegmentMediumSource = localSameSegmentSource;
+			}
 			if( distance ) {
 				*distance = downstreamDistance >= RISE_INFINITY
 					? RISE_INFINITY
@@ -2172,8 +2176,16 @@ bool RayCaster::CastRayNMImpl_(
 			return downstreamHit || additiveEmissionNM != 0.0;
 	}
 
+	if( rrContinuationRejected ) {
+		c = additiveEmissionNM;
+		if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+		if( distance ) *distance = 0.0;
+		return additiveEmissionNM != 0.0;
+	}
+
 	if( depthGateDeferredForEmission ) {
 		c = additiveEmissionNM;
+		if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
 		if( distance ) *distance = 0.0;
 		return additiveEmissionNM != 0.0;
 	}
@@ -2305,6 +2317,9 @@ bool RayCaster::CastRayNMImpl_(
 		c = c * rrContinuationCompensation;
 	}
 	c += additiveEmissionNM;
+	if( sameSegmentMediumSource ) {
+		*sameSegmentMediumSource = additiveEmissionNM;
+	}
 
 	return bReturn || additiveEmissionNM != 0.0;
 }
@@ -2912,7 +2927,8 @@ bool RayCaster::CastRayHWSSImpl_(
 	// gates.  The per-wavelength fallback owns both gates and keeps a local
 	// fire-source score ahead of continuation termination.
 	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
-	if( pMedium )
+	const bool sceneHasFire = pLightSampler && pLightSampler->SceneHasFireMedia();
+	if( sceneHasFire || pMedium )
 	{
 		bool anyHit = false;
 		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )

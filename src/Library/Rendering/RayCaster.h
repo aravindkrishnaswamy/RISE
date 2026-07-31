@@ -181,7 +181,8 @@ namespace RISE
 				Scalar* distance, const IRadianceMap* pRadianceMap,
 				const IORStack& ior_stack, bool skipEntryGates,
 				bool skipEntryRoulette = false,
-				bool sourceOnlySegment = false ) const;
+				bool sourceOnlySegment = false,
+				Scalar* sameSegmentMediumSource = 0 ) const;
 			bool CastRayHWSSImpl_(
 				const RuntimeContext& rc, const RasterizerState& rast,
 				const Ray& ray, Scalar c[SampledWavelengths::N],
