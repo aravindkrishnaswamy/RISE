@@ -212,16 +212,21 @@ exactly 0 or the finite/non-finite line (no epsilons):
 - `detail::PhaseCoefficient` — a layer contributes phase only if `kd = 2πd/λ` is a *positive
   finite* number. One rule covers `d < 0`, `d = ±inf`, `d = NaN`, `λ < 0`, `λ = 0`, `λ = NaN`;
   otherwise the layer is absent, the continuous `d → 0⁺` limit. (`λ < 0` flips the sign of `kd`
-  exactly as `d < 0` does — measured `|e^{+2iδ}| = 295.6`, `R_p = 17.69`, saturated to `1.0`.)
-- `detail::PhysicalIndex` — a medium is `N = n + i|k|` with `n > 0`. A non-passive index folds to
+  exactly as `d < 0` does — on glass / (1.4+0.5i, 300 nm) / silver at cos θ = 0.5,
+  `|e^{+2iδ}| = 295.6` and `R_p = 17.69`, saturated to `1.0`.)
+- `detail::PhysicalIndex` — folds a medium onto the passive convention `|n| + i|k|` (note `n = 0`
+  with `k > 0` is legitimate, not degenerate — silver is `n = 0.144`). A non-passive index folds to
   its passive twin — on one stack (glass ambient, film `|N| = 1.4+0.5i` at 300 nm, silver
   substrate, cos θ = 0.5) the passive sign gives `R_s = 0.217`, `R_p = 0.0547` while *either*
   flipped sign gives `R_s = 4.61`, `R_p = 18.31`, laundered into a saturated `1.0`; `R` is exactly
-  invariant under `N → −N`, so the two flipped forms necessarily agree. A zero or NaN index
-  normalizes to vacuum, and a zero or NaN *film* index makes the layer ABSENT rather than a vacuum
-  film — substituting vacuum alone inserts a real air gap, which under a glass or enamel ambient is
-  past the critical angle and renders a black `film_ior` texel as a MIRROR (measured `R = 0.9931`
-  where omitting the layer gives `0.0239`). The zero case
+  invariant under `N → −N`, so the two flipped forms necessarily agree. A **zero** index in any
+  role is replaced by a tiny stand-in (`1e-40`) so the ordinary math computes the **limit** —
+  tracked to 1.3e-15 across 200,000 stacks in all three roles. Four earlier rules invented a
+  constant instead and all four were wrong, because the limit depends on the stack: vacuum turned a
+  black `film_ior` texel into a mirror; "absent" was off by up to 1.0 (as `N₁ → 0` the film becomes
+  an evanescent *barrier*, not an absent layer); and "opaque, `R = 1`" was off by up to 0.9987,
+  because no transmission is not no absorption — an absorbing film still dissipates the round trip.
+  A **non-finite** index is not a limit at all, just corrupt input, and returns 1. The zero case
   affected the **ambient and substrate as well as the film**, and reached the BRDF two ways,
   neither benign: the RGB path yields a NaN pixel, the spectral path goes *silently black*,
   because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
@@ -234,17 +239,20 @@ genuinely spatially-varying painter; not implemented.
 **Residual, measured, open:** a merely *tiny* index is still wrong, and fails differently per flag
 set — bisected in-repo, not quoted. Shipped `-ffast-math` (which implies `-fcx-limited-range`, so
 complex division is the naive `(ac+bd, bc−ad)/(c²+d²)`): NaN below `n₁ = 1e-77.03`, by **overflow**
-— the p-polarization interface products grow like `1/n₁`. Strict IEEE: **not** NaN but *silently*
-the bare-stack value, the film vanishing, from `1e-78` to about `1e-154`. No threshold was
+— the p-polarization interface products grow like `1/n₁` — and above `n₁ = 1e154.06`. Strict IEEE:
+**not** NaN and not wrong either — it returns the correct value (to ~4e-16 against 120 dps) down to
+about `1e-154`. (An earlier version said it "silently returns the bare-stack value, the film
+vanishing"; that was never checked against the actual bare-stack value, which differs by 0.43.)
+No threshold was
 added, because a threshold here is the magic epsilon this codebase refuses; the named fix is to
 reformulate `CosThetaInMedium` around `η² = N² − s²` rather than dividing by `N`.
 
 **AMBIENT DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
 shipped caller passes a literal `0.0`. With `k₀ > 0` the incident wave is inhomogeneous, the stack
-is no longer passive, and the 120-dps reference itself returns `R > 1` — 288 of 400 sampled stacks
-exceed 1, reaching **1516** on a 4,000-stack sample (59 % exceed 1), so the error the clamp conceals
-is effectively *unbounded* and its maximum is whatever the sampling distribution happens to reach —
-not the ~30 % the first two samples (1.093, 1.287) suggested. The evaluators stay total there and the `[0,1]` clamp
+is no longer passive, and `R` exceeds 1 on most sampled stacks by an effectively *unbounded*
+margin. No single maximum is quoted: three independent samples gave 59.4, 202 and 1516, so the
+figure is a property of the sampling distribution rather than of the evaluator. (Two early samples,
+1.093 and 1.287, suggested ~30 %; they were simply the first two taken.) The evaluators stay total there and the `[0,1]` clamp
 reports the saturated 1, but that is a saturation, not a physical answer. (Byrnes' `tmm` rejects
 an absorbing incident medium outright.)
 

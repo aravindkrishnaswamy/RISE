@@ -880,7 +880,7 @@ all seven thin-film binaries):
   `[Invariant]`(c).
 - `MakeIndex`'s `|k|` fold — and this one was worse than untested: the **Complex
   overloads bypassed `MakeIndex` entirely**, so a negative extinction reached the
-  math unnormalized and produced per-polarization `R_s = 4.69`, `R_p = 17.69`,
+  math unnormalized and produced per-polarization `R_s = 4.61`, `R_p = 18.31`,
   laundered by the `[0,1]` clamp into a plausible saturated `1.0`. That is the
   same silent finite-but-wrong class this whole arc is about. Normalization moved
   into `detail::PhysicalIndex`, applied at every entry point.
@@ -903,20 +903,20 @@ sets** — bisected in-repo, not quoted. Under the shipped `-ffast-math` (which
 implies `-fcx-limited-range`, so complex division is the naive
 `(ac+bd, bc−ad)/(c²+d²)`) it is NaN below `n1 = 1e-77.03`, by **overflow** —
 the p-polarization interface products grow like `1/n1` until `c²+d²` leaves the
-double range. Under strict IEEE it is **not** NaN: it returns the plausible
-bare-stack reflectance, the film silently vanishing, from `1e-78` down to about
-`1e-154`. Round 2 recorded this as "`≲1e-100`" and "underflows"; both were wrong. Round 3
-then replaced the strict-IEEE half with "it silently returns the bare-stack
-value, the film vanishing" and built a lesson on it — also wrong, and never
-checked against the actual bare-stack value, which differs by 0.43. Under strict
-IEEE that case is simply **correct** (matching a 120-dps evaluation to ~4e-16).
-The same overflow bites at the large end too, from about `1e160`. No threshold was introduced, because any threshold here is exactly the
+double range. Under strict IEEE it is **not** NaN and **not** wrong either: it
+returns the correct value, matching a 120-dps evaluation to ~4e-16, down to
+about `1e-154`. Two earlier descriptions of this were wrong and are recorded
+only so they are not reintroduced — round 2 said "`≲1e-100`" and "underflows",
+and round 3 said it "silently returns the bare-stack value, the film
+vanishing" and built a lesson on that, never having checked it against the
+actual bare-stack value, which differs by 0.43.
+The same overflow bites at the large end too, from `1e154.06` (bisected). No threshold was introduced, because any threshold here is exactly the
 magic epsilon this file refuses. The named refinement is to reformulate
 `CosThetaInMedium` around `η² = N² − s²` — finite and well conditioned for tiny
 `N`, and the same identity the branch-rule proof rests on — instead of dividing
 by `N`. Judged out of proportion: it touches every `cosθ` in the file, and
-~77 decades below any refractive index is not scene data, whereas
-exactly `0` — a black texel through an unvalidated `IScalarPainter` — is not,
+an index ~77 decades below anything physical is not scene data, whereas
+exactly `0` — a black texel through an unvalidated `IScalarPainter` — **is**,
 and that case *is* fixed.
 
 **The same `-fcx-limited-range` mechanism also bounds the thick-absorber
