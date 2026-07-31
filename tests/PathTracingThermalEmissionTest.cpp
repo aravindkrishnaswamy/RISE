@@ -2672,6 +2672,113 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestCameraPrimaryDirectViewKeepsWeightOne()
+	{
+		std::cout << "TestCameraPrimaryDirectViewKeepsWeightOne" << std::endl;
+		Fixture fixture;
+		Check( fixture.Initialize("camera_primary_weight_one",1.0,1.0),
+			"camera-primary direct-fire fixture initializes" );
+		if( !fixture.job || !fixture.caster || !fixture.integrator ) return;
+
+		IRayCaster* marchOnlyCaster = nullptr;
+		const IMedium* fire = fixture.job->GetScene()->GetGlobalMedium();
+		if( fire ) fire->addref();
+		IsotropicPhaseFunction* vacuumPhase =
+			new IsotropicPhaseFunction();
+		UnsupportedHomogeneousSmoke* vacuum =
+			new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+		fixture.job->GetScene()->SetGlobalMedium(vacuum);
+		IShader* shader = fixture.job->GetShaders()->GetItem("global");
+		Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,0,*shader,true) &&
+			marchOnlyCaster,
+			"camera-primary march reference prepares without a thermal CDF" );
+		if( marchOnlyCaster ) {
+			marchOnlyCaster->AttachScene(fixture.job->GetScene());
+		}
+		fixture.job->GetScene()->SetGlobalMedium(fire);
+		safe_release(vacuum);
+		safe_release(vacuumPhase);
+		safe_release(fire);
+
+		const LightSampler* neeLights =
+			fixture.caster->GetLightSampler();
+		const LightSampler* marchLights =
+			marchOnlyCaster ? marchOnlyCaster->GetLightSampler() : nullptr;
+		const IMedium* activeFire =
+			fixture.job->GetScene()->GetGlobalMedium();
+		Check( neeLights && activeFire &&
+			neeLights->GetVolumeEmissionMediumCount()==1 &&
+			neeLights->VolumeEmissionPdf(
+				*activeFire,Point3(0,0,0.5))>0.0 &&
+			marchLights &&
+			marchLights->GetVolumeEmissionMediumCount()==0,
+			"camera-primary comparison has one live endpoint density and a pure-march control" );
+
+		if( marchOnlyCaster ) {
+			const unsigned int samples = 80000;
+			const Scalar nm = 500.0;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+			auto meanPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += fixture.integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*fixture.job->GetScene(),
+						route,sampler,nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+			auto meanShader = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				state.volumeBounces = 64;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			const Scalar expected = ExpectedSlab(fixture,nm);
+			const Scalar ptNEE =
+				meanPT(*fixture.caster,0xca0e001u);
+			const Scalar ptMarch =
+				meanPT(*marchOnlyCaster,0xca0e002u);
+			const Scalar shaderNEE =
+				meanShader(*fixture.caster,0xca0e003u);
+			const Scalar shaderMarch =
+				meanShader(*marchOnlyCaster,0xca0e004u);
+			std::cout << "  camera-primary expected=" << expected <<
+				" PT NEE/march=" << ptNEE << "/" << ptMarch <<
+				" shader NEE/march=" << shaderNEE << "/" <<
+				shaderMarch << std::endl;
+			Check( NearRelative(ptNEE,expected,0.015) &&
+				NearRelative(shaderNEE,expected,0.015),
+				"camera-primary collision emission stays at weight one with an active endpoint density" );
+			Check( NearRelative(ptMarch,expected,0.015) &&
+				NearRelative(shaderMarch,expected,0.015),
+				"camera-primary pure-march controls match the absolute slab target" );
+			Check( NearRelative(ptNEE,ptMarch,0.015) &&
+				NearRelative(shaderNEE,shaderMarch,0.015) &&
+				NearRelative(ptNEE,shaderNEE,0.015),
+				"camera-primary NEE-ready and march-only entry routes agree" );
+		}
+
+		safe_release(marchOnlyCaster);
+	}
+
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
@@ -4206,6 +4313,7 @@ int main()
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
 	TestThinEmitterSheetAtGrazingAngles();
+	TestCameraPrimaryDirectViewKeepsWeightOne();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestHollowCavityFullSphereVolumeNEEEquality();
