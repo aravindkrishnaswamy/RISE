@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "SubSurfaceScatteringShaderOp.h"
+#include "SSSContainment.h"
 #include "../../Utilities/GeometricUtilities.h"
 #include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Utilities/stl_utils.h"
@@ -78,6 +79,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+	SSSContainmentScope containment;
 	c = RISEPel(0.0);
 
 	const IScene* pScene = caster.GetAttachedScene();
@@ -118,6 +120,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	// Both paths re-compute on demand; the production path is
 	// already heavy enough that the cache hit pays off.
 	if( rc.bFastPreview ) {
+		RecordSSSContainedChildLaunch();
 		shader.Shade( rc, ri, caster, rs, c, ior_stack );
 		return;
 	}
@@ -255,6 +258,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 				// Advance the ray for the purpose of shading, this should help reduce errors
 				newri.geometric.ray.Advance( 1e-8 );
 
+				RecordSSSContainedChildLaunch();
 				shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
 
 				// Discard points that have no illumination

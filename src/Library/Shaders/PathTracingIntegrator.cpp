@@ -46,6 +46,7 @@
 // UniformColorPainter wrapped by one synthetic LambertianMaterial.
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/NullBoundaryMaterial.h"
+#include "SSS/SSSContainment.h"
 #include "../Painters/UniformColorPainter.h"
 
 using namespace RISE;
@@ -1949,7 +1950,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-					pCurrentMedium, currentRay, maxDist, bHit, pLS,
+					pCurrentMedium, currentRay, maxDist, bHit,
+					IsSSSContainmentActive() ? 0 : pLS,
 					activeVolumeSegmentState.pivots, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
@@ -2030,7 +2032,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					throughput = throughput * medWeight;
 
-					const bool volumeNEECompetes = !Traits::is_pel && pLS &&
+					const bool volumeNEECompetes = !IsSSSContainmentActive() &&
+						!Traits::is_pel && pLS &&
 						pLS->GetVolumeEmissionMediumCount() > 0 &&
 						MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 							*pCurrentMedium);
@@ -2490,9 +2493,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pClayMaterial : ri.pMaterial;
 			const bool materialSupported = clayOverride ||
 				IsExactSupportedContinuationMaterial( continuationMaterial );
-			const bool hasThermalVolumeEmitter =
+			const bool hasThermalVolumeEmitter = !IsSSSContainmentActive() &&
 				pLS && pLS->GetVolumeEmissionMediumCount() > 0;
-			const bool needsTerminalFireSegment =
+			const bool needsTerminalFireSegment = !IsSSSContainmentActive() &&
 				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
 			if( !materialSupported &&
 				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
@@ -2817,6 +2820,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								SSSContainmentScope containment;
 								// NEE at BSSRDF entry point.  GUI render modes P2b
 								// `indirect` (review-p2c P2-c fix): this is the
 								// SSS analog of the surface NEE gate above --
@@ -2891,6 +2895,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 											}
 										}
 
+										RecordSSSContainedChildLaunch();
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
@@ -2989,6 +2994,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								SSSContainmentScope containment;
 								// GUI render modes P2b `indirect` (review-p2c
 								// P2-c fix): same SSS-analog-of-surface-NEE
 								// gate as the diffusion-profile site above.
@@ -3058,6 +3064,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 											}
 										}
 
+										RecordSSSContainedChildLaunch();
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
@@ -4152,7 +4159,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			CurrentVolumeEmissionSegmentState();
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
-			pLS, volumeSegmentState.pivots, mediumSampler, tag );
+			IsSSSContainmentActive() ? 0 : pLS,
+			volumeSegmentState.pivots, mediumSampler, tag );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -4213,7 +4221,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
 				return result;
 			}
-			const bool volumeNEECompetes = !Traits::is_pel && pLS &&
+			const bool volumeNEECompetes = !IsSSSContainmentActive() &&
+				!Traits::is_pel && pLS &&
 				pLS->GetVolumeEmissionMediumCount() > 0 &&
 				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 					*pCurrentMedium);

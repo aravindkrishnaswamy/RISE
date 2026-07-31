@@ -299,6 +299,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/SSS/PointSetOctree.cpp"
     "${RISE_LIB}/Shaders/SSS/SubSurfaceScatteringShaderOp.cpp"
     "${RISE_LIB}/Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp"
+    "${RISE_LIB}/Shaders/SSS/SSSContainment.cpp"
     "${RISE_LIB}/Shaders/AmbientOcclusionShaderOp.cpp"
     "${RISE_LIB}/Shaders/AreaLightShaderOp.cpp"
     "${RISE_LIB}/Shaders/CausticPelPhotonMapShaderOp.cpp"

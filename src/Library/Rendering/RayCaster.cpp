@@ -34,6 +34,7 @@
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Materials/NullBoundaryMaterial.h"
+#include "../Shaders/SSS/SSSContainment.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 
 #define ENABLE_MAX_RECURSION
@@ -939,7 +940,7 @@ bool RayCaster::CastRayImpl_(
 		// Reference: Kulla, Fajardo, "Importance Sampling Techniques
 		// for Path Tracing in Participating Media", EGSR 2012.
 		// ----------------------------------------------------------------
-		const bool useEquiangularMIS = pLightSampler &&
+		const bool useEquiangularMIS = !IsSSSContainmentActive() && pLightSampler &&
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots;
@@ -1702,7 +1703,7 @@ bool RayCaster::CastRayNMImpl_(
 		Scalar t_m = 0;
 
 		// Equiangular MIS (spectral variant, see RGB path for details)
-		const bool useEquiangularMIS_NM = pLightSampler &&
+		const bool useEquiangularMIS_NM = !IsSSSContainmentActive() && pLightSampler &&
 			pLightSampler->IsEquiangularPivotDistributionValid() &&
 			pLightSampler->GetEquiangularPivotEntryCount() > 0;
 		VolumeEmissionPivotState equiangularPivots_NM;
@@ -1937,7 +1938,7 @@ bool RayCaster::CastRayNMImpl_(
 			}
 
 			static const unsigned int nMaxVolumeBounces = 64;
-			const bool volumeNEECompetes = pLightSampler &&
+			const bool volumeNEECompetes = !IsSSSContainmentActive() && pLightSampler &&
 				pLightSampler->GetVolumeEmissionMediumCount() > 0 &&
 				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 					*pMedium);

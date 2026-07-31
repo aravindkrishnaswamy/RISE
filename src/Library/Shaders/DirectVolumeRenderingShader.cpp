@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "DirectVolumeRenderingShader.h"
+#include "SSS/SSSContainment.h"
 #include "../Interfaces/ILog.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_NNB.h"
@@ -294,7 +295,13 @@ void DirectVolumeRenderingShader::Shade(
 					myri.geometric.vNormal = Vector3Ops::Normalize(Vector3Ops::Transform(ri.pObject->GetFinalTransformMatrix(),iso_normal));
 					myri.geometric.onb.CreateFromW( myri.geometric.vNormal );
 
-					pISOShader->Shade( rc, myri, caster, rs, c, ior_stack );
+					if( ShaderRequiresSSSContainment( *pISOShader ) ) {
+						SSSContainmentScope containment;
+						RecordSSSContainedChildLaunch();
+						pISOShader->Shade( rc, myri, caster, rs, c, ior_stack );
+					} else {
+						pISOShader->Shade( rc, myri, caster, rs, c, ior_stack );
+					}
 					return;
 				} else if( ri.pMaterial ) {
 					const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
@@ -449,6 +456,11 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 					myri.geometric.ptObjIntersec = voxel;
 					myri.geometric.vNormal = Vector3Ops::Normalize(Vector3Ops::Transform(ri.pObject->GetFinalTransformMatrix(),iso_normal));
 
+					if( ShaderRequiresSSSContainment( *pISOShader ) ) {
+						SSSContainmentScope containment;
+						RecordSSSContainedChildLaunch();
+						return pISOShader->ShadeNM( rc, myri, caster, rs, nm, ior_stack );
+					}
 					return pISOShader->ShadeNM( rc, myri, caster, rs, nm, ior_stack );
 				} else if( ri.pMaterial ) {
 					const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
@@ -521,4 +533,3 @@ void DirectVolumeRenderingShader::ResetRuntimeData() const
 		pISOShader->ResetRuntimeData();
 	}
 }
-

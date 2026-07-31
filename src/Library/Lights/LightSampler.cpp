@@ -34,6 +34,7 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/EquiangularSampler.h"
+#include "../Shaders/SSS/SSSContainment.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2194,6 +2195,7 @@ bool LightSampler::SampleVolumeEmissionPivots(
 	VolumeEmissionPivotState& pivots
 	) const
 {
+	RecordSSSContainedVolumePivotAttempt();
 	pivots.mediumPivots.clear();
 	pivots.mediumPivots.reserve( volumeEmissionMedia.size() );
 	for( unsigned int i = 0; i < volumeEmissionMedia.size(); ++i ) {
@@ -2232,6 +2234,7 @@ bool LightSampler::SampleVolumeEmissionVertex(
 	VolumeEmissionVertexSample& sample
 	) const
 {
+	RecordSSSContainedVolumeEndpointAttempt();
 	sample = VolumeEmissionVertexSample();
 	sample.pivotsReady = SampleVolumeEmissionPivots( sampler, sample.pivots );
 	if( !sample.pivotsReady ) return false;

@@ -1,12 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PathTracingThermalEmissionTest.cpp - Phase-A step-6 spectral gates.
+//  PathTracingThermalEmissionTest.cpp - spectral fire transport gates.
 //
 //  Verifies that the standalone PathTracingIntegrator scores fire thermal
 //  emission before the pure-absorber and max-volume-bounce continuation
 //  exits, agrees with RayCaster's already-gated estimator, preserves scene-
 //  unit invariance, and routes HWSS-requested fire transport through the
-//  unbiased per-wavelength NM fallback.
+//  unbiased per-wavelength NM fallback. Phase-B sections add volume-NEE
+//  partition and SSS preview-containment equality gates.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -57,6 +58,10 @@
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/PathTracingShaderOp.h"
 #include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
+#include "../src/Library/Shaders/SSS/SimpleExtinction.h"
+#include "../src/Library/Shaders/SSS/SSSContainment.h"
+#include "../src/Library/Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
@@ -839,6 +844,86 @@ namespace
 		~VolumeStateProbeShader() override = default;
 	};
 
+	class VolumeStateTransportProbeShader :
+		public virtual IShader,
+		public virtual Reference
+	{
+	public:
+		mutable bool sawCompetition;
+		VolumeStateTransportProbeShader() : sawCompetition(false) {}
+
+		void Shade(
+			const RuntimeContext& rc, const RayIntersection& ri,
+			const IRayCaster& caster, const IRayCaster::RAY_STATE&,
+			RISEPel& c, const IORStack& stack ) const override
+		{
+			sawCompetition =
+				CurrentVolumeEmissionSegmentState().competitionAvailable;
+			IRayCaster::RAY_STATE child;
+			Scalar value = 0.0;
+			caster.CastRayNM(rc,ri.geometric.rast,
+				Ray(Point3(0,0,-1),Vector3(0,0,1)),value,child,500.0,
+				nullptr,nullptr,stack);
+			c = RISEPel(value,value,value);
+		}
+
+		Scalar ShadeNM(
+			const RuntimeContext& rc, const RayIntersection& ri,
+			const IRayCaster& caster, const IRayCaster::RAY_STATE& rs,
+			const Scalar, const IORStack& stack ) const override
+		{
+			RISEPel c(0,0,0);
+			Shade(rc,ri,caster,rs,c,stack);
+			return c[0];
+		}
+
+		void ResetRuntimeData() const override {}
+
+	protected:
+		~VolumeStateTransportProbeShader() override = default;
+	};
+
+	// Unknown nested shader-op dependency used by both the Phase-B preview
+	// fixture and the Phase-C predictive re-gate. Its concrete type is absent
+	// from the renderer's closed local-op set, so classification must fail
+	// closed and contain the nested Shade call.
+	class UnknownNestedShaderOp :
+		public virtual IShaderOp,
+		public virtual Reference
+	{
+	public:
+		explicit UnknownNestedShaderOp( const IShader& shader ) : shader_(shader)
+		{
+			shader_.addref();
+		}
+
+		void PerformOperation(
+			const RuntimeContext& rc, const RayIntersection& ri,
+			const IRayCaster& caster, const IRayCaster::RAY_STATE& rs,
+			RISEPel& c, const IORStack& stack,
+			const ScatteredRayContainer* ) const override
+		{
+			shader_.Shade(rc,ri,caster,rs,c,stack);
+		}
+
+		Scalar PerformOperationNM(
+			const RuntimeContext& rc, const RayIntersection& ri,
+			const IRayCaster& caster, const IRayCaster::RAY_STATE& rs,
+			const Scalar, const Scalar nm, const IORStack& stack,
+			const ScatteredRayContainer* ) const override
+		{
+			return shader_.ShadeNM(rc,ri,caster,rs,nm,stack);
+		}
+
+		bool RequireSPF() const override { return false; }
+
+	protected:
+		~UnknownNestedShaderOp() override { shader_.release(); }
+
+	private:
+		const IShader& shader_;
+	};
+
 	std::string IsolatedSmokeReceiverScene()
 	{
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
@@ -927,6 +1012,61 @@ namespace
 				"omni_light\n{\nname point_competitor\npower 0.001\n"
 				"color 0.000001 0.000001 0.000001\nposition -0.75 0 -0.5\n}\n";
 		}
+		return scene.str();
+	}
+
+	std::string SSSFireReceiverScene( const bool randomWalk )
+	{
+		const Scalar carbon = 0.05 / HotAbsorptionMass633();
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
+			"shaderop DefaultPathTracing\n}\n";
+		if( randomWalk ) {
+			scene <<
+				"randomwalk_sss_material\n{\nname receiver\nior 1.3\n"
+				"absorption 0.01 0.01 0.01\nscattering 2 2 2\ng 0\n"
+				"roughness 0\nmax_bounces 32\n}\n";
+		} else {
+			scene <<
+				"subsurfacescattering_material\n{\nname receiver\nior 1.3\n"
+				"absorption 0.01 0.01 0.01\nscattering 2 2 2\ng 0\n"
+				"roughness 0\n}\n";
+		}
+		scene <<
+			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min -3 -3 -3\nbbox_max 3 3 3\n"
+			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
+			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium fire\n}\n"
+			"sphere_geometry\n{\nname receiver_geometry\nradius 1\n}\n"
+			"standard_object\n{\nname receiver_sphere\ngeometry receiver_geometry\n"
+			"material receiver\n}\n";
+		return scene.str();
+	}
+
+	std::string SSSShaderOpFireScene()
+	{
+		const Scalar carbon = 0.2 / HotAbsorptionMass633();
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min -2 -2 -2\nbbox_max 2 2 2\n"
+			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.6\n"
+			"soot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium fire\n}\n"
+			"box_geometry\n{\nname wall_geometry\nwidth 4\nheight 4\ndepth 0.2\n}\n"
+			"standard_object\n{\nname wall\ngeometry wall_geometry\nmaterial none\n"
+			"position 0 0 1\n}\n";
 		return scene.str();
 	}
 
@@ -6567,6 +6707,291 @@ namespace
 		safe_release( medium );
 		std::filesystem::remove( scenePath );
 	}
+
+	void TestSSSBSSRDFPreviewContainment()
+	{
+		std::cout << "TestSSSBSSRDFPreviewContainment" << std::endl;
+		for( unsigned int fixture=0; fixture<2; ++fixture ) {
+			const bool randomWalk = fixture != 0;
+			const char* label = randomWalk ? "random-walk" : "diffusion-profile";
+			const std::filesystem::path scenePath =
+				std::filesystem::temp_directory_path() /
+				( std::string("rise_sss_fire_containment_") + label + "_" +
+					std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+			{
+				std::ofstream output(scenePath);
+				output << SSSFireReceiverScene(randomWalk);
+			}
+
+			IJobPriv* job = nullptr;
+			IRayCaster* neeCaster = nullptr;
+			IRayCaster* marchOnlyCaster = nullptr;
+			const bool loaded = RISE_CreateJobPriv(&job) && job &&
+				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			Check( loaded,
+				(std::string(label) + " SSS containment fixture loads").c_str() );
+			if( loaded ) {
+				IShader* shader = job->GetShaders()->GetItem("global");
+				const IMedium* fire = job->GetScene()->GetGlobalMedium();
+				if( fire ) fire->addref();
+				IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+				UnsupportedHomogeneousSmoke* vacuum =
+					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+				job->GetScene()->SetGlobalMedium(vacuum);
+				Check( shader && RISE_API_CreateRayCaster(
+					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+					(std::string(label) + " march-only caster initializes").c_str() );
+				if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+				job->GetScene()->SetGlobalMedium(fire);
+				safe_release(vacuum);
+				safe_release(vacuumPhase);
+				Check( shader && RISE_API_CreateRayCaster(
+					&neeCaster,false,20,*shader,true) && neeCaster,
+					(std::string(label) + " volume-NEE caster initializes").c_str() );
+				if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+				safe_release(fire);
+			}
+
+			if( job && neeCaster && marchOnlyCaster ) {
+				StabilityConfig config;
+				config.maxTranslucentBounce = 4;
+				PathTracingIntegrator* integrator =
+					new PathTracingIntegrator(ManifoldSolverConfig(),config);
+				integrator->SetMaxPathDepth(4);
+				const RasterizerState rast = {0,0};
+				const Ray ray(Point3(0,0,-3),Vector3(0,0,1));
+				const Scalar nm = 500.0;
+				struct Moments { Scalar mean; Scalar variance; };
+				const unsigned int samples = 60000;
+				auto moments = [&]( const IRayCaster& route,
+					const unsigned int seed ) {
+					RandomNumberGenerator rng(seed);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+					IndependentSampler sampler(rng);
+					long double sum = 0.0;
+					long double sumSquares = 0.0;
+					for( unsigned int i=0; i<samples; ++i ) {
+						const Scalar value = integrator->IntegrateRayNM(
+							rc,rast,ray,nm,*job->GetScene(),route,
+							sampler,nullptr,nullptr);
+						sum += value;
+						sumSquares += static_cast<long double>(value)*value;
+					}
+					const long double count = static_cast<long double>(samples);
+					const long double mean = sum/count;
+					const long double variance =
+						(sumSquares-sum*sum/count)/(count-1.0);
+					return Moments{static_cast<Scalar>(mean),
+						static_cast<Scalar>(variance>0.0 ? variance : 0.0)};
+				};
+				bool allBatchesAgree = true;
+				for( unsigned int batch=0; batch<3; ++batch ) {
+					const unsigned int seed = 0x55b5500u + fixture*0x10001u +
+						batch*0x101u;
+					const Moments on = moments(*neeCaster,seed);
+					const Moments off = moments(*marchOnlyCaster,seed+0x7a31u);
+					const Scalar standardError = std::sqrt(
+						(on.variance+off.variance)/static_cast<Scalar>(samples));
+					const bool agrees = on.mean>0.0 && off.mean>0.0 &&
+						standardError>0.0 &&
+						std::fabs(on.mean-off.mean)<=6.0*standardError;
+					if( !agrees ) {
+						std::cout << "  " << label << " batch " << batch <<
+							" means=" << on.mean << "/" << off.mean <<
+							" variances=" << on.variance << "/" <<
+							off.variance << " se=" << standardError << std::endl;
+					}
+					allBatchesAgree = allBatchesAgree && agrees;
+				}
+				Check( allBatchesAgree,
+					(std::string(label) +
+						" SSS preview NEE-on/off means agree in three batches").c_str() );
+
+				const unsigned long long pivotsBefore =
+					SSSContainedVolumePivotAttemptCount();
+				const unsigned long long endpointsBefore =
+					SSSContainedVolumeEndpointAttemptCount();
+				const unsigned long long childrenBefore =
+					SSSContainedChildLaunchCount();
+				const bool competitionBefore =
+					SSSContainedChildCompetitionObserved();
+				Check( !competitionBefore,
+					"SSS child-competition witness starts clear" );
+				RandomNumberGenerator structuralRng(0x55c000u+fixture);
+				RuntimeContext structuralRc(
+					structuralRng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler structuralSampler(structuralRng);
+				for( unsigned int i=0;
+					i<10000 && SSSContainedChildLaunchCount()==childrenBefore; ++i ) {
+					const VolumeEmissionSegmentState parentCompetition(
+						true,false,nullptr,0.25,0.0,0.0);
+					const VolumeEmissionSegmentStateScope parentScope(parentCompetition);
+					integrator->IntegrateRayNM(
+						structuralRc,rast,ray,nm,*job->GetScene(),*neeCaster,
+						structuralSampler,nullptr,nullptr);
+				}
+				Check( SSSContainedChildLaunchCount()>childrenBefore,
+					(std::string(label) + " SSS fixture launches a contained child").c_str() );
+				Check( SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
+					SSSContainedVolumeEndpointAttemptCount()==endpointsBefore,
+					(std::string(label) +
+						" BSSRDF entry draws zero thermal pivots/endpoints").c_str() );
+				Check( SSSContainedChildCompetitionObserved()==competitionBefore,
+					(std::string(label) +
+						" BSSRDF child starts with competitionAvailable=false").c_str() );
+				Check( SSSContainmentDiagnosticEmitted(),
+					"SSS preview containment emits a debug diagnostic" );
+				safe_release(integrator);
+			}
+
+			safe_release(neeCaster);
+			safe_release(marchOnlyCaster);
+			safe_release(job);
+			std::filesystem::remove(scenePath);
+		}
+	}
+
+	void TestNestedSSSShaderOpContainment()
+	{
+		std::cout << "TestNestedSSSShaderOpContainment" << std::endl;
+		const std::filesystem::path scenePath =
+			std::filesystem::temp_directory_path() /
+			( "rise_nested_sss_containment_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SSSShaderOpFireScene();
+		}
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"nested SSS shader-op fixture loads" );
+		if( job ) {
+			IShader* sceneShader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			Check( sceneShader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*sceneShader,true) && marchOnlyCaster,
+				"nested SSS shader-op march-only caster initializes" );
+			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			Check( sceneShader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*sceneShader,true) && neeCaster,
+				"nested SSS shader-op volume-NEE caster initializes" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			RayIntersection ri(ray,rast);
+			job->GetScene()->GetObjects()->IntersectRay(ri,true,true,false);
+			Check( ri.geometric.bHit,
+				"nested SSS shader-op fixture resolves a shading hit" );
+			RandomNumberGenerator rng(0x551100u);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			rc.bFastPreview = true;
+			IRayCaster::RAY_STATE rs;
+			IORStack stack(1.0);
+			VolumeStateTransportProbeShader* probe =
+				new VolumeStateTransportProbeShader();
+			UnknownNestedShaderOp* unknown = new UnknownNestedShaderOp(*probe);
+			std::vector<IShaderOp*> unknownOps(1,unknown);
+			StandardShader* unknownShader = new StandardShader(unknownOps);
+			SimpleExtinction* extinction =
+				new SimpleExtinction(RISEPel(1,1,1),1.0);
+			SubSurfaceScatteringShaderOp* simple =
+				new SubSurfaceScatteringShaderOp(
+					1,0.1,1,1,1.0,false,false,*probe,*extinction,
+					false,false);
+			DonnerJensenSkinSSSShaderOp* skin =
+				new DonnerJensenSkinSSSShaderOp(
+					1,0.1,1,1,1.0,*probe,false,
+					0.1,0.5,0.001,0.001,0.001,0.001,1.4,1.4,0.75);
+
+			Check( ShaderRequiresSSSContainment(*probe) &&
+				ShaderOpRequiresSSSContainment(*unknown),
+				"unknown nested shader dependencies classify fail-closed as SSS" );
+			Check( ShaderOpRequiresSSSContainment(*simple) &&
+				ShaderOpRequiresSSSContainment(*skin),
+				"both named SSS shader ops classify as nonlocal SSS" );
+			const unsigned long long childrenBefore =
+				SSSContainedChildLaunchCount();
+			const bool competitionBefore =
+				SSSContainedChildCompetitionObserved();
+			const VolumeEmissionSegmentState parentCompetition(
+				true,false,nullptr,0.25,0.0,0.0);
+			{
+				const VolumeEmissionSegmentStateScope parentScope(parentCompetition);
+				RISEPel c(0,0,0);
+				probe->sawCompetition = true;
+				unknownShader->Shade(rc,ri,*neeCaster,rs,c,stack);
+				Check( !probe->sawCompetition,
+					"unknown nested shader-op call inherits a fresh competition state" );
+				probe->sawCompetition = true;
+				simple->PerformOperation(rc,ri,*neeCaster,rs,c,stack,nullptr);
+				Check( !probe->sawCompetition,
+					"SubSurfaceScatteringShaderOp nested Shade is contained" );
+				probe->sawCompetition = true;
+				skin->PerformOperation(rc,ri,*neeCaster,rs,c,stack,nullptr);
+				Check( !probe->sawCompetition,
+					"DonnerJensenSkinSSSShaderOp nested Shade is contained" );
+			}
+			Check( SSSContainedChildLaunchCount()>=childrenBefore+2 &&
+				SSSContainedChildCompetitionObserved()==competitionBefore,
+				"named SSS nested calls record fresh competition=false children" );
+			const unsigned long long pivotsBefore =
+				SSSContainedVolumePivotAttemptCount();
+			const unsigned long long endpointsBefore =
+				SSSContainedVolumeEndpointAttemptCount();
+			auto meanNamed = [&]( IShaderOp& op, const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator localRng(seed);
+				RuntimeContext localRc(
+					localRng,RuntimeContext::PASS_NORMAL,false);
+				localRc.bFastPreview = true;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<10000; ++i ) {
+					RISEPel c(0,0,0);
+					op.PerformOperation(
+						localRc,ri,route,rs,c,stack,nullptr);
+					sum += c[0];
+				}
+				return sum/10000.0;
+			};
+			const Scalar simpleOn = meanNamed(*simple,*neeCaster,0x551201u);
+			const Scalar simpleOff = meanNamed(*simple,*marchOnlyCaster,0x551201u);
+			const Scalar skinOn = meanNamed(*skin,*neeCaster,0x551202u);
+			const Scalar skinOff = meanNamed(*skin,*marchOnlyCaster,0x551202u);
+			Check( simpleOn>0.0 && simpleOn==simpleOff,
+				"SubSurfaceScatteringShaderOp nested NEE-on/off paths agree exactly" );
+			Check( skinOn>0.0 && skinOn==skinOff,
+				"DonnerJensenSkinSSSShaderOp nested NEE-on/off paths agree exactly" );
+			Check( SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
+				SSSContainedVolumeEndpointAttemptCount()==endpointsBefore,
+				"named SSS nested transport draws zero thermal pivots/endpoints" );
+
+			safe_release(skin);
+			safe_release(simple);
+			safe_release(extinction);
+			safe_release(unknownShader);
+			safe_release(unknown);
+			safe_release(probe);
+		}
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
 }
 
 int main()
@@ -6602,6 +7027,8 @@ int main()
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
 	TestZeroSootChemOnlyLineEstimator();
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
+	TestSSSBSSRDFPreviewContainment();
+	TestNestedSSSShaderOpContainment();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }

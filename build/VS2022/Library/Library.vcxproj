@@ -436,6 +436,7 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\SMSShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\BDPTIntegrator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\PointSetOctree.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\StandardShader.cpp" />
@@ -1150,6 +1151,7 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\PathTracingIntegrator.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\SMSShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.h" />
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMIntegrator.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertex.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertexStore.h" />

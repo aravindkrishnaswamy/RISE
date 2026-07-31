@@ -1113,6 +1113,9 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.cpp">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RISE_API.cpp">
       <Filter>API</Filter>
     </ClCompile>
@@ -2722,6 +2725,9 @@
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RISE_API.h">
