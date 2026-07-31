@@ -2490,7 +2490,7 @@ Scalar LightSampler::EvaluateVolumeDirectLightingFromClosureNM(
 		endpoint.point,ri.ptIntersection);
 	const Scalar distance = Vector3Ops::NormalizeMag(direction);
 	if( !RISE::IsFiniteDouble(distance) || distance <= 0.0 ) return 0.0;
-	const Scalar cosine = Vector3Ops::Dot(direction,ri.vNormal);
+	const Scalar cosine = fabs(Vector3Ops::Dot(direction,ri.vNormal));
 	if( cosine <= 0.0 ) return 0.0;
 
 	const unsigned int fullMask = closure.GetLobeMask();

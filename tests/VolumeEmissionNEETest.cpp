@@ -1812,6 +1812,62 @@ namespace
 					lambert->EvaluateSubset(lambert->GetLobeMask(),direction);
 				CheckRelative( cappedActual,cappedExpected,2e-14,
 					"per-type-capped response is confined to weight-one f_D" );
+
+				// Back-face transport uses the closure's incident-ray-oriented frame.
+				// The raw shading normal therefore has the opposite sign from the
+				// valid outgoing cosine; §7.2.1 requires |cos(theta_x)|.
+				RayIntersectionGeometric backRi(
+					Ray(Point3(0,0,1),Vector3(0,0,1)),rast);
+				backRi.bHit = true;
+				backRi.ptIntersection = Point3(0,0,1);
+				backRi.vNormal = Vector3(0,0,1);
+				backRi.vGeomNormal = backRi.vNormal;
+				backRi.onb.CreateFromW(backRi.vNormal);
+				const IContinuationClosureNM* backLambert =
+					CreateLambertianContinuationClosureNM(
+						backRi,0.8,noRoulette);
+				if( backLambert ) {
+					Vector3 backDirection = Vector3Ops::mkVector3(
+						endpoint.point,backRi.ptIntersection);
+					const Scalar backDistance =
+						Vector3Ops::NormalizeMag(backDirection);
+					const Scalar backDirectionPdf =
+						backLambert->PdfReachMarginal(
+							allAllowed.marchMask,backDirection);
+					Scalar backTr = 0.0;
+					const IMedium* backEndpointMedium = nullptr;
+					MISWeights::LogDensity backMarchDensity;
+					const bool backConnected =
+						lights->EvaluateVolumeEmissionConnectionNM(
+							Ray(backRi.ptIntersection,backDirection),backDistance,
+							fire,nullptr,nullptr,nm,vertex.Pivots(),
+							backDirectionPdf,backTr,&backEndpointMedium,
+							backMarchDensity);
+					const Scalar backWeight =
+						MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+							MISWeights::MakeLogDensity(endpoint.pdf),
+							backMarchDensity);
+					const Scalar backExpected =
+						backLambert->EvaluateSubset(
+							allAllowed.marchMask,backDirection)*
+						std::fabs(Vector3Ops::Dot(
+							backDirection,backRi.vNormal))*backTr*
+						endpoint.pMedium->GetThermalEmissionNM(
+							endpoint.point,nm)*backWeight/
+						(backDistance*backDistance*endpoint.pdf);
+					const Scalar backActual =
+						lights->EvaluateVolumeDirectLightingFromClosureNM(
+							backRi,*backLambert,allAllowed,nm,vertex,
+							fire,nullptr,nullptr);
+					Check( backConnected && backEndpointMedium==endpoint.pMedium &&
+						backDirectionPdf>0.0 &&
+						Vector3Ops::Dot(backDirection,backRi.vNormal)<0.0 &&
+						backExpected>0.0,
+						"back-face fixture has genuine closure and march support" );
+					CheckRelative( backActual,backExpected,2e-14,
+						"back-face surface volume NEE uses the absolute cosine" );
+				}
+				safe_release( backLambert );
 			}
 
 			const IContinuationClosureNM* phong =

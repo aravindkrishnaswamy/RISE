@@ -476,6 +476,30 @@ namespace
 		return scene.str();
 	}
 
+	std::string SurfaceFireReceiverScene()
+	{
+		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
+			"shaderop DefaultPathTracing\n}\n"
+			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n"
+			"lambertian_material\n{\nname receiver\nreflectance white\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min 0.3 -0.45 -0.9\n"
+			"bbox_max 1.2 0.45 -0.25\nsoot_em 0.26\nsoot_density 1800\n"
+			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
+			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium fire\n}\n"
+			"box_geometry\n{\nname receiver_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
+			"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
+			"material receiver\nposition 0 0 0\n}\n";
+		return scene.str();
+	}
+
 	struct PhaseClosureAudit
 	{
 		unsigned int nextId;
@@ -1386,6 +1410,140 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestSurfaceVolumeNEEProductionRoutes()
+	{
+		std::cout << "TestSurfaceVolumeNEEProductionRoutes" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_surface_fire_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SurfaceFireReceiverScene();
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"surface receiver and off-axis fire fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			job->GetScene()->SetGlobalMedium(nullptr);
+			Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+				"surface brute-force caster initializes without a volume-emission CDF" );
+			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+			job->GetScene()->SetGlobalMedium(fire);
+			Check( shader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*shader,true) && neeCaster,
+				"surface volume-NEE caster initializes with the fire CDF" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const Scalar nm = 500.0;
+			const unsigned int samples = 240000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			auto meanPT = [&]( PathTracingIntegrator& integrator,
+				const IRayCaster& route, const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					sum += integrator.IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+			auto meanShaderRoute = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(samples);
+			};
+
+			StabilityConfig ordinaryConfig;
+			ordinaryConfig.maxDiffuseBounce = 2;
+			PathTracingIntegrator* ordinary = new PathTracingIntegrator(
+				ManifoldSolverConfig(),ordinaryConfig);
+			ordinary->SetMaxPathDepth(2);
+			const Scalar ordinaryOn = meanPT(*ordinary,*neeCaster,0x5100a1u);
+			const Scalar ordinaryOff = meanPT(*ordinary,*marchOnlyCaster,0x5100a2u);
+			const Scalar shaderOn = meanShaderRoute(*neeCaster,0x5100a3u);
+			const Scalar shaderOff = meanShaderRoute(*marchOnlyCaster,0x5100a4u);
+
+			StabilityConfig terminalConfig;
+			terminalConfig.maxDiffuseBounce = 2;
+			PathTracingIntegrator* terminal = new PathTracingIntegrator(
+				ManifoldSolverConfig(),terminalConfig);
+			terminal->SetMaxPathDepth(1);
+			const Scalar terminalOn = meanPT(*terminal,*neeCaster,0x5100b1u);
+			const Scalar terminalOff = meanPT(*terminal,*marchOnlyCaster,0x5100b2u);
+
+			StabilityConfig cappedConfig;
+			cappedConfig.maxDiffuseBounce = 0;
+			PathTracingIntegrator* capped = new PathTracingIntegrator(
+				ManifoldSolverConfig(),cappedConfig);
+			capped->SetMaxPathDepth(2);
+			StabilityConfig uncappedConfig;
+			uncappedConfig.maxDiffuseBounce = 1;
+			PathTracingIntegrator* uncapped = new PathTracingIntegrator(
+				ManifoldSolverConfig(),uncappedConfig);
+			uncapped->SetMaxPathDepth(2);
+			const Scalar cappedOn = meanPT(*capped,*neeCaster,0x5100c1u);
+			const Scalar cappedReference = meanPT(
+				*uncapped,*marchOnlyCaster,0x5100c2u);
+
+			if( !(ordinaryOn>0.0 && ordinaryOff>0.0 && shaderOn>0.0 &&
+				shaderOff>0.0 && terminalOn>0.0 && terminalOff>0.0 &&
+				cappedOn>0.0 && cappedReference>0.0) ) {
+				std::cout << "  surface ordinary=" << ordinaryOn << "/" << ordinaryOff <<
+					" shader=" << shaderOn << "/" << shaderOff <<
+					" terminal=" << terminalOn << "/" << terminalOff <<
+					" capped=" << cappedOn << "/" << cappedReference << std::endl;
+			}
+			Check( ordinaryOn>0.0 && ordinaryOff>0.0 &&
+				NearRelative(ordinaryOn,ordinaryOff,0.08),
+				"surface closure NEE and brute-force march agree at a non-terminal vertex" );
+			Check( shaderOn>0.0 && shaderOff>0.0 &&
+				NearRelative(shaderOn,shaderOff,0.08),
+				"shader-dispatch and pure-rasterizer PT entries share the surface estimator" );
+			Check( NearRelative(ordinaryOn,shaderOn,0.08),
+				"both PathTracingIntegrator entry routes produce the same surface NEE mean" );
+			Check( terminalOn>0.0 && terminalOff>0.0 &&
+				NearRelative(terminalOn,terminalOff,0.08),
+				"total-depth surface vertex launches the A_march source-only competitor" );
+			Check( cappedOn>0.0 && cappedReference>0.0 &&
+				NearRelative(cappedOn,cappedReference,0.08),
+				"diffuse-capped lobe is NEE-only f_D and matches uncapped brute force" );
+
+			safe_release(uncapped);
+			safe_release(capped);
+			safe_release(terminal);
+			safe_release(ordinary);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
 	void TestNonNullSurfaceClearsMediumMarchCompetition()
 	{
 		std::cout << "TestNonNullSurfaceClearsMediumMarchCompetition" << std::endl;
@@ -2249,6 +2407,7 @@ int main()
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
+	TestSurfaceVolumeNEEProductionRoutes();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestCollisionEmissionConsumesMarchCompetitionState();
 	TestDirectPelEntryRejectsFire();

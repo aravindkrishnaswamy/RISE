@@ -610,9 +610,10 @@ namespace RISE
 				return equiangularPivotDistributionValid;
 			}
 
-			/// Standalone Phase-B volume-NEE estimator.  It is deliberately not
-			/// added to EvaluateDirectLightingNM until the following MIS-partition
-			/// gate can weight the competing march contribution.
+			/// Low-level Phase-B volume-NEE estimator retained for isolated tests
+			/// and non-closure callers. Production PT surface and medium vertices use
+			/// the closure-bound siblings below so the competing march density is the
+			/// exact proposal later sampled at that same vertex.
 			Scalar EvaluateVolumeDirectLightingNM(
 				const RayIntersectionGeometric& ri,
 				const IBSDF& receiver,

@@ -67,6 +67,32 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 
 namespace
 {
+	class ContinuationClosureNMGuard
+	{
+	public:
+		ContinuationClosureNMGuard() : closure( 0 ) {}
+		~ContinuationClosureNMGuard()
+		{
+			if( closure ) {
+				closure->release();
+				closure = 0;
+			}
+		}
+
+		void Reset( const IContinuationClosureNM* closure_ )
+		{
+			if( closure ) closure->release();
+			closure = closure_;
+		}
+
+		const IContinuationClosureNM* Get() const { return closure; }
+
+	private:
+		ContinuationClosureNMGuard( const ContinuationClosureNMGuard& );
+		ContinuationClosureNMGuard& operator=( const ContinuationClosureNMGuard& );
+		const IContinuationClosureNM* closure;
+	};
+
 	inline void ContinueAcrossNullBoundary(
 		const RayIntersection& ri,
 		Ray& ray,
@@ -1641,6 +1667,15 @@ namespace
 		ISPF* GetSPF() const override { return pSPF; }
 		IEmitter* GetEmitter() const override { return 0; }
 
+		const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack&, const Scalar,
+			const ContinuationPathState& pathState ) const override
+		{
+			return CreateLambertianContinuationClosureNM(
+				ri,Scalar(0.5),pathState);
+		}
+
 	protected:
 		~ClayNEEMaterial() override {}
 
@@ -2439,9 +2474,50 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		rs.translucentBounces = translucentBounces;
 		rs.glossyFilterWidth = glossyFilterWidth;
 
+		// Phase-B surface volume NEE is enabled only for the exact audited
+		// material set (plus the integrator-owned synthetic clay material).
+		// Construct the wavelength-bound closure and resolve both availability
+		// views before drawing U/Y or any continuation random numbers.  The guard
+		// keeps this exact immutable instance alive through direct evaluation and
+		// the later continuation sample.
+		ContinuationClosureNMGuard surfaceClosureGuard;
+		ContinuationAvailability surfaceAvailability;
+		bool surfaceVolumeNEECompetes = false;
+		bool surfaceVolumeEndpointAttempted = false;
+		if constexpr ( Traits::is_nm ) {
+			const bool clayOverride =
+				EffectivePathTracingClayOverride( rc, mClayOverride );
+			const IMaterial* continuationMaterial = clayOverride ?
+				pClayMaterial : ri.pMaterial;
+			const bool materialSupported = clayOverride ||
+				IsExactSupportedContinuationMaterial( continuationMaterial );
+			if( pLS && pLS->GetVolumeEmissionMediumCount() > 0 &&
+				materialSupported ) {
+				ContinuationPathState pathState;
+				pathState.pathDepth = depth;
+				pathState.rrMinDepth = rrMinDepth;
+				pathState.rrThreshold = rrThreshold;
+				pathState.importance = importance;
+				surfaceClosureGuard.Reset(
+					continuationMaterial->MakeContinuationClosureNM(
+						ri.geometric,iorStack,tag.nm,pathState) );
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				if( closure ) {
+					surfaceVolumeNEECompetes = true;
+					surfaceAvailability = ResolveContinuationAvailability(
+						closure->GetLobeMask(),depth+1 < maxDepth,
+						diffuseBounces,glossyBounces,stabilityConfig);
+					pLS->SampleVolumeEmissionVertex(
+						sampler,activeVolumeVertexSample);
+					surfaceVolumeEndpointAttempted =
+						activeVolumeVertexSample.WasEndpointAttempted();
+				}
+			}
+		}
+
 #ifdef RISE_ENABLE_OPENPGL
 		PGLPathSegmentData* guidingSegment =
-			(guidingRecorder && guidingRecorder->active) ?
+			(!surfaceVolumeNEECompetes && guidingRecorder && guidingRecorder->active) ?
 				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
 #endif
 
@@ -3146,6 +3222,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS, ri.geometric, *pBRDF,
 				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
 				ri.pObject, pCurrentMedium, false, pMediumObject, &iorStack, tag );
+			if constexpr ( Traits::is_nm ) {
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				if( surfaceVolumeNEECompetes && closure ) {
+					directAll += pLS->EvaluateVolumeDirectLightingFromClosureNM(
+						ri.geometric,*closure,surfaceAvailability,tag.nm,
+						activeVolumeVertexSample,pCurrentMedium,pMediumObject,
+						&iorStack);
+				}
+			}
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -3182,7 +3267,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// specular chain is a genuinely multi-bounce transport (the light
 		// energy already traveled through >=1 specular scatter to arrive
 		// here), not the open-air direct connection NEE evaluates.
-		if( pSolver )
+		if( pSolver && !surfaceVolumeNEECompetes )
 		{
 			const Vector3 woOutgoing = Vector3(
 				-ri.geometric.ray.Dir().x,
@@ -3263,6 +3348,73 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		// PART 3: BSDF sampling (continue path — iterative)
 		// ============================================================
+		if constexpr ( Traits::is_nm ) {
+			if( surfaceVolumeNEECompetes ) {
+				if( pAOV && !pAOV->valid &&
+					rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
+					pAOV->normal = ri.geometric.vNormal;
+					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric ) :
+						RISEPel( 1, 1, 1 );
+					pAOV->valid = true;
+				}
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				const unsigned int marchMask = surfaceAvailability.marchMask;
+				if( !closure || marchMask == eContinuationLobeNone ) {
+					break;
+				}
+
+				const bool sourceOnlySegment =
+					surfaceAvailability.vertexMask != marchMask;
+				const Scalar xiLobe = sampler.Get1D();
+				const Point2 xiDirection( sampler.Get1D(), sampler.Get1D() );
+				// A total-depth terminal segment has no ordinary continuation
+				// roulette event, so it must not consume a roulette draw.
+				const Scalar xiRoulette = sourceOnlySegment ? 0.0 : sampler.Get1D();
+				ContinuationSampleNM continuation;
+				if( !closure->SampleSubset(
+					marchMask,xiLobe,xiDirection,xiRoulette,
+					!sourceOnlySegment,continuation) ||
+					!continuation.horizonPassed ||
+					!continuation.rouletteSurvived ||
+					continuation.pdf <= 0.0 ||
+					continuation.reachPdf <= 0.0 ||
+					!RISE::IsFiniteDouble(continuation.throughput) ||
+					fabs(continuation.throughput) <= NEARZERO ) {
+					break;
+				}
+
+				throughput *= continuation.throughput;
+				importance *= fabs(continuation.throughput);
+				bsdfPdf = continuation.pdf;
+				const Scalar cosine = fabs(Vector3Ops::Dot(
+					continuation.ray.Dir(),ri.geometric.vNormal));
+				bsdfTimesCos = continuation.response*cosine;
+				considerEmission = true;
+				if( continuation.type == ScatteredRay::eRayDiffuse ) {
+					rayType = IRayCaster::RAY_STATE::eRayDiffuse;
+					++diffuseBounces;
+				} else {
+					rayType = IRayCaster::RAY_STATE::eRaySpecular;
+					++glossyBounces;
+					if( stabilityConfig.filterGlossy > 0.0 ) {
+						glossyFilterWidth += stabilityConfig.filterGlossy;
+					}
+				}
+				bPassedThroughSpecular = false;
+				bHadNonSpecularShading = true;
+
+				currentRay = continuation.ray;
+				activeVolumeSegmentState = VolumeEmissionSegmentState(
+					surfaceVolumeEndpointAttempted,continuation.singular,
+					surfaceVolumeEndpointAttempted &&
+						activeVolumeVertexSample.HasPivots() ?
+						&activeVolumeVertexSample.Pivots() : 0,
+					continuation.reachPdf,0.0,0.0);
+				currentRay.Advance( 1e-8 );
+				continue;
+			}
+		}
+
 		// GUI render modes P2b `clay_lights`: the continuation-ray SPF --
 		// substituting clay here (rather than only at the acquisition
 		// above) keeps NEE (which reads pBRDF) and the continuation
