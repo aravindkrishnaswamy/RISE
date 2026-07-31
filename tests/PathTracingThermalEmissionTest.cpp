@@ -42,8 +42,12 @@
 #include "../src/Library/SceneEditor/SceneEdit.h"
 #include "../src/Library/SceneEditor/SceneEditor.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/PathTracingShaderOp.h"
+#include "../src/Library/Shaders/StandardShader.h"
 #include "../src/Library/Utilities/EquiangularSampler.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Utilities/MediumTracking.h"
 #include "../src/Library/Utilities/MISWeights.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #ifdef RISE_ENABLE_OPENPGL
@@ -514,6 +518,37 @@ namespace
 				"omni_light\n{\nname point_competitor\npower 0.001\n"
 				"color 0.000001 0.000001 0.000001\nposition -0.75 0 -0.5\n}\n";
 		}
+		return scene.str();
+	}
+
+	std::string HollowCavityFireReceiverScene()
+	{
+		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		std::ostringstream scene;
+		scene << std::setprecision(17) <<
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n"
+			"lambertian_material\n{\nname receiver\nreflectance white\n}\n"
+			"null_boundary_material\n{\nname medium_boundary\n}\n"
+			"homogeneous_medium\n{\nname cavity_vacuum\n"
+			"absorption 0 0 0\nscattering 0 0 0\nphase isotropic\n}\n"
+			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"multichannel_heterogeneous_medium\n{\nname shell_fire\n"
+			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+			"bake_resolution 4 4 4\nbbox_min -2 -2 -2\nbbox_max 2 2 2\n"
+			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
+			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+			"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"global_medium\n{\nmedium shell_fire\n}\n"
+			"sphere_geometry\n{\nname cavity_geometry\nradius 0.75\n}\n"
+			"standard_object\n{\nname cavity\ngeometry cavity_geometry\n"
+			"material medium_boundary\ninterior_medium cavity_vacuum\n"
+			"casts_shadows TRUE\n}\n"
+			"sphere_geometry\n{\nname receiver_geometry\nradius 0.12\n}\n"
+			"standard_object\n{\nname receiver_probe\ngeometry receiver_geometry\n"
+			"material receiver\ncasts_shadows TRUE\n}\n";
 		return scene.str();
 	}
 
@@ -1566,6 +1601,292 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestHollowCavityFullSphereVolumeNEEEquality()
+	{
+		std::cout << "TestHollowCavityFullSphereVolumeNEEEquality" << std::endl;
+		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
+			( "rise_hollow_cavity_fire_receiver_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << HollowCavityFireReceiverScene();
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
+			"hollow-cavity emissive-shell fixture loads" );
+		if( job ) {
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			if( fire ) fire->addref();
+			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* preparationVacuum =
+				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(preparationVacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+				"hollow-cavity reference caster prepares without a thermal CDF" );
+			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+			job->GetScene()->SetGlobalMedium(fire);
+			safe_release(preparationVacuum);
+			safe_release(vacuumPhase);
+			Check( shader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*shader,true) && neeCaster,
+				"hollow-cavity volume-NEE caster prepares the shell CDF" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(fire);
+		}
+
+		if( job && neeCaster && marchOnlyCaster ) {
+			const Scalar nm = 500.0;
+			const IObject* cavity = job->GetScene()->GetObjects() ?
+				job->GetScene()->GetObjects()->GetItem("cavity") : nullptr;
+			const IMedium* cavityVacuum = cavity ? cavity->GetInteriorMedium() : nullptr;
+			const IMedium* fire = job->GetScene()->GetGlobalMedium();
+			IORStack receiverStack(1.0);
+			IORStackSeeding::SeedFromPoint(
+				receiverStack,Point3(0,0,-0.5),*job->GetScene());
+			const IMedium* receiverMedium = MediumTracking::GetCurrentMedium(
+				receiverStack,job->GetScene());
+			IORStack shellStack(1.0);
+			IORStackSeeding::SeedFromPoint(
+				shellStack,Point3(0,0,-1.5),*job->GetScene());
+			const IMedium* shellMedium = MediumTracking::GetCurrentMedium(
+				shellStack,job->GetScene());
+			const MediumCoefficientsNM receiverCoefficients = receiverMedium ?
+				receiverMedium->GetCoefficientsNM(Point3(0,0,-0.5),nm) :
+				MediumCoefficientsNM();
+			const MediumCoefficientsNM shellCoefficients = shellMedium ?
+				shellMedium->GetCoefficientsNM(Point3(0,0,-1.5),nm) :
+				MediumCoefficientsNM();
+			const Scalar shellEmission = shellMedium ?
+				shellMedium->GetThermalEmissionNM(Point3(0,0,-1.5),nm) : 0.0;
+			Check( cavityVacuum && receiverMedium==cavityVacuum &&
+				receiverCoefficients.sigma_t==0.0,
+				"receiver resolves to the hollow cavity with sigma_t equal to zero" );
+			if( !(fire && shellMedium==fire && shellCoefficients.sigma_t>0.0 &&
+				shellEmission>0.0) ) {
+				std::cout << "  shell medium=" << shellMedium << " fire=" << fire <<
+					" top object=" << shellStack.topObject() << " sigma_t=" <<
+					shellCoefficients.sigma_t << " thermal emission=" <<
+					shellEmission << std::endl;
+			}
+			Check( fire && shellMedium==fire && shellCoefficients.sigma_t>0.0 &&
+				shellEmission>0.0,
+				"the surrounding shell resolves to emissive fire with nonzero extinction" );
+
+			const RayCaster* concrete = dynamic_cast<const RayCaster*>(neeCaster);
+			const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
+			const RayCaster* referenceConcrete =
+				dynamic_cast<const RayCaster*>(marchOnlyCaster);
+			const LightSampler* referenceLights = referenceConcrete ?
+				referenceConcrete->GetLightSampler() : nullptr;
+			Check( lights && lights->GetVolumeEmissionMediumCount()==1 &&
+				lights->GetEquiangularPivotEntryCount()==1,
+				"hollow-cavity fixture prepares one shell endpoint and pivot label" );
+			Check( referenceLights &&
+				referenceLights->GetVolumeEmissionMediumCount()==0 &&
+				referenceLights->GetEquiangularPivotEntryCount()==0,
+				"hollow-cavity march reference has no thermal endpoint or pivot entries" );
+			bool octants[8] = {false,false,false,false,false,false,false,false};
+			if( lights ) {
+				RandomNumberGenerator pivotRng(0xc4717a1u);
+				IndependentSampler pivotSampler(pivotRng);
+				for( unsigned int i=0; i<4096; ++i ) {
+					VolumeEmissionPivotState pivots;
+					if( !lights->SampleVolumeEmissionPivots(pivotSampler,pivots) ||
+						pivots.mediumPivots.size()!=1 ) continue;
+					const Point3& pivot = pivots.mediumPivots[0];
+					const Vector3 offset = Vector3Ops::mkVector3(Point3(0,0,0),pivot);
+					if( Vector3Ops::Magnitude(offset) <= 0.75 ) continue;
+					const unsigned int octant =
+						(pivot.x>=0.0 ? 1u : 0u) |
+						(pivot.y>=0.0 ? 2u : 0u) |
+						(pivot.z>=0.0 ? 4u : 0u);
+					octants[octant] = true;
+				}
+			}
+			bool surroundsReceiver = true;
+			for( unsigned int i=0; i<8; ++i ) surroundsReceiver &= octants[i];
+			Check( surroundsReceiver,
+				"thermal pivot sampling covers every octant around the cavity receiver" );
+
+			StabilityConfig config;
+			config.maxDiffuseBounce = 2;
+			PathTracingIntegrator* integrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+			const unsigned int samples = 220000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-0.5),Vector3(0,0,1));
+			struct SampleMoments
+			{
+				Scalar mean;
+				Scalar variance;
+			};
+			auto momentsPT = [&]( PathTracingIntegrator& testedIntegrator,
+				const IRayCaster& route, const unsigned int seed,
+				const unsigned int sampleCount ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				for( unsigned int i=0; i<sampleCount; ++i ) {
+					const Scalar value = testedIntegrator.IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						nullptr,nullptr);
+					sum += value;
+					sumSquares += static_cast<long double>(value)*value;
+				}
+				const long double count = static_cast<long double>(sampleCount);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				SampleMoments result;
+				result.mean = static_cast<Scalar>(mean);
+				result.variance = static_cast<Scalar>(
+					variance>0.0 ? variance : 0.0);
+				return result;
+			};
+			auto momentsShaderRoute = [&]( const IRayCaster& route,
+				const unsigned int seed, const unsigned int sampleCount ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				for( unsigned int i=0; i<sampleCount; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+					sumSquares += static_cast<long double>(value)*value;
+				}
+				const long double count = static_cast<long double>(sampleCount);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				SampleMoments result;
+				result.mean = static_cast<Scalar>(mean);
+				result.variance = static_cast<Scalar>(
+					variance>0.0 ? variance : 0.0);
+				return result;
+			};
+
+			const SampleMoments ptOn = momentsPT(
+				*integrator,*neeCaster,0xc4717b1u,samples);
+			const SampleMoments ptOff = momentsPT(
+				*integrator,*marchOnlyCaster,0xc4717b2u,samples);
+			const SampleMoments shaderOn = momentsShaderRoute(
+				*neeCaster,0xc4717b3u,samples);
+			const SampleMoments shaderOff = momentsShaderRoute(
+				*marchOnlyCaster,0xc4717b4u,samples);
+			const Scalar varianceRatio = ptOff.variance>0.0 ?
+				ptOn.variance/ptOff.variance : -1.0;
+			std::cout << "  hollow-cavity PT on/off=" << ptOn.mean << "/" <<
+				ptOff.mean << " shader on/off=" << shaderOn.mean << "/" <<
+				shaderOff.mean << " variance NEE/march=" << varianceRatio << std::endl;
+			auto withinSixStandardErrors = [&]( const SampleMoments& a,
+				const SampleMoments& b ) {
+				const Scalar combinedStandardError = std::sqrt(
+					(a.variance+b.variance)/static_cast<Scalar>(samples));
+				return combinedStandardError>0.0 &&
+					std::fabs(a.mean-b.mean) <= 6.0*combinedStandardError;
+			};
+			const bool meansAgree = ptOn.mean>0.0 && ptOff.mean>0.0 &&
+				shaderOn.mean>0.0 && shaderOff.mean>0.0 &&
+				withinSixStandardErrors(ptOn,ptOff) &&
+				withinSixStandardErrors(shaderOn,shaderOff) &&
+				withinSixStandardErrors(ptOn,shaderOn);
+			if( !meansAgree || !std::isfinite(varianceRatio) ) {
+				std::cout << "  hollow cavity PT on/off=" << ptOn.mean << "/" <<
+					ptOff.mean << " shader on/off=" << shaderOn.mean << "/" <<
+					shaderOff.mean << " variance ratio=" << varianceRatio << std::endl;
+			}
+			Check( meansAgree,
+				"hollow-cavity shell NEE and march agree within MC noise in both PT entries" );
+			// The r43 full-sphere standoff deliberately weakens the endpoint
+			// proposal: the fixed-seed baseline is 8.68x the conditioned-march
+			// variance.  This is a measured regression ceiling, not a claim that
+			// NEE must win on every canonical geometry.
+			Check( std::isfinite(varianceRatio) && varianceRatio>0.0 &&
+				varianceRatio<12.0,
+				"hollow-cavity NEE-to-march variance stays within its recorded bound" );
+
+			StabilityConfig cappedConfig;
+			cappedConfig.maxDiffuseBounce = 0;
+			PathTracingIntegrator* cappedIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),cappedConfig);
+			cappedIntegrator->SetMaxPathDepth(2);
+			const unsigned int activationSamples = 30000;
+			const SampleMoments cappedOn = momentsPT(
+				*cappedIntegrator,*neeCaster,0xc4717c1u,activationSamples);
+			const SampleMoments cappedOff = momentsPT(
+				*cappedIntegrator,*marchOnlyCaster,0xc4717c2u,activationSamples);
+			Check( cappedOn.mean>0.0 && std::isfinite(cappedOn.mean) &&
+				cappedOff.mean==0.0,
+				"capped diffuse receiver proves the shell volume-NEE estimator is active" );
+
+			PathTracingShaderOp* cappedShaderOp = new PathTracingShaderOp(
+				ManifoldSolverConfig(),cappedConfig);
+			cappedShaderOp->SetMaxPathDepth(2);
+			std::vector<IShaderOp*> cappedShaderOps;
+			cappedShaderOps.push_back(cappedShaderOp);
+			StandardShader* cappedShader = new StandardShader(cappedShaderOps);
+			IRayCaster* cappedShaderNEECaster = nullptr;
+			IRayCaster* cappedShaderMarchCaster = nullptr;
+			const IMedium* fireForCappedShader =
+				job->GetScene()->GetGlobalMedium();
+			if( fireForCappedShader ) fireForCappedShader->addref();
+			IsotropicPhaseFunction* cappedVacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* cappedPreparationVacuum =
+				new UnsupportedHomogeneousSmoke(*cappedVacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(cappedPreparationVacuum);
+			Check( RISE_API_CreateRayCaster(
+				&cappedShaderMarchCaster,false,20,*cappedShader,true) &&
+				cappedShaderMarchCaster,
+				"capped shader-dispatch march reference initializes" );
+			if( cappedShaderMarchCaster )
+				cappedShaderMarchCaster->AttachScene(job->GetScene());
+			job->GetScene()->SetGlobalMedium(fireForCappedShader);
+			safe_release(cappedPreparationVacuum);
+			safe_release(cappedVacuumPhase);
+			Check( RISE_API_CreateRayCaster(
+				&cappedShaderNEECaster,false,20,*cappedShader,true) &&
+				cappedShaderNEECaster,
+				"capped shader-dispatch volume-NEE route initializes" );
+			if( cappedShaderNEECaster )
+				cappedShaderNEECaster->AttachScene(job->GetScene());
+			safe_release(fireForCappedShader);
+			if( cappedShaderNEECaster && cappedShaderMarchCaster ) {
+				const SampleMoments cappedShaderOn = momentsShaderRoute(
+					*cappedShaderNEECaster,0xc4717c3u,activationSamples);
+				const SampleMoments cappedShaderOff = momentsShaderRoute(
+					*cappedShaderMarchCaster,0xc4717c4u,activationSamples);
+				Check( cappedShaderOn.mean>0.0 &&
+					std::isfinite(cappedShaderOn.mean) &&
+					cappedShaderOff.mean==0.0,
+					"capped shader dispatch proves the shell volume-NEE estimator is active" );
+			}
+			safe_release(cappedShaderNEECaster);
+			safe_release(cappedShaderMarchCaster);
+			safe_release(cappedShader);
+			safe_release(cappedShaderOp);
+			safe_release(cappedIntegrator);
+			safe_release(integrator);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
 	void TestPointLightFlameThreeStrategyEquality()
 	{
 		std::cout << "TestPointLightFlameThreeStrategyEquality" << std::endl;
@@ -2536,6 +2857,7 @@ int main()
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
+	TestHollowCavityFullSphereVolumeNEEEquality();
 	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestCollisionEmissionConsumesMarchCompetitionState();
