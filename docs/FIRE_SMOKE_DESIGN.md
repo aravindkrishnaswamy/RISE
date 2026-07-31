@@ -3153,8 +3153,16 @@ persists across frames.
 measured variance ratios per
 [skills/variance-measurement.md](skills/variance-measurement.md); all
 comparisons on pre-denoise EXRs (§10.5). MIS correctness stressed on the
-canonical geometries: emitter enclosing the receiver, receiver inside the
-emitter, thin emitter sheet at grazing angles, camera-primary direct view
+canonical geometries (the first two clarified r43 — the original wording
+named the same topology twice; they are distinct cases distinguished by
+σ_t *at the receiver*): **an emissive shell enclosing a hollow cavity with
+the receiver in the cavity** (σ_t = 0 at the receiver, emission arrives
+from a full-sphere standoff — exercises pivot selection surrounding the
+receiver); **a receiver immersed inside the emissive volume itself**
+(σ_t ≠ 0 at the receiver — the §7.2.4 case where the equiangular 1/r²
+concentration argument weakens and the delta-tracking half of the 50/50
+pair must carry it); thin emitter sheet at grazing angles, camera-primary
+direct view
 (weight-1 rule), flame behind glass (march-only rule), a flame+point-light
 scene (three-way strategy coexistence, 7.2.4), and a zero-soot chem-only
 flame (methanol analog — exercises the §7.1 step 3 line integral with

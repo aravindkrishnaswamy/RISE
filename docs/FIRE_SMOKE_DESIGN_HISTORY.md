@@ -827,3 +827,17 @@ it was already tried and refuted here.
   extensively reviewed mixed-lobe gate to buy marginal variance on emission
   NEE already covers, at per-vertex cost the caps exist to remove.
 
+- **r43 (2026-07-30):** clarified the §7.2.7 canonical-geometry list — the
+  agent's ninth stop: "emitter enclosing the receiver, receiver inside the
+  emitter" named the same topology twice. The original intent (recoverable
+  from §7.2.4's own cross-reference to the weak-equiangular immersed case)
+  was two distinct cases distinguished by σ_t at the receiver: an emissive
+  shell around a hollow cavity with the receiver at a standoff (σ_t = 0 at
+  the receiver; full-sphere pivot selection), and a receiver immersed in
+  the emissive volume (σ_t ≠ 0; equiangular concentration weakens and the
+  DT half of the 50/50 must carry it). The agent's option 2 ("receiver
+  enclosing the emitter") was declined as redundant — that is the ordinary
+  exterior view, already the headline flame-lit-smoke gate — and option 3
+  was wrong on inspection: the :3205 smoke-scatter-receiver gate is a
+  mechanics axis (guiding/caps/RR at a medium vertex), not a topology.
+
