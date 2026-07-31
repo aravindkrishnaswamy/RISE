@@ -2358,6 +2358,320 @@ namespace
 		safe_release(marchOnlyCaster);
 	}
 
+	void TestThinEmitterSheetAtGrazingAngles()
+	{
+		std::cout << "TestThinEmitterSheetAtGrazingAngles" << std::endl;
+		const std::filesystem::path scenePath =
+			std::filesystem::temp_directory_path() /
+			( "rise_thin_grazing_fire_sheet_" +
+				std::to_string(static_cast<int>(::getpid())) +
+				".RISEscene" );
+		{
+			std::ofstream output(scenePath);
+			output << SurfaceFireReceiverScene();
+		}
+
+		IJobPriv* job = nullptr;
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		IScalarPainter* carbonPainter = nullptr;
+		IScalarPainter* temperaturePainter = nullptr;
+		IMedium* thinFire = nullptr;
+		const Point3 sheetMin(0.4,-2.0,-0.15);
+		const Point3 sheetMax(1.4,2.0,-0.13);
+		const Scalar carbon =
+			5.0*kTargetSigmaSI/HotAbsorptionMass633();
+		Check( RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+			RISE_API_CreateUniformScalarPainter(
+				&carbonPainter,carbon) && carbonPainter &&
+			RISE_API_CreateUniformScalarPainter(
+				&temperaturePainter,2600.0) && temperaturePainter &&
+			RISE_API_CreateMultichannelHeterogeneousMedium(
+				&thinFire,*carbonPainter,*temperaturePainter,
+				8,8,2,sheetMin,sheetMax,1.0,
+				0.26,1800.0,0.0,0.5,8.7,1.2,0.0,0.6) &&
+			thinFire,
+			"thin anisotropic fire sheet and grazing receiver fixture build" );
+		if( job && thinFire ) {
+			job->GetScene()->SetGlobalMedium(thinFire);
+			IShader* shader = job->GetShaders()->GetItem("global");
+			const IMedium* preparedThinFire =
+				job->GetScene()->GetGlobalMedium();
+			if( preparedThinFire ) preparedThinFire->addref();
+			IsotropicPhaseFunction* vacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* vacuum =
+				new UnsupportedHomogeneousSmoke(
+					*vacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(vacuum);
+			Check( shader && RISE_API_CreateRayCaster(
+					&marchOnlyCaster,false,8,*shader,true) &&
+				marchOnlyCaster,
+				"thin-sheet march reference prepares without a thermal CDF" );
+			if( marchOnlyCaster ) {
+				marchOnlyCaster->AttachScene(job->GetScene());
+			}
+			job->GetScene()->SetGlobalMedium(preparedThinFire);
+			safe_release(vacuum);
+			safe_release(vacuumPhase);
+			Check( shader && RISE_API_CreateRayCaster(
+					&neeCaster,false,8,*shader,true) && neeCaster,
+				"thin-sheet NEE route prepares the anisotropic thermal CDF" );
+			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+			safe_release(preparedThinFire);
+		}
+
+		const LightSampler* lights =
+			neeCaster ? neeCaster->GetLightSampler() : nullptr;
+		const LightSampler* referenceLights =
+			marchOnlyCaster ? marchOnlyCaster->GetLightSampler() : nullptr;
+		const Point3 receiver(0,0,-0.1);
+		const Point3 sheetCenter(
+			0.5*(sheetMin.x+sheetMax.x),
+			0.5*(sheetMin.y+sheetMax.y),
+			0.5*(sheetMin.z+sheetMax.z));
+		Vector3 receiverToSheet =
+			Vector3Ops::mkVector3(receiver,sheetCenter);
+		Vector3Ops::Normalize(receiverToSheet);
+		const Scalar sheetNormalCosine =
+			std::fabs(receiverToSheet.z);
+		Check( lights && lights->GetVolumeEmissionMediumCount()==1 &&
+			lights->GetEquiangularPivotEntryCount()==1 &&
+			referenceLights &&
+			referenceLights->GetVolumeEmissionMediumCount()==0 &&
+			sheetMax.z-sheetMin.z<0.025 &&
+			sheetNormalCosine<0.05,
+			"receiver views a twenty-millimetre emitter sheet at a grazing angle" );
+
+		if( job && neeCaster && marchOnlyCaster && thinFire ) {
+			struct SampleMoments
+			{
+				Scalar mean;
+				Scalar variance;
+				unsigned int positive;
+			};
+			const Scalar nm = 500.0;
+			const unsigned int samples = 2000000;
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+			StabilityConfig config;
+			config.maxDiffuseBounce = 1;
+			PathTracingIntegrator* integrator =
+				new PathTracingIntegrator(
+					ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+
+			auto momentsPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				unsigned int positive = 0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					const Scalar value = integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,
+						sampler,nullptr,nullptr);
+					sum += value;
+					sumSquares +=
+						static_cast<long double>(value)*value;
+					if( value>0.0 ) ++positive;
+				}
+				const long double count =
+					static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(
+						variance>0.0 ? variance : 0.0),
+					positive
+				};
+			};
+			auto momentsShader = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
+				unsigned int positive = 0;
+				for( unsigned int i=0; i<samples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+					sumSquares +=
+						static_cast<long double>(value)*value;
+					if( value>0.0 ) ++positive;
+				}
+				const long double count =
+					static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(
+						variance>0.0 ? variance : 0.0),
+					positive
+				};
+			};
+			auto withinSixStandardErrors = [&]( const SampleMoments& a,
+				const SampleMoments& b ) {
+				const Scalar standardError = std::sqrt(
+					(a.variance+b.variance)/
+					static_cast<Scalar>(samples));
+				return standardError>0.0 &&
+					std::fabs(a.mean-b.mean)<=
+						6.0*standardError;
+			};
+
+			const SampleMoments ptOn =
+				momentsPT(*neeCaster,0x7a1a510u);
+			const SampleMoments ptOff =
+				momentsPT(*marchOnlyCaster,0x7a1a511u);
+			const SampleMoments shaderOn =
+				momentsShader(*neeCaster,0x7a1a512u);
+			const SampleMoments shaderOff =
+				momentsShader(*marchOnlyCaster,0x7a1a513u);
+			std::cout << "  thin grazing PT on/off=" <<
+				ptOn.mean << "/" << ptOff.mean <<
+				" shader on/off=" << shaderOn.mean << "/" <<
+				shaderOff.mean << " positive NEE=" <<
+				ptOn.positive << "/" << shaderOn.positive <<
+				" march=" << ptOff.positive << "/" <<
+				shaderOff.positive <<
+				std::endl;
+			Check( ptOn.mean>0.0 && ptOff.mean>0.0 &&
+				shaderOn.mean>0.0 && shaderOff.mean>0.0 &&
+				ptOn.positive>100000 && shaderOn.positive>100000 &&
+				ptOff.positive>3000 && shaderOff.positive>3000,
+				"ordinary NEE is active and brute-force routes retain nontrivial grazing support" );
+			Check( withinSixStandardErrors(ptOn,ptOff) &&
+				withinSixStandardErrors(shaderOn,shaderOff),
+				"thin grazing fire-sheet NEE and brute-force march agree within MC noise" );
+			Check( withinSixStandardErrors(ptOn,shaderOn),
+				"both PT entry routes agree on thin-sheet volume NEE" );
+
+			StabilityConfig cappedConfig;
+			cappedConfig.maxDiffuseBounce = 0;
+			PathTracingIntegrator* cappedIntegrator =
+				new PathTracingIntegrator(
+					ManifoldSolverConfig(),cappedConfig);
+			cappedIntegrator->SetMaxPathDepth(2);
+			const unsigned int activationSamples = 4096;
+			auto cappedMeanPT = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<activationSamples; ++i ) {
+					sum += cappedIntegrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),route,
+						sampler,nullptr,nullptr);
+				}
+				return sum/static_cast<Scalar>(activationSamples);
+			};
+			auto cappedMeanShader = [&]( const IRayCaster& route,
+				const unsigned int seed ) {
+				RandomNumberGenerator rng(seed);
+				RuntimeContext rc(
+					rng,RuntimeContext::PASS_NORMAL,false);
+				IRayCaster::RAY_STATE state;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<activationSamples; ++i ) {
+					Scalar value = 0.0;
+					route.CastRayNM(
+						rc,rast,ray,value,state,nm,nullptr,nullptr);
+					sum += value;
+				}
+				return sum/static_cast<Scalar>(activationSamples);
+			};
+			const Scalar cappedPTOn =
+				cappedMeanPT(*neeCaster,0x7a1a514u);
+			const Scalar cappedPTOff =
+				cappedMeanPT(*marchOnlyCaster,0x7a1a515u);
+			PathTracingShaderOp* cappedShaderOp =
+				new PathTracingShaderOp(
+					ManifoldSolverConfig(),cappedConfig);
+			cappedShaderOp->SetMaxPathDepth(2);
+			std::vector<IShaderOp*> cappedShaderOps;
+			cappedShaderOps.push_back(cappedShaderOp);
+			StandardShader* cappedShader =
+				new StandardShader(cappedShaderOps);
+			IRayCaster* cappedShaderNEECaster = nullptr;
+			IRayCaster* cappedShaderMarchCaster = nullptr;
+			const IMedium* cappedPreparedFire =
+				job->GetScene()->GetGlobalMedium();
+			if( cappedPreparedFire ) cappedPreparedFire->addref();
+			IsotropicPhaseFunction* cappedVacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* cappedVacuum =
+				new UnsupportedHomogeneousSmoke(
+					*cappedVacuumPhase,0.0,0.0);
+			job->GetScene()->SetGlobalMedium(cappedVacuum);
+			Check( RISE_API_CreateRayCaster(
+					&cappedShaderMarchCaster,false,8,
+					*cappedShader,true) &&
+				cappedShaderMarchCaster,
+				"capped thin-sheet shader march reference initializes" );
+			if( cappedShaderMarchCaster ) {
+				cappedShaderMarchCaster->AttachScene(
+					job->GetScene());
+			}
+			job->GetScene()->SetGlobalMedium(cappedPreparedFire);
+			safe_release(cappedVacuum);
+			safe_release(cappedVacuumPhase);
+			Check( RISE_API_CreateRayCaster(
+					&cappedShaderNEECaster,false,8,
+					*cappedShader,true) &&
+				cappedShaderNEECaster,
+				"capped thin-sheet shader NEE route initializes" );
+			if( cappedShaderNEECaster ) {
+				cappedShaderNEECaster->AttachScene(
+					job->GetScene());
+			}
+			safe_release(cappedPreparedFire);
+			const Scalar cappedShaderOn =
+				cappedShaderNEECaster ?
+					cappedMeanShader(
+						*cappedShaderNEECaster,0x7a1a516u) : 0.0;
+			const Scalar cappedShaderOff =
+				cappedShaderMarchCaster ?
+					cappedMeanShader(
+						*cappedShaderMarchCaster,0x7a1a517u) : 1.0;
+			std::cout << "  thin capped PT on/off=" <<
+				cappedPTOn << "/" << cappedPTOff <<
+				" shader on/off=" << cappedShaderOn << "/" <<
+				cappedShaderOff << std::endl;
+			Check( cappedPTOn>0.0 && cappedShaderOn>0.0 &&
+				cappedPTOff==0.0 && cappedShaderOff==0.0,
+				"thin-sheet endpoint remains active when the diffuse march family is capped" );
+			safe_release(cappedShaderNEECaster);
+			safe_release(cappedShaderMarchCaster);
+			safe_release(cappedShader);
+			safe_release(cappedShaderOp);
+			safe_release(cappedIntegrator);
+			safe_release(integrator);
+		}
+
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
+		safe_release(thinFire);
+		safe_release(temperaturePainter);
+		safe_release(carbonPainter);
+		safe_release(job);
+		std::filesystem::remove(scenePath);
+	}
+
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
@@ -3891,6 +4205,7 @@ int main()
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
+	TestThinEmitterSheetAtGrazingAngles();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestHollowCavityFullSphereVolumeNEEEquality();
