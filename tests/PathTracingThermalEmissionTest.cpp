@@ -10,6 +10,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -112,7 +113,8 @@ namespace
 		const Scalar sceneUnitMeters,
 		const Scalar slabLength,
 		const bool positionalLight,
-		const Scalar sootAlbedoHot = 0.0 )
+		const Scalar sootAlbedoHot = 0.0,
+		const Scalar positionalLightPower = 1.0 )
 	{
 		const Scalar scale = 1.0 / sceneUnitMeters;
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
@@ -145,7 +147,8 @@ namespace
 			"standard_object\n{\nname black_wall\ngeometry wall_geometry\nmaterial none\nposition 0 0 " <<
 			(slabLength + 0.1 * scale) << "\n}\n";
 		if( positionalLight ) {
-			ss << "omni_light\n{\nname sampling_pivot\npower 1\ncolor 1 1 1\nposition "
+			ss << "omni_light\n{\nname sampling_pivot\npower " <<
+				positionalLightPower << "\ncolor 1 1 1\nposition "
 				<< 0.75 * scale << " 0 " << 0.5 * slabLength << "\n}\n";
 		}
 		return ss.str();
@@ -174,7 +177,8 @@ namespace
 			const Scalar sceneUnitMeters,
 			const Scalar length,
 			const bool positionalLight = false,
-			const Scalar sootAlbedoHot = 0.0 )
+			const Scalar sootAlbedoHot = 0.0,
+			const Scalar positionalLightPower = 1.0 )
 		{
 			slabLength = length;
 			char filename[176];
@@ -185,7 +189,8 @@ namespace
 				std::ofstream output( scenePath );
 				if( !output.is_open() ) return false;
 				output << SceneText(
-					sceneUnitMeters, length, positionalLight, sootAlbedoHot );
+					sceneUnitMeters, length, positionalLight, sootAlbedoHot,
+					positionalLightPower );
 			}
 
 			if( !RISE_CreateJobPriv( &job ) || !job ||
@@ -997,6 +1002,310 @@ namespace
 		~UnboundedDistanceProbeMedium() override = default;
 	};
 
+	class ImmersedDistanceMixtureFireMedium :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		mutable unsigned int deltaTrackingCalls;
+
+		ImmersedDistanceMixtureFireMedium() : deltaTrackingCalls(0) {}
+
+		static Scalar SigmaT() { return 0.8; }
+		static Scalar SigmaS() { return 0.4; }
+		static Scalar ThermalEmission() { return 2.0; }
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients result;
+			result.sigma_t = RISEPel(SigmaT(),SigmaT(),SigmaT());
+			result.sigma_s = RISEPel(SigmaS(),SigmaS(),SigmaS());
+			result.emission = RISEPel(0,0,0);
+			return result;
+		}
+
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM result;
+			result.sigma_t = SigmaT();
+			result.sigma_s = SigmaS();
+			result.emission = 0.0;
+			return result;
+		}
+
+		const IPhaseFunction* GetPhaseFunction() const override { return nullptr; }
+
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3&, const Scalar ) const override
+		{
+			return new IsotropicPhaseFunction();
+		}
+
+		Scalar SampleDistance(
+			const Ray& ray, const Scalar maxDist,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return SampleDistanceNM(ray,maxDist,500.0,sampler,scattered);
+		}
+
+		Scalar SampleDistanceNM(
+			const Ray&, const Scalar maxDist, const Scalar,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			const Scalar t = -std::log1p(-sampler.Get1D())/SigmaT();
+			scattered = t < maxDist;
+			return scattered ? t : maxDist;
+		}
+
+		DistanceSample SampleDistanceWithPdfNM(
+			const Ray& ray, const Scalar maxDist, const Scalar nm,
+			ISampler& sampler ) const override
+		{
+			++deltaTrackingCalls;
+			DistanceSample result;
+			result.t = SampleDistanceNM(ray,maxDist,nm,sampler,result.scattered);
+			result.pdf = result.scattered ?
+				SigmaT()*std::exp(-SigmaT()*result.t) :
+				std::exp(-SigmaT()*maxDist);
+			return result;
+		}
+
+		Scalar EvalDistancePdfNM(
+			const Ray&, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			return scattered ?
+				SigmaT()*std::exp(-SigmaT()*t) :
+				std::exp(-SigmaT()*maxDist);
+		}
+
+		Scalar EvalLogDistancePdfNM(
+			const Ray&, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			return scattered ?
+				std::log(SigmaT())-SigmaT()*t :
+				-SigmaT()*maxDist;
+		}
+
+		RISEPel EvalTransmittance( const Ray&, const Scalar dist ) const override
+		{
+			const Scalar tr = std::exp(-SigmaT()*dist);
+			return RISEPel(tr,tr,tr);
+		}
+
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar dist, const Scalar ) const override
+		{
+			return std::exp(-SigmaT()*dist);
+		}
+
+		bool IsHomogeneous() const override { return true; }
+
+		bool GetBoundingBox( Point3& bbMin, Point3& bbMax ) const override
+		{
+			bbMin = Point3(-0.5,-0.5,-1.0);
+			bbMax = Point3(0.5,0.5,2.0);
+			return true;
+		}
+
+		bool IsFireMedium() const override { return true; }
+
+		Scalar GetThermalEmissionNM(
+			const Point3&, const Scalar ) const override
+		{
+			return ThermalEmission();
+		}
+
+	protected:
+		~ImmersedDistanceMixtureFireMedium() override = default;
+	};
+
+	class BackwardPhaseFunction :
+		public virtual IPhaseFunction,
+		public virtual Reference
+	{
+	private:
+		static Vector3 Direction()
+		{
+			return Vector3(0.1,0.0,-std::sqrt(Scalar(0.99)));
+		}
+
+		static bool IsBackwardDirection( const Vector3& direction )
+		{
+			return Vector3Ops::Dot(direction,Direction()) >
+				1.0-1e-12;
+		}
+
+	public:
+		Scalar Evaluate( const Vector3&, const Vector3& wo ) const override
+		{
+			return IsBackwardDirection(wo) ? 1.0 : 0.0;
+		}
+
+		Vector3 Sample( const Vector3&, ISampler& ) const override
+		{
+			return Direction();
+		}
+
+		Scalar Pdf( const Vector3&, const Vector3& wo ) const override
+		{
+			return IsBackwardDirection(wo) ? 1.0 : 0.0;
+		}
+
+	protected:
+		~BackwardPhaseFunction() override = default;
+	};
+
+	class ContinuationDistanceMixtureFireMedium :
+		public ImmersedDistanceMixtureFireMedium
+	{
+	private:
+		static bool Inside( const Point3& pt )
+		{
+			return pt.x >= -0.5 && pt.x <= 0.5 &&
+				pt.y >= -0.5 && pt.y <= 0.5 &&
+				pt.z >= -1.0 && pt.z <= 2.0;
+		}
+
+		static Scalar SegmentLength( const Ray& ray, const Scalar maxDist )
+		{
+			Point3 bbMin(-0.5,-0.5,-1.0);
+			Point3 bbMax(0.5,0.5,2.0);
+			Scalar tNear = 0.0;
+			Scalar tFar = maxDist;
+			for( unsigned int axis=0; axis<3; ++axis ) {
+				const Scalar direction = ray.Dir()[axis];
+				if( std::fabs(direction) <= 1e-20 ) {
+					if( ray.origin[axis] < bbMin[axis] ||
+						ray.origin[axis] > bbMax[axis] ) return 0.0;
+					continue;
+				}
+				Scalar t0 = (bbMin[axis]-ray.origin[axis])/direction;
+				Scalar t1 = (bbMax[axis]-ray.origin[axis])/direction;
+				if( t0>t1 ) std::swap(t0,t1);
+				tNear = std::fmax(tNear,t0);
+				tFar = std::fmin(tFar,t1);
+				if( tNear>=tFar ) return 0.0;
+			}
+			return std::fmax(Scalar(0.0),tFar-tNear);
+		}
+
+	public:
+		mutable unsigned int primaryDeltaTrackingCalls;
+
+		ContinuationDistanceMixtureFireMedium() :
+			primaryDeltaTrackingCalls(0)
+		{}
+
+		MediumCoefficients GetCoefficients( const Point3& pt ) const override
+		{
+			if( Inside(pt) ) {
+				return ImmersedDistanceMixtureFireMedium::GetCoefficients(pt);
+			}
+			return MediumCoefficients();
+		}
+
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3& pt, const Scalar nm ) const override
+		{
+			if( Inside(pt) ) {
+				return ImmersedDistanceMixtureFireMedium::GetCoefficientsNM(pt,nm);
+			}
+			return MediumCoefficientsNM();
+		}
+
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3&, const Scalar ) const override
+		{
+			return new BackwardPhaseFunction();
+		}
+
+		Scalar SampleDistance(
+			const Ray& ray, const Scalar maxDist,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return SampleDistanceNM(ray,maxDist,500.0,sampler,scattered);
+		}
+
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			const Scalar mediumLength = SegmentLength(ray,maxDist);
+			if( mediumLength<=0.0 ) {
+				scattered = false;
+				return maxDist;
+			}
+			const Scalar t = -std::log1p(-sampler.Get1D())/SigmaT();
+			scattered = t<mediumLength;
+			return scattered ? t : maxDist;
+		}
+
+		DistanceSample SampleDistanceWithPdfNM(
+			const Ray& ray, const Scalar maxDist, const Scalar nm,
+			ISampler& sampler ) const override
+		{
+			++deltaTrackingCalls;
+			if( std::fabs(ray.origin.x)<1e-14 &&
+				std::fabs(ray.origin.y)<1e-14 &&
+				std::fabs(ray.origin.z)<1e-14 &&
+				ray.Dir().z>1.0-1e-14 ) {
+				++primaryDeltaTrackingCalls;
+			}
+			DistanceSample result;
+			result.t = SampleDistanceNM(
+				ray,maxDist,nm,sampler,result.scattered);
+			result.pdf = EvalDistancePdfNM(
+				ray,result.t,result.scattered,maxDist,nm);
+			return result;
+		}
+
+		Scalar EvalDistancePdfNM(
+			const Ray& ray, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			const Scalar distance = scattered ? t : SegmentLength(ray,maxDist);
+			return scattered ?
+				SigmaT()*std::exp(-SigmaT()*distance) :
+				std::exp(-SigmaT()*distance);
+		}
+
+		Scalar EvalLogDistancePdfNM(
+			const Ray& ray, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar ) const override
+		{
+			const Scalar distance = scattered ? t : SegmentLength(ray,maxDist);
+			return scattered ?
+				std::log(SigmaT())-SigmaT()*distance :
+				-SigmaT()*distance;
+		}
+
+		RISEPel EvalTransmittance(
+			const Ray& ray, const Scalar maxDist ) const override
+		{
+			const Scalar tr =
+				std::exp(-SigmaT()*SegmentLength(ray,maxDist));
+			return RISEPel(tr,tr,tr);
+		}
+
+		Scalar EvalTransmittanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar ) const override
+		{
+			return std::exp(-SigmaT()*SegmentLength(ray,maxDist));
+		}
+
+		Scalar GetThermalEmissionNM(
+			const Point3&, const Scalar ) const override
+		{
+			return 0.0;
+		}
+
+	protected:
+		~ContinuationDistanceMixtureFireMedium() override = default;
+	};
+
 	void TestNMAbsoluteParityAndSceneUnits()
 	{
 		std::cout << "TestNMAbsoluteParityAndSceneUnits" << std::endl;
@@ -1321,6 +1630,732 @@ namespace
 			"RayCaster flame-only segment enters the combined equiangular mixture" );
 
 		safe_release( probe );
+	}
+
+	void TestImmersedReceiverDeltaTrackingCarriesDistanceMixture()
+	{
+		std::cout << "TestImmersedReceiverDeltaTrackingCarriesDistanceMixture" << std::endl;
+		Fixture fixture;
+		Check( fixture.Initialize("immersed_distance_mixture",1.0,1.0,false,0.1),
+			"immersed-receiver fixture prepares a thermal pivot distribution" );
+		if( !fixture.job || !fixture.caster || !fixture.integrator ) return;
+
+		IRayCaster* neeCaster = nullptr;
+		IRayCaster* marchOnlyCaster = nullptr;
+		IShader* globalShader = fixture.job->GetShaders()->GetItem("global");
+		const IMedium* preparedFire =
+			fixture.job->GetScene()->GetGlobalMedium();
+		if( preparedFire ) preparedFire->addref();
+		IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
+		UnsupportedHomogeneousSmoke* preparationVacuum =
+			new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+		fixture.job->GetScene()->SetGlobalMedium(preparationVacuum);
+		Check( globalShader && RISE_API_CreateRayCaster(
+			&marchOnlyCaster,false,8,*globalShader,true) && marchOnlyCaster,
+			"immersed-receiver march reference prepares without a thermal CDF" );
+		if( marchOnlyCaster ) {
+			marchOnlyCaster->AttachScene(fixture.job->GetScene());
+		}
+		fixture.job->GetScene()->SetGlobalMedium(preparedFire);
+		safe_release(preparationVacuum);
+		safe_release(vacuumPhase);
+		Check( globalShader && RISE_API_CreateRayCaster(
+			&neeCaster,false,8,*globalShader,true) && neeCaster,
+			"immersed-receiver NEE route prepares the active fire CDF" );
+		if( neeCaster ) neeCaster->AttachScene(fixture.job->GetScene());
+		safe_release(preparedFire);
+		if( !neeCaster || !marchOnlyCaster ) {
+			safe_release(neeCaster);
+			safe_release(marchOnlyCaster);
+			return;
+		}
+
+		const LightSampler* lights = neeCaster->GetLightSampler();
+		const LightSampler* referenceLights = marchOnlyCaster->GetLightSampler();
+		Check( lights && lights->GetVolumeEmissionMediumCount()==1 &&
+			lights->GetEquiangularPivotEntryCount()==1,
+			"immersed-receiver fixture has one thermal endpoint and pivot label" );
+		Check( referenceLights &&
+			referenceLights->GetVolumeEmissionMediumCount()==0 &&
+			referenceLights->GetEquiangularPivotEntryCount()==0,
+			"immersed-receiver march reference has no endpoint or pivot labels" );
+
+		const Scalar nm = 500.0;
+		const Point3 receiver(0,0,0);
+		const IMedium* activeFire =
+			fixture.job->GetScene()->GetGlobalMedium();
+		const MediumCoefficientsNM activeReceiverCoefficients = activeFire ?
+			activeFire->GetCoefficientsNM(receiver,nm) : MediumCoefficientsNM();
+		Check( activeFire && activeFire->IsFireMedium() &&
+			activeReceiverCoefficients.sigma_t>0.0 &&
+			activeReceiverCoefficients.sigma_s>0.0 &&
+			activeFire->GetThermalEmissionNM(receiver,nm)>0.0,
+			"real immersed receiver is scattering, extinguishing, and emissive" );
+
+		const unsigned int equalitySamples = 160000;
+		const RasterizerState rast = {0,0};
+		const Ray ray(receiver,Vector3(0,0,1));
+		struct SampleMoments
+		{
+			Scalar mean;
+			Scalar variance;
+		};
+		auto momentsPT = [&]( PathTracingIntegrator& integrator,
+			const IRayCaster& route, const unsigned int seed,
+			const unsigned int samples ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				const Scalar value = integrator.IntegrateRayNM(
+					rc,rast,ray,nm,*fixture.job->GetScene(),route,
+					sampler,nullptr,nullptr);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+			}
+			const long double count = static_cast<long double>(samples);
+			const long double mean = sum/count;
+			const long double variance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return SampleMoments{
+				static_cast<Scalar>(mean),
+				static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+			};
+		};
+		auto momentsShaderRoute = [&]( const IRayCaster& route,
+			const unsigned int seed, const unsigned int samples,
+			const unsigned int volumeBounces ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			state.volumeBounces = volumeBounces;
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				Scalar value = 0.0;
+				route.CastRayNM(
+					rc,rast,ray,value,state,nm,nullptr,nullptr);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+			}
+			const long double count = static_cast<long double>(samples);
+			const long double mean = sum/count;
+			const long double variance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return SampleMoments{
+				static_cast<Scalar>(mean),
+				static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+			};
+		};
+		auto withinSixStandardErrors = []( const SampleMoments& a,
+			const SampleMoments& b, const unsigned int samples ) {
+			const Scalar standardError = std::sqrt(
+				(a.variance+b.variance)/static_cast<Scalar>(samples));
+			return standardError>0.0 &&
+				std::fabs(a.mean-b.mean)<=6.0*standardError;
+		};
+
+		StabilityConfig ordinaryConfig;
+		ordinaryConfig.maxVolumeBounce = 8;
+		PathTracingIntegrator* ordinaryIntegrator =
+			new PathTracingIntegrator(ManifoldSolverConfig(),ordinaryConfig);
+		ordinaryIntegrator->SetMaxPathDepth(8);
+		const SampleMoments ordinaryPTOn = momentsPT(
+			*ordinaryIntegrator,*neeCaster,0x1aae441u,equalitySamples);
+		const SampleMoments ordinaryPTOff = momentsPT(
+			*ordinaryIntegrator,*marchOnlyCaster,0x1aae442u,equalitySamples);
+		const SampleMoments ordinaryShaderOn = momentsShaderRoute(
+			*neeCaster,0x1aae443u,equalitySamples,0);
+		const SampleMoments ordinaryShaderOff = momentsShaderRoute(
+			*marchOnlyCaster,0x1aae444u,equalitySamples,0);
+		std::cout << "  immersed NEE/march PT=" << ordinaryPTOn.mean << "/" <<
+			ordinaryPTOff.mean << " shader=" << ordinaryShaderOn.mean << "/" <<
+			ordinaryShaderOff.mean << " variances PT=" << ordinaryPTOn.variance <<
+			"/" << ordinaryPTOff.variance << " shader=" <<
+			ordinaryShaderOn.variance << "/" << ordinaryShaderOff.variance <<
+			std::endl;
+		Check( ordinaryPTOn.mean>0.0 && ordinaryPTOff.mean>0.0 &&
+			ordinaryShaderOn.mean>0.0 && ordinaryShaderOff.mean>0.0 &&
+			withinSixStandardErrors(
+				ordinaryPTOn,ordinaryPTOff,equalitySamples) &&
+			withinSixStandardErrors(
+				ordinaryShaderOn,ordinaryShaderOff,equalitySamples) &&
+			withinSixStandardErrors(
+				ordinaryPTOn,ordinaryShaderOn,equalitySamples),
+			"real immersed-fire NEE and march agree within MC noise in both PT entries" );
+
+		StabilityConfig cappedConfig;
+		cappedConfig.maxVolumeBounce = 0;
+		PathTracingIntegrator* cappedIntegrator =
+			new PathTracingIntegrator(ManifoldSolverConfig(),cappedConfig);
+		cappedIntegrator->SetMaxPathDepth(2);
+		const unsigned int activationSamples = 80000;
+		const SampleMoments cappedPTOn = momentsPT(
+			*cappedIntegrator,*neeCaster,0x1aae445u,activationSamples);
+		const SampleMoments cappedPTOff = momentsPT(
+			*cappedIntegrator,*marchOnlyCaster,0x1aae446u,activationSamples);
+		const SampleMoments cappedShaderOn = momentsShaderRoute(
+			*neeCaster,0x1aae447u,activationSamples,64);
+		const SampleMoments cappedShaderOff = momentsShaderRoute(
+			*marchOnlyCaster,0x1aae448u,activationSamples,64);
+		std::cout << "  immersed capped NEE/march PT=" << cappedPTOn.mean <<
+			"/" << cappedPTOff.mean << " shader=" << cappedShaderOn.mean <<
+			"/" << cappedShaderOff.mean << std::endl;
+		auto neeSignalExceedsSixStandardErrors = [](
+			const SampleMoments& on, const SampleMoments& off,
+			const unsigned int samples ) {
+			const Scalar standardError = std::sqrt(
+				(on.variance+off.variance)/static_cast<Scalar>(samples));
+			return standardError>0.0 &&
+				on.mean-off.mean>6.0*standardError;
+		};
+		Check( neeSignalExceedsSixStandardErrors(
+				cappedPTOn,cappedPTOff,activationSamples) &&
+			neeSignalExceedsSixStandardErrors(
+				cappedShaderOn,cappedShaderOff,activationSamples),
+			"capped real-fire receiver proves immersed volume NEE is active in both PT entries" );
+		safe_release(cappedIntegrator);
+		safe_release(ordinaryIntegrator);
+
+		ImmersedDistanceMixtureFireMedium* probe =
+			new ImmersedDistanceMixtureFireMedium();
+		fixture.job->GetScene()->SetGlobalMedium(probe);
+		const MediumCoefficientsNM receiverCoefficients =
+			probe->GetCoefficientsNM(receiver,nm);
+		Check( receiverCoefficients.sigma_t>0.0 &&
+			receiverCoefficients.sigma_s>0.0,
+			"immersed receiver resolves inside nonzero-extinction scattering fire" );
+
+		bool octants[8] = {false,false,false,false,false,false,false,false};
+		if( lights ) {
+			RandomNumberGenerator pivotRng(0x1aae451u);
+			IndependentSampler pivotSampler(pivotRng);
+			for( unsigned int i=0; i<4096; ++i ) {
+				VolumeEmissionPivotState pivots;
+				if( !lights->SampleVolumeEmissionPivots(pivotSampler,pivots) ||
+					pivots.mediumPivots.size()!=1 ) continue;
+				const Point3& pivot = pivots.mediumPivots[0];
+				const unsigned int octant =
+					(pivot.x>=receiver.x ? 1u : 0u) |
+					(pivot.y>=receiver.y ? 2u : 0u) |
+					(pivot.z>=receiver.z ? 4u : 0u);
+				octants[octant] = true;
+			}
+		}
+		bool pivotsSurroundReceiver = true;
+		for( unsigned int i=0; i<8; ++i ) pivotsSurroundReceiver &= octants[i];
+		Check( pivotsSurroundReceiver,
+			"thermal pivots surround the immersed receiver in every octant" );
+
+		struct StrategyBoundarySeed
+		{
+			unsigned int seed;
+			Scalar xi;
+			StrategyBoundarySeed() : seed(0), xi(0.0) {}
+		};
+		StrategyBoundarySeed belowBoundary;
+		StrategyBoundarySeed aboveBoundary;
+		if( lights ) {
+			for( unsigned int candidate=1;
+				candidate<500000 &&
+					(!belowBoundary.seed || !aboveBoundary.seed);
+				++candidate ) {
+				RandomNumberGenerator auditRng(candidate);
+				IndependentSampler auditSampler(auditRng);
+				VolumeEmissionPivotState auditPivots;
+				Point3 auditPivot;
+				Scalar auditPivotPdf = 0.0;
+				if( !lights->ResolveVolumeEmissionPivots(
+						auditSampler,nullptr,auditPivots) ||
+					!lights->SampleEquiangularPivot(
+						auditPivots,auditSampler.Get1D(),
+						auditPivot,auditPivotPdf) ) continue;
+				const Scalar xiStrategy = auditSampler.Get1D();
+				if( !belowBoundary.seed &&
+					xiStrategy>=0.499 && xiStrategy<0.5 ) {
+					belowBoundary.seed = candidate;
+					belowBoundary.xi = xiStrategy;
+				}
+				if( !aboveBoundary.seed &&
+					xiStrategy>=0.5 && xiStrategy<0.501 ) {
+					aboveBoundary.seed = candidate;
+					aboveBoundary.xi = xiStrategy;
+				}
+			}
+		}
+		Check( belowBoundary.seed && aboveBoundary.seed &&
+			belowBoundary.xi<0.5 && aboveBoundary.xi>=0.5,
+			"deterministic strategy seeds straddle the pinned 50/50 boundary" );
+		auto ptUsesDeltaTracking = [&]( const unsigned int seed ) {
+			const unsigned int callsBefore = probe->deltaTrackingCalls;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			fixture.integrator->IntegrateRayNM(
+				rc,rast,ray,nm,*fixture.job->GetScene(),*neeCaster,
+				sampler,nullptr,nullptr);
+			return probe->deltaTrackingCalls==callsBefore+1;
+		};
+		auto shaderUsesDeltaTracking = [&]( const unsigned int seed ) {
+			const unsigned int callsBefore = probe->deltaTrackingCalls;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			state.volumeBounces = 64;
+			Scalar value = 0.0;
+			neeCaster->CastRayNM(
+				rc,rast,ray,value,state,nm,nullptr,nullptr);
+			return probe->deltaTrackingCalls==callsBefore+1;
+		};
+		if( belowBoundary.seed && aboveBoundary.seed ) {
+			Check( ptUsesDeltaTracking(belowBoundary.seed) &&
+				!ptUsesDeltaTracking(aboveBoundary.seed) &&
+				shaderUsesDeltaTracking(belowBoundary.seed) &&
+				!shaderUsesDeltaTracking(aboveBoundary.seed),
+				"both PT entries switch techniques exactly at xi = 0.5" );
+		}
+
+		const unsigned int samples = 80000;
+		const Scalar segmentLength = 1.0;
+		const Scalar expected =
+			ImmersedDistanceMixtureFireMedium::ThermalEmission() /
+			ImmersedDistanceMixtureFireMedium::SigmaT() *
+			(-std::expm1(
+				-ImmersedDistanceMixtureFireMedium::SigmaT()*segmentLength));
+		struct BranchMoments
+		{
+			long double sum;
+			long double sumSquares;
+			long double deltaTrackingSum;
+			unsigned int deltaTrackingSelections;
+			unsigned int deltaTrackingPositiveSamples;
+			BranchMoments() :
+				sum(0.0), sumSquares(0.0), deltaTrackingSum(0.0),
+				deltaTrackingSelections(0), deltaTrackingPositiveSamples(0)
+			{}
+		};
+		auto measurePT = [&]( const unsigned int seed ) {
+			BranchMoments result;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			for( unsigned int i=0; i<samples; ++i ) {
+				const unsigned int callsBefore = probe->deltaTrackingCalls;
+				const Scalar value = fixture.integrator->IntegrateRayNM(
+					rc,rast,ray,nm,*fixture.job->GetScene(),*neeCaster,
+					sampler,nullptr,nullptr);
+				const bool usedDeltaTracking =
+					probe->deltaTrackingCalls==callsBefore+1;
+				result.sum += value;
+				result.sumSquares += static_cast<long double>(value)*value;
+				if( usedDeltaTracking ) {
+					++result.deltaTrackingSelections;
+					result.deltaTrackingSum += value;
+					if( value>0.0 ) ++result.deltaTrackingPositiveSamples;
+				}
+			}
+			return result;
+		};
+		auto measureShaderRoute = [&]( const unsigned int seed ) {
+			BranchMoments result;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			state.volumeBounces = 64;
+			for( unsigned int i=0; i<samples; ++i ) {
+				const unsigned int callsBefore = probe->deltaTrackingCalls;
+				Scalar value = 0.0;
+				neeCaster->CastRayNM(
+					rc,rast,ray,value,state,nm,nullptr,nullptr);
+				const bool usedDeltaTracking =
+					probe->deltaTrackingCalls==callsBefore+1;
+				result.sum += value;
+				result.sumSquares += static_cast<long double>(value)*value;
+				if( usedDeltaTracking ) {
+					++result.deltaTrackingSelections;
+					result.deltaTrackingSum += value;
+					if( value>0.0 ) ++result.deltaTrackingPositiveSamples;
+				}
+			}
+			return result;
+		};
+		auto mean = [&]( const BranchMoments& result ) {
+			return static_cast<Scalar>(
+				result.sum/static_cast<long double>(samples));
+		};
+		auto variance = [&]( const BranchMoments& result ) {
+			const long double count = static_cast<long double>(samples);
+			const long double value =
+				(result.sumSquares-result.sum*result.sum/count)/(count-1.0);
+			return static_cast<Scalar>(value>0.0 ? value : 0.0);
+		};
+		auto deltaTrackingFraction = [&]( const BranchMoments& result ) {
+			return result.sum>0.0 ?
+				static_cast<Scalar>(result.deltaTrackingSum/result.sum) : 0.0;
+		};
+		auto selectionFrequency = [&]( const BranchMoments& result ) {
+			return static_cast<Scalar>(result.deltaTrackingSelections)/
+				static_cast<Scalar>(samples);
+		};
+
+		const BranchMoments pt = measurePT(0x1aae452u);
+		const BranchMoments shader = measureShaderRoute(0x1aae453u);
+		const Scalar ptMean = mean(pt);
+		const Scalar shaderMean = mean(shader);
+		const Scalar ptVariance = variance(pt);
+		const Scalar shaderVariance = variance(shader);
+		const Scalar ptDTFraction = deltaTrackingFraction(pt);
+		const Scalar shaderDTFraction = deltaTrackingFraction(shader);
+		const Scalar selectionTolerance =
+			6.0*0.5/std::sqrt(static_cast<Scalar>(samples));
+		const Scalar combinedStandardError = std::sqrt(
+			(ptVariance+shaderVariance)/static_cast<Scalar>(samples));
+		std::cout << "  immersed expected=" << expected <<
+			" PT/shader=" << ptMean << "/" << shaderMean <<
+			" DT selection=" << selectionFrequency(pt) << "/" <<
+			selectionFrequency(shader) << " DT contribution=" <<
+			ptDTFraction << "/" << shaderDTFraction << std::endl;
+
+		Check( std::fabs(selectionFrequency(pt)-0.5)<=selectionTolerance &&
+			std::fabs(selectionFrequency(shader)-0.5)<=selectionTolerance,
+			"immersed-receiver distance sampler selects DT at its pinned 50 percent mass" );
+		Check( pt.deltaTrackingPositiveSamples>0 &&
+			shader.deltaTrackingPositiveSamples>0 &&
+			ptDTFraction>0.10 && shaderDTFraction>0.10,
+			"delta-tracking half carries nonzero immersed-fire radiance in both PT entries" );
+		Check( std::fabs(ptMean-expected)<=
+				6.0*std::sqrt(ptVariance/static_cast<Scalar>(samples)) &&
+			std::fabs(shaderMean-expected)<=
+				6.0*std::sqrt(shaderVariance/static_cast<Scalar>(samples)),
+			"immersed 50/50 distance mixture matches the analytic thermal slab mean" );
+		Check( combinedStandardError>0.0 &&
+			std::fabs(ptMean-shaderMean)<=6.0*combinedStandardError,
+			"PT rasterizer and shader-dispatch entries agree for the immersed mixture" );
+
+		ContinuationDistanceMixtureFireMedium* continuationProbe =
+			new ContinuationDistanceMixtureFireMedium();
+		fixture.job->GetScene()->SetGlobalMedium(continuationProbe);
+		IPainter* environmentPainter = nullptr;
+		IRadianceMap* environment = nullptr;
+		Check( RISE_API_CreateUniformColorPainter(
+				&environmentPainter,RISEPel(1.0,1.0,1.0),
+				eSpectrumKind_Unbounded) && environmentPainter &&
+			RISE_API_CreateRadianceMap(
+				&environment,*environmentPainter,1.0) && environment,
+			"continuation-density probe creates a constant spectral environment" );
+
+		StabilityConfig continuationConfig;
+		continuationConfig.maxVolumeBounce = 1;
+		PathTracingIntegrator* continuationIntegrator =
+			new PathTracingIntegrator(
+				ManifoldSolverConfig(),continuationConfig);
+		continuationIntegrator->SetMaxPathDepth(4);
+		const unsigned int continuationSamples = 240000;
+		auto continuationPTMoments = [&]( const unsigned int seed ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			for( unsigned int i=0; i<continuationSamples; ++i ) {
+				const Scalar value = continuationIntegrator->IntegrateRayNM(
+					rc,rast,ray,nm,*fixture.job->GetScene(),*neeCaster,
+					sampler,environment,nullptr);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+			}
+			const long double count =
+				static_cast<long double>(continuationSamples);
+			const long double sampleMean = sum/count;
+			const long double sampleVariance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return SampleMoments{
+				static_cast<Scalar>(sampleMean),
+				static_cast<Scalar>(
+					sampleVariance>0.0 ? sampleVariance : 0.0)
+			};
+		};
+		auto continuationShaderMoments = [&]( const unsigned int seed ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			state.volumeBounces = 63;
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			for( unsigned int i=0; i<continuationSamples; ++i ) {
+				Scalar value = 0.0;
+				neeCaster->CastRayNM(
+					rc,rast,ray,value,state,nm,nullptr,environment);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+			}
+			const long double count =
+				static_cast<long double>(continuationSamples);
+			const long double sampleMean = sum/count;
+			const long double sampleVariance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return SampleMoments{
+				static_cast<Scalar>(sampleMean),
+				static_cast<Scalar>(
+					sampleVariance>0.0 ? sampleVariance : 0.0)
+			};
+		};
+		if( environment ) {
+			const Scalar backwardZ = std::sqrt(Scalar(0.99));
+			const Vector3 backwardDirection(0.1,0.0,-backwardZ);
+			const Scalar environmentNM = environment->GetRadianceNM(
+				Ray(receiver,backwardDirection),rast,nm);
+			const Scalar attenuationRate =
+				ImmersedDistanceMixtureFireMedium::SigmaT()*
+				(1.0+1.0/backwardZ);
+			const Scalar continuationExpected =
+				environmentNM*
+				ImmersedDistanceMixtureFireMedium::SigmaS()*
+				std::exp(
+					-ImmersedDistanceMixtureFireMedium::SigmaT()/backwardZ)*
+				(-std::expm1(-attenuationRate))/attenuationRate;
+			const SampleMoments continuationPT =
+				continuationPTMoments(0x1aae454u);
+			const SampleMoments continuationShader =
+				continuationShaderMoments(0x1aae455u);
+			const Scalar continuationCombinedSE = std::sqrt(
+				(continuationPT.variance+continuationShader.variance)/
+				static_cast<Scalar>(continuationSamples));
+			std::cout << "  immersed continuation expected=" <<
+				continuationExpected << " PT/shader=" <<
+				continuationPT.mean << "/" << continuationShader.mean <<
+				" variances=" << continuationPT.variance << "/" <<
+				continuationShader.variance << std::endl;
+			Check( continuationPT.mean>0.0 &&
+				std::fabs(continuationPT.mean-continuationExpected)<=
+					6.0*std::sqrt(
+						continuationPT.variance/
+						static_cast<Scalar>(continuationSamples)) &&
+				std::fabs(continuationShader.mean-continuationExpected)<=
+					6.0*std::sqrt(
+						continuationShader.variance/
+						static_cast<Scalar>(continuationSamples)),
+				"continuation-visible mixture matches the analytic scalar-density target" );
+			Check( continuationCombinedSE>0.0 &&
+				std::fabs(continuationPT.mean-continuationShader.mean)<=
+					6.0*continuationCombinedSE,
+				"both PT entries agree on continuation throughput from the mixed distance density" );
+		}
+
+		Fixture balanceFixture;
+		Check( balanceFixture.Initialize(
+				"immersed_balance_density",1.0,1.0,true,0.1,1e-12),
+			"balance-density fixture creates one deterministic point pivot" );
+		IRayCaster* pointPivotCaster = nullptr;
+		ContinuationDistanceMixtureFireMedium* balanceProbe = nullptr;
+		if( balanceFixture.job ) {
+			IShader* balanceShader =
+				balanceFixture.job->GetShaders()->GetItem("global");
+			const IMedium* balanceFire =
+				balanceFixture.job->GetScene()->GetGlobalMedium();
+			if( balanceFire ) balanceFire->addref();
+			IsotropicPhaseFunction* balanceVacuumPhase =
+				new IsotropicPhaseFunction();
+			UnsupportedHomogeneousSmoke* balanceVacuum =
+				new UnsupportedHomogeneousSmoke(
+					*balanceVacuumPhase,0.0,0.0);
+			balanceFixture.job->GetScene()->SetGlobalMedium(balanceVacuum);
+			Check( balanceShader && RISE_API_CreateRayCaster(
+					&pointPivotCaster,false,8,*balanceShader,true) &&
+				pointPivotCaster,
+				"balance-density caster prepares with the point pivot but no thermal pivot" );
+			if( pointPivotCaster ) {
+				pointPivotCaster->AttachScene(
+					balanceFixture.job->GetScene());
+			}
+			balanceFixture.job->GetScene()->SetGlobalMedium(balanceFire);
+			safe_release(balanceVacuum);
+			safe_release(balanceVacuumPhase);
+			safe_release(balanceFire);
+			balanceProbe =
+				new ContinuationDistanceMixtureFireMedium();
+			balanceFixture.job->GetScene()->SetGlobalMedium(balanceProbe);
+		}
+
+		const LightSampler* pointPivotLights =
+			pointPivotCaster ? pointPivotCaster->GetLightSampler() : nullptr;
+		Check( pointPivotLights &&
+			pointPivotLights->GetPositionalLightCount()==1 &&
+			pointPivotLights->GetVolumeEmissionMediumCount()==0 &&
+			pointPivotLights->GetEquiangularPivotEntryCount()==1,
+			"balance-density route has exactly one fixed point-pivot label" );
+
+		struct TechniqueMoments
+		{
+			long double sum;
+			long double sumSquares;
+			TechniqueMoments() : sum(0.0), sumSquares(0.0) {}
+		};
+		struct TechniquePair
+		{
+			TechniqueMoments deltaTracking;
+			TechniqueMoments equiangular;
+			bool classified;
+			TechniquePair() : classified(true) {}
+		};
+		const unsigned int balanceSamples = 320000;
+		auto recordTechniqueValue = [](
+			TechniquePair& result, const Scalar value,
+			const unsigned int calls ) {
+			if( value<=0.0 ) return;
+			TechniqueMoments* technique = nullptr;
+			if( calls==1 ) technique = &result.deltaTracking;
+			if( calls==0 ) technique = &result.equiangular;
+			if( !technique ) {
+				result.classified = false;
+				return;
+			}
+			technique->sum += value;
+			technique->sumSquares +=
+				static_cast<long double>(value)*value;
+		};
+		auto balanceMomentsPT = [&]( const unsigned int seed ) {
+			TechniquePair result;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			for( unsigned int i=0; i<balanceSamples; ++i ) {
+				const unsigned int callsBefore =
+					balanceProbe->primaryDeltaTrackingCalls;
+				const Scalar value = continuationIntegrator->IntegrateRayNM(
+					rc,rast,ray,nm,*balanceFixture.job->GetScene(),
+					*pointPivotCaster,sampler,environment,nullptr);
+				recordTechniqueValue(
+					result,value,
+					balanceProbe->primaryDeltaTrackingCalls-callsBefore);
+			}
+			return result;
+		};
+		auto balanceMomentsShader = [&]( const unsigned int seed ) {
+			TechniquePair result;
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE state;
+			state.volumeBounces = 63;
+			for( unsigned int i=0; i<balanceSamples; ++i ) {
+				const unsigned int callsBefore =
+					balanceProbe->primaryDeltaTrackingCalls;
+				Scalar value = 0.0;
+				pointPivotCaster->CastRayNM(
+					rc,rast,ray,value,state,nm,nullptr,environment);
+				recordTechniqueValue(
+					result,value,
+					balanceProbe->primaryDeltaTrackingCalls-callsBefore);
+			}
+			return result;
+		};
+		auto techniqueMean = [&]( const TechniqueMoments& technique ) {
+			return static_cast<Scalar>(
+				technique.sum/static_cast<long double>(balanceSamples));
+		};
+		auto techniqueVariance = [&]( const TechniqueMoments& technique ) {
+			const long double count =
+				static_cast<long double>(balanceSamples);
+			const long double value =
+				(technique.sumSquares-
+					technique.sum*technique.sum/count)/(count-1.0);
+			return static_cast<Scalar>(value>0.0 ? value : 0.0);
+		};
+		if( pointPivotCaster && balanceProbe && environment ) {
+			const Scalar backwardZ = std::sqrt(Scalar(0.99));
+			const Scalar environmentNM = environment->GetRadianceNM(
+				Ray(receiver,Vector3(0.1,0.0,-backwardZ)),rast,nm);
+			const Point3 pointPivot(0.75,0.0,0.5);
+			const unsigned int integrationIntervals = 400000;
+			const Scalar integrationStep =
+				1.0/static_cast<Scalar>(integrationIntervals);
+			long double expectedDT = 0.0;
+			long double expectedEQ = 0.0;
+			for( unsigned int i=0; i<integrationIntervals; ++i ) {
+				const Scalar t =
+					(static_cast<Scalar>(i)+0.5)*integrationStep;
+				const Scalar pdfDT =
+					ImmersedDistanceMixtureFireMedium::SigmaT()*
+					std::exp(
+						-ImmersedDistanceMixtureFireMedium::SigmaT()*t);
+				const Scalar pdfEQ = EquiangularSampling::Pdf(
+					ray,pointPivot,0.0,1.0,true,t);
+				const Scalar mixturePdf = 0.5*pdfDT+0.5*pdfEQ;
+				const Scalar integrand =
+					environmentNM*
+					ImmersedDistanceMixtureFireMedium::SigmaS()*
+					std::exp(
+						-ImmersedDistanceMixtureFireMedium::SigmaT()*
+						(t+(t+1.0)/backwardZ));
+				expectedDT +=
+					0.5*pdfDT*integrand/mixturePdf*integrationStep;
+				expectedEQ +=
+					0.5*pdfEQ*integrand/mixturePdf*integrationStep;
+			}
+
+			const TechniquePair balancePT =
+				balanceMomentsPT(0x1aae456u);
+			const TechniquePair balanceShader =
+				balanceMomentsShader(0x1aae457u);
+			const Scalar ptDT = techniqueMean(balancePT.deltaTracking);
+			const Scalar ptEQ = techniqueMean(balancePT.equiangular);
+			const Scalar shaderDT =
+				techniqueMean(balanceShader.deltaTracking);
+			const Scalar shaderEQ =
+				techniqueMean(balanceShader.equiangular);
+			const Scalar expectedDTScalar =
+				static_cast<Scalar>(expectedDT);
+			const Scalar expectedEQScalar =
+				static_cast<Scalar>(expectedEQ);
+			auto withinSixTechniqueErrors = [&](
+				const Scalar actual, const Scalar expectedValue,
+				const TechniqueMoments& technique ) {
+				const Scalar standardError = std::sqrt(
+					techniqueVariance(technique)/
+					static_cast<Scalar>(balanceSamples));
+				return standardError>0.0 &&
+					std::fabs(actual-expectedValue)<=
+						6.0*standardError;
+			};
+			std::cout << "  immersed balance DT/EQ expected=" <<
+				expectedDTScalar << "/" << expectedEQScalar <<
+				" PT=" << ptDT << "/" << ptEQ <<
+				" shader=" << shaderDT << "/" << shaderEQ << std::endl;
+			Check( balancePT.classified && balanceShader.classified,
+				"positive continuation samples identify their initial distance technique" );
+			Check( withinSixTechniqueErrors(
+					ptDT,expectedDTScalar,balancePT.deltaTracking) &&
+				withinSixTechniqueErrors(
+					ptEQ,expectedEQScalar,balancePT.equiangular) &&
+				withinSixTechniqueErrors(
+					shaderDT,expectedDTScalar,
+					balanceShader.deltaTracking) &&
+				withinSixTechniqueErrors(
+					shaderEQ,expectedEQScalar,
+					balanceShader.equiangular),
+				"each distance technique carries its balance-mixture conditional target" );
+			Check( std::fabs(expectedDTScalar-expectedEQScalar)>
+				12.0*std::fmax(
+					std::sqrt(
+						techniqueVariance(balancePT.deltaTracking)/
+						static_cast<Scalar>(balanceSamples)),
+					std::sqrt(
+						techniqueVariance(balancePT.equiangular)/
+						static_cast<Scalar>(balanceSamples))),
+				"balance targets distinguish mixture density from selected-component density" );
+		}
+
+		safe_release(balanceProbe);
+		safe_release(pointPivotCaster);
+		safe_release(continuationIntegrator);
+		safe_release(environment);
+		safe_release(environmentPainter);
+		safe_release(continuationProbe);
+		safe_release(probe);
+		safe_release(neeCaster);
+		safe_release(marchOnlyCaster);
 	}
 
 	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
@@ -2855,6 +3890,7 @@ int main()
 	TestEquiangularBoundednessAndCollinearFallback();
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
+	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestHollowCavityFullSphereVolumeNEEEquality();
