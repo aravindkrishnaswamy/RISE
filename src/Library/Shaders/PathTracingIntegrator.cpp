@@ -1733,6 +1733,7 @@ PathTracingIntegrator::PathTracingIntegrator(
   mIndirectOnly( false ),
   mClayOverride( false ),
   mFirePelDiagnosticEmitted( false ),
+  mUnsupportedContinuationDiagnosticEmitted( false ),
   pClayPainter( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
@@ -2525,6 +2526,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS && pLS->GetVolumeEmissionMediumCount() > 0;
 			const bool needsTerminalFireSegment =
 				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
+			if( !materialSupported &&
+				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
+				bool expected = false;
+				if( mUnsupportedContinuationDiagnosticEmitted.compare_exchange_strong(
+					expected,true,std::memory_order_relaxed) ) {
+					GlobalLog()->PrintEasyInfo(
+						"PathTracingIntegrator: unsupported continuation material; "
+						"volume NEE disabled at this vertex and legacy collision march retained" );
+				}
+			}
 			if( materialSupported &&
 				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
 				ContinuationPathState pathState;

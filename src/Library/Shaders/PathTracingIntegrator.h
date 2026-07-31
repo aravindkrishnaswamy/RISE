@@ -91,6 +91,13 @@ namespace RISE
 			//! integrator entry needs the same one-shot diagnostic gate.
 			mutable std::atomic<bool>	mFirePelDiagnosticEmitted;
 
+			//! Phase-B preview fallback diagnostic. Unsupported continuation
+			//! materials deliberately stay on the legacy collision-march estimator
+			//! with no volume-NEE competitor. Emit this at most once per integrator
+			//! instance so a debug render identifies the degraded vertex class
+			//! without flooding the log from every sample.
+			mutable std::atomic<bool>	mUnsupportedContinuationDiagnosticEmitted;
+
 			//! Shared clay reflectance state for `clay_lights`: a mid-grey
 			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
 			//! and a LambertianSPF, all three built ONCE in the constructor
@@ -163,6 +170,13 @@ namespace RISE
 			//! rasterizer dtor never reached 0 and the dtor never ran).
 			static long long ConstructionCount() { return sConstructionCount.load( std::memory_order_relaxed ); }
 			static long long DestructionCount() { return sDestructionCount.load( std::memory_order_relaxed ); }
+
+			//! Test-visible witness for the Phase-B unsupported-material fallback.
+			//! This is diagnostic state only; no transport decision reads it.
+			bool UnsupportedContinuationDiagnosticEmitted() const {
+				return mUnsupportedContinuationDiagnosticEmitted.load(
+					std::memory_order_relaxed );
+			}
 
 			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).
 			//! DEPTH ACCOUNTING: ordinary vertex processing runs while

@@ -11,6 +11,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -29,6 +31,8 @@
 #endif
 
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IContinuationClosure.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
@@ -37,9 +41,14 @@
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/PerfectRefractorMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEdit.h"
@@ -672,6 +681,132 @@ namespace
 		IPhaseFunction* pPhase_;
 		const Scalar sigmaT_;
 		const Scalar sigmaS_;
+	};
+
+	// Phase-B and Phase-C intentionally share this unsupported-material
+	// fixture family. Phase B proves the preview fallback; Phase C will rerun
+	// the same exact types against predictive-mode preflight rejection.
+	class UnsupportedPluginMaterial :
+		public virtual IMaterial,
+		public virtual Reference
+	{
+	public:
+		UnsupportedPluginMaterial(
+			IMaterial& continuationSource,
+			IMaterial& bsdfSource ) :
+			pContinuationSource_(&continuationSource),
+			pBsdfSource_(&bsdfSource)
+		{
+			pContinuationSource_->addref();
+			pBsdfSource_->addref();
+		}
+
+		IBSDF* GetBSDF() const override {
+			return pBsdfSource_->GetBSDF();
+		}
+		ISPF* GetSPF() const override {
+			return pContinuationSource_->GetSPF();
+		}
+		IEmitter* GetEmitter() const override { return nullptr; }
+
+	protected:
+		~UnsupportedPluginMaterial() override
+		{
+			safe_release(pBsdfSource_);
+			safe_release(pContinuationSource_);
+		}
+
+		IMaterial* ContinuationSource() const {
+			return pContinuationSource_;
+		}
+
+	private:
+		IMaterial* pContinuationSource_;
+		IMaterial* pBsdfSource_;
+	};
+
+	class SelfAttestingMismatchedMaterial final :
+		public UnsupportedPluginMaterial
+	{
+	public:
+		SelfAttestingMismatchedMaterial(
+			IMaterial& continuationSource,
+			IMaterial& bsdfSource ) :
+			UnsupportedPluginMaterial(continuationSource,bsdfSource),
+			closureCalls_(0)
+		{}
+
+		const IContinuationClosurePel* MakeContinuationClosurePel(
+			const RayIntersectionGeometric& ri,
+			const IORStack& iorStack,
+			const ContinuationPathState& pathState ) const override
+		{
+			closureCalls_.fetch_add(1,std::memory_order_relaxed);
+			return ContinuationSource()->MakeContinuationClosurePel(
+				ri,iorStack,pathState);
+		}
+
+		const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack& iorStack,
+			const Scalar nm,
+			const ContinuationPathState& pathState ) const override
+		{
+			closureCalls_.fetch_add(1,std::memory_order_relaxed);
+			return ContinuationSource()->MakeContinuationClosureNM(
+				ri,iorStack,nm,pathState);
+		}
+
+		unsigned int ClosureCalls() const {
+			return closureCalls_.load(std::memory_order_relaxed);
+		}
+
+	protected:
+		~SelfAttestingMismatchedMaterial() override = default;
+
+	private:
+		mutable std::atomic<unsigned int> closureCalls_;
+	};
+
+	class FallbackDiagnosticLogPrinter final :
+		public virtual ILogPrinter,
+		public virtual Reference
+	{
+	public:
+		explicit FallbackDiagnosticLogPrinter( const std::string& needle ) :
+			needle_(needle)
+		{}
+
+		void Print( const LogEvent& event ) override
+		{
+			const std::string message(event.szMessage);
+			if( message.find(needle_) != std::string::npos ) {
+				std::lock_guard<std::mutex> lock(mutex_);
+				matches_.push_back(message);
+			}
+		}
+
+		void Flush() override {}
+
+		unsigned int MatchCount() const
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			return static_cast<unsigned int>(matches_.size());
+		}
+
+		std::string LastMatch() const
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			return matches_.empty() ? std::string() : matches_.back();
+		}
+
+	protected:
+		~FallbackDiagnosticLogPrinter() override = default;
+
+	private:
+		const std::string needle_;
+		mutable std::mutex mutex_;
+		std::vector<std::string> matches_;
 	};
 
 	class VolumeStateProbeShader :
@@ -3783,6 +3918,224 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestUnsupportedMaterialVolumeNEEFallback()
+	{
+		std::cout << "TestUnsupportedMaterialVolumeNEEFallback" << std::endl;
+		const std::string diagnostic =
+			"PathTracingIntegrator: unsupported continuation material; "
+			"volume NEE disabled at this vertex and legacy collision march retained";
+		FallbackDiagnosticLogPrinter* captureOwned =
+			new FallbackDiagnosticLogPrinter(
+				"unsupported continuation material");
+		GlobalLogPriv()->AddPrinter(captureOwned);
+		FallbackDiagnosticLogPrinter* capture = captureOwned;
+		safe_release(captureOwned);
+
+		UniformColorPainter* white =
+			new UniformColorPainter(RISEPel(0.8,0.8,0.8));
+		UniformColorPainter* extinction =
+			new UniformColorPainter(RISEPel(0.0,0.0,0.0));
+		UniformScalarPainter* roughness = new UniformScalarPainter(0.7);
+		LambertianMaterial* lambertianA = new LambertianMaterial(*white);
+		LambertianMaterial* lambertianB = new LambertianMaterial(*white);
+		OrenNayarMaterial* orenNayar =
+			new OrenNayarMaterial(*white,*roughness);
+		UnsupportedPluginMaterial* plugin =
+			new UnsupportedPluginMaterial(*lambertianA,*lambertianA);
+		SelfAttestingMismatchedMaterial* mismatched =
+			new SelfAttestingMismatchedMaterial(*lambertianA,*orenNayar);
+		CompositeMaterial* composite = new CompositeMaterial(
+			*lambertianA,*lambertianB,3,2,2,2,2,0.0,*extinction);
+
+		Check( !IsExactSupportedContinuationMaterial(plugin),
+			"unsupported plugin exact type is absent from the continuation allowlist" );
+		Check( !IsExactSupportedContinuationMaterial(composite) &&
+			dynamic_cast<CompositeSPF*>(composite->GetSPF()) != nullptr,
+			"built-in CompositeSPF material is rejected by the exact-type allowlist" );
+		Check( !IsExactSupportedContinuationMaterial(mismatched) &&
+			mismatched->GetSPF() == lambertianA->GetSPF() &&
+			mismatched->GetBSDF() == orenNayar->GetBSDF(),
+			"self-attesting custom material remains unsupported when its SPF and BSDF disagree" );
+
+		unsigned int fixtureOrdinal = 0;
+		auto runFixture = [&]( const char* fixtureName, IMaterial& material,
+			SelfAttestingMismatchedMaterial* selfAttesting ) {
+			const unsigned int thisFixture = fixtureOrdinal++;
+			const std::filesystem::path scenePath =
+				std::filesystem::temp_directory_path() /
+				( std::string("rise_unsupported_material_") + fixtureName + "_" +
+					std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+			{
+				std::ofstream output(scenePath);
+				output << SurfaceFireReceiverScene();
+			}
+
+			IJobPriv* job = nullptr;
+			IRayCaster* neeCaster = nullptr;
+			IRayCaster* marchOnlyCaster = nullptr;
+			const bool loaded = RISE_CreateJobPriv(&job) && job &&
+				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			Check( loaded,
+				(std::string(fixtureName) + " fallback fixture loads").c_str() );
+			if( loaded ) {
+				IObjectPriv* receiver =
+					job->GetScene()->GetObjects()->GetItem("receiver_wall");
+				Check( receiver != nullptr,
+					(std::string(fixtureName) + " receiver resolves").c_str() );
+				if( receiver ) receiver->AssignMaterial(material);
+
+				const RasterizerState rast = {0,0};
+				const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+				RayIntersection hit(ray,rast);
+				job->GetScene()->GetObjects()->IntersectRay(hit,true,true,false);
+				const bool hitFound = hit.pObject != nullptr;
+				Check( hitFound && hit.pMaterial == &material,
+					(std::string(fixtureName) +
+						" authored receiver uses the unsupported exact type").c_str() );
+
+				ContinuationPathState pathState;
+				IORStack stack(1.0);
+				const unsigned int callsBeforeProbe = selfAttesting ?
+					selfAttesting->ClosureCalls() : 0;
+				const IContinuationClosureNM* directClosure = hitFound ?
+					material.MakeContinuationClosureNM(
+						hit.geometric,stack,500.0,pathState) : nullptr;
+				if( selfAttesting ) {
+					Check( directClosure != nullptr &&
+						selfAttesting->ClosureCalls() == callsBeforeProbe+1,
+						"mismatched custom fixture can self-attest if a caller bypasses the central allowlist" );
+				} else {
+					Check( directClosure == nullptr,
+						(std::string(fixtureName) +
+							" exposes no continuation closure").c_str() );
+				}
+				safe_release(directClosure);
+				const unsigned int callsBeforeRender = selfAttesting ?
+					selfAttesting->ClosureCalls() : 0;
+
+				IShader* shader = job->GetShaders()->GetItem("global");
+				const IMedium* fire = job->GetScene()->GetGlobalMedium();
+				if( fire ) fire->addref();
+				IsotropicPhaseFunction* vacuumPhase =
+					new IsotropicPhaseFunction();
+				UnsupportedHomogeneousSmoke* vacuum =
+					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
+				job->GetScene()->SetGlobalMedium(vacuum);
+				Check( shader && RISE_API_CreateRayCaster(
+					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+					(std::string(fixtureName) +
+						" legacy-march reference caster initializes").c_str() );
+				if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
+				job->GetScene()->SetGlobalMedium(fire);
+				safe_release(vacuum);
+				safe_release(vacuumPhase);
+				Check( shader && RISE_API_CreateRayCaster(
+					&neeCaster,false,20,*shader,true) && neeCaster,
+					(std::string(fixtureName) +
+						" volume-NEE caster initializes").c_str() );
+				if( neeCaster ) neeCaster->AttachScene(job->GetScene());
+				safe_release(fire);
+
+				if( neeCaster && marchOnlyCaster ) {
+					const unsigned int diagnosticsBefore =
+						capture->MatchCount();
+					StabilityConfig config;
+					config.maxDiffuseBounce = 2;
+					PathTracingIntegrator* integrator =
+						new PathTracingIntegrator(ManifoldSolverConfig(),config);
+					integrator->SetMaxPathDepth(2);
+					struct SampleMoments
+					{
+						Scalar mean;
+						Scalar variance;
+					};
+					const unsigned int samples = 120000;
+					auto momentsPT = [&]( const IRayCaster& route,
+						const unsigned int seed ) {
+						RandomNumberGenerator rng(seed);
+						RuntimeContext rc(
+							rng,RuntimeContext::PASS_NORMAL,false);
+						IndependentSampler sampler(rng);
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							const Scalar value = integrator->IntegrateRayNM(
+								rc,rast,ray,500.0,*job->GetScene(),route,
+								sampler,nullptr,nullptr);
+							sum += value;
+							sumSquares += static_cast<long double>(value)*value;
+						}
+						const long double count =
+							static_cast<long double>(samples);
+						const long double mean = sum/count;
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						return SampleMoments{
+							static_cast<Scalar>(mean),
+							static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+						};
+					};
+					bool allBatchesAgree = true;
+					for( unsigned int batch=0; batch<3; ++batch ) {
+						const unsigned int seedBase = 0xf44bac1u +
+							thisFixture*0x101u + batch*0x10001u;
+						const SampleMoments neeOn =
+							momentsPT(*neeCaster,seedBase);
+						const SampleMoments neeOff =
+							momentsPT(*marchOnlyCaster,seedBase+0x5bd1u);
+						const Scalar standardError = std::sqrt(
+							(neeOn.variance+neeOff.variance)/
+							static_cast<Scalar>(samples));
+						const bool agrees = neeOn.mean>0.0 && neeOff.mean>0.0 &&
+							standardError>0.0 &&
+							std::fabs(neeOn.mean-neeOff.mean)<=6.0*standardError;
+						if( !agrees ) {
+							std::cout << "  " << fixtureName << " batch " << batch <<
+								" means=" << neeOn.mean << "/" << neeOff.mean <<
+								" variances=" << neeOn.variance << "/" <<
+								neeOff.variance << " SE=" << standardError << std::endl;
+						}
+						allBatchesAgree = allBatchesAgree && agrees;
+					}
+					Check( allBatchesAgree,
+						(std::string(fixtureName) +
+							" NEE-on/off weight-1 legacy means agree in three independent batches").c_str() );
+					Check( integrator->UnsupportedContinuationDiagnosticEmitted(),
+						(std::string(fixtureName) +
+							" fallback records the diagnostic route witness").c_str() );
+					Check( capture->MatchCount() == diagnosticsBefore+1 &&
+						capture->LastMatch() == diagnostic,
+						(std::string(fixtureName) +
+							" fallback emits the exact user-visible diagnostic once").c_str() );
+					if( selfAttesting ) {
+						Check( selfAttesting->ClosureCalls() == callsBeforeRender,
+							"central allowlist rejects the mismatched custom material before virtual closure construction" );
+					}
+					safe_release(integrator);
+				}
+			}
+
+			safe_release(neeCaster);
+			safe_release(marchOnlyCaster);
+			safe_release(job);
+			std::filesystem::remove(scenePath);
+		};
+
+		runFixture("plugin",*plugin,nullptr);
+		runFixture("composite",*composite,nullptr);
+		runFixture("mismatched",*mismatched,mismatched);
+
+		safe_release(composite);
+		safe_release(mismatched);
+		safe_release(plugin);
+		safe_release(orenNayar);
+		safe_release(lambertianB);
+		safe_release(lambertianA);
+		safe_release(roughness);
+		safe_release(extinction);
+		safe_release(white);
+	}
+
 	void TestOrenNayarSurfaceVolumeNEEEquality()
 	{
 		std::cout << "TestOrenNayarSurfaceVolumeNEEEquality" << std::endl;
@@ -6009,6 +6362,7 @@ int main()
 	TestFlameBehindGlassIsMarchOnly();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
 	TestSurfaceVolumeNEEProductionRoutes();
+	TestUnsupportedMaterialVolumeNEEFallback();
 	TestOrenNayarSurfaceVolumeNEEEquality();
 	TestIsotropicPhongSurfaceVolumeNEEEquality();
 	TestNullBoundaryMixtureSurvivalEquality();
