@@ -46,6 +46,7 @@
 #include <cstdio>
 #include <iostream>
 #include <complex>
+#include <limits>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -492,7 +493,7 @@ int main()
 			Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
 			       "thick absorbing film still finite (Airy remains the primary form)" );
 		}
-		std::printf( "  worst |R(crit) - R(crit +/- 1e-9)| = %.3e ; thick-absorber headroom intact\n",
+		std::printf( "  worst |R(crit) - R(crit +/- 1e-9)| = %.3e ; thick absorber finite\n",
 		             worstJump );
 	}
 
@@ -652,14 +653,23 @@ int main()
 			std::printf( "  decay invariant over %d media: worst Im(N cos) = %.3e\n", n, worstNeg );
 		}
 
-		// (b) The ORDER of the two tests inside PickForwardCos is load-bearing,
-		// and this is the measurement that says so.  Over an evanescent /
-		// propagating grid the `Im == 0` tie-break FIRES (lossless propagating
-		// media reach it exactly), while `Re == 0` -- the tie-break the
-		// pre-2026-07-30 rule relied on -- NEVER fires, because std::sqrt of a
-		// negative real leaves a ~6.1e-17 real residue.  An edit that swaps the
-		// order restores a dead tie-break and with it the growing-root bug;
-		// this assertion is what catches that.
+		// (b) WHY the order of the two tests inside PickForwardCos is
+		// load-bearing.  Over an evanescent / propagating grid the `Im == 0`
+		// tie-break FIRES (lossless propagating media reach it exactly), while
+		// `Re == 0` -- the tie-break the pre-2026-07-30 rule relied on -- never
+		// fires for an evanescent medium, because std::sqrt of a negative real
+		// leaves a ~6.1e-17 real residue.
+		//
+		// The census below is a PLATFORM-ASSUMPTION guard, not a guard on
+		// PickForwardCos: it recomputes the principal root inline and never
+		// calls it, so no edit to PickForwardCos can move these counters.  (An
+		// earlier version of this comment claimed it caught the order swap;
+		// mutation testing showed it does not -- what kills that swap is (a)
+		// above plus [Thick] and [Truth].)  It earns its place by going red on
+		// a libm whose std::sqrt returns an exact (0, +-r), which would
+		// invalidate the rationale written into PickForwardCos even though
+		// every result stayed correct.  The direct pin on the function itself
+		// is immediately after.
 		{
 			int imExactZero = 0, reExactZeroEvan = 0, etaExactZero = 0;
 			int evanescent = 0, n = 0;
@@ -693,6 +703,50 @@ int main()
 			             " Re(eta)==0 %d times (min |Re| = %.3e);"
 			             " eta==0 exactly (at critical, both roots 0) %d times\n",
 			             n, imExactZero, evanescent, reExactZeroEvan, minAbsRe, etaExactZero );
+		}
+
+		// (b2) The DIRECT pin on PickForwardCos, stated as its CONTRACT over
+		// explicitly constructed candidates.  This is the assertion an order
+		// swap has to get past.
+		//
+		// It deliberately does NOT obtain the candidate from std::sqrt.  Which
+		// root sqrt returns for an evanescent medium depends on the sign of a
+		// signed zero in Im(1 - sin^2), and that sign is CONSTANT-FOLDING
+		// DEPENDENT: with literal inputs the compiler folds it to +0 and the
+		// principal root lands in the first quadrant, whereas at run time it
+		// is -0 and the root lands in the fourth.  (Verified both ways; it is
+		// part of why the pre-2026-07-30 bug hid from a test suite full of
+		// literals while misbehaving in every render.)  Feeding the function
+		// both candidates directly removes that dependence entirely.
+		{
+			const Scalar resid = Scalar( 6.123233995736766e-17 );	// the sqrt residue
+			struct Row { const char* tag; Complex N, cand; bool expectNegate; };
+			const Row rows[] = {
+				// Evanescent: the growing candidate must be negated, the
+				// decaying one kept.  Re-first gets BOTH of these wrong --
+				// it keeps whichever has Re > 0, which is the growing one.
+				{ "evanescent, growing candidate",
+				  Complex(1.0,0.0), Complex(  resid, -0.83 ), true  },
+				{ "evanescent, decaying candidate",
+				  Complex(1.0,0.0), Complex( -resid,  0.83 ), false },
+				// Lossless propagating: Im is exactly 0, so the Re tie-break
+				// must fire and decide.
+				{ "propagating, forward candidate",
+				  Complex(1.5,0.0), Complex(  0.8, 0.0 ), false },
+				{ "propagating, backward candidate",
+				  Complex(1.5,0.0), Complex( -0.8, 0.0 ), true  },
+				// Absorbing at normal incidence: cos must stay +1.  This is
+				// the classic bug a naive "Im >= 0 else negate" rule creates.
+				{ "absorbing, normal incidence",
+				  Complex(2.5,3.0), Complex( 1.0, 0.0 ), false },
+			};
+			for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+				const Complex got = TFd::PickForwardCos( rows[i].N, rows[i].cand );
+				const Complex want = rows[i].expectNegate ? -rows[i].cand : rows[i].cand;
+				Check( got == want, rows[i].tag );
+				Check( ( rows[i].N * got ).imag() >= Scalar(0),
+				       "PickForwardCos result always decays" );
+			}
 		}
 
 		// (c) p-polarization SIGN of the interface terms, against the textbook
@@ -791,11 +845,15 @@ int main()
 
 				if( !std::isfinite(as) || !std::isfinite(ap) ) airyFinite = false;
 				if( !std::isfinite(ts) || !std::isfinite(tp) ) tmmFinite  = false;
-				if( std::isfinite(as) && std::isfinite(ts) ) {
+				// BOTH polarizations must be finite before folding, or a NaN in
+				// the p term would be silently dropped: std::max(finite, NaN)
+				// returns the finite operand.
+				if( std::isfinite(as) && std::isfinite(ts)
+				 && std::isfinite(ap) && std::isfinite(tp) ) {
 					const double dd = std::max( std::fabs(double(as)-double(ts)),
 					                            std::fabs(double(ap)-double(tp)) );
 					if( dd > worstDiff ) worstDiff = dd;
-					if( dd > 1e-9 ) agree = false;
+					if( dd > 1e-13 ) agree = false;
 				}
 				++n;
 			}
@@ -804,7 +862,7 @@ int main()
 		       "Airy form ALONE stays finite on thick absorbing/evanescent films (fallback is dead)" );
 		Check( tmmFinite,
 		       "exponent-factored N-layer form stays finite on thick absorbing/evanescent films" );
-		Check( agree, "Airy == N-layer on the thick sweep" );
+		Check( agree, "Airy == N-layer on the thick sweep (tol 1e-13; measured ~9e-16)" );
 		std::printf( "  %d (stack x thickness) points to d = 1e12 nm; worst |Airy - TMM| = %.3e\n",
 		             n, worstDiff );
 
@@ -875,8 +933,13 @@ int main()
 				r.cosT, r.lam, r.n0, r.k0, r.n1, r.k1, r.d, r.n2, r.k2 );
 			const double e = std::fabs( double(R) - r.truth );
 			worst = std::max( worst, e );
-			Check( e < 1e-9, r.tag );
-			if( e >= 1e-9 ) {
+			// 1e-13, not 1e-9.  At 1e-9 this block discriminated almost
+			// nothing -- measured worst is 3.3e-16, so a 1e-10-scale real
+			// error walked straight through a pin whose stated job is
+			// ABSOLUTE accuracy.  1e-13 still leaves ~300x margin over libm
+			// variation while actually constraining the value.
+			Check( e < 1e-13, r.tag );
+			if( e >= 1e-13 ) {
 				std::printf( "    got %.17g want %.17g\n", double(R), r.truth );
 			}
 		}
@@ -894,7 +957,7 @@ int main()
 				0.18439276498056584, 386.41219459337918, N0, f1, t1, 1, Ns1 );
 			const double e1 = std::fabs( double(Rs1) - 0.35449755010854007 );
 			worst = std::max( worst, e1 );
-			Check( e1 < 1e-9, "N-layer(1 thick absorbing film) matches the 120-dps reference" );
+			Check( e1 < 1e-13, "N-layer(1 thick absorbing film) matches the 120-dps reference" );
 
 			const Complex Ns3( 1.52, 0.0 );
 			const Complex f3[3] = { Complex(1.38,0.0), Complex(2.1,0.6), Complex(1.46,0.0) };
@@ -903,7 +966,7 @@ int main()
 				0.8, 550.0, N0, f3, d3, 3, Ns3 );
 			const double e3 = std::fabs( double(Rs3) - 0.014823504562343579 );
 			worst = std::max( worst, e3 );
-			Check( e3 < 1e-9, "3-layer ar_layer stack matches the 120-dps reference" );
+			Check( e3 < 1e-13, "3-layer ar_layer stack matches the 120-dps reference" );
 
 			const Complex Nag( 0.144, 3.28 );
 			const Complex f4[4] = { Complex(1.38,0.0), Complex(2.2,0.9),
@@ -913,27 +976,32 @@ int main()
 				0.6, 633.0, N0, f4, d4, 4, Nag );
 			const double e4 = std::fabs( double(Rs4) - 0.037386571463810047 );
 			worst = std::max( worst, e4 );
-			Check( e4 < 1e-9, "4-layer stack matches the 120-dps reference" );
+			Check( e4 < 1e-13, "4-layer stack matches the 120-dps reference" );
 		}
-		std::printf( "  worst |production - 120-dps truth| = %.3e (tol 1e-9)\n", worst );
+		std::printf( "  worst |production - 120-dps truth| = %.3e (tol 1e-13)\n", worst );
 	}
 
 
 	// ------------------------------------------------------------------
 	// [Domain] Inputs outside the physical domain (2026-07-30).
 	//
-	// Found by self-audit while closing the branch bug, not by a reviewer.
-	// The whole evaluator rests on |e^{+2i delta}| <= 1, which holds iff
-	// Im(delta) >= 0.  PickForwardCos guarantees Im(N cos) >= 0
-	// unconditionally, so the only remaining way to break it is kd < 0 --
-	// a NEGATIVE film thickness.  That is reachable: GGXBRDF / GGXSPF read the
-	// thickness from an IScalarPainter, and nothing between the scene file and
-	// here requires it to be positive.  Measured before the normalization:
-	// R = NaN for a negative thickness through an evanescent film, and a
-	// silent plausible-looking interference value for a lossless one.
+	// NOTHING between a scene file and ThinFilm.h validates a number: GGXBRDF /
+	// GGXSPF resolve the film thickness AND all three media's n and k from
+	// IScalarPainters, so a black texel, a negative `scale` or a polynomial
+	// that dips below zero arrives at the evaluator directly.  Two failure
+	// modes, both of which the [0,1] clamp hides:
+	//   * kd < 0 defeats the decaying-root guarantee (|e^{+2i delta}| > 1) and
+	//     the round trip diverges -- NaN, or a saturated 1.0.
+	//   * a non-passive (n < 0 or k < 0) or zero index gives per-polarization
+	//     reflectances above 1, or NaN.  A NaN reaches the BRDF two different
+	//     ways, neither benign: the RGB path yields a NaN pixel, the spectral
+	//     path goes silently BLACK (GGXBRDF's `if( Rfilm > 0 )` is false for
+	//     NaN).
+	// Measured pre-normalization values are in the ThinFilm.h comments on
+	// detail::PhaseCoefficient and detail::PhysicalIndex.
 	// ------------------------------------------------------------------
 	{
-		std::printf( "\n[Domain] negative film thickness normalizes to the bare substrate\n" );
+		std::printf( "\n[Domain] out-of-domain inputs normalize instead of poisoning\n" );
 		const struct { const char* tag; double c, n0, n1, k1, ns, ks; } cs[] = {
 			{ "lossless film / conductor",  0.7, 1.0, 2.4, 0.0, 2.5,   3.0  },
 			{ "absorbing film / conductor", 0.7, 1.0, 2.0, 3.0, 2.5,   3.0  },
@@ -982,19 +1050,222 @@ int main()
 		}
 		std::printf( "  worst |R(d<0) - R(d=0)| = %.3e\n", worst );
 
-		// DISCLOSED RESIDUAL, not fixed here: a film index of exactly 0
-		// (n1 == k1 == 0) divides by zero in the Snell step and yields NaN.
-		// It is equally reachable through an IScalarPainter, but unlike a
-		// negative thickness it has no unambiguous nearest-physical meaning --
-		// "a medium with no index" is not a limit of anything -- so guessing
-		// one would be an invention rather than a normalization.  Recorded
-		// here so the next reader finds it measured rather than rediscovering
-		// it; see docs/INTEGRATOR_BUGFIX_FINDINGS.md.
+		// A phase coefficient that is not a POSITIVE FINITE number makes the
+		// layer absent.  The condition is on kd, not on thickness: lambda is
+		// just as unvalidated as d, and lambda < 0 flips the sign of kd the
+		// same way.  All six of these were broken before 2026-07-30 (four NaN,
+		// one saturated 1.0, one accidentally fine).
+		{
+			const double bare = double( RISE::ThinFilm::ReflectanceConductor(
+				0.5, 550.0, 1.5, 0.0, 1.4, 0.5, 0.0, 0.144, 3.28 ) );
+			const struct { const char* tag; double d, lam; } bad[] = {
+				{ "negative thickness",  -300.0, 550.0 },
+				{ "negative wavelength",  300.0, -550.0 },
+				{ "zero wavelength",      300.0, 0.0 },
+				{ "infinite thickness",   std::numeric_limits<double>::infinity(), 550.0 },
+				{ "NaN thickness",        std::numeric_limits<double>::quiet_NaN(), 550.0 },
+				{ "NaN wavelength",       300.0, std::numeric_limits<double>::quiet_NaN() },
+			};
+			for( size_t i = 0; i < sizeof(bad)/sizeof(bad[0]); ++i ) {
+				const double R = double( RISE::ThinFilm::ReflectanceConductor(
+					0.5, bad[i].lam, 1.5, 0.0, 1.4, 0.5, bad[i].d, 0.144, 3.28 ) );
+				Check( std::isfinite( R ) && std::fabs( R - bare ) < 1e-12,
+				       "non-positive/non-finite kd makes the layer absent" );
+			}
+		}
+
+		// A NON-PASSIVE index (n < 0 or k < 0) must fold to its passive twin
+		// |n| + i|k|, not produce R_p up to 48.8 laundered into a saturated 1.
+		// Checked through BOTH public APIs: the scalar one routes through
+		// MakeIndex, the Complex one used to bypass it entirely.
+		{
+			const struct { double n1, k1; } signs[] = {
+				{  1.4,  0.5 }, { -1.4,  0.5 }, {  1.4, -0.5 }, { -1.4, -0.5 },
+			};
+			const double ref = double( RISE::ThinFilm::ReflectanceConductor(
+				0.5, 550.0, 1.5, 0.0, 1.4, 0.5, 300.0, 0.144, 3.28 ) );
+			for( size_t i = 0; i < sizeof(signs)/sizeof(signs[0]); ++i ) {
+				const double Rs = double( RISE::ThinFilm::ReflectanceConductor(
+					0.5, 550.0, 1.5, 0.0, signs[i].n1, signs[i].k1, 300.0, 0.144, 3.28 ) );
+				Check( std::fabs( Rs - ref ) < 1e-12,
+				       "scalar API: non-passive index folds to its passive twin" );
+				const RISE::ThinFilm::Complex N0( 1.5, 0.0 ), Ns( 0.144, 3.28 );
+				const RISE::ThinFilm::Complex N1( signs[i].n1, signs[i].k1 );
+				const double Rc = double( RISE::ThinFilm::ReflectanceConductor(
+					0.5, 550.0, N0, N1, 300.0, Ns ) );
+				Check( std::fabs( Rc - ref ) < 1e-12,
+				       "Complex API: non-passive index folds too (it bypasses MakeIndex)" );
+				const RISE::ThinFilm::Complex f[1] = { N1 };
+				const RISE::Scalar t[1] = { 300.0 };
+				const double Rk = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.5, 550.0, N0, f, t, 1, Ns ) );
+				Check( std::fabs( Rk - ref ) < 1e-12,
+				       "N-layer API: non-passive index folds too" );
+			}
+		}
+
+		// A ZERO or NaN index is not a medium.  It divides by zero in the
+		// Snell step; the resulting NaN survives the [0,1] clamp and reaches
+		// the BRDF.  All THREE roles were affected, not just the film.
+		{
+			const double qnan = std::numeric_limits<double>::quiet_NaN();
+			const struct { const char* tag; double n0,k0,n1,k1,n2,k2; } z[] = {
+				{ "zero film index",      1.0,0.0,  0.0,0.0,  2.5,3.0 },
+				{ "zero substrate index", 1.0,0.0,  2.4,0.0,  0.0,0.0 },
+				{ "zero ambient index",   0.0,0.0,  2.4,0.0,  2.5,3.0 },
+				{ "NaN film index",       1.0,0.0, qnan,qnan, 2.5,3.0 },
+			};
+			for( size_t i = 0; i < sizeof(z)/sizeof(z[0]); ++i ) {
+				const double R = double( RISE::ThinFilm::ReflectanceConductor(
+					0.7, 550.0, z[i].n0, z[i].k0, z[i].n1, z[i].k1, 120.0, z[i].n2, z[i].k2 ) );
+				Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
+				       "zero / NaN index normalizes to vacuum instead of NaN" );
+			}
+			// And through the RGB preview integral, where ONE bad wavelength
+			// used to poison the whole XYZ accumulation.
+			const RISEPel rgb = RISE::ThinFilm::ReflectanceConductorRGB(
+				0.7, 1.0, 0.0, 0.0, 0.0, 120.0, 2.5, 3.0 );
+			Check( std::isfinite( double(rgb.r) ) && std::isfinite( double(rgb.g) )
+			       && std::isfinite( double(rgb.b) ),
+			       "zero film index: RGB preview stays finite" );
+		}
+
+		// ⚠ DISCLOSED RESIDUAL, measured, deliberately NOT closed: a merely
+		// TINY index still NaNs -- n1 <~ 1e-100 under the shipped -ffast-math
+		// (which implies -fcx-limited-range, so complex division is the naive
+		// (ac+bd, bc-ad)/(c^2+d^2) and c^2+d^2 underflows), <~ 1e-154 under
+		// strict IEEE.  No threshold is asserted here BECAUSE any threshold
+		// would be the magic epsilon this file refuses; see the note on
+		// detail::PhysicalIndex for the named reformulation that would close
+		// it and why it was judged out of proportion.  What IS pinned is the
+		// boundary that is real scene data: exactly 0 (a black texel).  A
+		// value 100 decades below any refractive index is not.
 		{
 			const double R = double( RISE::ThinFilm::ReflectanceConductor(
-				0.7, 550.0, 1.0, 0.0, 0.0, 0.0, 120.0, 2.5, 3.0 ) );
-			Check( !( R >= 0.0 && R <= 1.0 ),
-			       "KNOWN/DISCLOSED: a zero film index still yields NaN (see comment)" );
+				0.7, 550.0, 1.0, 0.0, 1e-50, 0.0, 120.0, 2.5, 3.0 ) );
+			Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
+			       "an index 50 decades small is still handled (the cliff is far below)" );
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// [Invariant] Branch-rule-FREE physics invariants (2026-07-30).
+	//
+	// Every other block in this file scores the evaluator against a reference
+	// or against its own sibling algebra.  These two do neither: they are
+	// consequences of energy conservation and of the Fresnel equations that
+	// hold whatever cos-root convention is in force, so they stay valid even
+	// if a future change makes the oracle and production agree for the wrong
+	// reason.  That matters here because the 2026-07-30 reformulation moved
+	// the oracle's TMM to the SAME exponent-factored algebra as production, so
+	// oracle-vs-production is a weaker independent check than it used to be.
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[Invariant] TIR and Brewster (independent of the cos-root convention)\n" );
+
+		// (a) Total internal reflection.  Past the critical angle of a LOSSLESS
+		// dense->rare interface there is no transmitted wave and no
+		// absorption, so R == 1 EXACTLY.  Two forms, because they are not the
+		// same statement:
+		//   * a BARE interface (nothing beyond the rare medium) is exactly 1
+		//     at every angle past critical;
+		//   * a dense / rare GAP / dense sandwich is FRUSTRATED TIR -- the
+		//     evanescent field tunnels across a thin gap, so R < 1 there and
+		//     only reaches 1 in the thick-gap limit.  Asserting exactness on a
+		//     thin gap would be asserting the wrong physics.
+		{
+			double worstBare = 0.0;
+			int nBare = 0;
+			const double n0s[] = { 1.33, 1.5, 1.52, 1.77, 2.4 };
+			for( size_t a = 0; a < sizeof(n0s)/sizeof(n0s[0]); ++a ) {
+				const double n0 = n0s[a], nRare = 1.0;
+				const double cosC = std::sqrt( 1.0 - ( nRare / n0 ) * ( nRare / n0 ) );
+				const double cosines[] = { cosC * 0.9, cosC * 0.5, cosC * 0.1, 0.0 };
+				for( size_t c = 0; c < sizeof(cosines)/sizeof(cosines[0]); ++c ) {
+					// d = 0 -> the film is absent, so this is the bare
+					// n0 -> air interface; the film index is irrelevant.
+					const double R = double( RISE::ThinFilm::ReflectanceConductor(
+						cosines[c], 550.0, n0, 0.0, 2.0, 0.0, 0.0, nRare, 0.0 ) );
+					worstBare = std::max( worstBare, std::fabs( R - 1.0 ) );
+					++nBare;
+				}
+			}
+			Check( worstBare < 1e-12,
+			       "TIR: bare dense->rare interface is R == 1 exactly past critical" );
+
+			// Frustrated TIR: monotone in gap thickness, leaking when thin,
+			// and exactly 1 once the gap is many evanescent decay lengths.
+			bool monotone = true;
+			double prev = -1.0, thin = 0.0, thick = 0.0;
+			const double gaps[] = { 5.0, 25.0, 100.0, 400.0, 2e3, 1e4, 1e6 };
+			for( size_t g = 0; g < sizeof(gaps)/sizeof(gaps[0]); ++g ) {
+				const double R = double( RISE::ThinFilm::ReflectanceConductor(
+					0.5, 550.0, 1.5, 0.0, 1.0, 0.0, gaps[g], 1.5, 0.0 ) );
+				if( prev >= 0.0 && R < prev - 1e-12 ) monotone = false;
+				prev = R;
+				if( g == 0 ) thin = R;
+				thick = R;
+			}
+			Check( monotone, "frustrated TIR: R increases monotonically with gap thickness" );
+			Check( thin < 0.9, "frustrated TIR: a thin gap really does leak" );
+			Check( std::fabs( thick - 1.0 ) < 1e-12,
+			       "frustrated TIR: a thick gap is R == 1 exactly" );
+			std::printf( "  TIR: %d bare configurations, worst |R - 1| = %.3e ;"
+			             " FTIR R(5nm) = %.6f -> R(1e6 nm) = %.17g\n",
+			             nBare, worstBare, thin, thick );
+		}
+
+		// (b) Brewster: for a BARE lossless interface, R_p vanishes at
+		// tan(theta_B) = n2/n0.  Pins the p-polarization branch against a
+		// closed-form angle that owes nothing to this file's algebra.
+		{
+			double worst = 0.0;
+			const double pairs[][2] = { {1.0,1.5}, {1.0,2.4}, {1.5,1.0}, {1.33,1.52}, {1.0,1.38} };
+			for( size_t i = 0; i < sizeof(pairs)/sizeof(pairs[0]); ++i ) {
+				const double n0 = pairs[i][0], n2 = pairs[i][1];
+				const double thB = std::atan( n2 / n0 );
+				const RISE::ThinFilm::Complex N0( n0, 0.0 ), Ns( n2, 0.0 );
+				const RISE::ThinFilm::Complex si =
+					RISE::ThinFilm::detail::SnellInvariant( N0, std::cos( thB ) );
+				// d = 0 -> bare interface; the film index is then irrelevant.
+				const double Rp = double( RISE::ThinFilm::detail::SingleFilmReflectanceForPol(
+					N0, RISE::ThinFilm::Complex( 2.0, 0.0 ), Ns, 0.0, 550.0, si,
+					RISE::ThinFilm::ePolP ) );
+				worst = std::max( worst, Rp );
+				// and via the N-layer path with no films at all
+				const double RpN = double( RISE::ThinFilm::detail::TmmReflectanceForPol(
+					N0, NULL, NULL, 0, Ns, 550.0, si, RISE::ThinFilm::ePolP ) );
+				worst = std::max( worst, RpN );
+			}
+			Check( worst < 1e-20, "Brewster: R_p vanishes at tan(theta_B) = n2/n0" );
+			std::printf( "  Brewster: worst R_p at the Brewster angle = %.3e\n", worst );
+		}
+
+		// (c) The grazing floor is a real constant with a real job, and until
+		// 2026-07-30 nothing bracketed it: mutating kGrazingCosFloor from 1e-6
+		// to 1e-12 or to 0 passed every thin-film binary.  The floor exists
+		// because the Snell invariant is built as sqrt(1 - cos^2), and for
+		// cos <~ 1.5e-8 that rounds to exactly 1, collapsing the near-grazing
+		// answer onto the exact-grazing limit R = 1.  Two assertions bracket
+		// it from both sides.
+		{
+			const double R9 = double( RISE::ThinFilm::ReflectanceConductor(
+				1e-9, 550.0, 1.0, 0.0, 2.4, 0.0, 120.0, 2.5, 3.0 ) );
+			const double R7 = double( RISE::ThinFilm::ReflectanceConductor(
+				1e-7, 550.0, 1.0, 0.0, 2.4, 0.0, 120.0, 2.5, 3.0 ) );
+			const double R4 = double( RISE::ThinFilm::ReflectanceConductor(
+				1e-4, 550.0, 1.0, 0.0, 2.4, 0.0, 120.0, 2.5, 3.0 ) );
+			// Below the floor every cosine gives the SAME answer (the floor is
+			// active). A floor of 1e-12 or 0 lets 1e-9 collapse while 1e-7 does
+			// not, so this fails.
+			Check( R9 == R7, "grazing floor is ACTIVE below itself (kills floor -> 1e-12 / 0)" );
+			// And that shared answer must NOT be the degenerate R = 1.
+			Check( R9 < 1.0, "grazing floor prevents the collapse to R == 1" );
+			// Above the floor the result must still vary with the cosine, so
+			// the floor is not merely swallowing everything.
+			Check( R4 < R7, "above the floor R still varies with the cosine" );
+			std::printf( "  grazing floor: R(1e-9) = R(1e-7) = %.17g ; R(1e-4) = %.17g\n",
+			             R9, R4 );
 		}
 	}
 

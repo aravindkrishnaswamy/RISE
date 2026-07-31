@@ -40,8 +40,10 @@
 //         the critical angle gives R == 1 exactly (lossless energy
 //         conservation), and a frustrated-TIR gap (dense/rare/dense)
 //         leaks for a thin gap but -> full TIR for a thick gap.  This
-//         exercises the EVANESCENT cosθ branch (Re(N cosθ)=0) that the
-//         absorbing-conductor stacks do not reach.
+//         exercises the EVANESCENT cosθ branch -- the one where Re(N cosθ)
+//         is zero in exact arithmetic but ~6.1e-17 in floating point, which
+//         is what made the pre-2026-07-30 branch rule pick the growing root
+//         -- that the absorbing-conductor stacks do not reach.
 //      7. Lossless thin-film thickness sweep vs an independent
 //         real-trigonometric closed form (Hecht), plus a grazing-angle
 //         conditioning check (θ -> 90° stays finite and R -> 1).  Pins
@@ -237,24 +239,33 @@ int main()
 			Check( std::fabs( Rtmm  - Rexpected ) < tol, "quarter-wave AR: TMM matches closed form" );
 			Check( std::fabs( Rairy - Rexpected ) < tol, "quarter-wave AR: Airy matches closed form" );
 
-			// Cross-check that the phase factor is really e^{-2iδ} = -1
-			// at the quarter-wave thickness (δ = π/2 at normal incidence,
-			// so 2δ = π).  We assert this indirectly: a HALF-wave film
-			// (twice the thickness, δ=π, e^{-2iδ}=+1) must reproduce the
+			// Cross-check that the round-trip phase factor is really
+			// e^{+2iδ} = -1 at the quarter-wave thickness (δ = π/2 at normal
+			// incidence, so 2δ = π).  We assert this indirectly: a HALF-wave
+			// film (twice the thickness, δ=π, e^{+2iδ}=+1) must reproduce the
 			// BARE-substrate reflectance ((n0-n2)/(n0+n2))^2, independent
-			// of n1 -- the absentee-layer property.  If e^{-2iδ} were not
+			// of n1 -- the absentee-layer property.  If e^{+2iδ} were not
 			// hitting +/-1 at these thicknesses the identity would fail.
+			//
+			// (This block said e^{-2iδ} until 2026-07-30 -- the OPPOSITE
+			// convention, the one that pairs with a +i sinδ matrix and makes
+			// absorbing films diverge, which is precisely what the Airy<->TMM
+			// cross-check exists to catch.  It went unnoticed because these
+			// stacks are lossless at normal incidence, where δ is real and
+			// e^{+2iδ} and e^{-2iδ} coincide at ±1.  The evaluators have used
+			// e^{+2iδ} throughout; see this file's header and
+			// TmmReference.h.)
 			Stack sHalf = MakeSingleFilmStack(
 				MakeIndex( n0, 0.0 ), MakeIndex( n1, 0.0 ), 2.0 * d, MakeIndex( n2, 0.0 ) );
 			const double Rhalf = TmmReflectanceUnpolarized( sHalf, lambda0, 0.0 );
 			const double bnum = n0 - n2, bden = n0 + n2;
 			const double Rbare = ( bnum / bden ) * ( bnum / bden );
 			Check( std::fabs( Rhalf - Rbare ) < tol,
-			       "half-wave absentee layer == bare substrate (confirms e^{-2iδ}=+1)" );
+			       "half-wave absentee layer == bare substrate (confirms e^{+2iδ}=+1)" );
 		}
 
 		// Perfect AR: n1 = sqrt(n0 n2) -> R == 0 exactly at the design
-		// wavelength and normal incidence.  This is the e^{-2iδ}=-1
+		// wavelength and normal incidence.  This is the e^{+2iδ}=-1
 		// destructive-interference null.
 		{
 			const double n0 = 1.0, n2 = 2.25;	// air / (n2=2.25)
@@ -430,9 +441,11 @@ int main()
 	//------------------------------------------------------------------
 	// [6/7] Total internal reflection (lossless energy conservation) and
 	//       frustrated TIR.  Exercises the EVANESCENT cosθ branch
-	//       (Re(N cosθ) = 0), which the absorbing-conductor stacks above
-	//       never reach -- a wrong evanescent branch passes [1..5] but
-	//       fails here.
+	//       (Re(N cosθ) = 0 in exact arithmetic; ~6.1e-17 in floating
+	//       point), which the absorbing-conductor stacks above never reach --
+	//       a wrong evanescent branch passes [1..5] but fails here, PROVIDED
+	//       the gap is thick enough: the thin-gap rows below do not bite
+	//       until ~4 µm, which is why the thick sweep was added.
 	//------------------------------------------------------------------
 	std::cout << "\n[6/7] Total internal reflection and frustrated TIR (evanescent branch)\n";
 	{
@@ -827,7 +840,8 @@ int main()
 			       "ExpM1OverZ continuous across the |z| = 1 domain split" );
 			Check( std::abs( detail::Sinc( Complex(1e-2,0) ) - Complex(1,0) ) > 1e-6,
 			       "Sinc is NOT a constant 1 below the cut (kills the stub mutant)" );
-			std::printf( "  Sinc worst %.3e ; ExpM1OverZ worst %.3e (vs long-double reference)\n",
+			std::printf( "  Sinc worst %.3e ; ExpM1OverZ worst %.3e"
+			             " (vs an independent series/direct reference, NOT extra precision)\n",
 			             worstSinc, worstE );
 		}
 

@@ -827,13 +827,149 @@ rather than restated.
 
 **Residual, disclosed and bounded.** With an **absorbing ambient** (`k₀ > 0`)
 the incident wave is inhomogeneous and the stack is not passive: the 120-dps
-reference itself returns `R > 1` (measured 1.093 and 1.287). The evaluator is
-**total** there — the decaying rule keeps every exponential of modulus ≤ 1 —
-and the `[0,1]` clamp reports the saturated 1, but that is a saturation, not a
-physical answer. This is a domain limit, not a defect: Byrnes' `tmm` rejects an
-absorbing incident medium outright. No shipped caller supplies one (the ambient
-is air, glass or enamel), and it is now documented on the `k0` parameter of
-`ReflectanceConductor` and in `PickForwardCos`.
+reference itself returns `R > 1` — measured 1.093 and 1.287 on the first two
+stacks sampled, but **288 of 400 exceed 1 and the excess reaches 59.4**, so the
+error the clamp conceals is *unbounded*, not the ~30 % those two figures
+suggest. The evaluator is **total** there — the decaying rule keeps every
+exponential of modulus ≤ 1 — and the `[0,1]` clamp reports the saturated 1, but
+that is a saturation, not a physical answer. This is a domain limit, not a
+defect: Byrnes' `tmm` rejects an absorbing incident medium outright. It is also
+**unreachable**: all four GGX call sites pass a literal `0.0` for `k0`, and
+`DielectricSPF.cpp` builds its ambient with `MakeIndex(nIncident, 0.0)`. It is
+documented on the `k0` parameter of `ReflectanceConductor` and in
+`PickForwardCos`.
+
+**Scope of the "before" figures.** The fuzz counts above are **macOS / libc++ /
+arm64** measurements. The old rule's *manifestation* was implementation-
+dependent: it decided the evanescent branch on the ~6.1e-17 real residue that
+libc++ leaves because it evaluates `std::sqrt` of a negative real as
+`polar(r, ±π/2)`. A standard library returning an exact `(0, ±r)` would make the
+old `Re == 0` tie-break fire and the old rule work. The new rule is correct
+under **both** conventions, so this is a strict portability improvement — but
+do not read "206,884 non-finite" as a claim about Linux or MSVC, which were not
+measured.
+
+---
+
+### Review round 2 (2026-07-30): four fresh reviewers, 5 P1s
+
+Axes: numerical correctness, doc/comment fidelity, test binding by mutation,
+consumer/API impact. The **three headline fixes above survived all four** —
+correctness found no P1 in them, mutation confirmed every algebraic mutant dies
+in `ThinFilmProductionTest`, and consumer impact measured the shipped regime
+unchanged (max 4.2e-15 over 564,300 evaluations across all six entry points).
+What the round found was **claims** and **unpinned guards**.
+
+**A derivation replaced a measurement.** The correctness reviewer supplied the
+proof the branch rule was missing: for a real Snell invariant,
+`η² = N² − s²`, so `Im(η²) = 2nk ≥ 0` for a passive medium, and a number whose
+square lies in the closed upper half-plane lies in quadrant I or III — never II
+or IV. Hence `Re(η)` and `Im(η)` always share a sign, the two rules *cannot*
+disagree on a passive stack, and the tie-break decides only the axis cases. It
+also predicts exactly where they diverge: an absorbing ambient makes `s` complex,
+`Im(η²)` can go negative, and the root leaves quadrant I. That derivation is now
+in `PickForwardCos`.
+
+**Two guards were entirely unpinned** (found by mutation; both mutants passed
+all seven thin-film binaries):
+- `kGrazingCosFloor` — the header spends ~25 lines arguing it must be `1e-6` and
+  specifically not `NEARZERO`, yet mutating it to `1e-12` **or to `0`** changed
+  nothing any test could see, while measurably collapsing `R(cos=1e-9)` from
+  `0.99999235932627673` to exactly `1`. Now bracketed from both sides by
+  `[Invariant]`(c).
+- `MakeIndex`'s `|k|` fold — and this one was worse than untested: the **Complex
+  overloads bypassed `MakeIndex` entirely**, so a negative extinction reached the
+  math unnormalized and produced per-polarization `R_s = 4.69`, `R_p = 17.69`,
+  laundered by the `[0,1]` clamp into a plausible saturated `1.0`. That is the
+  same silent finite-but-wrong class this whole arc is about. Normalization moved
+  into `detail::PhysicalIndex`, applied at every entry point.
+
+**Input domain closed properly.** The round-1 `PhaseCoefficient` normalized
+*thickness* and claimed thickness was "the ONE input that can defeat the
+decaying-root guarantee". **False**: `lambda_nm` is equally unvalidated, and
+`λ < 0` flips the sign of `kd` just as `d < 0` does (measured `Im(δ) = −2.84`,
+`|e^{+2iδ}| = 295.6`, `R_p = 17.69` → saturated `1.0`); `λ = 0` and `d = +inf`
+both gave NaN, while `d = NaN` happened to normalize. The condition is now on
+`kd` itself, covering all six cases with one rule. Likewise the **zero-index
+NaN** that round 1 merely disclosed is fixed — it affected the **ambient and
+substrate as well as the film**, and reached the BRDF two different ways,
+neither benign: the RGB path yields a NaN pixel, the spectral path goes
+*silently black*, because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
+
+**Residual that remains open, measured and deliberately not closed:** a merely
+*tiny* index still NaNs — `n1 ≲ 1e-100` under the shipped `-ffast-math` (which
+implies `-fcx-limited-range`, so complex division is the naive
+`(ac+bd, bc−ad)/(c²+d²)` and `c²+d²` underflows), or `≲ 1e-154` under strict
+IEEE. No threshold was introduced, because any threshold here is exactly the
+magic epsilon this file refuses. The named refinement is to reformulate
+`CosThetaInMedium` around `η² = N² − s²` — finite and well conditioned for tiny
+`N`, and the same identity the branch-rule proof rests on — instead of dividing
+by `N`. Judged out of proportion: it touches every `cosθ` in the file, and
+`1e-100` is ~100 decades below any refractive index that is scene data, whereas
+exactly `0` — a black texel through an unvalidated `IScalarPainter` — is not,
+and that case *is* fixed.
+
+**The same `-fcx-limited-range` mechanism also bounds the thick-absorber
+claim.** Round 1 wrote that the exponent-factored matrix has "no cliff and no
+headroom to lose". Within the measured envelope (`|N| ∈ 1e-3..1e3`, `d ≤ 1e12`
+nm) that reproduces exactly — 0 non-finite of 4,000,000, both forms, both flag
+sets. Outside it a cliff remains: 600,000 eight-layer stacks with `|N| ∈
+1e-20..1e20` gave **4,540 NaN under the shipped flags, 0 under strict IEEE, and
+0 with `-fno-cx-limited-range`**. The envelope is now stated as the claim.
+
+**Cost, previously undisclosed** (min of 30 × 200,000 calls, arm64, shipped
+flags):
+
+| entry point | 345566ff | now | Δ |
+|---|---|---|---|
+| `ReflectanceConductor` | 149.9 ns | 154.2 ns | **+2.9 %** |
+| `ReflectanceConductorStack` n=1 | 202.7 ns | 209.4 ns | **+3.3 %** |
+| `ReflectanceConductorStack` n=2 | 267.4 ns | 280.2 ns | **+4.8 %** |
+
+The N-layer figures were **+12.5 % / +17.9 %** before hoisting the per-film
+normalization out of the polarization loop. A select-form branch rule was tried
+and is *slower* (161.9 ns); the exponent-factored layer matrix is marginally
+free (per-additional-layer cost unchanged within noise). Recorded in the
+`ThinFilm.h` file header so it is not rediscovered.
+
+**A real cost of keeping the oracle "in step".** The correctness reviewer
+flagged that rewriting `tests/thinfilm/TmmReference.h` into the *identical*
+exponent-factored form has made oracle-vs-production close to a tautology: the
+two now share `PickForwardCos`, `CosThetaInMedium`, `PhaseCoefficient`,
+`PhysicalIndex`, `InterfaceTerms`, `ExpM1OverZ` and `Sinc`, differing only in
+top-level algebra. `ThinFilmTMMTest`'s Airy↔TMM cross-check still compares two
+algebras, but over a much larger shared substrate. Mitigated rather than
+reversed — the independent checks are now (a) the mpmath 120-dps constants in
+`[Truth]` and `[Helpers]`, and (b) a new `[Invariant]` block asserting
+**branch-rule-free** physics: TIR gives `R == 1` exactly for a bare dense→rare
+interface past critical (worst `2.2e-16` over 20 configurations), frustrated TIR
+is monotone in gap thickness and reaches `1` only in the thick limit, and `R_p`
+vanishes at the Brewster angle (worst `1.4e-32`). Those hold whatever cos-root
+convention is in force.
+
+**Test-claim corrections.** `[Branch]`(b) claimed to catch an order swap in
+`PickForwardCos`; mutation showed it cannot — it recomputes the principal root
+inline and never calls the function. It is kept (it is a genuine
+platform-assumption guard on `std::sqrt`) with an honest comment, and a real
+pin `[Branch]`(b2) was added that feeds `PickForwardCos` constructed candidates.
+That pin deliberately does **not** obtain its candidate from `std::sqrt`: which
+root `sqrt` returns for an evanescent medium depends on the sign of a signed
+zero in `Im(1 − sin²θ)`, and that sign is **constant-folding dependent** — `+0`
+when the compiler folds literals, `−0` at run time. That is a large part of why
+the original bug hid from a test suite full of literals while misbehaving in
+every render. `[Truth]`'s tolerance was `1e-9` against a measured `3.3e-16`,
+which let a `1e-10`-scale error through a pin whose stated job is absolute
+accuracy; it and `[Thick]`'s agreement gate are now `1e-13`.
+
+**Also corrected:** the round-1 claim that the old rule "decided the branch by
+the sign of a round-off residue" — implying intermittency. The residue's sign is
+invariably positive (0 negative of 775,041), so `Re(η) > 0` held for *every*
+evanescent medium and the rule deterministically accepted whatever root
+`std::sqrt` produced. Systematic, not flaky. And `ThinFilmTMMTest [2/7]`
+asserted the `e^{−2iδ}` convention five times, including in a test-name string —
+the opposite convention, the one the Airy↔TMM cross-check exists to catch. It
+passed only because those stacks are lossless at normal incidence, where `δ` is
+real and the two coincide at `±1`.
 
 **Flag surface (all four sites).** `-ffast-math` had only ever been in the
 make build and the two Xcode **Opto** configurations, so the picture was more

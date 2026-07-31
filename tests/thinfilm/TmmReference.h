@@ -71,12 +71,25 @@
 //        prefer the Airy form for extreme thick-absorber queries."  All of
 //        that described the cosδ / sinδ layer matrix.  The exponent-
 //        factored matrix below never forms a quantity of modulus > ~1 per
-//        layer, so there is no cliff and no headroom to lose: measured
-//        finite for BOTH forms over 4,000,000 random stacks with |N| in
-//        1e-3..1e3 and thickness to 1e12 nm (0 non-finite, versus
-//        1,553,854 for the old matrix on the same inputs).  Airy remains
-//        the single-film production form for COST, not range (design
-//        doc §7).
+//        layer, so within the measured envelope there is no cliff and no
+//        headroom to lose: finite for BOTH forms over 4,000,000 random
+//        stacks with |N| in 1e-3..1e3 and thickness to 1e12 nm (0
+//        non-finite, versus 1,553,854 for the old matrix on the same
+//        inputs).  Airy remains the single-film production form for COST,
+//        not range (design doc §7).
+//        ⚠ THE ENVELOPE IS THE CLAIM -- "total" is NOT.  Far outside it a
+//        cliff remains, from a DIFFERENT mechanism: -ffast-math implies
+//        -fcx-limited-range, so std::complex division is the naive
+//        (ac+bd, bc-ad)/(c²+d²) and the c²+d² term itself overflows once
+//        |denominator| exceeds ~1.34e154.  Measured on 600,000 8-layer
+//        stacks with |N| in 1e-20..1e20: 4,540 NaN under the shipped
+//        flags, 0 under strict IEEE, and 0 with -fno-cx-limited-range.
+//        The least extreme failure needed |log10 n| ~ 13.2 with all 8
+//        layers; at 4 layers, at 2 layers, or with |N| <= 1e12, none was
+//        found in 3,000,000 each.  `ar_layer` bounds n > 0 and the layer
+//        count but places no MAGNITUDE cap, so this is reachable in
+//        principle by a pathological scene and unreachable by a physical
+//        one.
 //      * Exactly grazing incidence θ = 90° and exactly the critical angle
 //        both drive some medium's cosθ to exactly 0, which makes the
 //        UNSCALED η_p = N/cosθ infinite.  The pre-scaled assembly above
@@ -238,11 +251,18 @@ namespace RISE
 				return 2.0 * 3.14159265358979323846 * d / lambda_nm;
 			}
 
-			//! (e^z - 1)/z, entire, limit exactly 1 at z = 0.  Uses the
-			//! cancellation-free identity (e^z-1)/z = e^{z/2} sinh(z/2)/(z/2)
-			//! with sinh(w)/w = Sinc(i*w).  The naive (exp(z)-1)/z loses the
-			//! result to cancellation for small |z| (1.08e-12 vs 2.2e-16,
-			//! measured) -- see ThinFilm.h for the full note.
+			//! (e^z - 1)/z, entire, limit exactly 1 at z = 0.  TWO forms, and
+			//! the split matters in both directions -- see ThinFilm.h for the
+			//! full note and the measurements:
+			//!   |z| <= 1 : the cancellation-free identity
+			//!             (e^z-1)/z = e^{z/2} sinh(z/2)/(z/2) with
+			//!             sinh(w)/w = Sinc(i*w).  The naive (exp(z)-1)/z
+			//!             loses the result to cancellation for small |z|
+			//!             (8.05e-13 vs 4.5e-16 at |z| = 3e-4, measured).
+			//!   |z| >  1 : the DIRECT form -- the only one that survives a
+			//!             thick absorbing or evanescent layer, where Re(z)
+			//!             is large and negative and the identity would
+			//!             evaluate 0 * inf = NaN.
 			inline Complex ExpM1OverZ( const Complex& z )
 			{
 				// See ThinFilm.h for the full note: direct form above |z| = 1

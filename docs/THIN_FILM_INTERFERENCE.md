@@ -202,11 +202,42 @@ TMM with M=1 reduces algebraically to the Airy result → they must match to ~ma
   sufficient here, because the two worst thin-film defects found to date (the unfactored Airy
   0/0, and the growing evanescent root) both returned *finite, in-range, wrong* values.
 
-**DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
-shipped caller. With `k₀ > 0` the incident wave is inhomogeneous, the stack is no longer passive,
-and the 120-dps reference itself returns `R > 1` (measured 1.093, 1.287). The evaluators stay
-total there and the `[0,1]` clamp reports the saturated 1, but that is a saturation, not a
-physical answer. (Byrnes' `tmm` rejects an absorbing incident medium outright.)
+**INPUT DOMAIN — nothing between a scene file and the evaluator validates a number.** `GGXBRDF` /
+`GGXSPF` resolve the film thickness *and* all three media's `n` and `k` from `IScalarPainter`s, so
+a black texel, a negative `scale`, or a polynomial that dips below zero arrives at the optics
+directly — and the `[0,1]` clamp hides the result either way (`NaN < 0` and `NaN > 1` are both
+false). `ThinFilm.h` therefore normalizes at its own boundary, in two helpers whose boundaries are
+exactly 0 or the finite/non-finite line (no epsilons):
+
+- `detail::PhaseCoefficient` — a layer contributes phase only if `kd = 2πd/λ` is a *positive
+  finite* number. One rule covers `d < 0`, `d = ±inf`, `d = NaN`, `λ < 0`, `λ = 0`, `λ = NaN`;
+  otherwise the layer is absent, the continuous `d → 0⁺` limit. (`λ < 0` flips the sign of `kd`
+  exactly as `d < 0` does — measured `|e^{+2iδ}| = 295.6`, `R_p = 17.69`, saturated to `1.0`.)
+- `detail::PhysicalIndex` — a medium is `N = n + i|k|` with `n > 0`. A non-passive index folds to
+  its passive twin (`k = −0.5` → `R_s = 4.69`, `R_p = 17.69`; `n = −1.4` → `R_p = 48.81`, all
+  laundered into a saturated `1.0`); a zero or NaN index normalizes to vacuum. The zero case
+  affected the **ambient and substrate as well as the film**, and reached the BRDF two ways,
+  neither benign: the RGB path yields a NaN pixel, the spectral path goes *silently black*,
+  because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
+
+Note the asymmetry with `ar_layer`, which hard-rejects `thickness <= 0` at parse time. The GGX
+slot has no such gate, so an author whose painter dips negative renders the bare substrate and is
+never told. A parse-time diagnostic for the inline-constant case would close everything except a
+genuinely spatially-varying painter; not implemented.
+
+**Residual, measured, open:** a merely *tiny* index still NaNs — `n₁ ≲ 1e-100` under the shipped
+`-ffast-math` (which implies `-fcx-limited-range`, so complex division is the naive
+`(ac+bd, bc−ad)/(c²+d²)` and `c²+d²` underflows), `≲ 1e-154` under strict IEEE. No threshold was
+added, because a threshold here is the magic epsilon this codebase refuses; the named fix is to
+reformulate `CosThetaInMedium` around `η² = N² − s²` rather than dividing by `N`.
+
+**AMBIENT DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
+shipped caller passes a literal `0.0`. With `k₀ > 0` the incident wave is inhomogeneous, the stack
+is no longer passive, and the 120-dps reference itself returns `R > 1` — 288 of 400 sampled stacks
+exceed 1, reaching **59.4**, so the error the clamp conceals is *unbounded*, not the ~30 % the
+first two samples (1.093, 1.287) suggested. The evaluators stay total there and the `[0,1]` clamp
+reports the saturated 1, but that is a saturation, not a physical answer. (Byrnes' `tmm` rejects
+an absorbing incident medium outright.)
 
 Reference code uses `std::complex<double>` (clarity over speed; this is the oracle). Written
 N-layer so graded/multi-oxide is a future special-case, not a rewrite.

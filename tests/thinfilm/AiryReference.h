@@ -50,9 +50,11 @@
 //    before then PickForwardCos tested Re(η) first with a tie-break that
 //    never fired, so for an evanescent film it selected the GROWING root and
 //    e^{+2iδ1} diverged (onset d ~ 4 µm).  See TmmReference.h
-//    PickForwardCos.  The e^{-2iδ} form written in the
-//    design doc belongs to the opposite phase convention and GROWS for
-//    absorbing films; see TmmReference.h header for the full discussion.
+//    PickForwardCos.  (docs/THIN_FILM_INTERFERENCE.md §5 USED TO write the
+//    e^{-2iδ} form, which belongs to the opposite phase convention and GROWS
+//    for absorbing films; it was reconciled with this file on 2026-07-30 and
+//    now writes e^{+2iδ}, naming e^{-2iδ} only as the wrong pairing to avoid.
+//    See the TmmReference.h header for the full discussion.)
 //
 //    IMPORTANT: this file deliberately reuses the SAME cosθ-branch and
 //    admittance helpers as TmmReference.h (detail::CosThetaInMedium,
