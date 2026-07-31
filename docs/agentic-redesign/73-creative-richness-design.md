@@ -637,3 +637,50 @@ diagnostics shape, so a deliberately-flat scene will carry a permanent
 info diagnostic — the message text must self-disarm ("intentional flat
 styling: ignore") and the severity must stay below anything the GUI
 badges as a problem.
+
+---
+
+## 10. P2.b outcome and ARC CLOSE (2026-07-30, commit af764f67 measured)
+
+| instrument | scalar adoption | exposure to the diagnostics |
+|---|---|---|
+| gemini-3.5-flash (3 runs) | **0/3** | seen every run (1–2 validate results each) |
+| qwen3.6:27b (3 runs) | **0/3** | r1/r2 NEVER called validate (zero exposure); r3 saw it twice, zero reasoning engagement |
+
+**Lifetime: 0/24 runs ever bound a scalar_painter**, across two models, two
+framings (note, Info diagnostic), two carriers (render, validate), and up
+to 30 exposures in a single run. gemini's runs are the clean test — full
+exposure, zero action. qwen's add a structural lesson: moving the fact
+from render results (which a render-spamming agent sees 10–57×/run) to
+validate-only (0–2×/run) REDUCED reach; carrier choice must follow the
+agent's actual tool habits, not our notion of "the right moment".
+
+**Per the §9 pre-committed decision rule: STOP.** Scalar-pipe and
+advanced-geometry adoption on bare prompts is not purchasable with
+result-payload scaffolding at reasonable cost for current models. The
+next plausible lever class (schema-structural: a required parameter, a
+material template that ships a scalar slot pre-bound) changes the
+product's authoring surface, not the agent's guidance — out of this
+arc's scope and worth its own design if ever wanted.
+
+### What the arc banked (all shipped, measured, zero-P1 reviewed)
+- **Painter richness floor 1→3, median 2→3** on bare prompts (P1 skills;
+  confirmed still holding at painter_kinds=2.0 floor under P2.b's runs).
+- **Permanent measurement infrastructure**: 4 checker ops, per-label
+  metric columns, the bare-prompt scenario + counterweight pairing, and
+  a three-instrument comparison discipline (before/after runDirs).
+- **The design-note + Info-diagnostics plumbing**: truthful, tested,
+  harmless; left in tree deliberately — zero runtime cost, and a
+  stronger future model may act where these did not (re-measure with
+  the same runconfigs when the model roster changes).
+- **A mechanism law, twice evidenced and once confessed in writing**:
+  models act on facts that BLOCK (errors, empty prerequisites); they
+  habituate to advice regardless of framing, severity vocabulary,
+  or repetition. Prose ≈ 50%; examples move copying; advice moves
+  nothing; structure moves behavior. (§5.1 → §8 → §9 → here.)
+
+### Ask-side, final state
+`build_ambiguous_scene` held its epoch-11 form through every phase
+(2/3–3/3 asked). The tension the arc opened with — "more creative" vs
+"asks more questions" — closed exactly as designed in §1: richer
+defaults landed without a single unwanted question appearing.
