@@ -342,6 +342,38 @@ main checkout after any worktree agent.  Runs: gemini via
   edits must be checked for cross-subject transfer, not just courtyard
   deltas.  S1's baseline is now anchored: varied_microsurface 0.00 on
   both subjects, stop rule ≥2/6 runs with ≥1.
+- **2026-08-01 — BDPT phantom-NEE-term fix LANDED (`7e91d5a9`)** — the
+  deferred defect turned out to be a **~2400× energy wipeout** on
+  indirect paths (weight ~4e-4), not mild dimming: scenes lit primarily
+  by non-light-sampled emitters rendered essentially black under
+  BDPT/MLT.  Narrow set-membership flag mechanism (NOT the global
+  delta-aware remap0); 3×3×2 A/B protocol closed the BDPT/PT ratio
+  0.0004→1.001 with an MC-indistinguishable control; env-vertex fence
+  verified two layers deep; fresh Opus review zero P1s, both P2s fixed
+  (a pdf-valued predicate would have flipped the defect into energy
+  EXCESS under the opt-in light BVH — caught in review).  Gate 227/227.
+- **2026-08-01 — S0.6 qwen leg COMPLETE; S0 CLOSED.**  qwen3.6:27b N=3:
+  varied_microsurface **0.00 both subjects** (baseline anchored on both
+  instruments); painter_kinds 0.67/0.00 (consistent with qwen's known
+  uniformcolor habit, not a regression — cozy 3/3 all-uniformcolor
+  confirmed from insert payloads); counterweight noisy but diagnosed
+  (r1 asked properly — guard intact; r3 "provider_error" = a degenerate
+  reasoning-only turn, HTTP 200; r2 wall-budget = render-perfectionism,
+  samples escalated to 4096 on a 2-object scene).
+  **Thinking-probe verdict (S1-critical): never-considered, 6/6.**
+  Zero reasoning about microsurface variation despite the advisory
+  firing up to 21×/run and two runs reading the full
+  materials-and-media-basics scalar section — the concept never enters
+  the option set.  `procedural-textures` (the skill every advisory
+  points to) was read 0/6 times.  **The strongest S1 evidence yet:**
+  the two pbr-using runs pasted constant roughness values with zero
+  deliberation, and the constants MATCH THE SKILL'S OWN DEMO VALUES —
+  models copy the copy-source verbatim and silently.  S1 therefore
+  edits the snippets in the skills models MEASURABLY read
+  (scene-skeleton-and-conventions, lighting-recipes,
+  materials-and-media-basics, modeling-workflow, object-modeling — the
+  anchor's observed read-set), carries the binding IN the copied
+  snippet, and is checked on both subjects for transfer.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
