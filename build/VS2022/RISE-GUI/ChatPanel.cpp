@@ -2215,6 +2215,21 @@ void ChatPanel::detailedTranscriptToggled(bool on)
     refreshTranscript(m_statusLabel ? m_statusLabel->text() : QString());
 }
 
+// LOCKSTEP WITH RISE::Agent::AgentSession::RenderSkillIndex (AgentSession.h/
+// .cpp) -- that C++ function is now the single source of truth for the
+// "name -- hook" rendering (skip an unnamed entry, bare name when hook is
+// empty, "\n"-joined); the headless eval runner (AgentEvalRunner.cpp,
+// S0.2) and this panel both need the identical algorithm, but this panel's
+// input is the raw read_skill JSON-RPC response TEXT (m_bridge->
+// agentHandleLine's return), not an in-process AgentSkillResult -- ChatPanel
+// doesn't include AgentSession.h and has no existing JSON->AgentSkillResult
+// decode, so wiring an actual delegation here isn't a minimal, verifiable
+// edit in a file this repo never compiles (Windows/Qt is text-only in this
+// checkout). Kept as an independent implementation instead, matching the
+// Mac Swift copy's situation (ChatViewModel.renderSkillIndex, same doc
+// note) -- if the algorithm ever changes, update AgentSession::
+// RenderSkillIndex, this function, AND ChatViewModel.renderSkillIndex
+// together.
 QString ChatPanel::renderSkillIndex(const QString& rpcResponse) const
 {
     const QJsonDocument doc = QJsonDocument::fromJson(rpcResponse.toUtf8());

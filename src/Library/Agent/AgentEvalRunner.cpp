@@ -2496,6 +2496,18 @@ namespace RISE
 					if( scenario.budgets.maxToolCalls > cap ) cap = scenario.budgets.maxToolCalls;
 					loop.SetMaxToolRoundsPerTurn( cap );
 				}
+				// S0.2: parity with the GUI drivers -- carry the skills index
+				// in the system prompt here too. AgentSession::RenderSkillIndex
+				// is the single-source "name -- hook" rendering (see its doc
+				// in AgentSession.h) that this call, the Mac Swift copy, and
+				// the Windows/Qt ChatPanel::renderSkillIndex all produce
+				// identically; a headless run has no RPC round-trip to make,
+				// so this calls the same static AgentSession::ReadSkill("")
+				// the read_skill RPC verb calls, directly, and renders it
+				// through the shared helper. This changes the measurement
+				// instrument (turn structure / prompt size) deliberately;
+				// the 74-log records it as the reason S0 re-anchors.
+				loop.SetSkillIndex( AgentSession::RenderSkillIndex( AgentSession::ReadSkill() ) );
 				ChatTrajectoryConfig cfg;
 				cfg.clock = optClock;
 				cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;

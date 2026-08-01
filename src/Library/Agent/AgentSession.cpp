@@ -561,6 +561,21 @@ namespace RISE
 			return r;
 		}
 
+		std::string AgentSession::RenderSkillIndex( const AgentSkillResult& skills )
+		{
+			// See the header doc: the single-source "name -- hook" rendering
+			// every C++ SetSkillIndex caller uses. Skip an unnamed entry
+			// (never emitted by ReadSkill(), but a defensive skip costs
+			// nothing); an empty hook renders as the bare name.
+			std::string out;
+			for( const AgentSkillEntry& e : skills.index ) {
+				if( e.name.empty() ) continue;
+				if( !out.empty() ) out += '\n';
+				out += e.hook.empty() ? e.name : ( e.name + " -- " + e.hook );
+			}
+			return out;
+		}
+
 		//==============================================================
 		// AgentImageCache -- the last-render frame, optionally shared by a
 		// group of sessions.  Every method is a single leaf critical

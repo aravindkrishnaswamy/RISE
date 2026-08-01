@@ -1624,6 +1624,83 @@ static void TestFinalTextCheckpoint()
 }
 
 //----------------------------------------------------------------------
+// S0.2: headless SetSkillIndex parity.  The 74-log (docs/agentic-redesign/
+// 74-creative-richness-arc-log.md Sec.5) recorded that only the two GUI
+// drivers (ChatViewModel.swift / ChatPanel.cpp) called SetSkillIndex --
+// a headless eval run's system prompt carried no "Available skills"
+// section, so models had to burn a bare read_skill{} round-trip just to
+// discover the index.  RunScenarioDriven (AgentEvalRunner.cpp) now calls
+// the same static AgentSession::ReadSkill("") the GUI's read_skill RPC
+// verb calls, renders it into the identical "name -- hook" lines, and
+// feeds it to AgentChatLoop::SetSkillIndex before the turn loop runs --
+// this is the RED-PROOF that the section actually reaches the wire (via
+// the trajectory's session record, which carries ComposeSystemPrompt()'s
+// full text verbatim -- see AgentChatLoop::EnsureSessionRecordEmitted),
+// for both the present (skills root resolves) and absent (root missing --
+// degrades to today's pre-parity behavior, no crash) cases.
+//----------------------------------------------------------------------
+static void TestHeadlessSkillIndexParity()
+{
+	std::printf( "S0.2: headless SetSkillIndex parity (skills-index present/absent)...\n" );
+	const std::string dir = ScratchRunDir( "s0_2_skill_index" );
+
+	// Present case: default SkillsRoot() resolution -- no RISE_SKILLS_PATH /
+	// RISE_MEDIA_PATH override -- falls back to "./skills/agent/", which
+	// resolves against this repo's skills/agent/ directory when the test
+	// runs from repo root (the documented convention; see run_all_tests.sh
+	// and the gate command in the task brief).
+	{
+		AgentEvalScenario s = MakeScenario( "skillidx_present", kScene, "Explain the reserved name",
+			"commit", kFinalTextFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "skillidx_present: run reached final_text" );
+
+		std::ifstream tf( h.trajectoryPath.c_str(), std::ios::binary );
+		const std::string body( ( std::istreambuf_iterator<char>( tf ) ), std::istreambuf_iterator<char>() );
+		Check( body.find( "Available skills:" ) != std::string::npos,
+			"skillidx_present: the trajectory's session record carries the \"Available skills:\" section" );
+		Check( body.find( "lighting-recipes -- Read when adding or tuning lights" ) != std::string::npos,
+			"skillidx_present: a known skill's rendered \"name -- hook\" line appears verbatim "
+			"(skills/agent/lighting-recipes.md's header)" );
+	}
+
+	// Absent case: RISE_SKILLS_PATH overrides SkillsRoot() to a directory
+	// that does not exist on disk -- the same miswired-install shape
+	// AgentSession::ReadSkill already handles (empty index, `note` set).
+	// Parity must NOT invent new absent-root handling: no crash, no error
+	// spam anywhere in the trajectory, and the section is simply omitted --
+	// exactly the pre-parity behavior this slice preserves for the
+	// no-skills-root case.
+	{
+		const std::string missingRoot = dir + "/no_such_skills_root/";
+#ifdef _WIN32
+		_putenv_s( "RISE_SKILLS_PATH", missingRoot.c_str() );
+#else
+		setenv( "RISE_SKILLS_PATH", missingRoot.c_str(), 1 );
+#endif
+
+		AgentEvalScenario s = MakeScenario( "skillidx_absent", kScene, "Explain the reserved name",
+			"commit", kFinalTextFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+
+#ifdef _WIN32
+		_putenv_s( "RISE_SKILLS_PATH", "" );
+#else
+		unsetenv( "RISE_SKILLS_PATH" );
+#endif
+
+		Check( h.result.terminalStatus == "final_text", "skillidx_absent: run reached final_text (no crash)" );
+		std::ifstream tf( h.trajectoryPath.c_str(), std::ios::binary );
+		const std::string body( ( std::istreambuf_iterator<char>( tf ) ), std::istreambuf_iterator<char>() );
+		Check( body.find( "Available skills:" ) == std::string::npos,
+			"skillidx_absent: a missing skills root omits the \"Available skills:\" section "
+			"(today's pre-parity behavior, preserved)" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T8: unknown checkpoint kind + malformed checkpoint shape -> FAILED, not
 // a crash.
 //----------------------------------------------------------------------
@@ -6662,6 +6739,7 @@ int main()
 	TestRenderCameraCompareToImage();
 	TestCompareToImageOversizedReferenceIsRefusedCheaply();
 	TestFinalTextCheckpoint();
+	TestHeadlessSkillIndexParity();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
 	TestScenarioIntervention();

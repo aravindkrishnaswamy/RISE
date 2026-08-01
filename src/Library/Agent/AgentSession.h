@@ -1589,6 +1589,36 @@ namespace RISE
 			//! names off the operator's own index).
 			static AgentSkillResult ReadSkill( const std::string& name = std::string() );
 
+			//! S0.2: the SINGLE-SOURCE rendering of a ReadSkill("") index
+			//! into the stable "name -- hook" lines (one per entry,
+			//! newline-joined) that AgentChatLoop::SetSkillIndex documents
+			//! as its input.  Entries with an empty `name` are skipped; an
+			//! entry with an empty `hook` renders as the bare name.  Pure,
+			//! stateless, no IO -- callers fetch the AgentSkillResult
+			//! themselves (via ReadSkill(), or via the read_skill RPC verb
+			//! for a caller across an IPC/language boundary) and pass it in.
+			//!
+			//! Every C++ site that needs this rendering calls THIS function
+			//! rather than re-implementing the loop -- added precisely to
+			//! close a duplication the two GUI drivers already had (Mac's
+			//! ChatViewModel.renderSkillIndex, Windows' ChatPanel::
+			//! renderSkillIndex) and the headless eval runner (S0.2,
+			//! AgentEvalRunner.cpp) would otherwise have made a third of.
+			//! Mirrors the repo's ToolOutcomeLineForDisplay precedent
+			//! (AgentChatLoop.h) for giving an external caller one
+			//! canonical rendering instead of a re-derived copy.
+			//!
+			//! Two GUI copies remain independent BY NECESSITY, each with a
+			//! lockstep comment naming this function as the source of
+			//! truth: the Mac Swift copy (ChatViewModel.renderSkillIndex)
+			//! lives across the Swift/C++ boundary, and the Windows/Qt
+			//! copy (ChatPanel::renderSkillIndex) consumes the raw
+			//! read_skill JSON-RPC response text rather than an
+			//! AgentSkillResult, so neither can call this function
+			//! directly.  Any change to the rendering must update all
+			//! three in step.
+			static std::string RenderSkillIndex( const AgentSkillResult& skills );
+
 			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one
 			//! param-value edit to the retained CST Document via
 			//! Job::ApplyCstParamEdit -- the SAME call the GUI property panel
