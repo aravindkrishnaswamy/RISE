@@ -6445,6 +6445,18 @@ namespace RISE
 					return !painterName.empty();
 				}
 
+				static bool ParseInterval(
+					const std::string& raw,
+					double (&interval)[2]
+					)
+				{
+					std::istringstream input(raw);
+					std::string extra;
+					return (input >> interval[0] >> interval[1]) &&
+						!(input >> extra) && std::isfinite(interval[0]) &&
+						std::isfinite(interval[1]) && interval[1] > interval[0];
+				}
+
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					static const char* required[] = {
@@ -6476,14 +6488,44 @@ namespace RISE
 							return false;
 						}
 					}
+					static const char* chemChannels[] = {
+						"channel_chem_ch", "channel_chem_c2", "channel_chem_co2" };
+					static const char* chemSPDs[] = {
+						"chem_spd_ch", "chem_spd_c2", "chem_spd_co2" };
+					static const char* chemIntervals[] = {
+						"chem_interval_ch", "chem_interval_c2", "chem_interval_co2" };
+					bool hasAnyChemParameter = false;
+					bool hasAllChemParameters = true;
+					for( unsigned int band = 0; band < 3u; ++band ) {
+						hasAnyChemParameter = hasAnyChemParameter ||
+							bag.Has(chemChannels[band]) || bag.Has(chemSPDs[band]) ||
+							bag.Has(chemIntervals[band]);
+						hasAllChemParameters = hasAllChemParameters &&
+							bag.Has(chemChannels[band]) && bag.Has(chemSPDs[band]) &&
+							bag.Has(chemIntervals[band]);
+					}
+					const bool declaresChemNone = bag.Has("chem_model") &&
+						bag.GetString("chem_model") == "none";
+					if( (hasAnyChemParameter && !hasAllChemParameters) ||
+						(hasAnyChemParameter && declaresChemNone) ||
+						(!hasAnyChemParameter && !declaresChemNone) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: provide all three chem channel/SPD/interval tuples, or declare `chem_model none`" );
+						return false;
+					}
 
 					std::string carbonPainter;
 					std::string temperaturePainter;
 					std::string condensedPainter;
+					std::string chemPainters[3];
 					if( !ParsePainterSource( bag.GetString( "channel_carbon" ), carbonPainter ) ||
 						!ParsePainterSource( bag.GetString( "channel_temperature" ), temperaturePainter ) ||
 						(hasCondensed && !ParsePainterSource(
-							bag.GetString( "channel_condensed" ), condensedPainter )) ) {
+							bag.GetString( "channel_condensed" ), condensedPainter )) ||
+						(hasAnyChemParameter &&
+							(!ParsePainterSource(bag.GetString(chemChannels[0]),chemPainters[0]) ||
+							 !ParsePainterSource(bag.GetString(chemChannels[1]),chemPainters[1]) ||
+							 !ParsePainterSource(bag.GetString(chemChannels[2]),chemPainters[2]))) ) {
 						GlobalLog()->PrintEasyError(
 							"MultichannelHeterogeneousMedium:: channel sources must be `painter <scalar_painter-name>`" );
 						return false;
@@ -6510,7 +6552,37 @@ namespace RISE
 					bag.GetVec3( "bbox_min", bboxMin );
 					bag.GetVec3( "bbox_max", bboxMax );
 
-					const bool ok = hasCondensed ?
+					double chemInterval[3][2] = {{0,0},{0,0},{0,0}};
+					if( hasAnyChemParameter &&
+						(!ParseInterval(bag.GetString(chemIntervals[0]),chemInterval[0]) ||
+						 !ParseInterval(bag.GetString(chemIntervals[1]),chemInterval[1]) ||
+						 !ParseInterval(bag.GetString(chemIntervals[2]),chemInterval[2])) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: each chem_interval requires finite `lambda_min lambda_max` with lambda_max > lambda_min" );
+						return false;
+					}
+
+					const bool ok = hasAnyChemParameter ?
+						pJob.AddMultichannelHeterogeneousMediumWithChem(
+							bag.GetString("name").c_str(), carbonPainter.c_str(),
+							temperaturePainter.c_str(),
+							hasCondensed ? condensedPainter.c_str() : 0,
+							chemPainters[0].c_str(), chemPainters[1].c_str(),
+							chemPainters[2].c_str(), bag.GetString(chemSPDs[0]).c_str(),
+							bag.GetString(chemSPDs[1]).c_str(), bag.GetString(chemSPDs[2]).c_str(),
+							chemInterval[0], chemInterval[1], chemInterval[2],
+							static_cast<unsigned int>(resolution[0]),
+							static_cast<unsigned int>(resolution[1]),
+							static_cast<unsigned int>(resolution[2]),
+							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+							bag.GetDouble("soot_em"), bag.GetDouble("soot_density"),
+							bag.GetDouble("soot_albedo_hot"), bag.GetDouble("soot_g_hot"),
+							bag.GetDouble("smoke_km_carbon"), bag.GetDouble("smoke_n_carbon"),
+							bag.GetDouble("smoke_albedo_carbon"), bag.GetDouble("smoke_g_carbon"),
+							hasCondensed ? bag.GetDouble("smoke_km_cond") : 0.0,
+							hasCondensed ? bag.GetDouble("smoke_n_cond") : 0.0,
+							hasCondensed ? bag.GetDouble("smoke_albedo_cond") : 0.0,
+							hasCondensed ? bag.GetDouble("smoke_g_cond") : 0.0 ) : hasCondensed ?
 						pJob.AddMultichannelHeterogeneousMediumWithCondensed(
 							bag.GetString( "name" ).c_str(),
 							carbonPainter.c_str(), temperaturePainter.c_str(),
@@ -6552,6 +6624,16 @@ namespace RISE
 						{ auto& p = P(); p.name = "channel_carbon"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Carbon source: `painter <scalar_painter-name>` [g/m^3]"; }
 						{ auto& p = P(); p.name = "channel_temperature"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Temperature source: `painter <scalar_painter-name>` [K]"; }
 						{ auto& p = P(); p.name = "channel_condensed"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Condensed-organic source: `painter <scalar_painter-name>` [g/m^3]"; }
+						{ auto& p = P(); p.name = "chem_model"; p.kind = ValueKind::Enum; p.required = false; p.enumValues = {"none"}; p.description = "Explicitly disables chem channels; mutually exclusive with the all-or-none chem bundle"; }
+						{ auto& p = P(); p.name = "channel_chem_ch"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated CH source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "channel_chem_c2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated C2 source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "channel_chem_co2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated CO2* source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "chem_spd_ch"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "CH SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_spd_c2"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "C2 SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_spd_co2"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "CO2* SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_interval_ch"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "CH SPD normalization interval [nm]: lambda_min lambda_max"; }
+						{ auto& p = P(); p.name = "chem_interval_c2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "C2 SPD normalization interval [nm]: lambda_min lambda_max"; }
+						{ auto& p = P(); p.name = "chem_interval_co2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "CO2* SPD normalization interval [nm]: lambda_min lambda_max"; }
 						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature/condensed lattice resolution (integer X Y Z, each >= 2)"; }
 						{ auto& p = P(); p.name = "bbox_min"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox minimum"; }
 						{ auto& p = P(); p.name = "bbox_max"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox maximum"; }

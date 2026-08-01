@@ -52,6 +52,7 @@
 
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IFunction1D.h"
 #include "../Interfaces/IVolumeAccessor.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
@@ -336,6 +337,11 @@ namespace RISE
 		IVolumeAccessor* m_pCarbonAccessor;
 		IVolumeAccessor* m_pTemperatureAccessor;
 		IVolumeAccessor* m_pCondensedAccessor;
+		IVolumeAccessor* m_pChemAccessor[3];
+		const IFunction1D* m_pChemSPD[3];
+		Scalar m_chemIntervalMin[3];
+		Scalar m_chemIntervalMax[3];
+		Scalar m_chemSPDArea[3];
 		Scalar m_sceneUnitMeters;
 		Scalar m_sootEm;
 		Scalar m_sootDensity;
@@ -407,6 +413,30 @@ namespace RISE
 			const unsigned int y,
 			const unsigned int z
 			) const;
+		Scalar LookupChemBand(
+			const unsigned int band,
+			const Point3& worldPt
+			) const;
+		Scalar NormalizedChemSPD(
+			const unsigned int band,
+			const Scalar nm
+			) const;
+		void AppendChemPanelBreakpoints(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			std::vector<Scalar>& breakpoints
+			) const;
+		Scalar ChemPanelSupport(
+			const Ray& ray,
+			const Scalar panelStart,
+			const Scalar panelEnd
+			) const;
+		static Scalar NormalizeChemSPD(
+			const IFunction1D& curve,
+			const Scalar intervalMin,
+			const Scalar intervalMax
+			);
 
 	public:
 		MultichannelHeterogeneousMedium(
@@ -426,6 +456,43 @@ namespace RISE
 			const Scalar smokeNCarbon,
 			const Scalar smokeAlbedoCarbon,
 			const Scalar smokeGCarbon,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const IScalarPainter* chemCHPainter,
+			const IScalarPainter* chemC2Painter,
+			const IScalarPainter* chemCO2Painter,
+			const IFunction1D* chemCHSPD,
+			const IFunction1D* chemC2SPD,
+			const IFunction1D* chemCO2SPD,
+			const Scalar chemCHIntervalMin,
+			const Scalar chemCHIntervalMax,
+			const Scalar chemC2IntervalMin,
+			const Scalar chemC2IntervalMax,
+			const Scalar chemCO2IntervalMin,
+			const Scalar chemCO2IntervalMax,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const Scalar smokeKmCond,
+			const Scalar smokeNCond,
+			const Scalar smokeAlbedoCond,
+			const Scalar smokeGCond,
 			const IPhaseFunction& phase
 			);
 
@@ -498,6 +565,23 @@ namespace RISE
 		Scalar GetThermalEmissionNM(
 			const Point3& pt,
 			const Scalar nm
+			) const override;
+		Scalar GetChemEmissionNM(
+			const Point3& pt,
+			const Scalar nm
+			) const;
+		Scalar GetChemSPDAuthoredArea(
+			const unsigned int band
+			) const
+		{
+			return band < 3u ? m_chemSPDArea[band] : 0.0;
+		}
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar nm,
+			ISampler& sampler
 			) const override;
 		Scalar GetThermalEmissionImportance() const override
 		{

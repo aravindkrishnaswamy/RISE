@@ -23,6 +23,7 @@
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <math.h>
@@ -1738,6 +1739,53 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	const Scalar smokeGCond,
 	const IPhaseFunction& phase
 	) :
+	MultichannelHeterogeneousMedium(
+		carbonPainter, temperaturePainter, condensedPainter,
+		0, 0, 0, 0, 0, 0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		volWidth, volHeight, volDepth, bboxMin, bboxMax, sceneUnitMeters,
+		sootEm, sootDensity, sootAlbedoHot, sootGHot,
+		smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+		smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond, phase )
+{
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const IScalarPainter* condensedPainter,
+	const IScalarPainter* chemCHPainter,
+	const IScalarPainter* chemC2Painter,
+	const IScalarPainter* chemCO2Painter,
+	const IFunction1D* chemCHSPD,
+	const IFunction1D* chemC2SPD,
+	const IFunction1D* chemCO2SPD,
+	const Scalar chemCHIntervalMin,
+	const Scalar chemCHIntervalMax,
+	const Scalar chemC2IntervalMin,
+	const Scalar chemC2IntervalMax,
+	const Scalar chemCO2IntervalMin,
+	const Scalar chemCO2IntervalMax,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const Scalar smokeKmCond,
+	const Scalar smokeNCond,
+	const Scalar smokeAlbedoCond,
+	const Scalar smokeGCond,
+	const IPhaseFunction& phase
+	) :
   HeterogeneousMedium(
 	  TrackingSigmaT633( sceneUnitMeters, sootEm, sootDensity,
 		  sootAlbedoHot, smokeKmCarbon, smokeKmCond ),
@@ -1745,6 +1793,11 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
   m_pCarbonAccessor( 0 ),
   m_pTemperatureAccessor( 0 ),
 	  m_pCondensedAccessor( 0 ),
+	  m_pChemAccessor{ 0, 0, 0 },
+	  m_pChemSPD{ 0, 0, 0 },
+	  m_chemIntervalMin{ chemCHIntervalMin, chemC2IntervalMin, chemCO2IntervalMin },
+	  m_chemIntervalMax{ chemCHIntervalMax, chemC2IntervalMax, chemCO2IntervalMax },
+	  m_chemSPDArea{ 0.0, 0.0, 0.0 },
   m_sceneUnitMeters( sceneUnitMeters ),
   m_sootEm( sootEm ),
   m_sootDensity( sootDensity ),
@@ -1770,6 +1823,13 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
   m_minPositiveThermalEmissionPdf( 0.0 ),
   m_valid( false )
 {
+	const IScalarPainter* chemPainters[3] = {
+		chemCHPainter, chemC2Painter, chemCO2Painter };
+	const IFunction1D* chemSPDs[3] = { chemCHSPD, chemC2SPD, chemCO2SPD };
+	const bool hasAnyChem = chemPainters[0] || chemPainters[1] || chemPainters[2] ||
+		chemSPDs[0] || chemSPDs[1] || chemSPDs[2];
+	const bool hasAllChem = chemPainters[0] && chemPainters[1] && chemPainters[2] &&
+		chemSPDs[0] && chemSPDs[1] && chemSPDs[2];
 	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
 	const bool validDimensions = volWidth >= 2 && volHeight >= 2 && volDepth >= 2 &&
 		volWidth <= 0x7fffffffu && volHeight <= 0x7fffffffu && volDepth <= 0x7fffffffu;
@@ -1797,10 +1857,14 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		(!condensedPainter ||
 			(smokeKmCond >= 0.0 && smokeNCond >= 0.0 &&
 			smokeAlbedoCond >= 0.0 && smokeAlbedoCond <= 1.0 &&
-			smokeGCond > -1.0 && smokeGCond < 1.0));
+			smokeGCond > -1.0 && smokeGCond < 1.0)) &&
+		(!hasAnyChem || hasAllChem);
 	if( !validDimensions || !validBounds || !validOptics ||
 		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ||
-		(condensedPainter && condensedPainter->HasPerChannelVariation()) ) {
+		(condensedPainter && condensedPainter->HasPerChannelVariation()) ||
+		(hasAllChem && (chemPainters[0]->HasPerChannelVariation() ||
+			chemPainters[1]->HasPerChannelVariation() ||
+			chemPainters[2]->HasPerChannelVariation())) ) {
 		GlobalLog()->PrintEasyError(
 			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or constituent optical parameter" );
 		return;
@@ -1818,6 +1882,29 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 			*condensedPainter, volWidth, volHeight, volDepth,
 			bboxMin, bboxMax, "condensed", false );
 		if( !m_pCondensedAccessor ) return;
+	}
+	if( hasAllChem ) {
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_pChemSPD[band] = chemSPDs[band];
+			m_pChemSPD[band]->addref();
+		}
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_chemSPDArea[band] = NormalizeChemSPD(
+				*m_pChemSPD[band], m_chemIntervalMin[band],
+				m_chemIntervalMax[band] );
+			if( m_chemSPDArea[band] <= 0.0 ) {
+				GlobalLog()->PrintEasyError(
+					"MultichannelHeterogeneousMedium:: chem SPD interval or 1 nm trapezoid normalization is invalid" );
+				return;
+			}
+		}
+		static const char* chemNames[3] = { "chem_CH", "chem_C2", "chem_CO2" };
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_pChemAccessor[band] = BakeScalarChannel(
+				*chemPainters[band], volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, chemNames[band], false );
+			if( !m_pChemAccessor[band] ) return;
+		}
 	}
 
 	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
@@ -1849,6 +1936,126 @@ MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 	safe_release( m_pCarbonAccessor );
 	safe_release( m_pTemperatureAccessor );
 	safe_release( m_pCondensedAccessor );
+	for( unsigned int band = 0; band < 3u; ++band ) {
+		safe_release( m_pChemAccessor[band] );
+		safe_release( m_pChemSPD[band] );
+	}
+}
+
+Scalar MultichannelHeterogeneousMedium::NormalizeChemSPD(
+	const IFunction1D& curve,
+	const Scalar intervalMin,
+	const Scalar intervalMax
+	)
+{
+	if( !RISE::IsFiniteDouble(intervalMin) ||
+		!RISE::IsFiniteDouble(intervalMax) || intervalMax <= intervalMin ) {
+		return 0.0;
+	}
+	Scalar x = intervalMin;
+	Scalar left = curve.Evaluate(x);
+	if( !RISE::IsFiniteDouble(left) || left < 0.0 ) return 0.0;
+	Scalar integral = 0.0;
+	while( x < intervalMax ) {
+		const Scalar next = fmin( x + 1.0, intervalMax );
+		if( next <= x ) return 0.0;
+		const Scalar right = curve.Evaluate(next);
+		if( !RISE::IsFiniteDouble(right) || right < 0.0 ) return 0.0;
+		integral += 0.5*(left+right)*(next-x);
+		if( !RISE::IsFiniteDouble(integral) ) return 0.0;
+		x = next;
+		left = right;
+	}
+	return integral > 0.0 ? integral : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupChemBand(
+	const unsigned int band,
+	const Point3& worldPt
+	) const
+{
+	return band < 3u && m_pChemAccessor[band]
+		? LookupChannel( *m_pChemAccessor[band], worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::NormalizedChemSPD(
+	const unsigned int band,
+	const Scalar nm
+	) const
+{
+	if( band >= 3u || !m_pChemSPD[band] || m_chemSPDArea[band] <= 0.0 ||
+		!RISE::IsFiniteDouble(nm) || nm < 380.0 || nm > 780.0 ||
+		nm < m_chemIntervalMin[band] || nm > m_chemIntervalMax[band] ) {
+		return 0.0;
+	}
+	const Scalar value = m_pChemSPD[band]->Evaluate(nm);
+	assert( RISE::IsFiniteDouble(value) && value >= 0.0 );
+	return RISE::IsFiniteDouble(value) && value > 0.0
+		? value/m_chemSPDArea[band] : 0.0;
+}
+
+void MultichannelHeterogeneousMedium::AppendChemPanelBreakpoints(
+	const Ray& ray,
+	const Scalar segmentStart,
+	const Scalar segmentEnd,
+	std::vector<Scalar>& breakpoints
+	) const
+{
+	const Scalar origins[3] = { ray.origin.x, ray.origin.y, ray.origin.z };
+	const Scalar directions[3] = { ray.Dir().x, ray.Dir().y, ray.Dir().z };
+	const Scalar bounds[3] = { m_bboxMin.x, m_bboxMin.y, m_bboxMin.z };
+	const Scalar extents[3] = { m_bboxExtent.x, m_bboxExtent.y, m_bboxExtent.z };
+	const unsigned int dimensions[3] = { m_volWidth, m_volHeight, m_volDepth };
+	for( unsigned int axis = 0; axis < 3u; ++axis ) {
+		if( directions[axis] == 0.0 ) continue;
+		const Scalar scale = Scalar(dimensions[axis])/extents[axis];
+		const Scalar offset = InterpolationAccessorOffset(dimensions[axis]);
+		const Scalar base = (origins[axis]-bounds[axis])*scale-offset;
+		const Scalar slope = directions[axis]*scale;
+		const Scalar u0 = base+slope*segmentStart;
+		const Scalar u1 = base+slope*segmentEnd;
+		long long first = static_cast<long long>(ceil(fmin(u0,u1)));
+		long long last = static_cast<long long>(floor(fmax(u0,u1)));
+		const long long latticeFirst = static_cast<long long>(ceil(-offset));
+		const long long latticeLast = static_cast<long long>(
+			floor(Scalar(dimensions[axis])-offset) );
+		first = std::max(first,latticeFirst);
+		last = std::min(last,latticeLast);
+		for( long long knot = first; knot <= last; ++knot ) {
+			const Scalar t = (Scalar(knot)-base)/slope;
+			if( t > segmentStart && t < segmentEnd ) breakpoints.push_back(t);
+		}
+	}
+}
+
+Scalar MultichannelHeterogeneousMedium::ChemPanelSupport(
+	const Ray& ray,
+	const Scalar panelStart,
+	const Scalar panelEnd
+	) const
+{
+	const Point3 middle = ray.PointAtLength(0.5*(panelStart+panelEnd));
+	const Scalar nx = (middle.x-m_bboxMin.x)/m_bboxExtent.x;
+	const Scalar ny = (middle.y-m_bboxMin.y)/m_bboxExtent.y;
+	const Scalar nz = (middle.z-m_bboxMin.z)/m_bboxExtent.z;
+	const int ix = static_cast<int>(floor(
+		nx*Scalar(m_volWidth)-InterpolationAccessorOffset(m_volWidth)));
+	const int iy = static_cast<int>(floor(
+		ny*Scalar(m_volHeight)-InterpolationAccessorOffset(m_volHeight)));
+	const int iz = static_cast<int>(floor(
+		nz*Scalar(m_volDepth)-InterpolationAccessorOffset(m_volDepth)));
+	Scalar maxima[3] = { 0.0, 0.0, 0.0 };
+	for( int dz = 0; dz <= 1; ++dz ) {
+		for( int dy = 0; dy <= 1; ++dy ) {
+			for( int dx = 0; dx <= 1; ++dx ) {
+				for( unsigned int band = 0; band < 3u; ++band ) {
+					maxima[band] = fmax( maxima[band],
+						m_pChemAccessor[band]->GetValue(ix+dx,iy+dy,iz+dz) );
+				}
+			}
+		}
+	}
+	return maxima[0]+maxima[1]+maxima[2];
 }
 
 unsigned int MultichannelHeterogeneousMedium::EmissionBinIndex(
@@ -2284,6 +2491,103 @@ Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
 	return sigmaA > 0.0
 		? sigmaA * PlanckSpectralRadianceNM( nm, LookupTemperature( pt ) )
 		: 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetChemEmissionNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid || !m_pChemAccessor[0] ) return 0.0;
+	Scalar sourceSI = 0.0;
+	for( unsigned int band = 0; band < 3u; ++band ) {
+		sourceSI += LookupChemBand(band,pt)*NormalizedChemSPD(band,nm);
+	}
+	return sourceSI > 0.0
+		? m_sceneUnitMeters*sourceSI/FOUR_PI : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::EstimateChemEmissionSegmentNM(
+	const Ray& ray,
+	const Scalar segmentStart,
+	const Scalar segmentEnd,
+	const Scalar nm,
+	ISampler& sampler
+	) const
+{
+	if( !m_valid || !m_pChemAccessor[0] ||
+		!RISE::IsFiniteDouble(segmentStart) ||
+		!RISE::IsFiniteDouble(segmentEnd) || segmentEnd <= segmentStart ) {
+		return 0.0;
+	}
+
+	std::vector<Scalar> boundaries;
+	boundaries.reserve(16);
+	boundaries.push_back(segmentStart);
+	AppendChemPanelBreakpoints(ray,segmentStart,segmentEnd,boundaries);
+	boundaries.push_back(segmentEnd);
+	std::sort(boundaries.begin(),boundaries.end());
+	boundaries.erase(std::unique(boundaries.begin(),boundaries.end()),boundaries.end());
+	if( boundaries.size() < 2u ) return 0.0;
+
+	std::vector<Scalar> support;
+	support.reserve(boundaries.size()-1u);
+	Scalar totalWeight = 0.0;
+	for( size_t panel = 0; panel+1u < boundaries.size(); ++panel ) {
+		const Scalar length = boundaries[panel+1u]-boundaries[panel];
+		const Scalar bound = length > 0.0
+			? ChemPanelSupport(ray,boundaries[panel],boundaries[panel+1u]) : 0.0;
+		const Scalar weight = bound > 0.0
+			? StablePositiveProduct({length,bound}) : 0.0;
+		if( weight < 0.0 ) return 0.0;
+		support.push_back(weight);
+		totalWeight += weight;
+		if( !RISE::IsFiniteDouble(totalWeight) ) return 0.0;
+	}
+
+	const Scalar segmentLength = segmentEnd-segmentStart;
+	Scalar sampleT = 0.0;
+	if( totalWeight > 0.0 && sampler.Get1D() >= 0.5 ) {
+		const Scalar target = sampler.Get1D()*totalWeight;
+		Scalar cumulative = 0.0;
+		size_t selected = support.size()-1u;
+		for( size_t panel = 0; panel < support.size(); ++panel ) {
+			cumulative += support[panel];
+			if( target < cumulative ) {
+				selected = panel;
+				break;
+			}
+		}
+		sampleT = boundaries[selected] + sampler.Get1D()*
+			(boundaries[selected+1u]-boundaries[selected]);
+	} else {
+		sampleT = segmentStart+sampler.Get1D()*segmentLength;
+	}
+
+	Scalar reactionDensity = 0.0;
+	if( totalWeight > 0.0 ) {
+		for( size_t panel = 0; panel < support.size(); ++panel ) {
+			const bool contains = sampleT >= boundaries[panel] &&
+				(panel+1u == support.size()
+					? sampleT <= boundaries[panel+1u]
+					: sampleT < boundaries[panel+1u]);
+			if( contains ) {
+				const Scalar length = boundaries[panel+1u]-boundaries[panel];
+				reactionDensity = length > 0.0
+					? (support[panel]/totalWeight)/length : 0.0;
+				break;
+			}
+		}
+	}
+	const Scalar proposalDensity = totalWeight > 0.0
+		? 0.5/segmentLength+0.5*reactionDensity : 1.0/segmentLength;
+	if( !RISE::IsFiniteDouble(proposalDensity) || proposalDensity <= 0.0 ) {
+		return 0.0;
+	}
+	const Scalar epsilon = GetChemEmissionNM(ray.PointAtLength(sampleT),nm);
+	if( epsilon <= 0.0 ) return 0.0;
+	const Scalar tau = EvalDeterministicOpticalDepthNM(ray,sampleT,nm);
+	return exp(-tau)*epsilon/proposalDensity;
 }
 
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionPowerProxy() const

@@ -206,6 +206,7 @@ multichannel_heterogeneous_medium
 	name				phase_b_fire
 	channel_carbon			painter carbon_field
 	channel_temperature		painter temperature_field
+	chem_model			none
 	bake_resolution			112 176 16
 	bbox_min			-0.055 0.0 -0.020
 	bbox_max			 0.055 0.16 0.020

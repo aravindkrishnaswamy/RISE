@@ -33,6 +33,7 @@
 #include "../src/Library/Materials/HomogeneousMedium.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/MediumTransport.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -165,6 +166,106 @@ namespace
 
 	protected:
 		~BilinearHumpTemperaturePainter() override = default;
+	};
+
+	class IntervalTopHatFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+		const Scalar minimum_;
+		const Scalar maximum_;
+		const Scalar height_;
+
+	public:
+		IntervalTopHatFunction(
+			const Scalar minimum,
+			const Scalar maximum,
+			const Scalar height = 1.0
+			) : minimum_(minimum), maximum_(maximum), height_(height)
+		{
+		}
+
+		Scalar Evaluate( const Scalar wavelength ) const override
+		{
+			return wavelength >= minimum_ && wavelength <= maximum_ ? height_ : 0.0;
+		}
+
+	protected:
+		~IntervalTopHatFunction() override = default;
+	};
+
+	class OffsetQuadraticFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+		const Scalar origin_;
+
+	public:
+		explicit OffsetQuadraticFunction( const Scalar origin ) : origin_(origin) {}
+
+		Scalar Evaluate( const Scalar wavelength ) const override
+		{
+			const Scalar offset = wavelength-origin_;
+			return offset*offset;
+		}
+
+	protected:
+		~OffsetQuadraticFunction() override = default;
+	};
+
+	class ThinSheetXPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		const Scalar minimum_;
+		const Scalar maximum_;
+		const Scalar value_;
+
+	public:
+		ThinSheetXPainter(
+			const Scalar minimum,
+			const Scalar maximum,
+			const Scalar value
+			) : minimum_(minimum), maximum_(maximum), value_(value)
+		{
+		}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple(ri.ptIntersection.x >= minimum_ &&
+				ri.ptIntersection.x <= maximum_ ? value_ : 0.0);
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~ThinSheetXPainter() override = default;
+	};
+
+	class ForcedBranchSampler : public ISampler
+	{
+		const Scalar branch_;
+		RandomNumberGenerator random_;
+		bool first_;
+
+	public:
+		ForcedBranchSampler( const Scalar branch, const unsigned int seed ) :
+			branch_(branch), random_(seed), first_(true)
+		{
+		}
+
+		void BeginSample() { first_ = true; }
+
+		Scalar Get1D() override
+		{
+			if( first_ ) {
+				first_ = false;
+				return branch_;
+			}
+			return random_.CanonicalRandom();
+		}
+
+		Point2 Get2D() override { return Point2(Get1D(),Get1D()); }
 	};
 
 	Scalar ReferencePhiAwareSigmaT( const Scalar x )
@@ -370,6 +471,35 @@ namespace
 			0.26, 1800.0, 0.10, 0.5,
 			8.7, 1.2, 0.6, -0.4,
 			4.0, 0.5, 0.9, 0.7 );
+		return ok ? medium : nullptr;
+	}
+
+	IMedium* CreateMediumWithChem(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const IScalarPainter& chemCH,
+		const IScalarPainter& chemC2,
+		const IScalarPainter& chemCO2,
+		const IFunction1D& spdCH,
+		const IFunction1D& spdC2,
+		const IFunction1D& spdCO2,
+		const Scalar intervalMin,
+		const Scalar intervalMax,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const Scalar sceneUnitMeters,
+		const unsigned int resolution = 8
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool ok = RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+			&medium, carbon, temperature, nullptr,
+			chemCH, chemC2, chemCO2, spdCH, spdC2, spdCO2,
+			intervalMin, intervalMax, intervalMin, intervalMax,
+			intervalMin, intervalMax,
+			resolution, resolution, resolution, bboxMin, bboxMax,
+			sceneUnitMeters, 0.26, 1800.0, 0.10, 0.5,
+			0.0, 1.2, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0 );
 		return ok ? medium : nullptr;
 	}
 
@@ -1194,6 +1324,259 @@ namespace
 		safe_release(temperature);
 	}
 
+	void TestChemSPDNormalizationClippingAndSceneScale()
+	{
+		std::cout << "TestChemSPDNormalizationClippingAndSceneScale" << std::endl;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemCH =
+			new AffineWorldScalarPainter( 120.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemC2 =
+			new AffineWorldScalarPainter( 50.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemZero =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		IntervalTopHatFunction* tenNanometre =
+			new IntervalTopHatFunction( 500.0, 510.0 );
+
+		IMedium* medium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		Check( fire != nullptr, "chem medium constructs from three authored SPD curves" );
+		if( fire ) {
+			Check( Near(fire->GetChemSPDAuthoredArea(0),10.0,1e-15),
+				"pinned 1 nm trapezoid normalizes a 10 nm top-hat to area ten" );
+			const Scalar glArea = GaussLegendre21::IntegrateVisibleBand(
+				[&](const Scalar nm){ return tenNanometre->Evaluate(nm); } );
+			Check( std::fabs(glArea-10.0) > 0.5,
+				"the shared smooth-band GL21 rule is observably unsuitable for the 10 nm top-hat" );
+			const Scalar expectedSource = 120.0/(FOUR_PI*10.0);
+			Check( NearRelative(fire->GetChemEmissionNM(Point3(0.5,0.5,0.5),505.0),
+				expectedSource,1e-14),
+				"band-integrated W/m^3 becomes per-nm per-steradian source after authored-interval normalization" );
+			Check( fire->GetChemEmissionNM(Point3(0.5,0.5,0.5),499.0) == 0.0,
+				"normalized chem SPD has no support outside its declared interval" );
+
+			RandomNumberGenerator rng(901u);
+			Implementation::IndependentSampler sampler(rng);
+			const Ray ray(Point3(-1.0,0.5,0.5),Vector3(1.0,0.0,0.0));
+			const Scalar lineEstimate = fire->EstimateChemEmissionSegmentNM(
+				ray,1.0,2.0,505.0,sampler);
+			Check( NearRelative(lineEstimate,expectedSource,1e-14),
+				"full-segment chem estimator is exact for a zero-extinction uniform source" );
+		}
+
+		OffsetQuadraticFunction* quadraticSPD =
+			new OffsetQuadraticFunction(500.0);
+		IMedium* quadraticMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*quadraticSPD, *quadraticSPD, *quadraticSPD,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* quadratic =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(quadraticMedium);
+		if( quadratic ) {
+			// Composite h=1 trapezoid for x^2 over [0,10]:
+			// 1/2(0^2+10^2) + sum_{i=1}^{9} i^2 = 50+285 = 335.
+			Check( Near(quadratic->GetChemSPDAuthoredArea(0),335.0,1e-14),
+				"nonconstant SPD pins every 1 nm composite-trapezoid sample" );
+			Check( NearRelative(quadratic->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),120.0*25.0/(FOUR_PI*335.0),1e-14),
+				"the pinned nonconstant normalization area is used by spectral emission" );
+		}
+
+		IntervalTopHatFunction* fractionalHat =
+			new IntervalTopHatFunction( 500.0, 510.5 );
+		IMedium* fractionalMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*fractionalHat, *fractionalHat, *fractionalHat,
+			500.0, 510.5, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* fractional =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(fractionalMedium);
+		if( fractional ) {
+			Check( Near(fractional->GetChemSPDAuthoredArea(0),10.5,1e-15),
+				"1 nm trapezoid normalization includes the final fractional panel" );
+			Check( NearRelative(fractional->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),120.0/(FOUR_PI*10.5),1e-14),
+				"fractional-panel normalization controls the per-nm source" );
+		}
+
+		IMedium* overlappingMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemC2, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 0.01 );
+		const MultichannelHeterogeneousMedium* overlapping =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(overlappingMedium);
+		if( overlapping ) {
+			Check( NearRelative(overlapping->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),
+				0.01*(120.0+50.0)/(FOUR_PI*10.0),1e-14),
+				"overlapping chem bands add their normalized per-nm sources" );
+		}
+
+		IntervalTopHatFunction* clippedHat =
+			new IntervalTopHatFunction( 375.0, 385.0 );
+		IMedium* clippedMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*clippedHat, *clippedHat, *clippedHat,
+			375.0, 385.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* clipped =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(clippedMedium);
+		if( clipped ) {
+			Scalar visibleIntegral = 0.0;
+			for( unsigned int nm = 380u; nm < 385u; ++nm ) {
+				visibleIntegral += 0.5*(
+					clipped->GetChemEmissionNM(Point3(0.5,0.5,0.5),Scalar(nm))+
+					clipped->GetChemEmissionNM(Point3(0.5,0.5,0.5),Scalar(nm+1u)) );
+			}
+			Check( NearRelative(visibleIntegral,0.5*120.0/FOUR_PI,1e-14),
+				"renderer-band clipping loses half the authored power without renormalizing" );
+		}
+
+		IMedium* centimetreMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(100,100,100), 0.01 );
+		const MultichannelHeterogeneousMedium* centimetres =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(centimetreMedium);
+		if( fire && centimetres ) {
+			RandomNumberGenerator metreRng(77u);
+			RandomNumberGenerator centimetreRng(77u);
+			Implementation::IndependentSampler metreSampler(metreRng);
+			Implementation::IndependentSampler centimetreSampler(centimetreRng);
+			const Scalar metres = fire->EstimateChemEmissionSegmentNM(
+				Ray(Point3(-1.0,0.5,0.5),Vector3(1,0,0)),1.0,2.0,505.0,metreSampler);
+			const Scalar cm = centimetres->EstimateChemEmissionSegmentNM(
+				Ray(Point3(-100.0,50.0,50.0),Vector3(1,0,0)),100.0,200.0,
+				505.0,centimetreSampler);
+			Check( NearRelative(cm,metres,1e-14),
+				"chem line radiance is invariant between metre and centimetre scene units" );
+		}
+
+		IntervalTopHatFunction* zeroSPD =
+			new IntervalTopHatFunction(500.0,510.0,0.0);
+		IMedium* invalidSPDMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*zeroSPD, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		Check( invalidSPDMedium == nullptr,
+			"zero-area authored SPD is rejected at medium construction" );
+		safe_release(invalidSPDMedium);
+		safe_release(zeroSPD);
+
+		IntervalTopHatFunction* negativeSPD =
+			new IntervalTopHatFunction(500.0,510.0,-1.0);
+		invalidSPDMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*negativeSPD, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		Check( invalidSPDMedium == nullptr,
+			"negative authored SPD samples are rejected at medium construction" );
+		safe_release(invalidSPDMedium);
+		safe_release(negativeSPD);
+
+		safe_release(centimetreMedium);
+		safe_release(clippedMedium);
+		safe_release(clippedHat);
+		safe_release(overlappingMedium);
+		safe_release(fractionalMedium);
+		safe_release(fractionalHat);
+		safe_release(quadraticMedium);
+		safe_release(quadraticSPD);
+		safe_release(medium);
+		safe_release(tenNanometre);
+		safe_release(chemZero);
+		safe_release(chemC2);
+		safe_release(chemCH);
+		safe_release(temperature);
+		safe_release(carbon);
+	}
+
+	void TestChemReactionMixtureAgainstAttenuatedReference()
+	{
+		std::cout << "TestChemReactionMixtureAgainstAttenuatedReference" << std::endl;
+		ThinSheetXPainter* carbonSheet =
+			new ThinSheetXPainter(0.66,0.72,4.0);
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter(1000.0,0.0,0.0,0.0);
+		ThinSheetXPainter* reactionSheet =
+			new ThinSheetXPainter(0.66,0.72,200.0);
+		AffineWorldScalarPainter* chemZero =
+			new AffineWorldScalarPainter(0.0,0.0,0.0,0.0);
+		IntervalTopHatFunction* spd = new IntervalTopHatFunction(500.0,510.0);
+		IMedium* medium = CreateMediumWithChem(
+			*carbonSheet,*temperature,*reactionSheet,*chemZero,*chemZero,
+			*spd,*spd,*spd,500.0,510.0,
+			Point3(0,0,0),Point3(1,1,1),1.0,32u);
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		Check( fire != nullptr,
+			"thin reaction sheet aligned with an extinction transition constructs" );
+		if( fire ) {
+			const Scalar wavelength = 505.0;
+			const unsigned int referenceSteps = 200000u;
+			const Scalar h = 1.0/Scalar(referenceSteps);
+			Scalar reference = 0.0;
+			Scalar tau = 0.0;
+			for( unsigned int i = 0; i < referenceSteps; ++i ) {
+				const Scalar x = (Scalar(i)+0.5)*h;
+				const Point3 point(x,0.5,0.5);
+				const Scalar sigmaT = fire->GetCoefficientsNM(point,wavelength).sigma_t;
+				const Scalar epsilon = fire->GetChemEmissionNM(point,wavelength);
+				reference += exp(-(tau+0.5*sigmaT*h))*epsilon*h;
+				tau += sigmaT*h;
+			}
+			Check( tau > 1.0,
+				"the adversarial reaction sheet overlaps a genuinely high optical-depth transition" );
+
+			const Ray ray(Point3(0,0.5,0.5),Vector3(1,0,0));
+			const unsigned int sampleCount = 12000u;
+			ForcedBranchSampler uniformSampler(0.25,7101u);
+			ForcedBranchSampler reactionSampler(0.75,9107u);
+			Scalar uniformSum = 0.0;
+			Scalar uniformSquareSum = 0.0;
+			Scalar reactionSum = 0.0;
+			Scalar reactionSquareSum = 0.0;
+			for( unsigned int i = 0; i < sampleCount; ++i ) {
+				uniformSampler.BeginSample();
+				const Scalar uniformEstimate = fire->EstimateChemEmissionSegmentNM(
+					ray,0.0,1.0,wavelength,uniformSampler);
+				uniformSum += uniformEstimate;
+				uniformSquareSum += uniformEstimate*uniformEstimate;
+
+				reactionSampler.BeginSample();
+				const Scalar reactionEstimate = fire->EstimateChemEmissionSegmentNM(
+					ray,0.0,1.0,wavelength,reactionSampler);
+				reactionSum += reactionEstimate;
+				reactionSquareSum += reactionEstimate*reactionEstimate;
+			}
+			const Scalar uniformMean = uniformSum/Scalar(sampleCount);
+			const Scalar reactionMean = reactionSum/Scalar(sampleCount);
+			const Scalar estimate = 0.5*(uniformMean+reactionMean);
+			const Scalar uniformVariance = fmax(0.0,
+				uniformSquareSum/Scalar(sampleCount)-uniformMean*uniformMean);
+			const Scalar reactionVariance = fmax(0.0,
+				reactionSquareSum/Scalar(sampleCount)-reactionMean*reactionMean);
+			const Scalar standardError = sqrt(0.25*(uniformVariance+reactionVariance)/
+				Scalar(sampleCount));
+			Check( uniformMean > 0.0 && reactionMean > 0.0,
+				"both the uniform and reaction-importance halves carry thin-sheet contribution" );
+			Check( std::fabs(estimate-reference) <=
+				6.0*standardError+0.003*reference,
+				"real chem mixture matches an independent attenuated thin-sheet reference" );
+		}
+
+		safe_release(medium);
+		safe_release(spd);
+		safe_release(chemZero);
+		safe_release(reactionSheet);
+		safe_release(temperature);
+		safe_release(carbonSheet);
+	}
+
 	void TestNonFiniteRejection()
 	{
 		std::cout << "TestNonFiniteRejection" << std::endl;
@@ -1284,6 +1667,7 @@ namespace
 			{ "name", "fire" },
 			{ "channel_carbon", "painter carbon" },
 			{ "channel_temperature", "painter temperature" },
+			{ "chem_model", "none" },
 			{ "bake_resolution", "4 4 4" },
 			{ "bbox_min", "0 0 0" },
 			{ "bbox_max", "1 1 1" },
@@ -1320,6 +1704,27 @@ namespace
 		}
 	}
 
+	void AddChemFields( ParseStateBag& bag, const char* omit )
+	{
+		struct Pair { const char* key; const char* value; };
+		static const Pair values[] = {
+			{ "channel_chem_ch", "painter chem_ch" },
+			{ "channel_chem_c2", "painter chem_c2" },
+			{ "channel_chem_co2", "painter chem_co2" },
+			{ "chem_spd_ch", "chem_ch_spd" },
+			{ "chem_spd_c2", "chem_c2_spd" },
+			{ "chem_spd_co2", "chem_co2_spd" },
+			{ "chem_interval_ch", "500 510" },
+			{ "chem_interval_c2", "500 510" },
+			{ "chem_interval_co2", "500 510" }
+		};
+		for( const Pair& value : values ) {
+			if( !omit || std::string(value.key) != omit ) {
+				bag.SetSingle(value.key,value.value);
+			}
+		}
+	}
+
 	void TestDescriptorAndRequiredness()
 	{
 		std::cout << "TestDescriptorAndRequiredness" << std::endl;
@@ -1345,6 +1750,20 @@ namespace
 			}
 			Check( foundOptional,
 				(std::string( field ) + " is advertised as conditionally required").c_str() );
+		}
+		const char* chemFields[] = {
+			"chem_model", "channel_chem_ch", "channel_chem_c2",
+			"channel_chem_co2", "chem_spd_ch", "chem_spd_c2",
+			"chem_spd_co2", "chem_interval_ch", "chem_interval_c2",
+			"chem_interval_co2"
+		};
+		for( const char* field : chemFields ) {
+			bool foundOptional = false;
+			for( const ParameterDescriptor& parameter : descriptor.parameters ) {
+				if( parameter.name == field ) foundOptional = !parameter.required;
+			}
+			Check( foundOptional,
+				(std::string(field)+" is advertised as part of the conditional chem bundle").c_str() );
 		}
 
 		IJobPriv* job = nullptr;
@@ -1375,6 +1794,31 @@ namespace
 			Check( !parser->Finalize( bag, *job ),
 				(std::string( orphaned ) + " without channel_condensed fails").c_str() );
 		}
+		{
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, "chem_model" );
+			Check( !parser->Finalize(bag,*job),
+				"omitting both the all-band chem bundle and chem_model none fails" );
+		}
+		{
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, nullptr );
+			bag.SetSingle( "channel_chem_ch", "painter chem_ch" );
+			Check( !parser->Finalize(bag,*job),
+				"a partial chem bundle fails even when chem_model none is present" );
+		}
+		const char* requiredChemBundle[] = {
+			"channel_chem_ch", "channel_chem_c2", "channel_chem_co2",
+			"chem_spd_ch", "chem_spd_c2", "chem_spd_co2",
+			"chem_interval_ch", "chem_interval_c2", "chem_interval_co2"
+		};
+		for( const char* omitted : requiredChemBundle ) {
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, "chem_model" );
+			AddChemFields( bag, omitted );
+			Check( !parser->Finalize(bag,*job),
+				(std::string("chem bundle without ")+omitted+" fails").c_str() );
+		}
 		safe_release( job );
 	}
 
@@ -1386,11 +1830,26 @@ namespace
 			"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
 			"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
 			"scalar_painter\n{\nname condensed\nvalue 2\n}\n\n"
+			"scalar_painter\n{\nname chem_ch\nvalue 120\n}\n\n"
+			"scalar_painter\n{\nname chem_c2\nvalue 50\n}\n\n"
+			"scalar_painter\n{\nname chem_co2\nvalue 8\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_ch_spd\ncp 499 0\ncp 500 1\ncp 510 1\ncp 511 0\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_c2_spd\ncp 549 0\ncp 550 1\ncp 555 1\ncp 556 0\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_co2_spd\ncp 699 0\ncp 700 3\ncp 702 3\ncp 703 0\n}\n\n"
 			"multichannel_heterogeneous_medium\n{\n"
 			"name fire\n"
 			"channel_carbon painter carbon\n"
 			"channel_temperature painter temperature\n"
 			"channel_condensed painter condensed\n"
+			"channel_chem_ch painter chem_ch\n"
+			"channel_chem_c2 painter chem_c2\n"
+			"channel_chem_co2 painter chem_co2\n"
+			"chem_spd_ch chem_ch_spd\n"
+			"chem_spd_c2 chem_c2_spd\n"
+			"chem_spd_co2 chem_co2_spd\n"
+			"chem_interval_ch 500 510\n"
+			"chem_interval_c2 550 555\n"
+			"chem_interval_co2 700 702\n"
 			"bake_resolution 4 4 4\n"
 			"bbox_min 0 0 0\n"
 			"bbox_max 100 100 100\n"
@@ -1439,6 +1898,21 @@ namespace
 				Check( Near( fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t[0],
 					expectedSigmaT, 1e-12 ),
 					"scene_options.scene_unit reaches medium construction" );
+				Check( Near(fire->GetChemSPDAuthoredArea(0),10.0,1e-15),
+					"authored CH fixture curve uses its own normalization interval" );
+				Check( Near(fire->GetChemSPDAuthoredArea(1),5.0,1e-15),
+					"authored C2 fixture curve uses its distinct normalization interval" );
+				Check( Near(fire->GetChemSPDAuthoredArea(2),6.0,1e-15),
+					"authored CO2 fixture curve preserves its distinct shape scale" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),505.0),
+					0.01*120.0/(FOUR_PI*10.0),1e-14),
+					"CST binding isolates the CH painter, SPD, and interval" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),552.0),
+					0.01*50.0/(FOUR_PI*5.0),1e-14),
+					"CST binding isolates the C2 painter, SPD, and interval" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),701.0),
+					0.01*8.0*3.0/(FOUR_PI*6.0),1e-14),
+					"CST binding isolates the CO2 painter, SPD, and interval" );
 
 				const Scalar wavelengths[] = { 450.0, 750.0 };
 				for( const Scalar nm : wavelengths ) {
@@ -1477,6 +1951,8 @@ int main()
 	TestPhysicalUnitsAndSceneScale();
 	TestPhiSupMajorant();
 	TestPhiAwareQuadratureAndDistancePdf();
+	TestChemSPDNormalizationClippingAndSceneScale();
+	TestChemReactionMixtureAgainstAttenuatedReference();
 	TestNonFiniteRejection();
 	TestDescriptorAndRequiredness();
 	TestSceneLanguageAndSceneUnitPropagation();

@@ -105,6 +105,7 @@ namespace
 			"name fire\n"
 			"channel_carbon painter carbon\n"
 			"channel_temperature painter temperature\n"
+			"chem_model none\n"
 			"bake_resolution 4 4 4\n"
 			"bbox_min " << -0.5 * scale << " " << -0.5 * scale << " " << -slabLength << "\n"
 			"bbox_max " << 0.5 * scale << " " << 0.5 * scale << " " << 2.0 * slabLength << "\n"

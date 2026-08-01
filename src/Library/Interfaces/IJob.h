@@ -3812,6 +3812,42 @@ namespace RISE
 			const double /*smoke_g_cond*/
 			) { return false; }
 
+		//! Adds the Phase-A medium with the all-or-none chem channel/SPD bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithChem(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/,
+			const double /*smoke_km_cond*/,
+			const double /*smoke_n_cond*/,
+			const double /*smoke_albedo_cond*/,
+			const double /*smoke_g_cond*/
+			) { return false; }
+
 	};
 
 

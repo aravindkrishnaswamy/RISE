@@ -6159,6 +6159,98 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 	return true;
 }
 
+bool Job::AddMultichannelHeterogeneousMediumWithChem(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ||
+		!chem_ch_painter || !chem_c2_painter || !chem_co2_painter ||
+		!chem_spd_ch || !chem_spd_c2 || !chem_spd_co2 ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	IScalarPainter* painters[6] = {
+		pScalarPntManager->GetItem(carbon_painter),
+		pScalarPntManager->GetItem(temperature_painter),
+		condensed_painter && condensed_painter[0]
+			? pScalarPntManager->GetItem(condensed_painter) : 0,
+		pScalarPntManager->GetItem(chem_ch_painter),
+		pScalarPntManager->GetItem(chem_c2_painter),
+		pScalarPntManager->GetItem(chem_co2_painter) };
+	IFunction1D* curves[3] = {
+		pFunc1DManager->GetItem(chem_spd_ch),
+		pFunc1DManager->GetItem(chem_spd_c2),
+		pFunc1DManager->GetItem(chem_spd_co2) };
+	if( !painters[0] || !painters[1] ||
+		(condensed_painter && condensed_painter[0] && !painters[2]) ||
+		!painters[3] || !painters[4] || !painters[5] ||
+		!curves[0] || !curves[1] || !curves[2] ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithChem:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	for( unsigned int i = 0; i < 6u; ++i ) {
+		if( painters[i] && painters[i]->HasPerChannelVariation() ) {
+			GlobalLog()->PrintEasyError(
+				"Job::AddMultichannelHeterogeneousMediumWithChem:: physical channels require single-valued scalar painters" );
+			return false;
+		}
+	}
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+		&medium, *painters[0], *painters[1], painters[2],
+		*painters[3], *painters[4], *painters[5],
+		*curves[0], *curves[1], *curves[2],
+		Scalar(chem_interval_ch[0]), Scalar(chem_interval_ch[1]),
+		Scalar(chem_interval_c2[0]), Scalar(chem_interval_c2[1]),
+		Scalar(chem_interval_co2[0]), Scalar(chem_interval_co2[1]),
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), Scalar(soot_em), Scalar(soot_density),
+		Scalar(soot_albedo_hot), Scalar(soot_g_hot),
+		Scalar(smoke_km_carbon), Scalar(smoke_n_carbon),
+		Scalar(smoke_albedo_carbon), Scalar(smoke_g_carbon),
+		Scalar(smoke_km_cond), Scalar(smoke_n_cond),
+		Scalar(smoke_albedo_cond), Scalar(smoke_g_cond)) || !medium ) return false;
+	mediaMap[name] = medium;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

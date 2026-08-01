@@ -700,6 +700,7 @@ namespace
 				"channel_carbon painter @NAME@_carbon\n"
 				"channel_temperature painter @NAME@_temperature\n"
 				"channel_condensed painter @NAME@_condensed\n"
+				"chem_model none\n"
 				"bake_resolution 32 32 64\n"
 				"bbox_min -0.02 0 -0.02\n"
 				"bbox_max 0.02 0.08 0.02\n"
