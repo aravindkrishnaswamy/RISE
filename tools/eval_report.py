@@ -20,10 +20,11 @@ subdirectory is written per (scenario, provider, model, repeat):
                                          checkpointFraction, allPassed,
                                          checkpoints[] = {kind,passed,weight,detail,
                                          metricValue?,metricLabel?} -- metricValue
-                                         is OMITTED entirely except on the two
+                                         is OMITTED entirely except on the three
                                          "document" ops that populate it
                                          ("distinct_chunk_kinds" / geometry scope
-                                         expansion's "objects_reaching_kinds");
+                                         expansion's "objects_reaching_kinds" /
+                                         eval-harness S0.1's "param_binding");
                                          metricLabel rides ALONGSIDE it (the
                                          checkpoint's explicit "metricLabel", else
                                          its op name) and is likewise omitted when
@@ -844,10 +845,11 @@ def compute_group_stats(key, recs):
     status_counter = Counter()
     total_input = total_output = total_cached = 0
     wall_ms_list = []
-    # material-richness P0 (geometry scope expansion, 2026-07-29): any
-    # checkpoint carrying a numeric "metricValue" (today: the "document" ops
-    # "distinct_chunk_kinds" / "objects_reaching_kinds" -- see
-    # AgentEvalRunner.cpp's CheckOutcome::metricValue) contributes to a mean,
+    # material-richness P0 (geometry scope expansion, 2026-07-29; eval-harness
+    # S0.1 added a third op, 2026-07-31): any checkpoint carrying a numeric
+    # "metricValue" (today: the "document" ops "distinct_chunk_kinds" /
+    # "objects_reaching_kinds" / "param_binding" -- see AgentEvalRunner.cpp's
+    # CheckOutcome::metricValue) contributes to a mean,
     # so richness is a trend line across repeats/providers, not just
     # pass/fail. AGGREGATED PER metricLabel (never pooled ACROSS labels --
     # a scenario with painter-diversity AND geometry-diversity checkpoints
