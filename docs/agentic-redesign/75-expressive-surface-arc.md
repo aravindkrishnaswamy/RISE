@@ -374,6 +374,28 @@ main checkout after any worktree agent.  Runs: gemini via
   materials-and-media-basics, modeling-workflow, object-modeling — the
   anchor's observed read-set), carries the binding IN the copied
   snippet, and is checked on both subjects for transfer.
+- **2026-08-01 — S1 edit LANDED; measurement opened.**  The read-set
+  audit found the convertible surface far narrower than designed:
+  **3 of 5 read-set skills are lambertian-only** (no microsurface slot
+  exists in any of their snippets — which is also WHY anchor runs are
+  lambertian-dominated), object-modeling-recipes already carried the
+  74-arc conversions, and the whole live surface was
+  `materials-and-media-basics` — where both converted sites are exactly
+  the demo constants qwen was observed pasting verbatim
+  (cooktorrance `facets 0.08`→scalar_painter wear;
+  pbr `roughness 0.35`→perlin3d — each binding-form verified against
+  Job.cpp's per-slot manager resolution; the golden-sequence `0.1`
+  site honestly skipped, its teaching point IS the inline-scalar
+  fallback).  One fresh reviewer: zero P1/P2 (independent
+  execution re-validation; anti-overfit sweep clean; hook lines
+  frozen).  **Reach caveat pre-committed in the runconfigs before the
+  run**: this lever only touches runs that instantiate
+  pbr/cooktorrance-class materials — a 0/6 on all-lambertian documents
+  is a REACH failure (points at material-choice, an S2+ question), not
+  a copying failure; material-kind census precedes any verdict.
+  (Also for the record: the supervisor's S1 brief mis-stated the skill
+  path as docs/skills — the agent corpus lives at skills/agent/; the
+  writer caught it.  §4.3 discipline, mine again.)
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
