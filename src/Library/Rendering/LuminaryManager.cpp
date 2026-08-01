@@ -90,17 +90,79 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 		// that contract (CanBeAreaLight() false -- e.g. a field that tessellates to
 		// zero surface area) would feed NEE wrong positions and pdfs.  Refuse it as
 		// a luminary, with a diagnostic, rather than sample a broken light.  The
-		// object still renders and still emits when hit directly / by BSDF rays --
-		// it simply is not importance-sampled by NEE.
+		// object still renders and still contributes emission when directly viewed
+		// or reached by a BSDF-sampled ray -- it simply is not importance-sampled
+		// by NEE.
+		//
+		// NULL GEOMETRY (crash fix): pObject.GetGeometry() can legitimately be
+		// null -- a CSGObject has no single owned IGeometry* (its shape is
+		// synthesized on the fly from its two operand objects; see CSGObject.h/
+		// .cpp, which override IntersectRay/getBoundingBox but NOT GetArea() or
+		// UniformRandomPoint(), so those fall through to the base Object's
+		// `pGeometry->...` and null-deref if ever invoked).  The condition below
+		// used to be `pGeom && !pGeom->CanBeAreaLight()`, which short-circuited
+		// to false -- i.e. "acceptable" -- for exactly this null case, so a
+		// csg_object with an emissive material bound was pushed onto the
+		// luminaries list, and LightSampler later called GetArea() on it
+		// (Object::GetArea() -> pGeometry->GetArea() with pGeometry == 0) ->
+		// EXC_BAD_ACCESS.  A null geometry can never honour the
+		// UniformRandomPoint()/GetArea() contract, so it must be refused the
+		// same as CanBeAreaLight() == false.
+		//
+		// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix round
+		// 3 / P2b): this gate alone does NOT make "the object still glows
+		// when directly viewed" true by itself -- it only keeps the object
+		// OFF the NEE luminaries list (this function's job).  A refused
+		// object's emission is read back on a DIFFERENT code path entirely
+		// (EmissionShaderOp / the integrators' BSDF-hit emission blocks, and
+		// BDPT/VCM's s=0 / path-length-1 strategy), which had the IDENTICAL
+		// null-geometry crash independently (fixed alongside this in round 2:
+		// EmissionShaderOp.cpp, PathTracingIntegrator.cpp, BDPTIntegrator.cpp,
+		// VCMIntegrator.cpp, plus a base-layer null guard on Object::GetArea()/
+		// UniformRandomPoint() in Object.cpp).
+		//
+		// EXACTLY WHAT tests/CSGNullGeometryLuminaireCrashTest.cpp VERIFIES
+		// (P2b: do not overclaim beyond this) --
+		//   DIRECT camera view, non-crashing + non-zero radiance:
+		//     pathtracing_pel_rasterizer, bdpt_pel_rasterizer,
+		//     vcm_pel_rasterizer, AND the legacy EmissionShaderOp
+		//     (DefaultEmission) shaderop chain under pixelpel_rasterizer.
+		//   INDIRECT (BSDF-sampled, bsdfPdf>0) bounce hit, non-crashing +
+		//     non-zero radiance: pathtracing_pel_rasterizer ONLY
+		//     (PathTracingIntegrator.cpp's bsdfPdf>0 block) -- EmissionShaderOp's
+		//     OWN bsdfPdf>0 block is gated identically (code-verified, same
+		//     `pEmitGeom && pEmitGeom->CanBeAreaLight()` fix) but NOT
+		//     independently exercised by an indirect-bounce test.
+		//   NOT tested at all: the spectral/HWSS twins of every path above
+		//     (PathTracingIntegrator's NM loop, BDPT/VCM spectral rasterizers)
+		//     -- code-identical fixes (same file, same pattern) but no
+		//     dedicated spectral render test.
+		//   BDPT NOTE: BDPT's s=0 strategy hits a PRE-EXISTING, unrelated MIS
+		//     defect (MISWeight's remap0 promoting a non-NEE-sampleable
+		//     emitter's true pdfRev=0 to 1 -- see BDPTIntegrator.cpp's eye-walk
+		//     comment) that gives it LESS than PT/VCM's full weight on this
+		//     scene (an energy deficit, not a crash, and explicitly NOT fixed
+		//     by this crash-fix arc) -- "contributes emission" is verified,
+		//     "full weight" is NOT claimed for BDPT.
 		const IGeometry* pGeom = pObject.GetGeometry();
-		if( pGeom && !pGeom->CanBeAreaLight() ) {
+		if( !pGeom || !pGeom->CanBeAreaLight() ) {
 			GlobalLog()->PrintSourceError(
+				!pGeom ?
+				"LuminaryManager:: an emissive material is bound to an object with no directly-"
+				"owned geometry (e.g. a csg_object, whose shape comes from its two operand "
+				"objects rather than a single geometry chunk) -- it cannot be uniformly area-"
+				"sampled.  It will NOT act as an area light (no NEE importance sampling); it is "
+				"never selected by light-sampling, but still contributes emission on direct "
+				"camera view (PT/BDPT/VCM pel + the legacy EmissionShaderOp chain, verified by "
+				"tests/CSGNullGeometryLuminaireCrashTest.cpp) or a BSDF-sampled hit (PT pel, "
+				"verified; code-identical elsewhere, untested)." :
 				"LuminaryManager:: an emissive material is bound to a geometry that cannot be "
 				"uniformly area-sampled (CanBeAreaLight() == false, e.g. a degenerate zero-area "
 				"field, or an SDF whose sampling mesh provably missed renderable surface -- see "
 				"the SDFGeometry warning above; raise sampling_detail).  It will NOT act as an "
-				"area light (no NEE importance sampling); it still glows when viewed / hit by "
-				"BSDF rays.", __FILE__, __LINE__ );
+				"area light (no NEE importance sampling); it is never selected by light-sampling, "
+				"but still contributes emission on direct camera view or a BSDF-sampled hit.",
+				__FILE__, __LINE__ );
 			return;
 		}
 

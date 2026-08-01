@@ -1210,6 +1210,108 @@ static void TestDiagnosticsCheckpointCleanIgnoresInfo()
 }
 
 //----------------------------------------------------------------------
+// T6d: "diagnostics" checkpoint expect:"clean" FAILS on a document carrying
+// the LUMINAIRE_NULL_GEOMETRY Warning (crash-fix round 2, closes 74-log open
+// item 2).  Sibling of T6c immediately above: T6c proves an Info-only
+// document stays "clean"; this proves a Warning-carrying document does NOT
+// -- the two together are the full clean-branch severity contract
+// (`d.severity != Severity::Info` is "unclean", covering BOTH Warning and
+// Error, not just Error).  A model that inserts a csg_object with an
+// emissive material bound (see LuminaryManager::AddToLuminaryList,
+// src/Library/Rendering/LuminaryManager.cpp) must see validate report
+// NOT-clean, not a false "no errors" verdict.  Reviewer B verified this
+// behaviour empirically via a throwaway probe during the fix-round-2 review;
+// this is that probe made permanent.
+//----------------------------------------------------------------------
+static void TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning()
+{
+	std::printf( "T6d: \"diagnostics\" expect:\"clean\" FAILS on the LUMINAIRE_NULL_GEOMETRY Warning...\n" );
+	const std::string dir = ScratchRunDir( "t6d_diagnostics_warning" );
+	const std::string scenePath = dir + "/csg_null_geometry_luminaire_probe.RISEscene";
+
+	// A csg_object with an emissive material bound -- no directly-owned
+	// geometry (CSGObject synthesizes its shape from its two operands), so
+	// LuminaryManager::AddToLuminaryList refuses it as an NEE luminary and
+	// AgentSession::ValidateText's null-geometry-luminaire walk (added
+	// alongside that fix) reports LUMINAIRE_NULL_GEOMETRY at Severity::Warning.
+	const std::string scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+		"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+		"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n\n"
+		"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}\n";
+	Check( WriteFile( scenePath, scene ), "wrote the csg null-geometry luminaire probe scene" );
+
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, "the csg null-geometry luminaire probe scene loads cleanly" );
+
+	if( loaded ) {
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "WrapJob produced a live session over the probe scene" );
+		if( session ) {
+			// Red-prove the fixture itself: LUMINAIRE_NULL_GEOMETRY must
+			// actually fire, at Warning severity, and it must be the ONLY
+			// non-Info diagnostic present -- else the assertions below are
+			// vacuous (either passing/failing for an unrelated reason).
+			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+			bool sawWarning = false;
+			unsigned int nonInfoCount = 0;
+			for( const AgentDiagnostic& d : diags ) {
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == AgentDiagnostic::Severity::Warning )
+					sawWarning = true;
+				if( d.severity != AgentDiagnostic::Severity::Info ) ++nonInfoCount;
+			}
+			Check( sawWarning, "RED-PROVE fixture: LUMINAIRE_NULL_GEOMETRY fires at Warning severity" );
+			Check( nonInfoCount == 1, "RED-PROVE fixture: the Warning is the ONLY non-Info diagnostic present" );
+
+			AgentEvalRunHandle h;
+			h.result.scenarioId = "csg_null_geometry_luminaire_probe";
+			h.result.terminalStatus = "final_text";
+			h.trajectoryPath = "";
+			h.resultPath = dir + "/csg_null_geometry_luminaire_probe.result.jsonl";
+			h.dispatcher.reset( new AgentRpcDispatcher( std::move( session ) ) );
+
+			AgentEvalScenario s2;
+			s2.id = "csg_null_geometry_luminaire_probe";
+
+			auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+				JsonValue cps; std::string err;
+				Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+				s2.checkpoints = cps;
+				AgentEvalCheckResult r = CheckScenario( h, s2 );
+				if( r.checkpoints.size() == 1 ) {
+					Check( r.checkpoints[0].passed == expectPass,
+						label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+						" (detail: " + r.checkpoints[0].detail + ")" );
+				} else Check( false, label + ": expected exactly one checkpoint result" );
+			};
+
+			// THE MONEY ASSERTION: expect:"clean" FAILS -- a Warning is a
+			// real functional gap (this light silently won't be NEE-sampled),
+			// not a style advisory, and must not be swallowed the way an
+			// Info-severity design note is (T6c, immediately above).
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"clean\"}]", false,
+				"expect:\"clean\" FAILS on a document carrying the LUMINAIRE_NULL_GEOMETRY Warning" );
+			// The deficit is also independently observable via expect:"code".
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"code\",\"code\":\"LUMINAIRE_NULL_GEOMETRY\"}]", true,
+				"expect:\"code\" finds the LUMINAIRE_NULL_GEOMETRY code" );
+		}
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
 // T7: "trajectory" checkpoint kind.
 //----------------------------------------------------------------------
 static void TestTrajectoryCheckpoint()
@@ -6728,6 +6830,7 @@ int main()
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
 	TestDiagnosticsCheckpointCleanIgnoresInfo();
+	TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning();
 	TestTrajectoryCheckpoint();
 	TestTrajectoryNewAssertions();
 	TestToolOutcomesArgsContainsAndConflict();

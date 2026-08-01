@@ -96,6 +96,16 @@ namespace RISE
 			//! DESIGN_SCALAR_PIPE_UNUSED, and the same shared fire
 			//! condition.
 			static const char* const DESIGN_NO_ADVANCED_GEOMETRY  = "DESIGN_NO_ADVANCED_GEOMETRY";
+			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
+			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
+			//! is bound to an object with no directly-owned geometry (e.g. a
+			//! csg_object -- its shape comes from its two operand objects, not
+			//! a single geometry chunk).  Such an object is silently skipped
+			//! by NEE at render time (it still glows when hit directly).
+			//! Severity::Warning -- a real functional gap, not a style
+			//! suggestion, but the scene still renders (the render-side
+			//! null-geometry candidate is refused, not dereferenced).
+			static const char* const LUMINAIRE_NULL_GEOMETRY = "LUMINAIRE_NULL_GEOMETRY";
 		}
 	}
 }

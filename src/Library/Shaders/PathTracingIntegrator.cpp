@@ -2155,12 +2155,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				Scalar emissionMiWeight = 1.0;
 
 				// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
-				// false) is NOT in the NEE light set (LuminaryManager skips it), so the
-				// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
-				// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
-				// RIS, so it is not lost).
+				// false, OR NO geometry at all -- e.g. a csg_object, see LuminaryManager::
+				// AddToLuminaryList) is NOT in the NEE light set (LuminaryManager skips it), so
+				// the light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission
+				// must take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed
+				// under RIS, so it is not lost).
+				//
+				// CRASH FIX (2026-07-31 fix round 2): this used to read
+				// `( !pEmitGeom || pEmitGeom->CanBeAreaLight() )` -- INVERTED for the null case,
+				// so a csg_object's null pEmitGeom evaluated emitterNeeSampleable = TRUE and
+				// entered this block, reaching `ri.pObject->GetArea()` (null-deref pre this fix
+				// round; Object::GetArea() now has its own base-layer null guard and returns 0,
+				// which `area > 0` below would also have caught -- but null geometry must
+				// independently be treated as "NOT NEE-sampleable", matching the
+				// CanBeAreaLight()==false precedent, not the inverted default).
 				const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
-				const bool emitterNeeSampleable = ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
+				const bool emitterNeeSampleable = ( pEmitGeom && pEmitGeom->CanBeAreaLight() );
 
 				if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
 				{
@@ -4430,12 +4440,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						swl.lambda[w] );
 
 					// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
-					// false) is NOT in the NEE light set (LuminaryManager skips it), so the
-					// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
-					// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
-					// RIS, so it is not lost).
+					// false, OR NO geometry at all -- e.g. a csg_object) is NOT in the NEE light
+					// set (LuminaryManager skips it), so the light-sampling strategy's pdf for
+					// this BSDF hit is ZERO -> the emission must take FULL weight.  Skipping the
+					// block leaves it unweighted (and un-zeroed under RIS, so it is not lost).
+					// See the RGB PART 1 block above for the crash-fix-round-2 rationale on why
+					// the null case is `pEmitGeomHW && ...` (NOT NEE-sampleable) rather than the
+					// previous inverted `!pEmitGeomHW || ...`.
 					const IGeometry* pEmitGeomHW = ri.pObject ? ri.pObject->GetGeometry() : 0;
-					const bool emitterNeeSampleableHW = ( !pEmitGeomHW || pEmitGeomHW->CanBeAreaLight() );
+					const bool emitterNeeSampleableHW = ( pEmitGeomHW && pEmitGeomHW->CanBeAreaLight() );
 					if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleableHW )
 					{
 						const Scalar area = ri.pObject->GetArea();

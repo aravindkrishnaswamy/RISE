@@ -1044,6 +1044,69 @@ namespace RISE
 
 			std::vector<std::string> diags;
 			RISE::Cst::DeriveToJob( candidateDoc, *throwaway, &diags );
+
+			// (b2) Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
+			// src/Library/Rendering/LuminaryManager.cpp): a luminaire-bound
+			// object with no directly-owned geometry (a csg_object, whose shape
+			// comes from its two operand objects rather than a single geometry
+			// chunk) is silently skipped by NEE at render time -- refused, not
+			// dereferenced, so it no longer crashes, but a model authoring the
+			// scene should still be told its light won't act as an area light.
+			// Walk the throwaway job's realized objects (post-derive, so
+			// geometry/material bindings are fully resolved) BEFORE releasing
+			// it and surface one Warning diagnostic summarizing every match.
+			{
+				struct NullGeometryLuminaireCollector : IEnumCallback<IObject>
+				{
+					unsigned int count = 0;
+					bool operator()( const IObject& obj ) override
+					{
+						const IMaterial* pMat = obj.GetMaterial();
+						if( pMat && pMat->GetEmitter() && !obj.GetGeometry() ) {
+							++count;
+						}
+						return true;
+					}
+				};
+
+				if( IObjectManager* pObjMan = throwaway->GetObjects() ) {
+					NullGeometryLuminaireCollector collector;
+					pObjMan->EnumerateObjects( collector );
+					if( collector.count > 0 ) {
+						AgentDiagnostic d;
+						d.severity = AgentDiagnostic::Severity::Warning;
+						d.code     = AgentDiagnosticCode::LUMINAIRE_NULL_GEOMETRY;
+						// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix
+						// round 3 / P2b -- see LuminaryManager.cpp's AddToLuminaryList for
+						// the full "exactly what is verified" breakdown, reproduced in
+						// scope here): "contributes emission" is VERIFIED (not merely
+						// asserted) for DIRECT camera view under pathtracing_pel_rasterizer,
+						// bdpt_pel_rasterizer, vcm_pel_rasterizer, AND the legacy
+						// EmissionShaderOp (DefaultEmission) shaderop chain under
+						// pixelpel_rasterizer -- all four in
+						// tests/CSGNullGeometryLuminaireCrashTest.cpp.  For an INDIRECT
+						// (BSDF-sampled) hit, only PathTracingIntegrator.cpp's bsdfPdf>0
+						// block is independently tested; EmissionShaderOp.cpp's identically-
+						// gated bsdfPdf>0 block is code-verified but untested.  Spectral/HWSS
+						// twins of every path above are code-identical fixes, untested.  BDPT
+						// additionally carries a PRE-EXISTING, unrelated MIS energy deficit
+						// on this class of emitter (see BDPTIntegrator.cpp's eye-walk
+						// comment) -- "contributes emission" holds for BDPT, "full weight"
+						// does not.
+						d.message  = std::to_string( collector.count ) +
+							" object(s) bind an emissive material but have no directly-owned "
+							"geometry (e.g. a csg_object, whose geometry comes from its two "
+							"operand objects rather than a single geometry chunk) -- they will "
+							"NOT act as an area light for next-event estimation (no NEE "
+							"importance sampling, never selected by light-sampling); each still "
+							"contributes emission on direct camera view (PT/BDPT/VCM pel + the "
+							"legacy EmissionShaderOp chain) or a BSDF-sampled hit. Bind the "
+							"emissive material to a standard_object with real geometry instead.";
+						out.push_back( d );
+					}
+				}
+			}
+
 			throwaway->release();
 			throwaway = nullptr;
 

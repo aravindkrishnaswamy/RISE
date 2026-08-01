@@ -988,24 +988,38 @@ namespace
 			}
 
 			// Mirror BDPT (BDPTIntegrator.cpp ~line 3097): an emitter whose
-			// geometry cannot be NEE-sampled -- zero sampling area, or a
-			// withdrawn capability (CanBeAreaLight() false, e.g. an SDF
-			// with a proven missed-feature cell) -- has NO competing
-			// light-sampling strategy.  Its light pdf is ZERO and the
-			// camera/BSDF-hit emission must flow through at FULL weight.
-			// The previous `area <= 0 -> continue` DROPPED the emission:
-			// a zero-sampling-area emissive SDF sphere-traced visibly
-			// under PT/BDPT but rendered BLACK under VCM (2026-06-11
-			// review P2).  pdfSelect is already 0 for refused
-			// (unregistered) luminaries; the explicit gate keeps the
+			// geometry cannot be NEE-sampled -- zero sampling area, no
+			// directly-owned geometry at all (e.g. a csg_object -- see
+			// LuminaryManager::AddToLuminaryList), or a withdrawn capability
+			// (CanBeAreaLight() false, e.g. an SDF with a proven missed-
+			// feature cell) -- has NO competing light-sampling strategy.
+			// Its light pdf is ZERO and the camera/BSDF-hit emission must
+			// flow through at FULL weight.  The previous `area <= 0 ->
+			// continue` DROPPED the emission: a zero-sampling-area emissive
+			// SDF sphere-traced visibly under PT/BDPT but rendered BLACK
+			// under VCM (2026-06-11 review P2).  pdfSelect is already 0 for
+			// refused (unregistered) luminaries; the explicit gate keeps the
 			// intent readable and guards the 1/area divide.
+			//
+			// CRASH FIX (2026-07-31 fix round 2): pEmitGeom is checked BEFORE
+			// GetArea() is ever called (was checked after, with an inverted
+			// `!pEmitGeom || ...` OR -- moot in practice because
+			// Object::GetArea()'s base-layer null guard makes area==0 for a
+			// null-geometry object, and `area > 0 &&` already short-circuited
+			// the old expression to false before the inversion could matter,
+			// but the inverted phrasing was still a latent trap for anyone
+			// touching the `area > 0` gate later).  This form never calls
+			// GetArea() on an object whose geometry is null, matching the
+			// null-safety convention now used at every luminary-area call
+			// site (LuminaryManager.cpp, EmissionShaderOp.cpp,
+			// PathTracingIntegrator.cpp, SubSurfaceScatteringShaderOp.cpp,
+			// DonnerJensenSkinSSSShaderOp.cpp).
 			const Scalar pdfSelect = pLS->PdfSelectLuminary(
 				scene, luminaries, *v.pObject, prev.position, prev.normal );
-			const Scalar area = v.pObject->GetArea();
 			const IGeometry* pEmitGeom = v.pObject->GetGeometry();
-			const bool emitterNeeSampleable =
-				( area > 0 ) && ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
-			const Scalar pdfPosition = emitterNeeSampleable ? ( Scalar( 1 ) / area ) : Scalar( 0 );
+			const bool emitterNeeSampleable = pEmitGeom && pEmitGeom->CanBeAreaLight();
+			const Scalar area = emitterNeeSampleable ? v.pObject->GetArea() : Scalar( 0 );
+			const Scalar pdfPosition = ( area > 0 ) ? ( Scalar( 1 ) / area ) : Scalar( 0 );
 			const Scalar directPdfA = pdfSelect * pdfPosition;
 
 			// Emission pdf area-Jacobian uses GEOMETRIC normal — the

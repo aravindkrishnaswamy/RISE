@@ -63,6 +63,7 @@
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): crash-fix-round-2, s=0 eyeEnd.pObject->GetArea() null-geometry guard
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/ILightManager.h"
@@ -3235,7 +3236,65 @@ ConnectAndEvaluateImpl(
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
 				scene, luminaries, *eyeEnd.pObject,
 				predVert_s0.position, predVert_s0.normal );
-			const Scalar area = eyeEnd.pObject->GetArea();
+			// CRASH FIX (2026-07-31 fix round 2): eyeEnd.pObject->GetArea()
+			// used to be called UNCONDITIONALLY here -- reached on the
+			// primary camera ray directly viewing an emitter (the eye path's
+			// s=0 strategy), so a csg_object luminary null-derefed inside
+			// Object::GetArea() (pre this fix round).  PROVEN SAFE by TWO
+			// independent layers even without this restructure: (1)
+			// Object::GetArea() now has a base-layer null guard (Object.cpp)
+			// and returns 0 for a null-geometry object, so `area > 0` below
+			// was already false and pdfPosition was already 0 -- no
+			// div-by-zero; (2) eyeEnd.pObject is never a REGISTERED NEE
+			// luminary when its geometry is null (LuminaryManager refuses
+			// it), so PdfSelectLuminary() -- which only matches against
+			// LuminaryManager's already-filtered light table -- already
+			// returns pdfSelect == 0 for it, making `pdfSelect * pdfPosition`
+			// == 0 regardless of pdfPosition's value.  This restructure adds
+			// a THIRD layer (skip GetArea() entirely when there is no
+			// geometry to sample) purely for defense-in-depth /
+			// consistency with the null-safety convention now used at every
+			// other luminary-area call site -- it does not change the
+			// computed pdfRev value in any case (still 0 whenever geometry
+			// is null or CanBeAreaLight() is false, matching the existing
+			// area<=0 semantics; no new MIS weighting introduced).
+			//
+			// P3 (fix round 3): this value-identity argument (pdfSelect==0
+			// for a null-geometry/non-CanBeAreaLight object) is NOT purely
+			// local -- it depends on two invariants enforced elsewhere:
+			//   (a) LuminaryManager::AddToLuminaryList (LuminaryManager.cpp)
+			//       is the SOLE admission gate for the luminaries list
+			//       `pLightSampler`/`luminaries` are built from; no other
+			//       code path adds an object to it, so "not admitted" here
+			//       and "refused by LuminaryManager" are the same fact.
+			//   (b) RayCaster::AttachScene's realize pass (RayCaster.cpp
+			//       ~225-231, `obj.Realize()` over every world-visible
+			//       object) runs BEFORE RebuildLightSamplers (~246/259),
+			//       which runs before any pixel is shaded -- so by the time
+			//       LuminaryManager decided admission AND by the time this
+			//       code reads eyeEnd.pObject->GetGeometry() /
+			//       CanBeAreaLight() at shading time, the object's geometry
+			//       is in the SAME final realized state both times.  If
+			//       realize ran AFTER RebuildLightSamplers, LuminaryManager
+			//       could admit/refuse based on a not-yet-realized geometry
+			//       that later resolves differently, breaking the identity
+			//       this comment relies on.
+			//
+			// MIS CAVEAT (fix round 3, Opus review -- do NOT fix here, see
+			// tracked slice): pdfRev==0 for a non-NEE-sampleable emitter is
+			// the correct INPUT, but MISWeight's remap0 step (this file,
+			// the eye-walk around line ~4917) promotes a phantom NEE
+			// strategy's pdfRev==0 to 1 rather than leaving it 0 -- a
+			// PRE-EXISTING BDPT MIS defect (applies to any CanBeAreaLight()
+			// == false emitter, not introduced by this crash fix, but this
+			// fix is what newly routes null-geometry CSG emitters through
+			// it) that gives such emitters MIS weight < 1 where PT/VCM give
+			// full weight -- an energy DEFICIT, not a crash.  This crash fix
+			// intentionally does NOT touch MISWeight/remap0; see that
+			// site's own comment for the deferral.
+			const IGeometry* pEyeEndGeom = eyeEnd.pObject->GetGeometry();
+			const bool eyeEndAreaSampleable = pEyeEndGeom && pEyeEndGeom->CanBeAreaLight();
+			const Scalar area = eyeEndAreaSampleable ? eyeEnd.pObject->GetArea() : Scalar( 0 );
 			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
 		}
@@ -4889,6 +4948,36 @@ Scalar BDPTIntegrator::MISWeight(
 				eyeVerts[j] : lightVerts[0];
 
 			// Compute the ratio with remap0 (see light-side walk above)
+			//
+			// KNOWN DEFECT, DEFERRED (fix round 3 / Opus MIS review, tracked
+			// separately -- do NOT fix here): on the FIRST iteration of this
+			// loop (j == t-1), vj IS eyeEnd -- the s=0 emitter-hit vertex.
+			// The s=0 restructure above (~line 3225) correctly sets
+			// eyeEnd.pdfRev = 0 for an emitter that is NOT NEE-sampleable
+			// (null geometry, or CanBeAreaLight() == false) -- a TRUE zero,
+			// meaning "the light-sampling strategy has zero probability of
+			// generating this vertex", not a delta-vertex zero that needs
+			// remapping to keep the ratio chain alive.  remap0 cannot tell
+			// the two apart: it maps BOTH to 1, so `ri *= 1/pdfF` instead of
+			// the correct `ri *= 0/pdfF = 0` -- the phantom NEE strategy
+			// gets counted in sumWeights as if it competed, giving a
+			// non-NEE-sampleable emitter's s=0 strategy MIS weight < 1
+			// where PT and VCM (which have no such competing-strategy
+			// bookkeeping for this case) give full weight.  This is an
+			// ENERGY DEFICIT (observed: TestCSGLuminaireGlowsUnderBDPT's
+			// maxLum is noticeably lower than the PT/VCM twins on the same
+			// scene), not a crash and not new in this crash-fix arc --
+			// PRE-EXISTING for any CanBeAreaLight()==false emitter (e.g. an
+			// SDF with a proven missed-feature cell); this crash fix newly
+			// ROUTES null-geometry CSG emitters into it (previously they
+			// crashed before ever reaching MISWeight).  Fixing this needs a
+			// way to distinguish "delta vertex" zero from "not
+			// NEE-sampleable" zero in the ratio walk (e.g. a dedicated
+			// isNeeSampleable flag on BDPTVertex, or folding the
+			// CanBeAreaLight()/null-geometry test into isDelta's role here)
+			// -- real MIS-weighting work, out of scope for a lifetime/
+			// null-safety crash fix.  See the s=0 restructure's comment
+			// (~line 3260) for the full write-up.
 			const Scalar pdfR = (vj.pdfRev != 0) ? vj.pdfRev : Scalar(1);
 			const Scalar pdfF = (vj.pdfFwd != 0) ? vj.pdfFwd : Scalar(1);
 			ri *= pdfR / pdfF;

@@ -158,9 +158,17 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
 			// collapse the samples -> a bogus irradiance cache.  Refuse SSS on such
 			// geometry, with a diagnostic, rather than build a garbage sample set.
+			//
+			// NULL GEOMETRY (crash-sibling fix, see LuminaryManager::AddToLuminaryList):
+			// ri.pObject->GetGeometry() can legitimately be null (a CSGObject has no
+			// single owned geometry).  The condition used to be `pSSSGeom &&
+			// !pSSSGeom->CanBeAreaLight()`, which short-circuits to false -- i.e.
+			// "acceptable" -- for exactly the null case, letting a null-geometry
+			// object fall through to `ri.pObject->UniformRandomPoint(...)` below,
+			// which null-derefs (Object::UniformRandomPoint -> pGeometry->...).
 			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
-			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
-				GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
+			if( !pSSSGeom || !pSSSGeom->CanBeAreaLight() ) {
+				GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false, or no directly-owned geometry, e.g. a csg_object); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
 				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
 				c = RISEPel( 0.0 );
 				return;
