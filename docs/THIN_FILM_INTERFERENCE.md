@@ -240,7 +240,10 @@ genuinely spatially-varying painter; not implemented.
 
 **Residual, measured, open:** a merely *tiny* index is still wrong, and fails differently per flag
 set — bisected in-repo, not quoted. Shipped `-ffast-math` (which implies `-fcx-limited-range`, so
-complex division is the naive `(ac+bd, bc−ad)/(c²+d²)`): NaN below `n₁ = 1e-77.03`, by **overflow**
+complex division is the naive `(ac+bd, bc−ad)/(c²+d²)`): the **public** result is now finite and
+correct down to `1e-154.06`, because the per-layer renormalization (2026-08-01) removed the growth;
+only the Airy *primary* form still overflows below `1e-77.02`, and the TMM fallback rescues it. By
+**overflow**
 — the p-polarization interface products grow like `1/n₁` — and above `n₁ = 1e154.06`. Strict IEEE:
 **not** NaN and not wrong either — it returns the correct value (to ~4e-16 against 120 dps) down to
 about `1e-154`. (An earlier version said it "silently returns the bare-stack value, the film

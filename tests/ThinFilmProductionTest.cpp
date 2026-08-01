@@ -1287,6 +1287,48 @@ int main()
 			}
 		}
 
+		// ⚠ THE SIXTH BLIND DIMENSION (found round 7).  n == 0 with k > 0 is a
+		// LEGITIMATE medium -- a pure-imaginary index, i.e. an ideal plasma /
+		// epsilon-near-zero material, and silver is already n = 0.144.  It
+		// must NOT be treated as degenerate.  Nothing anywhere exercised it:
+		// mutating PhysicalIndex's `n == 0 && k == 0` to `n == 0` alone -- which
+		// silently replaces every such medium with the 1e-40 stand-in, a
+		// measured error up to 0.239 and constant in k -- passed the entire
+		// suite 3508/0.
+		{
+			const double ks[] = { 0.5, 1.0, 3.0, 10.0 };
+			double prev = -1.0;
+			bool varies = false;
+			for( size_t i = 0; i < sizeof(ks)/sizeof(ks[0]); ++i ) {
+				const double R = double( RISE::ThinFilm::ReflectanceConductor(
+					0.7, 550.0, 1.0, 0.0, 0.0, ks[i], 100.0, 1.5, 0.0 ) );
+				Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
+				       "pure-imaginary film index is a valid medium, not degenerate" );
+				// The giveaway of the mutant is that R stops depending on k.
+				if( prev >= 0.0 && std::fabs( R - prev ) > 1e-6 ) varies = true;
+				prev = R;
+			}
+			Check( varies,
+			       "a pure-imaginary index still varies with k (kills the "
+			       "`n == 0` degeneracy mutant)" );
+			// A strongly absorbing pure-imaginary film approaches total
+			// reflection; the stand-in substitution does not.
+			const double Rbig = double( RISE::ThinFilm::ReflectanceConductor(
+				0.7, 550.0, 1.0, 0.0, 0.0, 10.0, 100.0, 1.5, 0.0 ) );
+			Check( Rbig > 0.99, "pure-imaginary index with large k -> near-total reflection" );
+			// Same through the other two entry points.
+			const RISE::ThinFilm::Complex N0( 1.0, 0.0 ), Ns( 1.5, 0.0 );
+			const RISE::ThinFilm::Complex pi3( 0.0, 3.0 );
+			const RISE::ThinFilm::Complex f1[1] = { pi3 };
+			const RISE::Scalar t1[1] = { 100.0 };
+			const double Rc = double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0, pi3, 100.0, Ns ) );
+			const double Rk = double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0, f1, t1, 1, Ns ) );
+			const double Rs3 = double( RISE::ThinFilm::ReflectanceConductor(
+				0.7, 550.0, 1.0, 0.0, 0.0, 3.0, 100.0, 1.5, 0.0 ) );
+			Check( std::fabs( Rc - Rs3 ) < 1e-12 && std::fabs( Rk - Rs3 ) < 1e-11,
+			       "pure-imaginary index agrees across all three entry points" );
+		}
+
 		// A NON-FINITE index is not the endpoint of any limit -- it is corrupt
 		// input.  It must stay in range and stay > 0 (a 0 would render
 		// silently black through GGXBRDF's `if( Rfilm > 0 )`).
@@ -1414,6 +1456,16 @@ int main()
 			{ "DENORMAL",        Complex(den,0), Complex(den/2,0), Complex(0,0), Complex(den/4,0) },
 			{ "denorm_min",      Complex(tiny,0), Complex(0,0), Complex(0,0), Complex(0,0) },
 			{ "all zero",        Complex(0,0), Complex(0,0), Complex(0,0), Complex(0,0) },
+			// m00 SMALL, an off-diagonal HUGE.  The magnitude must be the max
+			// over all four entries, not |m00|: using |m00| alone leaves the
+			// product un-rescaled here, and that mutant passes every other row
+			// in this block.  (It is exactly the shape a stand-in layer makes:
+			// the p-polarization off-diagonals blow up while m00 = 1 + phi
+			// stays O(1).)
+			{ "small m00, huge m01", Complex(1,0), Complex(1e160,0), Complex(0,0), Complex(1,0) },
+			{ "small m00, huge m10", Complex(1,0), Complex(0,0), Complex(1e160,0), Complex(1,0) },
+			{ "small m00, huge m11", Complex(1,0), Complex(0,0), Complex(0,0), Complex(1e160,0) },
+			{ "tiny m00, tiny rest",  Complex(1e-160,0), Complex(1e-161,0), Complex(0,0), Complex(1e-162,0) },
 		};
 		for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
 			Complex m00 = cases[i].a, m01 = cases[i].b, m10 = cases[i].c, m11 = cases[i].d;
@@ -1424,9 +1476,34 @@ int main()
 			    && std::isfinite(m10.real()) && std::isfinite(m10.imag())
 			    && std::isfinite(m11.real()) && std::isfinite(m11.imag()),
 			       "renormalize stays finite (incl. denormal magnitudes)" );
-			// EXACT: every RATIO is bit-identical, which is all the
-			// reflectance depends on.  Compare against the original in a
-			// scale-free way, skipping the all-zero row.
+			// POSTCONDITION -- the assertion that actually has teeth.  After
+			// the call the magnitude's binary exponent must be inside the
+			// band, so the product cannot drift toward the ~1e154 where the
+			// complex division overflows.  A do-nothing implementation fails
+			// this (an un-rescaled product reaches ~1e161, exponent ~535), as
+			// do "rescale only above 1e100", "only on the first layer", "only
+			// on the last layer" and "use |m00| instead of the max" -- every
+			// one of which passes the finiteness and ratio rows below.
+			{
+				double mg = std::fabs( m00.real() );
+				const double cs[7] = { std::fabs( m00.imag() ),
+				                       std::fabs( m01.real() ), std::fabs( m01.imag() ),
+				                       std::fabs( m10.real() ), std::fabs( m10.imag() ),
+				                       std::fabs( m11.real() ), std::fabs( m11.imag() ) };
+				for( int q = 0; q < 7; ++q ) { if( cs[q] > mg ) mg = cs[q]; }
+				if( mg > 0.0 && std::isfinite( mg ) ) {
+					int e2 = 0;
+					std::frexp( mg, &e2 );
+					Check( e2 >= -64 && e2 <= 65,
+					       "renormalize POSTCONDITION: magnitude lands inside the band" );
+				}
+			}
+
+			// The ratio rows below are weaker than they read: a power-of-two
+			// rescale and a correctly-rounded division differ by ~2 ulp, so a
+			// 1e-15 relative tolerance cannot distinguish "exact" from
+			// "correctly rounded".  They are kept as a coarse sanity check;
+			// the postcondition above is the discriminating assertion.
 			const double n0 = std::abs( cases[i].a ), r0 = std::abs( m00 );
 			const double n1 = std::abs( cases[i].b ), r1 = std::abs( m01 );
 			if( n0 > 0.0 && n1 > 0.0 && r0 > 0.0 && r1 > 0.0 ) {
@@ -1446,9 +1523,15 @@ int main()
 			const double R = double( RISE::ThinFilm::ReflectanceConductorStack(
 				0.6, 550.0, N0, f, t, 3, Ns ) );
 			// 120-dps limit for this stack.
-			Check( std::isfinite( R ) && std::fabs( R - 0.99999989915178811 ) < 1e-12,
+			// 0.99999989915178819 is the mpmath limit at 120+ dps, cross-checked
+			// in two independent formulations.  An earlier version of this pin
+			// used ...811, which is not the limit at all -- it is what THIS
+			// evaluator prints under -O3 -fno-fast-math, i.e. the component
+			// under test recorded under a different flag set and mislabelled
+			// as an independent reference.
+			Check( std::isfinite( R ) && std::fabs( R - 0.99999989915178819 ) < 1e-12,
 			       "two stand-in layers around an ordinary one match the 120-dps limit" );
-			std::printf( "  two-stand-in-layer stack: R = %.17g (120-dps 0.99999989915178811)\n", R );
+			std::printf( "  two-stand-in-layer stack: R = %.17g (120-dps 0.99999989915178819)\n", R );
 		}
 	}
 

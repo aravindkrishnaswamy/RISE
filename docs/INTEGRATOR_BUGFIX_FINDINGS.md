@@ -901,7 +901,9 @@ neither benign: the RGB path yields a NaN pixel, the spectral path goes
 *tiny* index is still wrong, and it fails **differently under the two flag
 sets** — bisected in-repo, not quoted. Under the shipped `-ffast-math` (which
 implies `-fcx-limited-range`, so complex division is the naive
-`(ac+bd, bc−ad)/(c²+d²)`) it is NaN below `n1 = 1e-77.03`, by **overflow** —
+`(ac+bd, bc−ad)/(c²+d²)`) the Airy primary form is NaN below `n1 = 1e-77.02` — quoted as `.03` for
+three rounds — by **overflow**, though since 2026-08-01 the public result survives to `1e-154.06`
+via the TMM fallback —
 the p-polarization interface products grow like `1/n1` until `c²+d²` leaves the
 double range. Under strict IEEE it is **not** NaN and **not** wrong either: it
 returns the correct value, matching a 120-dps evaluation to ~4e-16, down to

@@ -18,6 +18,14 @@
 //        ReflectanceConductor            149.9 -> 154.2 ns/call   +2.9 %
 //        ReflectanceConductorStack n=1   202.7 -> 209.4 ns/call   +3.3 %
 //        ReflectanceConductorStack n=2   267.4 -> 280.2 ns/call   +4.8 %
+//    Re-measured 2026-08-01 after the per-layer renormalization, same
+//    recipe, min of 25 x 200,000: ReflectanceConductor is UNCHANGED by it
+//    (142.4 vs 143.0 ns, i.e. within noise -- the single-film GGX path pays
+//    nothing), while ReflectanceConductorStack pays +8.2 % at n=1 (205.5 ->
+//    222.4) and +11.5 % at n=2 (305.3 -> 340.5).  Those were +34.6 % and
+//    +44.5 % before the magnitude proxy and the binade-band skip; the
+//    remaining cost is confined to multi-layer ar_layer coatings.
+//
 //    ⚠ These are ONE MEASUREMENT ON ONE MACHINE, and there is no benchmark
 //    in the repo to reproduce them: 200,000 calls per rep sweeping cos over
 //    [0.05, 0.95], lambda over [380, 780], thickness over [40, 340] nm, air
@@ -186,24 +194,36 @@ namespace RISE
 			//!     the FIRST of four wrong ones and outlived its own
 			//!     replacement here by two rounds.)
 			//!
-			//! ⚠ RESIDUAL, measured, NOT closed: a merely TINY index is still
-			//! wrong, and it fails DIFFERENTLY under the two flag sets.
-			//! Bisected on air / (film n1) 120 nm / 2.5+3i at cosθ = 0.7:
+			//! ⚠ RESIDUAL -- and note it MOVED 77 decades when the per-layer
+			//! renormalization landed, which the note here did not notice for
+			//! a round.  Re-bisected on air / (film n1) 120 nm / 2.5+3i at
+			//! cosθ = 0.7, at HEAD: the PUBLIC result is finite and correct
+			//! down to 1e-154.06, not 1e-77.  What still goes NaN below
+			//! ~1e-77.5 is the Airy PRIMARY form; the public call survives
+			//! because SingleFilmReflectanceForPol's TMM fallback now
+			//! succeeds -- so that fallback is LIVE and load-bearing in this
+			//! regime, which falsifies the "measured dead" note on it.
+			//! Historical figures, from before the renormalization:
 			//!   * shipped flags (-ffast-math implies -fcx-limited-range, so
 			//!     std::complex division is the naive
-			//!     (ac+bd, bc-ad)/(c²+d²)): NaN below n1 = 1e-77.03.  The
+			//!     (ac+bd, bc-ad)/(c²+d²)): the AIRY form was NaN below
+			//!     n1 = 1e-77.02 (a figure quoted as .03 for three rounds).  The
 			//!     mechanism is OVERFLOW, not underflow -- the p-polarization
 			//!     interface products grow like 1/n1, so c²+d² exceeds the
 			//!     double range.  (An earlier version of this note said
 			//!     "1e-100" and "underflows"; both were wrong, and neither
 			//!     was measured here.)
 			//! The same overflow bites at the OTHER end: a LARGE finite index
-			//! is NaN from n1 = 1e154.06, bisected on air / (n1, 120 nm) /
-			//! 2.5+3i at cosθ = 0.5 (1e154 -> 0.516, 1e155 -> NaN), identical
-			//! under both flag sets.  Same mechanism, same non-fix.  (An
-			//! earlier note said "about 1e160" -- six decades out, because
-			//! that end was eyeballed while its tiny-index twin two lines
-			//! above was bisected to two decimals.)
+			//! is NaN from n1 = 1e154.06 on air / (n1, 120 nm) / 2.5+3i at
+			//! cosθ = 0.5.  It goes SILENTLY WRONG BEFORE it goes NaN, and it
+			//! is NOT the same under both flag sets: from ~1e153.7 the shipped
+			//! flags return 0.51627988179890383 -- which is exactly the BARE
+			//! stack, i.e. the film has vanished -- where the 200-dps truth is
+			//! 1, an error of 0.484 that is finite, in range and invisible to
+			//! every guard.  Strict IEEE returns 0.99999999999999956 there.
+			//! (An earlier note said "about 1e160", quoted 0.516 as the
+			//! HEALTHY side of its own bisection, and called the two flag sets
+			//! identical.  All three were wrong.)
 			//!   * strict IEEE: NOT NaN, and NOT wrong either -- it returns
 			//!     the CORRECT value (matching a 120-dps evaluation to ~4e-16)
 			//!     down to about 1e-154, where it finally overflows.  An
@@ -226,9 +246,13 @@ namespace RISE
 			//! evaluator returns, by substituting a tiny stand-in and letting
 			//! the ordinary math compute it.
 			//!
-			//! WHY A STAND-IN RATHER THAN A CONSTANT.  Four earlier attempts
-			//! invented a constant for this case and all four were wrong,
-			//! because the limit is not a constant -- it depends on the stack:
+			//! WHY A STAND-IN RATHER THAN A CONSTANT.  THREE earlier attempts
+			//! invented a constant for this case and all three were wrong,
+			//! because the limit is not a constant -- it depends on the stack.
+			//! (A fourth attempt, the un-renormalized stand-in, invented no
+			//! constant but was non-total; see RenormalizeLayerProduct.  An
+			//! earlier version of this note said "four" and then listed
+			//! three.)
 			//!   1. VACUUM (N = 1).  For a film that inserts a real air layer
 			//!      of the authored thickness; under an ambient denser than
 			//!      air it total-internal-reflects, so a black `film_ior`
@@ -264,8 +288,10 @@ namespace RISE
 			//!     error is LINEAR in it -- 1e-10 gives 3.2e-10, nowhere near
 			//!     machine precision.  (The earlier note said the plateau
 			//!     began at 1e-10.  Setting this constant to 1e-12, a value
-			//!     that note placed INSIDE the plateau, fails three [Domain]
-			//!     assertions -- a claim the file's own test refutes.)
+			//!     that note placed INSIDE the plateau, fails SIX [Domain]
+			//!     assertions -- a claim the file's own test refutes.  It was
+			//!     recorded as "three", counted before the same commit added
+			//!     three more [Domain] rows and never re-derived.)
 			//!   * BOTTOM ~1e-76 for a benign stack, from the overflow
 			//!     described two paragraphs below, and it rises roughly one
 			//!     decade per decade of ambient index, so an extreme
@@ -750,10 +776,23 @@ namespace RISE
 				return std::norm( num / den );		// |r|²
 			}
 
+			//! Binade band inside which RenormalizeLayerProduct does nothing.
+			//! 2^-64 .. 2^+64, i.e. ~1e-19 .. ~1e19 -- roughly 135 decades of
+			//! margin to the ~1e154 where the naive complex division
+			//! -ffast-math selects overflows.  Any band well inside that works;
+			//! this one is wide enough that ordinary stacks never leave it (so
+			//! the rescale costs two compares) and narrow enough that eight
+			//! stand-in layers cannot escape it.
+			static const Scalar kRenormLo = Scalar(5.4210108624275222e-20);	// 2^-64
+			static const Scalar kRenormHi = Scalar(1.8446744073709552e+19);	// 2^+64
+
 			//! Rescales an accumulated 2x2 layer product to O(1), IN PLACE,
 			//! by an exact power of two.
 			//!
-			//! Free AND exact.  Free because the reflectance
+			//! ALGEBRAICALLY free, and exact up to the denormal caveat below.
+			//! ("Free" here means it changes no result -- it is NOT free in
+			//! time; see the cost note at the end of this comment.)
+			//! Algebraically free because the reflectance
 			//!   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
 			//! is homogeneous of degree 0 in M -- the same argument that lets
 			//! each layer drop its e^{-i delta}/2 -- so any nonzero scalar may
@@ -780,18 +819,61 @@ namespace RISE
 			//! reaches -1073 and ldexp(1, +1073) overflows to inf -- which a
 			//! finiteness check on the magnitude cannot see, because the
 			//! magnitude is finite and it is the MULTIPLIER that overflows.
-			//! Pinned by ThinFilmProductionTest [Renormalize].
+			//! ⚠ NOT exact when a component is denormal, or becomes denormal
+			//! under the rescale.  A power-of-two shift preserves mantissas
+			//! only while every component stays normal; below that, bits are
+			//! lost and an entry can even flush to zero (measured: an m01 of
+			//! 7*denorm_min against an m00 of 1 shifts its ratio by 14.3 %,
+			//! and 1e-300 against 1e300 is annihilated).  Reachable in the
+			//! layer loop -- 3,514 flush-to-zero and 2,712 new-denormal events
+			//! over 400,000 degenerate stacks -- but immaterial: worst
+			//! |production - 150 dps| over the stacks that trigger it is
+			//! 5.6e-16.  The earlier claim "every mantissa is preserved, so no
+			//! result moves" was therefore too strong.
+			//!
+			//! COST.  Not free in time: the four std::abs(Complex) hypots this
+			//! originally used measured +34.6 % on ReflectanceConductorStack
+			//! n=1 and +44.5 % on n=2.  Replaced by a component-wise magnitude
+			//! proxy (see the body); re-measured figures are in the file
+			//! header's cost table.
+			//!
+			//! Pinned by ThinFilmProductionTest [Renormalize], whose
+			//! POSTCONDITION assertion (the rescaled magnitude lands in
+			//! [0.5, 1)) is what gives the block teeth -- the finiteness and
+			//! ratio rows alone are satisfied by a function that does nothing.
 			inline void RenormalizeLayerProduct(
 				Complex& m00, Complex& m01, Complex& m10, Complex& m11 )
 			{
-				Scalar mag = std::abs( m00 );
-				const Scalar a01 = std::abs( m01 );
-				const Scalar a10 = std::abs( m10 );
-				const Scalar a11 = std::abs( m11 );
-				if( a01 > mag ) mag = a01;
-				if( a10 > mag ) mag = a10;
-				if( a11 > mag ) mag = a11;
+				// Magnitude PROXY: max over components of |re| and |im|, not
+				// std::abs(Complex).  std::abs on a complex is a hypot per
+				// entry -- four of them, per layer, PER POLARIZATION -- and it
+				// measured +34.6 % on the n=1 stack and +44.5 % on n=2, an
+				// order of magnitude more than the whole correctness arc had
+				// cost to that point.  Only the EXPONENT is wanted here, and
+				// the proxy is within a factor of sqrt(2) of the true modulus,
+				// i.e. at most one binade -- which changes nothing, because
+				// the postcondition is a binade-scale property and the margin
+				// to overflow is ~150 decades.
+				Scalar mag = std::fabs( m00.real() );
+				const Scalar c[7] = { std::fabs( m00.imag() ),
+				                      std::fabs( m01.real() ), std::fabs( m01.imag() ),
+				                      std::fabs( m10.real() ), std::fabs( m10.imag() ),
+				                      std::fabs( m11.real() ), std::fabs( m11.imag() ) };
+				for( int i = 0; i < 7; ++i ) { if( c[i] > mag ) mag = c[i]; }
 				if( !( mag > Scalar(0) ) || !std::isfinite( mag ) ) {
+					return;
+				}
+				// Do nothing while the product is already in a safe binade
+				// band.  This is the whole cost of the guard in the common
+				// case -- two compares instead of a frexp and eight ldexps --
+				// and it is not a weakening: the rescale exists only to keep
+				// the product away from the ~1e154 where the naive c^2+d^2
+				// complex division overflows, and 2^+-64 is ~1e19, some 135
+				// decades of margin.  The POSTCONDITION the tests pin is
+				// therefore "the magnitude's exponent lands in [-64, 64]",
+				// which a do-nothing implementation cannot satisfy (an
+				// un-rescaled product reaches ~1e161, exponent ~535).
+				if( mag > kRenormLo && mag < kRenormHi ) {
 					return;
 				}
 				int exponent = 0;
@@ -986,9 +1068,15 @@ namespace RISE
 			//!
 			//! The TMM fallback below is DEFENCE IN DEPTH for the case where
 			//! Airy does not produce a finite value at all.  It is MEASURED
-			//! DEAD: 0 firings over 7,000,000 adversarial stacks in two
-			//! distributions (3,000,000 in the shipped index range with
-			//! thickness to 1e5 nm, plus the 4,000,000 above).  It is kept
+			//! DEAD over the SHIPPED domain: 0 firings over 7,000,000
+			//! adversarial stacks in two distributions (3,000,000 in the
+			//! shipped index range with thickness to 1e5 nm, plus the
+			//! 4,000,000 above).  ⚠ It is NOT dead everywhere: since the
+			//! per-layer renormalization landed it FIRES and is load-bearing
+			//! for a film index below ~1e-77.5, where the Airy form still
+			//! overflows and the N-layer form no longer does.  That regime is
+			//! ~77 decades below any optical constant, but "measured dead"
+			//! without that qualifier was false.  It is kept
 			//! because it costs one predictable branch per polarization and
 			//! degrades a future regression to a second, independently
 			//! derived algebra instead of poisoning a whole spectral
