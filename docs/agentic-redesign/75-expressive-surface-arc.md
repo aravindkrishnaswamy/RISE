@@ -396,6 +396,25 @@ main checkout after any worktree agent.  Runs: gemini via
   (Also for the record: the supervisor's S1 brief mis-stated the skill
   path as docs/skills — the agent corpus lives at skills/agent/; the
   writer caught it.  §4.3 discipline, mine again.)
+- **2026-08-01 — S1 gemini leg: COPYING-FAILURE 6/6 (the clean
+  disconfirmation).**  Precision census (authored payloads only,
+  validated against final.RISEscene chunk counts): every run authored
+  bindable pbr materials (33 microsurface-slot instances), every run
+  genuinely read the edited materials-and-media-basics BEFORE authoring
+  (edited content confirmed served — pnt_pbr_roughness present in the
+  read_skill result), and ALL 33 slots are inline numeric constants.
+  Zero copy trace of the demo painters, not even renamed.  Neither
+  reach-failure nor exposure-failure applies — the copy-source carried
+  the binding and the model reproduced the SHAPE of its prior instead
+  (numbers in number-looking slots).  Refined mechanism model this
+  licenses: the 74-arc's "examples move copying" lever moved painter
+  FAMILIES in slots models already bound painters to (reflectance /
+  base_color); it does not override the slot-TYPING prior that
+  roughness is a scalar.  Per the pre-committed rule the gemini half is
+  0/6 → example ceiling confirmed at construct level for gemini; the
+  qwen leg (in flight) completes the phase verdict — its
+  copy-verbatim-constants habit is the strongest remaining test of the
+  hypothesis.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
