@@ -325,6 +325,23 @@ main checkout after any worktree agent.  Runs: gemini via
   read with that in mind.  **Deferred, tracked**: pre-existing BDPT
   remap0 phantom-NEE-term energy deficit for non-light-sampled emitters
   (fenced MIS work; comments at both sites).
+- **2026-08-01 — S0.6 gemini leg COMPLETE** (9/9 post-fix, zero crashes,
+  all `final_text`; qwen leg in flight).  Anchor numbers
+  (gemini-3.5-flash, N=3): courtyard meanCkpt 0.880 / painter_kinds
+  2.33 / advanced_geometry 0.67 / **varied_microsurface 0.00**;
+  cozy-study meanCkpt 0.813 / painter_kinds 1.33 / advanced_geometry
+  1.00 / **varied_microsurface 0.00**; counterweight ask-guard 3/3
+  (its 33% pass@1 is the known-tight objectmap/luma bands at N=3, not
+  an ask-side regression).  Forensics: every microsurface failure is
+  the construct metric itself (no calibration artifact); the cozy
+  provisional 0.35 luma band held with no recalibration needed.
+  **New finding the second subject exists to surface: the 74-arc
+  painter-floor win does NOT fully transfer** — cozy r2/r3 bound only
+  perlin3d (floor 1 vs courtyard's 2.33); the P1 snippet families are
+  plausibly subject-associated.  S1 design input: the aligned-example
+  edits must be checked for cross-subject transfer, not just courtyard
+  deltas.  S1's baseline is now anchored: varied_microsurface 0.00 on
+  both subjects, stop rule ≥2/6 runs with ≥1.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
