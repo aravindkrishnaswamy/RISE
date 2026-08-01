@@ -22,13 +22,152 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <math.h>
 
 using namespace RISE;
 
 namespace
 {
+	static Scalar EvaluateCubic(
+		const Scalar (&coeff)[4],
+		const Scalar x
+		)
+	{
+		return ((coeff[0]*x + coeff[1])*x + coeff[2])*x + coeff[3];
+	}
+
+	static bool CubicValueIsNumericalZero(
+		const Scalar (&coeff)[4],
+		const Scalar x,
+		const Scalar value
+		)
+	{
+		const Scalar ax = fabs(x);
+		const Scalar scale = fabs(coeff[0])*ax*ax*ax +
+			fabs(coeff[1])*ax*ax + fabs(coeff[2])*ax + fabs(coeff[3]);
+		return fabs(value) <= 64.0*std::numeric_limits<Scalar>::epsilon()*scale;
+	}
+
+	static void AppendDerivativeRoots(
+		const Scalar (&coeff)[4],
+		std::vector<Scalar>& partition
+		)
+	{
+		const Scalar a = 3.0*coeff[0];
+		const Scalar b = 2.0*coeff[1];
+		const Scalar c = coeff[2];
+		if( a == 0.0 ) {
+			if( b != 0.0 ) {
+				const Scalar root = -c/b;
+				if( root > 0.0 && root < 1.0 ) partition.push_back(root);
+			}
+			return;
+		}
+
+		Scalar discriminant = b*b - 4.0*a*c;
+		const Scalar discriminantScale = b*b + fabs(4.0*a*c);
+		if( discriminant < 0.0 &&
+			-discriminant <= 64.0*std::numeric_limits<Scalar>::epsilon()*discriminantScale ) {
+			discriminant = 0.0;
+		}
+		if( discriminant < 0.0 ) return;
+
+		const Scalar rootDisc = sqrt(discriminant);
+		const Scalar q = -0.5*(b + copysign(rootDisc,b));
+		if( q == 0.0 ) {
+			const Scalar root = -b/(2.0*a);
+			if( root > 0.0 && root < 1.0 ) partition.push_back(root);
+			return;
+		}
+		const Scalar root0 = q/a;
+		const Scalar root1 = c/q;
+		if( root0 > 0.0 && root0 < 1.0 ) partition.push_back(root0);
+		if( root1 > 0.0 && root1 < 1.0 ) partition.push_back(root1);
+	}
+
+	static void SortUniqueUnitIntervalValues( std::vector<Scalar>& values )
+	{
+		std::sort( values.begin(), values.end() );
+		std::vector<Scalar>::iterator out = values.begin();
+		for( std::vector<Scalar>::const_iterator it = values.begin();
+			it != values.end(); ++it ) {
+			if( out == values.begin() || *it != *(out-1) ) {
+				*out++ = *it;
+			}
+		}
+		values.erase( out, values.end() );
+	}
+
+	static void AppendCubicLevelCrossings(
+		const Scalar (&temperature)[4],
+		const Scalar threshold,
+		const Scalar tBegin,
+		const Scalar tEnd,
+		std::vector<Scalar>& breakpoints
+		)
+	{
+		// Recover the cubic in u from four equally spaced values.  Using
+		// the dimensionless cell parameter keeps the solve independent of
+		// scene scale and avoids powers of a potentially large ray distance.
+		const Scalar thirdDifference = temperature[3] - 3.0*temperature[2] +
+			3.0*temperature[1] - temperature[0];
+		const Scalar a = 4.5*thirdDifference;
+		const Scalar secondDifference = temperature[2] -
+			2.0*temperature[1] + temperature[0];
+		const Scalar b = 4.5*secondDifference - a;
+		const Scalar c = 3.0*(temperature[1]-temperature[0]) - a/9.0 - b/3.0;
+		Scalar coeff[4] = { a, b, c, temperature[0] - threshold };
+
+		std::vector<Scalar> partition;
+		partition.reserve(4);
+		partition.push_back(0.0);
+		AppendDerivativeRoots( coeff, partition );
+		partition.push_back(1.0);
+		SortUniqueUnitIntervalValues(partition);
+
+		for( size_t i = 0; i < partition.size(); ++i ) {
+			const Scalar u = partition[i];
+			const Scalar value = EvaluateCubic(coeff,u);
+			if( u > 0.0 && u < 1.0 &&
+				CubicValueIsNumericalZero(coeff,u,value) ) {
+				breakpoints.push_back( tBegin + u*(tEnd-tBegin) );
+			}
+		}
+
+		for( size_t i = 0; i + 1 < partition.size(); ++i ) {
+			Scalar lo = partition[i];
+			Scalar hi = partition[i+1];
+			Scalar flo = EvaluateCubic(coeff,lo);
+			const Scalar fhi = EvaluateCubic(coeff,hi);
+			if( CubicValueIsNumericalZero(coeff,lo,flo) ||
+				CubicValueIsNumericalZero(coeff,hi,fhi) ||
+				(flo < 0.0) == (fhi < 0.0) ) continue;
+
+			for( unsigned int iteration = 0; iteration < 64u; ++iteration ) {
+				const Scalar middle = 0.5*(lo+hi);
+				if( middle == lo || middle == hi ) break;
+				const Scalar fmiddle = EvaluateCubic(coeff,middle);
+				if( CubicValueIsNumericalZero(coeff,middle,fmiddle) ) {
+					lo = hi = middle;
+					break;
+				}
+				if( (flo < 0.0) != (fmiddle < 0.0) ) {
+					hi = middle;
+				} else {
+					lo = middle;
+					flo = fmiddle;
+				}
+			}
+			const Scalar root = 0.5*(lo+hi);
+			if( root > 0.0 && root < 1.0 ) {
+				breakpoints.push_back( tBegin + root*(tEnd-tBegin) );
+			}
+		}
+	}
+
 	static Scalar StablePositiveProduct(
 		const std::initializer_list<Scalar>& factors
 		)
@@ -1196,6 +1335,22 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthNM(
 		ray, targetDist, 1.0, true, nm );
 }
 
+Scalar HeterogeneousMedium::InterpolationAccessorOffset(
+	const unsigned int dimension
+	) const
+{
+	return 0.5*Scalar(dimension);
+}
+
+void HeterogeneousMedium::AppendOpticalDepthBreakpoints(
+	const Ray&,
+	const Scalar,
+	const Scalar,
+	std::vector<Scalar>&
+	) const
+{
+}
+
 Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	const Ray& ray,
 	const Scalar targetDist,
@@ -1212,7 +1367,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	// interpolation stencil changes.  All three supported accessors
 	// (NNB, trilinear, tricubic Catmull-Rom) switch stencils at
 	// integer accessor coordinates.  Within each interval between
-	// consecutive knot planes, 5-point Gauss-Legendre quadrature
+	// consecutive knot planes, 7-point Gauss-Legendre quadrature
 	// integrates the density exactly:
 	//
 	//   Nearest-neighbor ('n'): piecewise constant (degree 0)
@@ -1220,17 +1375,22 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	//   Tricubic Catmull-Rom ('c'):  degree 9 along ray per cell
 	//     (3D tensor product of cubics, each axis linear in t)
 	//
-	// 5-point GL is exact for polynomials up to degree 2*5-1 = 9.
+	// 7-point GL is exact for polynomials up to degree 2*7-1 = 13.
+	// Fire media add the roots of T(t)-700/900 as sub-panel boundaries,
+	// making carbon*phi(T) polynomial (degree at most 12) on each panel.
 	//
 	// COORDINATE MAPPING:
-	//   LookupDensity maps world → accessor via:
+	//   Legacy LookupDensity maps world → accessor via:
 	//     vx = ((world_x - bboxMin.x) / extent.x - 0.5) * volWidth
 	//   Knot planes are at integer vx = n.  Solving for world_x:
 	//     world_x = (n/volWidth + 0.5) * extent.x + bboxMin.x
 	//             = (n + volWidth/2.0) * cellSzX + bboxMin.x
 	//   For even volWidth, this coincides with bboxMin + k*cellSz.
-	//   For odd volWidth, there is a half-voxel offset; the DDA
-	//   must use the knot planes, not the naively subdivided AABB.
+	//   For odd volWidth, there is a half-voxel offset.  Painter-baked
+	//   fire channels use floor(volWidth/2)+1/2 because integer samples
+	//   denote voxel centres.  The virtual accessor offset keeps both
+	//   mappings on their actual knot planes rather than naively splitting
+	//   the AABB.
 	//
 	// DDA cell indices are in accessor space (floor of accessor
 	// coordinate), not 0-based voxel indices.
@@ -1257,30 +1417,31 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	const Scalar invCellSzY = Scalar(m_volHeight) / m_bboxExtent.y;
 	const Scalar invCellSzZ = Scalar(m_volDepth)  / m_bboxExtent.z;
 
-	// Accessor-space half-widths for the centered coordinate mapping
-	const Scalar halfW = Scalar(m_volWidth)  * 0.5;
-	const Scalar halfH = Scalar(m_volHeight) * 0.5;
-	const Scalar halfD = Scalar(m_volDepth)  * 0.5;
+	// Accessor-coordinate offsets.  Ordinary volume accessors use dim/2;
+	// painter-baked fire channels use floor(dim/2)+1/2 because their
+	// integer samples denote voxel centres.
+	const Scalar offsetW = InterpolationAccessorOffset(m_volWidth);
+	const Scalar offsetH = InterpolationAccessorOffset(m_volHeight);
+	const Scalar offsetD = InterpolationAccessorOffset(m_volDepth);
 
 	// Starting point (nudge slightly inside to avoid landing on face)
 	const Point3 startPt = ray.PointAtLength( tEntry + 1e-10 );
 
 	// Map start point to accessor coordinates and take floor to get
 	// the cell index.  Accessor coord:
-	//   vx = (world_x - bboxMin.x) * invCellSzX - halfW
+	//   vx = (world_x - bboxMin.x) * invCellSzX - offsetW
 	// Cell index = floor(vx).
-	int cx = (int)floor( (startPt.x - m_bboxMin.x) * invCellSzX - halfW );
-	int cy = (int)floor( (startPt.y - m_bboxMin.y) * invCellSzY - halfH );
-	int cz = (int)floor( (startPt.z - m_bboxMin.z) * invCellSzZ - halfD );
+	int cx = (int)floor( (startPt.x - m_bboxMin.x) * invCellSzX - offsetW );
+	int cy = (int)floor( (startPt.y - m_bboxMin.y) * invCellSzY - offsetH );
+	int cz = (int)floor( (startPt.z - m_bboxMin.z) * invCellSzZ - offsetD );
 
-	// Valid accessor-space cell range: floor(-halfW) .. ceil(halfW)-1
-	// (the AABB spans accessor coords [-halfW, halfW])
-	const int minCx = (int)floor( -halfW );
-	const int maxCx = (int)ceil( halfW ) - 1;
-	const int minCy = (int)floor( -halfH );
-	const int maxCy = (int)ceil( halfH ) - 1;
-	const int minCz = (int)floor( -halfD );
-	const int maxCz = (int)ceil( halfD ) - 1;
+	// Valid accessor-space cells over [-offset, dimension-offset].
+	const int minCx = (int)floor( -offsetW );
+	const int maxCx = (int)ceil( Scalar(m_volWidth)-offsetW ) - 1;
+	const int minCy = (int)floor( -offsetH );
+	const int maxCy = (int)ceil( Scalar(m_volHeight)-offsetH ) - 1;
+	const int minCz = (int)floor( -offsetD );
+	const int maxCz = (int)ceil( Scalar(m_volDepth)-offsetD ) - 1;
 
 	if( cx < minCx ) cx = minCx;  if( cx > maxCx ) cx = maxCx;
 	if( cy < minCy ) cy = minCy;  if( cy > maxCy ) cy = maxCy;
@@ -1293,7 +1454,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 
 	// tMax: ray parameter to reach the next knot plane in each axis.
 	// Knot plane at accessor integer n maps to world:
-	//   world_x = (n + halfW) * cellSzX + bboxMin.x
+	//   world_x = (n + offsetW) * cellSzX + bboxMin.x
 	// Next face from cell cx in +x direction: n = cx + 1
 	// Next face from cell cx in -x direction: n = cx
 	Scalar tMaxX, tMaxY, tMaxZ;
@@ -1302,7 +1463,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	if( fabs( ray.Dir().x ) > 1e-20 )
 	{
 		const int nextN = (stepX > 0) ? cx + 1 : cx;
-		const Scalar nextFaceX = m_bboxMin.x + (Scalar(nextN) + halfW) * cellSzX;
+		const Scalar nextFaceX = m_bboxMin.x + (Scalar(nextN) + offsetW) * cellSzX;
 		tMaxX = (nextFaceX - ray.origin.x) / ray.Dir().x;
 		tDeltaX = fabs( cellSzX / ray.Dir().x );
 	}
@@ -1315,7 +1476,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	if( fabs( ray.Dir().y ) > 1e-20 )
 	{
 		const int nextN = (stepY > 0) ? cy + 1 : cy;
-		const Scalar nextFaceY = m_bboxMin.y + (Scalar(nextN) + halfH) * cellSzY;
+		const Scalar nextFaceY = m_bboxMin.y + (Scalar(nextN) + offsetH) * cellSzY;
 		tMaxY = (nextFaceY - ray.origin.y) / ray.Dir().y;
 		tDeltaY = fabs( cellSzY / ray.Dir().y );
 	}
@@ -1328,7 +1489,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	if( fabs( ray.Dir().z ) > 1e-20 )
 	{
 		const int nextN = (stepZ > 0) ? cz + 1 : cz;
-		const Scalar nextFaceZ = m_bboxMin.z + (Scalar(nextN) + halfD) * cellSzZ;
+		const Scalar nextFaceZ = m_bboxMin.z + (Scalar(nextN) + offsetD) * cellSzZ;
 		tMaxZ = (nextFaceZ - ray.origin.z) / ray.Dir().z;
 		tDeltaZ = fabs( cellSzZ / ray.Dir().z );
 	}
@@ -1350,32 +1511,47 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 
 		if( tNext > t + 1e-15 )
 		{
-			// 5-point Gauss-Legendre: exact for polynomials up to
-			// degree 9, covering all supported accessor types.
-			//
-			// Nodes on [-1,1]:  ±0.90618, ±0.53847, 0
-			// Weights:          0.23693,  0.47863,  0.56889
-			static const Scalar glNodes[5] = {
-				-0.906179845938664, -0.538469310105683, 0.0,
-				 0.538469310105683,  0.906179845938664 };
-			static const Scalar glWeights[5] = {
-				0.236926885056189, 0.478628670499366, 0.568888888888889,
-				0.478628670499366, 0.236926885056189 };
+			static const Scalar glNodes[7] = {
+				-0.949107912342758524526189684048,
+				-0.741531185599394439863864773281,
+				-0.405845151377397166906606412077,
+				 0.0,
+				 0.405845151377397166906606412077,
+				 0.741531185599394439863864773281,
+				 0.949107912342758524526189684048 };
+			static const Scalar glWeights[7] = {
+				0.129484966168869693270611432679,
+				0.279705391489276667901467771424,
+				0.381830050505118944950369775489,
+				0.417959183673469387755102040816,
+				0.381830050505118944950369775489,
+				0.279705391489276667901467771424,
+				0.129484966168869693270611432679 };
 
-			const Scalar halfLen = 0.5 * (tNext - t);
-			const Scalar midPt  = 0.5 * (t + tNext);
-			Scalar segIntegral = 0;
-			for( int q = 0; q < 5; q++ )
-			{
-				const Scalar tq = midPt + halfLen * glNodes[q];
-				const Point3 samplePt = Point3Ops::mkPoint3(
-					ray.origin, ray.Dir() * tq );
-				const Scalar dq = spectral
-					? GetCoefficientsNM( samplePt, nm ).sigma_t
-					: sigma_t_eff * LookupDensity( samplePt );
-				segIntegral += glWeights[q] * dq;
+			std::vector<Scalar> panels;
+			panels.reserve(4);
+			panels.push_back(t);
+			AppendOpticalDepthBreakpoints( ray, t, tNext, panels );
+			panels.push_back(tNext);
+			std::sort( panels.begin(), panels.end() );
+			for( size_t panel = 0; panel + 1 < panels.size(); ++panel ) {
+				const Scalar panelBegin = panels[panel];
+				const Scalar panelEnd = panels[panel+1];
+				if( panelEnd <= panelBegin ) continue;
+				const Scalar halfLen = 0.5*(panelEnd-panelBegin);
+				const Scalar midPt = 0.5*(panelBegin+panelEnd);
+				Scalar segIntegral = 0.0;
+				for( unsigned int q = 0; q < 7u; ++q ) {
+					const Scalar tq = midPt + halfLen*glNodes[q];
+					const Point3 samplePt = Point3Ops::mkPoint3(
+						ray.origin, ray.Dir()*tq );
+					const Scalar dq = spectral
+						? GetCoefficientsNM( samplePt, nm ).sigma_t
+						: sigma_t_eff*LookupDensity( samplePt );
+					segIntegral += glWeights[q]*dq;
+				}
+				opticalDepth += halfLen*segIntegral;
 			}
-			opticalDepth += halfLen * segIntegral;
 		}
 
 		// Advance DDA: step the axis with the smallest tMax
@@ -1423,8 +1599,9 @@ Scalar HeterogeneousMedium::EvalDistancePdf(
 	//   no scatter: T_real(0,tEnd)
 	// where T_real = exp(-integral sigma_t ds) is the real transmittance.
 	//
-	// We compute T_real deterministically via Simpson quadrature over
-	// the DDA cells (see EvalDeterministicOpticalDepth).  This avoids
+	// We compute T_real deterministically via knot-aligned, root-split
+	// 7-point Gauss-Legendre panels (see EvalDeterministicOpticalDepth).
+	// This avoids
 	// the stochastic ratio-tracking path through EvalTransmittance,
 	// which would randomize the MIS balance-heuristic denominator.
 	//
@@ -1915,13 +2092,38 @@ Scalar MultichannelHeterogeneousMedium::LookupChannel(
 	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
 	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
 	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
-	const Scalar halfW = Scalar(m_volWidth / 2u);
-	const Scalar halfH = Scalar(m_volHeight / 2u);
-	const Scalar halfD = Scalar(m_volDepth / 2u);
 	return accessor.GetValue(
-		nx * Scalar(m_volWidth) - 0.5 - halfW,
-		ny * Scalar(m_volHeight) - 0.5 - halfH,
-		nz * Scalar(m_volDepth) - 0.5 - halfD );
+		nx*Scalar(m_volWidth) - InterpolationAccessorOffset(m_volWidth),
+		ny*Scalar(m_volHeight) - InterpolationAccessorOffset(m_volHeight),
+		nz*Scalar(m_volDepth) - InterpolationAccessorOffset(m_volDepth) );
+}
+
+Scalar MultichannelHeterogeneousMedium::InterpolationAccessorOffset(
+	const unsigned int dimension
+	) const
+{
+	return Scalar(dimension/2u) + 0.5;
+}
+
+void MultichannelHeterogeneousMedium::AppendOpticalDepthBreakpoints(
+	const Ray& ray,
+	const Scalar tBegin,
+	const Scalar tEnd,
+	std::vector<Scalar>& breakpoints
+	) const
+{
+	Scalar temperature[4];
+	for( unsigned int sample = 0; sample < 4u; ++sample ) {
+		const Scalar u = Scalar(sample)/3.0;
+		const Scalar t = tBegin + u*(tEnd-tBegin);
+		const Point3 point = Point3Ops::mkPoint3( ray.origin, ray.Dir()*t );
+		temperature[sample] = LookupTemperature(point);
+	}
+	AppendCubicLevelCrossings( temperature, 700.0, tBegin, tEnd, breakpoints );
+	AppendCubicLevelCrossings( temperature, 900.0, tBegin, tEnd, breakpoints );
+	std::sort( breakpoints.begin(), breakpoints.end() );
+	breakpoints.erase( std::unique(breakpoints.begin(),breakpoints.end()),
+		breakpoints.end() );
 }
 
 Scalar MultichannelHeterogeneousMedium::LookupCarbon( const Point3& worldPt ) const

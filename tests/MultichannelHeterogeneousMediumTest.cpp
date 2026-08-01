@@ -109,6 +109,125 @@ namespace
 		~AffineWorldScalarPainter() override = default;
 	};
 
+	class TrilinearProductPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		const Scalar bias_;
+		const Scalar scale_;
+
+	public:
+		TrilinearProductPainter( const Scalar bias, const Scalar scale ) :
+		  bias_(bias), scale_(scale)
+		{
+		}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( bias_ + scale_*ri.ptIntersection.x*
+				ri.ptIntersection.y*ri.ptIntersection.z );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~TrilinearProductPainter() override = default;
+	};
+
+	class QuadraticXPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( ri.ptIntersection.x*ri.ptIntersection.x );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~QuadraticXPainter() override = default;
+	};
+
+	class BilinearHumpTemperaturePainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( 600.0 + 1500.0*ri.ptIntersection.x*
+				(1.0-ri.ptIntersection.y) );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~BilinearHumpTemperaturePainter() override = default;
+	};
+
+	Scalar ReferencePhiAwareSigmaT( const Scalar x )
+	{
+		const Scalar carbon = 1.0 + 8.0*x*x*x;
+		const Scalar temperature = 600.0 + 1600.0*x*x*x;
+		Scalar phi = 0.0;
+		if( temperature >= 900.0 ) {
+			phi = 1.0;
+		} else if( temperature > 700.0 ) {
+			const Scalar s = (temperature-700.0)/200.0;
+			phi = s*s*(3.0-2.0*s);
+		}
+		return carbon*(0.2 + phi*(2.0-0.2));
+	}
+
+	Scalar ReferencePhiAwareOpticalDepth(
+		const Scalar xBegin,
+		const Scalar xEnd
+		)
+	{
+		// Composite Simpson is an independent reference for the piecewise
+		// degree-12 integrand.  The fixed even panel count puts the numerical
+		// error far below the gate while making no use of renderer breakpoints.
+		const unsigned int panelCount = 20000u;
+		const Scalar h = (xEnd-xBegin)/Scalar(panelCount);
+		Scalar sum = ReferencePhiAwareSigmaT(xBegin) +
+			ReferencePhiAwareSigmaT(xEnd);
+		for( unsigned int i = 1u; i < panelCount; ++i ) {
+			const Scalar value = ReferencePhiAwareSigmaT(xBegin+Scalar(i)*h);
+			sum += (i&1u ? 4.0 : 2.0)*value;
+		}
+		return sqrt(3.0)*h*sum/3.0;
+	}
+
+	Scalar ReferenceHumpSigmaT( const Scalar x )
+	{
+		const Scalar temperature = 600.0 + 1500.0*x*(1.0-x);
+		Scalar phi = 0.0;
+		if( temperature >= 900.0 ) {
+			phi = 1.0;
+		} else if( temperature > 700.0 ) {
+			const Scalar s = (temperature-700.0)/200.0;
+			phi = s*s*(3.0-2.0*s);
+		}
+		return 0.2 + phi*(2.0-0.2);
+	}
+
+	Scalar ReferenceHumpOpticalDepth()
+	{
+		const unsigned int panelCount = 20000u;
+		const Scalar xBegin = 0.25;
+		const Scalar xEnd = 0.75;
+		const Scalar h = (xEnd-xBegin)/Scalar(panelCount);
+		Scalar sum = ReferenceHumpSigmaT(xBegin) +
+			ReferenceHumpSigmaT(xEnd);
+		for( unsigned int i = 1u; i < panelCount; ++i ) {
+			const Scalar value = ReferenceHumpSigmaT(xBegin+Scalar(i)*h);
+			sum += (i&1u ? 4.0 : 2.0)*value;
+		}
+		return sqrt(2.0)*h*sum/3.0;
+	}
+
 	class DerivedMultichannelHeterogeneousMedium final :
 		public MultichannelHeterogeneousMedium
 	{
@@ -951,6 +1070,130 @@ namespace
 		safe_release( temperature );
 	}
 
+	void TestPhiAwareQuadratureAndDistancePdf()
+	{
+		std::cout << "TestPhiAwareQuadratureAndDistancePdf" << std::endl;
+		// First isolate the painter-baked lattice convention.  A quadratic
+		// painter becomes piecewise linear after baking, with real knots at
+		// x={0.125,0.375,0.625,0.875}.  The legacy density offset instead
+		// splits at quarter boundaries and misses those polynomial changes.
+		QuadraticXPainter* quadraticCarbon = new QuadraticXPainter();
+		IScalarPainter* coolTemperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &coolTemperature, 600.0 );
+		IMedium* latticeMedium = nullptr;
+		const bool latticeCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&latticeMedium, *quadraticCarbon, *coolTemperature,
+			4, 4, 4, Point3(0,0,0), Point3(1,1,1), 1.0,
+			0.0, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		Check( latticeCreated && latticeMedium,
+			"piecewise baked-lattice fixture constructs" );
+		if( latticeMedium ) {
+			const Scalar samples[4] = {
+				0.125*0.125, 0.375*0.375, 0.625*0.625, 0.875*0.875 };
+			Scalar expectedIntegral = 0.0;
+			for( unsigned int i = 0u; i < 3u; ++i ) {
+				expectedIntegral += 0.25*0.5*(samples[i]+samples[i+1]);
+			}
+			const Scalar expectedTau = 0.2*expectedIntegral;
+			const Ray latticeRay( Point3(0.125,0.5,0.5), Vector3(1,0,0) );
+			const Scalar survival = latticeMedium->EvalDistancePdfNM(
+				latticeRay, 0.75, false, 0.75, 633.0 );
+			Check( NearRelative( -log(survival), expectedTau, 2e-13 ),
+				"deterministic DDA splits at the actual painter-baked trilinear knots" );
+		}
+		safe_release(latticeMedium);
+		safe_release(quadraticCarbon);
+		safe_release(coolTemperature);
+
+		// A non-monotone, renderer-realizable polynomial needs derivative
+		// partitioning to reveal both roots.  Along x=y, x*(1-y) forms a
+		// hump whose endpoints are below 900 K while its interior is above;
+		// endpoint sign checks alone therefore miss both 900 K crossings.
+		IScalarPainter* uniformCarbon = nullptr;
+		RISE_API_CreateUniformScalarPainter( &uniformCarbon, 1.0 );
+		BilinearHumpTemperaturePainter* humpTemperature =
+			new BilinearHumpTemperaturePainter();
+		const Scalar humpHotMassExtinction = 2.0;
+		const Scalar humpSootEm = humpHotMassExtinction*633.0e-9*1800.0 /
+			(6.0*PI*1.0e-3);
+		IMedium* humpMedium = nullptr;
+		const bool humpCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&humpMedium, *uniformCarbon, *humpTemperature,
+			2, 2, 2, Point3(0,0,0), Point3(1,1,1), 1.0,
+			humpSootEm, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		Check( humpCreated && humpMedium,
+			"non-monotone phi-transition fixture constructs" );
+		if( humpMedium ) {
+			const Scalar invSqrtTwo = 1.0/sqrt(2.0);
+			const Ray humpRay( Point3(0.25,0.25,0.5),
+				Vector3(invSqrtTwo,invSqrtTwo,0.0) );
+			const Scalar humpLength = 0.5*sqrt(2.0);
+			const Scalar survival = humpMedium->EvalDistancePdfNM(
+				humpRay, humpLength, false, humpLength, 633.0 );
+			Check( NearRelative( -log(survival),
+				ReferenceHumpOpticalDepth(), 2e-12 ),
+				"derivative partitions expose both same-sign-endpoint 900 K roots" );
+		}
+		safe_release(humpMedium);
+		safe_release(uniformCarbon);
+		safe_release(humpTemperature);
+
+		TrilinearProductPainter* carbon = new TrilinearProductPainter( 1.0, 8.0 );
+		TrilinearProductPainter* temperature =
+			new TrilinearProductPainter( 600.0, 1600.0 );
+		const Scalar targetHotMassExtinction = 2.0;
+		const Scalar sootEm = targetHotMassExtinction*633.0e-9*1800.0 /
+			(6.0*PI*1.0e-3);
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature,
+			2, 2, 2, Point3(0,0,0), Point3(1,1,1), 1.0,
+			sootEm, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>(medium);
+		Check( created && fire && fire->IsValid(),
+			"phi-transition quadrature fixture constructs" );
+		if( fire ) {
+			const Scalar invSqrtThree = 1.0/sqrt(3.0);
+			const Ray ray( Point3(0.25,0.25,0.25),
+				Vector3(invSqrtThree,invSqrtThree,invSqrtThree) );
+			const Scalar length = 0.5*sqrt(3.0);
+			const Scalar expectedTau = ReferencePhiAwareOpticalDepth(0.25,0.75);
+			const Scalar survival = fire->EvalDistancePdfNM(
+				ray, length, false, length, 633.0 );
+			Check( NearRelative( -log(survival), expectedTau, 2e-12 ),
+				"root-split 7-point optical depth integrates a degree-12 phi transition" );
+
+			const Scalar scatterDistance = 0.61*length;
+			const Scalar scatterX = 0.25 + scatterDistance*invSqrtThree;
+			const Scalar expectedScatterPdf = ReferencePhiAwareSigmaT(scatterX)*
+				exp( -ReferencePhiAwareOpticalDepth(0.25,scatterX) );
+			const Scalar scatterPdf = fire->EvalDistancePdfNM(
+				ray, scatterDistance, true, length, 633.0 );
+			Check( NearRelative( scatterPdf, expectedScatterPdf, 2e-12 ),
+				"EvalDistancePdfNM retains the deterministic pure-DT density through both clamps" );
+
+			bool majorantBounded = true;
+			for( unsigned int i = 0u; i <= 256u; ++i ) {
+				const Scalar x = 0.25 + 0.5*Scalar(i)/256.0;
+				const Point3 point(x,x,x);
+				if( fire->TrackingMajorantAtNM(point,633.0) <
+					fire->GetCoefficientsNM(point,633.0).sigma_t ) {
+					majorantBounded = false;
+					break;
+				}
+			}
+			Check( majorantBounded,
+				"shared-lattice majorant bounds every sampled point across both phi transitions" );
+		}
+		safe_release(medium);
+		safe_release(carbon);
+		safe_release(temperature);
+	}
+
 	void TestNonFiniteRejection()
 	{
 		std::cout << "TestNonFiniteRejection" << std::endl;
@@ -1233,6 +1476,7 @@ int main()
 	TestContinuationPhaseClosurePreflightTable();
 	TestPhysicalUnitsAndSceneScale();
 	TestPhiSupMajorant();
+	TestPhiAwareQuadratureAndDistancePdf();
 	TestNonFiniteRejection();
 	TestDescriptorAndRequiredness();
 	TestSceneLanguageAndSceneUnitPropagation();

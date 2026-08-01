@@ -108,18 +108,19 @@ namespace RISE
 		/// accessor knot planes (integer coordinates in the centered
 		/// accessor coordinate system).  This ensures each GL panel
 		/// stays within one interpolation stencil region regardless
-		/// of volume dimension parity.  5-point Gauss-Legendre
-		/// quadrature is exact for polynomials up to degree 9,
+		/// of volume dimension parity.  7-point Gauss-Legendre
+		/// quadrature is exact for polynomials up to degree 13,
 		/// covering all supported accessor types: nearest-neighbor
 		/// (degree 0), trilinear (degree 3 along ray), and
-		/// Catmull-Rom tricubic (degree 9 along ray).
+		/// Catmull-Rom tricubic (degree 9 along ray).  Fire media also
+		/// split panels at the roots of T(t)-700/900, so each panel's
+		/// carbon*phi(T) integrand is polynomial through degree 12.
 		///
 		/// This is used by EvalDistancePdf to provide a deterministic
 		/// technique density for MIS, avoiding the stochastic ratio
 		/// tracking path through EvalTransmittance.
 		/// The chromatic fire overload evaluates sigma_t(nm) at the same
-		/// nodes.  Phase A's phi-aware root splitting / 7-point upgrade is a
-		/// deliberately later increment.
+		/// nodes and medium-specific root-split panels.
 		Scalar EvalDeterministicOpticalDepth(
 			const Ray& ray,
 			const Scalar targetDist,
@@ -138,6 +139,22 @@ namespace RISE
 			const Scalar sigma_t_eff,
 			const bool spectral,
 			const Scalar nm
+			) const;
+
+		/// Accessor-coordinate offset used by the deterministic knot walk.
+		/// The legacy volume mapping uses dim/2; painter-baked fire channels
+		/// override this because their integer samples denote voxel centres.
+		virtual Scalar InterpolationAccessorOffset(
+			const unsigned int dimension
+			) const;
+
+		/// Add medium-specific, strictly interior quadrature breakpoints for
+		/// one interpolation cell.  Ordinary heterogeneous media have none.
+		virtual void AppendOpticalDepthBreakpoints(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			std::vector<Scalar>& breakpoints
 			) const;
 
 		/// Scalar majorant used by the NM tracker.  Fire overrides this with
@@ -353,6 +370,15 @@ namespace RISE
 
 		virtual ~MultichannelHeterogeneousMedium();
 		Scalar SpectralTrackingMajorant( const Scalar nm ) const override;
+		Scalar InterpolationAccessorOffset(
+			const unsigned int dimension
+			) const override;
+		void AppendOpticalDepthBreakpoints(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			std::vector<Scalar>& breakpoints
+			) const override;
 
 		Scalar LookupChannel(
 			const IVolumeAccessor& accessor,
