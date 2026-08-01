@@ -104,8 +104,10 @@ namespace RISE
 			External    //!< a remote/other agent: mutating verbs STAGE a proposal (inert) instead of committing; may NOT resolve (approve/reject) ANY proposal, including its own.
 		};
 
-		//! Secure-MCP slice 5a: the structured result of a STAGED
-		//! propose_patch / insert_chunk / remove_chunk call (External
+		//! Secure-MCP slice 5a: the structured result of a STAGED mutating
+		//! call -- any of the 5 mutating verbs (propose_patch/propose_patches/
+		//! insert_chunk/insert_chunks/remove_chunk); the batch forms stage per
+		//! element through the same single-item path (External
 		//! authority + Propose autonomy, with a live controller attached).
 		//! Deliberately narrow -- a stage is INERT, so there is no
 		//! rawCode/status tri-state to fold; `staged` is true iff the
@@ -252,8 +254,11 @@ namespace RISE
 
 		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics), extended by
 		//! a later slice to propose_patch and remove_chunk: ONE shape for EVERY
-		//! per-parameter / per-chunk diagnostic signal the three mutating verbs
-		//! can return -- a NON-BLOCKING WARNING attached to a SUCCESSFUL
+		//! per-parameter / per-chunk diagnostic signal the 5 mutating verbs
+		//! (propose_patch / propose_patches / insert_chunk / insert_chunks /
+		//! remove_chunk -- the batch forms surface it PER ELEMENT, through the
+		//! same single-item delegates) can return -- a NON-BLOCKING WARNING
+		//! attached to a SUCCESSFUL
 		//! insert_chunk (the chunk landed but names something not yet defined --
 		//! a forward reference is legitimate incremental authoring, so
 		//! `applied`/`status` are UNCHANGED by it) and the descriptor- or
@@ -287,8 +292,12 @@ namespace RISE
 		//!     caller can switch on without string-matching `message`, grouped
 		//!     by which verb(s) can produce it:
 		//!
-		//!     insert_chunk, propose_patch, AND remove_chunk (target/param
-		//!     resolution and reference-typing are shared concerns):
+		//!     insert_chunk AND propose_patch -- and therefore insert_chunks
+		//!     and propose_patches, which run each element through the SAME
+		//!     per-item call and so emit the SAME issues (target/param
+		//!     resolution and reference-typing are shared concerns).
+		//!     remove_chunk is NOT in this group: AnalyzeRejectedRemove
+		//!     emits "still_referenced" and nothing else.
 		//!       "unresolved_reference"      a Reference-kind param's value is
 		//!                                   a NAME that does not resolve
 		//!                                   against the document in scope
@@ -305,11 +314,11 @@ namespace RISE
 		//!                                   NAME belongs), not a dangling
 		//!                                   reference.
 		//!
-		//!     insert_chunk ONLY:
+		//!     insert_chunk / insert_chunks ONLY:
 		//!       "unknown_chunk_type"        the chunk keyword itself is not a
 		//!                                   registered chunk type.
 		//!
-		//!     propose_patch ONLY:
+		//!     propose_patch / propose_patches ONLY:
 		//!       "unknown_target"            the `target` entity name does not
 		//!                                   resolve to any chunk in the head
 		//!                                   (restricted to `kind` when given).
@@ -880,6 +889,18 @@ namespace RISE
 			bool                       perceptionAvailable = false;
 			std::uint64_t              perceptionPersistentBytes = 0;
 			std::uint64_t              perceptionAuxiliaryPeakBytes = 0;
+			//! Creative-richness P2 ADDITIVE wire field: the observed-state
+			//! "design note" (AgentSession::ComputeDesignNote), populated
+			//! ONLY on a successful ("ok") beauty render whose `renderMode`
+			//! is "production" or "draft" -- NEVER "objectmap" or a view
+			//! mode (see RenderCore_'s population site for why: those are
+			//! diagnostic/segmentation renders, not the "the model just
+			//! looked at its finished work" moment the note is anchored
+			//! to). EMPTY (and omitted from the wire result entirely,
+			//! same convention as AgentSkillResult::note) whenever the scan
+			//! finds neither measured deficit, or the render did not
+			//! qualify for the scan at all.
+			std::string                note;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -1134,7 +1155,92 @@ namespace RISE
 			std::string                  name;       //!< the requested name (named fetch)
 			std::string                  markdown;   //!< the full skill markdown (named fetch)
 			std::vector<AgentSkillEntry> index;      //!< the index (empty-name fetch)
-			std::string                  note;       //!< index-only advisory: set when the skills ROOT DIRECTORY itself was not found (distinguishing a miswired root from a present-but-empty one; both give an empty index)
+			std::string                  note;       //!< index-only advisory: set whenever the index comes back EMPTY (never silent -- an empty index means a miswired install), and worded to distinguish a MISSING skills root from a present-but-empty one
+		};
+
+		//! THE LAST-RENDER IMAGE CACHE -- the pair `read_image` serves.
+		//!
+		//! Holds the PNG bytes of the last successful render plus that
+		//! render's in-memory sink (kept alive so `read_image` with a
+		//! maxEdge, and `read_perception`, can re-encode from the cached
+		//! full-resolution linear pixels without re-rendering).  Written at
+		//! RenderCore_'s tail; read by AgentSession's ReadImage /
+		//! ReadPerception.
+		//!
+		//! WHY IT IS A SEPARATE, SHAREABLE OBJECT.  It used to be two plain
+		//! AgentSession members, so the cache was strictly PER-SESSION -- and
+		//! the GUIs stand up THREE sessions over one Job (an administrative
+		//! one, plus a tool-call Owner and a tool-call Propose session).  A
+		//! user who flipped the autonomy chip to or from Propose between a
+		//! `render` and the `read_image` that followed it moved the read onto
+		//! the OTHER session, which returned an empty or stale cache.  A host
+		//! now creates ONE cache (MakeSharedImageCache) and passes it to the
+		//! sessions that should share a view of "the last render".
+		//!
+		//! SHARING IS OPT-IN, AND MUST STAY THAT WAY.  A session constructed
+		//! without a cache allocates a private one, so isolation is the
+		//! DEFAULT.  That is not a convenience -- the hosted loopback (MCP)
+		//! server's External session MUST NOT be able to read pixels an
+		//! in-app render produced, and it stays isolated precisely because
+		//! nobody hands it the in-app handle.  Before adding a call site,
+		//! decide whether the new session is INSIDE the app's trust boundary.
+		//!
+		//! LIFETIME.  Held by std::shared_ptr, so sessions may be destroyed
+		//! in any order; the last one out destroys the cache, which releases
+		//! the sink exactly once.  A reader that leased the sink holds its
+		//! OWN reference on it (AgentSession's lease bookkeeping addrefs),
+		//! so even a sink dropped from here stays alive until that reader
+		//! finishes.
+		//!
+		//! LOCKING.  `mMutex` is a LEAF: every method takes it, does its
+		//! work, and releases it without acquiring any other lock (the only
+		//! thing it does under the lock is a refcount release, same as the
+		//! per-session code it replaced).  Callers may hold
+		//! AgentSession::mAsyncCacheMutex -- or, on the worker side,
+		//! SceneEditController::mMutex -- across a call here; nothing here
+		//! ever reaches back for either.  Leaf-ness is what makes that
+		//! deadlock-free by construction rather than by case analysis.
+		class AgentImageCache
+		{
+		public:
+			AgentImageCache() {}
+			~AgentImageCache();
+
+			AgentImageCache( const AgentImageCache& ) = delete;
+			AgentImageCache& operator=( const AgentImageCache& ) = delete;
+
+			//! Replace the cached frame.  TAKES OWNERSHIP of the caller's
+			//! reference on `sink` (null is legal: it empties the cache) and
+			//! releases whatever sink was cached before.
+			void Store( std::vector<unsigned char> png, InMemoryRasterizerOutput* sink );
+
+			//! The cached PNG bytes (empty when nothing is cached).
+			std::vector<unsigned char> Png() const;
+
+			//! The cached PNG bytes together with the cached sink's
+			//! dimensions, read under ONE lock so the two cannot come from
+			//! different renders.  Dimensions stay 0 when no sink is cached.
+			std::vector<unsigned char> PngWithDims( unsigned int& outWidth,
+			                                        unsigned int& outHeight ) const;
+
+			//! The cached sink with a NEW reference the caller must release
+			//! (null when nothing is cached).  Handing back a reference
+			//! rather than a bare pointer is what lets the caller drop this
+			//! lock and still encode safely while a newer render replaces
+			//! the cache underneath it.
+			InMemoryRasterizerOutput* AcquireSink() const;
+
+			//! Move the cached frame OUT, leaving the cache empty; the
+			//! caller inherits the sink's reference.  For
+			//! EphemeralRenderCacheGuard's stash half -- Store() is the
+			//! restore half.
+			void Take( std::vector<unsigned char>& outPng,
+			           InMemoryRasterizerOutput*& outSink );
+
+		private:
+			mutable std::mutex         mMutex;
+			std::vector<unsigned char> mPng;
+			InMemoryRasterizerOutput*  mSink = nullptr;
 		};
 
 		//! A headless read/validate session over a Job.  Owns the Job iff it
@@ -1146,18 +1252,24 @@ namespace RISE
 		//! RenderAsync: this class now has a REAL, NARROW cross-thread
 		//! surface, and the actual contract is:
 		//!
-		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
-		//!     mActiveSinkReadLeases, mSinkReadsClosing, plus decrements of
-		//!     mSinkReadEntrants after its lock-free entry increment,
-		//!     mAsyncOutstandingJobId) is the ONLY
+		//!   * mAsyncCacheMutex-guarded state (mActiveSinkReadLeases,
+		//!     mSinkReadsClosing, plus decrements of mSinkReadEntrants after
+		//!     its lock-free entry increment, mAsyncOutstandingJobId,
+		//!     mLastAsyncRenderResult{,JobId}) plus the LAST-RENDER CACHE
+		//!     behind mImageCache (which has its own leaf lock -- see
+		//!     AgentImageCache) is the ONLY
 		//!     state touched from more
 		//!     than one thread -- written by the async worker thread
 		//!     (RenderCore_'s cache-population tail; RenderAsync's
 		//!     OutstandingGuard) and read/written by whatever thread calls
 		//!     ReadImage() / ReadImage(maxEdge) / ReadPerception / RenderAsync /
 		//!     DrainAsyncRender_.  Every access to these fields goes
-		//!     through mAsyncCacheMutex; there is no unguarded access
-		//!     anywhere in this class.
+		//!     through mAsyncCacheMutex (or, for the cache, through
+		//!     AgentImageCache's own methods); there is no unguarded access
+		//!     anywhere in this class.  LOCK ORDER where both are held:
+		//!     mAsyncCacheMutex OUTSIDE, the cache's lock INSIDE, never the
+		//!     reverse -- trivially satisfied because the cache's lock is a
+		//!     leaf that acquires nothing.
 		//!   * EVERYTHING ELSE (mJob, mController, mNextSessionLocalRenderJobId,
 		//!     ProposePatch / InsertChunk / RemoveChunk / Validate / the
 		//!     synchronous Render() family, AttachController) remains
@@ -1165,6 +1277,17 @@ namespace RISE
 		//!     (typically the RPC dispatcher's serving thread), same as the
 		//!     original slice-0a contract -- no mutex protects them, and
 		//!     none is added by this fix.
+		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
+		//!     The Job behind mJob is SHARED: with a controller attached the
+		//!     GUI main thread commits to the same head while this session
+		//!     reads it, and the hosted-MCP topology runs a SECOND
+		//!     AgentSession over that same Job on its own thread.  The head
+		//!     is therefore genuinely multi-threaded state, and every read of
+		//!     it goes through ReadDocumentSnapshot / ReadHeadVersion, which
+		//!     take the controller's mMutex -- the lock every commit path
+		//!     already takes.  The bare accessors (ReadDocument / HasDocument
+		//!     / HeadVersion) must NOT be paired up under a live controller;
+		//!     that pairing WAS the split-read defect.
 		//!   * LIFETIME across the async surface: RenderAsync's submitted
 		//!     closure captures a raw `this` and runs on the ATTACHED
 		//!     controller's dedicated worker thread, independent of this
@@ -1205,8 +1328,27 @@ namespace RISE
 			//! back-compat rationale) -- the GUI's own construction sites
 			//! are unaffected; an External-authority session over a live
 			//! controller is the two-session pattern this slice's tests use.
+			//!
+			//! `sharedImageCache` (default null) opts this session INTO a
+			//! shared last-render cache -- see AgentImageCache's doc for what
+			//! that is and why sharing is opt-in.  Null gives the session a
+			//! private cache, i.e. the historical per-session behaviour, and
+			//! is the right answer for anything outside the host's own trust
+			//! boundary (notably the hosted loopback server's External
+			//! session, which must never read in-app pixels).
 			static std::unique_ptr<AgentSession> WrapJob( IJobPriv* job,
-			                                               AgentAuthority authority = AgentAuthority::Owner );
+			                                               AgentAuthority authority = AgentAuthority::Owner,
+			                                               std::shared_ptr<AgentImageCache> sharedImageCache =
+			                                                   std::shared_ptr<AgentImageCache>() );
+
+			//! Allocate a cache for a group of sessions that should share one
+			//! view of "the last render" (the GUIs' three in-app sessions).
+			//! Pass the SAME handle to each WrapJob call in the group; give
+			//! any session outside the group nothing, so it stays isolated.
+			static std::shared_ptr<AgentImageCache> MakeSharedImageCache()
+			{
+				return std::make_shared<AgentImageCache>();
+			}
 
 			//! Secure-MCP slice 5a: this session's construction-time
 			//! authority (Owner / External).  Wire-immutable -- never
@@ -1288,16 +1430,77 @@ namespace RISE
 			//! Facet 5 slice 1a: the retained CST head's (uuid,revision)
 			//! optimistic-concurrency identity (see RISE::Cst::CstHeadVersion).
 			//! {0,0} when there is no wrapped Job (or the Job retains no head).
-			//! An agent reads this alongside ReadDocument, then passes it back as
-			//! a patch's baseVersion so a stale edit is rejected with a CONFLICT.
+			//! The agent passes this back as a patch's baseVersion so a stale
+			//! edit is rejected with a CONFLICT -- which is exactly why it must
+			//! be read TOGETHER with the bytes it describes: use
+			//! ReadDocumentSnapshot (or ReadHeadVersion for the version alone),
+			//! NOT this accessor paired with a separate ReadDocument() call.
+			//! This one is the raw, unsynchronized read the snapshot is built
+			//! on; no shipped read verb calls it directly.
 			RISE::Cst::CstHeadVersion HeadVersion() const;
+
+			//! One COHERENT read of the head: the document bytes and the
+			//! head-version that describes them, captured together.
+			struct AgentDocumentSnapshot
+			{
+				bool                      hasDocument = false;  //!< HasDocument() at capture time
+				std::string               document;             //!< ReadDocument() at capture time
+				RISE::Cst::CstHeadVersion headVersion;          //!< the version those exact bytes ARE
+			};
+
+			//! THE READ VERBS MUST USE THIS, not the three accessors above.
+			//! read_document and validate's head form hand the model byte
+			//! offsets plus the headVersion those offsets describe; calling
+			//! HasDocument() / ReadDocument() / HeadVersion() separately lets
+			//! a commit on another thread land between them, so the answer
+			//! pairs one revision's offsets with another revision's stamp
+			//! (and serializing a Document another thread is mutating is a
+			//! plain data race).  The hosted-MCP topology has exactly that
+			//! second thread: the GUI's loopback HTTP server runs its own
+			//! AgentSession over the SAME Job the main thread commits to.
+			//!
+			//! WITH A CONTROLLER: delegates to
+			//! SceneEditController::ReadAgentSceneSnapshot -- one mMutex
+			//! hold, the same lock every commit path takes.  It BLOCKS while
+			//! a render owns the scene (see that method's doc for why the
+			//! UI-poll try-lock convention is wrong here), so call it from
+			//! the agent RPC thread only.
+			//!
+			//! WITHOUT A CONTROLLER (headless -- a supported, first-class
+			//! configuration: the CLI agent, the eval harness, every
+			//! AgentSession unit test): the plain unlocked reads are
+			//! CORRECT, not a concession.  A controller is what introduces
+			//! the render thread and the second UI-thread writer; with none
+			//! attached, nothing touches this Job CONCURRENTLY with a
+			//! dispatcher call -- the headless Render() family runs
+			//! synchronously on the dispatcher's own thread (RenderAsync
+			//! refuses outright without a controller), and
+			//! AgentRpcDispatcher's single-caller contract (AgentRpc.h)
+			//! makes that thread the sole caller.  (The render's own worker
+			//! POOL touches the derived Scene during that synchronous call,
+			//! but the call has not returned, so no read can interleave.)
+			AgentDocumentSnapshot ReadDocumentSnapshot() const;
+
+			//! The head-version alone, read with the SAME discipline as
+			//! ReadDocumentSnapshot (controller-mediated under mMutex when
+			//! one is attached; direct otherwise) -- for the result-stamping
+			//! sites that need the version but no document.  CstHeadVersion
+			//! is 16 non-atomic bytes, so an unlocked read of it while a
+			//! controller is live can tear, not merely go stale.
+			RISE::Cst::CstHeadVersion ReadHeadVersion() const;
 
 			//! The descriptor-generated JSON schema (charter L6): one chunk
 			//! when `keyword` is non-empty, else the whole grammar.
 			std::string ReadSchema( const std::string& keyword = std::string() ) const;
 
 			//! THE KEYSTONE.  Validate a CANDIDATE scene text with NO side
-			//! effects on this session's Job: parse it to a CST, derive it
+			//! effects on this session's Job.  A candidate that declares NO
+			//! CHUNKS AT ALL (empty, whitespace-only, comments-only) is
+			//! screened FIRST and reported as EMPTY_DOCUMENT: such a text
+			//! round-trips and derives with zero diagnostics, so without the
+			//! screen a non-document came back CLEAN.  Emptiness is judged on
+			//! chunk COUNT, not byte length, so all three degenerate shapes
+			//! get one answer.  Otherwise: parse it to a CST, derive it
 			//! into a THROWAWAY Job, and map the derive diagnostics into
 			//! structured AgentDiagnostics with best-effort byte-offset
 			//! localization (see AgentSession.cpp for the localization
@@ -1316,6 +1519,27 @@ namespace RISE
 			//! any head exists.  Identical result to `Validate()`.
 			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
 
+			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			//! RE-TARGETED by sec 7): the shared engine-side "design note"
+			//! scan.  STATELESS, like ValidateText above -- parses
+			//! `documentText` to its own throwaway CST and reports the two
+			//! MEASURED bare-prompt deficits as observed state: (A) 3+
+			//! `standard_object` chunks with no `scalar_painter` chunk
+			//! anywhere in the document (the scalar-pipe-unused deficit,
+			//! 0/12 lifetime baseline runs); (B) 4+ `standard_object` chunks
+			//! with no `sdf_geometry`/`sweep_geometry`/`displaced_geometry`
+			//! chunk anywhere (the no-advanced-geometry deficit, 2/12
+			//! lifetime).  Returns EMPTY when neither fires -- carriers
+			//! (AgentSession::RenderCore_'s render-result population, and
+			//! AgentRpc.cpp's `validate` handler) must omit their `note`
+			//! wire field entirely in that case, mirroring the `read_skill`
+			//! empty-index `note` convention (AgentSkillResult::note).
+			//! Firing one or both conditions returns ONE combined
+			//! "DESIGN NOTE: ..." string carrying every firing clause plus
+			//! a load-bearing anti-churn escape clause.  See
+			//! AgentSession.cpp for the exact scan and wording.
+			static std::string ComputeDesignNote( const std::string& documentText );
+
 			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
 			//! ValidateText (references NO member state; exposed static so the
 			//! transport's no-head bootstrap can read skills before any head
@@ -1330,6 +1554,22 @@ namespace RISE
 			//!   3. "./skills/agent/"               (cwd fallback -- the repo
 			//!      root when run from a checkout, matching run_all_tests.sh)
 			//! Reads are READ-ONLY; nothing is ever written under the root.
+			//!
+			//! TIER 2 IS A TRAP FOR A GUI HOST, WHICH IS WHY BOTH DESKTOP
+			//! SHELLS SET TIER 1 AT STARTUP.  $RISE_MEDIA_PATH follows the
+			//! OPEN SCENE (each GUI re-points it at the scene's project root
+			//! on every load), so binding skills to it made the agent's
+			//! skills a property of whichever scene happened to be open --
+			//! open one outside a RISE project and all skills vanished.
+			//! Skills belong to the INSTALLATION.  See RISEApp.swift
+			//! (macOS) / main.cpp (Windows), which resolve tier 1 from the
+			//! app's OWN location once at launch.
+			//!
+			//! AN EMPTY INDEX IS ALWAYS ANNOTATED.  A zero-skill index sets
+			//! AgentSkillResult::note saying so plainly (and which root was
+			//! tried) rather than returning a bare empty list -- an empty
+			//! index means a miswired install, and it used to be silent at
+			//! every layer.
 			//!
 			//! PATH SAFETY: `name` must be a BARE filename component -- any
 			//! '/', '\\', or ".." is REJECTED (no traversal), and only files
@@ -1555,7 +1795,8 @@ namespace RISE
 			//! Secure-MCP slice 5a: the structured result of ResolveProposal.
 			struct AgentResolveResult
 			{
-				bool        ok = false;        //!< true iff the resolve actually ran (id found, this session's authority permits it); false leaves `message` explaining why
+				bool        ok = false;        //!< true iff the resolve actually ran, i.e. the proposal LEFT the pending state (id found, this session's authority permits it, and the replay was not transiently refused); false leaves `message` explaining why
+				bool        retriable = false; //!< meaningful only when !ok: true = the refusal was TRANSIENT (a render held the admission gate, or the replay hit an open editor transaction/gesture). The proposal is STILL PENDING and nothing was applied, so resolving it again later is a true retry, not a double-apply. false = permanent (unknown id, already resolved, authority, teardown)
 				std::string status;            //!< "applied" / "rejected" / "conflict" -- meaningful only when ok
 				AgentPatchResult   paramResult;    //!< filled iff ok && the resolved proposal was a ParamEdit
 				AgentChunkResult   chunkResult;     //!< filled iff ok && the resolved proposal was Insert/RemoveChunk
@@ -1583,6 +1824,14 @@ namespace RISE
 			//! with the apply; a stale proposal (the head moved since it was
 			//! staged, including via a reload that minted a fresh uuid)
 			//! resolves to status="conflict" and is NOT applied.
+			//!
+			//! A TRANSIENT refusal -- a render holding the controller's
+			//! admission gate, or an open editor transaction/gesture the
+			//! replay refused on -- is reported with `ok=false` and
+			//! `retriable=true`, NOT as a resolve: the controller leaves
+			//! the proposal PENDING in that case, so reporting it as
+			//! resolved-and-rejected would describe a proposal that can
+			//! still be approved as one that never can be.
 			AgentResolveResult ResolveProposal( std::uint64_t proposalId, bool approve );
 
 			//! compare_to_reference: register (or wholesale REPLACE) the set
@@ -1827,9 +2076,11 @@ namespace RISE
 			void CancelAsyncRender( std::uint64_t renderJobId = 0 );
 
 			//! Model-B F2 slice S2b: the full stats of the LAST async render
-			//! to complete (whatever RenderAsync's submitted closure got back
-			//! from RenderCore_, which the closure itself discards -- see
-			//! that closure's `(void)r;`).  A caller that drove
+			//! to complete -- whatever RenderAsync's submitted closure got
+			//! back from RenderCore_, which the closure caches HERE (with
+			//! `r.renderJobId` corrected to its own job id first; see the
+			//! closure for why RenderCore_ leaves that field 0 on the async
+			//! path).  A caller that drove
 			//! render{"async":true} -> render_status/render_wait and
 			//! observed completion uses this to retrieve the SAME
 			//! {ok,width,height,meanR,meanG,meanB,integrator,previewWidth,
@@ -1849,10 +2100,21 @@ namespace RISE
 			//! recently.
 			//!
 			//! Guarded by mAsyncCacheMutex (the SAME lock already used for
-			//! mLastPng/mLastSink/mAsyncOutstandingJobId) -- populated by
-			//! RenderAsync's submitted closure right where it currently
-			//! discards `r`, read here by whatever thread polls after
+			//! the image cache / mAsyncOutstandingJobId) -- populated by
+			//! RenderAsync's submitted closure once RenderCore_ returns,
+			//! read here by whatever thread polls after
 			//! render_wait/render_status observes completion.
+			//!
+			//! ONE window reports `found == false` for a job that really did
+			//! complete: an EPHEMERAL internal render (QueryObjectAt,
+			//! CompareToReference's split mask) stashes this record along
+			//! with the image-cache frame for its duration, so an async render
+			//! that finishes inside that window has BOTH its pixels and its
+			//! result record discarded.  That is deliberate -- the pixels
+			//! are unrecoverable either way, and reporting `found` over a
+			//! frame `read_image` can no longer serve would be a lie.  See
+			//! EphemeralRenderCacheGuard's RESIDUAL bullet in
+			//! AgentSession.cpp.
 			struct AgentLastAsyncRenderResult
 			{
 				bool             found = false;   //!< true iff renderJobId matches the cached result's job
@@ -1957,9 +2219,177 @@ namespace RISE
 			//! `outAvailable` is the structured outcome; `outReason` is one of
 			//!   ""              (available == true)
 			//!   "no_controller" (no live SceneEditController attached -- a
-			//!                    headless session has no viewport at all)
+			//!                    headless session has no viewport at all.
+			//!                    NOT retriable: a session that starts
+			//!                    headless never grows a viewport.  Use
+			//!                    `render` instead)
 			//!   "no_frame_yet"  (a controller is attached but the interactive
-			//!                    render loop has not produced a frame yet).
+			//!                    render loop has not produced a frame yet.
+			//!                    NOT retriable IN THE SENSE THAT MATTERS --
+			//!                    a later read_viewport WILL succeed once the
+			//!                    user's viewport draws, but nothing the
+			//!                    caller does makes that happen sooner, so
+			//!                    spinning on it is pure chatter.  Use
+			//!                    `render` in the meantime.  Round-12
+			//!                    finding 4: model-facing surfaces must say
+			//!                    exactly this -- filing it under a flat
+			//!                    "retrying can never succeed" bucket and
+			//!                    then describing it as self-resolving is a
+			//!                    self-contradiction a reader has to
+			//!                    adjudicate)
+			//! plus, when the parked frame-copy is REFUSED by the controller
+			//! (fix-round-8 P1 -- these were previously all reported as the
+			//! first of them, and none of them were listed here at all):
+			//!   "editor_transaction_in_progress" (a transaction, pointer
+			//!                    gesture, time scrub, save, or composite is
+			//!                    open -- RETRIABLE once it completes)
+			//!   "render_in_progress"   (another coordinated agent/production
+			//!                    render owns the admission gate -- RETRIABLE)
+			//!   "editor_shutting_down" (controller teardown -- NOT retriable,
+			//!                    and it never becomes available again)
+			//!   "editor_interaction_finalize_failed" (round-10: an open
+			//!                    platform interaction could not be finalized
+			//!                    for a TRANSIENT reason -- RETRIABLE.  Used to
+			//!                    be reported as editor_transaction_in_progress,
+			//!                    which names a different cause)
+			//!   "editor_interaction_unrecoverable" (round-10 finding 3: the
+			//!                    controller's mInteractionPersistenceFailed
+			//!                    flag is LATCHED -- a gesture's pending CST
+			//!                    commit failed.  That flag is never cleared, so
+			//!                    read_viewport and every coordinated render
+			//!                    refuse for the LIFE of this controller.
+			//!                    **NOT retriable, and it will NOT clear on its
+			//!                    own.**  It too used to be reported as
+			//!                    editor_transaction_in_progress -- i.e. as
+			//!                    something that clears by itself -- which is
+			//!                    exactly the infinite-retry instruction the
+			//!                    chattiness work exists to remove)
+			//! Every surface that enumerates them must list ALL of them; the
+			//! MODEL-FACING surfaces must ALSO state retriability inline,
+			//! because that is what a model acts on and a model does not
+			//! follow a "see the header" pointer.
+			//! Round-14 finding 3: that rule used to say "every surface ...
+			//! AND state retriability" while listing surfaces that do not and
+			//! need not -- the design doc defers here, and the two tests pin
+			//! WIRE VALUES, not prose.  Scoped to what its own rationale
+			//! actually justifies, the obligations are the REGISTRY below.
+			//!
+			//! THE REGISTRY IS MACHINE-CHECKED.  tests/SourceHygieneTest
+			//! parses the repo-relative paths out of the delimited block
+			//! below and asserts, BOTH WAYS, that {files enumerating every
+			//! reason value} == {this registry} + AgentSession.cpp (which
+			//! DEFINES the values and is the test's ground truth).  So a new
+			//! surface added without registering it here FAILS the suite, and
+			//! a registered surface that falls behind on a newly-added reason
+			//! FAILS it too.  Since round 20 it also checks each reader-facing
+			//! surface PASSAGE BY PASSAGE (a blank-line-delimited block that
+			//! names all but one value is an incomplete enumeration, not a
+			//! subset), and rejects a stale whole-set COUNT stated in prose.
+			//! Do not restate a COUNT of the entries here -- four consecutive
+			//! review rounds found a hand-maintained count in this family
+			//! stale; the delimited list IS the count.
+			//!
+			//! SCOPE, stated because it is not unlimited (round 20: the flat
+			//! "catches any new surface by construction" claim that used to
+			//! stand here was FALSE -- the scan then covered only
+			//! {src,skills,docs,tests,build}, and probe files at the repo
+			//! root, under scenes/, and as docs/*.txt or *.json each
+			//! enumerated all of them and left the suite green).  The scan
+			//! now walks the WHOLE repo for the text extensions listed in the
+			//! test's kTextExts, pruning only .git, extlib, bin, rendered,
+			//! agent worktrees, and build-output directories.  Anything the
+			//! scan can find can also be REGISTERED here -- including a
+			//! `build/...` GUI surface or a repo-root file such as AGENTS.md,
+			//! neither of which the round-17 extractor accepted.  A surface
+			//! with an extension outside kTextExts, or inside a pruned tree,
+			//! is still invisible: widen kTextExts rather than let this
+			//! paragraph over-claim again.
+			//!
+			//! [read_viewport-reason-surfaces]
+			//!   MODEL-FACING (list every reason + retriability + what to do):
+			//!   * src/Library/Agent/AgentMcpAdapter.cpp -- the read_viewport
+			//!     tool description (the model-facing MCP schema)
+			//!   * skills/agent/observe-modes.md -- in the "Anything when
+			//!     available:false" cell of the observe-verb table; in "Hard
+			//!     warnings" item 3's reason/retriable/action table; in the
+			//!     prose under that same item 3; and in "Traps" item 3, which
+			//!     re-states all of them with retriability and an action
+			//!   DEVELOPER-FACING (list every reason; retriability may be a
+			//!   grouped summary that defers here for the detail):
+			//!   * src/Library/Agent/AgentRpc.h -- the read_viewport
+			//!     tool-table comment
+			//!   * src/Library/Agent/AgentRpc.cpp -- the read_viewport
+			//!     handler comment
+			//!   * docs/agentic-redesign/50-agentic-surface.md -- the S1
+			//!     read_viewport SHIPPED bullet
+			//!   * src/Library/Agent/AgentSession.h -- this block
+			//!   TESTS (pin the wire values / the model-facing wording; they
+			//!   are not themselves an enumeration a reader acts on):
+			//!   * tests/AgentSkillsTest.cpp -- the cross-reference assertion
+			//!     (which checks the skill names every value verbatim)
+			//!   * tests/AgentViewportReadTest.cpp -- pins the exact wire
+			//!     value each refusal produces
+			//! [/read_viewport-reason-surfaces]
+			//!
+			//! Adding a reason, or changing the retriability of an existing
+			//! one, means touching every entry above.
+			//!
+			//! Round-12 finding 2 -- the `render` FALLBACK, stated once, here.
+			//! For "editor_transaction_in_progress",
+			//! "editor_interaction_finalize_failed", "editor_shutting_down" and
+			//! "editor_interaction_unrecoverable", a `render` call is refused
+			//! by the same gate (SubmitAgentRenderAsync_Locked re-runs the same
+			//! mTxnOpen / mSaving / IsCompositeOpen / FinalizeOpenInteractions /
+			//! stop checks RunPreviewRenderParked just failed), so telling a
+			//! model to fall back is telling it to collect a second refusal.
+			//! "render_in_progress" is the ONE exception to the SAME-GATE
+			//! rule, but -- round-14 finding 2 -- it is NOT an exception to
+			//! "the fallback is a bad idea", and the earlier flat "the render
+			//! SUCCEEDS" here was false on two paths.  The routing first:
+			//! read_viewport reports this reason from RunPreviewRenderParked's
+			//! mAgentRenderBlocksInteractive check, but RenderCore_ only
+			//! routes through RunPreviewRenderParked when `wantFilmOverride`
+			//! (width AND height given) or a camera/`view` override is
+			//! present.  A PLAIN `render {}` instead goes to
+			//! SubmitAgentRenderSync, which WAITS on the fairness ticket
+			//! (timeoutMs = 30000, passed by RenderCore_) rather than refusing
+			//! outright.  What actually happens then:
+			//!   * OCCUPANT FINISHES INSIDE 30 s -> the render SUCCEEDS.  The
+			//!     agent-render worker clears the admission gate (ActiveFlipGuard)
+			//!     BEFORE it clears mAgentRenderPending, so the queued
+			//!     submission is accepted once the slot frees.
+			//!   * OCCUPANT OUTLIVES 30 s -> the fairness wait TIMES OUT and
+			//!     reports CoordinatedRenderBusy ("render queued or in progress
+			//!     -- retry after it completes").  This is the COMMON case in a
+			//!     live GUI session: SubmitProductionRenderSync forwards
+			//!     straight onto SubmitAgentRenderSync, so the USER'S OWN
+			//!     production render occupies this same single slot, and a
+			//!     production render routinely runs longer than 30 s.
+			//!     (Round-15 P2 precision: that timeout reports
+			//!     PinnedRenderBusy, not CoordinatedRenderBusy, when the
+			//!     occupant is a PINNED agent render -- which read_viewport
+			//!     also reports as render_in_progress.  Refused either way,
+			//!     so the guidance is unaffected; only the enumerator and
+			//!     the message text differ.)
+			//!   * GATE HELD BY A DIRECT PARKED RENDER (RunPreviewRenderParked
+			//!     sets mAgentRenderBlocksInteractive but NOT
+			//!     mAgentRenderPending) -> the fairness predicate is satisfied
+			//!     IMMEDIATELY, there is no wait at all, and
+			//!     SubmitAgentRenderAsync_Locked's own
+			//!     mAgentRenderBlocksInteractive check refuses on the spot
+			//!     (CoordinatedRenderBusy).  AgentRenderAsyncTest's "coordinated
+			//!     submission refuses while a direct parked render owns
+			//!     admission" case witnesses that gate.
+			//! (`quality:"draft"` and `mode:` do NOT set width/height and do
+			//! NOT change that routing.)  So: do not restate this as a blanket
+			//! "render is refused too" on any surface, and do NOT restate it as
+			//! "the render succeeds" either.  The guidance every model-facing
+			//! surface must carry is that `read_viewport` is FREE and clears
+			//! the instant the gate does, so ONE short retry of read_viewport
+			//! is the cheap poll; a plain `render {}` is worth its up-to-30 s
+			//! block only when a NEW image is actually needed, and when the
+			//! occupant is the user's production render the right move is to
+			//! say so and wait for it, not to retry.
 			//! An unavailable result is a STRUCTURED, NON-error outcome (the
 			//! returned byte vector is empty, outW/outH are 0).
 			//!
@@ -2056,9 +2486,11 @@ namespace RISE
 			//! it runs one full mode:"objectmap" Render() at the effective
 			//! dims (composing width/height/camera EXACTLY as render's own
 			//! overrides do, via the SAME AgentRenderParams path) and then
-			//! reads ONE pixel back from the cached sink, matched against
-			//! that render's legend by EXACT colorHex byte (the same byte-
-			//! unique-by-construction contract the palette guarantees).  This
+			//! reads ONE pixel back out of THAT RENDER'S OWN returned PNG
+			//! (never the session's ReadImage cache -- see the cache
+			//! contract below), matched against that render's legend by
+			//! EXACT colorHex byte (the same byte-unique-by-construction
+			//! contract the palette guarantees).  This
 			//! costs one identity render (measured ~20ms at 256x256) rather
 			//! than a second, bespoke GetCamera()->GenerateRay + caster code
 			//! path -- shared machinery, shared invariants (exactness,
@@ -2082,6 +2514,16 @@ namespace RISE
 			//! identical before and after, camera/film overrides are
 			//! captured-applied-restored exactly as render's own do).
 			//!
+			//! ReadImage-cache identity: the internal objectmap render is
+			//! EPHEMERAL and does NOT become "the last render" -- ReadImage()
+			//! (and the `read_image` verb) still serves the frame the caller
+			//! last rendered itself, byte-for-byte, both before and after this
+			//! call.  Without that guarantee a render -> query_object_at ->
+			//! read_image sequence would hand the caller a flat segmentation
+			//! image to judge a beauty render from.  Same contract, same
+			//! mechanism (EphemeralRenderCacheGuard in AgentSession.cpp) as
+			//! CompareToReference's split-mask render.
+			//!
 			//! Works on a head with NO active production rasterizer (mirrors
 			//! the quality:"draft" / mode:"objectmap" gate -- the underlying
 			//! render this reuses never dereferences the production
@@ -2101,6 +2543,39 @@ namespace RISE
 			//! needing to wait out multiple 5000ms production-default
 			//! chunks.  Production code never calls this.
 			void ForTest_SetDrainChunkMs( unsigned int chunkMs ) { mDrainChunkMsForTest = chunkMs; }
+
+			//! Fix-round-8 P2 test hook.  Invoked by QueryObjectAt in the
+			//! window between EphemeralRenderCacheGuard's CONSTRUCTOR and the
+			//! guarded internal `mode:"objectmap"` Render() -- i.e. with the
+			//! last-render cache and the async-result record already moved
+			//! OUT to the guard's stash.
+			//!
+			//! WHY IT EXISTS.  The guard's dtor half (the RESTORE) is pinned
+			//! by AgentRenderAsyncTest's (guard-async) case and by the
+			//! AgentObjectMapTest / AgentViewportReadTest suites.  Its CTOR
+			//! half (the move-OUT) was pinned by NOTHING: a mutation audit
+			//! zeroed both ctor lines and every one of those suites stayed
+			//! green -- yet the ctor comment states outright that zeroing the
+			//! id is what makes LastAsyncRenderResult() report "not found"
+			//! for the duration, and AgentSession.h documents the "ONE window
+			//! reports found == false" property.  A documented property with
+			//! no test is a claim; this seam is what lets a test OBSERVE the
+			//! window from inside it and turn the claim into a fact.
+			//!
+			//! Fires ONCE per QueryObjectAt call, on the calling thread, with
+			//! NO AgentSession mutex held (mAsyncCacheMutex is taken and
+			//! released inside the ctor before this runs), so the hook may
+			//! freely call LastAsyncRenderResult() / ReadImage().  Set it on
+			//! one thread before the QueryObjectAt call.  Production code
+			//! never sets it; when unset the branch is a single null test.
+			//! Deliberately NOT installed at CompareToReference's guard site
+			//! -- one seam is enough to pin the property, and one firing site
+			//! keeps "fires once per call" true without a caller having to
+			//! know which verb it came from.
+			void ForTest_SetEphemeralCacheGuardOpenHook( std::function<void()> hook )
+			{
+				mEphemeralCacheGuardOpenHookForTest = std::move( hook );
+			}
 
 			//! Invoked once after ReadViewport releases its parked controller
 			//! snapshot but before it serializes the response.  Test-only: lets a
@@ -2213,9 +2688,56 @@ namespace RISE
 			}
 
 		private:
-			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
+			//! `sharedImageCache` null => allocate a PRIVATE cache (the
+			//! isolated default; see AgentImageCache's doc).
+			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority,
+			              std::shared_ptr<AgentImageCache> sharedImageCache );
 			AgentSession( const AgentSession& );             // deleted
 			AgentSession& operator=( const AgentSession& );  // deleted
+
+			//! The head, as ONE locked snapshot, reparsed to a Document --
+			//! but ONLY when it still IS the version `stamped` names.
+			//!
+			//! The three Attach*Issues analysers pin their {param, value,
+			//! reason, suggestions} against the head the result REPORTS.
+			//! On the LIVE (controller-attached) branches that head is
+			//! whatever the commit returned, while the Document was being
+			//! walked through an unlocked mJob->GetCstDocument() -- a data
+			//! race with the controller's other writer thread, and, even
+			//! when it did not tear, issues that could describe a head the
+			//! result does not name.  Returns false (outputs untouched)
+			//! when there is no head or when it has MOVED since the commit;
+			//! callers then attach nothing, which `issues` already
+			//! documents as a legitimate answer ("an empty issues on a
+			//! rejection does not mean the patch was fine").
+			//!
+			//! `outDoc` is a REPARSE of the snapshot bytes, so its NodeIds are
+			//! positional rather than the stable ids a live DocReplaceItem /
+			//! DocInsertItem head carries.  Fine for the three analysers,
+			//! which only resolve ids WITHIN the document they are handed --
+			//! but do not hand it an id obtained from anywhere else.
+			bool ReadHeadDocumentAt_( const RISE::Cst::CstHeadVersion& stamped,
+			                          RISE::Cst::Document& outDoc ) const;
+
+			//! True iff `r` is a DERIVE rejection worth running an analyser
+			//! against -- i.e. NOT one of the controller's pre-derive GATE
+			//! refusals, which share the `rawCode == 0` bucket but have
+			//! nothing to analyse.
+			//!
+			//! Two gates, two hazards, both real:
+			//!   * `retriable` (an open editor transaction, or a render owning
+			//!     the scene) -- the controller answers these WITHOUT taking
+			//!     mMutex, on purpose, so the caller is not made to wait for a
+			//!     render that may run for minutes.  Reading the head here
+			//!     would take mMutex and hand back that exact wait, defeating
+			//!     the prompt-retry contract the refusal exists to offer.
+			//!   * `headVersion.uuid == 0` -- the "no head to report"
+			//!     sentinel the DESTROYING arm returns precisely because the
+			//!     owner may already have released the Job; touching it would
+			//!     be a use-after-free.  (The version can never match this
+			//!     sentinel anyway, so the read was pure cost even when safe.)
+			static bool IsAnalysableRejection_( const AgentPatchResult& r );
+			static bool IsAnalysableRejection_( const AgentChunkResult& r );
 
 			//! The shared core of both Render overloads: legacy Render(int) is a
 			//! thin forwarder that builds an all-absent AgentRenderParams (so
@@ -2402,14 +2924,23 @@ namespace RISE
 			//! SceneEditController::ApplyAgentParamEdit.
 			SceneEditController* mController = nullptr;
 
-			std::vector<unsigned char> mLastPng;   //!< cached PNG bytes of the last Render (for ReadImage)
-
-			//! read_image maxEdge: the LAST successful Render's in-memory sink,
-			//! kept alive (addref'd) so ReadImage(maxEdge) can re-encode a
-			//! downscaled PNG from the cached full-resolution linear pixels
-			//! WITHOUT re-rendering.  Null before the first successful render.
-			//! Owned (released in the destructor and whenever replaced).
-			InMemoryRasterizerOutput* mLastSink = nullptr;
+			//! The last-render cache (PNG bytes + the sink read_image's
+			//! maxEdge downscale and read_perception re-encode from).  NEVER
+			//! null -- the constructor allocates a private one when the host
+			//! did not hand in a shared handle.
+			//!
+			//! MOVED OUT OF THIS CLASS on purpose: it is the ONE piece of the
+			//! old mAsyncCacheMutex-guarded state that is about THE JOB'S LAST
+			//! RENDER rather than about THIS SESSION OBJECT.  Everything that
+			//! stayed behind -- mActiveSinkReadLeases, mSinkReadEntrants,
+			//! mSinkReadsClosing, mSinkReadLeaseCv, mAsyncOutstandingJobId,
+			//! mLastAsyncRenderResult -- answers "is a call still in flight
+			//! ON THIS SESSION, and may this object be destroyed yet", which
+			//! is inherently per-session and would be WRONG to share: one
+			//! session's teardown must not wait on another session's readers,
+			//! and one session's render_status/render_wait must not answer
+			//! for another session's job ids.
+			std::shared_ptr<AgentImageCache> mImageCache;
 
 			//! Distinct cached sinks retained by lock-dropped ReadImage/
 			//! ReadPerception encodes. Counts, references, and iteration are all
@@ -2431,8 +2962,13 @@ namespace RISE
 			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
 			//! async render to complete, plus the renderJobId it belongs to
 			//! -- see LastAsyncRenderResult()'s doc.  {0, default-constructed
-			//! AgentRenderResult} before the first async render completes.
-			//! Guarded by mAsyncCacheMutex, same as mLastPng/mLastSink.
+			//! AgentRenderResult} before the first async render completes,
+			//! and reset to exactly that for the width of an ephemeral
+			//! internal render (EphemeralRenderCacheGuard stashes this pair
+			//! alongside the image-cache frame so the guarded window leaves no
+			//! trace of anything that completed inside it).
+			//! Guarded by mAsyncCacheMutex (the image-cache frame has its own
+			//! leaf lock -- see AgentImageCache).
 			std::uint64_t     mLastAsyncRenderResultJobId = 0;
 			AgentRenderResult mLastAsyncRenderResult;
 
@@ -2466,7 +3002,7 @@ namespace RISE
 			static constexpr std::uint64_t kSessionLocalRenderJobIdStride = 2;
 			std::uint64_t mNextSessionLocalRenderJobId = 1;
 
-			//! Model-B F2 slice S2a: guards mLastPng / mLastSink against a
+			//! Model-B F2 slice S2a: guards the per-session async state against a
 			//! torn read/write race between the agent-render WORKER thread
 			//! (which runs RenderCore_'s cache-population tail at the end of
 			//! an async render, on the controller's dedicated worker
@@ -2515,6 +3051,10 @@ namespace RISE
 			mutable std::function<void()> mReadPerceptionBeforeCacheHookForTest;
 			//! See ForTest_SetSinkReadShutdownWaitHook.
 			std::function<void()> mSinkReadShutdownWaitHookForTest;
+			//! See ForTest_SetEphemeralCacheGuardOpenHook.  NOT mutable:
+			//! QueryObjectAt is a non-const method (it renders), so no
+			//! const-escape is needed here.
+			std::function<void()> mEphemeralCacheGuardOpenHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

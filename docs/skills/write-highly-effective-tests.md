@@ -224,13 +224,16 @@ duplication hides patterns and makes stronger tests expensive to add.
 If a property can be checked analytically in `tests/`, do not force it
 through a rendered-scene diff.
 
-### NaN/Inf as a not-found sentinel (FALSE-GREEN under -ffast-math)
+### NaN/Inf as a not-found sentinel (a FALSE-GREEN class — banned regardless)
 
-RISE builds with `-ffast-math` (`-ffinite-math-only`).  A helper that
-returns `std::nan("")` for "not found" and is then compared
-(`abs(x - K) < eps`) is **folded to constant-true** by the compiler — the
-assertion silently passes even when the lookup failed.  This shipped as a
-false-green THREE times in the snapshot/transaction work.  Use a **finite
+RISE builds with `-ffast-math`; until 2026-07-29 macOS also inherited
+`-ffinite-math-only`, under which a helper that returns `std::nan("")` for
+"not found" and is then compared (`abs(x - K) < eps`) was **folded to
+constant-true** by the compiler — the assertion silently passed even when the
+lookup failed.  This shipped as a false-green THREE times in the
+snapshot/transaction work.  macOS now passes `-fno-finite-math-only`, so that
+fold no longer occurs — **but the rule below stands unchanged**: one `-Ofast`
+anywhere re-arms it, and a NaN used as control flow is fragile regardless.  Use a **finite
 poison** (e.g. `return -1.0e30;`, which fails an `abs(x-K)<eps` "equals"
 check loudly) or an explicit `Check( ptr != nullptr )` before reading.
 `tests/SourceHygieneTest.cpp` now FAILS the suite on any

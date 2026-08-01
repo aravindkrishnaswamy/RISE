@@ -75,17 +75,21 @@ namespace RISE
 
 			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
 			//! DEFAULT -- an explicit allowlist of the READ-SAFE verb
-			//! names (read_document, read_schema, read_skill, validate,
-			//! render, render_status, render_wait, render_cancel,
-			//! read_image, read_viewport, list_proposals, query_object_at),
-			//! the ONE list the choke point in HandleLine
-			//! consults.  Anything NOT on this list -- including the 3
-			//! known-mutating verbs (propose_patch, insert_chunk,
-			//! remove_chunk) AND any FUTURE verb added to the dispatch
-			//! below without also being added here -- is refused under
+			//! names, ENUMERATED IN THE FUNCTION BODY IMMEDIATELY BELOW
+			//! (deliberately NOT restated here: a prose copy of a list
+			//! three lines away is pure drift surface, and it drifted --
+			//! review rounds 13 and 17 both landed on a stale copy of it.
+			//! The remote restatements that DO earn their keep, in
+			//! AgentRpc.h where the reader cannot see this body, are
+			//! machine-checked against these two function bodies by
+			//! tests/SourceHygieneTest).  This body is the ONE list the
+			//! choke point in HandleLine consults.  Anything NOT on it --
+			//! including the mutating verbs enumerated by
+			//! IsProposeSafeVerb below, AND any FUTURE verb added to the
+			//! dispatch without also being added here -- is refused under
 			//! AgentAutonomy::Read.  This is the deliberate polarity flip
 			//! from the pre-hardening `IsMutatingVerb` allow-list-of-
-			//! mutators: that shape was FAIL-OPEN (a new mutating verb #13
+			//! mutators: that shape was FAIL-OPEN (a NEW mutating verb
 			//! would be silently PERMITTED under Read until someone
 			//! remembered to add it to the mutating list).  Fail-closed
 			//! means a new verb is refused-under-read by construction --
@@ -258,12 +262,16 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 6: the queue-full refusal error envelope for
-			//! propose_patch/insert_chunk/remove_chunk -- built when the
+			//! all 5 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) -- built when the
 			//! wrapped AgentSession's result carries queueFull==true (see
 			//! AgentPatchResult::queueFull / AgentChunkResult::queueFull's
-			//! doc). A distinct top-level JSON-RPC error (kProposalQueueFull),
-			//! NOT the normal success-envelope result shape those three verbs
-			//! otherwise always return -- same posture as
+			//! doc).  The BATCH forms raise it too, from the per-element
+			//! result, so a queue that fills mid-batch is reported as
+			//! backpressure rather than as N rejections.  A distinct
+			//! top-level JSON-RPC error (kProposalQueueFull), NOT the normal
+			//! success-envelope result shape those verbs otherwise always
+			//! return -- same posture as
 			//! MakeAutonomyRefusedError above: a resource-backpressure
 			//! refusal must be tellable apart from a scene-state outcome
 			//! (status="rejected"/"conflict"), not folded into it, so a
@@ -301,7 +309,8 @@ namespace RISE
 			}
 
 			//! Model-B F5 slice S2: parse the OPTIONAL `baseHeadVersion` param
-			//! shared by propose_patch / insert_chunk / remove_chunk.  Returns
+			//! shared by all 5 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk).  Returns
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
@@ -444,10 +453,11 @@ namespace RISE
 			}
 
 			//! Serialize an AgentChunkIssue list as the wire `issues` array --
-			//! shared by ChunkResultJson (insert_chunk/remove_chunk) AND
-			//! propose_patch's own inline result construction below, so the
-			//! {param,value,reason,suggestions} shape can never drift between
-			//! the three verbs that can emit it.
+			//! shared by ChunkResultJson (insert_chunk/insert_chunks/
+			//! remove_chunk) AND the inline result construction of
+			//! propose_patch and propose_patches below, so the
+			//! {param,value,reason,suggestions} shape can never drift across
+			//! the 5 mutating verbs that can emit it.
 			JsonValue IssuesJson( const std::vector<AgentChunkIssue>& issues )
 			{
 				JsonValue arr = JsonValue::MakeArray();
@@ -556,6 +566,16 @@ namespace RISE
 					}
 					result.set( "legend", legend );
 				}
+				// Creative-richness P2 (73-creative-richness-design.md sec 2 P2
+				// / sec 7 re-target): the observed-state design note
+				// (AgentSession::ComputeDesignNote, run inside RenderCore_ --
+				// see AgentRenderResult::note's doc). CONDITIONAL key, same
+				// omit-when-empty convention as `legend` above and as
+				// read_skill's index-only `note` -- absent whenever the scan
+				// found neither measured deficit (or never ran, e.g. an
+				// objectmap/view-mode render).
+				if( !rr.note.empty() )
+					result.set( "note", JsonValue::MakeString( rr.note ) );
 				return result;
 			}
 
@@ -796,10 +816,12 @@ namespace RISE
 				// (5b) Secure-MCP slice 2 hardening (extended by slice 5b): the
 				// ONE choke point for the launch-time autonomy policy --
 				// checked BEFORE any per-verb block, DENY-BY-DEFAULT against
-				// the fixed allowlist of read-safe verb names (IsReadSafeVerb,
-				// now 10 -- the original 9 plus list_proposals).  A verb that
+				// the fixed allowlist of read-safe verb names (IsReadSafeVerb
+				// in this file -- its BODY is the sole source of truth for
+				// membership; a count or a copy of it here would just be one
+				// more thing to drift).  A verb that
 				// is not on the read-safe list is refused under Read -- this
-				// covers the 3 known-mutating verbs, resolve_proposal, AND any
+				// covers the 5 known-mutating verbs, resolve_proposal, AND any
 				// future verb that reaches dispatch without being consciously
 				// classified read-safe (the fail-closed property this
 				// hardening exists for).  Under AgentAutonomy::Read this is a
@@ -809,7 +831,7 @@ namespace RISE
 				// "conflict" success result.
 				//
 				// Secure-MCP slice 5b: AgentAutonomy::Propose extends the
-				// read-safe set with the 3 mutating verbs (IsProposeSafeVerb)
+				// read-safe set with the 5 mutating verbs (IsProposeSafeVerb)
 				// -- letting them REACH AgentSession, whose own Owner/External
 				// authority decides staging-vs-commit (see AgentRpc.h's file
 				// header).  resolve_proposal is deliberately excluded from
@@ -849,19 +871,60 @@ namespace RISE
 						result.set( "headVersion", HeadVersionJson( RISE::Cst::CstHeadVersion{} ) );
 						return MakeSuccess( idValue, result );
 					}
-					result.set( "document", JsonValue::MakeString( s->ReadDocument() ) );
-					result.set( "hasDocument", JsonValue::MakeBool( s->HasDocument() ) );
-					result.set( "headVersion", HeadVersionJson( s->HeadVersion() ) );
+					// ONE snapshot: the bytes and the version that describes
+					// them must come from a single locked capture (see
+					// AgentSession::ReadDocumentSnapshot) -- an agent passes
+					// this headVersion straight back as a baseHeadVersion, so
+					// a version that does not match the bytes turns the
+					// optimistic-concurrency gate into a rubber stamp.
+					const AgentSession::AgentDocumentSnapshot snap = s->ReadDocumentSnapshot();
+					result.set( "document", JsonValue::MakeString( snap.document ) );
+					result.set( "hasDocument", JsonValue::MakeBool( snap.hasDocument ) );
+					result.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 					return MakeSuccess( idValue, result );
 				}
 
 				//--------------------------------------------------------------
-				// read_schema {keyword?} -> the schema JSON (nested object)
+				// read_schema {keyword?, keywords?, category?} -> the schema JSON
 				//   STATELESS: the schema is a pure descriptor-registry walk
 				//   (SchemaGenAll / SchemaGenForChunk touch NO Job), so it needs
 				//   NO loaded head -- an agent CONSTRUCTING a scene from scratch
 				//   reads the grammar first.  We call SchemaGen directly rather
 				//   than through the session so the no-head path works.
+				//
+				//   FOUR forms, resolved in this order:
+				//     `keywords` (array of strings) -> BATCH: `schema` is an
+				//       ARRAY that is POSITIONALLY ALIGNED with the request --
+				//       `schema[i]` is `keywords[i]`, always.  That is the whole
+				//       contract, and it is why this path does NOT dedupe and
+				//       does NOT reorder: a model that asks for [a,b,c] and
+				//       indexes the reply by position is doing the obvious
+				//       thing, and a silently shorter or reordered array is a
+				//       trap.  A repeated keyword therefore comes back twice
+				//       (the cap bounds the cost).  An unknown keyword occupies
+				//       ITS OWN slot as {keyword, error}, so one typo neither
+				//       fails the batch nor shifts its neighbours.  `keyword`,
+				//       when supplied alongside, is APPENDED after the array --
+				//       never prepended, which would shift every index by one --
+				//       so it lands at `schema[keywords.length]`.  Every entry
+				//       carries its own `keyword` field regardless, so an
+				//       element is attributable without counting at all.
+				//       Measured motivation: a recorded 48-turn GUI scene build
+				//       spent 21 of its 47 tool calls on read_schema -- 16 of
+				//       those one keyword at a time.
+				//     `keyword` (string) -> ONE chunk's full schema (object).
+				//     `category` (string) -> the CHEAP LISTING (discovery-cost
+				//       fix): just that category's keyword list + one-line
+				//       descriptions, NOT the ~286 KB whole-grammar dump.
+				//       Deliberately still names-only, and deliberately NOT
+				//       batchable here: this verb's batching covers the
+				//       per-keyword fetches (16 of the 21 calls above), not the
+				//       5 category listings.  A `categories` array would close
+				//       that remainder and is a known, unimplemented gap -- the
+				//       guidance now steers a model that already knows what it
+				//       wants straight to `keywords`, which is where the bulk of
+				//       the waste was.
+				//     neither -> the whole grammar.
 				//--------------------------------------------------------------
 				if( m == "read_schema" ) {
 					std::string keyword;
@@ -870,17 +933,75 @@ namespace RISE
 						else if( !kw->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'keyword' must be a string" );
 					}
-					// CHEAP LISTING mode (discovery-cost fix): {category:"<name>"}
-					// with NO keyword returns just the keyword list (+ one-line
-					// descriptions) of that category, NOT the ~300KB full dump.
-					// `keyword` takes precedence if BOTH are supplied (a single
-					// chunk is more specific than its category).
+					// Type-checked HERE, above the batch branch, even though the
+					// batch ignores its value: otherwise {"keywords":["x"],
+					// "category":5} would succeed silently while
+					// {"keyword":"x","category":5} is a clean -32602 -- the same
+					// malformed value diagnosed on one form and not the other.
 					std::string category;
 					if( const JsonValue* cat = params.find( "category" ) ) {
 						if( cat->isString() ) category = cat->asString();
 						else if( !cat->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'category' must be a string" );
 					}
+					// BATCH form.  PRESENCE of the array (even empty) selects it,
+					// so `keywords:[]` honestly returns an empty array rather than
+					// silently falling through to the whole-grammar dump.
+					const JsonValue* kws = params.find( "keywords" );
+					if( kws && kws->isNull() ) kws = nullptr;
+					if( kws && !kws->isArray() )
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'keywords' must be an array of strings" );
+					if( kws ) {
+						// The cap bounds ONE result's cost; an unbounded array is
+						// a token bomb.  24 is set from the largest observed real
+						// need with headroom: the recorded build above wanted 16
+						// distinct keywords, which total ~21 KB of schema against
+						// the whole-grammar dump's ~286 KB.  (A previous version
+						// of this comment claimed the bare dump becomes the
+						// cheaper call "well past two dozen".  It does not, at
+						// ANY size: the dump measures 286,275 B while the sum of
+						// all 157 per-chunk schemas is 282,636 B, so the dump is
+						// never cheaper -- not at 24, not at 157.  The cost bound
+						// above is the whole rationale.)
+						//
+						// It counts BOTH parameters, because both produce entries:
+						// with `keyword` appended, {keyword, keywords:[24]} would
+						// otherwise return 25 while every model-facing surface says
+						// 24.  The advertised number has to be the number the code
+						// enforces.  (The five surfaces that restate it are tied to
+						// this constant by SourceHygieneTest's read_schema batch-cap
+						// parity check -- update it here and they go red.)
+						//
+						// REJECTED, not truncated: a silent truncation would leave
+						// the caller believing it had every schema it asked for.
+						const std::size_t kMaxBatch = 24;
+						const std::size_t requested = kws->size() + ( keyword.empty() ? 0u : 1u );
+						if( requested > kMaxBatch )
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'keyword' and 'keywords' together accept at most " +
+								std::to_string( kMaxBatch ) + " chunk keywords (got " +
+								std::to_string( requested ) +
+								"); split the batch, or omit both for the whole grammar" );
+						// POSITIONAL ALIGNMENT (see this verb's doc): one entry per
+						// requested keyword, `keywords` first and in order, then
+						// `keyword`.  No dedupe, no reordering -- `schema[i]` is
+						// `keywords[i]`.
+						JsonValue arr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < kws->size(); ++i ) {
+							const JsonValue& e = kws->at( i );
+							if( !e.isString() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'keywords[" + std::to_string( i ) + "]' must be a string" );
+							arr.push_back( SchemaAsJson( RISE::Agent::SchemaGenForChunk( e.asString() ) ) );
+						}
+						if( !keyword.empty() )
+							arr.push_back( SchemaAsJson( RISE::Agent::SchemaGenForChunk( keyword ) ) );
+						JsonValue result = JsonValue::MakeObject();
+						result.set( "schema", arr );
+						return MakeSuccess( idValue, result );
+					}
+					// `keyword` takes precedence over `category` if BOTH are
+					// supplied (a single chunk is more specific than its category).
 					std::string schemaText;
 					if( !keyword.empty() )       schemaText = RISE::Agent::SchemaGenForChunk( keyword );
 					else if( !category.empty() ) schemaText = RISE::Agent::SchemaGenCategory( category );
@@ -924,9 +1045,11 @@ namespace RISE
 							arr.push_back( e );
 						}
 						result.set( "skills", arr );
-						// Index-only advisory: a missing skills ROOT (vs a
-						// present-but-empty one) -- surfaced so an agent can tell
-						// a miswired install from "no skills shipped".
+						// Index-only advisory, set whenever the index is EMPTY:
+						// says plainly that no skills are available and names the
+						// root tried, so a miswired install is never a silent
+						// degradation (and a MISSING root stays distinguishable
+						// from a present-but-empty one).
 						if( !sr.note.empty() )
 							result.set( "note", JsonValue::MakeString( sr.note ) );
 					}
@@ -938,31 +1061,160 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// validate {text} -> {diagnostics:[...]}
-				//   STATELESS: validation parses `text` to a CST and derives it
-				//   into a THROWAWAY Job (never a session's head), so it needs
-				//   NO loaded head -- an agent REPAIRING a scene from scratch
-				//   validates a candidate BEFORE any head exists.  We call the
-				//   static ValidateText directly so the no-head path works.
+				// validate {text?} -> {diagnostics:[...]}  (+ headVersion in the
+				//   no-argument form)
+				//
+				//   TWO FORMS, both read-only and both side-effect-free:
+				//
+				//   * WITH `text` -- the STATELESS candidate form.  Validation
+				//     parses `text` to a CST and derives it into a THROWAWAY Job
+				//     (never a session's head), so it needs NO loaded head -- an
+				//     agent REPAIRING or composing a scene from scratch validates
+				//     a candidate BEFORE any head exists.  We call the static
+				//     ValidateText directly so the no-head path works.
+				//
+				//   * WITHOUT `text` -- validate the CURRENTLY RETAINED document.
+				//     Added because requiring `text` made the model re-emit the
+				//     WHOLE scene just to check its own three-parameter patch.
+				//     MEASURED (trajectory 20260727T063526Z-a7ee472c): calls
+				//     17-19 were three propose_patch calls of 183/184/184
+				//     request bytes; call 22 was a `validate` whose `text`
+				//     argument was 19,828 bytes -- the ENTIRE head, which the
+				//     engine already had in memory -- and the turn that
+				//     produced it spent 6,369 output tokens and 27.8 s.
+				//     HONEST SCOPING of that evidence: a second session
+				//     (20260727T064005Z-d815b0c7) also spent 4,689 output
+				//     tokens / 26.5 s on a validate, but that one carried a
+				//     3,355-byte CANDIDATE against a ~1.9 KB head -- the LEGITIMATE
+				//     `text` form during a from-scratch build, not a re-echo.
+				//     It is not evidence for this change, and is recorded here
+				//     so the claim is not quietly doubled.  The head is validated
+				//     through the SAME static ValidateText on the SAME canonical
+				//     text ReadDocument() serves, so a diagnosed document reports
+				//     identical diagnostics either way -- this form is an
+				//     argument shortcut, not a second validator.  (It is also
+				//     literally the idiom the eval harness already used
+				//     internally for its "diagnostics" checkpoint --
+				//     AgentEvalRunner.cpp's CheckDiagnosticsKind -- which had
+				//     no way to express it over the wire until now.)  The result also
+				//     carries the `headVersion` that was validated (the text form
+				//     does NOT: a candidate is unrelated to the head, and stamping
+				//     one there would be a lie).
+				//
+				//   NO HEAD + no `text`: an ERROR, deliberately.  Returning an
+				//   empty diagnostics array would tell the model "your document
+				//   is clean" about a document that does not exist -- the exact
+				//   dishonesty this surface refuses elsewhere.  The message names
+				//   the `text` form, which DOES work with no head.
+				//
+				//   A PRESENT-BUT-NULL `text` reads as ABSENT (the same
+				//   convention read_schema's `keyword` and read_skill's `name`
+				//   already use); any other non-string value is rejected.  An
+				//   EMPTY STRING does NOT read as absent -- presence of a
+				//   string selects the text form, so `{"text":""}` validates
+				//   the empty candidate and gets EMPTY_DOCUMENT back.  That
+				//   keeps the form selection a pure function of the argument's
+				//   presence, and puts the honesty where it belongs (in
+				//   ValidateText, which refuses to call a content-free
+				//   document clean) rather than in a routing special case.
+				//
+				//   STAGED EDITS.  This validates the HEAD as the engine holds
+				//   it.  Under AgentAutonomy::Propose with an External-authority
+				//   session (the loopback-HTTP topology) a mutating verb answers
+				//   status="staged" and leaves the head UNTOUCHED -- so a clean
+				//   verdict here says nothing about a staged edit, which is not
+				//   in the head yet.  Both model-facing tool descriptions say so;
+				//   the `headVersion` in the result is the check (it will not
+				//   have moved).
+				//
+				//   BOTH forms stamp `validated`: "head" or "text".  It is not
+				//   redundant with the presence of `headVersion` -- a call whose
+				//   arguments were MALFORMED degrades to empty params
+				//   (ToolCallToJsonRpcLine's documented behaviour), so a model
+				//   that MEANT to check a candidate can silently land in the
+				//   head form.  Without an explicit discriminator it would read
+				//   an empty diagnostics array as "my candidate is clean"; with
+				//   one, the answer says plainly what was checked.
 				//--------------------------------------------------------------
 				if( m == "validate" ) {
 					const JsonValue* text = params.find( "text" );
-					if( !text || !text->isString() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'text' (string) is required" );
+					// TYPE FIRST, then the absent/present decision -- so a
+					// non-string is refused rather than silently reinterpreted
+					// as the head form.
+					if( text && !text->isString() && !text->isNull() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'text' must be a string when supplied "
+							"(omit it entirely to validate the current scene)" );
 					}
-					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( text->asString() );
-					JsonValue arr = JsonValue::MakeArray();
-					for( const AgentDiagnostic& d : diags ) {
-						JsonValue dj = JsonValue::MakeObject();
-						dj.set( "severity", JsonValue::MakeString( SeverityName( d.severity ) ) );
-						dj.set( "code",     JsonValue::MakeString( d.code ) );
-						dj.set( "message",  JsonValue::MakeString( d.message ) );
-						dj.set( "offset",   JsonValue::MakeNumber( static_cast<double>( d.offset ) ) );
-						dj.set( "length",   JsonValue::MakeNumber( static_cast<double>( d.length ) ) );
-						arr.push_back( dj );
+					// PRESENCE of a string selects the text form; only
+					// OMISSION (or an explicit null) selects the head.  An
+					// empty candidate is a VALID candidate -- it just is not a
+					// valid scene, and ValidateText says so with an
+					// EMPTY_DOCUMENT diagnostic.  (Reading "" as ABSENT here
+					// instead was the wrong lever: it dodged the "clean verdict
+					// on a non-document" lie by silently validating something
+					// the caller did not ask about, and made `{"text":""}` fail
+					// outright when no scene is loaded.)
+					const bool haveText = ( text != nullptr && text->isString() );
+					// ONE renderer for both forms, so the two result shapes
+					// cannot drift apart field by field.
+					auto diagnosticsArray = []( const std::vector<AgentDiagnostic>& diags ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const AgentDiagnostic& d : diags ) {
+							JsonValue dj = JsonValue::MakeObject();
+							dj.set( "severity", JsonValue::MakeString( SeverityName( d.severity ) ) );
+							dj.set( "code",     JsonValue::MakeString( d.code ) );
+							dj.set( "message",  JsonValue::MakeString( d.message ) );
+							dj.set( "offset",   JsonValue::MakeNumber( static_cast<double>( d.offset ) ) );
+							dj.set( "length",   JsonValue::MakeNumber( static_cast<double>( d.length ) ) );
+							arr.push_back( dj );
+						}
+						return arr;
+					};
+					if( !haveText ) {
+						// The CURRENT-HEAD form.  ONE snapshot binds the
+						// diagnostics' byte offsets to the headVersion this
+						// result stamps -- reading hasDocument / the bytes /
+						// the version separately let a commit on another
+						// thread (the hosted MCP server runs on its own,
+						// over the same Job) land between them, so the
+						// offsets described bytes that were not the reported
+						// head, with no document in the response to
+						// disambiguate.  See AgentSession::ReadDocumentSnapshot.
+						if( !s ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: no scene is loaded, so there is nothing to "
+								"validate; supply 'text' to validate a candidate document" );
+						}
+						const AgentSession::AgentDocumentSnapshot snap = s->ReadDocumentSnapshot();
+						if( !snap.hasDocument ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: no scene is loaded, so there is nothing to "
+								"validate; supply 'text' to validate a candidate document" );
+						}
+						JsonValue headResult = JsonValue::MakeObject();
+						headResult.set( "diagnostics", diagnosticsArray(
+							AgentSession::ValidateText( snap.document ) ) );
+						headResult.set( "validated", JsonValue::MakeString( "head" ) );
+						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
+						// Creative-richness P2.b (73-creative-richness-design.md
+						// sec 9's closing recommendation): validate no longer
+						// attaches a `note` field -- the SAME two design-note
+						// conditions now ride the `diagnostics` array above as
+						// Info-severity DESIGN_SCALAR_PIPE_UNUSED /
+						// DESIGN_NO_ADVANCED_GEOMETRY entries (see
+						// AgentSession::ValidateText's AppendDesignDiagnostics_
+						// call).  ONE mechanism per carrier: the render-result
+						// carrier (AgentSession::RenderCore_) still attaches
+						// `note` -- untouched by this slice.
+						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
-					result.set( "diagnostics", arr );
+					result.set( "diagnostics", diagnosticsArray(
+						AgentSession::ValidateText( text->asString() ) ) );
+					result.set( "validated", JsonValue::MakeString( "text" ) );
+					// Creative-richness P2.b: no `note` field here either -- see
+					// the head-form branch's comment above.
 					return MakeSuccess( idValue, result );
 				}
 
@@ -1307,12 +1559,20 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// render {samples?,width?,height?,camera?} ->
+				// render {samples?,width?,height?,camera?,imageMaxEdge?} ->
 				//   {ok,width,height,meanR,meanG,meanB,integrator,
 				//    previewWidth,previewHeight,cameraOverridden,message,
 				//    renderJobId}
-				//   (NOT the image bytes -- render stays lean; read_image
-				//    carries the base64 PNG.  `integrator` = the ACTIVE
+				//   (Image bytes only when `imageMaxEdge` is given: then the
+				//    result also carries png_base64/byteLength/imageWidth/
+				//    imageHeight, downscaled to that long-edge bound by the
+				//    SAME AgentSession::ReadImage(maxEdge,...) call read_image
+				//    makes -- so the bytes equal what a following
+				//    read_image{maxEdge:N} would have returned, in one round
+				//    trip instead of two.  Refused with mode:"objectmap" (must
+				//    be read at native size) and with async (no pixels exist at
+				//    submit time).  Omitted -> the result is unchanged.
+				//    `integrator` = the ACTIVE
 				//    rasterizer's chunk keyword, empty when none is active.
 				//    width/height/camera are the OPTIONAL preview-render
 				//    overrides -- absent = today's exact behaviour.
@@ -1577,6 +1837,39 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'xray' must be a boolean" );
 					}
 
+					// ADDITIVE param {"imageMaxEdge":N}: return the rendered PNG
+					// INLINE, so an ordinary look costs ONE call instead of
+					// render + read_image.  PRESENCE is the opt-in -- absent
+					// leaves the result exactly what it was.  N is a long-edge
+					// bound clamped [16,1024], read_image's own maxEdge contract,
+					// because the bytes come from the SAME
+					// AgentSession::ReadImage(maxEdge,...) call read_image makes.
+					unsigned int imageMaxEdge = 0;
+					std::string imeErr;
+					const int imePresent = ParseClampedUInt( params, "imageMaxEdge", 16, 1024, imageMaxEdge, imeErr );
+					if( imePresent < 0 ) return MakeError( idValue, kInvalidParams, imeErr );
+					if( imePresent == 1 ) {
+						// An objectmap must be read at NATIVE size: the box
+						// downscale blends the flat identity colours and breaks
+						// the exact-byte legend match.  Refused here -- before the
+						// render runs, so nothing is wasted -- rather than
+						// silently downscaled (a corrupt map) or silently sent at
+						// native size (an unasked-for token bill).
+						if( rparams.renderTarget == AgentRenderTarget::ObjectMap ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'imageMaxEdge' is not supported with mode:\"objectmap\" "
+								"-- a downscale blends the identity colours and breaks the legend match. "
+								"Render without it, then read_image with NO maxEdge." );
+						}
+						// An async submit returns before any pixels exist.
+						if( wantAsync ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'imageMaxEdge' is not supported with 'async' -- the "
+								"submit returns before the render produces pixels. Use render_wait, "
+								"then read_image." );
+						}
+					}
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
@@ -1594,7 +1887,26 @@ namespace RISE
 					// is the SAME field-by-field shape this handler used to
 					// build inline -- factored out so render_wait's
 					// post-completion echo can return an IDENTICAL shape.
-					return MakeSuccess( idValue, RenderResultJson( rr ) );
+					JsonValue renderResult = RenderResultJson( rr );
+					// The inline image rides under the SAME "png_base64" field
+					// name read_image and compare_to_reference use, so
+					// AgentChatCodecs' IsImageResult -- and every retention /
+					// elision policy built on it -- covers this without a second
+					// code path.  Attached only on a SUCCESSFUL render: on a
+					// failure the cache still holds the PREVIOUS render, and
+					// returning those pixels as this call's image would be a lie.
+					if( imePresent == 1 && rr.ok ) {
+						unsigned int imgW = 0, imgH = 0;
+						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
+						if( !png.empty() ) {
+							renderResult.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
+							renderResult.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
+							// NOT "width"/"height" -- those are the RENDER's dims.
+							renderResult.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
+							renderResult.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+						}
+					}
+					return MakeSuccess( idValue, renderResult );
 				}
 
 				//--------------------------------------------------------------
@@ -1822,11 +2134,30 @@ namespace RISE
 				//   returns THIS session's last headless render).  NEVER
 				//   triggers a render -- it copies whatever the interactive
 				//   render loop has most recently produced (the cheapest
-				//   observe).  `available` is false with reason "no_controller"
-				//   (headless session -- no viewport at all) or "no_frame_yet"
-				//   (controller attached but no interactive frame produced yet);
-				//   in both cases png_base64 is "" and byteLength/width/height
-				//   are 0.  available:false is a STRUCTURED SUCCESS result, NOT
+				//   observe).  `available` is false with one of SEVEN reasons:
+				//   "no_controller" (headless session -- no viewport at all;
+				//   PERMANENT), "no_frame_yet" (controller attached but no
+				//   interactive frame produced yet -- it resolves once the
+				//   viewport draws, but NOT because the caller retried), or,
+				//   when the parked frame copy is refused,
+				//   "editor_transaction_in_progress" / "render_in_progress" /
+				//   "editor_interaction_finalize_failed" (all three RETRIABLE) /
+				//   "editor_shutting_down" / "editor_interaction_unrecoverable"
+				//   (both PERMANENT -- retrying can never succeed; round-10).
+				//   See AgentSession::ReadViewport's doc for the authoritative
+				//   list, the retriability of each, and when a `render`
+				//   fallback actually helps.  Round-14: for
+				//   "render_in_progress" an OVERRIDDEN render is refused
+				//   outright, and a PLAIN one is NOT simply "accepted" either
+				//   -- it waits up to 30 s on the render slot, then succeeds
+				//   only if the occupant (often the user's own production
+				//   render, which shares that slot) finished inside the
+				//   window, and it is refused with no wait at all when a
+				//   DIRECT PARKED render holds the gate.  Retrying the free
+				//   read_viewport is the cheap poll; see the authority block
+				//   for the full three-way outcome and the recommendation.
+				//   In every case png_base64 is "" and
+				//   byteLength/width/height are 0.  available:false is a STRUCTURED SUCCESS result, NOT
 				//   a JSON-RPC error (the list_proposals precedent) -- only "no
 				//   session loaded" is the usual MakeError gate.  maxEdge
 				//   (OPTIONAL, clamped [16,1024]) downscales exactly as
@@ -2036,11 +2367,16 @@ namespace RISE
 
 					if( const JsonValue* sv = params.find( "samples" ) ) {
 						if( sv->isNumber() ) {
-							// Same explicit finite-range guard idiom as every
-							// other numeric parse in this file (NOT
-							// std::isfinite -- dead code under
-							// -ffinite-math-only; see the 'samples' parse in
-							// the render dispatch above).
+							// Explicit finite-range guard.  NOTE: this is NOT
+							// equivalent to a finiteness check -- the range
+							// idiom is NaN-BLIND by construction (it catches
+							// only +/-Inf).  It was historically chosen because
+							// std::isfinite was dead code under
+							// -ffinite-math-only; that is no longer true
+							// (macOS pairs -fno-finite-math-only since
+							// 2026-07-29).  See the 'samples' parse in
+							// the render dispatch above, which uses the
+							// canonical RISE::IsFiniteDouble.
 							const double sd = sv->asNumber();
 							if( !( sd >= -2147483648.0 && sd <= 2147483647.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
@@ -2194,7 +2530,8 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// resolve_proposal {proposalId, approve:bool} ->
-				//   {resolved:bool, status:string, headVersion, message}
+				//   {resolved:bool, retriable:bool, status:string, headVersion,
+				//    message}
 				//   Secure-MCP slice 5b: approve or reject a staged proposal.
 				//   OWNER-ONLY -- routes to AgentSession::ResolveProposal, which
 				//   refuses (resolved=false) for a non-Owner-authority session,
@@ -2203,7 +2540,8 @@ namespace RISE
 				//   NOT on Propose's extension (refused under Propose too, with
 				//   a Propose-specific message -- see the autonomy choke point
 				//   above); reachable only under Commit, the posture the
-				//   in-process Owner dispatcher runs at.
+				//   GUI's in-process ADMINISTRATIVE dispatcher (the one
+				//   behind agentHandleLine) permanently runs at.
 				//--------------------------------------------------------------
 				if( m == "resolve_proposal" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -2228,6 +2566,13 @@ namespace RISE
 					const AgentSession::AgentResolveResult rr = s->ResolveProposal( proposalId, approve );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "resolved", JsonValue::MakeBool( rr.ok ) );
+					// resolved:false has two flavours and a caller must be able
+					// to tell them apart: a TRANSIENT refusal (a render or an
+					// open editor gesture held the gate) leaves the proposal
+					// PENDING and resolving again later works, while every
+					// other refusal is permanent.  Always present so a client
+					// never has to treat a missing key as either.
+					result.set( "retriable", JsonValue::MakeBool( rr.retriable ) );
 					result.set( "status",   JsonValue::MakeString( rr.status ) );
 					// headVersion: exactly one of paramResult/chunkResult is
 					// populated on any REAL resolve -- approve, reject, OR

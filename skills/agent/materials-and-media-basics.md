@@ -13,6 +13,15 @@ read_schema (only if unsure of a param) -> insert_chunk -> propose_patch
   painter is an extra insert_chunk call AND an extra name to manage —
   only add one when the request needs a genuinely different colour
   than anything already in the scene.
+- **`uniformcolor_painter` is for FLAT colour only.**  The moment the ask
+  names a real material (wood, stone, marble, rust, wear, water, cloth)
+  or the surface is a large hero one (table top, floor, wall, ground), a
+  flat colour is the wrong answer and RISE's ~36 procedural painters are
+  the right one — read
+  `read_skill {name:"procedural-textures"}` for the intent →
+  painter-family map and two verified recipes.  This skill covers the
+  material and how its slots bind; that one covers what fills the
+  colour slot.
 - **Default to `pbr_metallic_roughness_material`, not `ggx_material` /
   `cooktorrance_material`, for ordinary metal/shiny asks.**  Verified
   against the chunk parsers (`ChunkParserRegistry.cpp` /
@@ -253,12 +262,20 @@ roughness, scattering/absorption coefficients, phase asymmetry): values
 are raw magnitudes, NEVER color-converted or uplifted.  Binding a color
 painter into a scalar slot used to silently mangle values in spectral
 renders (e.g. `scattering 1000000` clamped to ~1); today the parser
-emits a per-parameter diagnostic at parse time — heed it rather than
-guessing.  Route by physical meaning: tinted
+REFUSES it with a per-parameter diagnostic at derive time — heed it
+rather than guessing.  Route by physical meaning: tinted
 attenuation/reflectance/emission -> color painter; coefficient
 with units -> `scalar_painter` (forms: `value <x>`, `values <r g b>`,
 `file <spd>`, `sellmeier ...`).  Inline numbers in scalar slots (`ior
 1.5`) are already scalar-safe.
+
+Note that `read_schema` cannot tell the two apart on its own: a colour
+slot and a scalar slot BOTH report `references:["painter"]`, so read the
+parameter's `description`.  And for a scalar that must VARY across the
+surface (spatially-varying roughness), the only expressible forms are
+`scalar_painter { function2d ... }` and `scalar_painter { texture ... }`
+— see `read_skill {name:"procedural-textures"}`, which has a worked
+example and the sub-trap that catches people.
 
 The demo puts the glass sphere in front of a checkered backdrop, under
 a sky dome — remember, glass in a void is black; the backdrop and dome

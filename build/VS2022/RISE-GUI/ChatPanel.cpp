@@ -44,6 +44,8 @@
 #include <QVBoxLayout>
 #include <QVector>
 
+#include <algorithm>
+#include <cmath>      // std::isfinite -- inline-image maxEdge staging
 #include <utility>
 
 #include <ctime>
@@ -119,6 +121,69 @@ namespace
         return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
     }
 
+    // Split the model's `imageMaxEdge` (the ONE-CALL observe form) out of a
+    // `render` request line.  Returns the line to submit; sets outMaxEdge +
+    // outHas when the parameter was present AND this driver can honour it
+    // itself.
+    //
+    // WHY THIS EXISTS.  The RPC refuses `imageMaxEdge` together with `async`
+    // (AgentRpc.cpp) -- correctly, for a raw async caller: the submit
+    // returns before any pixels exist.  But this driver injects `async`
+    // behind the model's back on EVERY render, so the pair collided on a
+    // call the model was explicitly taught to make and the one-call form was
+    // unreachable from in-app chat.  The parameter is stripped here and its
+    // EFFECT re-applied after completion (pollOutstandingRender), so the
+    // RPC-level refusal stays intact for genuine async callers.
+    //
+    // LEFT IN PLACE (outHas=false) in exactly the cases where the RPC must
+    // remain the one to answer, so the model sees the same -32602 the
+    // synchronous one-call form would have produced:
+    //   * mode:"objectmap" -- an objectmap must be read at native size; a
+    //     box downscale blends the flat identity colours and breaks the
+    //     exact-byte legend match.  (The RPC checks objectmap BEFORE async,
+    //     so the model gets the objectmap-specific message.)
+    //   * a value the RPC would REJECT rather than clamp -- a non-number, or
+    //     a number outside ParseClampedUInt's accepted window.  Its -32602 is
+    //     the message to give, not a driver guess.  QJsonValue::isDouble() is
+    //     false for bools and for null, matching JsonValue::isNumber() on the
+    //     far side.
+    // The accepted window is the subtle one, and getting it wrong is silent:
+    // ParseClampedUInt (AgentRpc.cpp) CLAMPS into [16,1024] only for values it
+    // accepts, and it accepts only finite numbers in [-2^31, 2^31-1] --
+    // anything else is a -32602.  Staging a value it would have REJECTED (e.g.
+    // 1e30) runs the render, then hands the same rejection to the fold's own
+    // read_image, which attaches nothing -- and the model gets ok:true with no
+    // image and no error, the one outcome this path exists to prevent.  Inside
+    // the window the raw value is passed through untouched, so the clamp is
+    // reproduced rather than re-implemented.
+    // std::isfinite (not RISE::IsFiniteDouble) is deliberate here: this file is
+    // the Qt GUI, built /fp:precise (RISE-GUI.vcxproj sets no FloatingPointModel),
+    // so the standard predicate is reliable; FiniteMath.h exists for the
+    // -ffast-math library builds, which this TU is not part of.
+    QString stripInlineImageMaxEdge(const QString& jsonRpcLine,
+                                    bool& outHas, double& outMaxEdge)
+    {
+        outHas = false;
+        outMaxEdge = 0.0;
+        const QJsonDocument doc = QJsonDocument::fromJson(jsonRpcLine.toUtf8());
+        if (!doc.isObject()) return jsonRpcLine;
+        QJsonObject obj = doc.object();
+        QJsonObject params = obj.value("params").toObject();
+        if (!params.contains("imageMaxEdge")) return jsonRpcLine;
+        if (params.value("mode").toString() == "objectmap") return jsonRpcLine;
+        const QJsonValue raw = params.value("imageMaxEdge");
+        if (!raw.isDouble()) return jsonRpcLine;
+        const double value = raw.toDouble();
+        if (!std::isfinite(value)) return jsonRpcLine;
+        // ParseClampedUInt's own bounds, mirrored exactly.
+        if (value < -2147483648.0 || value > 2147483647.0) return jsonRpcLine;
+        params.remove("imageMaxEdge");
+        obj["params"] = params;
+        outHas = true;
+        outMaxEdge = value;
+        return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+
     // Wrap a `result` object as a plain JSON-RPC success envelope.  The
     // `id` is never inspected by AgentChatCodecs (branches only on
     // `error` vs `result`), so a fixed placeholder is honest here.
@@ -152,6 +217,273 @@ namespace
             { "renderJobId", 0 }
         };
         return makeSyntheticResponseLine(result);
+    }
+
+    // ================================================================
+    // FIX 2 -- client-side retry of a WHOLLY-UNAPPLIED retriable edit
+    // refusal.  macOS sibling (same gate, same bound, same backoff
+    // table, same driver stamp):
+    // build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+    // retryWhollyRefusedEditToolCall / editRefusalIsWhollyUnapplied /
+    // stampDriverRetry.
+    //
+    // THE MEASURED PROBLEM.  In a production GUI trajectory the agent's
+    // edits were refused five times in a row with `retriable:true` and
+    // the message "editor transaction or gesture in progress -- retry
+    // after it completes" (SceneEditController's
+    // ApplyAgentParamEditInner_ / ApplyAgentChunkCrud_
+    // `mTxnOpen || mEditor.IsCompositeOpen()` pre-flight -- NOT the thin
+    // ApplyAgentParamEdit admission wrapper, whose own refusal is the
+    // different, render-admission one described at kEditRetryMaxAttempts
+    // below).  Each retry cost a FULL LLM round-trip -- the model
+    // re-read the 21.5 KB document between attempts and thrashed
+    // between four different approaches because it did not believe the
+    // refusal; ~13 of that session's 23 turns were this loop.
+    //
+    // WHY NOT SERVER-SIDE.  A GUI agent tool call runs synchronously on
+    // the GUI thread, and the editor transaction/composite that is
+    // blocking is owned by that SAME thread.  Blocking inside the RPC
+    // to wait for it would guarantee the gesture can never complete.
+    // The retry must therefore yield back to the Qt event loop between
+    // attempts -- hence QTimer::singleShot, NEVER a blocking sleep.
+    //
+    // THE CORRECTNESS CONSTRAINT.  The batch verbs are SEQUENTIAL and
+    // BEST-EFFORT, not atomic (AgentRpc.cpp documents it for both
+    // insert_chunks and propose_patches): every element is attempted in
+    // order and a rejected element does not stop the batch, so a batch
+    // can be PARTIALLY applied.  Blindly re-issuing a call whose result
+    // merely says `retriable` would DOUBLE-APPLY whatever already
+    // succeeded.  editRefusalIsWhollyUnapplied() below therefore retries
+    // ONLY when NOTHING was applied -- and refusalHeadVersionKey() adds
+    // the second half: only while the head has not moved under us.
+    // ================================================================
+
+    // THE ATTEMPT BUDGET.  Total dispatch attempts for one refused edit
+    // call, the first included.  Five attempts across the backoff table
+    // below is ~2.25 s of added wall-clock in the WORST case, against a
+    // measured alternative of ~5 LLM round-trips (seconds each, plus a
+    // 21.5 KB document re-read per round).
+    //
+    // There are TWO retriable blocking conditions, not one, and the
+    // budget is sized for the first:
+    //   * an open editor TRANSACTION / composite
+    //     (ApplyAgentParamEditInner_ / ApplyAgentChunkCrud_'s
+    //     `mTxnOpen || mEditor.IsCompositeOpen()` pre-flight) -- a
+    //     human-scale gesture (a viewport drag, a slider scrub) that
+    //     ends when the user releases the mouse, well under a second in
+    //     the common case.  This is the measured failure this fix is
+    //     for, and 2.25 s comfortably covers it;
+    //   * the RENDER-ADMISSION gate (mAgentRenderBlocksInteractive,
+    //     checked by the thin ApplyAgentParamEdit / ApplyAgentInsertChunk
+    //     / ApplyAgentRemoveChunk wrappers) -- "render queued or in
+    //     progress".  That clears on a RENDER duration, which 2.25 s
+    //     will usually NOT outlast, so a retry of this kind normally
+    //     exhausts the budget and hands the refusal to the model anyway.
+    //     It costs at most the 2.25 s; it is not the case the budget is
+    //     tuned for.  (The permanently LATCHED form of that same gate --
+    //     set by ~SceneEditController / PrepareForDestruction and never
+    //     cleared -- is reported retriable:false by the controller
+    //     precisely so it is never retried here.)
+    //
+    // Past ~2 s the block is no longer a transient gesture, and the
+    // honest move is to hand the refusal to the model (which also
+    // learns, from the stamp below, that the driver already tried).
+    const int kEditRetryMaxAttempts = 5;
+
+    // Backoff BEFORE attempt i+1 (index i-1), in milliseconds.  Starts
+    // short so the common "we caught the tail of a gesture" case costs a
+    // sixth of a second, then doubles so the total stays bounded and the
+    // controller's mMutex (which every attempt takes) is not hammered.
+    // Sum = 2250 ms across the four gaps between five attempts.
+    const int kEditRetryBackoffMs[] = { 150, 300, 600, 1200 };
+
+    // The FIVE mutating verbs whose results carry the `applied` +
+    // `retriable` pair the gate below reads -- exactly the set
+    // AgentRpc.cpp's IsProposeSafeVerb enumerates, and exactly the set
+    // whose result JSON is built by ChunkResultJson / propose_patch's
+    // inline result / propose_patches' per-element result (the only
+    // three sites in AgentRpc.cpp that emit `retriable` at all).
+    // Checked BEFORE parsing the response so a multi-megabyte
+    // read_image result is never JSON-parsed twice.
+    // tests/SourceHygieneTest.cpp derives this set from IsProposeSafeVerb
+    // and fails if the two drift.
+    bool isRetriableEditVerb(const std::string& name)
+    {
+        return name == "propose_patch" ||
+               name == "propose_patches" ||
+               name == "insert_chunk" ||
+               name == "insert_chunks" ||
+               name == "remove_chunk";
+    }
+
+    int editRetryBackoffMs(int attemptsSoFar)
+    {
+        const int last =
+            static_cast<int>(sizeof(kEditRetryBackoffMs) / sizeof(kEditRetryBackoffMs[0])) - 1;
+        return kEditRetryBackoffMs[std::min(std::max(attemptsSoFar - 1, 0), last)];
+    }
+
+    // Is this tool result a refusal with NOTHING applied -- the only
+    // shape a client-side retry may re-issue?
+    //
+    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk):
+    // applied == false AND retriable == true AND status == "rejected".
+    // The rejection contract guarantees the head is byte-identical on a
+    // reject (SceneEditController refuses BEFORE any mutation or park),
+    // so re-issuing is a true no-op-then-retry.
+    //
+    // BATCH verbs (insert_chunks / propose_patches): `applied` is a
+    // COUNT and it must be 0, AND EVERY element must itself be
+    // applied == false + retriable == true + status == "rejected".  A
+    // PARTIALLY applied batch is handed to the model exactly as today --
+    // re-issuing it would double-apply the elements that already landed.
+    //
+    // WHY status == "rejected" IS TESTED EXPLICITLY (and is not
+    // redundant with retriable).  `applied` means CLEAN APPLY ONLY.  A
+    // status:"diagnosed" outcome reports applied:false even though the
+    // Document WAS mutated and the live managers WERE replaced
+    // (SceneEditController's code-3 arm says so in as many words), so
+    // {"applied":0,...,"results":[{"applied":false,"status":"diagnosed",
+    // ...}]} is a real shape in which the count is zero and the head HAS
+    // moved.  What excludes it today is only that all five
+    // `retriable = true` origins in SceneEditController happen to be
+    // pre-mutation, pre-park refusals -- an observation about today's
+    // controller, not a contract, and nothing pins it.  Requiring the
+    // status makes the exclusion STRUCTURAL: "diagnosed", "conflict" and
+    // (should it ever gain retriable) "staged" all fall out on the
+    // status alone.  "staged" is the one with teeth:
+    // SceneEditController::StageProposal has NO dedupe, so a future
+    // staged + retriable:true would enqueue up to kEditRetryMaxAttempts
+    // identical proposals for the Owner to resolve.  Today the check is
+    // a no-op; that is the point.
+    //
+    // BATCH-FIRST ordering is DEFENCE IN DEPTH, not load-bearing.  A
+    // batch envelope carries no TOP-LEVEL `retriable` (AgentRpc.cpp
+    // emits only {applied,total,results}), so the singular arm would
+    // reject it on the missing key even if it ran first; and a PARTIALLY
+    // applied batch has applied >= 1, which is not `false`.  What is
+    // real is that every read is TYPE-CHECKED (isDouble/isBool) rather
+    // than coerced -- QJsonValue's toBool()/toDouble() return a default
+    // for a mismatched type, so an untyped read of a batch's numeric
+    // `applied` would silently answer the singular question.  The macOS
+    // sibling type-checks for the same reason (NSNumber bridges both
+    // JSON numbers and JSON booleans).
+    bool editRefusalIsWhollyUnapplied(const QString& responseLine)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(responseLine.toUtf8());
+        if (!doc.isObject()) return false;
+        const QJsonObject envelope = doc.object();
+        if (envelope.contains("error")) return false;
+        if (!envelope.value("result").isObject()) return false;
+        const QJsonObject result = envelope.value("result").toObject();
+
+        // BATCH FIRST -- see the BATCH-FIRST note above.
+        if (result.value("results").isArray()) {
+            const QJsonArray results = result.value("results").toArray();
+            if (results.isEmpty()) return false;
+            if (!result.value("applied").isDouble()) return false;
+            if (result.value("applied").toDouble() != 0.0) return false;
+            for (const QJsonValue& element : results) {
+                if (!element.isObject()) return false;
+                const QJsonObject e = element.toObject();
+                if (!e.value("applied").isBool() || e.value("applied").toBool()) return false;
+                if (!e.value("retriable").isBool() || !e.value("retriable").toBool()) return false;
+                if (e.value("status").toString() != QStringLiteral("rejected")) return false;
+            }
+            return true;
+        }
+
+        if (!result.value("applied").isBool() || result.value("applied").toBool()) return false;
+        if (!result.value("retriable").isBool() || !result.value("retriable").toBool()) return false;
+        if (result.value("status").toString() != QStringLiteral("rejected")) return false;
+        return true;
+    }
+
+    // The refusal's reported head, canonicalized to "<uuid>:<revision>"
+    // -- or an EMPTY string when the response does not report one.
+    //
+    // This is the C2 guard's observable.  The retry is timed to land the
+    // instant the blocking gesture commits, which is EXACTLY when the
+    // head is most likely to have just moved, and -- unlike the
+    // model-mediated retry this replaces -- the driver does NOT re-read
+    // the document in between.  That matters because insert_chunks has
+    // no batch-fatal rule (AgentSession::InsertChunks gives only element
+    // 0 the caller's baseHeadVersion and attempts elements 1..N-1
+    // unconditionally, unlike ProposePatches, which stops): re-issuing a
+    // batch whose head moved during the backoff returns
+    // results[0].status:"conflict" while the other N-1 chunks insert
+    // against a head the model never read.
+    //
+    // Singular results carry `headVersion` at the top of `result`; batch
+    // envelopes carry it per element, and a WHOLLY-refused batch refused
+    // every element against the same head, so element 0's is the
+    // batch's.  Returns "" on a missing/malformed field, which the
+    // caller treats as "cannot verify" and therefore "do not retry" --
+    // fail-safe, not fail-open.
+    QString refusalHeadVersionKey(const QString& responseLine)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(responseLine.toUtf8());
+        if (!doc.isObject()) return QString();
+        const QJsonObject envelope = doc.object();
+        if (!envelope.value("result").isObject()) return QString();
+        QJsonObject holder = envelope.value("result").toObject();
+        if (holder.value("results").isArray()) {
+            const QJsonArray results = holder.value("results").toArray();
+            if (results.isEmpty() || !results.at(0).isObject()) return QString();
+            holder = results.at(0).toObject();
+        }
+        if (!holder.value("headVersion").isObject()) return QString();
+        const QJsonObject head = holder.value("headVersion").toObject();
+        if (!head.value("uuid").isDouble() || !head.value("revision").isDouble()) return QString();
+        return QString::number(head.value("uuid").toDouble(), 'f', 0)
+             + QStringLiteral(":")
+             + QString::number(head.value("revision").toDouble(), 'f', 0);
+    }
+
+    // OBSERVABILITY.  Stamp a DRIVER-ATTRIBUTED retry record onto the
+    // tool result handed to AddToolResult.
+    //
+    // The trajectory's `tool` record (AgentChatLoop.cpp's AddToolResult)
+    // stores the raw JSON-RPC response line verbatim as
+    // `jsonRpcResponse`, so stamping the response is what makes the
+    // retries visible in the trajectory JSONL.  `latencyMs` needs
+    // nothing: it is stamped at ToolCallToJsonRpcLine (before attempt 1)
+    // and completed at AddToolResult (after the last attempt), so it
+    // already spans the retries honestly.
+    //
+    // The model sees this too -- the codecs pack `result` (not the
+    // envelope) into the tool-result block.  That is DELIBERATE and is
+    // why the key is namespaced `guiDriverRetry` and carries a note
+    // saying who added it: a model that learns the driver already spent
+    // five attempts should stop re-issuing the same call itself, which
+    // is the whole point of this fix.  Nothing is fabricated -- every
+    // other field is the engine's own last-attempt result, carried
+    // through FIELD-FOR-FIELD.  Not byte-for-byte: this decodes and
+    // RE-SERIALIZES the envelope (QJsonDocument emits sorted-key order;
+    // the macOS sibling emits Swift Dictionary hash order), so the line
+    // AgentChatLoop.cpp:~993 documents as "the raw JSON-RPC response
+    // line verbatim" is, on a stamped result only, a re-serialization of
+    // it -- same keys, same values, possibly different key order and
+    // whitespace.  Stamping happens ONLY when at least one retry
+    // happened, so the response really is byte-for-byte unchanged on the
+    // common single-attempt path.
+    QString stampDriverRetry(const QString& responseLine, int attempts)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(responseLine.toUtf8());
+        if (!doc.isObject()) return responseLine;
+        QJsonObject envelope = doc.object();
+        if (!envelope.value("result").isObject()) return responseLine;
+        QJsonObject result = envelope.value("result").toObject();
+        QJsonObject stamp;
+        stamp["attempts"] = attempts;
+        stamp["note"] = QStringLiteral(
+            "Added by the RISE GUI chat driver, not by the scene engine: this call "
+            "was refused as retriable with NOTHING applied, so the driver re-issued "
+            "it verbatim, yielding the GUI thread between attempts. Only the last "
+            "attempt's outcome is reported above; no earlier attempt applied anything.");
+        result["guiDriverRetry"] = stamp;
+        envelope["result"] = result;
+        return QString::fromUtf8(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
     }
 }
 
@@ -404,6 +736,14 @@ ChatPanel::ChatPanel(QWidget* parent)
     : QWidget(parent)
     , m_loop(new AgentChatLoop())
 {
+    // Context compaction is OFF until a host sets a budget; both GUI
+    // drivers install the SAME shared default so they cannot drift.  See
+    // AgentChatLoop.h's kDefaultContextBudget* doc for the numbers and
+    // their justification.  (The Mac twin is RISEAgentChatBridge's init --
+    // keep the two in lockstep.)
+    m_loop->SetContextBudget(AgentChatLoop::kDefaultContextBudgetHighTokens,
+                             AgentChatLoop::kDefaultContextBudgetLowTokens);
+
     m_network = new QNetworkAccessManager(this);
     // P2-6: mirror the Mac driver's URLRequest.timeoutInterval = 300 --
     // without this a stalled connection blocks the turn (and the render-
@@ -835,6 +1175,14 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
     }
     m_bridge = bridge;
     m_sceneEditableExternal = (bridge != nullptr);
+    if (!m_bridge && m_outstandingRenderJobId != 0) {
+        // The caller now owns synchronous bridge/controller teardown, which
+        // joins the worker before a later scene can attach.  No live scene
+        // controls remain to protect, so retire this scene's occupancy.
+        if (m_renderPollTimer) m_renderPollTimer->stop();
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+    }
     recomputeSceneEditable();
     if (m_bridge) {
         // Agent autonomy selector: a fresh bridge's dispatchers default
@@ -874,6 +1222,10 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         m_proposalsPollTimer->stop();
         m_resolvedProposalObservedAt.clear();
         rebuildProposalsUI({});
+        // No scene, no skill fetch -- clear the latch so the notice does
+        // not outlive the scene it was reported for.
+        m_skillIndexEmpty = false;
+        m_skillIndexNote.clear();
         m_loop->Reset();
         // Detach so no file lingers between scenes.
         startTrajectory();
@@ -933,6 +1285,14 @@ void ChatPanel::requestStop()
         // P1-2: suspended in the render_wait poll, not blocked on an HTTP
         // reply -- there is no networkFinished() callback coming to end
         // the turn, so do it here directly.
+        cancelActiveTurn("Stopped.");
+        return;
+    }
+    if (m_editRetryPending) {
+        // FIX 2: parked between attempts of a refused edit tool call --
+        // no HTTP reply and no render poll is coming to end the turn, so
+        // end it here directly (same reasoning as the render branch above).
+        // cancelActiveTurn abandons the parked retry and answers its call.
         cancelActiveTurn("Stopped.");
         return;
     }
@@ -1448,18 +1808,27 @@ QWidget* ChatPanel::buildToolRow(const QString& headerText, const QString& detai
 void ChatPanel::updatePendingToolRow(const RISE::Agent::ChatToolCall& call,
                                       const std::string& responseLine)
 {
-    // QPointer GUARD: every OTHER tool call's dispatch-to-result path is
-    // fully synchronous C++ (no event-loop turn in between), so the row
-    // built at dispatch time is still exactly what it was. `render`
-    // calls are the one exception -- they suspend across the async
-    // submit/poll state machine (startAsyncRenderToolCall /
-    // pollOutstandingRender), a genuine event-loop gap during which a
-    // Stop / production-render-start / provider-switch can call
-    // finishBusy()/refreshTranscript(), which clearLayout()s (i.e.
-    // deleteLater()s) every live transcript widget, this row included.
+    // QPointer GUARD: most tool calls' dispatch-to-result path is fully
+    // synchronous C++ (no event-loop turn in between), so the row built
+    // at dispatch time is still exactly what it was.  There are TWO
+    // exceptions, and BOTH reach this function across a real event-loop
+    // gap:
+    //   * `render` -- suspends across the async submit/poll state
+    //     machine (startAsyncRenderToolCall / pollOutstandingRender),
+    //     for the render's whole duration;
+    //   * (FIX 2) an EDIT verb refused with nothing applied -- parks in
+    //     scheduleEditToolCallRetry's QTimer chain for up to 2250 ms
+    //     before deliverEditToolCallResult calls in here.
+    // During either gap a Stop / production-render-start /
+    // provider-switch can call finishBusy()/refreshTranscript(), which
+    // clearLayout()s (i.e. deleteLater()s) every live transcript widget,
+    // this row included -- and so can a plain user click on the
+    // "Detailed transcript" checkbox, which is NOT m_busy-gated and
+    // routes straight to detailedTranscriptToggled -> refreshTranscript.
     // A raw pointer would dangle the moment that deferred deletion
     // actually runs; QPointer auto-nulls instead, so this check is a
-    // real guard against a stale write, not decoration.
+    // real guard against a stale write, not decoration.  Do NOT weaken
+    // it on the belief that only `render` can park here.
     if (!m_pendingToolRowLabel) {
         m_pendingToolRowDetail = nullptr;
         m_pendingToolRowChevron = nullptr;
@@ -1505,11 +1874,66 @@ void ChatPanel::rebuildTranscriptWidgets()
         m_transcriptLayout->addWidget(placeholder);
     }
 
+    // CONTEXT-COMPACTION NOTICE (FIX 3).  This panel renders DIRECTLY out of
+    // the loop's transcript -- there is no display mirror here.  So once a
+    // budget is installed (see the constructor's SetContextBudget call), the
+    // first compaction event ERASES the user's earlier rows from this panel.
+    // Dropping them from the WIRE is the intended behaviour; dropping them
+    // from the user's view with no explanation is not -- it reads as data
+    // loss.  Say so.
+    //
+    // The Mac driver has the OPPOSITE symptom and needs its OWN, differently
+    // worded notice (it has one -- ChatViewModel.swift, near buildRequest):
+    // its ChatViewModel keeps an append-only display array, so nothing
+    // changes on screen and it keeps showing turns the model can no longer
+    // see -- amnesia indistinguishable from a model defect, which is
+    // arguably the worse of the two.  SourceHygieneTest guards both.
+    // NO-SKILLS NOTICE (Mac parity: ChatViewModel.sceneOpened's .notice
+    // row).  A skill-less agent is a degraded product, and it used to be
+    // invisible everywhere -- the empty index just omits the system
+    // prompt's skills section.  Same dim centered affordance this panel
+    // already uses for "the harness is speaking".
+    if (m_skillIndexEmpty) {
+        QString text = tr("No scene-authoring skills are loaded \xE2\x80\x94 the agent is "
+                          "running without RISE's scene conventions. This is an "
+                          "installation problem, not a normal state.");
+        if (!m_skillIndexNote.isEmpty()) text += QStringLiteral("\n") + m_skillIndexNote;
+        auto* noSkills = new QLabel(text);
+        noSkills->setFont(Theme::sans(11));
+        noSkills->setWordWrap(true);
+        noSkills->setAlignment(Qt::AlignCenter);
+        noSkills->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_transcriptLayout->addWidget(noSkills);
+    }
+
+    if (m_loop->CompactedEntryCount() > 0) {
+        auto* dropped = new QLabel(
+            tr("\xE2\x8B\xAF %1 earlier transcript row(s) \xE2\x80\x94 messages and their "
+               "tool results \xE2\x80\x94 were dropped to stay within the context budget "
+               "(the running total for this conversation). They are gone from the "
+               "model's memory too.")
+                .arg(static_cast<qulonglong>(m_loop->CompactedEntryCount())));
+        dropped->setFont(Theme::sans(11));
+        dropped->setWordWrap(true);
+        dropped->setAlignment(Qt::AlignCenter);
+        dropped->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_transcriptLayout->addWidget(dropped);
+    }
+
     for (std::size_t i = 0; i < m_loop->TranscriptSize(); ++i) {
         const auto& entry = m_loop->TranscriptAt(i);
         const QString body = toQString(entry.displayText).trimmed();
 
-        if (entry.role == Role::User) {
+        // A SWITCH, NOT AN IF/ELSE CHAIN, AND DELIBERATELY WITHOUT A
+        // `default`.  The chain this replaced ended in a bare `else`
+        // meaning "ToolResults", so a newly added Role enumerator silently
+        // rendered as an empty tool row instead of failing loudly --
+        // exactly what happened when Role::DriverNote was introduced.
+        // With every enumerator named and no default, adding the next one
+        // is a -Wswitch warning at compile time, which this project treats
+        // as a build failure.
+        switch (entry.role) {
+        case Role::User: {
             // Right-aligned bubble -- Theme::bgBubbleUser fill, uneven
             // corners 12/12/4/12 (topLeft/topRight/bottomLeft/
             // bottomRight) via BubbleLabel's custom paintEvent -- see
@@ -1526,7 +1950,33 @@ void ChatPanel::rebuildTranscriptWidgets()
             row->addStretch(1);
             row->addWidget(bubble, 0, Qt::AlignRight);
             m_transcriptLayout->addLayout(row);
-        } else if (entry.role == Role::Assistant) {
+            break;
+        }
+        case Role::DriverNote: {
+            // A note the LOOP injected into the conversation (today: the
+            // blind-edit nudge).  It goes on the wire as ordinary user
+            // content, so before Role::DriverNote existed it landed in the
+            // User branch above and was painted as the user's own chat
+            // bubble -- a lie about who said it, and one this panel is
+            // uniquely exposed to because it renders straight out of the
+            // wire transcript.
+            //
+            // SHOWN, NOT FILTERED.  The model received this message and
+            // visibly changed course because of it; hiding it would leave
+            // the user watching an agent that suddenly renders for no
+            // reason they can see.  Rendered with the SAME dim centered
+            // notice affordance as the compaction message above, which is
+            // this panel's existing vocabulary for "the harness is
+            // speaking, not a participant".
+            auto* note = new QLabel(body.isEmpty() ? tr("[system note]") : body);
+            note->setFont(Theme::sans(11));
+            note->setWordWrap(true);
+            note->setAlignment(Qt::AlignCenter);
+            note->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            m_transcriptLayout->addWidget(note);
+            break;
+        }
+        case Role::Assistant: {
             // GUI stage 3 (Windows parity): the model's reasoning for
             // THIS turn, if the provider exposed any (Anthropic
             // `thinking` blocks; OpenAI-family `reasoning`/
@@ -1546,8 +1996,10 @@ void ChatPanel::rebuildTranscriptWidgets()
             lbl->setWordWrap(true);
             lbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
             m_transcriptLayout->addWidget(lbl);
-        } else {
-            // ToolResults -- one expandable trace chip PER CALL, built
+            break;
+        }
+        case Role::ToolResults: {
+            // One expandable trace chip PER CALL, built
             // from entry.toolSummaries (name/outcomeLine/argsJson/
             // resultJson, populated by FlushPendingToolResults) rather
             // than parsing entry.displayText: stage 1 (AgentChatLoop.cpp)
@@ -1576,6 +2028,8 @@ void ChatPanel::rebuildTranscriptWidgets()
                     m_transcriptLayout->addWidget(buildToolRow(header, detail, true, false));
                 }
             }
+            break;
+        }
         }
     }
 
@@ -1656,7 +2110,22 @@ void ChatPanel::fetchSkillIndex()
     if (!m_bridge) return;
     const QString line =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_skill\",\"params\":{}}";
-    m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
+    const QString response = m_bridge->agentHandleLine(line);
+    const QString index = renderSkillIndex(response);
+    m_loop->SetSkillIndex(toStdString(index));
+    // AN AGENT WITH NO SKILLS IS A DEGRADED PRODUCT, NOT A NEUTRAL STATE
+    // (Mac parity: ChatViewModel.sceneOpened).  An empty index omits the
+    // whole skills section of the system prompt and told nobody -- not
+    // the user, not the model.  Latched here and rendered by
+    // refreshTranscript(); the RPC's own advisory (which names the root
+    // it tried) rides along as the detail line.
+    m_skillIndexEmpty = index.isEmpty();
+    m_skillIndexNote.clear();
+    if (m_skillIndexEmpty) {
+        const QJsonObject result =
+            QJsonDocument::fromJson(response.toUtf8()).object().value("result").toObject();
+        m_skillIndexNote = result.value("note").toString();
+    }
 }
 
 QString ChatPanel::trajectoryDirectory() const
@@ -1894,6 +2363,42 @@ void ChatPanel::processNextToolCall()
         }
 
         if (call.name == "render") {
+            // SESSION-ROUTING INVARIANT (2026-07 fix): the async render path
+            // below reaches the SAME autonomy-selected session every OTHER
+            // tool call in this turn uses.  `render` used to go to
+            // agentHandleLine's separate administrative session while every
+            // other verb went through agentHandleToolCall -- and because
+            // AgentSession's last-render PNG cache was PER-SESSION, the
+            // agent's read_image then read a cache its own render had never
+            // written: zero bytes, or the stale objectmap PNG left by
+            // query_object_at's internal render.  (That second symptom has
+            // since been fixed at its own source too -- query_object_at's
+            // internal render is stash/restore-guarded and no longer clobbers
+            // the cache; see AgentSession.cpp's EphemeralRenderCacheGuard.
+            // It is named here because it is what the split ACTUALLY
+            // surfaced in production trajectories.)
+            //
+            // THE CACHE HALF OF THAT IS NOW CLOSED (2026-07): ViewportBridge's
+            // constructor hands all THREE in-app sessions ONE shared
+            // AgentImageCache, so whichever of them ran the render, the
+            // follow-up read_image reads it.  The autonomy-flip residual this
+            // comment used to carry -- "a flip TO or FROM Propose between a
+            // render and the read_image after it lands on the other session
+            // and sees an empty/stale cache" -- is gone.  Library-level
+            // coverage: AgentRenderAsyncTest's "(shared-img-cache)" case.
+            //
+            // KEEP THE ROUTING ANYWAY.  render_status / render_wait answer
+            // out of PER-SESSION state (the async result record keyed by a
+            // session-local render job id), and that is deliberately NOT
+            // shared -- a session must not report on another session's jobs.
+            // So a render and the calls that poll it still belong on one
+            // session; only the image cache stopped caring.  A render JOB
+            // therefore still pins its session (m_outstandingRenderAutonomy),
+            // while the live posture governs what that pinned session may do.
+            // macOS sibling of this routing site:
+            // build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+            // driveTurn / executeRenderToolCallAsync.
+            //
             // P1-2: suspends here -- resumes back into processNextToolCall
             // from pollOutstandingRender() once the async job completes.
             // GUI stage 3: the row created above stays live across the
@@ -1905,15 +2410,37 @@ void ChatPanel::processNextToolCall()
             return;
         }
 
-        // Every other verb keeps the existing synchronous contract: fast
-        // CST reads/edits with no render-duration cost to amortize.
+        // Every other verb keeps the existing synchronous DISPATCH
+        // contract: fast CST reads/edits with no render-duration cost to
+        // amortize.  (FIX 2 below can PARK an edit verb between retry
+        // attempts, but each individual dispatch is still one synchronous
+        // GUI-thread call -- the parking happens between them, in the
+        // event loop.)
         // Agent autonomy selector: routes to whichever dispatcher
         // matches the composer's CURRENT level (see ViewportBridge.h's
         // agentHandleToolCall doc) -- Read refuses edit verbs, Propose
         // stages them, Apply commits them directly (today's behaviour).
-        // `render` is excluded from this routing on purpose (handled in
-        // the `if` branch above via the level-independent agentHandleLine).
+        // `render` goes through the SAME selector, just via the pinned
+        // overload -- see the routing comment in the `if` branch above.
         const QString response = m_bridge->agentHandleToolCall(toQString(line));
+        // FIX 2 (edit-refusal retry): if that first attempt came back a
+        // WHOLLY-UNAPPLIED retriable refusal ("editor transaction or
+        // gesture in progress"), do NOT burn an LLM round-trip on it --
+        // park here and re-issue after a short backoff that RETURNS TO
+        // THE EVENT LOOP, so the blocking gesture can actually finish.
+        // See editRefusalIsWhollyUnapplied's doc for the gate that keeps
+        // a partially-applied batch from ever being re-issued, and
+        // refusalHeadVersionKey's for the head-movement guard the whole
+        // chain carries (an empty key means "cannot verify the head" and
+        // so declines to retry at all).  macOS sibling:
+        // ChatViewModel.retryWhollyRefusedEditToolCall.
+        if (isRetriableEditVerb(call.name) && editRefusalIsWhollyUnapplied(response)) {
+            const QString baselineHead = refusalHeadVersionKey(response);
+            if (!baselineHead.isEmpty()) {
+                scheduleEditToolCallRetry(call, line, /*attemptsSoFar=*/1, baselineHead);
+                return;
+            }
+        }
         updatePendingToolRow(call, toStdString(response));
         m_loop->AddToolResult(call, toStdString(response));
         processNextToolCall();
@@ -1933,6 +2460,46 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     m_activeRenderCall = call;
     m_activeRenderPending = true;
 
+    // PIN the SESSION SELECTION for this render job's whole lifecycle,
+    // captured ONCE, here, before the submit, so every later call about
+    // this job (pollOutstandingRender's render_wait,
+    // cancelOutstandingRender's render_cancel) reaches the session that
+    // actually RAN it.  Not because the job id would otherwise be
+    // unresolvable -- it resolves on any session attached to the same
+    // controller -- but because render_wait's `result` payload lives on the
+    // running session.  NOT the PNG cache: the three in-app sessions
+    // deliberately share one AgentImageCache.  This pins
+    // WHICH SESSION, not what that session may do: the live autonomy
+    // posture still applies to it, so a mid-render drop to Read is not
+    // defeated here.  Full derivation in ViewportBridge.h's
+    // agentHandleToolCall(const QString&, AgentAutonomyLevel) doc.
+    //
+    // Read from the BRIDGE (the same source the un-pinned
+    // agentHandleToolCall consults) rather than this panel's mirror, so the
+    // two can never disagree.  The two enums are numerically identical by
+    // construction -- see ChatPanel.h's AutonomyLevel doc, which is why
+    // setAutonomyLevel() casts the other direction.
+    //
+    // m_bridge is non-null here: the only caller, processNextToolCall(),
+    // drains the pending calls and returns before reaching this method when
+    // `!m_bridge`.  Dereferenced unconditionally, matching the rest of this
+    // method -- a defensive null check on the line above would only be
+    // half-honest, since the submit below cannot proceed without a bridge.
+    m_outstandingRenderAutonomy =
+        static_cast<AutonomyLevel>(m_bridge->agentAutonomyLevel());
+    const ViewportBridge::AgentAutonomyLevel pinnedAutonomy =
+        static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy);
+
+    // Take the model's `imageMaxEdge` (the one-call observe form) out of
+    // the line the RPC will see, so it does not collide with the `async`
+    // injected just below, and remember the bound for pollOutstandingRender
+    // to honour on completion.  See stripInlineImageMaxEdge for why the
+    // RPC's own refusal is right and stays.  Both members are rewritten on
+    // EVERY submit, before any poll can read them.
+    const QString stagedLine = stripInlineImageMaxEdge(
+        toQString(submitLine), m_outstandingRenderHasInlineImage,
+        m_outstandingRenderInlineImageMaxEdge);
+
     // Upgrade the already-built synchronous-shaped JSON-RPC line to carry
     // {"async":true} -- the LLM-authored params (width/height/camera/
     // samples/...) pass through unchanged.  A parse failure here should
@@ -1941,7 +2508,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     // would silently re-block the GUI thread for the render's whole
     // duration, the exact failure mode this async path exists to prevent.
     // Refuse honestly instead; the model can retry.
-    const QString asyncLine = injectAsyncTrue(toQString(submitLine));
+    const QString asyncLine = injectAsyncTrue(stagedLine);
     if (asyncLine.isEmpty()) {
         m_activeRenderPending = false;
         const std::string resultLine = toStdString(makeSyntheticRenderResultLine(
@@ -1952,7 +2519,12 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
-    const QString submitResponse = m_bridge->agentHandleLine(asyncLine);
+    // Direct-connected MainWindow cleanup must run before the submit can
+    // hand controller ownership to the async render worker.  In
+    // particular, disabling a still-pressed QSlider only after submission
+    // would emit sliderReleased -> scrubEnd against the render-held mutex.
+    emit chatRenderWillSubmit();
+    const QString submitResponse = m_bridge->agentHandleToolCall(asyncLine, pinnedAutonomy);
     const QJsonDocument submitDoc = QJsonDocument::fromJson(submitResponse.toUtf8());
     if (!submitDoc.isObject()) {
         // Malformed response line -- should not happen (HandleLine always
@@ -1998,6 +2570,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
+    m_renderCancellationDraining = false;
     setOutstandingRenderJobId(static_cast<quint64>(result.value("renderJobId").toDouble()));
 
     if (!m_renderPollTimer) {
@@ -2014,11 +2587,24 @@ void ChatPanel::pollOutstandingRender()
         if (m_renderPollTimer) m_renderPollTimer->stop();
         return;
     }
-    if (m_stopRequested || !m_bridge || !m_sceneEditable) {
-        // requestStop()/setSceneEditable(false)/productionRenderStarting()
-        // already cancel+drain synchronously when they fire; this guard
-        // only covers a tick that raced one of them.  Don't act on a job
-        // we've already cancelled.
+    if (!m_bridge) {
+        if (m_renderPollTimer) m_renderPollTimer->stop();
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+        return;
+    }
+    // This poll owns the outstanding chat render, so it must not consult
+    // m_sceneEditable: that combined gate is deliberately false because
+    // this same job is outstanding.  Only an EXTERNAL production-render
+    // transition or explicit Stop invalidates a normal result poll.  Once
+    // cancellation is draining, keep polling despite those flags until the
+    // worker itself reports completion.
+    if (!m_renderCancellationDraining
+        && (m_stopRequested || !m_sceneEditableExternal)) {
+        // Those transitions normally route through cancelActiveTurn first,
+        // which flips m_renderCancellationDraining.  This is only a stale
+        // normal-result tick that raced the transition; do not deliver a
+        // result into a turn that is being cancelled.
         if (m_renderPollTimer) m_renderPollTimer->stop();
         return;
     }
@@ -2030,7 +2616,14 @@ void ChatPanel::pollOutstandingRender()
         { "renderJobId", static_cast<double>(m_outstandingRenderJobId) },
         { "timeoutMs", 0 }
     });
-    const QString waitResponse = m_bridge->agentHandleLine(waitLine);
+    // The job's pinned SESSION SELECTION -- render_wait must reach the
+    // session that RAN m_outstandingRenderJobId, not whichever session the
+    // autonomy chip happens to select right now: only the running session
+    // holds this job's cached `result` payload (the id itself resolves on
+    // any session on the controller).  The live autonomy posture still
+    // applies to the pinned session.
+    const QString waitResponse = m_bridge->agentHandleToolCall(
+        waitLine, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
     const QJsonDocument waitDoc = QJsonDocument::fromJson(waitResponse.toUtf8());
     if (!waitDoc.isObject()) {
         return; // transient parse hiccup -- keep polling
@@ -2042,7 +2635,10 @@ void ChatPanel::pollOutstandingRender()
         // poll forever and sit busy until a manual Stop.  Surface it
         // verbatim, matching the submit path's error branch.
         if (m_renderPollTimer) m_renderPollTimer->stop();
+        const bool wasDraining = m_renderCancellationDraining;
+        m_renderCancellationDraining = false;
         setOutstandingRenderJobId(0);
+        if (wasDraining) return;
         m_activeRenderPending = false;
         updatePendingToolRow(m_activeRenderCall, toStdString(waitResponse));
         m_loop->AddToolResult(m_activeRenderCall, toStdString(waitResponse));
@@ -2055,14 +2651,18 @@ void ChatPanel::pollOutstandingRender()
     }
 
     if (m_renderPollTimer) m_renderPollTimer->stop();
+    const bool wasDraining = m_renderCancellationDraining;
+    m_renderCancellationDraining = false;
     setOutstandingRenderJobId(0);
+    if (wasDraining) return;
     m_activeRenderPending = false;
 
     // waitResult's `result` sub-object (present iff this session cached
     // that job's stats) carries the EXACT synchronous-render shape.
     QString responseLine;
     if (waitResult.contains("result")) {
-        responseLine = makeSyntheticResponseLine(waitResult.value("result").toObject());
+        responseLine = makeSyntheticResponseLine(
+            foldInlineImageIntoRenderResult(waitResult.value("result").toObject()));
     } else {
         responseLine = makeSyntheticRenderResultLine(
             false, "render completed but no cached result was found");
@@ -2072,22 +2672,88 @@ void ChatPanel::pollOutstandingRender()
     processNextToolCall();
 }
 
+// Fold the inline render image into a completed async render's downgraded
+// result, reproducing what render{imageMaxEdge:N} does synchronously in
+// AgentRpc.cpp.  A no-op when the model did not ask for it.
+//
+// Two guards mirror that handler exactly:
+//   * `ok` must be true.  On a failed or cancelled render the session cache
+//     still holds the PREVIOUS frame, and returning those pixels as this
+//     call's image would be a lie.
+//   * an empty payload attaches nothing (the handler's !png.empty()).
+//
+// The fetch goes through agentHandleToolCall(line, autonomy) with the JOB'S
+// PINNED autonomy, for the same reason every other call in this job's
+// lifecycle does -- NOT because the pixels would otherwise be unreachable.
+// Since 2026-07 the last-render PNG cache is SHARED by the three in-app
+// sessions (ViewportBridge.cpp's MakeSharedImageCache), so a sibling would
+// find this render's pixels either way.  What the pin buys here is that the
+// fold runs under the same session and posture as the render it belongs to,
+// instead of re-selecting a session mid-job.  read_image is on
+// IsReadSafeVerb's allowlist, so no posture refuses it.  It costs one PNG
+// encode of a <=1024px image on the
+// GUI thread: the same encode the model's own follow-up read_image used to
+// cost, now without the round trip.
+QJsonObject ChatPanel::foldInlineImageIntoRenderResult(const QJsonObject& renderResult)
+{
+    if (!m_outstandingRenderHasInlineImage) return renderResult;
+    const double maxEdge = m_outstandingRenderInlineImageMaxEdge;
+    m_outstandingRenderHasInlineImage = false;
+    m_outstandingRenderInlineImageMaxEdge = 0.0;
+    if (!renderResult.value("ok").toBool(false)) return renderResult;
+    if (!m_bridge) return renderResult;
+
+    const QString readLine = buildJsonRpcLine("read_image", QJsonObject{
+        { "maxEdge", maxEdge }
+    });
+    const QString readResponse = m_bridge->agentHandleToolCall(
+        readLine, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
+    const QJsonDocument readDoc = QJsonDocument::fromJson(readResponse.toUtf8());
+    if (!readDoc.isObject()) return renderResult;
+    const QJsonObject readResult = readDoc.object().value("result").toObject();
+    const QString b64 = readResult.value("png_base64").toString();
+    if (b64.isEmpty()) return renderResult;
+
+    QJsonObject out = renderResult;
+    out["png_base64"] = b64;
+    // toDouble() rather than the raw QJsonValue: assigning an Undefined
+    // value REMOVES the key in QJsonObject, and the synchronous handler
+    // always emits all four fields together.  (read_image always sets
+    // them alongside a non-empty payload, so this is belt-and-braces.)
+    out["byteLength"] = readResult.value("byteLength").toDouble(0.0);
+    // NOT "width"/"height" -- those are the RENDER's dims, already in
+    // `renderResult`.  These are the returned image's, same as the handler.
+    out["imageWidth"] = readResult.value("width").toDouble(0.0);
+    out["imageHeight"] = readResult.value("height").toDouble(0.0);
+    return out;
+}
+
 void ChatPanel::cancelOutstandingRender()
 {
-    if (m_renderPollTimer) {
-        m_renderPollTimer->stop();
-    }
     if (m_outstandingRenderJobId == 0) return;
+    if (m_renderCancellationDraining) return;
     const quint64 jobId = m_outstandingRenderJobId;
-    setOutstandingRenderJobId(0);
-    if (!m_bridge) return;
+    m_renderCancellationDraining = true;
+    if (!m_bridge) {
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+        return;
+    }
     // Fire-and-forget: render_cancel only trips the cancel flag and
     // returns immediately (it does not block for the render's duration --
     // see AgentRpc.h). The response is intentionally discarded.
     const QString line = buildJsonRpcLine("render_cancel", QJsonObject{
         { "renderJobId", static_cast<double>(jobId) }
     });
-    m_bridge->agentHandleLine(line);
+    // Pinned to the same session as the poll above, for the same reason:
+    // the drain poll that follows this cancel needs the running session's
+    // cached job result to observe completion.
+    m_bridge->agentHandleToolCall(
+        line, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
+    // Keep m_outstandingRenderJobId published and continue the existing
+    // non-blocking render_wait poll until the worker has actually drained.
+    // Only that completion path re-enables timeline/viewport transport.
+    if (m_renderPollTimer) m_renderPollTimer->start();
 }
 
 void ChatPanel::drainPendingToolCallsAsCancelled()
@@ -2100,9 +2766,112 @@ void ChatPanel::drainPendingToolCallsAsCancelled()
     m_pendingToolCalls.clear();
 }
 
+// FIX 2 (edit-refusal retry) -- the parked-retry half of the tool-call
+// state machine.  See the block comment above editRefusalIsWhollyUnapplied
+// for WHY this lives in the driver and WHY the gate is what it is.
+//
+// SHAPE.  Qt cannot suspend a function the way Swift's `await` can, so the
+// retry is a QTimer::singleShot chain: each tick re-verifies the driver's
+// standing gates, re-issues the SAME JSON-RPC line, and either schedules
+// the next attempt or delivers.  Returning to the event loop is the whole
+// point -- a blocking sleep on the GUI thread would guarantee the editor
+// gesture we are waiting for can never complete.
+//
+// LIFECYCLE GUARD.  The call has ALREADY been popped from
+// m_pendingToolCalls by processNextToolCall, so it is invisible to
+// drainPendingToolCallsAsCancelled -- exactly like m_activeRenderCall
+// during an async render.  It is tracked the same way (m_editRetryCall /
+// m_editRetryPending) and cancelActiveTurn delivers its cancelled result
+// the same way.  m_editRetryToken is the anti-stale guard: cancelActiveTurn
+// bumps it, so a tick that fires after a cancellation -- or into a LATER
+// turn that has parked a retry of its own -- is a no-op instead of
+// double-advancing the state machine.
+//
+// HEAD-VERSION GUARD (C2).  `baselineHead` is the head the FIRST refusal
+// reported (refusalHeadVersionKey).  A re-issue is admitted only while the
+// refusal keeps reporting that same head; the first refusal that reports a
+// different one ends the chain and is delivered to the model, which re-reads
+// before deciding.  RESIDUAL, stated honestly: this cannot make the count
+// zero.  The head can move DURING a backoff and the driver has no way to
+// observe that without issuing a read of its own, so ONE re-issue can still
+// land against a moved head -- the guard bounds it to one instead of
+// kEditRetryMaxAttempts - 1.
+void ChatPanel::scheduleEditToolCallRetry(const ChatToolCall& call, const std::string& line,
+                                          int attemptsSoFar, const QString& baselineHead)
+{
+    m_editRetryCall = call;
+    m_editRetryPending = true;
+    const quint64 token = ++m_editRetryToken;
+    QTimer::singleShot(editRetryBackoffMs(attemptsSoFar), this,
+        [this, call, line, attemptsSoFar, token, baselineHead]() {
+            // Superseded: cancelActiveTurn bumped the token (and already
+            // delivered a cancelled result for this call), or a newer
+            // retry owns the slot.  Do nothing.
+            if (m_editRetryToken != token) return;
+            m_editRetryPending = false;
+
+            // Re-verify the driver's standing gates after the yield: a
+            // Stop, a scene close, or a production render starting must
+            // abandon the retry rather than resume into a torn-down world.
+            // Defensive -- every one of those transitions routes through
+            // cancelActiveTurn, which bumps
+            // the token above -- so this arm ends the turn the same way
+            // cancelActiveTurn would, rather than delivering into a world
+            // that is already gone.  The cancelled envelope is the SAME one
+            // drainPendingToolCallsAsCancelled reports for every other
+            // unexecuted call of the torn-down turn.
+            if (m_stopRequested || !m_sceneEditable || !m_bridge) {
+                const int rpcId = m_nextRpcId++;
+                m_loop->AddToolResult(call, toStdString(
+                    cancelledToolResultJson(rpcId, "tool call cancelled: scene is not editable")));
+                cancelActiveTurn("Stopped.");
+                return;
+            }
+
+            const int attempts = attemptsSoFar + 1;
+            const QString response = m_bridge->agentHandleToolCall(toQString(line));
+            if (attempts < kEditRetryMaxAttempts && editRefusalIsWhollyUnapplied(response)
+                && refusalHeadVersionKey(response) == baselineHead) {
+                scheduleEditToolCallRetry(call, line, attempts, baselineHead);
+                return;
+            }
+            deliverEditToolCallResult(call, toStdString(response), attempts);
+        });
+}
+
+// Hand one edit tool call's FINAL result to the loop and resume the tool
+// state machine.  `attempts` > 1 stamps the driver-attributed retry record
+// (see stampDriverRetry) so the retries are visible in the trajectory JSONL
+// and to the model; `attempts == 1` is never routed here (processNextToolCall
+// delivers the un-retried common case inline, byte-for-byte unchanged).
+void ChatPanel::deliverEditToolCallResult(const ChatToolCall& call,
+                                          const std::string& responseLine, int attempts)
+{
+    const std::string finalLine = (attempts > 1)
+        ? toStdString(stampDriverRetry(toQString(responseLine), attempts))
+        : responseLine;
+    updatePendingToolRow(call, finalLine);
+    m_loop->AddToolResult(call, finalLine);
+    processNextToolCall();
+}
+
 void ChatPanel::cancelActiveTurn(const QString& statusLine)
 {
     cancelOutstandingRender();
+    // FIX 2: a parked edit-tool-call retry must be abandoned HERE -- its
+    // call was already popped from m_pendingToolCalls, so
+    // drainPendingToolCallsAsCancelled below cannot see it.  Bumping the
+    // token makes the scheduled tick a no-op; the cancelled envelope keeps
+    // AgentChatLoop's "every pending call of the turn gets exactly one
+    // result" wire invariant.  Direct sibling of the m_activeRenderPending
+    // block just below.
+    ++m_editRetryToken;
+    if (m_editRetryPending) {
+        const int rpcId = m_nextRpcId++;
+        m_loop->AddToolResult(m_editRetryCall, toStdString(
+            cancelledToolResultJson(rpcId, "tool call cancelled: scene is not editable")));
+        m_editRetryPending = false;
+    }
     if (m_activeRenderPending) {
         const int rpcId = m_nextRpcId++;
         m_loop->AddToolResult(m_activeRenderCall, toStdString(
@@ -2116,11 +2885,15 @@ void ChatPanel::cancelActiveTurn(const QString& statusLine)
 // ============================================================
 // Secure-MCP slice 5c (Windows parity) -- proposals panel.
 //
-// Polls list_proposals over the SAME in-process agentHandleLine
-// transport the tool-call loop and the raw JSON-RPC debug panel use
-// (not any external hosted server -- Windows has no MCP-hosting UI in
-// this slice).  Mirrors ChatViewModel.refreshProposals /
-// resolveProposal / the ProposalsPanel linger behaviour.
+// Polls list_proposals over the in-process agentHandleLine
+// (ADMINISTRATIVE) transport -- the same one the raw JSON-RPC debug
+// panel drives, and NOT the agentHandleToolCall session the tool-call
+// loop uses (that one is autonomy-routed, and resolve_proposal is
+// refused outside Owner/Commit, which is exactly why this panel keeps
+// its own path).  Not any external hosted server either -- Windows has
+// no MCP-hosting UI in this slice.  Mirrors
+// ChatViewModel.refreshProposals / resolveProposal / the ProposalsPanel
+// linger behaviour.
 // ============================================================
 
 void ChatPanel::refreshProposals()

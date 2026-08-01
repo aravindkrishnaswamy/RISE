@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  TimelineSlider.swift - Bottom-of-window time scrubber for the
-//    interactive viewport.  Visible only when the loaded scene
-//    has any keyframed elements.
+//    interactive viewport.  Visible whenever the live scene has
+//    keyframed elements, including timelines added after load.
 //
 //  UI redesign center-column slice: restyled to the design comp's
 //  transport row (⏮ / play-pause / ⏭ + "MM:SS / MM:SS" readout + a
@@ -11,9 +11,9 @@
 //  CONTRACT is unchanged from the pre-redesign `Slider`-based
 //  implementation — `onUserScrubBegan` + `onScrubBegin` still fire
 //  once at drag start, `time` still updates continuously during the
-//  drag (driving ViewportView's `.onChange(of: sceneTime)` →
-//  `bridge.scrubTime(newValue)`, i.e. the "move" leg), and
-//  `onScrubEnd` still fires once at drag end — only the widget
+//  drag for UI display while `onScrubMove` forwards the native move
+//  synchronously between those callbacks, and `onScrubEnd` still fires
+//  once at drag end — only the widget
 //  producing those calls changed (a `DragGesture` over a custom
 //  track instead of `Slider`'s built-in gesture), because `Slider`'s
 //  native AppKit thumb can't be reskinned to the comp's thin
@@ -31,7 +31,9 @@ struct TimelineSlider: View {
     var isPlaying: Bool = false
     var onPlayToggle: () -> Void = {}
     var onUserScrubBegan: () -> Void = {}
+    var onJump: (Double) -> Void = { _ in }
     var onScrubBegin: () -> Void = {}
+    var onScrubMove: (Double) -> Void = { _ in }
     var onScrubEnd: () -> Void = {}
 
     @State private var isScrubbing = false
@@ -127,7 +129,9 @@ struct TimelineSlider: View {
                             onScrubBegin()
                         }
                         let x = max(0, min(w, value.location.x))
-                        time = range.lowerBound + Double(x / w) * span
+                        let newTime = range.lowerBound + Double(x / w) * span
+                        time = newTime
+                        onScrubMove(newTime)
                     }
                     .onEnded { _ in
                         isScrubbing = false
@@ -163,15 +167,13 @@ struct TimelineSlider: View {
 
     // MARK: - Helpers
 
-    /// Jumps to an instant time (rewind / to-end) using the SAME
-    /// begin/end bracketing a drag uses, so downstream state (e.g.
-    /// the controller's cancel-and-park dance) behaves identically
-    /// to a zero-distance scrub.
+    /// Jumps to an instant time (rewind / to-end) through a direct callback
+    /// whose owner performs the native begin/move/end synchronously.  A
+    /// binding mutation here would be observed only after this function
+    /// returned, too late to sit between Begin and End.
     private func jumpTo(_ t: Double) {
         onUserScrubBegan()
-        onScrubBegin()
-        time = t
-        onScrubEnd()
+        onJump(t)
     }
 
     private func timeString(_ t: Double) -> String {

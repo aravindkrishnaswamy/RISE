@@ -874,7 +874,7 @@ bool GeometricUtilities::BilinearInverse(
 
 	bool found = false;
 	// Sentinel: any actual surface residual is finite and far below this.
-	// Avoid std::numeric_limits<Scalar>::infinity() because the build is
+	// Avoid std::numeric_limits<Scalar>::infinity() because the pre-2026-07-29 macOS build was
 	// compiled with -ffinite-math-only / -fno-honor-infinities.
 	Scalar bestResidual = RISE_INFINITY;
 	Scalar bestU = 0.0, bestV = 0.0;

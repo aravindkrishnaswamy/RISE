@@ -69,6 +69,15 @@
 //        its OWN evals/fixtures/*.fixture.jsonl and checked against its OWN
 //        wired checkpoints[] -- every checkpoint is TRUE of the fixture
 //        that produces it (allPassed, checkpointFraction 1.0).
+//    T-mr material/geometry-richness "document" ops -- distinct_chunk_kinds
+//        (kind-DISTINCTNESS, not raw match count -- two chunks of the SAME
+//        qualifying kind still count once) / any_param_references_kind /
+//        no_orphan_chunks / objects_reaching_kinds (review-round-1 P1-b
+//        anti-decoy-gaming: a qualifying painter bound only to a hidden
+//        far-away object does not count) -- both directions for each op,
+//        plus loader validation (malformed op configs, the metricLabel
+//        cross-checkpoint dedupe guard) and metricValue/metricLabel
+//        population.
 //
 //  RED-PROVE (manual, not automated in this file -- see the final report):
 //    CheckDocumentKind's param_equals comparison was temporarily replaced
@@ -97,6 +106,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+// Per-process scratch directory -- see ScratchRunDir below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid(), fork(), pipe()
+	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
+#endif
 
 #ifndef NO_PNG_SUPPORT
 	#include <zlib.h>   // P1 fix test: WriteSyntheticSolidPng streams a genuinely valid oversized PNG
@@ -269,17 +286,84 @@ static const char* const kBodyFinalText =
 // needed on disk beyond the scratch AgentEvalScenario the test builds in
 // memory).
 //----------------------------------------------------------------------
-static std::string ScratchRunDir( const char* leaf )
+// Per-process scratch root.  Nothing stops two copies of this binary
+// running at once (a stray earlier run, a developer running it by hand
+// while the suite runs, a repeat-run loop chasing a suspected flake) --
+// with a FIXED root, those processes' ScratchRunDir() calls collide: each
+// invocation's remove_all() below can delete the OTHER process's
+// in-flight fixtures/results out from under it, surfacing as a bogus
+// "the test is flaky" failure (the exact hazard already fixed for the
+// WriteTemp-style file helpers in AgentRenderAsyncTest.cpp /
+// ViewportPaneSchedulerTest.cpp).  The pid suffix makes the whole tree
+// unique per process; ScratchTestRoot() is split out so main() can
+// recursively remove the ENTIRE per-process tree on exit, not just
+// individual leaf directories.
+static std::string ScratchTestRoot()
 {
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_check_test/";
-	dir += leaf;
+	dir += "rise_agent_eval_check_test_";
+	dir += std::to_string( (long)getpid() );
+	return dir;
+}
+
+static std::string ScratchRunDir( const char* leaf )
+{
+	std::string dir = ScratchTestRoot() + "/" + leaf;
 	std::error_code ec;
 	std::filesystem::remove_all( dir, ec );
 	return dir;
+}
+
+//----------------------------------------------------------------------
+// Collision-hazard proof: two processes calling ScratchTestRoot() must
+// get DISTINCT trees.  This is a cheap, honest regression guard for the
+// exact bug the pid suffix above fixes -- a real fork() (no exec, no
+// scene load, no render) is negligible cost, and it proves the actual
+// property (parent and child disagree) rather than just re-reading the
+// same source line back.  POSIX-only: Windows has no fork(), and the
+// pid-suffix logic itself is still exercised implicitly by every
+// ScratchRunDir() call the other tests make.
+//----------------------------------------------------------------------
+static void TestScratchRootDiffersAcrossProcesses()
+{
+#ifndef _WIN32
+	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
+	int fds[2];
+	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
+	const pid_t child = fork();
+	if( child < 0 ) {
+		Check( false, "collision check: fork() succeeded" );
+		close( fds[0] ); close( fds[1] );
+		return;
+	}
+	if( child == 0 ) {
+		// ---- child: report its OWN ScratchTestRoot() back to the parent ----
+		close( fds[0] );
+		const std::string childRoot = ScratchTestRoot();
+		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
+		(void)w;
+		close( fds[1] );
+		_exit( 0 );
+	}
+	// ---- parent ----
+	close( fds[1] );
+	std::string childRoot;
+	char buf[4096]; ssize_t n;
+	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
+	close( fds[0] );
+	int status = 0;
+	waitpid( child, &status, 0 );
+
+	const std::string parentRoot = ScratchTestRoot();
+	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
+	Check( childRoot != parentRoot,
+		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
+#else
+	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
+#endif
 }
 
 static bool WriteFile( const std::string& path, const std::string& text )
@@ -1021,6 +1105,104 @@ static void TestDiagnosticsLiveDocInvariant()
 			// h.dispatcher (destroyed at scope exit above) owned `session`,
 			// which never owned pJob (WrapJob is non-owning) -- pJob is
 			// still ours to release below either way.
+		}
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// T6c: "diagnostics" checkpoint expect:"clean" IGNORES Info-severity
+// entries (creative-richness P2.b, 73-creative-richness-design.md sec 9):
+// a document tripping the DESIGN_SCALAR_PIPE_UNUSED advisory (>=3
+// standard_object, no scalar_painter anywhere) is NOT "unclean" for
+// expect:"clean" purposes -- the deficit is independently observable via
+// its own expect:"code" checkpoint (or any_param_references_kind), and
+// double-counting it here would fail expect:"clean" on a scenario that is
+// otherwise genuinely error/warning-free, corrupting both metrics.
+// RED-PROVEN: pre-fix, CheckDiagnosticsKind's "clean" branch counted
+// `diags.empty()` -- ANY entry, including an Info advisory, failed it. This
+// fixture is crafted to trip EXACTLY the advisory and nothing else (3
+// standard_object -- stays below condition B's >=4 gate, so
+// DESIGN_NO_ADVANCED_GEOMETRY stays silent too), so it discriminates the
+// fix from that regression rather than passing vacuously.
+//----------------------------------------------------------------------
+static void TestDiagnosticsCheckpointCleanIgnoresInfo()
+{
+	std::printf( "T6c: \"diagnostics\" expect:\"clean\" ignores Info-severity design advisories...\n" );
+	const std::string dir = ScratchRunDir( "t6c_diagnostics_info" );
+	const std::string scenePath = dir + "/design_advisory_probe.RISEscene";
+
+	// 3 standard_object sharing one material/geometry, NO scalar_painter
+	// anywhere -- trips condition A alone.
+	const std::string scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+		"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+		"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+		"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+		"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+	Check( WriteFile( scenePath, scene ), "wrote the design-advisory probe scene" );
+
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, "the design-advisory probe scene loads cleanly" );
+
+	if( loaded ) {
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "WrapJob produced a live session over the probe scene" );
+		if( session ) {
+			// Red-prove the fixture itself: DESIGN_SCALAR_PIPE_UNUSED must
+			// actually fire, at Info severity, DESIGN_NO_ADVANCED_GEOMETRY
+			// must NOT (3 < 4), and no error/warning may be present -- else
+			// the assertions below are vacuous.
+			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+			bool sawScalarInfo = false, sawGeom = false, sawAnyNonInfo = false;
+			for( const AgentDiagnostic& d : diags ) {
+				if( d.code == "DESIGN_SCALAR_PIPE_UNUSED" && d.severity == AgentDiagnostic::Severity::Info )
+					sawScalarInfo = true;
+				if( d.code == "DESIGN_NO_ADVANCED_GEOMETRY" ) sawGeom = true;
+				if( d.severity != AgentDiagnostic::Severity::Info ) sawAnyNonInfo = true;
+			}
+			Check( sawScalarInfo, "RED-PROVE fixture: DESIGN_SCALAR_PIPE_UNUSED fires at Info severity" );
+			Check( !sawGeom, "RED-PROVE fixture: DESIGN_NO_ADVANCED_GEOMETRY stays silent (3 < 4)" );
+			Check( !sawAnyNonInfo, "RED-PROVE fixture: the ONLY diagnostics entry is the Info advisory" );
+
+			AgentEvalRunHandle h;
+			h.result.scenarioId = "design_advisory_probe";
+			h.result.terminalStatus = "final_text";
+			h.trajectoryPath = "";
+			h.resultPath = dir + "/design_advisory_probe.result.jsonl";
+			h.dispatcher.reset( new AgentRpcDispatcher( std::move( session ) ) );
+
+			AgentEvalScenario s2;
+			s2.id = "design_advisory_probe";
+
+			auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+				JsonValue cps; std::string err;
+				Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+				s2.checkpoints = cps;
+				AgentEvalCheckResult r = CheckScenario( h, s2 );
+				if( r.checkpoints.size() == 1 ) {
+					Check( r.checkpoints[0].passed == expectPass,
+						label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+						" (detail: " + r.checkpoints[0].detail + ")" );
+				} else Check( false, label + ": expected exactly one checkpoint result" );
+			};
+
+			// THE MONEY ASSERTION: expect:"clean" PASSES despite the live
+			// Info-severity advisory.
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"clean\"}]", true,
+				"expect:\"clean\" PASSES on a document carrying ONLY an Info-severity design advisory" );
+			// The deficit is still independently observable via expect:"code".
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"code\",\"code\":\"DESIGN_SCALAR_PIPE_UNUSED\"}]", true,
+				"expect:\"code\" still FINDS the advisory -- the deficit is not hidden, just not "
+				"counted as \"unclean\"" );
 		}
 	}
 
@@ -4972,10 +5154,747 @@ static void TestAdversarialControlNeverAsksStillBuilds()
 	}
 }
 
+//----------------------------------------------------------------------
+// T-mr: material-richness P0's three new "document" ops --
+// distinct_chunk_kinds / any_param_references_kind / no_orphan_chunks
+// (docs/agentic-redesign/73-creative-richness-design.md).  Proves BOTH
+// directions for each op against crafted documents, plus the loader's
+// hard-fail-fast validation of malformed op configs.  Every scene here
+// is read-only (kReadThenDoneFixture -- one read_document, no model
+// edit), so the checked document is the scene TEXT verbatim.
+//----------------------------------------------------------------------
+
+// Clean baseline: ZERO orphan painter-category chunks, and THREE distinct
+// non-uniformcolor/non-scalar painter kinds (perlin3d_painter,
+// worley3d_painter, expression_function2d -- the last is the counterexample
+// to "every Painter-category keyword ends in _painter", exercised here via
+// "category":"painter" rather than a suffix match).  A scalar_painter
+// (sp_rough) is bound into mat_ggx's alphax/alphay (the physical-scalar
+// pipe, per materials-and-media-basics.md).
+static const char* const kMaterialRichnessScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"worley3d_painter\n{\n\tname pnt_worley\n\tcolora pnt_a\n\tcolorb pnt_b\n\toutput f1\n}\n\n"
+	"lambertian_material\n{\n\tname mat_wall\n\treflectance pnt_perlin\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_worley\n}\n\n"
+	"box_geometry\n{\n\tname geo_wall\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"box_geometry\n{\n\tname geo_floor\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry geo_wall\n\tmaterial mat_wall\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n\tposition 2 0 0\n}\n\n"
+	"expression_function2d\n{\n\tname fn_rough\n\tparam bands 4.0\n\tdef s sin( u * bands * tau )\n\texpr smoothstep( -0.3, 0.3, s )\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tfunction2d fn_rough\n\tscale 0.4\n\tbias 0.02\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_a\n\trs pnt_spec\n\talphax sp_rough\n\talphay sp_rough\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n\tposition -2 0 0\n}\n";
+
+// Same as kMaterialRichnessScene PLUS one deliberately UNREFERENCED
+// uniformcolor_painter (pnt_orphan) -- the no_orphan_chunks FAIL case.
+static const char* const kMaterialRichnessSceneWithOrphan =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"lambertian_material\n{\n\tname mat_wall\n\treflectance pnt_perlin\n}\n\n"
+	"box_geometry\n{\n\tname geo_wall\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry geo_wall\n\tmaterial mat_wall\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_orphan\n\tcolor 0.3 0.2 0.1\n}\n";
+
+// Same as kMaterialRichnessScene EXCEPT mat_ggx's alphax/alphay are INLINE
+// numbers, not a reference to sp_rough -- sp_rough (and fn_rough) exist but
+// have NO referrer.  The any_param_references_kind "exists but orphaned"
+// FAIL case.
+static const char* const kMaterialRichnessSceneOrphanScalar =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"expression_function2d\n{\n\tname fn_rough\n\tparam bands 4.0\n\tdef s sin( u * bands * tau )\n\texpr smoothstep( -0.3, 0.3, s )\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tfunction2d fn_rough\n\tscale 0.4\n\tbias 0.02\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_a\n\trs pnt_spec\n\talphax 0.3\n\talphay 0.3\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+// Uniformcolor-only: no scalar_painter, no other painter kind at all --
+// distinct_chunk_kinds' "FAILS on uniformcolor-only doc" case and
+// any_param_references_kind's "no such chunk exists" case.
+static const char* const kFlatPainterScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+// P1-a red-proof (review round 1): TWO worley3d_painter chunks (different
+// names/params, both bound to their own object) -- distinct_chunk_kinds
+// must count DISTINCT KEYWORDS (1: "worley3d_painter"), not raw filter-
+// matching chunk COUNT (2).  Mutating distinctKinds.size() to matches.size()
+// in the implementation must turn this scene's distinctMin:2 assertion from
+// FAIL to PASS -- the mutation probe this scene exists to drive red.
+static const char* const kDuplicateKindScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"worley3d_painter\n{\n\tname pnt_worley1\n\tcolora pnt_a\n\tcolorb pnt_b\n\toutput f1\n}\n\n"
+	"worley3d_painter\n{\n\tname pnt_worley2\n\tcolora pnt_b\n\tcolorb pnt_a\n\toutput f2\n}\n\n"
+	"lambertian_material\n{\n\tname mat_1\n\treflectance pnt_worley1\n}\n\n"
+	"lambertian_material\n{\n\tname mat_2\n\treflectance pnt_worley2\n}\n\n"
+	"box_geometry\n{\n\tname geo_1\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"box_geometry\n{\n\tname geo_2\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_1\n\tgeometry geo_1\n\tmaterial mat_1\n}\n\n"
+	"standard_object\n{\n\tname obj_2\n\tgeometry geo_2\n\tmaterial mat_2\n\tposition 2 0 0\n}\n";
+
+// Geometry-diversity PASS case (geometry scope expansion): box_geometry +
+// sphere_geometry + sdf_geometry -- 3 distinct geometry kinds (satisfies
+// category:"geometry" distinctMin:3) with exactly one advanced-modeling
+// kind present (satisfies kinds:[sdf_geometry,sweep_geometry,
+// displaced_geometry] distinctMin:1).  The sdf_geometry part uses the
+// documented roundcone field layout (skills/agent/object-modeling-
+// recipes.md): `<prim> <op> <k>  <pos xyz>  <euler xyz deg>  <scale xyz>
+// <a b c>  <round>`, a b c = r1 r2 h.
+static const char* const kGeometryRichnessScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_a\n\treflectance pnt_a\n}\n\n"
+	"box_geometry\n{\n\tname geo_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_box\n\tgeometry geo_box\n\tmaterial mat_a\n}\n\n"
+	"sphere_geometry\n{\n\tname geo_sph\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry geo_sph\n\tmaterial mat_a\n\tposition 2 0 0\n}\n\n"
+	"sdf_geometry\n{\n\tname geo_sdf\n\tpart roundcone union 0  0 0 0  0 0 0  1 1 1  0.3 0.2 0.4  0.0\n}\n\n"
+	"standard_object\n{\n\tname obj_sdf\n\tgeometry geo_sdf\n\tmaterial mat_a\n\tposition -2 0 0\n}\n";
+
+// P1-b red-proof (review round 1, the reviewer-proved single-decoy gaming
+// pattern): obj_wall/obj_floor are the only VISIBLE surfaces and are
+// uniformcolor-only; every diverse painter (worley3d_painter,
+// perlin3d_painter) is bound ONLY to a hidden 0.001-unit decoy box at
+// position 1000 1000 1000.  distinct_chunk_kinds/no_orphan_chunks both
+// PASS on this document (the painters exist and are bound to SOMETHING) --
+// objects_reaching_kinds is the op that catches it (only 1 standard_object,
+// the decoy itself, reaches a qualifying painter; the 2 visible objects
+// reach only excluded uniformcolor_painter chunks).
+static const char* const kDecoyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_vis\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_vis\n\treflectance pnt_vis\n}\n\n"
+	"box_geometry\n{\n\tname geo_wall\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry geo_wall\n\tmaterial mat_vis\n}\n\n"
+	"box_geometry\n{\n\tname geo_floor\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_vis\n\tposition 2 0 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_decoy_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_decoy_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"worley3d_painter\n{\n\tname pnt_decoy_worley\n\tcolora pnt_decoy_a\n\tcolorb pnt_decoy_b\n\toutput f1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_decoy_perlin\n\tcolora pnt_decoy_a\n\tcolorb pnt_decoy_b\n}\n\n"
+	"ggx_material\n{\n\tname mat_decoy\n\trd pnt_decoy_worley\n\trs pnt_decoy_perlin\n\talphax 0.3\n\talphay 0.3\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_decoy\n\twidth 0.001\n\theight 0.001\n\tdepth 0.001\n}\n\n"
+	"standard_object\n{\n\tname obj_decoy\n\tgeometry geo_decoy\n\tmaterial mat_decoy\n\tposition 1000 1000 1000\n}\n";
+
+// review-round-2 P3 (both reviewers): objects_reaching_kinds is only exercised
+// above on object->material->painter (2-hop) chains.  This scene makes the
+// ONLY qualifying painter (pnt_worley_deep, a worley3d_painter) reachable
+// SOLELY via a THIRD hop through an intermediate painter-referencing-painter
+// chunk: obj_deep -> mat_deep -> pnt_blend (blend_painter) -> pnt_worley_deep.
+// pnt_blend is itself Painter-category but is excluded from the filter below
+// alongside uniformcolor_painter/scalar_painter, so a BFS that stops
+// expanding after the first hop past the root (material) would find nothing
+// qualifying -- it must walk past the intermediate blend_painter to reach the
+// worley3d_painter one hop further out.  blend_painter's mask carries the
+// qualifying reference (per ChunkParserRegistry.cpp: "out = colora * mask +
+// colorb * (1 - mask)"); colora/colorb are flat uniformcolor_painter chunks
+// that carry no signal here.
+static const char* const kDeepChainScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"worley3d_painter\n{\n\tname pnt_worley_deep\n\tcolora pnt_a\n\tcolorb pnt_b\n\toutput f1\n}\n\n"
+	"blend_painter\n{\n\tname pnt_blend\n\tcolora pnt_a\n\tcolorb pnt_b\n\tmask pnt_worley_deep\n}\n\n"
+	"lambertian_material\n{\n\tname mat_deep\n\treflectance pnt_blend\n}\n\n"
+	"box_geometry\n{\n\tname geo_deep\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_deep\n\tgeometry geo_deep\n\tmaterial mat_deep\n}\n";
+
+static void TestMaterialRichnessCheckpoints()
+{
+	std::printf( "T-mr: material-richness P0 -- distinct_chunk_kinds / any_param_references_kind / no_orphan_chunks...\n" );
+	const std::string dir = ScratchRunDir( "t_mr_richness" );
+
+	auto makeHandle = [&]( const char* id, const char* sceneText ) -> AgentEvalRunHandle {
+		AgentEvalScenario s = MakeScenario( id, sceneText, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", std::string( id ) + ": run reached final_text" );
+		Check( h.dispatcher != nullptr, std::string( id ) + ": run has a live dispatcher" );
+		return h;
+	};
+
+	const AgentEvalRunHandle hClean        = makeHandle( "mr_clean", kMaterialRichnessScene );
+	const AgentEvalRunHandle hOrphanPainter = makeHandle( "mr_orphan_painter", kMaterialRichnessSceneWithOrphan );
+	const AgentEvalRunHandle hOrphanScalar  = makeHandle( "mr_orphan_scalar", kMaterialRichnessSceneOrphanScalar );
+	const AgentEvalRunHandle hFlat          = makeHandle( "mr_flat", kFlatPainterScene );
+	const AgentEvalRunHandle hDupKind       = makeHandle( "mr_dup_kind", kDuplicateKindScene );
+	const AgentEvalRunHandle hGeomDiverse   = makeHandle( "mr_geom_diverse", kGeometryRichnessScene );
+	const AgentEvalRunHandle hDecoy         = makeHandle( "mr_decoy", kDecoyScene );
+	const AgentEvalRunHandle hDeepChain     = makeHandle( "mr_deep_chain", kDeepChainScene );
+
+	auto checkAgainst = [&]( const AgentEvalRunHandle& h, const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+
+	// ---- distinct_chunk_kinds ----
+
+	// PASSES on a doc with (at least) 2 distinct qualifying painters --
+	// kMaterialRichnessScene carries 3 (perlin3d_painter, worley3d_painter,
+	// expression_function2d).  "category":"painter" is used (not
+	// "kindSuffix") because expression_function2d is Painter-category
+	// without a "_painter" suffix -- a suffix filter would silently drop it.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":2}]",
+		true, "distinct_chunk_kinds: 3 distinct qualifying painters >= distinctMin:2 PASSES" );
+
+	// FAILS on a uniformcolor-only doc (0 distinct qualifying painters).
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":2}]",
+		false, "distinct_chunk_kinds: uniformcolor-only doc (0 distinct) FAILS" );
+
+	// FAILS when distinct kinds < distinctMin: excluding perlin3d_painter and
+	// worley3d_painter too leaves ONLY expression_function2d (count 1),
+	// under distinctMin:2.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\",\"perlin3d_painter\",\"worley3d_painter\"],\"distinctMin\":2}]",
+		false, "distinct_chunk_kinds: count 1 < distinctMin:2 FAILS" );
+
+	// Exclusion actually excludes: the SAME document, same distinctMin:1,
+	// PASSES without the extra exclusions (count 3) and FAILS with them
+	// (count 1) -- proving "exclude" changes the outcome, not just present.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":3}]",
+		true, "distinct_chunk_kinds: distinctMin:3 PASSES without narrowing exclusions (count 3)" );
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\",\"perlin3d_painter\",\"worley3d_painter\"],\"distinctMin\":3}]",
+		false, "distinct_chunk_kinds: the SAME distinctMin:3 FAILS once exclude narrows the count to 1" );
+
+	// distinctMax: the count (3) exceeding an explicit ceiling FAILS.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1,\"distinctMax\":2}]",
+		false, "distinct_chunk_kinds: count 3 > distinctMax:2 FAILS" );
+
+	// distinctMax: an EXACTLY-AT-CEILING count PASSES (review round 2, P2-1)
+	// -- the inclusive-upper-bound edge.  Mutating "count > distinctMax" to
+	// "count >= distinctMax" in AgentEvalRunner.cpp (~line 4684) would flip
+	// this to FAIL while every other distinct_chunk_kinds assertion above
+	// stays green (none of them sit exactly on the ceiling).  hClean's
+	// qualifying count is exactly 3 (confirmed by the metricValue==3
+	// assertion below), so distinctMax:3 must still PASS.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1,\"distinctMax\":3}]",
+		true, "distinct_chunk_kinds: count 3 == distinctMax:3 PASSES (inclusive upper bound)" );
+
+	// metricValue is populated with the exact distinct count.
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse( "[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+			"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1}]", cps, err ),
+			"distinct_chunk_kinds metricValue: checkpoint JSON parses" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hClean, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"distinct_chunk_kinds: hasMetricValue is true" );
+		if( r.checkpoints.size() == 1 )
+			Check( r.checkpoints[0].metricValue == 3.0,
+				"distinct_chunk_kinds: metricValue == 3 (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+		// Default metricLabel (no explicit "metricLabel" in the checkpoint JSON
+		// above) is the op name.
+		if( r.checkpoints.size() == 1 )
+			Check( r.checkpoints[0].metricLabel == "distinct_chunk_kinds",
+				"distinct_chunk_kinds: default metricLabel == op name (got '" + r.checkpoints[0].metricLabel + "')" );
+	}
+
+	// P1-a (review round 1): distinct_chunk_kinds counts DISTINCT KEYWORDS,
+	// not raw filter-matching chunk COUNT.  kDuplicateKindScene carries TWO
+	// worley3d_painter chunks (pnt_worley1, pnt_worley2 -- different names,
+	// different params, both bound) and nothing else qualifying -- the
+	// distinct count is 1, so distinctMin:2 must FAIL even though the raw
+	// matching-chunk count is 2.  A distinctMin:1 sibling on the SAME
+	// document must PASS, proving this isn't a filter-collection bug.
+	checkAgainst( hDupKind,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":2}]",
+		false, "distinct_chunk_kinds: two worley3d_painter chunks are 1 distinct kind, FAILS distinctMin:2" );
+	checkAgainst( hDupKind,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1}]",
+		true, "distinct_chunk_kinds: two worley3d_painter chunks still PASS distinctMin:1 (the filter itself finds them)" );
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse( "[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+			"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1}]", cps, err ),
+			"distinct_chunk_kinds dup-kind metricValue: checkpoint JSON parses" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hDupKind, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricValue == 1.0,
+			"distinct_chunk_kinds: metricValue == 1 on the duplicate-kind scene (DISTINCTNESS, not match count -- got " +
+			( r.checkpoints.size() == 1 ? std::to_string( r.checkpoints[0].metricValue ) : std::string( "<no result>" ) ) + ")" );
+	}
+
+	// ---- geometry-diversity (scope expansion) ----
+
+	// FAILS: kMaterialRichnessScene's geometry is box_geometry-only (3
+	// chunks, 1 distinct kind) -- a box-monoculture scene must fail
+	// distinctMin:3 under category:"geometry".
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":3}]",
+		false, "distinct_chunk_kinds: all-box geometry (1 distinct kind) FAILS distinctMin:3 category:geometry" );
+
+	// PASSES: kGeometryRichnessScene mixes box_geometry + sphere_geometry +
+	// sdf_geometry -- 3 distinct kinds satisfies distinctMin:3.
+	checkAgainst( hGeomDiverse,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":3}]",
+		true, "distinct_chunk_kinds: box+sphere+sdf (3 distinct kinds) PASSES distinctMin:3 category:geometry" );
+
+	// The advanced-geometry "kinds" list: PASSES when the scene carries the
+	// ONE sdf_geometry chunk; FAILS on the box-only scene that carries none
+	// of sdf_geometry/sweep_geometry/displaced_geometry.
+	checkAgainst( hGeomDiverse,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"sdf_geometry\",\"sweep_geometry\",\"displaced_geometry\"],\"distinctMin\":1}]",
+		true, "distinct_chunk_kinds: kinds-list PASSES with one sdf_geometry present" );
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"sdf_geometry\",\"sweep_geometry\",\"displaced_geometry\"],\"distinctMin\":1}]",
+		false, "distinct_chunk_kinds: kinds-list FAILS with none of sdf/sweep/displaced present" );
+
+	// ---- objects_reaching_kinds (review round 1, P1-b anti-decoy-gaming) ----
+
+	// FAILS on the decoy scene: only obj_decoy (the hidden 0.001-unit box)
+	// reaches a qualifying (non-uniform, non-scalar) painter -- the two
+	// VISIBLE objects (obj_wall, obj_floor) reach only excluded
+	// uniformcolor_painter chunks.  reachingCount 1 < min:2.
+	checkAgainst( hDecoy,
+		"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":2}]",
+		false, "objects_reaching_kinds: decoy scene (1 qualifying root) FAILS min:2" );
+
+	// The op's count semantics, asserted directly: metricValue == 1 on the
+	// decoy scene (the decoy itself, and only the decoy).
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse( "[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+			"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":0}]", cps, err ),
+			"objects_reaching_kinds decoy metricValue: checkpoint JSON parses" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hDecoy, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricValue == 1.0,
+			"objects_reaching_kinds: metricValue == 1 on the decoy scene (got " +
+			( r.checkpoints.size() == 1 ? std::to_string( r.checkpoints[0].metricValue ) : std::string( "<no result>" ) ) + ")" );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].metricLabel == "objects_reaching_kinds",
+			"objects_reaching_kinds: default metricLabel == op name" );
+	}
+
+	// PASSES on the honest scene: kMaterialRichnessScene's obj_wall reaches
+	// pnt_wall (perlin3d_painter, qualifying) and obj_floor reaches
+	// pnt_floor (worley3d_painter, qualifying) -- 2 qualifying roots meets
+	// min:2.  (obj_ggx reaches only excluded uniformcolor_painter/
+	// scalar_painter chunks, so this also proves the closure walk doesn't
+	// over-count.)
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":2}]",
+		true, "objects_reaching_kinds: honest scene (2 qualifying roots: obj_wall, obj_floor) PASSES min:2" );
+
+	// max: exceeding an explicit ceiling FAILS (the honest scene has exactly 2).
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":0,\"max\":1}]",
+		false, "objects_reaching_kinds: count 2 > max:1 FAILS" );
+
+	// max: an EXACTLY-AT-CEILING count PASSES (review round 2, P2-1) -- the
+	// inclusive-upper-bound edge.  Mutating "reachingCount > maxCount" to
+	// "reachingCount >= maxCount" in AgentEvalRunner.cpp (~line 4844) would
+	// flip this to FAIL while every other objects_reaching_kinds assertion
+	// above stays green (none of them sit exactly on the ceiling).  The
+	// qualifying-root count under THIS filter is exactly 3, not 2 -- besides
+	// obj_wall/obj_floor, obj_ggx's mat_ggx binds sp_rough (scalar_painter,
+	// excluded, so not itself qualifying) whose "function2d" param in turn
+	// references fn_rough (expression_function2d, Painter-category and NOT
+	// excluded here), so obj_ggx's closure also reaches a qualifying chunk
+	// one hop further out.  Confirmed at runtime via the "count 3 > max:2"
+	// FAIL detail before landing this boundary at max:3.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":3,\"max\":3}]",
+		true, "objects_reaching_kinds: count 3 == max:3 PASSES (inclusive upper bound)" );
+
+	// review-round-2 P3 (both reviewers): a 3-hop closure -- the qualifying
+	// painter is reachable ONLY through an intermediate painter-referencing-
+	// painter chunk (obj_deep -> mat_deep -> pnt_blend -> pnt_worley_deep).
+	// pnt_blend (blend_painter) is itself excluded from the filter, so this
+	// PASSES only if the BFS walks past it to the worley3d_painter one hop
+	// further out.  reachingCount is exactly 1 (obj_deep is the only root).
+	checkAgainst( hDeepChain,
+		"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+		"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\",\"blend_painter\"],\"min\":1}]",
+		true, "objects_reaching_kinds: 3-hop closure (obj->mat->blend_painter->worley3d_painter) PASSES min:1" );
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse( "[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\","
+			"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\",\"blend_painter\"],\"min\":0}]", cps, err ),
+			"objects_reaching_kinds 3-hop metricValue: checkpoint JSON parses" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hDeepChain, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricValue == 1.0,
+			"objects_reaching_kinds: metricValue == 1 on the 3-hop scene (exactly obj_deep -- got " +
+			( r.checkpoints.size() == 1 ? std::to_string( r.checkpoints[0].metricValue ) : std::string( "<no result>" ) ) + ")" );
+	}
+
+	// ---- any_param_references_kind ----
+
+	// PASSES: sp_rough (a scalar_painter) is referenced by mat_ggx's
+	// alphax/alphay.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		true, "any_param_references_kind: a referenced scalar_painter PASSES" );
+
+	// FAILS: sp_rough exists in the document but nothing references it
+	// (mat_ggx's alphax/alphay are inline numbers instead).
+	checkAgainst( hOrphanScalar,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: chunk exists but is orphaned FAILS" );
+
+	// FAILS: no scalar_painter chunk exists in the document at all.
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: no such chunk exists FAILS" );
+
+	// ---- no_orphan_chunks ----
+
+	// PASSES: every painter-category chunk in kMaterialRichnessScene is
+	// bound to something.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\",\"category\":\"painter\"}]",
+		true, "no_orphan_chunks: every painter bound PASSES" );
+
+	// FAILS: pnt_orphan is a painter chunk with zero referrers; the detail
+	// names it.
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse( "[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\",\"category\":\"painter\"}]", cps, err ),
+			"no_orphan_chunks orphan-detail: checkpoint JSON parses" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hOrphanPainter, s2 );
+		Check( r.checkpoints.size() == 1 && !r.checkpoints[0].passed,
+			"no_orphan_chunks: one orphaned painter FAILS" );
+		if( r.checkpoints.size() == 1 )
+			Check( r.checkpoints[0].detail.find( "pnt_orphan" ) != std::string::npos,
+				"no_orphan_chunks: the failing detail NAMES pnt_orphan (detail: " + r.checkpoints[0].detail + ")" );
+	}
+
+	// Vacuous PASS on zero matching chunks: "kinds" names a painter kind
+	// that appears nowhere in the document.
+	checkAgainst( hClean,
+		"[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\",\"kinds\":[\"voronoi3d_painter\"]}]",
+		true, "no_orphan_chunks: zero matching chunks vacuously PASSES" );
+
+	// ---- Loader validation: malformed op configs are hard load errors ----
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kMaterialRichnessScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// distinct_chunk_kinds: BOTH kindSuffix and category present -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_both_filters",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"kindSuffix\":\"_painter\",\"category\":\"painter\",\"distinctMin\":1}]", err ),
+			"distinct_chunk_kinds: BOTH kindSuffix and category FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// distinct_chunk_kinds: NEITHER kindSuffix/kinds/category -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_no_filter",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"distinctMin\":1}]", err ),
+			"distinct_chunk_kinds: no filter field FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// distinct_chunk_kinds: missing distinctMin -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_no_distinctmin",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\"}]", err ),
+			"distinct_chunk_kinds: missing distinctMin FAILS to load" );
+		Check( err.find( "distinctMin" ) != std::string::npos,
+			"the load error names distinctMin (got: " + err + ")" );
+	}
+	// The correctly-shaped sibling still loads cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "mr_good_distinct",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1}]", err ),
+			"distinct_chunk_kinds: correctly-shaped checkpoint loads (" + err + ")" );
+	}
+	// distinct_chunk_kinds: NEGATIVE distinctMin -- refused (a negative floor
+	// makes the checkpoint vacuously pass on any document).
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_negative_distinctmin",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":-1}]", err ),
+			"distinct_chunk_kinds: distinctMin -1 FAILS to load" );
+		Check( err.find( "never be negative" ) != std::string::npos,
+			"the load error explains a count can never be negative (got: " + err + ")" );
+	}
+	// distinct_chunk_kinds: INVERTED band (max < min) -- refused (can never pass).
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_inverted_band",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":5,\"distinctMax\":1}]", err ),
+			"distinct_chunk_kinds: distinctMax 1 < distinctMin 5 FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// no_orphan_chunks: BOTH kindSuffix and kinds present -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_orphan_both_filters",
+			"[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\",\"kindSuffix\":\"_painter\",\"kinds\":[\"perlin3d_painter\"]}]", err ),
+			"no_orphan_chunks: BOTH kindSuffix and kinds FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// no_orphan_chunks: NEITHER filter field -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_orphan_no_filter",
+			"[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\"}]", err ),
+			"no_orphan_chunks: no filter field FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// any_param_references_kind: missing referencedKind -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_no_referencedkind",
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\"}]", err ),
+			"any_param_references_kind: missing referencedKind FAILS to load" );
+		Check( err.find( "referencedKind" ) != std::string::npos,
+			"the load error names referencedKind (got: " + err + ")" );
+	}
+	// The correctly-shaped siblings still load cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "mr_good_orphan",
+			"[{\"kind\":\"document\",\"op\":\"no_orphan_chunks\",\"kindSuffix\":\"_painter\"}]", err ),
+			"no_orphan_chunks: correctly-shaped checkpoint loads (" + err + ")" );
+		Check( writeAndLoad( "mr_good_anyref",
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]", err ),
+			"any_param_references_kind: correctly-shaped checkpoint loads (" + err + ")" );
+	}
+
+	// ---- objects_reaching_kinds: loader validation (review round 1) ----
+
+	// BOTH kindSuffix and category present -- refused (shares the filter
+	// validation with distinct_chunk_kinds/no_orphan_chunks).
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_reach_both_filters",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"kindSuffix\":\"_painter\",\"category\":\"painter\",\"min\":1}]", err ),
+			"objects_reaching_kinds: BOTH kindSuffix and category FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// NEITHER kindSuffix/kinds/category -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_reach_no_filter",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"min\":1}]", err ),
+			"objects_reaching_kinds: no filter field FAILS to load" );
+		Check( err.find( "EXACTLY ONE" ) != std::string::npos,
+			"the load error explains EXACTLY ONE filter is required (got: " + err + ")" );
+	}
+	// missing min -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_reach_no_min",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\"}]", err ),
+			"objects_reaching_kinds: missing min FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// NEGATIVE min -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_reach_negative_min",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\",\"min\":-1}]", err ),
+			"objects_reaching_kinds: min -1 FAILS to load" );
+		Check( err.find( "never be negative" ) != std::string::npos,
+			"the load error explains a count can never be negative (got: " + err + ")" );
+	}
+	// INVERTED band (max < min) -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_reach_inverted_band",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\",\"min\":5,\"max\":1}]", err ),
+			"objects_reaching_kinds: max 1 < min 5 FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// The correctly-shaped sibling still loads cleanly (with an explicit
+	// rootKind override too, proving that field is accepted).
+	{
+		std::string err;
+		Check( writeAndLoad( "mr_good_reach",
+			"[{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\",\"rootKind\":\"standard_object\",\"min\":1,\"max\":10}]", err ),
+			"objects_reaching_kinds: correctly-shaped checkpoint loads (" + err + ")" );
+	}
+
+	// ---- metricLabel: cross-checkpoint dedupe guard (geometry scope expansion) ----
+
+	// Two distinct_chunk_kinds checkpoints, NEITHER carrying an explicit
+	// "metricLabel" -- both default to the op name "distinct_chunk_kinds",
+	// collide, and the scenario FAILS to load.  The error names metricLabel.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_label_default_collision",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1},"
+			"{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":1}]", err ),
+			"metricLabel: two distinct_chunk_kinds checkpoints with NO metricLabel (both default-collide) FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Two distinct_chunk_kinds checkpoints with the SAME EXPLICIT metricLabel
+	// -- also a collision, also refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_label_explicit_collision",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":\"richness\"},"
+			"{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":1,\"metricLabel\":\"richness\"}]", err ),
+			"metricLabel: two distinct_chunk_kinds checkpoints with the SAME explicit metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Cross-op collision: distinct_chunk_kinds (default label
+	// "distinct_chunk_kinds") + objects_reaching_kinds EXPLICITLY relabeled
+	// to the same string -- still a collision (the dedupe guard is op-
+	// agnostic, keyed on the EFFECTIVE label, not the op name).
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_label_cross_op_collision",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1},"
+			"{\"kind\":\"document\",\"op\":\"objects_reaching_kinds\",\"category\":\"painter\",\"min\":1,\"metricLabel\":\"distinct_chunk_kinds\"}]", err ),
+			"metricLabel: distinct_chunk_kinds (default label) vs objects_reaching_kinds (relabeled to the same string) FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Two DISTINCT explicit labels load cleanly, and BOTH checkpoints carry
+	// their own metricValue/metricLabel through CheckScenario -- proving the
+	// dedupe guard doesn't over-fire and the label actually threads through.
+	{
+		std::string err;
+		const bool loaded = writeAndLoad( "mr_good_two_labels",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+			"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+			"{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":1,\"metricLabel\":\"geometry_kinds\"}]", err );
+		Check( loaded, "metricLabel: two DISTINCT explicit labels load cleanly (" + err + ")" );
+		if( loaded ) {
+			JsonValue cps; std::string perr;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\","
+				"\"exclude\":[\"uniformcolor_painter\",\"scalar_painter\"],\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+				"{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"geometry\",\"distinctMin\":1,\"metricLabel\":\"geometry_kinds\"}]",
+				cps, perr ), "metricLabel: two-label checkpoint JSON re-parses for the runtime check" );
+			AgentEvalScenario s2; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( hClean, s2 );
+			Check( r.checkpoints.size() == 2, "metricLabel: two checkpoint results" );
+			if( r.checkpoints.size() == 2 ) {
+				Check( r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricLabel == "painter_kinds",
+					"metricLabel: checkpoint[0] carries label 'painter_kinds' (got '" + r.checkpoints[0].metricLabel + "')" );
+				Check( r.checkpoints[1].hasMetricValue && r.checkpoints[1].metricLabel == "geometry_kinds",
+					"metricLabel: checkpoint[1] carries label 'geometry_kinds' (got '" + r.checkpoints[1].metricLabel + "')" );
+			}
+		}
+	}
+	// A wrong-TYPED metricLabel (a number, not a string) is a hard load
+	// error on ANY checkpoint kind, not just "document" -- it is validated
+	// generically in ValidateCheckpointFieldTypes.
+	{
+		std::string err;
+		Check( !writeAndLoad( "mr_bad_label_wrong_type",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":5}]", err ),
+			"metricLabel: a numeric metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
 
+	TestScratchRootDiffersAcrossProcesses();
 	TestDocumentCheckpoint();
 	TestUntouchedCheckpoint();
 	TestRenderCheckpoint();
@@ -4984,6 +5903,7 @@ int main()
 	TestObjectmapCheckpoint();
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
+	TestDiagnosticsCheckpointCleanIgnoresInfo();
 	TestTrajectoryCheckpoint();
 	TestTrajectoryNewAssertions();
 	TestToolOutcomesArgsContainsAndConflict();
@@ -5009,7 +5929,17 @@ int main()
 	TestTrajectoryAskUserAssertions();
 	TestScenarioContentHashAskUserResponsesSensitivity();
 	TestAdversarialControlNeverAsksStillBuilds();
+	TestMaterialRichnessCheckpoints();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
+
+	// Leave the repo/TMPDIR clean: remove this process's ENTIRE scratch
+	// tree (every ScratchRunDir() leaf lives under it), not just the last
+	// leaf touched.
+	{
+		std::error_code ec;
+		std::filesystem::remove_all( ScratchTestRoot(), ec );
+	}
+
 	return g_fail == 0 ? 0 : 1;
 }

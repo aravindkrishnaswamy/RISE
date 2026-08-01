@@ -76,46 +76,90 @@ namespace RISE
 				},
 				{
 					"read_schema",
-					"Read the scene-language schema (chunk and parameter reference). Call "
-					"with a chunk keyword to learn one chunk's parameters. To DISCOVER "
-					"which chunk kinds exist under a category (e.g. which material or "
-					"geometry types are available), pass category (\"material\", "
-					"\"geometry\", \"painter\", \"light\", \"rasterizer\", ...) with NO "
-					"keyword -- that returns just the cheap keyword list + one-line "
-					"descriptions, so you pick a kind then fetch its full schema by "
-					"keyword. Omitting BOTH returns the whole grammar (large; rarely "
-					"needed). Use this before proposing a patch whose parameter name or "
-					"value format you are not sure about.",
+					"Read the scene-language schema (chunk and parameter reference). "
+					"WHEN YOU NEED SEVERAL CHUNK KINDS, ASK FOR THEM IN ONE CALL: pass "
+					"keywords as an ARRAY (e.g. keywords:[\"sdf_geometry\","
+					"\"pbr_metallic_roughness_material\",\"uniformcolor_painter\","
+					"\"omni_light\",\"standard_object\"]) and you get every one of those "
+					"schemas back in this single result, in the order you asked. That is "
+					"the DEFAULT way to prepare for authoring a scene -- one batch of "
+					"at most 24 keywords, instead of a round-trip per chunk kind. Use the "
+					"single "
+					"`keyword` form only when you genuinely want one. Pass `category` "
+					"(\"material\", \"geometry\", \"painter\" -- the TEXTURE system, 36 "
+					"kinds from flat colour through procedural noise -- \"light\", "
+					"\"rasterizer\", "
+					"...) only when you do NOT yet know which chunk kinds exist -- it "
+					"returns just that category's keyword list + one-line descriptions, "
+					"which you then batch-fetch via keywords. Omitting all three returns "
+					"the whole grammar (large; rarely needed). Use this before proposing a "
+					"patch whose parameter name or value format you are not sure about.",
 					"{\"type\":\"object\",\"properties\":{"
+						"\"keywords\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"PREFERRED when you need more than one: an array of chunk keywords (at most 24, counting `keyword` if you also send it) fetched in ONE call. The result's `schema` is then an ARRAY POSITIONALLY ALIGNED with this one -- schema[i] is keywords[i], never reordered, never collapsed -- and each entry also names its own `keyword`. An unrecognized keyword occupies its own slot as {keyword, error}, so one typo neither fails the batch nor shifts the rest. Batch the chunk kinds you have DECIDED to use (typically 4-8: geometry, material, painter, light, object); a full 24-entry batch runs roughly 30-45 KB depending on which kinds, so do not pad it with kinds you might not need.\"},"
 						"\"keyword\":{\"type\":\"string\",\"description\":"
-						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema.\"},"
+						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema. Use `keywords` instead when you want two or more.\"},"
 						"\"category\":{\"type\":\"string\",\"description\":"
-						"\"A chunk category (e.g. material, geometry, painter, light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions; omit keyword to use this. Omit both for the whole grammar.\"}"
+						"\"A chunk category (e.g. material, geometry, painter -- the texture system -- light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions -- discovery only, no parameters. Do the category listings you need FIRST, then ONE `keywords` batch for everything you picked across all of them -- not one batch per category. Omit all three for the whole grammar.\"}"
 					"}}"
 				},
 				{
 					"read_skill",
 					"Read a scene-authoring skill (curated RISE how-to notes with "
-					"verified scene snippets). Call with NO name first to list the "
-					"available skills (name + one-line hook each); call with a name to "
-					"read one BEFORE authoring or explaining scenes -- the skills carry "
-					"the conventions (light directions, power semantics, painter "
-					"wiring) that make first-try scenes render correctly.",
+					"verified scene snippets). Pass a NAME to read one BEFORE authoring "
+					"or explaining scenes -- the skills carry the conventions (light "
+					"directions, power semantics, painter wiring) that make first-try "
+					"scenes render correctly. Your system prompt already lists every "
+					"skill name with a one-line hook, so go straight to the name you "
+					"need.",
+					// `name` is deliberately OPTIONAL.  It was briefly made
+					// "required" on the strength of a misdiagnosis: a recorded run
+					// opened with a bare read_skill{} and never read a named skill,
+					// which was read as the model ignoring guidance.  It was not --
+					// SkillsRoot() was not resolving in that GUI session, the index
+					// was EMPTY (0 skills), and calling read_skill{} to discover
+					// names was the correct move for a model with no index.  Making
+					// `name` required then removed the only discovery path: the next
+					// run guessed the example name out of this very description,
+					// failed, guessed "index", failed again, and ran 41 turns
+					// against the previous run's 22.
+					//
+					// The listing form is the recovery path for exactly the case
+					// where the prompt carries no index.  Do not remove it; if a
+					// bare call is genuinely wasteful, the fix is to ensure the
+					// index is PRESENT, not to forbid asking for it.
 					"{\"type\":\"object\",\"properties\":{"
 						"\"name\":{\"type\":\"string\",\"description\":"
-						"\"A skill name from the index (e.g. scene-skeleton-and-conventions); omit to list all available skills.\"}"
+						"\"A skill name from the index (the list in your system prompt, or what read_skill with no arguments returns); omit to list the available skills.\"}"
 					"}}"
 				},
 				{
 					"validate",
-					"Validate a CANDIDATE scene document without touching the live scene. "
-					"Call this to check a document you are considering BEFORE proposing "
-					"changes; no error-severity diagnostics means the candidate will load "
-					"(warnings/info alone are not failures).",
+					"Check a scene for problems without touching or re-rendering it. "
+					"CALL IT WITH NO ARGUMENTS to validate the CURRENT scene -- that is "
+					"the normal post-edit check, and it also returns the headVersion it "
+					"validated. NEVER re-send the document you just edited: the engine "
+					"already has it, and echoing a whole scene back costs thousands of "
+					"output tokens and tens of seconds for nothing. Pass `text` ONLY to "
+					"check a CANDIDATE document you have not applied -- e.g. a "
+					"from-scratch scene you are composing before inserting it chunk by "
+					"chunk; that form works even with no scene loaded, while the "
+					"no-argument form needs one. Validate the candidate ONCE, when it "
+					"is COMPLETE -- not after each chunk you add. Every `text` call "
+					"re-sends the whole document, and a clean result (empty "
+					"diagnostics) has told you all it can, so go insert rather than "
+					"re-validating a superset of text that already came back clean. "
+					"Either way, no error-severity "
+					"diagnostics means the scene has no SEMANTIC errors (warnings/info "
+					"alone are not failures; a candidate still needs its `RISE ASCII "
+					"SCENE 7` header line to actually load, which this does not check), "
+					"and the result's `validated` field says which it actually checked -- "
+					"\"head\" or \"text\". If your edit came back status=\"staged\" it is "
+					"NOT in the current scene yet, so the no-argument form will not see it.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"text\":{\"type\":\"string\",\"description\":"
-						"\"The complete candidate .RISEscene document text to check.\"}"
-					"},\"required\":[\"text\"]}"
+						"\"OPTIONAL. A complete candidate .RISEscene document to check INSTEAD of the current scene. Omit it to validate the current scene -- do not re-send a document you already applied.\"}"
+					"}}"
 				},
 				{
 					"propose_patch",
@@ -144,9 +188,9 @@ namespace RISE
 					"still carries the engine's own diagnostic.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
-						"\"The entity NAME to edit (a chunk name from the document).\"},"
+						"\"The entity NAME to edit (a chunk name from the document). For a chunk that has NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead; that is the kind-addressed singleton form. Do NOT pass the chunk keyword here as if it were a name: `target:\\\"pinhole_camera\\\"` does not resolve and is rejected.\"},"
 						"\"kind\":{\"type\":\"string\",\"description\":"
-						"\"Optional entity KIND keyword (e.g. lambertian_material) to disambiguate a name clash.\"},"
+						"\"Entity KIND keyword (e.g. lambertian_material). Two uses: disambiguate a name clash, OR -- with an EMPTY `target` -- address the sole unnamed chunk of that kind, e.g. {target:\\\"\\\", kind:\\\"camera\\\", param:\\\"location\\\", value:\\\"0 1 4\\\"} to move an unnamed camera without removing and re-inserting it.\"},"
 						"\"param\":{\"type\":\"string\",\"description\":"
 						"\"The parameter to set (e.g. radius, color, location).\"},"
 						"\"value\":{\"type\":\"string\",\"description\":"
@@ -213,7 +257,7 @@ namespace RISE
 					"FIRST, then insert chunk by chunk. Always pass the headVersion you "
 					"last read as baseHeadVersion. A duplicate (kind,name) is rejected "
 					"-- pick a fresh name. status=applied means the entity is live (a "
-					"full re-derive ran); render + read_image to verify. "
+					"full re-derive ran); render {imageMaxEdge:192} to verify. "
 					"EITHER a successful OR a rejected insert may return "
 					"\"issues\": [{param,value,reason,suggestions:[...]}]. reason is one of "
 					"\"unresolved_reference\" (the value names a chunk not defined ANYWHERE "
@@ -332,8 +376,24 @@ namespace RISE
 					"compare the channel means against the previous render to confirm "
 					"the edit changed the image. After inserting a rasterizer, check "
 					"`integrator` to confirm which one is live. "
+					"TO SEE THE RESULT, pass imageMaxEdge (e.g. 192) and the PNG comes back "
+					"in THIS call -- do not follow an ordinary render with a separate "
+					"read_image; that is a wasted round-trip. Call read_image only to re-read "
+					"a render you already have at a DIFFERENT size, to read an objectmap at "
+					"native size, or for representation:\"perception\". "
+					"BUILD CADENCE: while BUILDING a scene, call this after each "
+					"OBJECT GROUP you place -- not once at the end. A small look per "
+					"object or pair is what keeps placement honest; four renders "
+					"across a six-object scene is too few. Do NOT render to confirm "
+					"a parameter value took (the apply response already said so), but "
+					"DO render to judge placement, shape, or composition -- those are "
+					"visual facts no apply response can report. Any RELATIONAL claim "
+					"in the request (resting against, behind, in front of, "
+					"overlapping, breaking the horizon) has to be checked against an "
+					"actual image before you call the task done; plausible "
+					"coordinates routinely do not touch. "
 					"TOKEN ECONOMY: for modeling/placement checks use width/height 128-192 "
-					"(NOT the full authored resolution) and read_image maxEdge ~192 -- a "
+					"(NOT the full authored resolution) and imageMaxEdge ~192 -- a "
 					"tiny preview is enough to confirm placement/shape/color and costs a "
 					"fraction of the tokens and render time. Use `camera` to check the "
 					"scene from 2-3 DIFFERENT ANGLES without editing the actual camera "
@@ -379,15 +439,21 @@ namespace RISE
 						"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
-						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"}"
+						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"},"
+						"\"imageMaxEdge\":{\"type\":\"number\",\"description\":"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Supply it and the rendered PNG comes back INLINE in this result -- one call instead of render then read_image. The image is downscaled (box filter, aspect-preserving, never upscales) by the same code read_image uses, so the bytes are exactly what read_image with that maxEdge would have returned. Use ~192 for a modeling/placement check. Omit it when you only want the statistics -- you then get no image. NOT allowed with mode:objectmap: that call is REJECTED, because an objectmap must be read at native size -- render it without this parameter, then call read_image with no maxEdge.\"}"
 					"}}"
 				},
 				{
 					"read_image",
 					"Fetch the LAST successful render as a PNG image so you can SEE the "
-					"scene. Call after propose_patch + render to visually verify your "
-					"edit did what you intended. If nothing has been rendered yet this "
+					"scene. If nothing has been rendered yet this "
 					"returns an empty png_base64 (byteLength 0) -- call render first. "
+					"DO NOT call this straight after your own render just to look at it: "
+					"pass imageMaxEdge on the render instead and the PNG arrives in that "
+					"one call. Use this verb to re-read a render you ALREADY have at a "
+					"different size without re-rendering, to read an objectmap at native "
+					"size, and for representation:\"perception\". "
 					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
 					"image is downscaled (no re-render) before being sent to you, so a "
 					"quick look costs far fewer tokens than the full-resolution image. "
@@ -858,7 +924,7 @@ namespace RISE
 			//! The text that replaces an elided (superseded) image block or
 			//! part -- see AgentChatLoop.h "IMAGE RETENTION".
 			const char* const kImageElidedNote =
-				"[image elided -- superseded by a newer render]";
+				"[image elided -- superseded by a newer image]";
 
 			//! The text that replaces an elided user reference-image
 			//! attachment once the live-image cap is exceeded -- see
@@ -899,16 +965,29 @@ namespace RISE
 				return summary;
 			}
 
-			//! True + the base64 payload iff this call is a read_image (or a
-			//! compare_to_reference called with visual:true -- see
-			//! AgentRpc.cpp's compare_to_reference dispatch doc: it
-			//! deliberately reuses the SAME "png_base64" field name so this
-			//! one predicate, and every retention/elision policy built on
-			//! it, covers both without a second code path) whose JSON-RPC
-			//! result carries a non-empty png_base64 string.
+			//! True + the base64 payload iff this call is one of the
+			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
+			//! non-empty png_base64 string.  compare_to_reference (visual:true),
+			//! render (imageMaxEdge:N) and read_viewport all reuse read_image's
+			//! "png_base64" field name deliberately, so this ONE predicate --
+			//! and every retention/elision policy built on it -- covers all
+			//! four without a second code path.  The field test is what makes
+			//! listing render here safe: a render without imageMaxEdge has no
+			//! png_base64 and is not an image result; likewise a read_viewport
+			//! that came back available:false carries an empty png_base64 and
+			//! is correctly not counted as an image.
+			//!
+			//! read_viewport is NOT declared in kToolDefs today, so no model
+			//! is told about it -- but ToolCallToJsonRpcLine forwards whatever
+			//! name the model emits and the dispatcher answers it, so an
+			//! injected or hallucinated read_viewport really does return a PNG
+			//! into the transcript.  Listing it here is what keeps the
+			//! image-retention cap covering every PNG that can actually get in.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
-				if( ( call.name != "read_image" && call.name != "compare_to_reference" ) || !result.isObject() ) return false;
+				if( ( call.name != "read_image" && call.name != "compare_to_reference"
+				      && call.name != "render" && call.name != "read_viewport" )
+				    || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
 				outB64 = b64->asString();
@@ -940,6 +1019,23 @@ namespace RISE
 				                : obj.has( "note" )       ? "note"
 				                : nullptr;
 				if( !key ) return text;
+				// VALUE GATE (added with SUPERSEDED-READ RETENTION): rewrite
+				// ONLY a note this loop wrote to announce an ATTACHED image.
+				// StripPngBase64's three attach notes all read "... is attached
+				// as ..."; nothing else does.  Without this gate the key alone
+				// decides, and `note` is NOT exclusively ours -- read_skill's
+				// missing-skills-root advisory (AgentRpc.cpp) is an RPC-owned
+				// top-level `note`, and OpenAI's RewriteElidedImages applies
+				// this rewrite to EVERY tool message of an image-bearing entry,
+				// not just the image one.  A parallel read_skill + read_image
+				// turn therefore had its ADVISORY silently replaced by
+				// "[image elided ...]" -- a pre-existing defect this gate
+				// closes, and the same collision the superseded-read
+				// placeholder would otherwise have hit.  Idempotent: a value
+				// already rewritten to kImageElidedNote no longer matches, so a
+				// second pass skips it (it was a self-assignment before).
+				if( obj.get( key ).asString().find( "is attached as" ) == std::string::npos )
+					return text;
 				JsonValue out = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = obj.members();
 				for( std::size_t i = 0; i < mem.size(); ++i ) {
@@ -1027,6 +1123,56 @@ namespace RISE
 			if( env.find( "error" ) ) return false;
 			std::string b64;
 			return IsImageResult( call, env.get( "result" ), b64 );
+		}
+
+		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
+		                                           const std::string& rawJsonRpcResponseLine )
+		{
+			// THE ALLOWLIST.  See the header for the four admission properties
+			// and, per excluded verb, the property it fails.  Because every
+			// listed verb is ARGUMENT-INDEPENDENT (property 3), the key is the
+			// verb name itself -- `call.argsJson` is deliberately NOT
+			// consulted, which is why a model that sends stray params to
+			// read_document still gets correct supersession.
+			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
+
+			bool listed = false;
+			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
+				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
+			if( !listed ) return std::string();
+
+			// A result only supersedes -- and is only supersedable -- when it
+			// is a parseable JSON-RPC SUCCESS.  See the header: an errored
+			// read must never evict the last good one.
+			JsonValue env;
+			std::string perr;
+			if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+			if( env.find( "error" ) ) return std::string();
+			const JsonValue* result = env.find( "result" );
+			if( !result ) return std::string();
+
+			// INFORMATIVE-RESULT GATE.  "Success" is not enough: read_document
+			// answers the NO-HEAD case with a SUCCESS carrying
+			// {document:"", hasDocument:false, headVersion:{0,0}} (AgentRpc.cpp).
+			// In the co-editing GUI the user can close the scene between two
+			// agent reads, and without this gate that empty success would
+			// supersede -- evicting the last real document and leaving the
+			// model with neither it nor a useful remedy (the placeholder's
+			// "call read_document again" would return empty too).  The MUTABLE
+			// property in the header assumes the newer view is at least as
+			// informative as the older; this is the one shape where it is not.
+			// An uninformative result is simply not in the game: it neither
+			// supersedes nor is elided (it is a few bytes, so leaving it live
+			// costs nothing).
+			if( call.name == "read_document" &&
+			    !result->get( "hasDocument" ).asBool( false ) ) return std::string();
+			return call.name;
+		}
+
+		std::string ChatSupersededResultNote( const std::string& verbName )
+		{
+			return "[" + verbName + " result elided -- superseded by a later " + verbName +
+			       " call in this conversation; call " + verbName + " again for the current state]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
@@ -1175,6 +1321,62 @@ namespace RISE
 		//======================================================================
 		// (3) AnthropicChatCodec
 		//======================================================================
+
+		namespace
+		{
+			//! Below this many bytes of message history BuildRequest places no
+			//! rolling cache breakpoint: a separate cache entry over a few
+			//! hundred bytes cannot repay its write premium, and the static
+			//! system/tools breakpoint already covers the request's bulk.
+			const std::size_t kAnthropicMinRollingCacheBytes = 2048;
+
+			//! Returns `entryJson` with cache_control:ephemeral added to the
+			//! LAST block of its content array, or `entryJson` unchanged when
+			//! that is not safe.  Three guards:
+			//!   * role must be "user" -- those entries are loop-generated
+			//!     (user turns, packed tool results) and reparsing them is
+			//!     already established practice (RewriteElidedImages).
+			//!     Assistant entries carry the verbatim byte-preservation
+			//!     contract and are never touched.
+			//!   * the content array must be non-empty and end in an object
+			//!     that does not already carry a marker.
+			//!   * the parse must round-trip to byte-identical input, so the
+			//!     ONLY difference from `entryJson` is the inserted marker.
+			//! The marker is request metadata, not message content: an entry
+			//! marked in one request and unmarked in the next still matches
+			//! the cached prefix (this is Anthropic's documented multi-turn
+			//! pattern -- the breakpoint moves to the newest turn each time).
+			std::string MarkAnthropicEntryCacheable( const std::string& entryJson )
+			{
+				JsonValue root;
+				std::string perr;
+				if( !JsonParse( entryJson, root, perr ) || !root.isObject() ) return entryJson;
+				if( root.get( "role" ).asString() != "user" ) return entryJson;
+				const JsonValue& content = root.get( "content" );
+				if( !content.isArray() || content.size() == 0 ) return entryJson;
+				const JsonValue& last = content.at( content.size() - 1 );
+				if( !last.isObject() || last.has( "cache_control" ) ) return entryJson;
+				if( JsonSerialize( root ) != entryJson ) return entryJson;
+
+				JsonValue cc = JsonValue::MakeObject();
+				cc.set( "type", JsonValue::MakeString( "ephemeral" ) );
+				JsonValue marked = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& lm = last.members();
+				for( std::size_t i = 0; i < lm.size(); ++i ) marked.set( lm[i].first, lm[i].second );
+				marked.set( "cache_control", cc );
+
+				JsonValue newContent = JsonValue::MakeArray();
+				for( std::size_t i = 0; i + 1 < content.size(); ++i )
+					newContent.push_back( content.at( i ) );
+				newContent.push_back( marked );
+
+				JsonValue newRoot = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& rm = root.members();
+				for( std::size_t i = 0; i < rm.size(); ++i )
+					newRoot.set( rm[i].first, rm[i].first == "content" ? newContent : rm[i].second );
+				return JsonSerialize( newRoot );
+			}
+		}
 
 		const char* AnthropicChatCodec::ProviderName() const { return "anthropic"; }
 
@@ -1392,6 +1594,53 @@ namespace RISE
 			return JsonSerialize( newRoot );
 		}
 
+		std::string AnthropicChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& tr = content.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || tr.get( "type" ).asString() != "tool_result" ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
+				// Swap the whole content-block array for the single
+				// placeholder text block.  Every OTHER member of the
+				// tool_result -- crucially tool_use_id -- is copied through,
+				// so this entry still answers its assistant turn's tool_use.
+				JsonValue newBlocks = JsonValue::MakeArray();
+				newBlocks.push_back( MakeTextBlock( placeholderText ) );
+				JsonValue newTr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newTr.set( mem[j].first, mem[j].first == "content" ? newBlocks : mem[j].second );
+				newContent.push_back( newTr );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
 		ChatHttpRequest AnthropicChatCodec::BuildRequest(
 			const std::string& modelId,
 			const std::string& apiKey,
@@ -1424,7 +1673,8 @@ namespace RISE
 			// block with cache_control:ephemeral so Anthropic caches that
 			// whole prefix -- tools render before system in the cache prefix,
 			// so one breakpoint on the last (only) system block covers tools
-			// AND system together (max 4 breakpoints/request; we use 1).
+			// AND system together.  The growing message history is covered
+			// separately, by the rolling breakpoints below.
 			// Cache reads bill at ~0.1x input and the 5-minute TTL is
 			// refreshed by any request in the window, which a live chat turn
 			// trivially satisfies.  Only this codec needs an explicit marker:
@@ -1444,9 +1694,56 @@ namespace RISE
 			body += ",\"tools\":";
 			body += AnthropicToolsJson();
 			body += ",\"messages\":[";
+			// ROLLING PROMPT-CACHE BREAKPOINTS.  The system marker above
+			// covers only the STATIC prefix; the message history grows every
+			// turn and would otherwise be re-sent uncached each time.
+			//
+			// Placement: the last content block of the TAIL entry, plus the
+			// last content block of entry n-3.  The loop appends exactly two
+			// entries between consecutive BuildRequests (assistant turn +
+			// packed tool results, or final assistant turn + the next user
+			// message), so n-3 is the position the PREVIOUS request marked --
+			// an exact-prefix read anchor that does not depend on Anthropic's
+			// backward scan to find a hit, and that still anchors a round
+			// whose two new entries carry many blocks.  The tail marker
+			// extends the cached prefix over this request's whole history so
+			// the NEXT request can read it.  Where the n-3 assumption misses
+			// (compaction dropped entries, two user turns in a row) that
+			// marker writes instead of reading; it is a strict prefix of the
+			// tail marker, so the loss is bounded by one extra cache entry.
+			//
+			// Both positions are role:"user" entries -- BuildRequest is only
+			// ever reached with a user turn or a tool-results turn last -- so
+			// MarkAnthropicEntryCacheable never reparses an assistant echo
+			// (and refuses to, if that ever changed).
+			//
+			// ELISION INTERACTION: the IMAGE RETENTION and SUPERSEDED-READ
+			// rules (AgentChatLoop.h) rewrite OLDER entries in place, i.e.
+			// inside the prefix both markers depend on, so the turn after a
+			// rewrite is a cache miss up to the tail.  No marker position
+			// avoids that: the rules can touch any entry, and the codec sees
+			// only the already-rewritten result.  It costs one re-write turn,
+			// not the feature -- both rules are convergent (an entry is
+			// elided at most once per rule), so the prefix re-stabilizes and
+			// the marker is read again on the following turn.
+			//
+			// Three breakpoints total (system + two), under the cap of four.
+			std::size_t rollingTail = rawEntries.size();
+			std::size_t rollingAnchor = rawEntries.size();
+			{
+				std::size_t historyBytes = 0;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i )
+					historyBytes += rawEntries[i].size();
+				if( !rawEntries.empty() && historyBytes >= kAnthropicMinRollingCacheBytes ) {
+					rollingTail = rawEntries.size() - 1;
+					if( rawEntries.size() >= 3 ) rollingAnchor = rawEntries.size() - 3;
+				}
+			}
 			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
 				if( i ) body += ",";
-				body += rawEntries[i];
+				body += ( i == rollingTail || i == rollingAnchor )
+					? MarkAnthropicEntryCacheable( rawEntries[i] )
+					: rawEntries[i];
 			}
 			body += "]}";
 			r.body = body;
@@ -1998,6 +2295,70 @@ namespace RISE
 						newFr.set( mem[j].first, mem[j].second );
 					}
 				}
+				JsonValue newPart = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
+				for( std::size_t j = 0; j < pm.size(); ++j )
+					newPart.set( pm[j].first, pm[j].first == "functionResponse" ? newFr : pm[j].second );
+				newParts.push_back( newPart );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				const JsonValue* fr = p.find( "functionResponse" );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || !fr || !fr->isObject() ) {
+					newParts.push_back( p );
+					continue;
+				}
+				changed = true;
+				// functionResponse.response MUST be an object, so the
+				// placeholder rides as its `note`.  A superseded result never
+				// carries an inlineData `parts` array (image results are on
+				// the separate IMAGE RETENTION path), but drop it defensively
+				// so a rewrite can never leave orphaned media behind.  id and
+				// name are copied through, keeping the call binding intact.
+				// KEY NAMESPACE (defense in depth alongside
+				// RewriteElidedSummaryText's value gate): deliberately NOT
+				// "note".  `note` is claimed by the image-elision rewrite AND
+				// is an RPC-owned field on some results (read_skill's
+				// missing-root advisory), so a distinct key makes a
+				// cross-rule collision structurally impossible rather than
+				// merely gated.
+				JsonValue newResp = JsonValue::MakeObject();
+				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				JsonValue newFr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
+				for( std::size_t j = 0; j < mem.size(); ++j ) {
+					if( mem[j].first == "parts" ) continue;
+					newFr.set( mem[j].first, mem[j].first == "response" ? newResp : mem[j].second );
+				}
+				if( !newFr.find( "response" ) ) newFr.set( "response", newResp );
 				JsonValue newPart = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
 				for( std::size_t j = 0; j < pm.size(); ++j )
@@ -2727,6 +3088,58 @@ namespace RISE
 					}
 				}
 				out.push_back( msg );
+			}
+			return changed ? JsonSerialize( out ) : packedEntryJson;
+		}
+
+		std::string OpenAIChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// PackToolResults emits a loop-owned ARRAY of messages: one per
+			// result IN ORDER, so index i is result i.  (The only element
+			// that is not a result is the trailing image user message, which
+			// is APPENDED after all N of them and therefore never collides
+			// with a result index -- and is guarded against below anyway.)
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isArray() ) return packedEntryJson;
+
+			// The payload keeps the SHAPE every other result uses -- a
+			// serialized JSON object -- so a model parsing tool output
+			// uniformly does not hit a lone bare string here.
+			// See the Gemini twin above for why the key is NOT "note".
+			JsonValue note = JsonValue::MakeObject();
+			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			const std::string notePayload = JsonSerialize( note );
+
+			bool changed = false;
+			JsonValue out = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < root.size(); ++i ) {
+				const JsonValue& msg = root.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( !hit || ( !chatTool && !responsesTool ) ) {
+					out.push_back( msg );
+					continue;
+				}
+				changed = true;
+				// tool_call_id / call_id are copied through, so the rewritten
+				// message still answers its tool call.
+				const char* const payloadKey = chatTool ? "content" : "output";
+				JsonValue newMsg = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newMsg.set( mem[j].first, mem[j].first == payloadKey
+						? JsonValue::MakeString( notePayload ) : mem[j].second );
+				out.push_back( newMsg );
 			}
 			return changed ? JsonSerialize( out ) : packedEntryJson;
 		}

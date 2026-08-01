@@ -1,4 +1,76 @@
 import SwiftUI
+import Foundation
+
+/// Binds the agent's skills root to the INSTALLATION, once, at launch.
+///
+/// WHY THIS EXISTS.  `AgentSession::SkillsRoot()` resolves, first hit
+/// wins: `$RISE_SKILLS_PATH` → `$RISE_MEDIA_PATH` + "skills/agent/" →
+/// "./skills/agent/".  Tier 2 is a trap for a GUI: `RISE_MEDIA_PATH` is
+/// re-pointed on EVERY scene load (`RenderViewModel.registerMediaPaths`
+/// walks up from the open scene to the nearest `global.options`), so the
+/// agent's skills silently became a property of whichever scene was
+/// open.  Build a scene from scratch, or open one outside a RISE project
+/// tree, and the walk-up found nothing, the media path pointed somewhere
+/// with no `skills/agent/`, and all skills vanished — with no signal at
+/// any layer.  Skills belong to the app, not to the document.
+///
+/// Setting tier 1 here is enough: it takes first precedence in the core,
+/// so nothing in the library changes and the CLI / MCP paths keep their
+/// existing resolution.  `setProjectRoot:` / `RISE_MEDIA_PATH` are left
+/// alone — they are doing their own (correct) job for scene media.
+enum SkillsRootBootstrap {
+
+    /// Resolve and publish `RISE_SKILLS_PATH`.  Call once, before any
+    /// scene can load (`ChatViewModel.sceneOpened` is what reads the
+    /// index).  A no-op when nothing resolves: leaving the core's
+    /// fallbacks intact beats pointing the variable at a directory that
+    /// is not there.
+    static func install() {
+        // An operator-set value always wins — this is a repair for a
+        // default, not an override of a deliberate choice.
+        if let set = ProcessInfo.processInfo.environment["RISE_SKILLS_PATH"], !set.isEmpty {
+            return
+        }
+        guard let root = resolve() else { return }
+        setenv("RISE_SKILLS_PATH", root, 1)
+    }
+
+    /// First existing directory wins:
+    ///
+    ///  1. `<app>/Contents/Resources/skills/agent` — the repo's `skills/`
+    ///     folder, copied in by the RISE-GUI target's Resources build
+    ///     phase (a folder reference, so there is no second copy of the
+    ///     markdown to drift).  This is the path in BOTH a shipped .app
+    ///     and a dev build: the phase runs in every configuration, and a
+    ///     dev build's .app lives in DerivedData where no amount of
+    ///     walking up reaches the checkout.
+    ///  2. `skills/agent` found by walking up from the .app itself — for
+    ///     an .app that does sit inside a source tree (a custom SYMROOT,
+    ///     or a build product copied into the repo) whose resource copy
+    ///     did not run.
+    private static func resolve() -> String? {
+        var candidates: [URL] = []
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("skills/agent"))
+        }
+        // Bounded walk: deep enough for build/XCode/rise/<config>/ inside
+        // a checkout, short enough never to wander off to "/".
+        var dir = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0 ..< 8 {
+            candidates.append(dir.appendingPathComponent("skills/agent"))
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        return candidates.first(where: isDirectory)?.path
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            && isDir.boolValue
+    }
+}
 
 @main
 struct RISEApp: App {
@@ -22,6 +94,11 @@ struct RISEApp: App {
     private var themeModeRaw: String = ThemeMode.dark.rawValue
 
     init() {
+        // Anchor the agent's skills to the INSTALLATION before anything
+        // can read the index (see SkillsRootBootstrap for why binding
+        // them to RISE_MEDIA_PATH, which follows the open scene, was the
+        // bug).  Cheap, and it must precede the first scene load.
+        SkillsRootBootstrap.install()
         // Register the bundled IBM Plex faces before any view renders —
         // Theme.sans/mono fall back to system fonts if this fails.
         FontBootstrap.registerBundledFonts()

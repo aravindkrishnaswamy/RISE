@@ -30,11 +30,13 @@ table, and "Transport modes" for all four additions.
 
 | Intent | Call | Cost | Trust it for | Do NOT trust it for |
 |---|---|---|---|---|
-| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false` (`no_controller`: headless session, no viewport at all; `no_frame_yet`: viewport exists but hasn't produced a frame) -- fall back to a `render` call instead of retrying |
+| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false`.  There are SEVEN reasons and they split into three groups (the full table is under "Hard warnings" item 3).  RETRIABLE, clears on its own: `editor_transaction_in_progress`, `render_in_progress`, `editor_interaction_finalize_failed`.  RESOLVES but not by retrying: `no_frame_yet` (viewport exists but hasn't drawn yet).  PERMANENT: `no_controller` (headless session -- there is no viewport and never will be), `editor_shutting_down`, `editor_interaction_unrecoverable` (a latched editor failure that never clears).  Falling back to `render` fixes `no_controller`/`no_frame_yet`; for the OTHER FOUR refusal reasons -- `editor_transaction_in_progress`, `editor_interaction_finalize_failed`, `editor_shutting_down`, `editor_interaction_unrecoverable` -- `render` hits the SAME gate and is refused too.  `render_in_progress` is the one split case, and even there `render` is a POOR fallback: a plain `render {}` BLOCKS up to 30 s on the render slot and only succeeds if the occupant finishes inside that window (the user's own production render, which shares that slot, usually does not), and it is refused with NO wait when a direct parked render holds the gate; a render with a `width`+`height` or `camera`/`view` override is always refused immediately.  Retry the FREE `read_viewport` instead of paying that block |
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
-| "Does it actually look right -- and what geometry/material cues explain it?" | `render` (no `quality`, i.e. production) + `read_image {representation:"perception"}`, or ordinary `read_image` when appearance alone is enough | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
+| "Does it actually look right -- and what geometry/material cues explain it?" | `render {imageMaxEdge:N}` (no `quality`, i.e. production) when appearance alone is enough -- the PNG rides back in that ONE call; add a following `read_image {representation:"perception"}` only when you want the atlas | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
+| "I am BUILDING a scene from scratch." | One cheap look after EACH object group you place -- `render {quality:"draft", width:192, height:192}` or `render {imageMaxEdge:192}` -- not one look at the end | Cheap, and paid once per group rather than once per chunk | Keeping placement honest while a mistake is still one edit to fix.  Four looks across a six-object scene is too few; blind construction is the failure mode, not over-rendering | Skipping the looks to save turns -- batching chunks into one `insert_chunks` call is where round-trips are saved, NOT here |
+| "Does A actually rest against / sit behind / overlap B?" (any RELATIONAL or compositional constraint in the request) | `render {imageMaxEdge:192}` and LOOK, from a second `camera` angle when the constraint is about depth; `query_object_at {x,y}` to confirm which object owns a given screen position | One small render, plus a near-free identity query | The only verification these constraints have.  Plausible coordinates routinely fail to touch, interpenetrate, or occlude the wrong way -- contact depends on geometry extent and camera, neither visible in the position values | Reasoning about coordinates instead of looking; and calling it done off a clean apply + clean validate, which say the document is well-formed, not that the objects relate as asked |
 
 ### Production perception: use the richer final observation
 
@@ -56,7 +58,8 @@ surface. Depth always remains the raw camera ray's first geometric hit, before
 alpha/transparency continuation, medium scattering, x-ray traversal, or
 refraction. At silhouettes it averages hit samples only; misses stay black.
 
-Use ordinary `read_image` when only appearance matters or the extra panels
+Use `render {imageMaxEdge:N}` -- one call, image included -- when only
+appearance matters or the extra panels
 would consume context without answering the prompt. Use `render {mode:"depth"}`
 instead when you specifically need the diagnostic mode's default x-ray-through-
 glass semantics; perception depth intentionally describes the front geometry.
@@ -64,14 +67,6 @@ Set `perception:false` on production render only when saving its 7-byte/pixel
 persistent sidecar and transient AOV memory matters more than the added context.
 
 ## View modes: which `render{mode:}` value answers which question
-
-`objectmap` answers "which object is where"; the other four are
-structural DIAGNOSTIC modes that answer a narrower question still --
-not identity, but geometry.  All six share ONE call shape
-(`render {mode:"..."}`) and ONE cost profile (fixed 1 spp, single
-exact pass, `quality`/`samples` both honestly ignored -- noted in the
-result `message`).  `renderMode` in the result always echoes back the
-exact mode name that ran.
 
 | mode | Question it answers | Read it as | `legend`? |
 |---|---|---|---|
@@ -377,18 +372,81 @@ mention (viewport, objectmap/query).
    when the palette is exhausted the result's `message` says so
    explicitly. Read an objectmap render's PNG at NATIVE size (omit
    `maxEdge` on `read_image`) -- downscaling box-blends the flat ids
-   and breaks the legend match. A pixel that matches NO legend entry
+   and breaks the legend match. `render {mode:"objectmap"}` therefore
+   REJECTS `imageMaxEdge`: render it without, then `read_image` with no
+   `maxEdge`. A pixel that matches NO legend entry
    is the reserved BACKGROUND: RGB `000000` at alpha 0 (never assigned
    to an object); the magenta `FF00FF` sentinel plus an `<unmapped>`
    legend entry mark the should-not-happen unregistered-object case.
    Pixel coordinates: `(0,0)` is the TOP-LEFT corner and y grows
    DOWNWARD, for both `query_object_at {x,y}` and the decoded PNG's
    row order -- they always agree.
-3. **`read_viewport` does not exist on a headless session.**
-   `available:false` with `reason:"no_controller"` (no live GUI at
-   all) or `"no_frame_yet"` (a viewport exists but hasn't rendered
-   yet) is a STRUCTURED SUCCESS, not an error -- don't retry blindly;
-   fall back to a `render` call when it's unavailable.
+3. **`read_viewport`'s `available:false` is a STRUCTURED SUCCESS, and
+   which reason you got determines what to do next.** There are SEVEN
+   reasons, and `render` is a fallback for exactly two of them:
+
+   | `reason` | Retriable? | What to do |
+   |---|---|---|
+   | `no_controller` | No -- never | Headless session: there is no GUI viewport at all. Use `render`. |
+   | `no_frame_yet` | Not by retrying -- but it does resolve | The viewport exists and hasn't drawn yet. It will draw on its own; nothing you do speeds that up. Use `render` meanwhile. |
+   | `editor_transaction_in_progress` | Yes | The user is mid-gesture or saving. Wait a moment and retry read_viewport. |
+   | `render_in_progress` | Yes | A render -- the agent's, or the USER'S OWN production render -- holds the admission gate. Retry `read_viewport`; it is free. Do NOT switch to `render` (see the prose below: a 30 s block, then likely a refusal). |
+   | `editor_interaction_finalize_failed` | Yes | An open editor interaction could not be finalized this time. Retry. |
+   | `editor_shutting_down` | No -- never | The editor is tearing down. Stop observing. |
+   | `editor_interaction_unrecoverable` | No -- never | An editor interaction failed to persist and the editor LATCHED that failure. It does NOT clear. Tell the user; do not retry, and do not switch to `render` -- it is refused too. |
+
+   **Do NOT reflexively fall back to `render`.** `render` is the right
+   move for the two no-viewport reasons (`no_controller`,
+   `no_frame_yet`). For `editor_transaction_in_progress`,
+   `editor_interaction_finalize_failed`, `editor_shutting_down` and
+   `editor_interaction_unrecoverable`, a `render` call passes through
+   the SAME editor/admission gate that just refused read_viewport and
+   is refused too (and on the permanent ones, an infinite loop if you
+   keep trying).  That leaves `render_in_progress`, the seventh and only
+   split case -- covered in the paragraph immediately below, and still
+   not a good fallback.
+
+   `render_in_progress` is the ONE reason where a `render` call does
+   not hit that same gate -- but it is still a POOR fallback, because
+   it can be refused two different ways:
+
+   - A **plain `render {}`** -- no `width`+`height` pair, no `camera`,
+     no `view` -- does NOT take the parked path read_viewport takes.
+     It queues on the agent-render slot and WAITS up to 30 s. It
+     SUCCEEDS if the occupant finishes inside that window, and is
+     REFUSED ("render queued or in progress -- retry after it
+     completes") if the occupant outlives it. The commonest occupant
+     in a live GUI session is the USER'S OWN production render, which
+     runs through the very same single slot and routinely takes far
+     longer than 30 s -- so the realistic outcome there is a
+     thirty-second block followed by a refusal.
+   - It is also refused with **NO wait at all** when the gate is held
+     by a **direct parked render** -- a film/camera-override agent
+     render, or a `read_viewport` in flight. (Those are the only two
+     producers: the parked path has exactly two callers, both agent
+     ones, and the GUI hosts more than one agent session, so the
+     holder may be a sibling session rather than yours. The GUI's own
+     interactive preview is NOT a producer -- the gate is what blocks
+     it.) That render owns the admission gate without occupying the
+     render slot, so the fairness wait is satisfied instantly and the
+     admission check refuses on the spot. Do NOT tell the user their
+     viewport preview is holding it.
+   - A render carrying a **film override (`width` AND `height`)** or a
+     **`camera`/`view` override** always takes the parked path and IS
+     refused, immediately, for the same reason read_viewport was.
+   - `quality:"draft"` and `mode:` do NOT change this by themselves --
+     only a width+height pair or a camera/view override changes the
+     routing.
+
+   **What to do instead.** `read_viewport` is FREE -- it never renders
+   -- and it becomes available the instant the gate clears, so ONE
+   short retry of `read_viewport` is the cheap poll here, not
+   `render`. If a second read still reports `render_in_progress`, a
+   long render (most likely the user's own) owns the gate: tell the
+   user and wait for it rather than blocking 30 s on a render that
+   will probably be refused anyway. Reach for a plain `render {}` only
+   when you genuinely need a NEW image rather than the viewport's
+   current one, and budget for that 30 s block.
 4. **A generator-synthesized legend name (`grid[0,1]`) is not a CST
    chunk.** `mode:"objectmap"` and `query_object_at` both report it
    verbatim so you can tell instances apart on screen, but to EDIT
@@ -597,11 +655,29 @@ only honest here):
    and the result's `effectiveSamples` still reads back the cap (4)
    with a note in `message` -- don't assume a higher request took
    effect just because it wasn't rejected.
-3. **`read_viewport`'s `available:false` is not a retry signal.** A
-   headless session (`rise --agent-stdio`, or this same skill's
-   render-contract test harness) will NEVER have a viewport --
-   spinning on `read_viewport` waiting for `available:true` there
-   hangs forever for no reason. Use `render` instead.
+3. **`read_viewport`'s `available:false` is not automatically a retry
+   signal -- read the `reason`.** A headless session
+   (`rise --agent-stdio`, or this same skill's render-contract test
+   harness) reports `no_controller` and will NEVER have a viewport;
+   spinning there waiting for `available:true` hangs forever for no
+   reason. Use `render` instead -- for `no_controller` and
+   `no_frame_yet`. `editor_shutting_down` and
+   `editor_interaction_unrecoverable` are equally permanent AND a
+   `render` call hits the same gates, so neither retrying nor
+   switching to `render` helps; say so and stop. The three retriable
+   reasons (`editor_transaction_in_progress`, `render_in_progress`,
+   `editor_interaction_finalize_failed`) do clear on their own -- one
+   short retry of `read_viewport` is reasonable. `render` is not a way
+   around the first and third of those. For `render_in_progress` a
+   PLAIN `render {}` (no `width`+`height`, no `camera`/`view`) at
+   least reaches the render slot instead of the parked path -- but it
+   then BLOCKS up to 30 s and is STILL refused if the occupant
+   outlives that window (the user's own production render shares the
+   slot and usually does) or if a direct parked render holds the gate
+   (no wait at all -- instant refusal). Retry the free `read_viewport`
+   rather than paying that block; a render with a film or camera
+   override is refused outright. Full table under "Hard warnings" item
+   3 above.
 4. **An empty-pixel `query_object_at` is `hit:false`, not an error.**
    The probe pixel resolved to background -- a normal, structured
    result. An actually out-of-range `(x,y)` for the effective film

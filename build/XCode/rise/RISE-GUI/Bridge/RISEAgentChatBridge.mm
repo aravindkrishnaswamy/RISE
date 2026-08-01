@@ -220,6 +220,13 @@ static NSString *ToNS(const std::string& s) {
     self = [super init];
     if (self) {
         _loop = new Agent::AgentChatLoop();
+        // Context compaction is OFF until a host sets a budget; both GUI
+        // drivers install the SAME shared default so they cannot drift.
+        // See AgentChatLoop.h's kDefaultContextBudget* doc for the numbers
+        // and their justification.  (The Windows twin is ChatPanel's
+        // constructor -- keep the two in lockstep.)
+        _loop->SetContextBudget(Agent::AgentChatLoop::kDefaultContextBudgetHighTokens,
+                                Agent::AgentChatLoop::kDefaultContextBudgetLowTokens);
     }
     return self;
 }
@@ -304,6 +311,10 @@ static NSString *ToNS(const std::string& s) {
 
 + (NSInteger)maxLiveUserImages {
     return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxLiveUserImages);
+}
+
+- (NSUInteger)compactedEntryCount {
+    return static_cast<NSUInteger>(_loop->CompactedEntryCount());
 }
 
 - (void)setSkillIndex:(NSString *)indexText {
@@ -417,15 +428,33 @@ static NSString *ToNS(const std::string& s) {
 - (RISEAgentChatRole)transcriptRoleAtIndex:(NSUInteger)index {
     // TranscriptAt is bounds-safe (returns a static empty entry whose
     // role is User), so no extra range check is needed here.
+    //
+    // NO `default` CASE, deliberately.  This switch used to fold every
+    // unrecognized role into RISEAgentChatRoleUser, so Role::DriverNote —
+    // a message the LOOP wrote — would have been reported to the driver as
+    // something the user typed, silently.  With every enumerator named and
+    // no default, the next one added to Role is a -Wswitch warning, which
+    // this project treats as a build failure.  The trailing return keeps
+    // -Wreturn-type quiet; it is unreachable.
     switch (_loop->TranscriptAt(static_cast<std::size_t>(index)).role) {
         case Agent::ChatTranscriptEntry::Role::Assistant:
             return RISEAgentChatRoleAssistant;
         case Agent::ChatTranscriptEntry::Role::ToolResults:
             return RISEAgentChatRoleToolResults;
+        case Agent::ChatTranscriptEntry::Role::DriverNote:
+            return RISEAgentChatRoleDriverNote;
         case Agent::ChatTranscriptEntry::Role::User:
-        default:
             return RISEAgentChatRoleUser;
     }
+    return RISEAgentChatRoleUser;
+}
+
+- (NSUInteger)driverNoteCount {
+    return static_cast<NSUInteger>(_loop->DriverNoteCount());
+}
+
+- (NSString *)lastDriverNoteText {
+    return ToNS(_loop->LastDriverNoteText());
 }
 
 - (NSString *)transcriptDisplayTextAtIndex:(NSUInteger)index {

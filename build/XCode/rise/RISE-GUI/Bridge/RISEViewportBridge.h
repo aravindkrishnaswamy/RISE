@@ -486,14 +486,27 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 //! Returns (0,0) when no camera is attached.
 @property (nonatomic, readonly) NSSize cameraSurfaceDimensions;
 
-//! Scene's animation duration in scene-time units, derived from the
-//! `animation_options` chunk's `time_end - time_start`.  Used by the
-//! timeline scrubber to size its slider range.  Returns 0 when the
-//! scene declared no animation options or no controller is attached;
-//! the UI layer treats 0 as "no timeline" (slider hidden).
+//! Active animation's scene-time range and frame count, derived from its
+//! `animation_options` chunk (or the core's defaults when none is declared).
+//! Used only to configure the timeline scrubber; animationPresence below
+//! independently controls whether that scrubber is visible.  A temporarily
+//! unavailable controller yields the bridge's existing sentinel values.
 @property (nonatomic, readonly) double animationTimeStart;
 @property (nonatomic, readonly) double animationTimeEnd;
 @property (nonatomic, readonly) NSUInteger animationNumFrames;
+
+//! Coherently snapshot all active animation options under one controller
+//! admission.  Returns NO without touching the outputs while unavailable.
+- (BOOL)getAnimationOptionsTimeStart:(double *)timeStart
+                             timeEnd:(double *)timeEnd
+                           numFrames:(NSUInteger *)numFrames
+    NS_SWIFT_NAME(getAnimationOptions(timeStart:timeEnd:numFrames:));
+
+//! Tri-state live animation-presence snapshot: 1 when the scene currently
+//! has keyframed elements, 0 when it does not, and -1 when the controller is
+//! temporarily unavailable/contended.  Callers retain their last successful
+//! value on -1 so an external agent commit never makes the timeline flicker.
+@property (nonatomic, readonly) NSInteger animationPresence;
 
 // Named animations are surfaced as a first-class accordion Category
 // (RISEViewportCategoryAnimation) — the generic categoryEntities: /
@@ -955,7 +968,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 #pragma mark - Agent surface (Facet 5 slice 1c-1: live in-app injection)
 
 /// Facet 5 slice 1c-1: hand one JSON-RPC 2.0 request LINE to the live
-/// agent dispatcher and return the JSON-RPC response line.  This is the
+/// ADMINISTRATIVE agent dispatcher (`_agentDispatcher`) and return the
+/// JSON-RPC response line.  This is the
 /// "agent + user co-edit" entry point: the same
 /// `AgentRpcDispatcher::HandleLine` the CLI's `--agent-stdio` loop drives,
 /// but here it runs IN-PROCESS over the SAME live Job + SceneEditController
@@ -987,6 +1001,16 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// staged proposals, which has nothing to do with what the CHAT AGENT is
 /// permitted to do.  The chat driver's own tool calls go through
 /// `-agentHandleToolCall:` instead — see that method's doc.
+///
+/// `read_image` TYPED BY HAND HERE DOES SEE THE CHAT AGENT'S LAST FRAME
+/// (2026-07 shared image cache).  This session and the two tool-call
+/// sessions are handed the SAME AgentImageCache at construction, so a
+/// `read_image` sent through the Agent (JSON-RPC) debug panel returns
+/// whatever was rendered most recently through ANY of the three — the chat
+/// agent's frame included.  (An intermediate revision of this doc said the
+/// opposite, correctly for the per-session cache that preceded the shared
+/// one.)  The hosted loopback server's External session is NOT in that
+/// group and still sees nothing.
 - (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleLine(_:));
 
@@ -1003,7 +1027,7 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 };
 
 /// The chat composer's current autonomy level for its OWN tool calls (the
-/// LLM-issued `propose_patch`/`insert_chunk`/`remove_chunk`/etc. driven by
+/// LLM-issued mutating verbs and reads driven by
 /// `-agentHandleToolCall:`, NOT the administrative calls `-agentHandleLine:`
 /// makes on its own — see that method's note).  Defaults to
 /// `RISEAgentAutonomyApply` at bridge-attach time, matching every
@@ -1020,17 +1044,19 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// This is the entry point the chat driver's OWN tool-call execution uses
 /// (ChatViewModel's `driveTurn`, for every non-`render` tool call) — the
 /// verb-by-verb behaviour per level:
-///   * Read    -> the 10-verb read-safe allowlist (IsReadSafeVerb in
-///                AgentRpc.cpp) dispatches; `propose_patch`/`insert_chunk`/
-///                `remove_chunk` (and any other verb) are REFUSED
+///   * Read    -> the read-safe allowlist (IsReadSafeVerb in AgentRpc.cpp,
+///                which IS the membership list — no count or copy of it
+///                here) dispatches; the 5 mutating verbs and any other verb
+///                are REFUSED
 ///                (kAutonomyRefused, -32011) — this is Owner authority
 ///                under Read autonomy, so even the refusal path never
 ///                reaches ProposePatch/InsertChunk/RemoveChunk.
 ///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but this
 ///                level runs over a SEPARATE, External-authority
 ///                AgentSession sharing the SAME live SceneEditController
-///                `-agentHandleLine:`'s Owner session is attached to — so
-///                `propose_patch`/`insert_chunk`/`remove_chunk` STAGE a
+///                `-agentHandleLine:`'s administrative session is
+///                attached to — so the 5 mutating verbs (IsProposeSafeVerb)
+///                STAGE a
 ///                real proposal onto that controller's ONE queue (the
 ///                exact queue the existing proposals panel already reads
 ///                via `-agentHandleLine:`'s `list_proposals`/
@@ -1045,21 +1071,118 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 ///                AgentSession, but identical authority+autonomy, so
 ///                observably indistinguishable).
 ///
-/// A `render` tool call is deliberately NOT routed through this level
-/// selector — `executeRenderToolCallAsync`'s submit/poll/cancel sequence
-/// spans multiple `agentHandleLine`-shaped calls against ONE session's
-/// per-job result cache (`AgentSession::mLastAsyncRenderResult`), and the
-/// user can change `agentAutonomyLevel` mid-poll; routing those calls
-/// through whichever dispatcher happens to be current at each poll tick
-/// would risk polling a DIFFERENT session than the one that submitted the
-/// job, missing its cached result.  `render` is read-safe at every level
-/// anyway (see AgentRpc.h — it never mutates the CST document), so there is
-/// no HONESTY cost to always running it over the stable Owner/Commit
-/// session `-agentHandleLine:` already uses.
+/// `render` GOES THROUGH THIS SELECTOR TOO (2026-07 image-cache fix).  It
+/// used to be routed to `-agentHandleLine:`'s administrative session
+/// instead, on the reasoning that a render's submit/poll/cancel sequence
+/// spans several calls against ONE session's per-job result cache and the
+/// user can flip `agentAutonomyLevel` mid-render.  That reasoning was right
+/// about the job-id problem and wrong about the fix: it split `render` away
+/// from `read_image`, and the LAST-RENDER PNG cache was PER-SESSION at the
+/// time.  With the two verbs on different sessions, the agent's
+/// `read_image` read a cache its own render never wrote — returning zero
+/// bytes, or the stale objectmap PNG left behind by `query_object_at`'s
+/// internal render.  (The stale-objectmap half has since been fixed at its
+/// own source as well — `query_object_at`'s internal render is
+/// stash/restore-guarded and no longer clobbers the cache; see
+/// AgentSession.cpp's EphemeralRenderCacheGuard.)
+///
+/// THE CACHE IS NO LONGER WHY.  All three in-app sessions now share ONE
+/// AgentImageCache (see -initWithHostBridge:), so `read_image` finds the
+/// render whichever in-app session ran it — including across the
+/// autonomy-chip flip that co-routing could never cover.  What still binds
+/// `render` to this selector is the PER-SESSION half that was deliberately
+/// NOT shared: render_status / render_wait answer out of this session's own
+/// async-result record, so a poll on a sibling gets completed:true with no
+/// `result`.
+///
+/// The mid-render level flip is handled by PINNING instead: the caller
+/// captures the level ONCE at submit time and passes it to the
+/// `autonomy:` variant below for every subsequent poll / status / cancel /
+/// final-result call for that job, so a whole render job's calls stay on
+/// ONE session no matter what the composer chip does meanwhile.  What the
+/// pin actually fixes — and what it deliberately does NOT freeze — is
+/// spelled out on that variant; read it before building on this.
+/// Routing `render` here does not change what is PERMITTED: `render`,
+/// `render_status`, `render_wait`, `render_cancel`, and `read_image` are
+/// all on `IsReadSafeVerb`'s allowlist (AgentRpc.cpp), so every one of
+/// them dispatches under Read, Propose, and Apply alike.
 ///
 /// Same nil-safety contract as `-agentHandleLine:`: never returns nil.
 - (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleToolCall(_:));
+
+/// Level-EXPLICIT variant of the above: dispatch to the session `level`
+/// selects, IGNORING the live `agentAutonomyLevel` property.  `-agentHandleToolCall:`
+/// is exactly this method called with the current property value.
+///
+/// This exists for ONE reason: a chat-driven async render is a MULTI-CALL
+/// job (submit → render_wait poll ×N → possibly render_cancel), and PARTS
+/// OF THAT JOB'S STATE LIVE ON THE SESSION THAT RAN IT.  So the render
+/// driver captures the level ONCE at submit time and pins it here for that
+/// job's whole lifecycle.
+///
+/// WHICH PARTS — be precise here, because an earlier version of this doc
+/// was NOT.  The renderJobId itself is **not** session-scoped: ids are
+/// minted by the CONTROLLER (`SceneEditController::SubmitAgentRenderAsync`),
+/// and `AgentSession::RenderStatus` / `RenderWait` / `CancelAsyncRender`
+/// each delegate straight through to that controller — so ANY session
+/// attached to the same controller resolves ANY of its job ids.  Do not
+/// build on "another session cannot see this job"; it can.  What IS
+/// session-scoped, and is the real reason for the pin:
+///
+///   1. `render_wait`'s OPTIONAL `result` payload.  AgentRpc.cpp's
+///      `render_wait` handler attaches `result` only when
+///      `AgentSession::LastAsyncRenderResult` finds a cache entry whose
+///      `mLastAsyncRenderResultJobId` matches — and only the session that
+///      RAN the render ever writes that cell.  Poll a sibling session
+///      mid-render and the reply is `completed:true` with NO `result`, at
+///      which point the driver can only degrade to "render completed but
+///      no cached result was found" (see `executeRenderToolCallAsync`).
+///      The render really did succeed; the agent just never sees its stats.
+///   2. The last-render PNG cache (`mLastPng` / `mLastSink`) that
+///      `ReadImage()` and the `read_image` verb serve — the whole reason
+///      `render` was moved onto this selector in the first place.
+///
+/// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY POSTURE.
+/// `level` chooses WHICH dispatcher/session handles the call; it does not
+/// freeze what that session is allowed to do.  `-setAgentAutonomyLevel:`
+/// mutates the TOOL-CALL OWNER session's autonomy IN PLACE
+/// (`_agentToolDispatcherOwner`), so a poll issued with
+/// a pinned level of Apply *after* the user has dropped the chip to Read
+/// genuinely executes under Read.  That is the CORRECT safety behaviour and
+/// is deliberately kept — the pin does not defeat a mid-render drop to
+/// Read.  (Nothing in a render job's poll/cancel sequence is an edit verb,
+/// so the live posture never changes the outcome here anyway; the property
+/// matters because it is what makes the pin safe to have at all.)
+///
+/// The pin is likewise SCOPED TO ONE RENDER JOB, never to a chat turn.
+/// Autonomy is a SAFETY control: a user who drops to Read mid-turn to stop
+/// the agent editing must have that take effect on the agent's very NEXT
+/// tool call.  Pinning a whole turn would defer a safety decision to the
+/// turn boundary; pinning a render job only works around the two
+/// mechanical session-scoping constraints listed above.
+///
+/// THE AUTONOMY-FLIP RESIDUAL THIS DOC USED TO CARRY IS CLOSED (2026-07).
+/// It read: a flip TO or FROM **Propose** between a completed `render` and
+/// the `read_image` that follows lands that read on the other session,
+/// which returns ITS empty or stale PNG cache.  The three in-app sessions
+/// now share one `AgentImageCache` (see -initWithHostBridge:), so the read
+/// finds the render whichever of them ran it.  (A Read↔Apply flip never
+/// changed session in the first place — both select the SAME
+/// `_agentToolDispatcherOwner`, differing only in the autonomy set on it.)
+/// Library-level coverage: AgentRenderAsyncTest's "(shared-img-cache)".
+///
+/// WHAT A FLIP STILL COSTS: a poll or wait issued on the other session gets
+/// completed:true with no `result` payload, per constraint 1 above — which
+/// is why the render JOB is still pinned.  Sharing the cache bought back
+/// the pixels, not the per-session job bookkeeping, and that bookkeeping is
+/// deliberately NOT shared: a session must not report on another session's
+/// jobs.
+///
+/// Same nil-safety contract: never returns nil.
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+                         autonomy:(RISEAgentAutonomyLevel)level
+    NS_SWIFT_NAME(agentHandleToolCall(_:autonomy:));
 
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 
@@ -1069,20 +1192,23 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// SceneEditController, so a real external MCP client (Claude Code, or
 /// any other MCP host) can connect and PROPOSE edits into the scene
 /// that's actually open in this window -- the counterpart to the
-/// in-process Owner dispatcher `agentHandleLine` already drives.
+/// in-process administrative dispatcher (`_agentDispatcher`)
+/// `agentHandleLine` already drives.
 ///
 /// AUTHORITY / AUTONOMY: constructs a NEW, SEPARATE AgentSession over
 /// the SAME Job this bridge wraps (WrapJob), AttachController's it to
 /// this bridge's live `_controller` (so a staged proposal lands on the
-/// SAME queue the Owner dispatcher's ListProposals/ResolveProposal
-/// verbs read), sets its authority to External (mutating verbs STAGE,
+/// SAME queue the administrative dispatcher's ListProposals/
+/// ResolveProposal verbs read), sets its authority to External
+/// (mutating verbs STAGE,
 /// never commit), labels it via SetSessionLabel (see `sessionLabel`
 /// below), and wraps it in an AgentMcpAdapter constructed with
 /// AgentAutonomy::Propose (the wire-layer posture that pairs with
 /// External authority -- see AgentRpc.h's file header). This is a
-/// SEPARATE AgentRpcDispatcher instance from the one -agentHandleLine
-/// drives (that one is Owner-authority + Commit-autonomy, constructed
-/// at init time over its OWN AgentSession) -- see the .mm's
+/// SEPARATE AgentRpcDispatcher instance from the administrative one
+/// -agentHandleLine drives (`_agentDispatcher`, which is Owner-authority
+/// + Commit-autonomy, constructed at init time over its OWN
+/// AgentSession) -- see the .mm's
 /// "two-dispatcher-one-controller" doc comment for the full threading
 /// argument for why two independent dispatcher instances sharing one
 /// controller is safe.
@@ -1095,9 +1221,9 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// (for a mutating verb) calls SceneEditController::StageProposal --
 /// guarded by the controller's OWN mMutex, the SAME lock the render
 /// thread and every OTHER controller entry point (SetProperty,
-/// ApplyAgentParamEdit, the Owner dispatcher's own calls) already
-/// serialize on. list_proposals / resolve_proposal called from the
-/// GUI's Owner dispatcher (via -agentHandleLine, always the main
+/// ApplyAgentParamEdit, the administrative dispatcher's own calls)
+/// already serialize on. list_proposals / resolve_proposal called from
+/// the GUI's administrative dispatcher (via -agentHandleLine, always the main
 /// thread) and a concurrent external stage are therefore safe by the
 /// SAME pre-existing mutex discipline 5a/5b already proved -- nothing
 /// new is introduced here beyond a second caller thread.

@@ -32,7 +32,9 @@ static bool IsClose( double a, double b, double eps = 1e-6 )
 
 // Build the IEEE 754 +Inf / -Inf / quiet-NaN bit patterns via memcpy.
 // `std::numeric_limits<double>::infinity()` (and similar literal forms)
-// emit -Wnan-infinity-disabled under -ffast-math, since fast-math
+// emit -Wnan-infinity-disabled under BARE -ffast-math (measured 2026-07-30:
+// it does NOT fire under the shipped -ffast-math -fno-finite-math-only), since
+// bare fast-math
 // declares them UB; but the production Sanitise() exists precisely to
 // handle these bit patterns when they arrive at runtime from HDR
 // readers / numerically-degenerate BSDFs, so the test has to feed them

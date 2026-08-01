@@ -69,6 +69,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/Agent/Base64.h"
 #include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
@@ -103,6 +104,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -232,7 +240,22 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
@@ -1244,6 +1267,115 @@ static void RunQueryObjectAtWireTest()
 // Assertions are derived from the render itself (bbox scan), so no
 // hand-tuned pixel coordinates can rot.
 //----------------------------------------------------------------------
+// Fix-round-2 P1-A: query_object_at MUST NOT clobber the read_image cache.
+//
+// query_object_at fires a full ephemeral mode:"objectmap" Render()
+// internally, and Render() unconditionally caches every success into the
+// session's last-render pair (mLastPng / mLastSink) -- the pair ReadImage()
+// serves and the `read_image` verb returns.  Unguarded, that leaves a flat
+// SEGMENTATION image sitting where the caller's beauty frame was, so the
+// natural agent sequence
+//
+//     render -> query_object_at -> read_image
+//
+// hands the model the segmentation image and it "judges" the beauty render
+// from it.  That is the same symptom class as the per-session-cache bug this
+// branch fixes; before that fix the GUI's session split masked it, because
+// render and query_object_at landed on DIFFERENT sessions.  Now they share
+// one, so the clobber is live.
+//
+// CompareToReference's split-mask render has had a stash/restore guard for
+// exactly this reason since it shipped (locked by AgentViewportReadTest's
+// "split: cache-survival" block); query_object_at never got one.  Both now
+// take the SAME file-local RAII guard (EphemeralRenderCacheGuard in
+// AgentSession.cpp) so they cannot drift apart again.
+//
+// RED-PROOF SHAPE: the beauty frame is rendered at 48x24 while the internal
+// objectmap runs at the Document's authored 64x64, so the two PNGs cannot
+// coincidentally compare equal -- byte-for-byte equality after the query is
+// only reachable if the cache was genuinely preserved.
+//
+// The second half exercises ReadImage(maxEdge), which re-encodes from
+// mLastSink -- a SEPARATE cached pointer from mLastPng, so the byte
+// comparison above cannot speak for it.  Its failure mode is NOT "goes
+// empty": drop only the sink half of the restore and mLastSink is left
+// pointing at the EPHEMERAL OBJECTMAP sink (non-null), so the downscaling
+// overload cheerfully serves a downscaled SEGMENTATION image -- exactly the
+// shipped bug's shape, one pointer over.  A "did it come back non-empty?"
+// assertion therefore proves nothing.  The DIMS are the discriminator: the
+// beauty frame is deliberately NON-SQUARE (48x24, 2:1) while the objectmap
+// is square (64x64), and ToPngDownscaled preserves aspect, so at maxEdge=16
+// the beauty sink answers 16x8 and the objectmap sink answers 16x16.
+// Asserting dw==16 && dh==8 EXACTLY is the only form of this check that can
+// tell the two sinks apart.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtPreservesImageCacheTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at preserves the read_image cache (P1-A) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_cache.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa cache scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa cache session" ); return; }
+
+	// A BEAUTY frame at dims that differ from the authored film dims the
+	// internal objectmap render will use -- and deliberately NON-SQUARE, so
+	// the aspect-preserving downscale below identifies WHICH sink answered
+	// (see the header comment's RED-PROOF SHAPE note).
+	AgentRenderParams bp;
+	bp.width  = 48;
+	bp.height = 24;
+	const AgentRenderResult beauty = session->Render( bp );
+	Check( beauty.ok, "beauty render (48x24) succeeds" );
+	Check( !beauty.png.empty(), "beauty render produces PNG bytes" );
+
+	const std::vector<unsigned char> beforeQuery = session->ReadImage();
+	Check( !beforeQuery.empty() && beforeQuery == beauty.png,
+	       "read_image returns the beauty frame BEFORE query_object_at (baseline)" );
+
+	// The pixel choice is irrelevant to this invariant -- any query runs the
+	// same internal objectmap render -- but use a real object centre so the
+	// query is a genuine success path, not an early-out.
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
+	Check( qr.hit, "query_object_at hits an object (a real success path ran the internal render)" );
+	Check( qr.width == 64 && qr.height == 64,
+	       "the internal objectmap ran at the authored 64x64 -- DIFFERENT dims (and a DIFFERENT aspect) from the 48x24 beauty frame" );
+
+	const std::vector<unsigned char> afterQuery = session->ReadImage();
+	Check( !afterQuery.empty(),
+	       "MONEY (P1-A): read_image is NOT emptied by query_object_at" );
+	Check( afterQuery == beauty.png,
+	       "MONEY (P1-A): read_image STILL returns the BEAUTY frame byte-for-byte after query_object_at "
+	       "-- not the flat objectmap the internal render produced" );
+
+	// mLastSink half: ReadImage(maxEdge) re-encodes from the cached SINK, a
+	// separate pointer from mLastPng, so nothing above speaks for it.  A
+	// restore that forgets the sink leaves mLastSink pointing at the
+	// EPHEMERAL 64x64 OBJECTMAP sink -- non-null, so the call still returns
+	// bytes; only the DIMS give it away (16x8 from the 48x24 beauty frame
+	// vs 16x16 from the square objectmap).
+	{
+		unsigned int dw = 0, dh = 0;
+		const std::vector<unsigned char> scaled = session->ReadImage( 16, dw, dh );
+		Check( !scaled.empty(),
+		       "MONEY (P1-A): ReadImage(maxEdge) still works after query_object_at -- the cached SINK was restored too" );
+		Check( dw == 16 && dh == 8,
+		       "MONEY (P1-A): the restored sink downscales the 2:1 48x24 BEAUTY frame to EXACTLY 16x8 "
+		       "-- the square 64x64 objectmap sink would have answered 16x16" );
+	}
+
+	// A SECOND query must be idempotent on the cache, not merely
+	// "restores once" -- a guard that restored a stale stash would drift
+	// here.
+	(void)session->QueryObjectAt( 32, 32 );
+	Check( session->ReadImage() == beauty.png,
+	       "MONEY (P1-A): a SECOND query_object_at leaves the beauty frame intact as well" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
 static const char* const kSceneVerticalAsym =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -1319,6 +1451,556 @@ static void RunVerticalAsymmetryTest()
 	std::remove( scenePath.c_str() );
 }
 
+//----------------------------------------------------------------------
+// render{imageMaxEdge} -- the ONE-CALL observe form.
+//
+// The two-call form (render, then read_image) spent a whole round-trip
+// re-encoding bytes the render had already cached.  `imageMaxEdge` returns
+// them inline.  What must hold, and is proved below:
+//
+//   (a) IDENTITY.  The inline png_base64 EQUALS what a following
+//       read_image{maxEdge:N} returns -- i.e. one encoder, not two.
+//   (b) OPT-IN.  Omitting the parameter leaves the result's key set
+//       exactly what it was: no png_base64/byteLength/imageWidth/
+//       imageHeight, nothing else added or removed.
+//   (c) OBJECTMAP IS REFUSED.  A box-downscale blends the flat identity
+//       colours, so an inline objectmap would be a corrupt map.  The call
+//       is -32602'd BEFORE the render runs -- proved by showing the
+//       read_image cache still holds the earlier beauty frame, byte for
+//       byte.
+//   (d) ASYNC IS REFUSED.  The submit returns before any pixels exist.
+//   (e) A FAILED render carries no image (the cache still holds the
+//       PREVIOUS render; returning those pixels would be a lie).
+//   (f) The bound is CLAMPED to [16,1024], not rejected -- read_image's
+//       own contract, since it is read_image's own code path.
+//----------------------------------------------------------------------
+static std::string RenderReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"render\",\"params\":{" + extraParamsJson + "}}";
+}
+
+static std::string ReadImageReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"read_image\",\"params\":{" + extraParamsJson + "}}";
+}
+
+static void RunInlineRenderImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	// Review P3-5 (fixture-coupling): the exact-key-set assertion below
+	// (b) depends on kScene3 tripping design-note condition A (3 bare
+	// spheres, no scalar_painter chunk).  Assert that PRECONDITION
+	// directly and FIRST, on the raw scene text, so if a future edit to
+	// kScene3 (e.g. adding a fourth sphere, or binding a scalar_painter)
+	// stops it tripping the condition, THIS assertion fails with a
+	// self-explaining message instead of the exact-key-count assertion
+	// failing 40 lines below with only a byte-count mismatch to go on.
+	Check( !AgentSession::ComputeDesignNote( kScene3 ).empty(),
+	       "PRECONDITION: kScene3 trips design-note condition A (3 standard_object, "
+	       "no scalar_painter) -- the exact-key-set assertion below depends on this" );
+	const std::string scenePath = WriteTemp( "rise_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "inline-image scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "inline-image session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (b) OPT-IN: a plain render carries no image and no image fields.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ), "plain render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the plain render succeeds" );
+		Check( !r.has( "png_base64" ) && !r.has( "byteLength" ) &&
+		       !r.has( "imageWidth" ) && !r.has( "imageHeight" ),
+		       "MONEY (b): omitting imageMaxEdge carries NO image fields at all" );
+		// The full key set, so a future edit cannot quietly add or drop a
+		// field on the no-parameter path either.  Creative-richness P2:
+		// `note` NOW belongs in this exact set -- kScene3 has exactly 3
+		// standard_object chunks and NO scalar_painter chunk anywhere, so
+		// this plain PRODUCTION render trips design-note condition A
+		// (scalar-pipe unused) and the key is populated, not omitted.  A
+		// scene that didn't trip either condition would omit it instead
+		// (see the dedicated design-note carrier test below for that half).
+		static const char* const kPlainKeys[] = {
+			"ok", "width", "height", "meanR", "meanG", "meanB", "integrator",
+			"previewWidth", "previewHeight", "cameraOverridden", "message",
+			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
+			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes",
+			"note" };
+		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
+		bool allPresent = true;
+		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
+		Check( allPresent && r.members().size() == nPlain,
+		       "MONEY (b): the no-parameter result key set is EXACTLY today's " +
+		       std::to_string( nPlain ) + " fields (got " +
+		       std::to_string( r.members().size() ) + ")" );
+		Check( r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "the design note fires condition A (scalar-pipe unused) on kScene3's 3 bare spheres" );
+	}
+
+	// (a) IDENTITY: inline bytes == read_image at the same bound.
+	std::string inlineB64;
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"imageMaxEdge\":48" ) ), env, err ),
+		       "inline render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the inline render succeeds" );
+		inlineB64 = r.get( "png_base64" ).asString();
+		Check( !inlineB64.empty(), "the inline render carries a non-empty png_base64" );
+		Check( r.get( "byteLength" ).asNumber( 0 ) > 0, "it carries byteLength" );
+		Check( r.get( "imageWidth" ).asNumber( 0 ) == 48 && r.get( "imageHeight" ).asNumber( 0 ) == 48,
+		       "imageWidth/imageHeight report the DOWNSCALED image dims (48x48), not the render's" );
+		Check( r.get( "width" ).asNumber( 0 ) == 64 && r.get( "height" ).asNumber( 0 ) == 64,
+		       "width/height still report the RENDER dims (64x64) -- the two pairs are distinct" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( inlineB64, png ) && png.size() >= 8 &&
+		       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "the inline base64 decodes to real PNG bytes" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 3, "\"maxEdge\":48" ) ), env, err ),
+		       "read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == inlineB64,
+		       "MONEY (a): the inline bytes are IDENTICAL to read_image{maxEdge:48} -- one encoder, "
+		       "not two" );
+	}
+
+	// (f) CLAMPED, not rejected -- and still identical to read_image's own
+	// clamp of the same out-of-range value.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 4, "\"imageMaxEdge\":4" ) ), env, err ),
+		       "below-range imageMaxEdge response parses" );
+		Check( !env.has( "error" ), "an out-of-range imageMaxEdge is CLAMPED, not rejected" );
+		const std::string lowB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) == 16,
+		       "imageMaxEdge 4 clamps up to the [16,1024] floor" );
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 5, "\"maxEdge\":4" ) ), env, err ),
+		       "clamped read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == lowB64,
+		       "MONEY (f): the clamp is read_image's clamp, byte for byte" );
+	}
+
+	// Freeze the current cache so (c) can prove the refused call rendered
+	// nothing.
+	std::string cachedB64;
+	{
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 6, "" ) ), env, err ), "cache-probe response parses" );
+		cachedB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( !cachedB64.empty(), "the beauty frame is cached before the refusal" );
+	}
+
+	// (c) OBJECTMAP: refused, and nothing rendered.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 7, "\"mode\":\"objectmap\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "objectmap+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (c): mode:objectmap + imageMaxEdge is a clean -32602, never a corrupt "
+		       "downscaled identity map" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos &&
+		       env.get( "error" ).get( "message" ).asString().find( "read_image" ) != std::string::npos,
+		       "the refusal names the mode and the read_image route out of it" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 8, "" ) ), env, err ), "post-refusal probe parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == cachedB64,
+		       "MONEY (c): the refusal happened BEFORE the render -- the cached frame is "
+		       "byte-identical, so no objectmap was rendered and thrown away" );
+
+		// The refusal is specific to the parameter, not to objectmap.
+		Check( JsonParse( rpc.HandleLine( RenderReq( 9, "\"mode\":\"objectmap\"" ) ), env, err ),
+		       "plain objectmap response parses" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "renderMode" ).asString() == "objectmap",
+		       "an objectmap render WITHOUT imageMaxEdge still works" );
+	}
+
+	// (d) ASYNC: refused.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 10, "\"async\":true,\"imageMaxEdge\":48" ) ), env, err ),
+		       "async+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (d): async + imageMaxEdge is a clean -32602 (the submit returns before "
+		       "pixels exist)" );
+	}
+
+	// (e) A FAILED render carries no image.  Run on a session that ALREADY
+	// has a good frame cached (an unresolvable `view` fails the render
+	// without disturbing the cache) -- so an implementation that attached the
+	// image unconditionally would hand back the PREVIOUS render's pixels
+	// labelled as this failed call's.  That is the failure this catches; a
+	// never-rendered session would not catch it, because the cache is empty
+	// there either way.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 11, "\"view\":\"no_such_view\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "failed-render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( !env.has( "error" ) && !r.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render (ok:false, not an RPC error)" );
+		Check( !r.has( "png_base64" ) && !r.has( "imageWidth" ),
+		       "MONEY (e): a FAILED render carries no inline image, even though the cache still "
+		       "holds a perfectly good EARLIER frame" );
+		// ... and that earlier frame is still readable, so the guard skipped
+		// the attach rather than clearing the cache.
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 12, "" ) ), env, err ), "post-failure probe parses" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "the cache the failed render declined to serve is still there for read_image" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// render{imageMaxEdge} THROUGH THE GUI DRIVERS' ASYNC DETOUR.
+//
+// THE REGRESSION THIS PINS.  `imageMaxEdge` is refused alongside `async`
+// (see (d) above), and that refusal is right for a raw async caller.  But
+// BOTH GUI chat drivers -- ChatViewModel.executeRenderToolCallAsync (macOS)
+// and ChatPanel::startAsyncRenderToolCall (Windows) -- inject
+// {"async":true} into EVERY render the model makes, transparently; the
+// model is never taught `async` and never asks for it.  So the two
+// collided on a call the model IS taught to make, and the one-call observe
+// form was unreachable from the only transport it was built for.  Measured:
+// in the recorded 2026-07-29 GUI trajectory the model called
+// render{imageMaxEdge:192,samples:32}, got -32602, and reverted to
+// render + read_image for all five of its later looks.
+//
+// THE FIX IS IN THE DRIVERS: strip `imageMaxEdge` before injecting `async`,
+// then re-apply its EFFECT after the render completes by fetching the image
+// at that same bound on the SAME pinned session and folding
+// png_base64/byteLength/imageWidth/imageHeight into the downgraded result.
+//
+// WHAT THIS TEST CAN AND CANNOT PROVE.  The staging/folding code is Swift
+// and Qt and is not compiled here; SourceHygieneTest pins its shape on both
+// platforms.  What IS proved here is the thing that has to be TRUE for that
+// code to be correct -- that the exact call SEQUENCE the drivers perform
+// yields the same model-visible result as the synchronous one-call form:
+//
+//   (g) IDENTITY THROUGH THE DETOUR.  strip -> async submit -> render_wait
+//       -> read_image{maxEdge:N} -> fold produces a result whose key set
+//       and every field (bar the per-job renderJobId) equal the synchronous
+//       render{imageMaxEdge:N}'s.
+//   (h) A PLAIN render through the same detour is unchanged -- no image
+//       fields appear from nowhere.
+//   (i) OBJECTMAP STAYS REFUSED.  The drivers deliberately do NOT stage
+//       imageMaxEdge off an objectmap render, so the RPC still answers it,
+//       and it still answers with the objectmap-specific -32602.
+//   (j) A FAILED render offers nothing to attach: `ok` is false (the
+//       condition the drivers' fold keys off) while the cache still holds
+//       a perfectly good EARLIER frame -- i.e. an unconditional fold would
+//       have handed back the previous render's pixels as this call's.
+//   (k) THE PIXELS ARE CACHE-SCOPED, NOT GLOBAL.  read_image is answered out
+//       of the session's last-render cache, which at the LIBRARY level is
+//       isolated per session by default -- a sibling wrapping the same Job
+//       reads byteLength 0.  Note what this does and does NOT say about the
+//       GUI: the three in-app sessions are deliberately constructed sharing
+//       ONE AgentImageCache (ViewportBridge / RISEViewportBridge, guarded by
+//       SourceHygieneTest), so a fold routed to a sibling there WOULD still
+//       find the pixels.  The drivers pin the session anyway -- for posture
+//       and lifecycle consistency with every other call in the job, and for
+//       render_wait's genuinely per-session `result` -- not because the
+//       pixels would otherwise be unreachable.  What this case pins is the
+//       library default the sharing is an opt-in FROM.
+//----------------------------------------------------------------------
+static void RunDriverAsyncInlineImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} through the drivers' async detour ===\n" );
+	const std::string scenePath = WriteTemp( "rise_driver_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "driver-inline scene loads" ); return; }
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+	if( !owned ) { controller.Stop(); pJob->release(); Check( false, "driver-inline session" ); return; }
+	owned->AttachController( &controller );
+	AgentSession* session = owned.get();
+	AgentRpcDispatcher rpc( std::move( owned ) );
+
+	JsonValue env; std::string err;
+	auto handle = [&rpc, &env, &err]( const std::string& line, const char* what ) -> const JsonValue& {
+		Check( JsonParse( rpc.HandleLine( line ), env, err ), std::string( what ) + " response parses" );
+		return env;
+	};
+
+	// Drive the drivers' exact call sequence for one model-authored render
+	// line, returning the model-visible result they would deliver.
+	auto driveDriverPath = [&]( int idBase, const std::string& stagedParams,
+	                            bool hasInlineMaxEdge, int inlineMaxEdge ) -> JsonValue {
+		// (1) SUBMIT: the staged line (imageMaxEdge already removed) plus the
+		// driver-injected async.
+		const std::string sep = stagedParams.empty() ? "" : ",";
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase ) +
+		        ",\"method\":\"render\",\"params\":{" + stagedParams + sep + "\"async\":true}}",
+		        "driver submit" );
+		if( env.has( "error" ) ) return env;   // caller inspects the refusal
+		const double jobId = env.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+		Check( env.get( "result" ).get( "status" ).asString() == "submitted" && jobId > 0.0,
+		       "driver submit is accepted with a job id" );
+		// (2) POLL: render_wait, exactly the verb both drivers poll with.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 1 ) +
+		        ",\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+		        std::to_string( (long long)jobId ) + ",\"timeoutMs\":60000}}", "driver render_wait" );
+		Check( env.get( "result" ).get( "completed" ).asBool(), "the driver's render completes" );
+		JsonValue inner = env.get( "result" ).get( "result" );
+		Check( inner.isObject(), "render_wait echoes the synchronous-shaped result" );
+		// (3) FOLD: only on a SUCCESSFUL render, and only when the model asked.
+		if( !hasInlineMaxEdge || !inner.get( "ok" ).asBool() ) return inner;
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 2 ) +
+		        ",\"method\":\"read_image\",\"params\":{\"maxEdge\":" +
+		        std::to_string( inlineMaxEdge ) + "}}", "driver read_image" );
+		const JsonValue& ri = env.get( "result" );
+		if( ri.get( "png_base64" ).asString().empty() ) return inner;
+		inner.set( "png_base64", ri.get( "png_base64" ) );
+		inner.set( "byteLength", ri.get( "byteLength" ) );
+		inner.set( "imageWidth",  ri.get( "width" ) );
+		inner.set( "imageHeight", ri.get( "height" ) );
+		return inner;
+	};
+
+	// PRECONDITION for a byte-strict identity claim: this scene renders
+	// DETERMINISTICALLY, so any difference below is the detour's doing and
+	// not Monte-Carlo noise.
+	JsonValue syncResult;
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #1" );
+		const std::string firstB64 = env.get( "result" ).get( "png_base64" ).asString();
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #2" );
+		syncResult = env.get( "result" );
+		Check( !firstB64.empty() && syncResult.get( "png_base64" ).asString() == firstB64,
+		       "PRECONDITION: two identical synchronous renders produce byte-identical pixels "
+		       "(so the comparison below measures the detour, not MC noise)" );
+	}
+
+	// (g) MONEY: the driver detour reproduces the synchronous one-call result.
+	{
+		const JsonValue drv = driveDriverPath( 10, "", /*hasInline*/true, 48 );
+
+		std::set<std::string> syncKeys, drvKeys;
+		for( const auto& kv : syncResult.members() ) syncKeys.insert( kv.first );
+		for( const auto& kv : drv.members() )        drvKeys.insert( kv.first );
+		Check( syncKeys == drvKeys,
+		       "MONEY (g): the driver-path result's KEY SET is exactly the synchronous "
+		       "render{imageMaxEdge:48}'s -- including png_base64/byteLength/imageWidth/imageHeight" );
+
+		// renderJobId is the ONE field that legitimately differs: it names a
+		// call that ran, and these are two different renders.
+		std::vector<std::string> differing;
+		for( const std::string& k : syncKeys ) {
+			if( k == "renderJobId" ) continue;
+			if( JsonSerialize( syncResult.get( k ) ) != JsonSerialize( drv.get( k ) ) )
+				differing.push_back( k );
+		}
+		std::string names;
+		for( const std::string& k : differing ) { names += ' '; names += k; }
+		Check( differing.empty(),
+		       "MONEY (g): every field except renderJobId is IDENTICAL to the synchronous "
+		       "one-call form (differing:" + names + ")" );
+		Check( !drv.get( "png_base64" ).asString().empty() &&
+		       drv.get( "imageWidth" ).asNumber( 0 ) == 48 &&
+		       drv.get( "imageHeight" ).asNumber( 0 ) == 48 &&
+		       drv.get( "byteLength" ).asNumber( 0 ) > 0,
+		       "MONEY (g): ...and the image it carries is a real 48px-bounded PNG payload" );
+	}
+
+	// (h) A PLAIN render through the same detour gains nothing.
+	{
+		const JsonValue drv = driveDriverPath( 20, "", /*hasInline*/false, 0 );
+		Check( !drv.has( "png_base64" ) && !drv.has( "byteLength" ) &&
+		       !drv.has( "imageWidth" ) && !drv.has( "imageHeight" ),
+		       "MONEY (h): a render with NO imageMaxEdge still carries no image fields through "
+		       "the detour -- the fold is opt-in, not always-on" );
+	}
+
+	// (i) OBJECTMAP: the drivers leave the parameter in place, so the RPC
+	// still refuses -- with the objectmap message, not the async one.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"render\",\"params\":"
+		        "{\"mode\":\"objectmap\",\"imageMaxEdge\":48,\"async\":true}}", "objectmap detour" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (i): objectmap + imageMaxEdge is STILL refused when the driver's async "
+		       "rides along -- a downscaled identity map never reaches the model" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos,
+		       "MONEY (i): and the message is the OBJECTMAP one (checked before async), so the "
+		       "model is told the read_image route out rather than about an async it never asked for" );
+	}
+
+	// (j) A FAILED render: `ok` false, cache untouched -- so folding
+	// unconditionally would have shipped the previous frame as this one's.
+	{
+		const JsonValue drv = driveDriverPath( 40, "\"view\":\"no_such_view\"", /*hasInline*/true, 48 );
+		Check( !drv.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render through the detour too" );
+		Check( !drv.has( "png_base64" ) && !drv.has( "imageWidth" ),
+		       "MONEY (j): the failed render carries NO inline image" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}",
+		        "post-failure cache probe" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "MONEY (j): ...even though the cache still holds a perfectly good EARLIER frame, "
+		       "which an unconditional fold would have attached as a lie" );
+	}
+
+	// (l) THE STAGING WINDOW.  `imageMaxEdge` is CLAMPED into [16,1024] only
+	// for values ParseClampedUInt accepts; outside its [-2^31, 2^31-1] window
+	// it is REJECTED.  That distinction is invisible until it bites: a driver
+	// that staged such a value would strip it, run the render, and then get the
+	// same rejection back from its own read_image fetch -- handing the model
+	// ok:true with no image AND no error, the one outcome the fold exists to
+	// prevent.  Both halves of that asymmetry are pinned here, because the
+	// drivers' range guard is written against them.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"render\",\"params\":{\"imageMaxEdge\":1e30}}",
+		        "out-of-window sync render" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): a finite but out-of-int32 imageMaxEdge is REJECTED by the synchronous "
+		       "form, not clamped -- so a driver must not stage it" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"read_image\",\"params\":{\"maxEdge\":1e30}}",
+		        "out-of-window read_image" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): ...and the fold's own read_image rejects it identically, which is why "
+		       "staging it would silently yield a render with no image and no error" );
+		// The window's edge really is a clamp on the inside, so the guard is a
+		// window and not a blanket rejection of large values.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":62,\"method\":\"render\",\"params\":{\"imageMaxEdge\":2000000000}}",
+		        "in-window huge render" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) > 0,
+		       "MONEY (l): a huge but IN-window value is clamped and still returns an image -- the "
+		       "drivers' guard must reproduce the window, not just refuse big numbers" );
+	}
+
+	// (k) The pixels are CACHE-SCOPED: a sibling session over the same Job has
+	// its own last-render cache at the library default, so a fold routed to a
+	// session outside the render's cache group attaches nothing at all.  (The
+	// GUI opts its three in-app sessions into ONE shared cache -- see this
+	// case's heading for why that does not make the pin pointless.)
+	{
+		std::unique_ptr<AgentSession> sibling = AgentSession::WrapJob( pJob );
+		Check( sibling != nullptr, "a sibling session wraps the same Job" );
+		if( sibling ) {
+			AgentRpcDispatcher siblingRpc( std::move( sibling ) );
+			JsonValue sEnv; std::string sErr;
+			Check( JsonParse( siblingRpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}" ),
+				sEnv, sErr ), "sibling read_image response parses" );
+			Check( sEnv.get( "result" ).get( "byteLength" ).asNumber( -1 ) == 0,
+			       "MONEY (k): a DEFAULT-isolated sibling session returns byteLength 0 -- the "
+			       "render's pixels live in a cache the fetch has to reach, not in a global slot" );
+		}
+	}
+
+	session->AttachController( nullptr );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// by sec 7): the observed-state design note is a BEAUTY-render-only carrier
+// -- populated on "production"/"draft" renderMode, NEVER on "objectmap".
+// kScene3 (3 bare spheres, uniformcolor_painter only, no scalar_painter
+// anywhere) trips design-note condition A, so this is also the MONEY
+// red-proof that the render carrier and the objectmap exclusion actually
+// hold over the wire, on the SAME session/scene/Job -- not just in the
+// AgentSession struct field (RunInlineRenderImageTest above already pins
+// the struct-level key-set for the production case; this test is the
+// dedicated three-way comparison plus the negative/clean-scene control).
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier (P2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "design-note scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "design-note session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (a) PRODUCTION render: note present, names the fired condition.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+		       "production render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "MONEY (a): a PRODUCTION render carries the design note (condition A: 3 bare "
+		       "spheres, no scalar_painter anywhere)" );
+	}
+
+	// (b) DRAFT render, SAME scene: note present too.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"quality\":\"draft\"" ) ), env, err ),
+	       "draft render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "draft",
+		       "draft render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos,
+		       "MONEY (b): a DRAFT render ALSO carries the design note (same fired condition)" );
+	}
+
+	// (c) OBJECTMAP render, the SAME scene/session/Job: note is ABSENT --
+	// deliberately NEVER attached to a segmentation render (sec 2 P2: the
+	// note is anchored to "the model just looked at its finished work",
+	// which an identity map is not).
+	Check( JsonParse( rpc.HandleLine( RenderReq( 3, "\"mode\":\"objectmap\"" ) ), env, err ),
+	       "objectmap render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "objectmap",
+		       "objectmap render of the SAME kScene3 scene succeeds" );
+		Check( !r.has( "note" ),
+		       "MONEY (c): an OBJECTMAP render of the SAME triggering scene carries NO `note` "
+		       "key at all (never objectmap/view modes, only production/draft)" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2 negative control: a scene BELOW the design-note
+// object-count gate (kSceneEmissive has exactly 2 standard_object -- below
+// BOTH condition A's >=3 and condition B's >=4) must omit `note` entirely
+// even on a genuine PRODUCTION render, proving the render carrier does not
+// fire unconditionally.
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierCleanSceneTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier -- clean scene control ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote_clean.RISEscene", kSceneEmissive );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "clean-control scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "clean-control session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses (clean-control scene)" );
+	const JsonValue& r = env.get( "result" );
+	Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+	       "production render of the 2-object clean-control scene succeeds" );
+	Check( !r.has( "note" ),
+	       "MONEY: a PRODUCTION render of a scene BELOW the object-count gate (2 < 3) omits "
+	       "`note` entirely -- the carrier does not fire unconditionally" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1337,7 +2019,12 @@ int main()
 	RunQueryObjectAtCameraOverrideTest();
 	RunQueryObjectAtNoRasterizerTest();
 	RunQueryObjectAtWireTest();
+	RunQueryObjectAtPreservesImageCacheTest();
 	RunVerticalAsymmetryTest();
+	RunInlineRenderImageTest();
+	RunDriverAsyncInlineImageTest();
+	RunDesignNoteRenderCarrierTest();
+	RunDesignNoteRenderCarrierCleanSceneTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

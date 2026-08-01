@@ -4176,12 +4176,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Read the scene's animation options (start time, end time,
 	//! number of frames) for sizing the interactive timeline
 	//! scrubber.  Defaults are (0, 1, 30) when the .RISEscene file
-	//! declared no `animation_options` chunk.  Returns false on null
-	//! controller / no job attached.
+	//! declared no `animation_options` chunk.  Returns false without
+	//! touching the outputs on null input, while a render owns the scene,
+	//! or while the editor commit mutex is contended; polling callers
+	//! retain their last successful tuple and retry.
 	bool RISE_API_SceneEditController_GetAnimationOptions(
 		SceneEditController* p,
 		double* outTimeStart, double* outTimeEnd,
 		unsigned int* outNumFrames );
+
+	//! Read whether the CURRENT live scene contains any keyframed elements.
+	//! This is deliberately a controller-level snapshot rather than a direct
+	//! Job query: agent edits may re-derive the scene from another thread.
+	//! Returns false and leaves `*outHasAnimation` untouched on null input,
+	//! while a render owns the scene, or while the editor commit mutex is
+	//! contended; polling UIs should retain their last successful value.
+	bool RISE_API_SceneEditController_GetHasAnimation(
+		SceneEditController* p, bool* outHasAnimation );
 
 
 	//! Read the scene camera's stable full-resolution dimensions.

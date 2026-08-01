@@ -939,7 +939,9 @@ static void TestLiveControllerPath()
 
 //----------------------------------------------------------------------
 // L2: raw JSON-RPC insert_chunk / remove_chunk through the LIVE dispatcher
-// (the exact wiring the GUI's agentHandleLine drives).
+// (the exact wiring BOTH GUI agent entry points drive -- agentHandleToolCall
+// for chat tool calls, agentHandleLine for the raw JSON-RPC debug panel;
+// separate AgentSessions, same dispatcher shape over the same controller).
 //----------------------------------------------------------------------
 static bool JsonResultObj( const std::string& line, Agent::JsonValue& outResult )
 {

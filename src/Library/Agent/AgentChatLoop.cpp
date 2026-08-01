@@ -26,7 +26,10 @@ namespace RISE
 		namespace
 		{
 			//! The static co-editing system prompt (rule 7): the user and
-			//! the agent co-edit ONE live scene through the eleven verbs.
+			//! the agent co-edit ONE live scene through the tools
+			//! AgentChatCodecs.cpp's kToolDefs declares.  No count here --
+			//! this text is MODEL-FACING, and a stale count in it is a lie
+			//! told to the model on every single turn.
 			const char* const kSystemPrompt =
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "
@@ -37,10 +40,21 @@ namespace RISE
 				"1. read_document to see the scene and its headVersion (read_schema "
 				"when unsure about a chunk or parameter; consult read_skill before "
 				"scene-authoring tasks -- the skills carry the conventions that make "
-				"scenes render correctly on the first try). To discover which chunk "
-				"kinds exist, call read_schema {category:\"material\"|\"geometry\"|...} "
-				"for a cheap keyword list; a bare read_schema (whole grammar) is "
-				"expensive and rarely needed.\n"
+				"scenes render correctly on the first try). When you need MORE THAN "
+				"ONE chunk kind, ask for them ALL IN ONE read_schema call: "
+				"{keywords:[\"sdf_geometry\",\"pbr_metallic_roughness_material\","
+				"\"uniformcolor_painter\",\"omni_light\",\"standard_object\"]} returns "
+				"every one of those schemas in that single result, positionally "
+				"aligned with what you asked for, at most 24 per call. Batch the "
+				"kinds you have DECIDED to use -- one call per chunk kind is "
+				"wasteful, but a padded batch is just a bigger bill. Use "
+				"{category:\"material\"|"
+				"\"geometry\"|\"painter\"|...} only when you do not yet know which chunk kinds "
+				"exist: it is a cheap keyword list. Do ALL the category listings you "
+				"need FIRST, then ONE keywords batch for everything you picked across "
+				"all of them -- a batch per category is most of the waste back. "
+				"A bare read_schema (whole grammar) is expensive and rarely "
+				"needed.\n"
 				"2. propose_patch (or insert_chunk / remove_chunk) with the "
 				"headVersion you just read as baseHeadVersion. On status=conflict, "
 				"re-read and re-propose; on "
@@ -51,8 +65,12 @@ namespace RISE
 				"3. Verify by CHANGE KIND. PARAM/STRUCTURAL edits (value changes, "
 				"bindings, insert/remove of non-visual chunks) are confirmed by "
 				"the apply response's status and bumped headVersion alone -- "
-				"validate the document text too if the edit was structural "
-				"(insert_chunk/remove_chunk) -- then declare done from a clean "
+				"if the edit was structural (insert_chunk/remove_chunk), also "
+				"call validate WITH NO ARGUMENTS, which checks the CURRENT "
+				"scene; NEVER re-send the document you just edited (validate's "
+				"`text` argument is only for a candidate you have NOT applied, "
+				"and echoing a whole scene back costs thousands of output "
+				"tokens for nothing) -- then declare done from a clean "
 				"apply + clean validate; do NOT render just to confirm a "
 				"parameter took. When the user SPECIFIES the exact target (a "
 				"specific colour value, a named binding, a given chunk to "
@@ -60,6 +78,17 @@ namespace RISE
 				"appearance -- apply + validate suffices; a look is for judging "
 				"appearance you must EVALUATE (does it read as shiny/right), "
 				"never for confirming a specified value landed. "
+				"The dividing line is WHAT you are checking, not whether an "
+				"apply succeeded. A VALUE landing is a param confirmation: "
+				"the apply response already told you, so a render adds "
+				"nothing. But WHERE something sits, WHAT SHAPE it reads as, "
+				"and HOW the frame composes are NOT param confirmations -- "
+				"they are visual judgements the apply response cannot answer "
+				"at all, because a patch reports clean success for "
+				"coordinates that leave two objects a foot apart. So the two "
+				"rules never collide: never render to re-read a number you "
+				"set; always look to judge a placement, a silhouette, or a "
+				"composition. "
 				"VISUALLY-CONSEQUENTIAL judgement calls (material "
 				"appearance, lighting, geometry placement/shape, camera "
 				"framing), or whenever the user asks how it looks, need ONE "
@@ -68,7 +97,8 @@ namespace RISE
 				"uses a fixed studio-preview shader, capped at 4 samples, that "
 				"IGNORES materials and lighting, so NEVER judge those from it; "
 				"check `renderMode`, not `integrator`, to confirm which "
-				"pipeline ran) and read_image maxEdge ~192. Use render's "
+				"pipeline ran) with imageMaxEdge ~192, which returns the PNG "
+				"in that same call -- do not follow it with read_image. Use render's "
 				"`camera` override to check 2-3 angles WITHOUT touching the "
 				"actual camera -- ephemeral, restored automatically, far "
 				"cheaper than a full render. Reserve a full-size, full-sample, "
@@ -80,6 +110,31 @@ namespace RISE
 				"-- cheaper to parse, returns the name directly (hit:false, "
 				"not an error, when empty); combine with `camera` to aim "
 				"first.\n"
+				"4. BUILD CADENCE: when you are building a scene from "
+				"scratch, look after EACH OBJECT GROUP you place -- not once "
+				"at the end. Four renders across a six-object scene is too "
+				"few. One small look (width/height ~192, or quality:\"draft\") "
+				"per object or pair of objects is cheap, and it is the only "
+				"thing that keeps placement honest; the expensive failure is "
+				"discovering at chunk sixty that the hero has been floating "
+				"since chunk twelve. Blind construction, not over-rendering, "
+				"is the failure mode that loses builds -- batching chunks "
+				"into one insert_chunks call is where you save round-trips, "
+				"NOT skipping the looks between groups.\n"
+				"5. RELATIONAL CONSTRAINTS MUST BE SEEN. When the request "
+				"contains a relational or compositional constraint -- one "
+				"thing resting against / behind / in front of / overlapping "
+				"another, something breaking a horizon or a leading line, "
+				"\"reads as X from this angle\" -- verify it against an "
+				"actual rendered IMAGE before calling the task done. "
+				"Reasoning about coordinates is NOT verification: two "
+				"objects with entirely plausible numbers routinely fail to "
+				"touch, interpenetrate, or occlude the wrong way. Render "
+				"with imageMaxEdge and LOOK; use query_object_at {x,y} to "
+				"settle \"is object A actually at this screen position\" for "
+				"the price of one cheap call. If the check fails, patch the "
+				"position and look again -- do not re-derive the answer from "
+				"the numbers.\n"
 				"\n"
 				// CAPABILITY SCOPE (Model-B F5 slice S2: insert_chunk /
 				// remove_chunk shipped -- entity add/remove is real now;
@@ -90,7 +145,13 @@ namespace RISE
 				// kind="camera" positional fallback, so the camera-SWAP
 				// recipe (remove FIRST, then insert) is taught, plus the
 				// retarget-refused remove+reinsert escape).
-				"You can change PARAMETERS of existing entities via propose_patch, "
+				"You can change PARAMETERS of existing entities via propose_patch. "
+				"To patch a chunk that has NO name -- the sole camera, the film, "
+				"the rasterizer -- leave `target` EMPTY and pass `kind`: "
+				"{target:\"\", kind:\"camera\", param:\"location\", value:\"0 1 4\"} "
+				"moves an unnamed camera. Do NOT pass the chunk keyword as the "
+				"target (target:\"pinhole_camera\" does not resolve), and do NOT "
+				"remove-and-reinsert a camera just to move it. "
 				"ADD a new entity with insert_chunk (exactly ONE complete "
 				"`keyword { ... }` chunk per call, braces on their own lines; "
 				"declaration chunks -- painters, materials, geometry, shaders, "
@@ -114,11 +175,19 @@ namespace RISE
 				"remove_chunk the consumer and re-insert it (it will be "
 				"appended after the entity it references). For a BIG addition, "
 				"compose the full candidate document and validate it FIRST, then "
-				"insert chunk by chunk. That validate-first recipe is for BIG "
-				"MULTI-CHUNK additions only -- for one or two chunks, insert "
-				"DIRECTLY: the apply response is itself the validation, a "
-				"rejection is informative and cheap, and pre-validating "
-				"variants of a small insert wastes rounds.\n"
+				"insert chunk by chunk. ONCE, on the WHOLE candidate -- not once "
+				"per chunk as you build it up. Every validate{text} re-sends the "
+				"entire document, so validating an eight-chunk scene in eight "
+				"steps costs eight full copies to learn what one call would have "
+				"told you. And a validate that returns an EMPTY diagnostics array "
+				"has told you everything it can: go insert. Re-validating a "
+				"superset of text you just validated clean almost never reports "
+				"anything new -- if you find yourself sending a third clean "
+				"candidate in a row, stop and start inserting. That validate-first "
+				"recipe is for BIG MULTI-CHUNK additions only -- for one or two "
+				"chunks, insert DIRECTLY: the apply response is itself the "
+				"validation, a rejection is informative and cheap, and "
+				"pre-validating variants of a small insert wastes rounds.\n"
 				"\n"
 				"Keep responses concise. After acting, report plainly what changed "
 				"(entity, parameter, old vs new value when known) and what you "
@@ -363,8 +432,11 @@ namespace RISE
 
 		std::size_t AgentChatLoop::EstimateContextTokens() const
 		{
-			// Context-compaction slice S1 (observability only -- nothing
-			// acts on this estimate yet; S2 will).  Deterministic, provider-
+			// Context-compaction slice S1: the estimator slice S2's
+			// CompactTranscript triggers on (BuildRequest calls it every
+			// round; both GUI drivers install a budget via
+			// SetContextBudget / kDefaultContextBudget*, so this is a
+			// PRODUCTION trigger, not observability).  Deterministic, provider-
 			// aware, IMAGE-DISCOUNTED text-proxy estimator:
 			//
 			//   text tokens  ~= (system prompt + tool defs + PER-ENTRY
@@ -446,8 +518,13 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			// Describes the transcript we just cleared, so it goes with it.
+			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
 			mPendingBuildNudge.clear();
+			// Describe the transcript we just cleared, like mCompactedEntryCount.
+			mDriverNoteCount = 0;
+			mLastDriverNoteText.clear();
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
@@ -728,20 +805,19 @@ namespace RISE
 			// Facet 5 slice S1: append the skills section (when set) to the
 			// base prompt.  An empty index text sends the base prompt
 			// UNCHANGED -- byte-identical to the pre-S1 behaviour.
-			std::string systemPrompt = ComposeSystemPrompt();
-
-			// BLIND-EDIT NUDGE: fold a one-shot reminder into THIS request's
-			// system prompt when a run of unseen edits armed one (see
-			// AddToolResult).  One-shot -- cleared here so it rides exactly
-			// the request that follows the tripping edit, not every request
-			// after.  Deliberately NOT part of ComposeSystemPrompt() (which
-			// stamps the once-per-session trajectory record): the nudge is
-			// transient per-request state, not part of the session's identity.
-			if( !mPendingBuildNudge.empty() ) {
-				systemPrompt += "\n\n";
-				systemPrompt += mPendingBuildNudge;
-				mPendingBuildNudge.clear();
-			}
+			//
+			// PROMPT-CACHE INVARIANT: this is the ONLY input to the system
+			// block, and it is a pure function of (base prompt, skill index,
+			// override) -- none of which change per request.  The system
+			// prompt is therefore BYTE-IDENTICAL on every request of a
+			// session.  Nothing transient may be folded in here: tools render
+			// before system in every provider's cache prefix, so one changed
+			// system byte invalidates tools + system + the whole history for
+			// that request AND for the next one (which differs again by
+			// reverting).  The blind-edit nudge used to be appended here; it
+			// now rides the conversation instead -- see
+			// AppendPendingBuildNudge.
+			const std::string systemPrompt = ComposeSystemPrompt();
 
 			// The key goes straight through to the codec's auth header and
 			// is retained NOWHERE in this object.  REASONING-MODEL TOOLS-
@@ -939,8 +1015,9 @@ namespace RISE
 			// read_schema / read_skill / validate -- inspecting text or the
 			// registry is not looking at the RENDERED result), and grow it on
 			// a mutation.  When it hits a positive multiple of the threshold
-			// we arm a one-shot reminder (folded into the next request's
-			// system prompt by BuildRequest).  Threshold <= 0 disables it.
+			// we arm a reminder (appended to the transcript as a user message
+			// by AppendPendingBuildNudge, once the whole parallel round is
+			// answered and flushed).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
 				// The BATCH forms (insert_chunks / propose_patches) count as a
@@ -1080,7 +1157,17 @@ namespace RISE
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
-			//!   8. anything else                            -> "ok"
+			//!   8. name == "validate" AND result.diagnostics is an array
+			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
+			//!                                                  each with " (candidate)" appended when validated == "text".
+			//!                                                  "clean" means zero error AND zero warning entries --
+			//!                                                  Info-severity entries (creative-richness P2.b's
+			//!                                                  DESIGN_SCALAR_PIPE_UNUSED / DESIGN_NO_ADVANCED_GEOMETRY
+			//!                                                  advisories) count toward NEITHER bucket, so a scene
+			//!                                                  carrying only advisories still reads "clean" here --
+			//!                                                  same convention AgentEvalRunner.cpp's
+			//!                                                  CheckDiagnosticsKind uses for expect:"clean".
+			//!   9. anything else                            -> "ok"
 			//! A line that does not parse as a JSON object returns "?".
 			std::string ToolOutcomeLine( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
 			{
@@ -1127,7 +1214,7 @@ namespace RISE
 				// AgentRpc.cpp).  Both batch verbs return the IDENTICAL
 				// {applied,total,results} envelope, so they share this rule --
 				// without it propose_patches would fall through to the generic
-				// "ok" of rule 8 and report the SAME string whether 17/17 or
+				// "ok" of rule 9 and report the SAME string whether 17/17 or
 				// 0/17 elements applied, which is precisely the outcome a
 				// best-effort batch verb most needs to surface.
 				if( call.name == "insert_chunks" || call.name == "propose_patches" ) {
@@ -1180,9 +1267,46 @@ namespace RISE
 					return "ok";
 				}
 
-				// 8. Every other verb (read_document, read_schema, read_skill,
-				// validate, query_object_at, list_proposals, ...): a plain
-				// success with nothing terser to say than "ok".
+				// 8. validate: the one-liner must say whether the scene is
+				// CLEAN, for the same reason rule 4 summarises a batch as
+				// "3/4 applied" rather than "ok" -- reporting the identical
+				// string for a clean head and for one carrying errors is
+				// exactly the display defect that rule exists to avoid.  The
+				// exposure grew when the no-argument form made validate THE
+				// routine post-edit check (see the system prompt and both tool
+				// descriptions); the model always saw the diagnostics (they
+				// ride the raw JSON-RPC line), but the human watching the
+				// transcript saw "validate -> ok" over a diagnosed document.
+				if( call.name == "validate" && result.get( "diagnostics" ).isArray() ) {
+					const JsonValue& diags = result.get( "diagnostics" );
+					std::size_t errors = 0, warnings = 0;
+					std::string firstCode;
+					// Creative-richness P2.b: Info-severity entries (the
+					// DESIGN_* advisories) count toward NEITHER bucket -- an
+					// advisory is not a warning, and folding it into the
+					// warning count here would be exactly the mislabeling sec 9
+					// warns against (an Info entry described as a problem).
+					for( std::size_t i = 0; i < diags.size(); ++i ) {
+						const std::string sev = diags.at( i ).get( "severity" ).asString();
+						if( sev == "error" ) {
+							++errors;
+							if( firstCode.empty() ) firstCode = diags.at( i ).get( "code" ).asString();
+						} else if( sev == "warning" ) {
+							++warnings;
+						}
+					}
+					const std::string scope =
+						result.get( "validated" ).asString() == "text" ? " (candidate)" : "";
+					if( errors == 0 && warnings == 0 ) return "clean" + scope;
+					if( errors == 0 )
+						return std::to_string( warnings ) + " warning(s)" + scope;
+					return std::to_string( errors ) + " error(s)" +
+					       ( firstCode.empty() ? std::string() : ": " + firstCode ) + scope;
+				}
+
+				// 9. Every other verb (read_document, read_schema, read_skill,
+				// query_object_at, list_proposals, ...): a plain success with
+				// nothing terser to say than "ok".
 				return "ok";
 			}
 
@@ -1193,7 +1317,7 @@ namespace RISE
 			//! is a separate literal, not a shared symbol -- keep the two in
 			//! sync by hand if the wording ever changes).
 			const char* const kSummaryImageElidedNote =
-				"[image elided -- superseded by a newer render]";
+				"[image elided -- superseded by a newer image]";
 
 			//! ELISION CONSISTENCY (see ChatToolDisplaySummary::carriesImage's
 			//! doc): rewrite every image-bearing summary in `summaries` to
@@ -1222,6 +1346,12 @@ namespace RISE
 			// pending calls.  Clear defensively all the same.)
 			if( mPendingCalls.empty() ) {
 				mPendingResults.clear();
+				// Defensive, and unreachable in practice: the nudge is armed
+				// ONLY inside AddToolResult, which requires a pending call,
+				// so a nudge always finds its flush on the main path below.
+				// Draining it here too makes "an armed nudge is never
+				// stranded" true by construction rather than by argument.
+				AppendPendingBuildNudge();
 				return;
 			}
 
@@ -1358,6 +1488,15 @@ namespace RISE
 			entry.role = ChatTranscriptEntry::Role::ToolResults;
 			entry.displayText = joinedOutcome;
 			entry.toolSummaries = summaries;
+			// SUPERSEDED-READ RETENTION bookkeeping: one slot per packed
+			// result, in `ordered` order -- which IS the order
+			// PackToolResults writes them, and therefore the index space
+			// RewriteElidedToolResults addresses.  Built here (not lazily)
+			// so the key reflects the envelope AS PACKED.
+			entry.toolResultSlots.resize( ordered.size() );
+			for( std::size_t i = 0; i < ordered.size(); ++i )
+				entry.toolResultSlots[i].supersessionKey =
+					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -1375,11 +1514,216 @@ namespace RISE
 			}
 			mTranscript.push_back( entry );
 
+			// SUPERSEDED-READ RETENTION (see the header): now that the new
+			// entry is in the transcript, keep only the LAST live result per
+			// supersession key across the whole conversation.  Runs AFTER the
+			// image pass and after entry.imageContentBytes is computed: the
+			// two rewrites are disjoint (an image result is never
+			// supersedable -- see ChatToolResultSupersessionKey's property
+			// (4)), and a text-only shrink of rawJson leaves the tracked
+			// image payload correct either way.
+			ElideSupersededToolResults();
+
 			mPendingResults.clear();
 			mPendingCalls.clear();
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
+
+			// BLIND-EDIT NUDGE: deliver it as conversation content, directly
+			// after the tool results whose flush it followed.  Runs AFTER the
+			// elision passes above so their entry indices are unperturbed.
+			AppendPendingBuildNudge();
+		}
+
+		void AgentChatLoop::AppendPendingBuildNudge()
+		{
+			if( mPendingBuildNudge.empty() ) return;
+
+			// WHY CONVERSATION CONTENT, NOT THE SYSTEM PROMPT.  The nudge
+			// used to be appended to BuildRequest's system prompt.  That made
+			// the system block differ on exactly the request carrying it --
+			// and differ again on the next one, which reverted -- so a single
+			// nudge cost TWO cache-invalidated turns on every provider:
+			// tools render before system in the cached prefix, so a changed
+			// system byte invalidates tools + system + everything after it
+			// (Anthropic's explicit cache_control breakpoint, OpenAI/xAI
+			// automatic prefix caching, and Gemini implicit caching all key
+			// on the leading prefix).  Appending a message instead EXTENDS
+			// the prefix rather than editing it, which is free.
+			//
+			// The reminder reaches the model with the same force -- it is a
+			// message it must read to answer, not a system line it may weigh
+			// against the rest of the prompt -- and it now persists in the
+			// history rather than evaporating after one request, so a model
+			// that keeps editing keeps seeing it.  This is deliberate: the
+			// alternative (drop it next turn) would mean rewriting the
+			// message suffix, which re-introduces the invalidation.
+			//
+			// WIRE POSITION: emitted from FlushPendingToolResults, i.e.
+			// immediately after the ToolResults entry that answers the
+			// assistant turn -- assistant(tool_use) -> user(tool_results) ->
+			// user(nudge).  Every tool_use is therefore still answered by the
+			// message that directly follows it, so no tool_result is
+			// orphaned.  Adjacent user entries are an ALREADY-SUPPORTED shape
+			// on all four codecs (AddUserMessage produces the same
+			// tool_results -> user(text) pair): Anthropic combines
+			// consecutive same-role messages, Gemini's BuildRequest merges a
+			// run of adjacent user contents with the functionResponse parts
+			// FIRST, and the OpenAI-family codecs emit a flat message list
+			// where a trailing user message is unremarkable.
+			//
+			// ROLE: DriverNote, not User.  The WIRE is unchanged -- rawJson
+			// still comes from the same MakeUserEntry a real user message
+			// uses, and BuildRequest reads rawJson only -- but a GUI that
+			// renders out of this transcript can now tell that the loop, not
+			// the human, said this, and render it as a system notice rather
+			// than as the user's chat bubble.  See Role::DriverNote's doc.
+			ChatTranscriptEntry entry;
+			entry.role = ChatTranscriptEntry::Role::DriverNote;
+			entry.displayText = mPendingBuildNudge;
+			entry.rawJson = mCodec->MakeUserEntry( mPendingBuildNudge );
+			mTranscript.push_back( entry );
+
+			// Display-mirror drivers (the Mac ChatViewModel) never read the
+			// transcript, so they watermark against this counter instead --
+			// see DriverNoteCount().
+			++mDriverNoteCount;
+			mLastDriverNoteText = mPendingBuildNudge;
+
+			// Eval-harness E1: recorded as a history edit, NOT as a `user`
+			// record.  A `user` record would inflate the running user-turn
+			// count that AgentEvalRunner's toolCallAfterUserTurn check walks,
+			// silently changing what that assertion means -- the nudge is a
+			// loop-synthesized message, not a turn the user took.
+			RecordHistoryEdit( "blind_edit_nudge", 0,
+			                   static_cast<long long>( entry.rawJson.size() ),
+			                   static_cast<int>( mTranscript.size() - 1 ) );
+
+			mPendingBuildNudge.clear();
+		}
+
+		void AgentChatLoop::ElideSupersededToolResults()
+		{
+			// PASS 1: find, for every supersession key, the LAST still-live
+			// slot in wire order.  Scanning forward and overwriting means the
+			// map ends holding exactly the survivor of each key.
+			//
+			// A dead slot is skipped entirely rather than treated as a
+			// survivor -- so a key whose only remaining live slot is the
+			// newest one converges, and re-running the sweep is a no-op
+			// (idempotence).
+			std::vector<std::pair<std::string, std::pair<std::size_t, std::size_t>>> lastLive;
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				const ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+					const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					if( !slot.live || slot.supersessionKey.empty() ) continue;
+					bool replaced = false;
+					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
+						if( lastLive[k].first == slot.supersessionKey ) {
+							lastLive[k].second = std::make_pair( e, s );
+							replaced = true;
+							break;
+						}
+					}
+					if( !replaced )
+						lastLive.push_back( std::make_pair( slot.supersessionKey,
+						                                    std::make_pair( e, s ) ) );
+				}
+			}
+			if( lastLive.empty() ) return;
+
+			// PASS 2: every OTHER live slot sharing a surviving key is
+			// superseded.  Collect per entry so each entry's rawJson is
+			// rewritten (and recorded) exactly once, even when it packs
+			// several superseded results.
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+
+				// Grouped BY KEY, not one bucket per entry: the placeholder
+				// names its own verb, so an entry that ever packs superseded
+				// results of TWO different allowlisted verbs must not be told
+				// one verb's note for both.  (Today's single-verb allowlist
+				// makes that unreachable -- grouping keeps it correct by
+				// construction rather than by that coincidence.)
+				std::vector<std::pair<std::string, std::vector<std::size_t>>> byKey;
+				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+					ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					if( !slot.live || slot.supersessionKey.empty() ) continue;
+					bool survives = false;
+					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
+						if( lastLive[k].first != slot.supersessionKey ) continue;
+						survives = ( lastLive[k].second.first == e &&
+						             lastLive[k].second.second == s );
+						break;
+					}
+					if( survives ) continue;
+					bool bucketed = false;
+					for( std::size_t k = 0; k < byKey.size(); ++k ) {
+						if( byKey[k].first == slot.supersessionKey ) {
+							byKey[k].second.push_back( s );
+							bucketed = true;
+							break;
+						}
+					}
+					if( !bucketed ) {
+						std::vector<std::size_t> one;
+						one.push_back( s );
+						byKey.push_back( std::make_pair( slot.supersessionKey, one ) );
+					}
+				}
+				if( byKey.empty() ) continue;
+
+				// REWRITE FIRST, THEN mark the bucket dead -- and only when
+				// the rewrite actually LANDED.  Every codec returns its input
+				// UNCHANGED when the entry does not parse or its shape guards
+				// miss; clearing `live` before knowing that would leave the
+				// payload riding forever while the bookkeeping believed it
+				// elided, and pass 1 (which skips dead slots) would never
+				// retry.  A no-op rewrite instead leaves the slots live, so
+				// the next flush tries again -- bounded work, and no
+				// history_edit is emitted for a non-edit.
+				//
+				// GRANULARITY, stated exactly: the landing signal is
+				// PER BUCKET (did the entry's bytes move?), not per index.
+				// If a codec ever rewrote index i but skipped index j of the
+				// same bucket, both would be marked dead and j would ride on
+				// un-elided.  That is unreachable today -- RewriteElidedToolResults
+				// is TOTAL over a bucket's indices, because
+				// toolResultSlots.size() == ordered.size() and every codec
+				// emits exactly one addressable result per element of
+				// `ordered` at indices 0..N-1 (the OpenAI trailing image
+				// message is appended AFTER them).  A codec that ever
+				// violated that totality would need a per-index landing
+				// signal here.
+				const std::size_t beforeBytes = entry.rawJson.size();
+				bool anyLanded = false;
+				for( std::size_t k = 0; k < byKey.size(); ++k ) {
+					const std::string before = entry.rawJson;
+					entry.rawJson = mCodec->RewriteElidedToolResults(
+						entry.rawJson, byKey[k].second,
+						ChatSupersededResultNote( byKey[k].first ) );
+					if( entry.rawJson == before ) continue;
+					anyLanded = true;
+					for( std::size_t j = 0; j < byKey[k].second.size(); ++j )
+						entry.toolResultSlots[ byKey[k].second[j] ].live = false;
+				}
+				if( !anyLanded ) continue;
+				// Eval-harness E1: record the transcript rewrite, exactly as
+				// the image-elision pass does.
+				if( mRecorder ) {
+					EnsureSessionRecordEmitted();
+					TrajectoryHistoryEditRecord h;
+					h.entryIndex = static_cast<int>( e );
+					h.beforeBytes = static_cast<long long>( beforeBytes );
+					h.afterBytes = static_cast<long long>( entry.rawJson.size() );
+					h.reason = "tool_result_supersession";
+					mRecorder->EmitHistoryEdit( h );
+				}
+			}
 		}
 
 		//! GUI STAGE 2: a public, declared entry point onto the file-local
@@ -1477,6 +1821,12 @@ namespace RISE
 			// scan below always finds spanStarts[0] == 0.  Dropping WHOLE
 			// spans from the FRONT keeps mTranscript[0] a User entry and
 			// never orphans a tool_result from its preceding tool_use.
+			//
+			// Role::DriverNote is NOT a span boundary -- it is a message the
+			// loop injected mid-round, not a turn the user took, so it stays
+			// with the span it belongs to.  That is also what keeps the
+			// "mTranscript[0] is a real user message" guarantee above literal:
+			// the erase boundary can only ever land on a Role::User entry.
 			const std::size_t beforeEstimate = EstimateContextTokens();
 			bool dropped = false;
 
@@ -1505,6 +1855,10 @@ namespace RISE
 				// Erase the OLDEST whole span: entries [0 .. secondSpanStart).
 				mTranscript.erase( mTranscript.begin(),
 				                   mTranscript.begin() + static_cast<std::ptrdiff_t>( secondSpanStart ) );
+				// A driver that renders the chat straight out of this
+				// transcript must be able to TELL the user these turns are
+				// gone -- see CompactedEntryCount()'s doc.
+				mCompactedEntryCount += secondSpanStart;
 				dropped = true;
 			}
 
@@ -1622,7 +1976,19 @@ namespace RISE
 			if( !mSkillIndexText.empty() ) {
 				systemPrompt += "\n\nAvailable skills:\n";
 				systemPrompt += mSkillIndexText;
-				systemPrompt += "\nCall read_skill before scene-authoring tasks.";
+				// The block above IS the index, so say so.  Measured 2026-07-28:
+				// the chat tool description used to open with "Call with NO name
+				// first to list the available skills", and models obeyed it --
+				// gemini-3.5-flash burned a bare read_skill{} round-trip in 9 of
+				// 18 sessions, qwen3.6 in 2 of 2 -- fetching a list they were
+				// already holding.  (gpt-5.6-terra ignored it: 0 of 1.)  This
+				// line is inside the have-an-index branch, which is what makes
+				// the instruction safe to give: when no index was supplied the
+				// sentence is absent and the listing form remains the right move.
+				systemPrompt += "\nThat list IS the skill index -- call read_skill"
+				                " with a NAME directly before scene-authoring tasks."
+				                "  Do NOT call it with no arguments to list them"
+				                " first; you already have the list.";
 			}
 			return systemPrompt;
 		}

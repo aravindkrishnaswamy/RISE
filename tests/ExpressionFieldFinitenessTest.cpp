@@ -1,5 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
+//  NOTE 2026-07-30: this file's premise -- that -ffast-math folds finiteness
+//  checks -- described the pre-2026-07-29 build.  macOS now pairs
+//  -fno-finite-math-only, so std::isfinite works and the "survives" framing
+//  below is a survival test against a threat that is currently disarmed (one
+//  -Ofast re-arms it).  The assertions remain valid; the mechanism prose is
+//  historical.  See CLAUDE.md + docs/INTEGRATOR_BUGFIX_FINDINGS.md.
+//
 //  ExpressionFieldFinitenessTest.cpp - the nan/inf guard on the in-scene
 //  expression field (ExpressionEval / expression_function2d) must SURVIVE
 //  the production build's -O3 -flto -ffast-math.
@@ -32,6 +39,7 @@
 //  Tabs: 4
 //
 //  License Information: Please see the attached LICENSE.TXT file
+//
 //
 //////////////////////////////////////////////////////////////////////
 

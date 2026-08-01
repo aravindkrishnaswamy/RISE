@@ -239,6 +239,11 @@ MainWindow::MainWindow(QWidget* parent)
     // internal to ChatPanel's async poll timer.  Refresh both the menu
     // actions and TopBar's own control-enable state at every transition.
     m_topBar->setChatPanel(m_chatPanel);
+    connect(m_chatPanel, &ChatPanel::chatRenderWillSubmit, this, [this]() {
+        if (m_viewportTimeline) {
+            m_viewportTimeline->finalizeOpenTimelineInteraction();
+        }
+    });
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
 
@@ -272,10 +277,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_chatPanel, &ChatPanel::agentConfiguredChanged, this, pushAgentReadiness);
     pushAgentReadiness();
 
-    // CST <-> scene-file live sync (item 1).  ~2 Hz, same cadence as
-    // TopBar's own refinement-status poll.  Started/stopped alongside
-    // the viewport bridge -- see rebuildViewportForLoadedScene /
-    // teardownViewport.
+    // Live-scene UI sync.  ~2 Hz, same cadence as TopBar's own
+    // refinement-status poll.  Started/stopped alongside the viewport
+    // bridge -- see rebuildViewportForLoadedScene / teardownViewport.
     m_cstSyncTimer = new QTimer(this);
     m_cstSyncTimer->setInterval(500);
     connect(m_cstSyncTimer, &QTimer::timeout, this, &MainWindow::onCstSyncTick);
@@ -323,28 +327,11 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    // See the header doc: the bridge's destructor detaches itself from
-    // m_engine (attachSceneEditController(nullptr) and the dispatcher
-    // AttachController(nullptr) calls), so it MUST run while the engine
-    // -- created before it, hence destroyed before it by Qt's
-    // creation-order deleteChildren -- is still alive.  delete also
-    // unregisters the bridge from the children list, so the subsequent
-    // QObject teardown won't touch it again.  The rest of
-    // teardownViewport() (pane swapping, updateCenterViewStack) is
-    // pointless at shutdown and is deliberately not run here.
-    delete m_viewportBridge;
-    m_viewportBridge = nullptr;
-}
-
-MainWindow::~MainWindow()
-{
-    // QObject deletes children in construction order. RenderEngine is the
-    // first MainWindow child, while the live ViewportBridge is created later
-    // for each loaded scene and borrows that engine. Tear the bridge down
-    // explicitly while the engine is still alive; otherwise QObject's
-    // default child destruction would free the engine first and the bridge
-    // destructor would call attachSceneEditController(nullptr) through a
-    // dangling m_engine pointer.
+    // Retire production work before destroying its attached controller,
+    // then use the normal ordered teardown: it detaches ChatPanel and every
+    // other bridge borrower before deleting the later-created bridge while
+    // m_engine is still alive.  QObject's construction-order child teardown
+    // would otherwise delete the engine first and leave borrowed pointers.
     if (m_engine) {
         m_engine->cancelAndJoinInFlightWork();
     }
@@ -1373,13 +1360,11 @@ bool MainWindow::performSceneSaveAs()
     return false;
 }
 
-// CST <-> scene-file live sync (item 1).  Driven at ~2 Hz by
-// m_cstSyncTimer while a viewport bridge is attached (started in
-// rebuildViewportForLoadedScene, stopped in teardownViewport).  Mirrors
-// macOS RenderViewModel.pollRefinementState's item 1.  Explicit-save-
-// only (user decision 2026-07-12): this mirrors the live CST into the
-// SceneEditor buffer ONLY -- UI edits never write the .RISEscene to
-// disk automatically; a write happens only from performSceneSave().
+// Live-scene UI sync.  Driven at ~2 Hz by m_cstSyncTimer while a viewport
+// bridge is attached.  Mirrors macOS RenderViewModel.pollRefinementState:
+// the CST-to-editor mirror is still explicit-save-only, and the same safe
+// polling window also refreshes animation presence/options so a timeline
+// inserted after load becomes visible without rebuilding the viewport.
 void MainWindow::onCstSyncTick()
 {
     // Same gate as ChatPanel's chat-render poll (see its
@@ -1390,6 +1375,36 @@ void MainWindow::onCstSyncTick()
     // the GUI thread) against the render.  canUseSceneTransport()
     // already folds in the bridge-presence check.
     if (!canUseSceneTransport()) return;
+
+    // Animation presence is live scene state, not load metadata.  The
+    // controller returns a tri-state snapshot so a contended external agent
+    // commit leaves the previous UI value intact until the next poll.
+    const int animationPresence = m_viewportBridge->animationPresence();
+    if (animationPresence >= 0) {
+        const bool liveHasAnimation = animationPresence != 0;
+        if (m_engine->updateHasAnimation(liveHasAnimation)) {
+            if (m_viewportTimeline) {
+                if (!liveHasAnimation) {
+                    m_viewportTimeline->finalizeOpenTimelineInteraction();
+                }
+                m_viewportTimeline->setVisible(liveHasAnimation);
+            }
+            updateMenuActionStates();
+        }
+    }
+
+    // Keep the range/frame step synchronized too.  This covers the first
+    // post-load timeline as well as later animation-options edits and active
+    // named-animation switches.  A contended getter returns false and leaves
+    // the existing widget values untouched.
+    if (m_viewportTimeline && m_engine->hasAnimation()) {
+        double t0 = 0, t1 = 0;
+        unsigned int nf = 0;
+        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+            m_viewportTimeline->setRange(t0, t1, m_viewportBridge->lastSceneTime());
+            m_viewportTimeline->setAnimationFrameCount(nf);
+        }
+    }
 
     quint64 uuid = 0, revision = 0;
     if (!m_viewportBridge->getSceneTextVersion(&uuid, &revision)) return;
@@ -2076,7 +2091,7 @@ void MainWindow::onRender()
     // timeline widget (done in onStateChanged once Rendering starts)
     // does NOT stop a live QTimer, so a tick could still fire a scrub
     // into the scene the production rasterizer is about to read.
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
     if (m_viewportBridge) m_viewportBridge->stop();
 
     // UI redesign (A4 region refinement): a draw mode waiting for a
@@ -2145,7 +2160,7 @@ void MainWindow::onRenderAnimation()
     // Halt a running preview-play QTimer before the production
     // animation render begins (see onRender for why widget-disable
     // alone is insufficient).
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
     if (m_viewportBridge) m_viewportBridge->stop();
     if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
     m_engine->startAnimationRender(videoPath);
@@ -2507,21 +2522,6 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
-    // Pull the timeline range from the scene's animation_options
-    // chunk via the bridge.  Defaults are (0, 1) when the scene
-    // declares no animation_options; we keep the slider's max above
-    // 0 so a 0-length scene still produces a visible (if useless)
-    // slider — the user sees that no animation is wired up rather
-    // than a clamped slider that always reads t=0.
-    {
-        double t0 = 0, t1 = 0;
-        unsigned int nf = 0;
-        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
-            m_viewportTimeline->setRange(t0, t1);
-            m_viewportTimeline->setAnimationFrameCount(nf);
-        }
-    }
-
     // The scene's named animations are surfaced by the ViewportProperties
     // panel's "Animation" accordion category (constructed just above) —
     // it pulls the list from the bridge's generic categoryEntities() and
@@ -2579,6 +2579,20 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportBridge,   &ViewportBridge::scrubTimeEnd);
     connect(m_viewportTimeline, &ViewportTimeline::timeChanged,
             m_viewportBridge,   &ViewportBridge::scrubTime);
+
+    // Pull the initial active range only AFTER the scrub signals are wired.
+    // setRange may need to park the default t=0 playhead at a non-zero
+    // time_start through that normal begin/move/end contract.  Later option
+    // edits and active-animation switches follow the same path from the
+    // live-scene poll in onCstSyncTick.
+    {
+        double t0 = 0, t1 = 0;
+        unsigned int nf = 0;
+        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+            m_viewportTimeline->setRange(t0, t1, m_viewportBridge->lastSceneTime());
+            m_viewportTimeline->setAnimationFrameCount(nf);
+        }
+    }
     // "Render movie…" chip -- same slot the Render > Render Animation
     // menu item drives; setRenderMovieEnabled above keeps it gated
     // identically to that menu item.
@@ -2679,7 +2693,7 @@ void MainWindow::teardownViewport()
     // Close any looping preview-play (and its open scrub bracket) through the
     // normal path before the bridge it drives goes away — don't rely on
     // controller destruction to swallow an open composite.
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
 
     // Stop the render thread BEFORE the bridge dies.
     m_viewportBridge->stop();

@@ -56,13 +56,23 @@
 #include "../src/Library/Interfaces/IMemoryBuffer.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
 
+#include <atomic>
+#include <chrono>
 #include <map>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -79,7 +89,22 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
@@ -1145,17 +1170,44 @@ static void RunCompareToReferenceSplit()
 
 			// The check above only exercises mLastPng.  mLastSink is a
 			// SEPARATE cached pointer, read only by the downscaling
-			// ReadImage(maxEdge) overload and query_object_at -- drop the
-			// `mLastSink = savedSink` restore and everything above still
-			// passes while the sink leaks and those two verbs silently
-			// degrade to "nothing rendered yet".  Lock that half too.
+			// ReadImage(maxEdge) overload and ReadPerception, so nothing
+			// above speaks for it.  Its failure mode is NOT "goes empty":
+			// drop the sink half of EphemeralRenderCacheGuard's restore and
+			// mLastSink is left pointing at the EPHEMERAL OBJECTMAP sink
+			// (non-null), so both readers happily serve a SEGMENTATION
+			// image -- exactly the shipped bug's shape, one pointer over.
+			// A "did it come back non-empty?" assertion therefore proves
+			// nothing, and DIMS cannot discriminate here either:
+			// CompareToReference forces the objectmap render to the SAME
+			// refW/refH as the graded candidate, so both sinks are 40x30.
+			//
+			// CONTENT is the discriminator.  ToPngDownscaled with maxEdge >=
+			// the long edge never downscales and emits bytes IDENTICAL to
+			// ToPng() (see its "already within bounds" early-out) -- and
+			// ToPng() is exactly what produced mLastPng at the render's
+			// cache tail.  So byte-equality with `after` is reachable ONLY
+			// from the beauty sink; the objectmap sink's own re-encode
+			// differs wholesale.  The 16-bound call after it additionally
+			// locks the aspect-preserving downscale shape.
+			// (query_object_at decodes its OWN render's returned PNG, never
+			// this cache -- it is a WRITER of the pair, guarded by the same
+			// RAII helper; see AgentObjectMapTest's "preserves the
+			// read_image cache" test.)
 			{
+				// 40 == kSplitSceneBase's authored film long edge, which the
+				// compare forces both the candidate and the objectmap render to.
+				unsigned int nw = 0, nh = 0;
+				const std::vector<unsigned char> native = s->ReadImage( 40, nw, nh );
+				Check( nw == 40 && nh == 30,
+					"split: cache-survival: the restored sink reports the graded frame's 40x30 dims" );
+				Check( !native.empty() && native == after,
+					"split: cache-survival: MONEY -- a no-downscale ReadImage(maxEdge) re-encodes the "
+					"BEAUTY sink BYTE-FOR-BYTE, so mLastSink was restored and is NOT the ephemeral objectmap sink" );
+
 				unsigned int dw = 0, dh = 0;
 				const std::vector<unsigned char> scaled = s->ReadImage( 16, dw, dh );
-				Check( !scaled.empty(),
-					"split: cache-survival: ReadImage(maxEdge) still works -- mLastSink was restored, not dropped" );
-				Check( dw > 0 && dh > 0 && dw <= 16 && dh <= 16,
-					"split: cache-survival: the restored sink downscales to the requested bound" );
+				Check( !scaled.empty() && dw == 16 && dh == 12,
+					"split: cache-survival: the restored 40x30 sink downscales to EXACTLY 16x12 (aspect preserved)" );
 			}
 		}
 
@@ -1534,6 +1586,208 @@ static void RunCompareToReferenceSplit()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// ROUND-10 P2: the REFUSAL reason wire values had ZERO coverage.
+//
+// Round 8 added three reason strings ("render_in_progress",
+// "editor_shutting_down", "editor_transaction_in_progress") to
+// read_viewport and documented them on four surfaces -- and no test
+// asserted any of them.  Round 8's own argument applies: a documented
+// property that no test enforces is a claim, not a fact.  Round 10 adds
+// two more ("editor_interaction_finalize_failed" and
+// "editor_interaction_unrecoverable"), so the closed set is now seven.
+//
+// This case drives read_viewport into FIVE refusals and asserts the exact
+// wire value each produces.  ("no_controller" and "no_frame_yet" already
+// have their own cases above; together that is all seven.)  It also
+// asserts the property that actually matters to a model: the two
+// PERMANENT reasons are reported as their own values, not folded into a
+// retriable-sounding one.
+//
+// A note on the seams: the two finalize arms use
+// ForTest_TripInteractionPersistenceFailure /
+// ForTest_FailNextFinalizeOpenInteractions rather than staging a real CST
+// route failure.  The production triggers (a failed pending-CST commit; an
+// OnTimeScrubEnd that fails) have no deterministic black-box trigger from
+// a test, and leaving the retriability mapping untested is exactly the
+// gap this case exists to close.
+//////////////////////////////////////////////////////////////////////
+static void RunRefusalReasonWireValues()
+{
+	std::printf( "=== read_viewport: REFUSAL REASON WIRE VALUES ===\n" );
+
+	// Helper: one read_viewport call through the RPC surface, returning the
+	// `reason` string and asserting the call itself is a structured success.
+	const auto reasonOf = []( AgentRpcDispatcher& rpc, const char* arm ) -> std::string {
+		const std::string resp = rpc.HandleLine( Req( 1, "read_viewport", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 1 );
+		Check( env.has( "result" ),
+		       std::string( arm ) + ": read_viewport is a structured success, not a JSON-RPC error" );
+		if( !env.has( "result" ) ) return std::string();
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "available" ).asBool() == false, std::string( arm ) + ": available == false" );
+		return r.get( "reason" ).asString();
+	};
+
+	// ---- ARM 1: an open editor transaction -> editor_transaction_in_progress
+	{
+		const std::string scenePath = WriteTemp( "agent_viewport_reason_txn.RISEscene", kScene );
+		Check( !scenePath.empty(), "reason/txn: scratch scene written" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "reason/txn: scene loads via CST" );
+		{
+			SceneEditController controller( *pJob, pJob->GetRasterizer() );
+			Check( controller.BeginTransaction(), "reason/txn: transaction opens" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			session->AttachController( &controller );
+			AgentRpcDispatcher rpc( std::move( session ) );
+			Check( reasonOf( rpc, "reason/txn" ) == "editor_transaction_in_progress",
+			       "MONEY: an open transaction reports reason == \"editor_transaction_in_progress\"" );
+			Check( controller.RollbackTransaction(), "reason/txn: transaction rolls back" );
+			controller.Stop();
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- ARM 2: a coordinated render owns the admission gate -> render_in_progress
+	{
+		const std::string scenePath = WriteTemp( "agent_viewport_reason_busy.RISEscene", kScene );
+		Check( !scenePath.empty(), "reason/busy: scratch scene written" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "reason/busy: scene loads via CST" );
+		{
+			SceneEditController controller( *pJob, pJob->GetRasterizer() );
+			controller.Start( /*suppressInitialRender=*/true );
+
+			// Occupy the single agent-render slot until we release it.  The
+			// admission gate is claimed at SUBMIT time, so read_viewport's
+			// parked frame-copy is refused for CoordinatedRenderBusy.
+			std::atomic<bool> release{ false };
+			std::atomic<bool> entered{ false };
+			SceneEditController::RenderJobId jobId = 0;
+			const bool accepted = controller.SubmitAgentRenderAsync(
+				[&] {
+					entered.store( true, std::memory_order_release );
+					while( !release.load( std::memory_order_acquire ) ) {
+						std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+					}
+				},
+				String( "reason-busy-occupant" ), &jobId );
+			Check( accepted && jobId != 0, "reason/busy: the occupying agent render is accepted" );
+			{
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+				while( !entered.load( std::memory_order_acquire ) &&
+				       std::chrono::steady_clock::now() < deadline ) {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+				}
+			}
+			Check( entered.load( std::memory_order_acquire ), "reason/busy: the occupying render is running" );
+			Check( !controller.IsTransactionOpen(), "reason/busy: PRECONDITION -- no transaction is open" );
+
+			{
+				std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+				session->AttachController( &controller );
+				AgentRpcDispatcher rpc( std::move( session ) );
+				Check( reasonOf( rpc, "reason/busy" ) == "render_in_progress",
+				       "MONEY: a coordinated render holding the gate reports reason == \"render_in_progress\" "
+				       "(NOT the transaction reason -- there is no transaction)" );
+			}
+
+			release.store( true, std::memory_order_release );
+			Check( controller.WaitForRenderJob( jobId, 15000 ), "reason/busy: the occupying render completes" );
+			controller.Stop();
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- ARM 3: a TRANSIENT finalize failure -> editor_interaction_finalize_failed
+	//      (round-10: used to be reported as editor_transaction_in_progress,
+	//      which names a wholly different cause)
+	{
+		const std::string scenePath = WriteTemp( "agent_viewport_reason_finalize.RISEscene", kScene );
+		Check( !scenePath.empty(), "reason/finalize: scratch scene written" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "reason/finalize: scene loads via CST" );
+		{
+			SceneEditController controller( *pJob, pJob->GetRasterizer() );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			session->AttachController( &controller );
+			AgentRpcDispatcher rpc( std::move( session ) );
+
+			controller.ForTest_FailNextFinalizeOpenInteractions();
+			Check( reasonOf( rpc, "reason/finalize" ) == "editor_interaction_finalize_failed",
+			       "MONEY: a TRANSIENT finalize failure reports its own reason, not "
+			       "\"editor_transaction_in_progress\"" );
+
+			// It is one-shot: the very next call gets past that gate.  This is
+			// what makes the value's RETRIABLE claim a fact rather than a claim
+			// -- the refusal genuinely clears on a retry.
+			const std::string next = reasonOf( rpc, "reason/finalize-retry" );
+			Check( next == "no_frame_yet",
+			       "MONEY: retrying after the transient finalize failure gets PAST that gate "
+			       "(reaches no_frame_yet -- the controller was never Start()ed)" );
+			controller.Stop();
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- ARM 4: the LATCHED finalize failure -> editor_interaction_unrecoverable
+	{
+		const std::string scenePath = WriteTemp( "agent_viewport_reason_latched.RISEscene", kScene );
+		Check( !scenePath.empty(), "reason/latched: scratch scene written" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "reason/latched: scene loads via CST" );
+		{
+			SceneEditController controller( *pJob, pJob->GetRasterizer() );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			session->AttachController( &controller );
+			AgentRpcDispatcher rpc( std::move( session ) );
+
+			controller.ForTest_TripInteractionPersistenceFailure();
+			Check( reasonOf( rpc, "reason/latched" ) == "editor_interaction_unrecoverable",
+			       "MONEY: the LATCHED persistence failure reports its own PERMANENT reason -- "
+			       "before round 10 it was reported as \"editor_transaction_in_progress\", which "
+			       "every surface describes as clearing on its own" );
+
+			// The whole point of the distinct value: it does NOT clear.  Three
+			// more attempts, still refused for the same permanent reason -- this
+			// is the infinite-retry loop the value exists to stop a model
+			// entering.
+			for( int i = 0; i < 3; ++i ) {
+				Check( reasonOf( rpc, "reason/latched-repeat" ) == "editor_interaction_unrecoverable",
+				       "MONEY: the latched reason does NOT clear on retry" );
+			}
+			controller.Stop();
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- ARM 5: controller teardown -> editor_shutting_down
+	{
+		const std::string scenePath = WriteTemp( "agent_viewport_reason_stopped.RISEscene", kScene );
+		Check( !scenePath.empty(), "reason/stopped: scratch scene written" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "reason/stopped: scene loads via CST" );
+		{
+			SceneEditController controller( *pJob, pJob->GetRasterizer() );
+			controller.Start( /*suppressInitialRender=*/true );
+			controller.Stop();   // terminal: mAgentRenderStop / mDirectRenderStopping
+
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			session->AttachController( &controller );
+			AgentRpcDispatcher rpc( std::move( session ) );
+			Check( reasonOf( rpc, "reason/stopped" ) == "editor_shutting_down",
+			       "MONEY: a stopped controller reports reason == \"editor_shutting_down\"" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
@@ -1545,6 +1799,7 @@ int main()
 	RunDisplayTransformOrdering();
 	RunCompareToReference();
 	RunCompareToReferenceSplit();
+	RunRefusalReasonWireValues();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

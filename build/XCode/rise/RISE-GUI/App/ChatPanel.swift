@@ -5,9 +5,16 @@ import Combine
 // Facet 5 slice B2 — the LLM chat panel.
 //
 // The user types intent ("make the orange things red"); an LLM
-// (Anthropic or Gemini) drives the seven agent verbs as tools against
-// the LIVE scene through the viewport bridge's agentHandleLine — the
-// same dispatcher the Agent (JSON-RPC) debug panel drives by hand.
+// (Anthropic or Gemini) drives the agent verbs as tools against the
+// LIVE scene through the viewport bridge's agentHandleToolCall — the
+// AUTONOMY-ROUTED dispatcher, selected by the composer's Read/Propose/
+// Apply chip.  EVERY model-requested tool call goes through it,
+// `render` included since the 2026-07 per-session image-cache fix.
+// The bridge's other entry point, agentHandleLine, is the separate
+// ADMINISTRATIVE session the Agent (JSON-RPC) debug panel drives by
+// hand; the chat driver uses it only for its own housekeeping
+// (list_proposals / resolve_proposal, the one-time read_skill index
+// fetch), never for a model-requested verb.
 // All state + the turn driver live in ChatViewModel; this file is
 // presentation only.
 //
@@ -412,8 +419,10 @@ struct ChatPanel: View {
 }
 
 /// Secure-MCP slice 5c: the pending-proposals list — an external MCP
-/// client's staged edits, approved/rejected here through the OWNER
-/// dispatcher (ChatViewModel.resolveProposal, NOT the external server).
+/// client's staged edits, approved/rejected here through the
+/// ADMINISTRATIVE dispatcher (ChatViewModel.resolveProposal →
+/// agentHandleLine, NOT the external server and not the tool-call
+/// sessions).
 /// Restyled per the redesign comp: proposals render inline as full diff
 /// cards (ProposalCard.swift) rather than a collapsible summary list —
 /// the comp shows the proposal as part of the natural conversation

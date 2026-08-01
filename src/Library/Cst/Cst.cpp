@@ -18,6 +18,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <atomic>
 #include "Cst.h"
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IJobPriv.h"      // GetObjects() (manager access for the slice-3 stable-object apply)
@@ -210,30 +211,37 @@ namespace
 	// Item 3 -- persistent balanced sequence of top-level items (the D16 rope).
 	//----------------------------------------------------------------------
 
-	//! Diagnostic counter (single-threaded parse/edit context): bumped once per
-	//! per-ITEM stat walk (MkSeqFresh). A correct path-copy edit walks exactly one
-	//! item; a hidden re-scan of the unchanged spine would bump it. Read by the
-	//! cost gate via Cst::DebugItemStatWalks().
-	unsigned long g_itemStatWalks = 0;
+	//! COST-GATE COUNTERS.  Diagnostic only -- nothing branches on them; the
+	//! gate tests read them single-threaded and assert a bound.  ATOMIC
+	//! (relaxed) because the parse/edit entry points are NOT single-threaded:
+	//! the agent surface validates a candidate (ParseToCst) on one thread
+	//! while another commits an edit (DocReplaceItem) -- ThreadSanitizer
+	//! flags the plain ++ as a data race there.  Relaxed is the right
+	//! ordering: these count events, they order nothing.
+	//!
+	//! Bumped once per per-ITEM stat walk (MkSeqFresh). A correct path-copy
+	//! edit walks exactly one item; a hidden re-scan of the unchanged spine
+	//! would bump it. Read by the cost gate via Cst::DebugItemStatWalks().
+	std::atomic<unsigned long> g_itemStatWalks( 0 );
 
 	//! Cost-gate instrumentation for DocReparse: old-item touches during matching.
 	//! The 4-pass hashed matcher touches each old item O(1) times -> grows O(M+N);
 	//! a regression to a nested-loop matcher would make it O(M*N).
-	unsigned long g_reparseOldVisits = 0;
+	std::atomic<unsigned long> g_reparseOldVisits( 0 );
 
 	//! Cost-gate instrumentation for the insert label-reflow: labels rewritten by
 	//! ReflowWindow. A WINDOWED reflow writes O(window) << N; a regression to a
 	//! global reflow would write N per gap-exhausting insert.
-	unsigned long g_reflowLabelWrites = 0;
+	std::atomic<unsigned long> g_reflowLabelWrites( 0 );
 
 	//! Cost-gate instrumentation for param matching: old-param touches in
 	//! MatchParamSlots. Hashed buckets touch each old param O(1) -> O(P); a
 	//! regression to the nested-loop matcher would make it O(P^2).
-	unsigned long g_paramMatchVisits = 0;
+	std::atomic<unsigned long> g_paramMatchVisits( 0 );
 
 	//! #4b cost gate: ComputeChunkRefs evaluations.  A from-scratch / rebuild does N (one per
 	//! chunk); an incremental reference/cp edit does exactly 1.  Read by Cst::DebugChunkRefsComputed().
-	unsigned long g_chunkRefsComputed = 0;
+	std::atomic<unsigned long> g_chunkRefsComputed( 0 );
 
 	//! An item's own serialized byte width + newline count (computed once; the
 	//! immutable item never changes, so it is cached in the SeqNode).
@@ -263,7 +271,7 @@ namespace
 	//! Build a SeqNode, computing the item's own stats once (for a fresh/changed item).
 	SeqRef MkSeqFresh( SeqRef l, NodeRef item, SeqRef r )
 	{
-		++g_itemStatWalks;   // one per-item stat walk (cost-gate instrumentation)
+		g_itemStatWalks.fetch_add( 1, std::memory_order_relaxed );   // one per-item stat walk (cost-gate instrumentation)
 		size_t b = 0; int nl = 0; NodeStats( item, b, nl );
 		return MkSeq( std::move(l), std::move(item), b, nl, std::move(r) );
 	}
@@ -820,7 +828,7 @@ namespace
 		std::vector<bool> oldUsed( O, false );
 		// content key = role + bytes, serialized ONCE per slot (no nested re-serialize)
 		std::unordered_map<std::string, std::vector<int>> oldByFull, newByFull;
-		for( int i = 0; i < O; ++i ) { std::string b; Serialize( oldSlots[i].node, b ); oldByFull[ oldSlots[i].role + "\x1f" + b ].push_back( i ); ++g_paramMatchVisits; }
+		for( int i = 0; i < O; ++i ) { std::string b; Serialize( oldSlots[i].node, b ); oldByFull[ oldSlots[i].role + "\x1f" + b ].push_back( i ); g_paramMatchVisits.fetch_add( 1, std::memory_order_relaxed ); }
 		for( int j = 0; j < M; ++j ) { std::string b; Serialize( newSlots[j].node, b ); newByFull[ newSlots[j].role + "\x1f" + b ].push_back( j ); }
 		// pass 1: full-content groups with EQUAL count -> carry in document order
 		for( auto& kv : newByFull ) {
@@ -830,7 +838,7 @@ namespace
 		}
 		// pass 2: unique role among the remainder (a unique-role value edit keeps its id)
 		std::unordered_map<std::string,int> oldRem, newRem, oldRemIdx;
-		for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) { oldRem[oldSlots[i].role]++; oldRemIdx[oldSlots[i].role] = i; ++g_paramMatchVisits; }
+		for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) { oldRem[oldSlots[i].role]++; oldRemIdx[oldSlots[i].role] = i; g_paramMatchVisits.fetch_add( 1, std::memory_order_relaxed ); }
 		for( int j = 0; j < M; ++j ) if( newIds[j] == 0 ) newRem[newSlots[j].role]++;
 		for( int j = 0; j < M; ++j ) if( newIds[j] == 0 ) {
 			const std::string& r = newSlots[j].role;
@@ -906,7 +914,7 @@ namespace
 					const std::int64_t lab = lower + (std::int64_t)( k + 1 ) * step;
 					d.idseq = IdSetLabelAt( d.idseq, idx, lab );
 					d.byId  = IdMapSetLabel( d.byId, id, lab );
-					++g_reflowLabelWrites;
+					g_reflowLabelWrites.fetch_add( 1, std::memory_order_relaxed );
 				}
 				return d;
 			}
@@ -1350,7 +1358,7 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check.
 		// errno==ERANGE rejects an OVERFLOWING literal (count_u 1e400 -> inf) AT THE SOURCE -- the standard
 		// guarantees ERANGE on strtod overflow -- so the (long long) cast is never reached for a non-finite d
-		// (no reliance on an inf>1e6 compare, which is unreliable under -ffast-math).  The nan/inf char scan
+		// (no reliance on an inf>1e6 compare, which was unreliable under bare -ffast-math (fixed 2026-07-29)).  The nan/inf char scan
 		// catches an explicit "nan"/"inf" literal (strtod sets no errno for those); an expr-valued count
 		// already passed EvalExprBody's finite guard.
 		bool bad = cs.empty() || end != cs.c_str() + cs.size() || errno == ERANGE;
@@ -2260,7 +2268,7 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 	const NodeRef& c, NodeId chunkId, std::vector<std::string>& diags,
 	std::vector<UnresolvedReference>* unresolved = nullptr )
 {
-	++g_chunkRefsComputed;   // #4b cost gate (1 per incremental edit; N per full build)
+	g_chunkRefsComputed.fetch_add( 1, std::memory_order_relaxed );   // #4b cost gate (1 per incremental edit; N per full build)
 	ChunkRefs out;
 	unsigned long long cs;   // this chunk's accumulator (the body's first line seeds the FNV-1a basis)
 	auto mix = [&cs]( const std::string& s ) {
@@ -2989,11 +2997,11 @@ void MaintainedReferenceGraph::SetParamValue( NodeId chunkId, const std::string&
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }
 size_t DocByteWidth  ( const Document& doc ) { return SeqBytes( doc.items ); }
 int    DocNewlineCount( const Document& doc ) { return SeqNl( doc.items ); }
-unsigned long DebugItemStatWalks() { return g_itemStatWalks; }
-unsigned long DebugReparseOldVisits() { return g_reparseOldVisits; }
-unsigned long DebugReflowLabelWrites() { return g_reflowLabelWrites; }
-unsigned long DebugParamMatchVisits() { return g_paramMatchVisits; }
-unsigned long DebugChunkRefsComputed() { return g_chunkRefsComputed; }
+unsigned long DebugItemStatWalks() { return g_itemStatWalks.load( std::memory_order_relaxed ); }
+unsigned long DebugReparseOldVisits() { return g_reparseOldVisits.load( std::memory_order_relaxed ); }
+unsigned long DebugReflowLabelWrites() { return g_reflowLabelWrites.load( std::memory_order_relaxed ); }
+unsigned long DebugParamMatchVisits() { return g_paramMatchVisits.load( std::memory_order_relaxed ); }
+unsigned long DebugChunkRefsComputed() { return g_chunkRefsComputed.load( std::memory_order_relaxed ); }
 
 int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, size_t* outStart, int* visits )
 {
@@ -3508,7 +3516,7 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	// invalidate every existing "\n" separator id.
 	{
 		std::unordered_map<std::string, std::vector<int>> oldF, newF;
-		for( int i = 0; i < O; ++i ) { oldF[ fullOf(oldItems[i]) ].push_back( i ); ++g_reparseOldVisits; }
+		for( int i = 0; i < O; ++i ) { oldF[ fullOf(oldItems[i]) ].push_back( i ); g_reparseOldVisits.fetch_add( 1, std::memory_order_relaxed ); }
 		for( int j = 0; j < M; ++j )   newF[ fullOf(newItems[j]) ].push_back( j );
 		for( auto& kv : newF ) {
 			auto oit = oldF.find( kv.first );
@@ -3527,7 +3535,7 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	// (a key with >1 remaining) is never position-guessed -> it falls to pass 4.
 	auto uniqueCarry = [&]( bool byKeyword ) {
 		std::unordered_map<std::string, std::vector<int>> oldR, newR;
-		for( int i = 0; i < O; ++i ) if( !oldUsed[i] && oldItems[i]->kind == NodeKind::Chunk ) { oldR[ byKeyword ? oldItems[i]->role : keyOf(oldItems[i]) ].push_back( i ); ++g_reparseOldVisits; }
+		for( int i = 0; i < O; ++i ) if( !oldUsed[i] && oldItems[i]->kind == NodeKind::Chunk ) { oldR[ byKeyword ? oldItems[i]->role : keyOf(oldItems[i]) ].push_back( i ); g_reparseOldVisits.fetch_add( 1, std::memory_order_relaxed ); }
 		for( int j = 0; j < M; ++j ) if( carried[j] == 0 && newItems[j]->kind == NodeKind::Chunk ) newR[ byKeyword ? newItems[j]->role : keyOf(newItems[j]) ].push_back( j );
 		for( auto& kv : newR ) {
 			if( kv.second.size() != 1 ) continue;

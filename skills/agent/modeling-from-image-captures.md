@@ -256,7 +256,8 @@ capture (or copy the capture next to the scene file and set
 `RISE_MEDIA_PATH`/cwd accordingly so a relative path resolves).  Then,
 regardless of which you chose, **verify the reference actually
 appears** in the first render that includes the quad -- render at a
-small size, `read_image`, and look at the reference quad's rectangle
+small size with `imageMaxEdge` (which returns the PNG in that same
+call), and look at the reference quad's rectangle
 for actual photo content (edges, color variation, a recognizable
 silhouette) rather than a flat, featureless patch.  A flat patch where
 the photo should be means the texture didn't load -- fix the path
@@ -512,8 +513,9 @@ from scratch:
 
 ### 9. Iteration budgeting + stopping rule
 
-A healthy iteration is about 3-4 tool calls: edit the scene, draft
-render (one or more verification-loop poses), `read_image`.  Rough
+A healthy iteration is about 2-3 tool calls: edit the scene, draft
+render `{imageMaxEdge: ...}` (one or more verification-loop poses).
+Do NOT budget a separate `read_image` -- the render returns the PNG.  Rough
 budget across a reconstruction task: blockout 2-3 iterations, shape
 refinement 3-4, materials/lighting 2-3, final verification 1-2.
 
