@@ -256,13 +256,24 @@ namespace RISE
 			//! 200,000 random stacks: 1.3e-15 (film), 1.2e-15 (substrate),
 			//! 1.8e-15 (ambient); 0 non-finite.
 			//!
-			//! NOT a knife-edge threshold.  The answer is constant to machine
-			//! precision across a plateau roughly 1e-10 .. 1e-76 wide (~66
-			//! decades): below it the interface products overflow (see
-			//! MakeIndex), above it the stand-in stops being negligible
-			//! against the other indices.  1e-40 sits in the middle.  This is
-			//! a representability choice of the same kind as
-			//! kGrazingCosFloor, not a fudge factor tuned to a symptom.
+			//! NOT a knife-edge threshold -- but the usable window is narrower
+			//! than an earlier version of this note claimed, and it MOVES with
+			//! the stack, so both bounds are stated as measured:
+			//!   * TOP ~1e-16.  Above it the stand-in stops being negligible
+			//!     against the other indices, and for the AMBIENT role the
+			//!     error is LINEAR in it -- 1e-10 gives 3.2e-10, nowhere near
+			//!     machine precision.  (The earlier note said the plateau
+			//!     began at 1e-10.  Setting this constant to 1e-12, a value
+			//!     that note placed INSIDE the plateau, fails three [Domain]
+			//!     assertions -- a claim the file's own test refutes.)
+			//!   * BOTTOM ~1e-76 for a benign stack, from the overflow
+			//!     described two paragraphs below, and it rises roughly one
+			//!     decade per decade of ambient index, so an extreme
+			//!     (non-physical) stack can push it above 1e-40.
+			//! 1e-40 sits comfortably inside for any stack whose indices are
+			//! real optical constants.  A representability choice of the same
+			//! kind as kGrazingCosFloor -- but a CHOICE, over a finite
+			//! window.
 			static const Scalar kZeroIndexStandIn = Scalar(1e-40);
 
 			//! True iff N has a non-finite component.  Unlike a zero index
@@ -275,11 +286,28 @@ namespace RISE
 			}
 
 			//! What the public entry points report for a NON-FINITE index.
-			//! For an infinite one this is the correct limit (an infinite
-			//! impedance mismatch reflects everything).  For a NaN there is no
-			//! correct answer, and this value is chosen only so the result
-			//! stays in range AND stays > 0 -- GGXBRDF gates its lobe on
-			//! `if( Rfilm > 0 )`, so returning 0 would render silently black.
+			//!
+			//! For a NaN there is no correct answer; this value is chosen only
+			//! so the result stays in range AND stays > 0 -- GGXBRDF gates its
+			//! lobe on `if( Rfilm > 0 )`, so 0 would render silently black.
+			//!
+			//! ⚠ For an INFINITE index it is NOT the limit, and an earlier
+			//! version of this comment claimed it was ("an infinite impedance
+			//! mismatch reflects everything").  That is the SAME non-sequitur
+			//! that made the round-4 rule wrong -- no transmission is not no
+			//! absorption -- and the THIRD time a rationale here was validated
+			//! only against a lossless film.  With an infinite SUBSTRATE the
+			//! bottom interface is a perfect terminator, but the wave still
+			//! round-trips through the film and an absorbing one dissipates
+			//! it: air / (2.4 + 0.3i, 120 nm) / n2 = 1e150 gives 0.5048
+			//! (matching a 120-dps evaluation), while n2 = +inf returns 1 --
+			//! error 0.495, and up to 0.989 over a fuzz.  The film and ambient
+			//! roles ARE 1 in the limit; only the substrate is wrong.
+			//! Retained as an engineering choice, not a physical answer.  The
+			//! refinement, symmetric with kZeroIndexStandIn, is to substitute
+			//! a LARGE finite stand-in and let the math compute that limit
+			//! too -- now feasible because the layer product is renormalized
+			//! per layer, but not done here and not validated.
 			static const Scalar kNonFiniteStackReflectance = Scalar(1);
 
 			//! Folds an index onto the passive convention N = |n| + i|k|, and
@@ -833,6 +861,48 @@ namespace RISE
 
 					m00 = n00; m01 = n01;
 					m10 = n10; m11 = n11;
+
+					// RENORMALIZE the accumulated product to O(1).
+					//
+					// Licensed by exactly the argument that already lets each
+					// layer drop its e^{-i delta}/2: the reflectance
+					//   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
+					// is homogeneous of degree 0 in M, so scaling M by ANY
+					// nonzero scalar is free.  Scaling by a power of two makes
+					// it not merely free but EXACT -- every mantissa is
+					// preserved, so this changes no result, only the exponent.
+					//
+					// Needed because a layer whose cos is enormous -- which is
+					// what a near-zero index produces, and what PhysicalIndex
+					// deliberately substitutes -- contributes ~1/|N|^2 to the
+					// p-polarization entries.  ONE such layer is harmless; TWO
+					// separated by an ordinary layer reach ~1e161, and the
+					// naive c^2+d^2 complex division that -ffast-math selects
+					// (-fcx-limited-range) overflows above ~1e154.  Measured
+					// before this: glass / [ zero-index 300 nm, MgF2 100 nm,
+					// zero-index 300 nm ] / 1.46 returned NaN under the shipped
+					// flags while strict IEEE gave the correct 0.99999989915.
+					// The per-layer bound is 10^(-154/2m) for m such layers, so
+					// no single stand-in constant can close it for the
+					// kMaxFilms = 8 that this path allows -- the growth has to
+					// be removed rather than out-ranged.
+					// Pinned by ThinFilmProductionTest [Domain].
+					{
+						Scalar mag = std::abs( m00 );
+						const Scalar m01a = std::abs( m01 );
+						const Scalar m10a = std::abs( m10 );
+						const Scalar m11a = std::abs( m11 );
+						if( m01a > mag ) mag = m01a;
+						if( m10a > mag ) mag = m10a;
+						if( m11a > mag ) mag = m11a;
+						if( mag > Scalar(0) && std::isfinite( mag ) ) {
+							int exponent = 0;
+							std::frexp( mag, &exponent );
+							const Scalar inv = std::ldexp( Scalar(1), -exponent );
+							m00 *= inv; m01 *= inv;
+							m10 *= inv; m11 *= inv;
+						}
+					}
 				}
 
 				const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
@@ -1241,8 +1311,9 @@ namespace RISE
 				Scalar R;
 				if( nonFinite ) {
 					// Per-wavelength: the stack opts out at THIS lambda only,
-					// since `stackAt` may return a degenerate index for some
-					// wavelengths and not others.
+					// since `stackAt` may return a non-finite index at some
+					// wavelengths and not others.  (A ZERO index does not opt
+					// out -- it takes the stand-in and the limit is computed.)
 					R = detail::kNonFiniteStackReflectance;
 				} else {
 					const Scalar Rs = detail::SingleFilmReflectanceForPol(

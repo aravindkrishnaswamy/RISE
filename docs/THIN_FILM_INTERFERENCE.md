@@ -221,7 +221,9 @@ exactly 0 or the finite/non-finite line (no epsilons):
   flipped sign gives `R_s = 4.61`, `R_p = 18.31`, laundered into a saturated `1.0`; `R` is exactly
   invariant under `N → −N`, so the two flipped forms necessarily agree. A **zero** index in any
   role is replaced by a tiny stand-in (`1e-40`) so the ordinary math computes the **limit** —
-  tracked to 1.3e-15 across 200,000 stacks in all three roles. Four earlier rules invented a
+  tracked to ~1e-15 across 200,000 stacks in all three roles (film 1.3e-15,
+  substrate 1.2e-15, ambient 1.8e-15 on the sampled draw; an independent draw gave
+  1.4/1.6/7.6e-15, so read these as an order, not a bound). Four earlier rules invented a
   constant instead and all four were wrong, because the limit depends on the stack: vacuum turned a
   black `film_ior` texel into a mirror; "absent" was off by up to 1.0 (as `N₁ → 0` the film becomes
   an evanescent *barrier*, not an absent layer); and "opaque, `R = 1`" was off by up to 0.9987,

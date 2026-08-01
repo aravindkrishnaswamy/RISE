@@ -1079,7 +1079,11 @@ int main()
 		}
 
 		// A NON-PASSIVE index (n < 0 or k < 0) must fold to its passive twin
-		// |n| + i|k|, not produce R_p up to 48.8 laundered into a saturated 1.
+		// |n| + i|k|, not produce R_p up to 18.31 laundered into a saturated 1.
+		// (An earlier comment said 48.8.  That figure was never reproducible
+		// on this stack at ANY commit -- including the one that introduced
+		// it -- and is the fifth stray copy of a cross-contaminated number in
+		// this arc.)
 		// Checked through BOTH public APIs: the scalar one routes through
 		// MakeIndex, the Complex one used to bypass it entirely.
 		{
@@ -1202,6 +1206,87 @@ int main()
 			             "would be off by up to %.4f here\n", worst, spread );
 		}
 
+		// ⚠ THE THREE BLIND SPOTS THIS BLOCK USED TO HAVE, closed 2026-07-31.
+		// Mutation testing (round 6) showed the grid above passes against
+		// several WRONG implementations, because it exercised only one of the
+		// three public entry points and only one of the two multi-medium
+		// shapes:
+		//   (i)  it called only the scalar ReflectanceConductor; the Complex
+		//        4-arg overload has its own degeneracy handling and had ZERO
+		//        coverage -- reverting JUST that overload to the vacuum rule
+		//        passed 3493/0;
+		//   (ii) the N-layer rows zeroed a LAYER but never n0/ns, so reverting
+		//        just the stack path's endpoint handling also passed;
+		//   (iii) the AMBIENT role is vacuous on this grid -- the limit is
+		//        EXACTLY 1 on every row, so |zA - lA| < tol is satisfied by
+		//        the very rules the block exists to kill.
+		// Each is now covered explicitly.  Do not delete these without
+		// re-running the mutants.
+		{
+			const RISE::ThinFilm::Complex N0c( 1.5, 0.0 ), Nsc( 1.8, 0.15 );
+			const RISE::ThinFilm::Complex zero( 0.0, 0.0 );
+			const RISE::ThinFilm::Complex tiny( 1e-25, 0.0 );
+			const RISE::ThinFilm::Complex film( 2.4, 0.3 );	// ABSORBING
+
+			// (i) the Complex 4-arg overload, all three roles
+			Check( std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, zero, 120.0, Nsc ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, tiny, 120.0, Nsc ) ) ) < 1e-12
+			    && std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, film, 120.0, zero ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, film, 120.0, tiny ) ) ) < 1e-12
+			    && std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, zero, film, 120.0, Nsc ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, tiny, film, 120.0, Nsc ) ) ) < 1e-12,
+			       "Complex overload: a zero index in any role gives the LIMIT" );
+
+			// (ii) zero ENDPOINTS through the N-layer path
+			{
+				const RISE::ThinFilm::Complex f[2] = { RISE::ThinFilm::Complex(1.38,0.0), film };
+				const RISE::Scalar t[2] = { 100.0, 120.0 };
+				Check( std::fabs(
+				         double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0c, f, t, 2, zero ) )
+				       - double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0c, f, t, 2, tiny ) ) ) < 1e-12
+				    && std::fabs(
+				         double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, zero, f, t, 2, Nsc ) )
+				       - double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, tiny, f, t, 2, Nsc ) ) ) < 1e-12,
+				       "N-layer: a zero AMBIENT or SUBSTRATE gives the LIMIT" );
+			}
+
+			// (iii) The ambient role CANNOT be made discriminating, and
+			// pretending otherwise would be worse than saying so.  As N0 -> 0
+			// the ambient admittance eta0 -> 0, so
+			//   r = (eta0*B - C)/(eta0*B + C) -> -1
+			// and |r| = 1 for ANY stack beneath.  Measured: worst |limit - 1|
+			// = 3.3e-15 over 200,000 random stacks.  So the ambient assertions
+			// in the grid above are TRUE but vacuous -- any rule that returns
+			// 1 satisfies them.  Discrimination comes from the film and
+			// substrate rows and from (i) and (ii) above; this row only pins
+			// that the ambient case stays finite and lands on that limit.
+			{
+				const double zA = double( RISE::ThinFilm::ReflectanceConductor(
+					0.7, 550.0, 0.0, 0.0, 2.4, 0.3, 120.0, 1.8, 0.15 ) );
+				Check( std::isfinite( zA ) && std::fabs( zA - 1.0 ) < 1e-12,
+				       "zero AMBIENT lands on its (structurally unit) limit" );
+			}
+
+			// TWO degenerate layers separated by an ordinary one.  This is the
+			// shape that made ReflectanceConductorStack NON-TOTAL under the
+			// shipped flags before the per-layer renormalization: the p-pol
+			// entries reach ~1e161 and the naive c^2+d^2 division overflows.
+			{
+				const RISE::ThinFilm::Complex f3[3] = { zero, RISE::ThinFilm::Complex(1.38,0.0), zero };
+				const RISE::ThinFilm::Complex p3[3] = { tiny, RISE::ThinFilm::Complex(1.38,0.0), tiny };
+				const RISE::Scalar t3[3] = { 300.0, 100.0, 300.0 };
+				const double Rz = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.6, 550.0, N0c, f3, t3, 3, RISE::ThinFilm::Complex(1.46,0.0) ) );
+				const double Rp3 = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.6, 550.0, N0c, p3, t3, 3, RISE::ThinFilm::Complex(1.46,0.0) ) );
+				Check( std::isfinite( Rz ) && std::fabs( Rz - Rp3 ) < 1e-12,
+				       "two zero layers around an ordinary one: finite, and the LIMIT" );
+			}
+		}
+
 		// A NON-FINITE index is not the endpoint of any limit -- it is corrupt
 		// input.  It must stay in range and stay > 0 (a 0 would render
 		// silently black through GGXBRDF's `if( Rfilm > 0 )`).
@@ -1287,8 +1372,10 @@ int main()
 
 		// ⚠ DISCLOSED RESIDUAL, deliberately NOT closed: an index far outside
 		// the range of real optical constants still overflows -- NaN below
-		// about 1e-77 and above about 1e160 under the shipped flags (under
-		// strict IEEE the small end stays CORRECT to ~4e-16 down to ~1e-154).
+		// 1e-77.02 and above 1e154.06 under the shipped flags, and the large
+		// end goes SILENTLY WRONG before it goes NaN (1e154 returns 0.516
+		// where the truth is 1).  Under strict IEEE the small end stays
+		// CORRECT to ~4e-16 down to ~1e-154.
 		// No threshold is asserted here, because any threshold would be the
 		// magic epsilon this file refuses; the named reformulation is on
 		// detail::kZeroIndexStandIn.  What IS pinned is the boundary that is

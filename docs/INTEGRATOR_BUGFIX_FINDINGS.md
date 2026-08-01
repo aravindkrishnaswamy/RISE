@@ -1021,3 +1021,67 @@ the sign of the difference is a coin-flip — i.e. within the
 renderer's own run-to-run nondeterminism). `AgentRenderAsyncTest` failed once
 during this work and is a **pre-existing flake**, not flag-related (passes 3/3
 both with and without the flag, and in the final full suite).
+
+---
+
+### Review rounds 3-6 (2026-07-30/31): the code held, the degenerate-index rule did not
+
+Four more adversarial rounds ran after round 2, the last two directly on merged
+master. **The three originally-assigned P1s (growing evanescent root, non-total
+N-layer path, oracle-only test pins) were attacked in every round and never
+moved.** Round 6's correctness reviewer: *"the core algebra survives; every
+branch-rule-free invariant I could construct sits at machine precision"* — TIR
+4.4e-16, Brewster 1.45e-32, d→0 ≡ bare Fresnel 3.3e-16, half-wave absentee
+exactly 0 for 1-8 layers, reciprocity 3.1e-15, all eight `[Truth]` pins
+re-derived against independently written 120-dps oracles to ≤2.6e-17.
+
+Everything that failed was scope added in response to earlier rounds, and it
+failed the same way five times: **a constant was invented where a limit should
+have been computed.** For a DEGENERATE index (magnitude exactly 0, or a
+non-finite component) the rule was, in order:
+
+| # | rule | worst error | how it was caught |
+|---|---|---|---|
+| 1 | substitute VACUUM (N = 1) | ~1.0 | a black `film_ior` texel became a MIRROR under a dense ambient |
+| 2 | make the layer ABSENT | 1.0 | the limit is an evanescent BARRIER (`N₁cos₁ → i·s`), not an absent layer |
+| 3 | return R = 1 ("cannot transmit") | 0.9987 | non-sequitur: **no transmission is not no absorption** |
+| 4 | tiny STAND-IN, un-renormalized | NaN | two zero layers overflowed the layer product |
+| 5 | stand-in + per-layer renormalization | ~1e-15 | current |
+
+**Each of the first four was hidden by a test that was blind in exactly the
+decisive dimension** — rule 1 by an air ambient (where vacuum and absent
+coincide), rule 3 by a lossless film (where R = 1 is right), rule 4 by zeroing
+one layer and never two. That pattern, not the physics, is the real lesson of
+this arc.
+
+**The current rule.** A ZERO index in any role takes
+`detail::kZeroIndexStandIn = 1e-40` and the ordinary math computes the limit
+(measured ~1e-15 against a 120-dps oracle in all three roles). A NON-FINITE
+index returns `detail::kNonFiniteStackReflectance = 1` — correct for the film
+and ambient roles, **not** correct for an infinite substrate under an absorbing
+film (0.5048 vs 1), retained as an engineering choice because the value must
+stay `> 0` for `GGXBRDF`'s lobe gate. The four superseded rules are recorded on
+`kZeroIndexStandIn` so none is reinvented.
+
+**Per-layer projective renormalization** (round 6) is what makes the stand-in
+safe: `r` is homogeneous of degree 0 in `M`, so scaling the accumulated matrix
+by a power of two is free *and exact*. Without it, `m` interleaved stand-in
+layers overflow at `10^(-154/2m)` — 1e-38.5 at m = 2 — so with `kMaxFilms = 8`
+no constant could have worked. After: 300,000 stacks spanning every degenerate
+subset of 1-8 layers give 0 out-of-range and 0 exactly-zero, both flag sets.
+
+**The other recurring defect was numbers quoted rather than re-derived.** Round
+3 found seven, round 5 found the round-4 prune had left a whole design doc
+un-opened, round 6 found `1e160` (really 1e154.06), `1e-77.03` (really .02), a
+plateau stated as `1e-10..1e-76` whose top is really ~1e-16 — refuted by the
+file's own test — and an `R_p = 48.8` that was never reproducible at any commit.
+The standing rule now: a quantitative claim must be pinned by a committed test
+or carry a complete recipe, or it does not go in.
+
+**Disclosed residuals.** An index below ~1e-77 or above ~1e154 still overflows
+under the shipped flags (the large end goes silently wrong before it goes NaN);
+strict IEEE is correct down to ~1e-154. An absorbing ambient is outside the
+passive domain and unreachable (every call site passes literal `k0 = 0`). The
+named fix for the overflow residual is to reformulate `CosThetaInMedium` around
+`η² = N² − s²`.
+
