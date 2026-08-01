@@ -137,13 +137,18 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 		//     (PathTracingIntegrator's NM loop, BDPT/VCM spectral rasterizers)
 		//     -- code-identical fixes (same file, same pattern) but no
 		//     dedicated spectral render test.
-		//   BDPT NOTE: BDPT's s=0 strategy hits a PRE-EXISTING, unrelated MIS
-		//     defect (MISWeight's remap0 promoting a non-NEE-sampleable
-		//     emitter's true pdfRev=0 to 1 -- see BDPTIntegrator.cpp's eye-walk
-		//     comment) that gives it LESS than PT/VCM's full weight on this
-		//     scene (an energy deficit, not a crash, and explicitly NOT fixed
-		//     by this crash-fix arc) -- "contributes emission" is verified,
-		//     "full weight" is NOT claimed for BDPT.
+		//   BDPT NOTE (updated 2026-08-01): BDPT's s=0 strategy USED to hit a
+		//     separate, pre-existing MIS defect -- MISWeight's remap0 promoting
+		//     a non-NEE-sampleable emitter's true pdfRev=0 to 1, manufacturing
+		//     a phantom NEE strategy in the denominator and giving BDPT LESS
+		//     than PT/VCM's full weight here (an energy deficit, not a crash).
+		//     That is now FIXED (BDPTVertex::lightSamplingStrategyAbsent +
+		//     MISWeight's eye-walk gate; see BDPTIntegrator.cpp's s=0 block).
+		//     BDPT now carries FULL weight on such emitters, matching PT and
+		//     VCM -- pinned by tests/BDPTPhantomStrategyWeightTest.cpp, which
+		//     holds BDPT's mean luma to within 5% of PT's on both flavours of
+		//     non-NEE-sampleable emitter (null-geometry CSG and a
+		//     CanBeAreaLight()==false SDF).
 		const IGeometry* pGeom = pObject.GetGeometry();
 		if( !pGeom || !pGeom->CanBeAreaLight() ) {
 			GlobalLog()->PrintSourceError(

@@ -488,6 +488,18 @@ static void TestCSGLuminaireGlowsUnderPathTracing()
 // viewing the emitter (eyeVerts[0]=camera, eyeVerts[1]=csg_glow -> t=2) --
 // no bounce needed, so even samples=1 reliably reaches it.  Pre-round-2-fix
 // this SIGSEGVs (`eyeEnd.pObject->GetArea()` called unconditionally).
+//
+// ENERGY NOTE (2026-08-01).  This test asserts only maxLum > 0; the VALUE it
+// prints tracked BDPT's phantom-NEE-strategy MIS defect and moved when that
+// was fixed: maxLum was 9.26 while remap0 promoted the non-NEE-sampleable
+// emitter's true pdfRev == 0 to 1, and is 42.00 now that the s=0 strategy
+// carries full weight -- an exact match for the VCM twin below (Test E, also
+// 42.00).  PT's 29.57 differs from both; a MAX statistic is single-sample and
+// sampling-dependent, so that is plausibly just which sample each integrator
+// happened to draw, but it was NOT investigated and nothing here rests on it.
+// The energy claim itself is pinned quantitatively (mean
+// luma vs PT, both flavours of non-NEE-sampleable emitter) by
+// tests/BDPTPhantomStrategyWeightTest.cpp, not here.
 //-----------------------------------------------------------------------------
 static void TestCSGLuminaireGlowsUnderBDPT()
 {
