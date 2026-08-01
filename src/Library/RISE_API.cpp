@@ -7394,6 +7394,62 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter& condensedPainter,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon,
+		Scalar smokeKmCond,
+		Scalar smokeNCond,
+		Scalar smokeAlbedoCond,
+		Scalar smokeGCond
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction( &phase, sootGHot ) || !phase ) {
+			return false;
+		}
+
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, &condensedPainter,
+				volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, sceneUnitMeters,
+				sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon,
+				smokeAlbedoCarbon, smokeGCarbon,
+				smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond,
+				*phase );
+		safe_release( phase );
+
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with condensed constituent" );
+		return true;
+	}
+
 	//////////////////////////////////////////////////////////
 	// Interactive scene editor — C-API entry points
 	//////////////////////////////////////////////////////////

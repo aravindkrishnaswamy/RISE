@@ -131,7 +131,7 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 			"Heterogeneous media bake the max-coefficient bounds, volume dataset, accessor, "
 			"and majorant grid at construction time — changing any of those without rebuilding "
 			"the majorant grid would desync delta tracking.  This also applies to the shared "
-			"carbon/temperature lattice in `multichannel_heterogeneous_medium`.  Recreate the "
+			"carbon/temperature/condensed lattice in `multichannel_heterogeneous_medium`.  Recreate the "
 			"medium chunk to change these values." ) );
 	}
 

@@ -306,8 +306,9 @@ namespace RISE
 			) const override;
 	};
 
-	/// Painter-baked Phase-A fire/smoke medium carrying carbon concentration
-	/// [g/m^3] and temperature [K] on one shared trilinear lattice.
+	/// Painter-baked Phase-A fire/smoke medium carrying carbon and optional
+	/// condensed-organic concentrations [g/m^3], plus temperature [K], on one
+	/// shared trilinear lattice.
 	///
 	/// Pel remains a grey 633-nm preview placeholder, while the NM path uses
 	/// the wavelength-dependent §4.1/§4.3 hot-soot and cool-smoke laws.
@@ -317,6 +318,7 @@ namespace RISE
 	protected:
 		IVolumeAccessor* m_pCarbonAccessor;
 		IVolumeAccessor* m_pTemperatureAccessor;
+		IVolumeAccessor* m_pCondensedAccessor;
 		Scalar m_sceneUnitMeters;
 		Scalar m_sootEm;
 		Scalar m_sootDensity;
@@ -326,9 +328,14 @@ namespace RISE
 		Scalar m_smokeNCarbon;
 		Scalar m_smokeAlbedoCarbon;
 		Scalar m_smokeGCarbon;
+		Scalar m_smokeKmCond;
+		Scalar m_smokeNCond;
+		Scalar m_smokeAlbedoCond;
+		Scalar m_smokeGCond;
 		Scalar m_hotAbsorptionMass633;
 		Scalar m_hotExtinctionMass633;
 		Scalar m_coolExtinctionMass633;
+		Scalar m_condExtinctionMass633;
 
 		struct EmissionCell
 		{
@@ -396,10 +403,36 @@ namespace RISE
 			const IPhaseFunction& phase
 			);
 
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const Scalar smokeKmCond,
+			const Scalar smokeNCond,
+			const Scalar smokeAlbedoCond,
+			const Scalar smokeGCond,
+			const IPhaseFunction& phase
+			);
+
 		bool IsValid() const { return m_valid; }
 
 		Scalar LookupCarbon( const Point3& worldPt ) const;
 		Scalar LookupTemperature( const Point3& worldPt ) const;
+		Scalar LookupCondensed( const Point3& worldPt ) const;
 		Scalar HotOpticsFraction( const Point3& worldPt ) const;
 		Scalar HotSootVolumeFraction( const Point3& worldPt ) const;
 		Scalar TrackingMajorantAt( const Point3& worldPt ) const;

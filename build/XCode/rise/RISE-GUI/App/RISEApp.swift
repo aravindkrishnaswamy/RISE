@@ -65,7 +65,7 @@ enum SkillsRootBootstrap {
         return candidates.first(where: isDirectory)?.path
     }
 
-    private static func isDirectory(_ url: URL) -> Bool {
+    nonisolated private static func isDirectory(_ url: URL) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
             && isDir.boolValue

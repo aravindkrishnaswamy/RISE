@@ -670,7 +670,7 @@ namespace
 		static const EntityTemplateDef d = []{
 			EntityTemplateDef t;
 			t.category = Category::Medium;
-			t.label = "Carbon + Temperature Volume";
+			t.label = "Fire/Smoke Multichannel Volume";
 			t.baseName = "fire_volume";
 			t.hasNamedIdentity = true;
 			t.needsMaterial = false;
@@ -688,11 +688,18 @@ namespace
 				"value 1200\n"
 				"}\n" );
 			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_condensed\n"
+				"value 0.01\n"
+				"}\n" );
+			t.chunkTexts.push_back(
 				"multichannel_heterogeneous_medium\n"
 				"{\n"
 				"name @NAME@\n"
 				"channel_carbon painter @NAME@_carbon\n"
 				"channel_temperature painter @NAME@_temperature\n"
+				"channel_condensed painter @NAME@_condensed\n"
 				"bake_resolution 32 32 64\n"
 				"bbox_min -0.02 0 -0.02\n"
 				"bbox_max 0.02 0.08 0.02\n"
@@ -704,6 +711,10 @@ namespace
 				"smoke_n_carbon 1.2\n"
 				"smoke_albedo_carbon 0.6\n"
 				"smoke_g_carbon 0.6\n"
+				"smoke_km_cond 4.0\n"
+				"smoke_n_cond 0.5\n"
+				"smoke_albedo_cond 0.9\n"
+				"smoke_g_cond 0.7\n"
 				"}\n" );
 			return t;
 		}();

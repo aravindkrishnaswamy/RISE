@@ -3421,8 +3421,37 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								Scalar smokeKmCarbon,
 								Scalar smokeNCarbon,
 								Scalar smokeAlbedoCarbon,
-								Scalar smokeGCarbon
-								);
+							Scalar smokeGCarbon
+							);
+
+	//! Creates the Phase-A medium with the optional condensed-organic channel.
+	//! Kept as a distinct ABI entry so the original two-channel factory remains
+	//! source- and binary-compatible.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter& condensedPainter,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									Scalar sootEm,
+									Scalar sootDensity,
+									Scalar sootAlbedoHot,
+									Scalar sootGHot,
+									Scalar smokeKmCarbon,
+									Scalar smokeNCarbon,
+									Scalar smokeAlbedoCarbon,
+									Scalar smokeGCarbon,
+									Scalar smokeKmCond,
+									Scalar smokeNCond,
+									Scalar smokeAlbedoCond,
+									Scalar smokeGCond
+									);
 
 
 	//////////////////////////////////////////////////////////

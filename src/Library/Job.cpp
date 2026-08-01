@@ -6090,6 +6090,75 @@ bool Job::AddMultichannelHeterogeneousMedium(
 	return true;
 }
 
+bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !condensed_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	IScalarPainter* condensed = pScalarPntManager->GetItem( condensed_painter );
+	if( !carbon || !temperature || !condensed ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: scalar painter not found (carbon `%s`, temperature `%s`, condensed `%s`)",
+			carbon_painter, temperature_painter, condensed_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		condensed->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: physical channels require single-valued scalar painters" );
+		return false;
+	}
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		&medium, *carbon, *temperature, *condensed,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ),
+		Scalar( smoke_km_cond ), Scalar( smoke_n_cond ),
+		Scalar( smoke_albedo_cond ), Scalar( smoke_g_cond ) ) || !medium ) {
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

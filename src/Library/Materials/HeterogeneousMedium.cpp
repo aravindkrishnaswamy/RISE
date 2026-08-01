@@ -139,8 +139,10 @@ namespace
 	{
 		const Scalar m_hotWeight;
 		const Scalar m_coolWeight;
+		const Scalar m_condWeight;
 		const Scalar m_hotG;
 		const Scalar m_coolG;
+		const Scalar m_condG;
 
 	protected:
 		~ConstituentHGPhaseClosure() override = default;
@@ -149,13 +151,17 @@ namespace
 		ConstituentHGPhaseClosure(
 			const Scalar hotScattering,
 			const Scalar coolScattering,
+			const Scalar condScattering,
 			const Scalar hotG,
-			const Scalar coolG
+			const Scalar coolG,
+			const Scalar condG
 			) :
-		  m_hotWeight( hotScattering / (hotScattering + coolScattering) ),
-		  m_coolWeight( coolScattering / (hotScattering + coolScattering) ),
+		  m_hotWeight( hotScattering / (hotScattering + coolScattering + condScattering) ),
+		  m_coolWeight( coolScattering / (hotScattering + coolScattering + condScattering) ),
+		  m_condWeight( condScattering / (hotScattering + coolScattering + condScattering) ),
 		  m_hotG( hotG ),
-		  m_coolG( coolG )
+		  m_coolG( coolG ),
+		  m_condG( condG )
 		{
 		}
 
@@ -165,12 +171,16 @@ namespace
 			return m_hotWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
 				cosTheta, m_hotG ) +
 				m_coolWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
-					cosTheta, m_coolG );
+					cosTheta, m_coolG ) +
+				m_condWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+					cosTheta, m_condG );
 		}
 
 		Vector3 Sample( const Vector3& wi, ISampler& sampler ) const override
 		{
-			const Scalar g = sampler.Get1D() < m_hotWeight ? m_hotG : m_coolG;
+			const Scalar select = sampler.Get1D();
+			const Scalar g = select < m_hotWeight ? m_hotG :
+				(select < m_hotWeight + m_coolWeight ? m_coolG : m_condG);
 			return HenyeyGreensteinPhaseFunction::SampleWithG( wi, sampler, g );
 		}
 
@@ -181,7 +191,8 @@ namespace
 
 		Scalar GetMeanCosine() const override
 		{
-			return m_hotWeight * m_hotG + m_coolWeight * m_coolG;
+			return m_hotWeight * m_hotG + m_coolWeight * m_coolG +
+				m_condWeight * m_condG;
 		}
 	};
 
@@ -210,7 +221,8 @@ namespace
 		const Scalar sootEm,
 		const Scalar sootDensity,
 		const Scalar sootAlbedoHot,
-		const Scalar smokeKmCarbon
+		const Scalar smokeKmCarbon,
+		const Scalar smokeKmCond
 		)
 	{
 		if( !RISE::IsFiniteDouble( sceneUnitMeters ) ||
@@ -218,13 +230,15 @@ namespace
 			!RISE::IsFiniteDouble( sootDensity ) ||
 			!RISE::IsFiniteDouble( sootAlbedoHot ) ||
 			!RISE::IsFiniteDouble( smokeKmCarbon ) ||
+			!RISE::IsFiniteDouble( smokeKmCond ) ||
 			sceneUnitMeters <= 0.0 || sootAlbedoHot < 0.0 ||
-			sootAlbedoHot >= 1.0 || smokeKmCarbon < 0.0 ) {
+			sootAlbedoHot >= 1.0 || smokeKmCarbon < 0.0 || smokeKmCond < 0.0 ) {
 			return 0.0;
 		}
 		const Scalar hotExtinction =
 			HotAbsorptionMass633( sootEm, sootDensity ) / (1.0 - sootAlbedoHot);
-		return sceneUnitMeters * fmax( hotExtinction, smokeKmCarbon );
+		return sceneUnitMeters * fmax( hotExtinction,
+			fmax( smokeKmCarbon, smokeKmCond ) );
 	}
 
 	class MultichannelExtinctionAccessor :
@@ -234,14 +248,17 @@ namespace
 	protected:
 		const IVolumeAccessor* m_carbon;
 		const IVolumeAccessor* m_temperature;
+		const IVolumeAccessor* m_condensed;
 		Scalar m_hotExtinctionMass;
 		Scalar m_coolExtinctionMass;
+		Scalar m_condExtinctionMass;
 		Scalar m_massMajorant;
 
 		virtual ~MultichannelExtinctionAccessor()
 		{
 			safe_release( m_carbon );
 			safe_release( m_temperature );
+			safe_release( m_condensed );
 		}
 
 		Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
@@ -251,24 +268,32 @@ namespace
 			const Scalar phi = SmoothHotFraction( m_temperature->GetValue( x, y, z ) );
 			const Scalar massExtinction =
 				phi * m_hotExtinctionMass + (1.0 - phi) * m_coolExtinctionMass;
-			return carbon * massExtinction / m_massMajorant;
+			const Scalar condensed = m_condensed ? m_condensed->GetValue( x, y, z ) : 0.0;
+			return (carbon * massExtinction + condensed * m_condExtinctionMass) /
+				m_massMajorant;
 		}
 
 	public:
 		MultichannelExtinctionAccessor(
 			const IVolumeAccessor& carbon,
 			const IVolumeAccessor& temperature,
+			const IVolumeAccessor* condensed,
 			const Scalar hotExtinctionMass,
-			const Scalar coolExtinctionMass
+			const Scalar coolExtinctionMass,
+			const Scalar condExtinctionMass
 			) :
 		  m_carbon( &carbon ),
 		  m_temperature( &temperature ),
+		  m_condensed( condensed ),
 		  m_hotExtinctionMass( hotExtinctionMass ),
 		  m_coolExtinctionMass( coolExtinctionMass ),
-		  m_massMajorant( fmax( hotExtinctionMass, coolExtinctionMass ) )
+		  m_condExtinctionMass( condExtinctionMass ),
+		  m_massMajorant( fmax( hotExtinctionMass,
+			fmax( coolExtinctionMass, condExtinctionMass ) ) )
 		{
 			m_carbon->addref();
 			m_temperature->addref();
+			if( m_condensed ) m_condensed->addref();
 		}
 
 		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const override
@@ -284,6 +309,54 @@ namespace
 		void BindVolume( const IVolume* ) override
 		{
 			// Derived from the two immutable baked channel accessors.
+		}
+	};
+
+	class SummedConcentrationAccessor :
+		public virtual IVolumeAccessor,
+		public virtual Implementation::Reference
+	{
+		const IVolumeAccessor* m_carbon;
+		const IVolumeAccessor* m_condensed;
+
+	protected:
+		~SummedConcentrationAccessor() override
+		{
+			safe_release( m_carbon );
+			safe_release( m_condensed );
+		}
+
+		Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
+		{
+			return m_carbon->GetValue( x, y, z ) +
+				(m_condensed ? m_condensed->GetValue( x, y, z ) : 0.0);
+		}
+
+	public:
+		SummedConcentrationAccessor(
+			const IVolumeAccessor& carbon,
+			const IVolumeAccessor* condensed
+			) :
+		  m_carbon( &carbon ),
+		  m_condensed( condensed )
+		{
+			m_carbon->addref();
+			if( m_condensed ) m_condensed->addref();
+		}
+
+		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const override
+		{
+			return Evaluate( x, y, z );
+		}
+
+		Scalar GetValue( int x, int y, int z ) const override
+		{
+			return Evaluate( Scalar(x), Scalar(y), Scalar(z) );
+		}
+
+		void BindVolume( const IVolume* ) override
+		{
+			// Derived from immutable baked concentration accessors.
 		}
 	};
 
@@ -1455,12 +1528,46 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	const Scalar smokeGCarbon,
 	const IPhaseFunction& phase
 	) :
+  MultichannelHeterogeneousMedium(
+	  carbonPainter, temperaturePainter, 0,
+	  volWidth, volHeight, volDepth, bboxMin, bboxMax, sceneUnitMeters,
+	  sootEm, sootDensity, sootAlbedoHot, sootGHot,
+	  smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+	  0.0, 0.0, 0.0, 0.0, phase )
+{
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const IScalarPainter* condensedPainter,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const Scalar smokeKmCond,
+	const Scalar smokeNCond,
+	const Scalar smokeAlbedoCond,
+	const Scalar smokeGCond,
+	const IPhaseFunction& phase
+	) :
   HeterogeneousMedium(
 	  TrackingSigmaT633( sceneUnitMeters, sootEm, sootDensity,
-		  sootAlbedoHot, smokeKmCarbon ),
+		  sootAlbedoHot, smokeKmCarbon, smokeKmCond ),
 	  phase, volWidth, volHeight, volDepth, bboxMin, bboxMax ),
   m_pCarbonAccessor( 0 ),
   m_pTemperatureAccessor( 0 ),
+	  m_pCondensedAccessor( 0 ),
   m_sceneUnitMeters( sceneUnitMeters ),
   m_sootEm( sootEm ),
   m_sootDensity( sootDensity ),
@@ -1470,12 +1577,17 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
   m_smokeNCarbon( smokeNCarbon ),
   m_smokeAlbedoCarbon( smokeAlbedoCarbon ),
   m_smokeGCarbon( smokeGCarbon ),
+	  m_smokeKmCond( smokeKmCond ),
+	  m_smokeNCond( smokeNCond ),
+	  m_smokeAlbedoCond( smokeAlbedoCond ),
+	  m_smokeGCond( smokeGCond ),
   m_hotAbsorptionMass633( ComputeHotAbsorptionMass633( sootEm, sootDensity ) ),
   m_hotExtinctionMass633(
 	  sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0
 		  ? m_hotAbsorptionMass633 / (1.0 - sootAlbedoHot)
 		  : 0.0 ),
 	  m_coolExtinctionMass633( smokeKmCarbon ),
+	  m_condExtinctionMass633( smokeKmCond ),
 	  m_emissionBinSize( 0, 0, 0 ),
 	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
@@ -1497,16 +1609,23 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		RISE::IsFiniteDouble( sootAlbedoHot ) && RISE::IsFiniteDouble( sootGHot ) &&
 		RISE::IsFiniteDouble( smokeKmCarbon ) && RISE::IsFiniteDouble( smokeNCarbon ) &&
 		RISE::IsFiniteDouble( smokeAlbedoCarbon ) && RISE::IsFiniteDouble( smokeGCarbon ) &&
+		RISE::IsFiniteDouble( smokeKmCond ) && RISE::IsFiniteDouble( smokeNCond ) &&
+		RISE::IsFiniteDouble( smokeAlbedoCond ) && RISE::IsFiniteDouble( smokeGCond ) &&
 		sceneUnitMeters > 0.0 && sootEm >= 0.0 && sootDensity > 0.0 &&
 		sootAlbedoHot >= 0.0 && sootAlbedoHot < 1.0 &&
 		sootGHot > -1.0 && sootGHot < 1.0 &&
 		smokeKmCarbon >= 0.0 && smokeNCarbon >= 0.0 &&
 		smokeAlbedoCarbon >= 0.0 && smokeAlbedoCarbon <= 1.0 &&
-		smokeGCarbon > -1.0 && smokeGCarbon < 1.0;
+		smokeGCarbon > -1.0 && smokeGCarbon < 1.0 &&
+		(!condensedPainter ||
+			(smokeKmCond >= 0.0 && smokeNCond >= 0.0 &&
+			smokeAlbedoCond >= 0.0 && smokeAlbedoCond <= 1.0 &&
+			smokeGCond > -1.0 && smokeGCond < 1.0));
 	if( !validDimensions || !validBounds || !validOptics ||
-		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ) {
+		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ||
+		(condensedPainter && condensedPainter->HasPerChannelVariation()) ) {
 		GlobalLog()->PrintEasyError(
-			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or carbon optical parameter" );
+			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or constituent optical parameter" );
 		return;
 	}
 
@@ -1517,18 +1636,29 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	m_pTemperatureAccessor = BakeScalarChannel(
 		temperaturePainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "temperature", true );
 	if( !m_pTemperatureAccessor ) return;
+	if( condensedPainter ) {
+		m_pCondensedAccessor = BakeScalarChannel(
+			*condensedPainter, volWidth, volHeight, volDepth,
+			bboxMin, bboxMax, "condensed", false );
+		if( !m_pCondensedAccessor ) return;
+	}
 
 	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
-		*m_pCarbonAccessor, *m_pTemperatureAccessor,
-		m_hotExtinctionMass633, m_coolExtinctionMass633 );
+		*m_pCarbonAccessor, *m_pTemperatureAccessor, m_pCondensedAccessor,
+		m_hotExtinctionMass633, m_coolExtinctionMass633,
+		m_condExtinctionMass633 );
 	// The local tracking accessor evaluates carbon * k(phi(T)).  Building
 	// a majorant from that nonlinear product's corner samples can miss an
 	// interior maximum when carbon and temperature gradients oppose each
 	// other.  Build the grid from carbon alone and scale it by the global
-	// max of the hot/cool mass extinction (already in m_sigma_t_majorant):
-	// this is the required phi-sup bound.
-	InitializeTrackingAccessor( *trackingAccessor, *m_pCarbonAccessor );
+	// max of every constituent mass extinction (already in
+	// m_sigma_t_majorant).  Carbon + condensed is trilinear on the shared
+	// lattice, so its per-cell corner maximum is conservative.
+	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
+		*m_pCarbonAccessor, m_pCondensedAccessor );
+	InitializeTrackingAccessor( *trackingAccessor, *majorantAccessor );
 	safe_release( trackingAccessor );
+	safe_release( majorantAccessor );
 	m_valid = true;
 	if( !BuildThermalEmissionImportance() ) {
 		m_valid = false;
@@ -1541,6 +1671,7 @@ MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 {
 	safe_release( m_pCarbonAccessor );
 	safe_release( m_pTemperatureAccessor );
+	safe_release( m_pCondensedAccessor );
 }
 
 unsigned int MultichannelHeterogeneousMedium::EmissionBinIndex(
@@ -1582,6 +1713,7 @@ Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
 {
 	Scalar maxCarbon = 0.0;
 	Scalar maxTemperature = 0.0;
+	Scalar maxCondensed = 0.0;
 	const int halfW = static_cast<int>(m_volWidth / 2u);
 	const int halfH = static_cast<int>(m_volHeight / 2u);
 	const int halfD = static_cast<int>(m_volDepth / 2u);
@@ -1595,16 +1727,22 @@ Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
 					m_pCarbonAccessor->GetValue( ix, iy, iz ) );
 				maxTemperature = fmax( maxTemperature,
 					m_pTemperatureAccessor->GetValue( ix, iy, iz ) );
+				if( m_pCondensedAccessor ) {
+					maxCondensed = fmax( maxCondensed,
+						m_pCondensedAccessor->GetValue( ix, iy, iz ) );
+				}
 			}
 		}
 	}
-	if( maxCarbon <= 0.0 || maxTemperature <= 0.0 ) return 0.0;
+	if( (maxCarbon <= 0.0 && maxCondensed <= 0.0) || maxTemperature <= 0.0 ) return 0.0;
 
 	const Scalar blueScale = 633.0 / 380.0;
 	const Scalar hotAbsorptionMax = m_hotAbsorptionMass633 * blueScale;
 	const Scalar coolAbsorptionMax = m_coolExtinctionMass633 *
 		(1.0 - m_smokeAlbedoCarbon) * pow( blueScale, m_smokeNCarbon );
-	const Scalar absorptionMax = fmax( hotAbsorptionMax, coolAbsorptionMax );
+	const Scalar carbonAbsorptionMax = fmax( hotAbsorptionMax, coolAbsorptionMax );
+	const Scalar condAbsorptionMax = m_condExtinctionMass633 *
+		(1.0 - m_smokeAlbedoCond) * pow( blueScale, m_smokeNCond );
 
 	// Wien's displacement gives the maximum of B_lambda(T) on the band.
 	// Clamp that analytic peak to [380,780]; separating the absorption and
@@ -1613,10 +1751,17 @@ Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
 	const Scalar planckPeakNM = fmax( Scalar(380.0), fmin( Scalar(780.0), wienPeakNM ) );
 	const Scalar planckMax = PlanckSpectralRadianceNM(
 		planckPeakNM, maxTemperature );
-	return StablePositiveProduct( {
-		RepresentedBinVolume( m_bboxMin, m_bboxMax, m_emissionBinSize,
-			x, y, z, m_volWidth, m_volHeight, m_volDepth ),
-		Scalar(400.0), m_sceneUnitMeters, maxCarbon, absorptionMax, planckMax } );
+	const Scalar binVolume = RepresentedBinVolume(
+		m_bboxMin, m_bboxMax, m_emissionBinSize,
+		x, y, z, m_volWidth, m_volHeight, m_volDepth );
+	const Scalar carbonUpper = StablePositiveProduct( {
+		binVolume, Scalar(400.0), m_sceneUnitMeters,
+		maxCarbon, carbonAbsorptionMax, planckMax } );
+	const Scalar condensedUpper = StablePositiveProduct( {
+		binVolume, Scalar(400.0), m_sceneUnitMeters,
+		maxCondensed, condAbsorptionMax, planckMax } );
+	if( carbonUpper < 0.0 || condensedUpper < 0.0 ) return -1.0;
+	return carbonUpper + condensedUpper;
 }
 
 bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
@@ -1789,6 +1934,11 @@ Scalar MultichannelHeterogeneousMedium::LookupTemperature( const Point3& worldPt
 	return m_pTemperatureAccessor ? LookupChannel( *m_pTemperatureAccessor, worldPt ) : 0.0;
 }
 
+Scalar MultichannelHeterogeneousMedium::LookupCondensed( const Point3& worldPt ) const
+{
+	return m_pCondensedAccessor ? LookupChannel( *m_pCondensedAccessor, worldPt ) : 0.0;
+}
+
 Scalar MultichannelHeterogeneousMedium::HotOpticsFraction( const Point3& worldPt ) const
 {
 	return SmoothHotFraction( LookupTemperature( worldPt ) );
@@ -1818,7 +1968,9 @@ Scalar MultichannelHeterogeneousMedium::SpectralTrackingMajorant(
 	const Scalar hotMax = m_hotExtinctionMass633 * visibleBlueScale;
 	const Scalar coolMax = m_coolExtinctionMass633 *
 		pow( visibleBlueScale, m_smokeNCarbon );
-	return m_sceneUnitMeters * fmax( hotMax, coolMax );
+	const Scalar condMax = m_condExtinctionMass633 *
+		pow( visibleBlueScale, m_smokeNCond );
+	return m_sceneUnitMeters * fmax( hotMax, fmax( coolMax, condMax ) );
 }
 
 Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtNM(
@@ -1841,11 +1993,14 @@ MediumCoefficients MultichannelHeterogeneousMedium::GetCoefficients(
 	const Scalar hotScattering = hotAbsorption * m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
 	const Scalar coolExtinction = carbon * (1.0 - phi) * m_coolExtinctionMass633;
 	const Scalar coolScattering = coolExtinction * m_smokeAlbedoCarbon;
+	const Scalar condExtinction = LookupCondensed( pt ) * m_condExtinctionMass633;
+	const Scalar condScattering = condExtinction * m_smokeAlbedoCond;
 
 	const Scalar sigmaA = m_sceneUnitMeters *
-		(hotAbsorption + coolExtinction - coolScattering);
+		(hotAbsorption + coolExtinction - coolScattering +
+		 condExtinction - condScattering);
 	const Scalar sigmaS = m_sceneUnitMeters *
-		(hotScattering + coolScattering);
+		(hotScattering + coolScattering + condScattering);
 
 	MediumCoefficients c;
 	c.sigma_t = RISEPel( sigmaA + sigmaS, sigmaA + sigmaS, sigmaA + sigmaS );
@@ -1874,10 +2029,14 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 	const Scalar coolExtinction = carbon * (1.0 - phi) *
 		m_coolExtinctionMass633 * pow( wavelengthScale, m_smokeNCarbon );
 	const Scalar coolScattering = coolExtinction * m_smokeAlbedoCarbon;
+	const Scalar condExtinction = LookupCondensed( pt ) *
+		m_condExtinctionMass633 * pow( wavelengthScale, m_smokeNCond );
+	const Scalar condScattering = condExtinction * m_smokeAlbedoCond;
 	const Scalar sigmaA = m_sceneUnitMeters *
-		(hotAbsorption + coolExtinction - coolScattering);
+		(hotAbsorption + coolExtinction - coolScattering +
+		 condExtinction - condScattering);
 	const Scalar sigmaS = m_sceneUnitMeters *
-		(hotScattering + coolScattering);
+		(hotScattering + coolScattering + condScattering);
 	c.sigma_t = sigmaA + sigmaS;
 	c.sigma_s = sigmaS;
 	return c;
@@ -1900,11 +2059,16 @@ const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
 		m_coolExtinctionMass633 * pow( wavelengthScale, m_smokeNCarbon );
 	const Scalar coolScattering = m_sceneUnitMeters * coolExtinction *
 		m_smokeAlbedoCarbon;
-	const Scalar totalScattering = hotScattering + coolScattering;
+	const Scalar condExtinction = LookupCondensed( pt ) *
+		m_condExtinctionMass633 * pow( wavelengthScale, m_smokeNCond );
+	const Scalar condScattering = m_sceneUnitMeters * condExtinction *
+		m_smokeAlbedoCond;
+	const Scalar totalScattering = hotScattering + coolScattering + condScattering;
 	if( !RISE::IsFiniteDouble( totalScattering ) || totalScattering <= 0.0 ) return 0;
 
 	return new ConstituentHGPhaseClosure(
-		hotScattering, coolScattering, m_sootGHot, m_smokeGCarbon );
+		hotScattering, coolScattering, condScattering,
+		m_sootGHot, m_smokeGCarbon, m_smokeGCond );
 }
 
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(

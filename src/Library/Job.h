@@ -1737,6 +1737,31 @@ namespace RISE
 			const double smoke_g_carbon
 			);
 
+		bool AddMultichannelHeterogeneousMediumWithCondensed(
+			const char* name,
+			const char* carbon_painter,
+			const char* temperature_painter,
+			const char* condensed_painter,
+			const unsigned int bake_width,
+			const unsigned int bake_height,
+			const unsigned int bake_depth,
+			const double bboxMin[3],
+			const double bboxMax[3],
+			const double scene_unit_meters,
+			const double soot_em,
+			const double soot_density,
+			const double soot_albedo_hot,
+			const double soot_g_hot,
+			const double smoke_km_carbon,
+			const double smoke_n_carbon,
+			const double smoke_albedo_carbon,
+			const double smoke_g_carbon,
+			const double smoke_km_cond,
+			const double smoke_n_cond,
+			const double smoke_albedo_cond,
+			const double smoke_g_cond
+			);
+
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.
 		/// \return TRUE if successful, FALSE otherwise

@@ -6461,11 +6461,29 @@ namespace RISE
 							return false;
 						}
 					}
+					static const char* condensedRequired[] = {
+						"smoke_km_cond", "smoke_n_cond",
+						"smoke_albedo_cond", "smoke_g_cond"
+					};
+					const bool hasCondensed = bag.Has( "channel_condensed" );
+					for( size_t i = 0;
+						i < sizeof(condensedRequired)/sizeof(condensedRequired[0]); ++i ) {
+						const bool hasParameter = bag.Has( condensedRequired[i] );
+						if( hasCondensed != hasParameter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"MultichannelHeterogeneousMedium:: `%s` is required exactly when `channel_condensed` is present",
+								condensedRequired[i] );
+							return false;
+						}
+					}
 
 					std::string carbonPainter;
 					std::string temperaturePainter;
+					std::string condensedPainter;
 					if( !ParsePainterSource( bag.GetString( "channel_carbon" ), carbonPainter ) ||
-						!ParsePainterSource( bag.GetString( "channel_temperature" ), temperaturePainter ) ) {
+						!ParsePainterSource( bag.GetString( "channel_temperature" ), temperaturePainter ) ||
+						(hasCondensed && !ParsePainterSource(
+							bag.GetString( "channel_condensed" ), condensedPainter )) ) {
 						GlobalLog()->PrintEasyError(
 							"MultichannelHeterogeneousMedium:: channel sources must be `painter <scalar_painter-name>`" );
 						return false;
@@ -6492,21 +6510,32 @@ namespace RISE
 					bag.GetVec3( "bbox_min", bboxMin );
 					bag.GetVec3( "bbox_max", bboxMax );
 
-					const bool ok = pJob.AddMultichannelHeterogeneousMedium(
-						bag.GetString( "name" ).c_str(),
-						carbonPainter.c_str(), temperaturePainter.c_str(),
-						static_cast<unsigned int>( resolution[0] ),
-						static_cast<unsigned int>( resolution[1] ),
-						static_cast<unsigned int>( resolution[2] ),
-						bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
-						bag.GetDouble( "soot_em" ),
-						bag.GetDouble( "soot_density" ),
-						bag.GetDouble( "soot_albedo_hot" ),
-						bag.GetDouble( "soot_g_hot" ),
-						bag.GetDouble( "smoke_km_carbon" ),
-						bag.GetDouble( "smoke_n_carbon" ),
-						bag.GetDouble( "smoke_albedo_carbon" ),
-						bag.GetDouble( "smoke_g_carbon" ) );
+					const bool ok = hasCondensed ?
+						pJob.AddMultichannelHeterogeneousMediumWithCondensed(
+							bag.GetString( "name" ).c_str(),
+							carbonPainter.c_str(), temperaturePainter.c_str(),
+							condensedPainter.c_str(),
+							static_cast<unsigned int>( resolution[0] ),
+							static_cast<unsigned int>( resolution[1] ),
+							static_cast<unsigned int>( resolution[2] ),
+							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+							bag.GetDouble( "soot_em" ), bag.GetDouble( "soot_density" ),
+							bag.GetDouble( "soot_albedo_hot" ), bag.GetDouble( "soot_g_hot" ),
+							bag.GetDouble( "smoke_km_carbon" ), bag.GetDouble( "smoke_n_carbon" ),
+							bag.GetDouble( "smoke_albedo_carbon" ), bag.GetDouble( "smoke_g_carbon" ),
+							bag.GetDouble( "smoke_km_cond" ), bag.GetDouble( "smoke_n_cond" ),
+							bag.GetDouble( "smoke_albedo_cond" ), bag.GetDouble( "smoke_g_cond" ) ) :
+						pJob.AddMultichannelHeterogeneousMedium(
+							bag.GetString( "name" ).c_str(),
+							carbonPainter.c_str(), temperaturePainter.c_str(),
+							static_cast<unsigned int>( resolution[0] ),
+							static_cast<unsigned int>( resolution[1] ),
+							static_cast<unsigned int>( resolution[2] ),
+							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+							bag.GetDouble( "soot_em" ), bag.GetDouble( "soot_density" ),
+							bag.GetDouble( "soot_albedo_hot" ), bag.GetDouble( "soot_g_hot" ),
+							bag.GetDouble( "smoke_km_carbon" ), bag.GetDouble( "smoke_n_carbon" ),
+							bag.GetDouble( "smoke_albedo_carbon" ), bag.GetDouble( "smoke_g_carbon" ) );
 					if( ok ) s_sceneOptions.metric_medium_committed = true;
 					return ok;
 				}
@@ -6517,12 +6546,13 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "multichannel_heterogeneous_medium";
 						cd.category = ChunkCategory::Medium;
-						cd.description = "Preview-only painter-baked carbon + temperature medium on one trilinear lattice.";
+						cd.description = "Preview-only painter-baked carbon, temperature, and optional condensed-organic medium on one trilinear lattice.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true; p.description = "Unique medium name"; }
 						{ auto& p = P(); p.name = "channel_carbon"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Carbon source: `painter <scalar_painter-name>` [g/m^3]"; }
 						{ auto& p = P(); p.name = "channel_temperature"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Temperature source: `painter <scalar_painter-name>` [K]"; }
-						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature lattice resolution (integer X Y Z, each >= 2)"; }
+						{ auto& p = P(); p.name = "channel_condensed"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Condensed-organic source: `painter <scalar_painter-name>` [g/m^3]"; }
+						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature/condensed lattice resolution (integer X Y Z, each >= 2)"; }
 						{ auto& p = P(); p.name = "bbox_min"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox minimum"; }
 						{ auto& p = P(); p.name = "bbox_max"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox maximum"; }
 						{ auto& p = P(); p.name = "soot_em"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon E(m) absorption function"; }
@@ -6533,6 +6563,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "smoke_n_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon Angstrom exponent"; }
 						{ auto& p = P(); p.name = "smoke_albedo_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon single-scattering albedo"; }
 						{ auto& p = P(); p.name = "smoke_g_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon HG asymmetry"; }
+						{ auto& p = P(); p.name = "smoke_km_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic mass extinction at 633 nm [m^2/g]; required with channel_condensed"; }
+						{ auto& p = P(); p.name = "smoke_n_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic Angstrom exponent; required with channel_condensed"; }
+						{ auto& p = P(); p.name = "smoke_albedo_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic single-scattering albedo; required with channel_condensed"; }
+						{ auto& p = P(); p.name = "smoke_g_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic HG asymmetry; required with channel_condensed"; }
 						return cd;
 					}();
 					return d;

@@ -34,6 +34,7 @@
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/MediumTransport.h"
+#include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -232,6 +233,27 @@ namespace
 		return ok ? medium : nullptr;
 	}
 
+	IMedium* CreateMediumWithCondensed(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const IScalarPainter& condensed,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const Scalar sceneUnitMeters,
+		const unsigned int resolution = 8
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool ok = RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+			&medium, carbon, temperature, condensed,
+			resolution, resolution, resolution,
+			bboxMin, bboxMax, sceneUnitMeters,
+			0.26, 1800.0, 0.10, 0.5,
+			8.7, 1.2, 0.6, -0.4,
+			4.0, 0.5, 0.9, 0.7 );
+		return ok ? medium : nullptr;
+	}
+
 	Scalar SampleMeanCosine(
 		const IPhaseFunction& phase,
 		const unsigned int seed,
@@ -244,6 +266,23 @@ namespace
 		Scalar sum = 0.0;
 		for( unsigned int i = 0; i < sampleCount; ++i ) {
 			sum += Vector3Ops::Dot( wi, phase.Sample( wi, sampler ) );
+		}
+		return sum / Scalar( sampleCount );
+	}
+
+	Scalar SampleMeanSquaredCosine(
+		const IPhaseFunction& phase,
+		const unsigned int seed,
+		const unsigned int sampleCount = 80000
+		)
+	{
+		RandomNumberGenerator rng( seed );
+		Implementation::IndependentSampler sampler( rng );
+		const Vector3 wi( 0, 0, 1 );
+		Scalar sum = 0.0;
+		for( unsigned int i = 0; i < sampleCount; ++i ) {
+			const Scalar cosine = Vector3Ops::Dot( wi, phase.Sample( wi, sampler ) );
+			sum += cosine * cosine;
 		}
 		return sum / Scalar( sampleCount );
 	}
@@ -442,6 +481,162 @@ namespace
 		safe_release( carbon );
 		safe_release( hotTemperature );
 		safe_release( coolTemperature );
+	}
+
+	void TestCondensedConstituentOpticsAndClosure()
+	{
+		std::cout << "TestCondensedConstituentOpticsAndClosure" << std::endl;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 800.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* condensed =
+			new AffineWorldScalarPainter( 2.0, 1.0, 0.0, 0.0 );
+		IMedium* medium = CreateMediumWithCondensed(
+			*carbon, *temperature, *condensed,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( fire && fire->IsValid(), "three-channel fire medium constructs" );
+		if( fire ) {
+			const Point3 p( 0.4375, 0.4375, 0.4375 );
+			const Scalar expectedCondensed = 2.4375;
+			Check( Near( fire->LookupCondensed( p ), expectedCondensed, 1e-12 ),
+				"condensed channel is baked on the shared trilinear lattice" );
+
+			const Scalar nm = 500.0;
+			const Scalar wavelengthScale = 633.0 / nm;
+			const Scalar hotAbsorptionMass =
+				6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+			const Scalar hotAbsorption = 0.5 * hotAbsorptionMass * wavelengthScale;
+			const Scalar hotScattering = hotAbsorption * 0.10 / 0.90;
+			const Scalar coolExtinction = 0.5 * 8.7 * std::pow( wavelengthScale, 1.2 );
+			const Scalar coolScattering = coolExtinction * 0.6;
+			const Scalar condExtinction = expectedCondensed * 4.0 *
+				std::pow( wavelengthScale, 0.5 );
+			const Scalar condScattering = condExtinction * 0.9;
+			const MediumCoefficientsNM coeff = fire->GetCoefficientsNM( p, nm );
+			Check( NearRelative( coeff.sigma_t,
+				hotAbsorption + hotScattering + coolExtinction + condExtinction, 1e-13 ) &&
+				NearRelative( coeff.sigma_s,
+					hotScattering + coolScattering + condScattering, 1e-13 ),
+				"summed spectral optics include condensed extinction and albedo split" );
+
+			const Scalar expectedMean =
+				(hotScattering * 0.5 + coolScattering * -0.4 + condScattering * 0.7) /
+				(hotScattering + coolScattering + condScattering);
+			const Scalar totalScattering =
+				hotScattering + coolScattering + condScattering;
+			const Scalar hotWeight = hotScattering / totalScattering;
+			const Scalar coolWeight = coolScattering / totalScattering;
+			const Scalar condWeight = condScattering / totalScattering;
+			const IPhaseFunction* closure = fire->MakePhaseClosure( p, nm );
+			Check( closure && NearRelative( closure->GetMeanCosine(), expectedMean, 1e-13 ),
+				"phase closure is the sigma_s-weighted three-constituent HG mixture" );
+			if( closure ) {
+				Check( std::fabs( SampleMeanCosine( *closure, 0xc0ddu ) - expectedMean ) < 0.015,
+					"condensed g affects sampled continuation directions" );
+				const Scalar expectedSecondMoment =
+					hotWeight * (1.0 + 2.0 * 0.5 * 0.5) / 3.0 +
+					coolWeight * (1.0 + 2.0 * -0.4 * -0.4) / 3.0 +
+					condWeight * (1.0 + 2.0 * 0.7 * 0.7) / 3.0;
+				Check( std::fabs( SampleMeanSquaredCosine(
+					*closure, 0x5ec0du ) - expectedSecondMoment ) < 0.01,
+					"closure sampling preserves the HG-mixture second moment" );
+
+				const Scalar cosine = 0.25;
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo( std::sqrt( 1.0 - cosine*cosine ), 0, cosine );
+				const Scalar expectedPhase =
+					hotWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, 0.5 ) +
+					coolWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, -0.4 ) +
+					condWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, 0.7 );
+				Check( NearRelative( closure->Evaluate( wi, wo ), expectedPhase, 1e-13 ) &&
+					NearRelative( closure->Pdf( wi, wo ), expectedPhase, 1e-13 ),
+					"closure Evaluate and Pdf retain the explicit three-lobe mixture" );
+			}
+			safe_release( closure );
+
+			const Scalar majorant = fire->TrackingMajorantAtNM( p, 500.0 );
+			Check( majorant >= fire->GetCoefficientsNM( p, 380.0 ).sigma_t &&
+				majorant >= coeff.sigma_t &&
+				majorant >= fire->GetCoefficientsNM( p, 780.0 ).sigma_t,
+				"shared extinction majorant bounds the summed carbon and condensed optics" );
+
+			condensed->bias = 20.0;
+			Check( Near( fire->LookupCondensed( p ), expectedCondensed, 1e-12 ),
+				"condensed painter is baked once rather than read during transport" );
+		}
+
+		safe_release( medium );
+		safe_release( condensed );
+		safe_release( temperature );
+		safe_release( carbon );
+
+		IScalarPainter* zeroCarbon = nullptr;
+		IScalarPainter* hotTemperature = nullptr;
+		IScalarPainter* pureCondensed = nullptr;
+		RISE_API_CreateUniformScalarPainter( &zeroCarbon, 0.0 );
+		RISE_API_CreateUniformScalarPainter( &hotTemperature, 1200.0 );
+		RISE_API_CreateUniformScalarPainter( &pureCondensed, 1.0 );
+		IMedium* condensedOnly = CreateMediumWithCondensed(
+			*zeroCarbon, *hotTemperature, *pureCondensed,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0, 4 );
+		const MultichannelHeterogeneousMedium* condensedFire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( condensedOnly );
+		const Scalar emissionNM = 550.0;
+		const Scalar condensedExtinction = 4.0 * std::pow( 633.0 / emissionNM, 0.5 );
+		const Scalar expectedEmission = condensedExtinction * (1.0 - 0.9) *
+			PlanckSpectralRadianceNM( emissionNM, 1200.0 );
+		Check( condensedFire && NearRelative( condensedFire->GetThermalEmissionNM(
+			Point3( 0.5, 0.5, 0.5 ), emissionNM ), expectedEmission, 1e-13 ) &&
+			condensedFire->GetThermalEmissionImportance() > 0.0,
+			"pure-condensed thermal emission is sigma_a times Planck radiance with CDF support" );
+		safe_release( condensedOnly );
+		safe_release( pureCondensed );
+		safe_release( hotTemperature );
+		safe_release( zeroCarbon );
+
+		IScalarPainter* equalCarbon = nullptr;
+		IScalarPainter* equalTemperature = nullptr;
+		IScalarPainter* equalCondensed = nullptr;
+		RISE_API_CreateUniformScalarPainter( &equalCarbon, 1.0 );
+		RISE_API_CreateUniformScalarPainter( &equalTemperature, 800.0 );
+		RISE_API_CreateUniformScalarPainter( &equalCondensed, 1.0 );
+		const Scalar equalExtinctionMass = 8.7;
+		const Scalar equalHotAlbedo = 0.1;
+		const Scalar equalSootDensity = 1800.0;
+		const Scalar equalSootEm = equalExtinctionMass * (1.0 - equalHotAlbedo) *
+			633.0e-9 * equalSootDensity / (6.0 * PI * 1.0e-3);
+		IMedium* equalMedium = nullptr;
+		const bool equalCreated =
+			RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+				&equalMedium, *equalCarbon, *equalTemperature, *equalCondensed,
+				4, 4, 4, Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+				equalSootEm, equalSootDensity, equalHotAlbedo, 0.5,
+				equalExtinctionMass, 1.2, 0.6, -0.4,
+				equalExtinctionMass, 0.5, 0.9, 0.7 );
+		const MultichannelHeterogeneousMedium* equalFire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( equalMedium );
+		bool equalMajorantBoundsSupport = equalCreated && equalFire;
+		if( equalFire ) {
+			const Scalar positions[] = { 0.125, 0.5, 0.875 };
+			const Scalar wavelengths[] = { 380.0, 500.0, 633.0, 780.0 };
+			for( const Scalar x : positions ) {
+				const Point3 samplePoint( x, 1.0-x, 0.5 );
+				for( const Scalar wavelength : wavelengths ) {
+					equalMajorantBoundsSupport = equalMajorantBoundsSupport &&
+						equalFire->TrackingMajorantAtNM( samplePoint, wavelength ) >=
+							equalFire->GetCoefficientsNM( samplePoint, wavelength ).sigma_t;
+				}
+			}
+		}
+		Check( equalMajorantBoundsSupport,
+			"majorant bounds equal carbon-plus-condensed extinction over space and wavelength" );
+		safe_release( equalMedium );
+		safe_release( equalCondensed );
+		safe_release( equalTemperature );
+		safe_release( equalCarbon );
 	}
 
 	void TestWavelengthBoundConstituentPhaseClosure()
@@ -865,6 +1060,23 @@ namespace
 		}
 	}
 
+	void AddCondensedFields( ParseStateBag& bag, const char* omit )
+	{
+		struct Pair { const char* key; const char* value; };
+		static const Pair values[] = {
+			{ "channel_condensed", "painter condensed" },
+			{ "smoke_km_cond", "4.0" },
+			{ "smoke_n_cond", "0.5" },
+			{ "smoke_albedo_cond", "0.9" },
+			{ "smoke_g_cond", "0.7" }
+		};
+		for( const Pair& value : values ) {
+			if( !omit || std::string( value.key ) != omit ) {
+				bag.SetSingle( value.key, value.value );
+			}
+		}
+	}
+
 	void TestDescriptorAndRequiredness()
 	{
 		std::cout << "TestDescriptorAndRequiredness" << std::endl;
@@ -879,6 +1091,18 @@ namespace
 			if( parameter.required ) required.push_back( parameter.name );
 		}
 		Check( required.size() == 14, "all 14 Phase-A fields are descriptor-required" );
+		const char* condensedFields[] = {
+			"channel_condensed", "smoke_km_cond", "smoke_n_cond",
+			"smoke_albedo_cond", "smoke_g_cond"
+		};
+		for( const char* field : condensedFields ) {
+			bool foundOptional = false;
+			for( const ParameterDescriptor& parameter : descriptor.parameters ) {
+				if( parameter.name == field ) foundOptional = !parameter.required;
+			}
+			Check( foundOptional,
+				(std::string( field ) + " is advertised as conditionally required").c_str() );
+		}
 
 		IJobPriv* job = nullptr;
 		RISE_CreateJobPriv( &job );
@@ -891,6 +1115,23 @@ namespace
 			Check( !parser->Finalize( bag, *job ),
 				("omitting required parameter " + omitted + " fails").c_str() );
 		}
+		const char* condensedTuple[] = {
+			"smoke_km_cond", "smoke_n_cond", "smoke_albedo_cond", "smoke_g_cond"
+		};
+		for( const char* omitted : condensedTuple ) {
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, nullptr );
+			AddCondensedFields( bag, omitted );
+			Check( !parser->Finalize( bag, *job ),
+				(std::string( "channel_condensed without " ) + omitted + " fails").c_str() );
+		}
+		for( const char* orphaned : condensedTuple ) {
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, nullptr );
+			bag.SetSingle( orphaned, "0.5" );
+			Check( !parser->Finalize( bag, *job ),
+				(std::string( orphaned ) + " without channel_condensed fails").c_str() );
+		}
 		safe_release( job );
 	}
 
@@ -901,10 +1142,12 @@ namespace
 			"scene_options\n{\nscene_unit 0.01\n}\n\n"
 			"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
 			"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
+			"scalar_painter\n{\nname condensed\nvalue 2\n}\n\n"
 			"multichannel_heterogeneous_medium\n{\n"
 			"name fire\n"
 			"channel_carbon painter carbon\n"
 			"channel_temperature painter temperature\n"
+			"channel_condensed painter condensed\n"
 			"bake_resolution 4 4 4\n"
 			"bbox_min 0 0 0\n"
 			"bbox_max 100 100 100\n"
@@ -916,6 +1159,10 @@ namespace
 			"smoke_n_carbon 1.2\n"
 			"smoke_albedo_carbon 0.6\n"
 			"smoke_g_carbon -0.4\n"
+			"smoke_km_cond 4.0\n"
+			"smoke_n_cond 0.5\n"
+			"smoke_albedo_cond 0.9\n"
+			"smoke_g_cond 0.7\n"
 			"}\n";
 	}
 
@@ -944,8 +1191,8 @@ namespace
 			if( fire ) {
 				const Scalar hotAbsorptionMass =
 					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
-				const Scalar expectedSigmaT = 0.01 * 0.5 *
-					(hotAbsorptionMass / 0.90 + 8.7);
+				const Scalar expectedSigmaT = 0.01 *
+					(0.5 * (hotAbsorptionMass / 0.90 + 8.7) + 2.0 * 4.0);
 				Check( Near( fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t[0],
 					expectedSigmaT, 1e-12 ),
 					"scene_options.scene_unit reaches medium construction" );
@@ -957,13 +1204,16 @@ namespace
 						0.10 / 0.90;
 					const Scalar coolScattering = 0.5 * 8.7 *
 						pow( wavelengthScale, 1.2 ) * 0.60;
+					const Scalar condScattering = 2.0 * 4.0 *
+						pow( wavelengthScale, 0.5 ) * 0.90;
 					const Scalar expectedMean =
-						(hotScattering * 0.8 + coolScattering * -0.4) /
-						(hotScattering + coolScattering);
+						(hotScattering * 0.8 + coolScattering * -0.4 +
+						 condScattering * 0.7) /
+						(hotScattering + coolScattering + condScattering);
 					const IPhaseFunction* closure = fire->MakePhaseClosure(
 						Point3( 50, 50, 50 ), nm );
 					Check( closure && Near( closure->GetMeanCosine(), expectedMean, 1e-12 ),
-						"CST wiring preserves both authored g values in wavelength-bound mixtures" );
+						"CST wiring preserves all authored g values in wavelength-bound mixtures" );
 					if( closure ) closure->release();
 				}
 			}
@@ -978,6 +1228,7 @@ int main()
 {
 	TestBakedTrilinearChannelsAndOptics();
 	TestChromaticNMTrackingAndTransmittance();
+	TestCondensedConstituentOpticsAndClosure();
 	TestWavelengthBoundConstituentPhaseClosure();
 	TestContinuationPhaseClosurePreflightTable();
 	TestPhysicalUnitsAndSceneScale();
