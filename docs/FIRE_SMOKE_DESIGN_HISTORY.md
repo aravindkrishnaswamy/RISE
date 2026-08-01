@@ -878,3 +878,25 @@ it was already tried and refuted here.
   on the seam, no fixture is written twice. A sweep of §7.2 confirmed the
   two SSS sites were the last instances.
 
+- **r46 (2026-08-01):** closed the Phase-A chem SPD binding gap — the
+  agent's twelfth stop: §4.4 defines ε_chem from unit-normalized per-band
+  SPDs, and the manifest-less Phase-A chunk bound the three chem *channels*
+  but provided no way to supply S_b(λ), its normalization interval, or
+  units — with §9's no-implicit-defaults rule correctly forbidding the
+  loader from inventing them. **Adopted the agent's option 1**: per band,
+  the chunk requires `chem_spd_<b>` (a named `IFunction1D` spectral curve —
+  the same reference mechanism `homogeneous_medium` already uses for
+  `absorption_spectral`) and `chem_interval_<b>` (the declared [λa,b]).
+  The loader normalizes the curve to unit integral over the declared
+  interval at construction using a **pinned 1 nm trapezoid** — explicitly
+  not r37's 21-point Gauss–Legendre, whose own scope caveat excludes
+  narrow-band SPDs — so §4.4's convention holds by construction from an
+  authored *shape*; this load-time normalization is distinct from the
+  forbidden renderer-band renormalization (clipping to [380,780] still
+  loses out-of-band power without redistribution). Channels read in W/m³.
+  Everything stays preview-only fixture material until Q1 adopts real
+  records via `fire_medium`'s Phase-C chem record. Landed by the agent
+  before the stop: the condensed constituent (70f00d81) and the φ-aware
+  root-split 7-point quadrature (23bf6e33), both zero-P1 with green
+  suites.
+

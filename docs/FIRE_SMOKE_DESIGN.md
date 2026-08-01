@@ -3958,6 +3958,31 @@ is never optional):
 Required only when `channel_condensed` is present:
 `smoke_km_cond`, `smoke_n_cond`, `smoke_albedo_cond`, `smoke_g_cond`.
 
+Required whenever the chem channels are present (all three channels or
+`chem_model=none` — the existing all-or-none rule), **per band b ∈
+{ch, c2, co2} (r46 — the chunk bound the channels but gave the renderer no
+way to turn a band-integrated q̇‴_b field into per-nm emission)**:
+
+| parameter | meaning |
+|---|---|
+| `chem_spd_<b>` | a named spectral curve (`IFunction1D`, the same reference mechanism as `homogeneous_medium`'s `absorption_spectral`) giving the band's SPD *shape* S_b(λ) |
+| `chem_interval_<b>` | the band's normalization interval λa λb in nm — the [λa,b] of §4.4's ∫S_b dλ ≡ 1 |
+
+The loader **normalizes at construction**: it computes ∫S_b over the
+declared interval with a **pinned 1 nm trapezoid rule** and divides the
+curve by it once, making the §4.4 unit-normalization hold by construction
+(authors supply shape, not a hand-normalized curve). Two deliberate
+details: the normalization rule is *not* the r37 21-point Gauss–Legendre —
+r37's own scope caveat says the smooth-integrand rule does not extend to
+narrow-band SPDs, and a 10 nm chem band would break it; and this load-time
+normalization is *not* the forbidden renderer-band renormalization — it
+establishes the convention over the band's own declared interval, after
+which clipping to [380, 780] loses out-of-band power without
+redistribution, exactly as §4.4 demands. Chem channel values are read in
+W/m³ (§3.3's q̇‴_b). All of it remains preview-only fixtures until §12 Q1
+adopts real records — which arrive through `fire_medium`'s chem record in
+Phase C, not through these parameters.
+
 There is **no composite `phase` parameter** — the §4.3 closure is a
 σ_s-weighted mixture of *per-constituent* HG lobes, so a single `phase hg g`
 would be ambiguous about which constituent it governs and would silently
