@@ -1,0 +1,227 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#
+#   File:           pt_fire_phase_b_nee_spectral.RISEscene
+#   Description:    Phase-B spectral fire handback.  A hot soot core and a broader cool smoke plume share
+#                   one painter-baked fire medium.  Emissive-volume NEE lets the core illuminate the smoke,
+#                   floor, back wall, and diffuse spheres; there are deliberately no authored lights.
+#
+#                   The EXR is unmodified scene-linear radiance.  The PNG is an ACES display preview at -4 EV.
+#                   This is a transport demonstration, not a predictive combustion simulation.
+#
+#############################################################################################################
+
+scene_options
+{
+	scene_unit			1.0
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples				64
+	nmbegin				380
+	nmend				780
+	num_wavelengths			40
+	spectral_samples		1
+	hwss				false
+	max_volume_bounce		8
+	pixel_filter			gaussian
+	oidn_denoise			true
+	oidn_prefilter			accurate
+	progressive_rendering		false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_fire_phase_b_nee_spectral
+	type				EXR
+	bpp				16
+	color_space			Rec709RGB_Linear
+	exr_compression			piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_fire_phase_b_nee_spectral
+	type				PNG
+	bpp				8
+	color_space			sRGB
+	exposure			-4.0
+	display_transform		aces
+}
+
+film
+{
+	width				360
+	height				480
+}
+
+pinhole_camera
+{
+	location			0.0 0.075 -0.38
+	lookat				0.0 0.055 0.015
+	up				0 1 0
+	fov				30.0
+}
+
+#############################################################################################################
+# Diffuse receivers.  With no positional, area, or environment light in the scene, illumination on these
+# surfaces is attributable to the bounded thermal-emission distribution sampled by Phase-B volume NEE.
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name				receiver_white
+	color				0.72 0.72 0.72
+}
+
+uniformcolor_painter
+{
+	name				receiver_dark
+	color				0.16 0.18 0.22
+}
+
+lambertian_material
+{
+	name				white_diffuse
+	reflectance			receiver_white
+}
+
+lambertian_material
+{
+	name				dark_diffuse
+	reflectance			receiver_dark
+}
+
+box_geometry
+{
+	name				floor_geometry
+	width				0.42
+	height				0.018
+	depth				0.34
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geometry
+	material			white_diffuse
+	position			0.0 -0.018 0.03
+}
+
+box_geometry
+{
+	name				back_geometry
+	width				0.42
+	height				0.30
+	depth				0.018
+}
+
+standard_object
+{
+	name				back_wall
+	geometry			back_geometry
+	material			dark_diffuse
+	position			0.0 0.12 0.105
+}
+
+sphere_geometry
+{
+	name				receiver_sphere_geometry
+	radius				0.032
+}
+
+standard_object
+{
+	name				left_receiver
+	geometry			receiver_sphere_geometry
+	material			white_diffuse
+	position			-0.085 0.022 0.028
+}
+
+standard_object
+{
+	name				right_receiver
+	geometry			receiver_sphere_geometry
+	material			white_diffuse
+	position			0.085 0.022 0.028
+}
+
+#############################################################################################################
+# Flame + smoke field.  The hot core carries the visible Planck source.  A wider low-carbon plume is kept
+# near 650 K, so its own visible thermal emission is negligible while its scattering reveals fire lighting.
+#############################################################################################################
+
+expression_function2d
+{
+	name				phase_b_carbon_shape
+	def				core_center 0.08*sin(12*v)+0.025*sin(31*v)
+	def				core_dx abs((2*u-1)-core_center)
+	def				core_width 0.55*(1-v)+0.055
+	def				core_side 1-smoothstep(0.68*core_width,core_width,core_dx)
+	def				core core_side*smoothstep(0.01,0.09,v)*(1-smoothstep(0.88,1.0,v))
+	def				smoke_center -0.12*sin(7*v)+0.055*sin(23*v)
+	def				smoke_dx abs((2*u-1)-smoke_center)
+	def				smoke_width 0.22+0.30*v
+	def				smoke_side 1-smoothstep(0.72*smoke_width,smoke_width,smoke_dx)
+	def				smoke smoke_side*smoothstep(0.22,0.45,v)*(1-smoothstep(0.92,1.0,v))
+	expr				clamp(core+0.035*smoke,0,1)
+}
+
+expression_function2d
+{
+	name				phase_b_temperature_shape
+	def				center 0.08*sin(12*v)+0.025*sin(31*v)
+	def				dx abs((2*u-1)-center)
+	def				width 0.55*(1-v)+0.055
+	def				side 1-smoothstep(0.68*width,width,dx)
+	def				base smoothstep(0.01,0.09,v)
+	def				tip 1-smoothstep(0.88,1.0,v)
+	expr				clamp(side*base*tip,0,1)
+}
+
+scalar_painter
+{
+	name				carbon_field
+	function2d			phase_b_carbon_shape
+	scale				2.0
+	bias				0.0
+}
+
+scalar_painter
+{
+	name				temperature_field
+	function2d			phase_b_temperature_shape
+	scale				1750.0
+	bias				650.0
+}
+
+multichannel_heterogeneous_medium
+{
+	name				phase_b_fire
+	channel_carbon			painter carbon_field
+	channel_temperature		painter temperature_field
+	bake_resolution			112 176 16
+	bbox_min			-0.055 0.0 -0.020
+	bbox_max			 0.055 0.16 0.020
+
+	soot_em				0.26
+	soot_density			1800
+	soot_albedo_hot			0.10
+	soot_g_hot			0.5
+	smoke_km_carbon			8.7
+	smoke_n_carbon			1.2
+	smoke_albedo_carbon		0.72
+	smoke_g_carbon			0.6
+}
+
+global_medium
+{
+	medium				phase_b_fire
+}
