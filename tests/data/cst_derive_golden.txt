@@ -191,7 +191,7 @@ scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene  75a88d80a5d4bcc44ae93b
 scenes/Tests/Materials/sheen.RISEscene  4b443ded5e7ce956924503e31fd70087a7c240f13f59001cae5d5e885e2f8669  1532  31
 scenes/Tests/Materials/spectral_gold_sphere.RISEscene  409f98e62bfdd3d708d5b09c36ce49f06f814f2944b0ec9b2da484cf9065e9f6  906  24
 scenes/Tests/Materials/spectral_skin_fast.RISEscene  e04053742ab9e0d59deee5f115e47e5ec98546467964f9a77b1cfbbfa2540da2  1232  26
-scenes/Tests/Materials/spectral_skinmodel.RISEscene  1c60001cf34ff955d9a3683c07f6eff73cbd48d25381c8c8df4b654d1294b02b  2207  37
+scenes/Tests/Materials/spectral_skinmodel.RISEscene  fc2f7ca07b84fb66efeaa0038dfb95ca9cce4b36c4614ace52b98558681bf422  2206  37
 scenes/Tests/Materials/texture_dispersion.RISEscene  fbed8bbafd80034d4f0ed9f694c04bad8750bea9fef2b756bb75d157b2534780  1524  31
 scenes/Tests/Materials/thinfilm_ladder.RISEscene  b3c6d91fb66b8a0e23aacc2a6e9922e52c326ca299fec17379fd632de98b51fc  2254  40
 scenes/Tests/Materials/transmission.RISEscene  6441e017379ce2e1d0d7a73ccc9b072ccb8144be0a69fc8e3de375208a255694  2221  38
