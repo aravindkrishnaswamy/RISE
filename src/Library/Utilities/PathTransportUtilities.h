@@ -67,6 +67,17 @@ namespace RISE
 			return RISE::IsFiniteDouble( density ) && density > 0;
 		}
 
+		// Scalar NM analog tracking uses the same deterministic transmittance
+		// T_det for the physical factor and the no-event atom P_0.  They cancel
+		// exactly, leaving only the reciprocal of the explicitly selected
+		// distance-technique mass (1 for pure delta tracking, 0.5 for its half
+		// of the delta-tracking/equiangular mixture).
+		inline Scalar NMNoEventSurvivalWeight( const Scalar techniqueMass )
+		{
+			return IsPositiveFiniteDensity(techniqueMass) ?
+				Scalar(1.0)/techniqueMass : Scalar(0.0);
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// Russian Roulette
 		//////////////////////////////////////////////////////////////////////
@@ -462,29 +473,49 @@ namespace RISE
 			Scalar& effectivePdf
 			)
 		{
-			Scalar sumWeights = 0;
+			Scalar maxWeight = 0;
 			for( unsigned int i = 0; i < count; i++ ) {
-				sumWeights += candidates[i].risWeight;
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					maxWeight = r_max(maxWeight,weight);
+				}
 			}
 
-			if( sumWeights <= NEARZERO ) {
+			if( !IsPositiveFiniteDensity(maxWeight) ) {
 				effectivePdf = 0;
 				return 0;
 			}
 
-			const Scalar threshold = xi * sumWeights;
+			// Scale by the largest weight before summing.  This preserves every
+			// finite positive RIS atom without an epsilon support cutoff and keeps
+			// both the selection sum and the effective-density ratio finite when
+			// the unscaled weights are uniformly tiny or would overflow in sum.
+			Scalar scaledSum = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					scaledSum += weight/maxWeight;
+				}
+			}
+			const Scalar threshold = xi * scaledSum;
 			Scalar cumulative = 0;
 			unsigned int selected = 0;
 			for( unsigned int i = 0; i < count; i++ ) {
-				cumulative += candidates[i].risWeight;
-				if( cumulative >= threshold ) {
-					selected = i;
-					break;
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					cumulative += weight/maxWeight;
+					if( cumulative >= threshold ) {
+						selected = i;
+						break;
+					}
 				}
 			}
 
-			effectivePdf = candidates[selected].risTarget *
-				(static_cast<Scalar>( count ) / sumWeights);
+			effectivePdf = (candidates[selected].risTarget/maxWeight) *
+				(static_cast<Scalar>( count )/scaledSum);
+			if( !IsPositiveFiniteDensity(effectivePdf) ) {
+				effectivePdf = 0;
+			}
 			return selected;
 		}
 #endif

@@ -230,6 +230,14 @@ RayCaster::RayCaster(
   bWantsWireEdgeInfo( false ),
   bXrayViewResolve( false ),
 	bFirePelDiagnosticEmitted( false ),
+	bCompetingMediumGuideAlphaNonzero( false ),
+	nCompetingMediumGuideSampleCount( 0 ),
+	bCompetingMediumReachPdfMismatch( false ),
+	bCompetingMediumZeroSurvivalObserved( false ),
+	bCompetingMediumIntermediateSurvivalObserved( false ),
+	bCompetingMediumUnitSurvivalObserved( false ),
+	nMediumContinuationRRMinDepth( 3 ),
+	dMediumContinuationRRThreshold( 0.05 ),
   iPendingSoloKind( 0 ),
   pendingSoloLight( 0 ),
   pendingSoloLuminary( 0 )
@@ -1942,6 +1950,14 @@ bool RayCaster::CastRayNMImpl_(
 				pLightSampler->GetVolumeEmissionMediumCount() > 0 &&
 				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
 					*pMedium);
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+				0.0 : rc.guidingAlpha;
+			if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+				bCompetingMediumGuideAlphaNonzero.store(
+					true,std::memory_order_relaxed);
+			}
+#endif
 			const MediumContinuationAvailability mediumAvailability =
 				ResolveMediumContinuationAvailability(
 					rs.depth < nMaxRecursions,rs.volumeBounces,nMaxVolumeBounces);
@@ -1953,7 +1969,22 @@ bool RayCaster::CastRayNMImpl_(
 				*pMedium, scatterPt, nm, true, volumeNEECompetes );
 			const IPhaseFunction* pPhase = phaseClosure.Get();
 			const Scalar counterfactualRRSurvival =
-				RayCasterRRSurvivalProbability(rs.importance*throughput);
+				PathTransportUtilities::RussianRouletteSurvivalProbability(
+					rs.depth > 0 ? rs.depth-1 : 0,
+					nMediumContinuationRRMinDepth,dMediumContinuationRRThreshold,
+					rs.importance*throughput,rs.importance);
+			if( volumeNEECompetes && pPhase && mediumAvailability.vertexAllowed ) {
+				if( counterfactualRRSurvival == 0.0 ) {
+					bCompetingMediumZeroSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				} else if( counterfactualRRSurvival == 1.0 ) {
+					bCompetingMediumUnitSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				} else {
+					bCompetingMediumIntermediateSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				}
+			}
 			VolumeEmissionVertexSample volumeVertexSample;
 			bool volumeEndpointAttempted = false;
 			Scalar volumeLd = 0.0;
@@ -1991,9 +2022,9 @@ bool RayCaster::CastRayNMImpl_(
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Volume guiding (spectral): one-sample MIS
-				if( !volumeNEECompetes && rc.pGuidingField &&
+				if( rc.pGuidingField &&
 					rc.pGuidingField->IsTrained() &&
-					rc.guidingAlpha > 0 &&
+					volumeGuidingAlpha > 0 &&
 					rs.depth < rc.maxGuidingDepth )
 				{
 					static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandleNM;
@@ -2011,8 +2042,12 @@ bool RayCaster::CastRayNMImpl_(
 						}
 
 						const Scalar xiG = mediumSampler.Get1D();
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
-						{
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+					{
+						if( volumeNEECompetes ) {
+							nCompetingMediumGuideSampleCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
 							Scalar guidePdf = 0;
 							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
 							wi = rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
@@ -2064,6 +2099,18 @@ bool RayCaster::CastRayNMImpl_(
 						const Scalar marchDirectionPdf =
 							mediumAvailability.vertexAllowed ?
 								phasePdf*counterfactualRRSurvival : phasePdf;
+						if( volumeNEECompetes ) {
+							const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+							const Scalar expectedReachPdf =
+								mediumAvailability.vertexAllowed ?
+									retainedPhasePdf*counterfactualRRSurvival :
+									retainedPhasePdf;
+							if( retainedPhasePdf != phasePdf ||
+								marchDirectionPdf != expectedReachPdf ) {
+								bCompetingMediumReachPdfMismatch.store(
+									true,std::memory_order_relaxed);
+							}
+						}
 						const VolumeEmissionSegmentState downstreamVolumeState(
 							volumeEndpointAttempted,false,
 							volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
@@ -2134,14 +2181,12 @@ bool RayCaster::CastRayNMImpl_(
 			Scalar survival = 1.0;
 			Scalar noEventProbability = 1.0;
 			if( pMedium ) {
-				const Scalar Tr = pMedium->EvalTransmittanceNM(
-					ray, ri.geometric.surfaceRange, nm );
 				noEventProbability = noScatterPdfScale_NM *
 					pMedium->EvalDistancePdfNM(
 						ray, ri.geometric.surfaceRange, false,
 						ri.geometric.surfaceRange, nm );
-				survival = noEventProbability > 0.0 ?
-					Tr / noEventProbability : 0.0;
+				survival = PathTransportUtilities::NMNoEventSurvivalWeight(
+					noScatterPdfScale_NM);
 			}
 			const VolumeEmissionSegmentState downstreamVolumeSegmentState =
 				AdvanceVolumeEmissionSegmentState(
@@ -2213,22 +2258,12 @@ bool RayCaster::CastRayNMImpl_(
 			c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 		}
 
-		// Analog no-scatter survival: reaching this surface without a scatter
-		// event is a survival outcome whose probability already carries
-		// Beer-Lambert.  The correct weight is Tr / pSurvival, where pSurvival is
-		// the DETERMINISTIC no-scatter survival pdf EvalDistancePdfNM(false).  For
-		// a HomogeneousMedium both equal exp(-sigma_t(nm)*d), so the weight is
-		// exactly 1 (byte-identical to applying no factor).  For a
-		// HeterogeneousMedium, EvalTransmittanceNM is a STOCHASTIC ratio-tracking
-		// estimate while EvalDistancePdfNM is a deterministic Simpson optical
-		// depth, so the ratio is the correct unbiased weight (NOT unity).
+		// Scalar NM analog no-scatter survival: T_det is already carried by the
+		// sampled no-event atom, so the physical T_det cancels exactly.  Only the
+		// distance-strategy selection mass remains.
 		if( pMedium ) {
-			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
-			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
-				ray, ri.geometric.range, false, ri.geometric.range, nm );
-			if( pSurvival > 0 ) {
-				c = c * ( Tr / pSurvival );
-			}
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
 		}
 
 		if( distance ) {
@@ -2239,16 +2274,10 @@ bool RayCaster::CastRayNMImpl_(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
-		// Analog no-scatter survival weight for the escape-to-background path:
-		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
-		// homogeneous, correct for heterogeneous — see the surface-hit case).
+		// Exact scalar NM no-scatter cancellation; see the surface-hit case.
 		if( pMedium ) {
-			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
-				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
-			if( pSurvival > 0 ) {
-				c = c * ( Tr / pSurvival );
-			}
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
@@ -2292,16 +2321,10 @@ bool RayCaster::CastRayNMImpl_(
 			}
 		}
 
-		// Analog no-scatter survival weight for the escape-to-environment path:
-		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
-		// homogeneous, correct for heterogeneous — see the surface-hit case).
+		// Exact scalar NM no-scatter cancellation; see the surface-hit case.
 		if( pMedium ) {
-			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
-				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
-			if( pSurvival > 0 ) {
-				c = c * ( Tr / pSurvival );
-			}
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -2477,6 +2500,22 @@ bool RayCaster::CastShadowRayTransmittance(
 		{
 			const Scalar advance = ri.geometric.surfaceRange;
 			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, ior_stack );
+			origin = segRay.PointAtLength( advance );
+			remaining -= advance;
+			if( remaining <= 0.0 ) return false;
+			rejectZeroDistanceBoundary = true;
+			continue;
+		}
+
+		// `casts_shadows=FALSE` is the ordinary visibility opt-out.  The
+		// transparent-shadow walk must preserve the same visibility contract as
+		// the binary walk; otherwise merely enabling Fresnel shadows turns a
+		// deliberately non-shadow-casting opaque prop back into an occluder.
+		// Exact null boundaries were handled above by class and remain
+		// transparent independent of this flag.
+		if( ri.pObject && !ri.pObject->DoesCastShadows() )
+		{
+			const Scalar advance = ri.geometric.surfaceRange;
 			origin = segRay.PointAtLength( advance );
 			remaining -= advance;
 			if( remaining <= 0.0 ) return false;

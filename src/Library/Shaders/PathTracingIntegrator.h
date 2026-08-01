@@ -108,6 +108,8 @@ namespace RISE
 			//! density must be the retained phase-closure Pdf times the exact
 			//! roulette-survival mass (or just phase Pdf for A_march terminals).
 			mutable std::atomic<unsigned long long>	mCompetingMediumVertexCount;
+			mutable std::atomic<unsigned long long>	mCompetingMediumEndpointAttemptCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingMediumFallbackVertexCount;
 			mutable std::atomic<bool>				mCompetingMediumGuideAlphaNonzero;
 			mutable std::atomic<unsigned long long>	mCompetingMediumGuideSampleCount;
 			mutable std::atomic<bool>				mCompetingMediumReachPdfMismatch;
@@ -122,6 +124,10 @@ namespace RISE
 			//! reads these relaxed counters.
 			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceGuideInitializationCount;
 			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceRISCount;
+			mutable std::atomic<unsigned long long>	mSurfaceVolumeEndpointAttemptCount;
+			mutable std::atomic<bool>				mSSSOrdinaryDirectContributionObserved;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceGuidedCandidateInstalledCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceRISCandidateInstalledCount;
 
 			//! Shared clay reflectance state for `clay_lights`: one synthetic
 			//! mid-grey LambertianMaterial built by CreateClayOverrideMaterial.
@@ -246,12 +252,36 @@ namespace RISE
 				return mCompetingMediumUnitSurvivalObserved.load(
 					std::memory_order_relaxed);
 			}
+			unsigned long long CompetingMediumEndpointAttemptCount() const {
+				return mCompetingMediumEndpointAttemptCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingMediumFallbackVertexCount() const {
+				return mNonCompetingMediumFallbackVertexCount.load(
+					std::memory_order_relaxed);
+			}
 			unsigned long long NonCompetingSurfaceGuideInitializationCount() const {
 				return mNonCompetingSurfaceGuideInitializationCount.load(
 					std::memory_order_relaxed);
 			}
 			unsigned long long NonCompetingSurfaceRISCount() const {
 				return mNonCompetingSurfaceRISCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long SurfaceVolumeEndpointAttemptCount() const {
+				return mSurfaceVolumeEndpointAttemptCount.load(
+					std::memory_order_relaxed);
+			}
+			bool SSSOrdinaryDirectContributionObserved() const {
+				return mSSSOrdinaryDirectContributionObserved.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceGuidedCandidateInstalledCount() const {
+				return mNonCompetingSurfaceGuidedCandidateInstalledCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceRISCandidateInstalledCount() const {
+				return mNonCompetingSurfaceRISCandidateInstalledCount.load(
 					std::memory_order_relaxed);
 			}
 

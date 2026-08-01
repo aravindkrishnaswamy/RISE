@@ -47,6 +47,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/IsotropicPhaseFunction.h"
+#include "../src/Library/Materials/NullBoundaryMaterial.h"
 #include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/PerfectRefractorMaterial.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -689,6 +690,157 @@ namespace
 		const Scalar sigmaS_;
 	};
 
+	// Frozen-scene NEE-off reference.  The proxy preserves every collision,
+	// transmittance, and source operation of the authored fire medium while
+	// deliberately exposing no endpoint distribution.  It still delegates the
+	// wavelength-bound phase closure so the reference changes no collision
+	// transport.  Install it before AttachScene on an independently
+	// loaded job; mutating a scene after preparation would invalidate the
+	// renderer lifecycle that these equality gates are meant to exercise.
+	class MarchOnlyMediumProxy :
+		public virtual IMedium,
+		public virtual Reference
+	{
+	public:
+		explicit MarchOnlyMediumProxy( const IMedium& source ) : source_(source)
+		{
+			source_.addref();
+		}
+
+		MediumCoefficients GetCoefficients( const Point3& point ) const override
+		{
+			return source_.GetCoefficients(point);
+		}
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3& point, const Scalar nm ) const override
+		{
+			return source_.GetCoefficientsNM(point,nm);
+		}
+		const IPhaseFunction* GetPhaseFunction() const override
+		{
+			return source_.GetPhaseFunction();
+		}
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3& point, const Scalar nm ) const override
+		{
+			return source_.MakePhaseClosure(point,nm);
+		}
+		Scalar SampleDistance(
+			const Ray& ray, const Scalar maxDist, ISampler& sampler,
+			bool& scattered ) const override
+		{
+			return source_.SampleDistance(ray,maxDist,sampler,scattered);
+		}
+		Scalar SampleDistanceNM(
+			const Ray& ray, const Scalar maxDist, const Scalar nm,
+			ISampler& sampler, bool& scattered ) const override
+		{
+			return source_.SampleDistanceNM(ray,maxDist,nm,sampler,scattered);
+		}
+		DistanceSample SampleDistanceWithPdf(
+			const Ray& ray, const Scalar maxDist, ISampler& sampler ) const override
+		{
+			return source_.SampleDistanceWithPdf(ray,maxDist,sampler);
+		}
+		DistanceSample SampleDistanceWithPdfNM(
+			const Ray& ray, const Scalar maxDist, const Scalar nm,
+			ISampler& sampler ) const override
+		{
+			return source_.SampleDistanceWithPdfNM(ray,maxDist,nm,sampler);
+		}
+		RISEPel EvalTransmittance(
+			const Ray& ray, const Scalar dist ) const override
+		{
+			return source_.EvalTransmittance(ray,dist);
+		}
+		Scalar EvalTransmittanceNM(
+			const Ray& ray, const Scalar dist, const Scalar nm ) const override
+		{
+			return source_.EvalTransmittanceNM(ray,dist,nm);
+		}
+		Scalar EvalDistancePdf(
+			const Ray& ray, const Scalar t, const bool scattered,
+			const Scalar maxDist ) const override
+		{
+			return source_.EvalDistancePdf(ray,t,scattered,maxDist);
+		}
+		Scalar EvalDistancePdfNM(
+			const Ray& ray, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar nm ) const override
+		{
+			return source_.EvalDistancePdfNM(ray,t,scattered,maxDist,nm);
+		}
+		Scalar EvalLogDistancePdfNM(
+			const Ray& ray, const Scalar t, const bool scattered,
+			const Scalar maxDist, const Scalar nm ) const override
+		{
+			return source_.EvalLogDistancePdfNM(ray,t,scattered,maxDist,nm);
+		}
+		bool IsHomogeneous() const override { return source_.IsHomogeneous(); }
+		Scalar ClipDistanceToBounds(
+			const Ray& ray, const Scalar dist ) const override
+		{
+			return source_.ClipDistanceToBounds(ray,dist);
+		}
+		bool GetBoundingBox( Point3& bbMin, Point3& bbMax ) const override
+		{
+			return source_.GetBoundingBox(bbMin,bbMax);
+		}
+		bool IsFireMedium() const override { return source_.IsFireMedium(); }
+		Scalar GetThermalEmissionNM(
+			const Point3& point, const Scalar nm ) const override
+		{
+			return source_.GetThermalEmissionNM(point,nm);
+		}
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray, const Scalar segmentStart,
+			const Scalar segmentEnd, const Scalar nm,
+			ISampler& sampler ) const override
+		{
+			return source_.EstimateChemEmissionSegmentNM(
+				ray,segmentStart,segmentEnd,nm,sampler);
+		}
+
+	protected:
+		~MarchOnlyMediumProxy() override { source_.release(); }
+
+	private:
+		const IMedium& source_;
+	};
+
+	bool InstallMarchOnlyGlobalMedium( IJobPriv& job )
+	{
+		const IMedium* source = job.GetScene()->GetGlobalMedium();
+		if( !source ) return false;
+		MarchOnlyMediumProxy* proxy = new MarchOnlyMediumProxy(*source);
+		job.GetScene()->SetGlobalMedium(proxy);
+		safe_release(proxy);
+		return job.GetScene()->GetGlobalMedium()!=nullptr;
+	}
+
+	bool CreatePreparedCaster(
+		IJobPriv& job, const unsigned int maxRecursion,
+		IRayCaster*& caster )
+	{
+		IShader* const shader = job.GetShaders()->GetItem("global");
+		const bool created = shader && RISE_API_CreateRayCaster(
+			&caster,false,maxRecursion,*shader,true) && caster;
+		if( created ) caster->AttachScene(job.GetScene());
+		return created;
+	}
+
+	bool LoadMarchOnlyFixture(
+		const std::filesystem::path& scenePath,
+		const unsigned int maxRecursion,
+		IJobPriv*& job,
+		IRayCaster*& caster )
+	{
+		return RISE_CreateJobPriv(&job) && job &&
+			job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+			InstallMarchOnlyGlobalMedium(*job) &&
+			CreatePreparedCaster(*job,maxRecursion,caster);
+	}
+
 	// Phase-B and Phase-C intentionally share this unsupported-material
 	// fixture family. Phase B proves the preview fallback; Phase C will rerun
 	// the same exact types against predictive-mode preflight rejection.
@@ -850,7 +1002,13 @@ namespace
 	{
 	public:
 		mutable bool sawCompetition;
-		VolumeStateTransportProbeShader() : sawCompetition(false) {}
+		VolumeStateTransportProbeShader() :
+			sawCompetition(false),
+			probeRay_(Point3(0,0,-1),Vector3(0,0,1))
+		{}
+		explicit VolumeStateTransportProbeShader( const Ray& probeRay ) :
+			sawCompetition(false), probeRay_(probeRay)
+		{}
 
 		void Shade(
 			const RuntimeContext& rc, const RayIntersection& ri,
@@ -862,7 +1020,7 @@ namespace
 			IRayCaster::RAY_STATE child;
 			Scalar value = 0.0;
 			caster.CastRayNM(rc,ri.geometric.rast,
-				Ray(Point3(0,0,-1),Vector3(0,0,1)),value,child,500.0,
+				probeRay_,value,child,500.0,
 				nullptr,nullptr,stack);
 			c = RISEPel(value,value,value);
 		}
@@ -881,6 +1039,9 @@ namespace
 
 	protected:
 		~VolumeStateTransportProbeShader() override = default;
+
+	private:
+		const Ray probeRay_;
 	};
 
 	// Unknown nested shader-op dependency used by both the Phase-B preview
@@ -929,7 +1090,8 @@ namespace
 		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
 		std::ostringstream scene;
 		scene << std::setprecision(17) <<
-			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
+			"shaderop DefaultPathTracing\n}\n"
 			"null_boundary_material\n{\nname medium_boundary\n}\n"
 			"homogeneous_medium\n{\nname receiver_smoke\n"
 			"absorption 0.9 0.9 0.9\nscattering 0.1 0.1 0.1\nphase isotropic\n}\n"
@@ -967,24 +1129,119 @@ namespace
 		OpaquePartialBlocker
 	};
 
+	enum class PhaseBMatrixMechanism
+	{
+		Ordinary,
+		TerminalTotalDepth,
+		DiffuseCapped,
+		PositionalLight,
+		HollowCavity,
+		ImmersedReceiver,
+		ThinGrazingEmitter,
+		GlassMarchOnly
+	};
+
+	void AppendPhaseBMatrixTopology(
+		std::ostringstream& scene,
+		const PhaseBMatrixTopology topology,
+		const bool castsShadows,
+		const char* prefix,
+		const Point3& position,
+		const Scalar radius )
+	{
+		if( topology == PhaseBMatrixTopology::Clear ) return;
+		const std::string base(prefix);
+		if( topology == PhaseBMatrixTopology::NullCavity ||
+			topology == PhaseBMatrixTopology::NestedSmoke ) {
+				scene <<
+				"null_boundary_material\n{\nname " << base << "_boundary\n}\n"
+				"homogeneous_medium\n{\nname " << base << "_interior\n"
+				"absorption " <<
+					(topology == PhaseBMatrixTopology::NestedSmoke ?
+						"8 8 8" : "0.25 0.25 0.25") <<
+				"\nscattering " <<
+					(topology == PhaseBMatrixTopology::NestedSmoke ?
+						"2 2 2" : "0 0 0") <<
+				"\nphase isotropic\n}\n";
+		} else {
+			scene <<
+				"uniformcolor_painter\n{\nname " << base <<
+				"_black\ncolor 0 0 0\n}\n"
+				"lambertian_material\n{\nname " << base <<
+				"_blocker_material\nreflectance " << base << "_black\n}\n";
+		}
+		scene <<
+			"sphere_geometry\n{\nname " << base << "_geometry\nradius " <<
+			radius << "\n}\n"
+			"standard_object\n{\nname " << base << "_object\ngeometry " <<
+			base << "_geometry\nmaterial " <<
+				(topology == PhaseBMatrixTopology::OpaquePartialBlocker ?
+					base + "_blocker_material" : base + "_boundary") <<
+			"\nposition " << position.x << " " << position.y << " " <<
+			position.z << "\ncasts_shadows " <<
+				(castsShadows ? "TRUE" : "FALSE") << "\n";
+		if( topology != PhaseBMatrixTopology::OpaquePartialBlocker ) {
+			scene << "interior_medium " << base << "_interior\n";
+		}
+		scene << "}\n";
+	}
+
+	std::string IsolatedSmokeReceiverMatrixScene(
+		const PhaseBMatrixTopology topology,
+		const bool castsShadows )
+	{
+		std::ostringstream scene;
+		scene << IsolatedSmokeReceiverScene();
+		AppendPhaseBMatrixTopology(scene,topology,castsShadows,
+			"smoke_matrix",Point3(0.3,0,-0.2),0.12);
+		return scene.str();
+	}
+
 	std::string SurfaceFireReceiverScene(
-		const bool positionalLight = false,
+		const PhaseBMatrixMechanism mechanism =
+			PhaseBMatrixMechanism::Ordinary,
 		const SurfaceReceiverMaterial receiverMaterial =
 			SurfaceReceiverMaterial::Lambertian,
 		const PhaseBMatrixTopology matrixTopology =
 			PhaseBMatrixTopology::Clear,
 		const bool matrixObjectCastsShadows = true )
 	{
-		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		const bool positionalLight =
+			mechanism==PhaseBMatrixMechanism::PositionalLight;
+		const bool immersed =
+			mechanism==PhaseBMatrixMechanism::ImmersedReceiver;
+		const bool thin =
+			mechanism==PhaseBMatrixMechanism::ThinGrazingEmitter;
+		const bool glass =
+			mechanism==PhaseBMatrixMechanism::GlassMarchOnly;
+		const bool hollow =
+			mechanism==PhaseBMatrixMechanism::HollowCavity;
+		const Scalar carbon = (thin || glass ? 5.0 : 1.0) *
+			kTargetSigmaSI / HotAbsorptionMass633();
 		const Point3 fireMin = positionalLight ?
-			Point3(0.05,-2.0,-2.0) : Point3(0.3,-0.45,-0.9);
+			Point3(0.05,-2.0,-2.0) : thin ?
+			Point3(0.4,-2.0,-0.15) : glass ?
+			Point3(1.1,-0.25,-1.4) : hollow ?
+			Point3(-2.0,-2.0,-2.0) : immersed ?
+			Point3(-1.5,-1.5,-1.5) : Point3(0.3,-0.45,-0.9);
 		const Point3 fireMax = positionalLight ?
-			Point3(2.5,2.0,-0.11) : Point3(1.2,0.45,-0.25);
+			Point3(2.5,2.0,-0.11) : thin ?
+			Point3(1.4,2.0,-0.13) : glass ?
+			Point3(1.5,0.25,-1.1) : hollow ?
+			Point3(2.0,2.0,2.0) : immersed ?
+			Point3(1.5,1.5,0.5) : Point3(1.2,0.45,-0.25);
 		std::ostringstream scene;
 		scene << std::setprecision(17) <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
 			"shaderop DefaultPathTracing\n}\n"
 			"uniformcolor_painter\n{\nname white\ncolor 0.8 0.8 0.8\n}\n";
+		if( glass ) {
+			scene <<
+				"uniformcolor_painter\n{\nname matrix_clear_glass\ncolor 1 1 1\n}\n"
+				"scalar_painter\n{\nname matrix_glass_ior\nvalue 1.5\n}\n"
+				"perfectrefractor_material\n{\nname matrix_glass\n"
+				"refractance matrix_clear_glass\nior matrix_glass_ior\n}\n";
+		}
 		if( receiverMaterial == SurfaceReceiverMaterial::OrenNayar ) {
 			scene <<
 				"orennayar_material\n{\nname receiver\nreflectance white\n"
@@ -1005,52 +1262,58 @@ namespace
 		scene <<
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue " <<
-			(positionalLight ? 2600.0 : kTemperatureK) << "\n}\n"
+			((positionalLight || thin || glass) ? 2600.0 : kTemperatureK) << "\n}\n"
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
 			"bake_resolution 4 4 4\nbbox_min " << fireMin.x << " " <<
 			fireMin.y << " " << fireMin.z << "\nbbox_max " << fireMax.x << " " <<
 			fireMax.y << " " << fireMax.z <<
 			"\nsoot_em 0.26\nsoot_density 1800\n"
-			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
+			"soot_albedo_hot 0" <<
+			"\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
 			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
 			"global_medium\n{\nmedium fire\n}\n";
-		if( matrixTopology == PhaseBMatrixTopology::NullCavity ||
-			matrixTopology == PhaseBMatrixTopology::NestedSmoke ) {
+		if( mechanism==PhaseBMatrixMechanism::HollowCavity ) {
 			scene <<
-				"null_boundary_material\n{\nname matrix_boundary\n}\n"
-				"homogeneous_medium\n{\nname matrix_interior\n"
-				"absorption " <<
-					(matrixTopology == PhaseBMatrixTopology::NestedSmoke ?
-						"0.35 0.35 0.35" : "0 0 0") <<
-				"\nscattering " <<
-					(matrixTopology == PhaseBMatrixTopology::NestedSmoke ?
-						"0.15 0.15 0.15" : "0 0 0") <<
-				"\nphase isotropic\n}\n";
-		} else if( matrixTopology == PhaseBMatrixTopology::OpaquePartialBlocker ) {
-			scene <<
-				"uniformcolor_painter\n{\nname matrix_black\ncolor 0 0 0\n}\n"
-				"lambertian_material\n{\nname matrix_blocker_material\n"
-				"reflectance matrix_black\n}\n";
+				"null_boundary_material\n{\nname mechanism_cavity_boundary\n}\n"
+				"scalar_painter\n{\nname mechanism_zero_carbon\nvalue 0\n}\n"
+				"scalar_painter\n{\nname mechanism_cavity_temperature\nvalue 300\n}\n"
+				"multichannel_heterogeneous_medium\n{\nname mechanism_cavity_vacuum\n"
+				"channel_carbon painter mechanism_zero_carbon\n"
+				"channel_temperature painter mechanism_cavity_temperature\n"
+				"bake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\n"
+				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
+				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"sphere_geometry\n{\nname mechanism_cavity_geometry\nradius 0.75\n}\n"
+				"standard_object\n{\nname mechanism_cavity\n"
+				"geometry mechanism_cavity_geometry\nmaterial mechanism_cavity_boundary\n"
+				"interior_medium mechanism_cavity_vacuum\nposition 0 0 -0.1\n"
+				"casts_shadows TRUE\n}\n";
 		}
-		scene <<
-			"box_geometry\n{\nname receiver_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
-			"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
-			"material receiver\nposition 0 0 0\n}\n";
-		if( matrixTopology != PhaseBMatrixTopology::Clear ) {
+		if( glass ) {
 			scene <<
-				"sphere_geometry\n{\nname matrix_geometry\nradius 0.2\n}\n"
-				"standard_object\n{\nname matrix_object\ngeometry matrix_geometry\n"
-				"material " <<
-					(matrixTopology == PhaseBMatrixTopology::OpaquePartialBlocker ?
-						"matrix_blocker_material" : "matrix_boundary") <<
-				"\nposition 0.58 0.18 -0.42\ncasts_shadows " <<
-					(matrixObjectCastsShadows ? "TRUE" : "FALSE") << "\n";
-			if( matrixTopology != PhaseBMatrixTopology::OpaquePartialBlocker ) {
-				scene << "interior_medium matrix_interior\n";
-			}
-			scene << "}\n";
+				"sphere_geometry\n{\nname mechanism_glass_geometry\nradius 0.42\n}\n"
+				"standard_object\n{\nname mechanism_glass\n"
+				"geometry mechanism_glass_geometry\nmaterial matrix_glass\n"
+				"position 0.65 0.12 -0.65\ncasts_shadows FALSE\n}\n";
 		}
+		if( hollow ) {
+			scene <<
+				"sphere_geometry\n{\nname receiver_geometry\nradius 0.12\n}\n"
+				"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
+				"material receiver\nposition 0 0 0\n}\n";
+		} else {
+			scene <<
+				"box_geometry\n{\nname receiver_geometry\nwidth 8\nheight 8\ndepth 0.2\n}\n"
+				"standard_object\n{\nname receiver_wall\ngeometry receiver_geometry\n"
+				"material receiver\nposition 0 0 0\n}\n";
+		}
+		const Point3 matrixPosition = hollow ? Point3(0.3,0,-0.1) :
+			glass ? Point3(0.65,0.12,-0.65) : Point3(0.58,0.18,-0.55);
+		const Scalar matrixRadius = (hollow || glass) ? 0.15 : 0.5;
+		AppendPhaseBMatrixTopology(scene,matrixTopology,
+			matrixObjectCastsShadows,"matrix",matrixPosition,matrixRadius);
 		if( positionalLight ) {
 			scene <<
 				"omni_light\n{\nname point_competitor\npower 0.001\n"
@@ -1059,9 +1322,12 @@ namespace
 		return scene.str();
 	}
 
-	std::string SSSFireReceiverScene( const bool randomWalk )
+	std::string SSSFireReceiverScene(
+		const bool randomWalk,
+		const PhaseBMatrixTopology matrixTopology = PhaseBMatrixTopology::Clear,
+		const bool matrixObjectCastsShadows = true )
 	{
-		const Scalar carbon = 0.05 / HotAbsorptionMass633();
+		const Scalar carbon = 0.2 / HotAbsorptionMass633();
 		std::ostringstream scene;
 		scene << std::setprecision(17) <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n"
@@ -1089,16 +1355,25 @@ namespace
 			"global_medium\n{\nmedium fire\n}\n"
 			"sphere_geometry\n{\nname receiver_geometry\nradius 1\n}\n"
 			"standard_object\n{\nname receiver_sphere\ngeometry receiver_geometry\n"
-			"material receiver\n}\n";
+			"material receiver\n}\n"
+			"omni_light\n{\nname sss_surface_light\npower 20\n"
+			"color 1 1 1\nposition 0 1.5 -2\n}\n";
+		AppendPhaseBMatrixTopology(scene,matrixTopology,
+			matrixObjectCastsShadows,"sss_matrix",Point3(0.55,0,-1.45),0.45);
 		return scene.str();
 	}
 
-	std::string SSSShaderOpFireScene()
+	std::string SSSShaderOpFireScene(
+		const PhaseBMatrixTopology matrixTopology = PhaseBMatrixTopology::Clear,
+		const bool matrixObjectCastsShadows = true )
 	{
 		const Scalar carbon = 0.2 / HotAbsorptionMass633();
 		std::ostringstream scene;
 		scene << std::setprecision(17) <<
 			"RISE ASCII SCENE 7\nstandard_shader\n{\nname global\n}\n"
+			"uniformcolor_painter\n{\nname sss_op_white\ncolor 0.8 0.8 0.8\n}\n"
+			"lambertian_material\n{\nname sss_op_receiver\n"
+			"reflectance sss_op_white\n}\n"
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
@@ -1109,8 +1384,11 @@ namespace
 			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
 			"global_medium\n{\nmedium fire\n}\n"
 			"box_geometry\n{\nname wall_geometry\nwidth 4\nheight 4\ndepth 0.2\n}\n"
-			"standard_object\n{\nname wall\ngeometry wall_geometry\nmaterial none\n"
+			"standard_object\n{\nname wall\ngeometry wall_geometry\n"
+			"material sss_op_receiver\n"
 			"position 0 0 1\n}\n";
+		AppendPhaseBMatrixTopology(scene,matrixTopology,
+			matrixObjectCastsShadows,"sss_op_matrix",Point3(0.65,0.2,0.2),0.25);
 		return scene.str();
 	}
 
@@ -2298,31 +2576,16 @@ namespace
 
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
-		IShader* globalShader = fixture.job->GetShaders()->GetItem("global");
-		const IMedium* preparedFire =
-			fixture.job->GetScene()->GetGlobalMedium();
-		if( preparedFire ) preparedFire->addref();
-		IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-		UnsupportedHomogeneousSmoke* preparationVacuum =
-			new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-		fixture.job->GetScene()->SetGlobalMedium(preparationVacuum);
-		Check( globalShader && RISE_API_CreateRayCaster(
-			&marchOnlyCaster,false,8,*globalShader,true) && marchOnlyCaster,
+		IJobPriv* marchJob = nullptr;
+		Check( LoadMarchOnlyFixture(
+			fixture.scenePath,8,marchJob,marchOnlyCaster),
 			"immersed-receiver march reference prepares without a thermal CDF" );
-		if( marchOnlyCaster ) {
-			marchOnlyCaster->AttachScene(fixture.job->GetScene());
-		}
-		fixture.job->GetScene()->SetGlobalMedium(preparedFire);
-		safe_release(preparationVacuum);
-		safe_release(vacuumPhase);
-		Check( globalShader && RISE_API_CreateRayCaster(
-			&neeCaster,false,8,*globalShader,true) && neeCaster,
+		Check( CreatePreparedCaster(*fixture.job,8,neeCaster),
 			"immersed-receiver NEE route prepares the active fire CDF" );
-		if( neeCaster ) neeCaster->AttachScene(fixture.job->GetScene());
-		safe_release(preparedFire);
-		if( !neeCaster || !marchOnlyCaster ) {
+		if( !neeCaster || !marchOnlyCaster || !marchJob ) {
 			safe_release(neeCaster);
 			safe_release(marchOnlyCaster);
+			safe_release(marchJob);
 			return;
 		}
 
@@ -2357,7 +2620,7 @@ namespace
 			Scalar variance;
 		};
 		auto momentsPT = [&]( PathTracingIntegrator& integrator,
-			const IRayCaster& route, const unsigned int seed,
+			const IScene& scene, const IRayCaster& route, const unsigned int seed,
 			const unsigned int samples ) {
 			RandomNumberGenerator rng(seed);
 			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
@@ -2366,7 +2629,7 @@ namespace
 			long double sumSquares = 0.0;
 			for( unsigned int i=0; i<samples; ++i ) {
 				const Scalar value = integrator.IntegrateRayNM(
-					rc,rast,ray,nm,*fixture.job->GetScene(),route,
+					rc,rast,ray,nm,scene,route,
 					sampler,nullptr,nullptr);
 				sum += value;
 				sumSquares += static_cast<long double>(value)*value;
@@ -2419,9 +2682,11 @@ namespace
 			new PathTracingIntegrator(ManifoldSolverConfig(),ordinaryConfig);
 		ordinaryIntegrator->SetMaxPathDepth(8);
 		const SampleMoments ordinaryPTOn = momentsPT(
-			*ordinaryIntegrator,*neeCaster,0x1aae441u,equalitySamples);
+			*ordinaryIntegrator,*fixture.job->GetScene(),*neeCaster,
+			0x1aae441u,equalitySamples);
 		const SampleMoments ordinaryPTOff = momentsPT(
-			*ordinaryIntegrator,*marchOnlyCaster,0x1aae442u,equalitySamples);
+			*ordinaryIntegrator,*marchJob->GetScene(),*marchOnlyCaster,
+			0x1aae442u,equalitySamples);
 		const SampleMoments ordinaryShaderOn = momentsShaderRoute(
 			*neeCaster,0x1aae443u,equalitySamples,0);
 		const SampleMoments ordinaryShaderOff = momentsShaderRoute(
@@ -2449,9 +2714,11 @@ namespace
 		cappedIntegrator->SetMaxPathDepth(2);
 		const unsigned int activationSamples = 80000;
 		const SampleMoments cappedPTOn = momentsPT(
-			*cappedIntegrator,*neeCaster,0x1aae445u,activationSamples);
+			*cappedIntegrator,*fixture.job->GetScene(),*neeCaster,
+			0x1aae445u,activationSamples);
 		const SampleMoments cappedPTOff = momentsPT(
-			*cappedIntegrator,*marchOnlyCaster,0x1aae446u,activationSamples);
+			*cappedIntegrator,*marchJob->GetScene(),*marchOnlyCaster,
+			0x1aae446u,activationSamples);
 		const SampleMoments cappedShaderOn = momentsShaderRoute(
 			*neeCaster,0x1aae447u,activationSamples,64);
 		const SampleMoments cappedShaderOff = momentsShaderRoute(
@@ -3012,6 +3279,7 @@ namespace
 		safe_release(probe);
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 	}
 
 	void TestThinEmitterSheetAtGrazingAngles()
@@ -3028,6 +3296,7 @@ namespace
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		IScalarPainter* carbonPainter = nullptr;
@@ -3039,6 +3308,8 @@ namespace
 			5.0*kTargetSigmaSI/HotAbsorptionMass633();
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+			RISE_CreateJobPriv(&marchJob) && marchJob &&
+			marchJob->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
 			RISE_API_CreateUniformScalarPainter(
 				&carbonPainter,carbon) && carbonPainter &&
 			RISE_API_CreateUniformScalarPainter(
@@ -3049,33 +3320,14 @@ namespace
 				0.26,1800.0,0.0,0.5,8.7,1.2,0.0,0.6) &&
 			thinFire,
 			"thin anisotropic fire sheet and grazing receiver fixture build" );
-		if( job && thinFire ) {
+		if( job && marchJob && thinFire ) {
 			job->GetScene()->SetGlobalMedium(thinFire);
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* preparedThinFire =
-				job->GetScene()->GetGlobalMedium();
-			if( preparedThinFire ) preparedThinFire->addref();
-			IsotropicPhaseFunction* vacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(
-					*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-					&marchOnlyCaster,false,8,*shader,true) &&
-				marchOnlyCaster,
+			marchJob->GetScene()->SetGlobalMedium(thinFire);
+			Check( InstallMarchOnlyGlobalMedium(*marchJob) &&
+				CreatePreparedCaster(*marchJob,8,marchOnlyCaster),
 				"thin-sheet march reference prepares without a thermal CDF" );
-			if( marchOnlyCaster ) {
-				marchOnlyCaster->AttachScene(job->GetScene());
-			}
-			job->GetScene()->SetGlobalMedium(preparedThinFire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-					&neeCaster,false,8,*shader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,8,neeCaster),
 				"thin-sheet NEE route prepares the anisotropic thermal CDF" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(preparedThinFire);
 		}
 
 		const LightSampler* lights =
@@ -3100,7 +3352,7 @@ namespace
 			sheetNormalCosine<0.05,
 			"receiver views a twenty-millimetre emitter sheet at a grazing angle" );
 
-		if( job && neeCaster && marchOnlyCaster && thinFire ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster && thinFire ) {
 			struct SampleMoments
 			{
 				Scalar mean;
@@ -3118,7 +3370,7 @@ namespace
 					ManifoldSolverConfig(),config);
 			integrator->SetMaxPathDepth(2);
 
-			auto momentsPT = [&]( const IRayCaster& route,
+			auto momentsPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -3129,7 +3381,7 @@ namespace
 				unsigned int positive = 0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					const Scalar value = integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,
+						rc,rast,ray,nm,scene,route,
 						sampler,nullptr,nullptr);
 					sum += value;
 					sumSquares +=
@@ -3189,9 +3441,9 @@ namespace
 			};
 
 			const SampleMoments ptOn =
-				momentsPT(*neeCaster,0x7a1a510u);
+				momentsPT(*job->GetScene(),*neeCaster,0x7a1a510u);
 			const SampleMoments ptOff =
-				momentsPT(*marchOnlyCaster,0x7a1a511u);
+				momentsPT(*marchJob->GetScene(),*marchOnlyCaster,0x7a1a511u);
 			const SampleMoments shaderOn =
 				momentsShader(*neeCaster,0x7a1a512u);
 			const SampleMoments shaderOff =
@@ -3222,7 +3474,8 @@ namespace
 					ManifoldSolverConfig(),cappedConfig);
 			cappedIntegrator->SetMaxPathDepth(2);
 			const unsigned int activationSamples = 4096;
-			auto cappedMeanPT = [&]( const IRayCaster& route,
+			auto cappedMeanPT = [&]( const IScene& scene,
+				const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -3231,7 +3484,7 @@ namespace
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<activationSamples; ++i ) {
 					sum += cappedIntegrator->IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,
+						rc,rast,ray,nm,scene,route,
 						sampler,nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(activationSamples);
@@ -3252,9 +3505,9 @@ namespace
 				return sum/static_cast<Scalar>(activationSamples);
 			};
 			const Scalar cappedPTOn =
-				cappedMeanPT(*neeCaster,0x7a1a514u);
+				cappedMeanPT(*job->GetScene(),*neeCaster,0x7a1a514u);
 			const Scalar cappedPTOff =
-				cappedMeanPT(*marchOnlyCaster,0x7a1a515u);
+				cappedMeanPT(*marchJob->GetScene(),*marchOnlyCaster,0x7a1a515u);
 			PathTracingShaderOp* cappedShaderOp =
 				new PathTracingShaderOp(
 					ManifoldSolverConfig(),cappedConfig);
@@ -3265,15 +3518,6 @@ namespace
 				new StandardShader(cappedShaderOps);
 			IRayCaster* cappedShaderNEECaster = nullptr;
 			IRayCaster* cappedShaderMarchCaster = nullptr;
-			const IMedium* cappedPreparedFire =
-				job->GetScene()->GetGlobalMedium();
-			if( cappedPreparedFire ) cappedPreparedFire->addref();
-			IsotropicPhaseFunction* cappedVacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* cappedVacuum =
-				new UnsupportedHomogeneousSmoke(
-					*cappedVacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(cappedVacuum);
 			Check( RISE_API_CreateRayCaster(
 					&cappedShaderMarchCaster,false,8,
 					*cappedShader,true) &&
@@ -3281,11 +3525,8 @@ namespace
 				"capped thin-sheet shader march reference initializes" );
 			if( cappedShaderMarchCaster ) {
 				cappedShaderMarchCaster->AttachScene(
-					job->GetScene());
+					marchJob->GetScene());
 			}
-			job->GetScene()->SetGlobalMedium(cappedPreparedFire);
-			safe_release(cappedVacuum);
-			safe_release(cappedVacuumPhase);
 			Check( RISE_API_CreateRayCaster(
 					&cappedShaderNEECaster,false,8,
 					*cappedShader,true) &&
@@ -3295,7 +3536,6 @@ namespace
 				cappedShaderNEECaster->AttachScene(
 					job->GetScene());
 			}
-			safe_release(cappedPreparedFire);
 			const Scalar cappedShaderOn =
 				cappedShaderNEECaster ?
 					cappedMeanShader(
@@ -3324,6 +3564,7 @@ namespace
 		safe_release(thinFire);
 		safe_release(temperaturePainter);
 		safe_release(carbonPainter);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -3337,25 +3578,10 @@ namespace
 		if( !fixture.job || !fixture.caster || !fixture.integrator ) return;
 
 		IRayCaster* marchOnlyCaster = nullptr;
-		const IMedium* fire = fixture.job->GetScene()->GetGlobalMedium();
-		if( fire ) fire->addref();
-		IsotropicPhaseFunction* vacuumPhase =
-			new IsotropicPhaseFunction();
-		UnsupportedHomogeneousSmoke* vacuum =
-			new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-		fixture.job->GetScene()->SetGlobalMedium(vacuum);
-		IShader* shader = fixture.job->GetShaders()->GetItem("global");
-		Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,0,*shader,true) &&
-			marchOnlyCaster,
+		IJobPriv* marchJob = nullptr;
+		Check( LoadMarchOnlyFixture(
+				fixture.scenePath,0,marchJob,marchOnlyCaster),
 			"camera-primary march reference prepares without a thermal CDF" );
-		if( marchOnlyCaster ) {
-			marchOnlyCaster->AttachScene(fixture.job->GetScene());
-		}
-		fixture.job->GetScene()->SetGlobalMedium(fire);
-		safe_release(vacuum);
-		safe_release(vacuumPhase);
-		safe_release(fire);
 
 		const LightSampler* neeLights =
 			fixture.caster->GetLightSampler();
@@ -3376,7 +3602,7 @@ namespace
 			const Scalar nm = 500.0;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
-			auto meanPT = [&]( const IRayCaster& route,
+			auto meanPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -3385,7 +3611,7 @@ namespace
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					sum += fixture.integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*fixture.job->GetScene(),
+						rc,rast,ray,nm,scene,
 						route,sampler,nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(samples);
@@ -3409,9 +3635,9 @@ namespace
 
 			const Scalar expected = ExpectedSlab(fixture,nm);
 			const Scalar ptNEE =
-				meanPT(*fixture.caster,0xca0e001u);
+				meanPT(*fixture.job->GetScene(),*fixture.caster,0xca0e001u);
 			const Scalar ptMarch =
-				meanPT(*marchOnlyCaster,0xca0e002u);
+				meanPT(*marchJob->GetScene(),*marchOnlyCaster,0xca0e002u);
 			const Scalar shaderNEE =
 				meanShader(*fixture.caster,0xca0e003u);
 			const Scalar shaderMarch =
@@ -3433,6 +3659,7 @@ namespace
 		}
 
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 	}
 
 	void TestFlameBehindGlassIsMarchOnly()
@@ -3507,6 +3734,7 @@ namespace
 		}
 
 		IJobPriv* glassJob = nullptr;
+		IJobPriv* glassMarchJob = nullptr;
 		IJobPriv* clearJob = nullptr;
 		IRayCaster* glassNEECaster = nullptr;
 		IRayCaster* glassMarchCaster = nullptr;
@@ -3528,26 +3756,9 @@ namespace
 			if( glassNEECaster ) {
 				glassNEECaster->AttachScene(glassJob->GetScene());
 			}
-			const IMedium* preparedFire =
-				glassJob->GetScene()->GetGlobalMedium();
-			if( preparedFire ) preparedFire->addref();
-			IsotropicPhaseFunction* vacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(
-					*vacuumPhase,0.0,0.0);
-			glassJob->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-					&glassMarchCaster,false,8,*shader,true) &&
-				glassMarchCaster,
+			Check( LoadMarchOnlyFixture(
+					glassPath,8,glassMarchJob,glassMarchCaster),
 				"glass fire march reference prepares without a thermal CDF" );
-			if( glassMarchCaster ) {
-				glassMarchCaster->AttachScene(glassJob->GetScene());
-			}
-			glassJob->GetScene()->SetGlobalMedium(preparedFire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			safe_release(preparedFire);
 		}
 		if( clearJob ) {
 			IShader* shader =
@@ -3609,7 +3820,7 @@ namespace
 		Check( fixtureAuthentic,
 			"the live fire endpoint lies behind an exact off-axis direction-bending glass barrier" );
 
-		if( glassJob && clearJob && glassNEECaster &&
+		if( glassJob && glassMarchJob && clearJob && glassNEECaster &&
 			glassMarchCaster && clearNEECaster ) {
 			struct SampleMoments
 			{
@@ -3627,7 +3838,7 @@ namespace
 				new PathTracingIntegrator(
 					ManifoldSolverConfig(),config);
 			integrator->SetMaxPathDepth(6);
-			auto momentsPT = [&]( const IRayCaster& route,
+			auto momentsPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -3638,7 +3849,7 @@ namespace
 				unsigned int positive = 0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					const Scalar value = integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*glassJob->GetScene(),
+						rc,rast,ray,nm,scene,
 						route,sampler,nullptr,nullptr);
 					sum += value;
 					sumSquares +=
@@ -3697,29 +3908,71 @@ namespace
 						6.0*standardError;
 			};
 
-			const SampleMoments ptOn =
-				momentsPT(*glassNEECaster,0x61a5501u);
-			const SampleMoments ptOff =
-				momentsPT(*glassMarchCaster,0x61a5502u);
-			const SampleMoments shaderOn =
-				momentsShader(*glassNEECaster,0x61a5503u);
-			const SampleMoments shaderOff =
-				momentsShader(*glassMarchCaster,0x61a5504u);
-			std::cout << "  glass march-only PT on/off=" <<
-				ptOn.mean << "/" << ptOff.mean <<
-				" shader on/off=" << shaderOn.mean << "/" <<
-				shaderOff.mean << " positives=" <<
-				ptOn.positive << "/" << ptOff.positive << " " <<
-				shaderOn.positive << "/" << shaderOff.positive <<
-				std::endl;
-			Check( ptOn.positive>1000 && ptOff.positive>1000 &&
-				shaderOn.positive>1000 && shaderOff.positive>1000,
-				"refracted march paths reach the fire with nontrivial support in both entry routes" );
-			Check( withinSixStandardErrors(ptOn,ptOff) &&
-				withinSixStandardErrors(shaderOn,shaderOff),
-				"flame behind glass is march-only and NEE-on/off agree within MC noise" );
-			Check( withinSixStandardErrors(ptOn,shaderOn),
-				"both PT entry routes agree on refracted march-only fire" );
+			IObjectPriv* const mutableGlassObject = glassJob->GetScene()->
+				GetObjects()->GetItem("glass_barrier");
+			IObjectPriv* const mutableMarchGlassObject = glassMarchJob->GetScene()->
+				GetObjects()->GetItem("glass_barrier");
+			for( unsigned int castsMode=0; castsMode<2; ++castsMode ) {
+				const bool castsShadows = castsMode != 0;
+				if( mutableGlassObject ) {
+					mutableGlassObject->SetShadowParams(castsShadows,true);
+				}
+				if( mutableMarchGlassObject ) {
+					mutableMarchGlassObject->SetShadowParams(castsShadows,true);
+				}
+				for( unsigned int transparentMode=0; transparentMode<2;
+					++transparentMode ) {
+					const bool transparentShadows = transparentMode != 0;
+					RayCaster* const concreteNEE =
+						dynamic_cast<RayCaster*>(glassNEECaster);
+					RayCaster* const concreteMarch =
+						dynamic_cast<RayCaster*>(glassMarchCaster);
+					if( concreteNEE ) {
+						concreteNEE->SetTransparentShadows(transparentShadows);
+					}
+					if( concreteMarch ) {
+						concreteMarch->SetTransparentShadows(transparentShadows);
+					}
+					Check( mutableGlassObject && mutableMarchGlassObject &&
+						mutableGlassObject->DoesCastShadows()==castsShadows &&
+						mutableMarchGlassObject->DoesCastShadows()==castsShadows &&
+						concreteNEE && concreteMarch &&
+						concreteNEE->GetTransparentShadows()==transparentShadows &&
+						concreteMarch->GetTransparentShadows()==transparentShadows,
+						transparentShadows ?
+							"glass fixture activates transparent shadows on both routes" :
+							"glass fixture activates opaque shadows on both routes" );
+
+					const unsigned int seedOffset =
+						transparentMode*0x10000u+castsMode*0x20000u;
+					const SampleMoments ptOn =
+						momentsPT(*glassJob->GetScene(),*glassNEECaster,
+							0x61a5501u+seedOffset);
+					const SampleMoments ptOff =
+						momentsPT(*glassMarchJob->GetScene(),*glassMarchCaster,
+							0x61a5502u+seedOffset);
+					const SampleMoments shaderOn =
+						momentsShader(*glassNEECaster,0x61a5503u+seedOffset);
+					const SampleMoments shaderOff =
+						momentsShader(*glassMarchCaster,0x61a5504u+seedOffset);
+					std::cout << "  glass casts=" << castsShadows <<
+						" transparent=" << transparentShadows <<
+						" march-only PT on/off=" << ptOn.mean << "/" << ptOff.mean <<
+						" shader on/off=" << shaderOn.mean << "/" <<
+						shaderOff.mean << " positives=" <<
+						ptOn.positive << "/" << ptOff.positive << " " <<
+						shaderOn.positive << "/" << shaderOff.positive <<
+						std::endl;
+					Check( ptOn.positive>1000 && ptOff.positive>1000 &&
+						shaderOn.positive>1000 && shaderOff.positive>1000,
+						"refracted march paths reach the fire under the selected shadow mode" );
+					Check( withinSixStandardErrors(ptOn,ptOff) &&
+						withinSixStandardErrors(shaderOn,shaderOff),
+						"flame behind glass stays march-only under the selected shadow mode" );
+					Check( withinSixStandardErrors(ptOn,shaderOn),
+						"both PT entry routes agree on shadow-mode refracted fire" );
+				}
+			}
 
 			StabilityConfig cappedConfig;
 			cappedConfig.maxDiffuseBounce = 0;
@@ -3744,11 +3997,6 @@ namespace
 				return sum/
 					static_cast<Scalar>(activationSamples);
 			};
-			const Scalar cappedGlassPT = cappedMeanPT(
-				*glassJob,*glassNEECaster,0x61a5505u);
-			const Scalar cappedClearPT = cappedMeanPT(
-				*clearJob,*clearNEECaster,0x61a5506u);
-
 			PathTracingShaderOp* cappedShaderOp =
 				new PathTracingShaderOp(
 					ManifoldSolverConfig(),cappedConfig);
@@ -3793,20 +4041,52 @@ namespace
 				return sum/
 					static_cast<Scalar>(activationSamples);
 			};
-			const Scalar cappedGlassShader = cappedGlassCaster ?
-				cappedMeanShader(
-					*cappedGlassCaster,0x61a5507u) : 1.0;
-			const Scalar cappedClearShader = cappedClearCaster ?
-				cappedMeanShader(
-					*cappedClearCaster,0x61a5508u) : 0.0;
-			std::cout << "  capped glass/clear PT=" <<
-				cappedGlassPT << "/" << cappedClearPT <<
-				" shader=" << cappedGlassShader << "/" <<
-				cappedClearShader << std::endl;
-			Check( cappedGlassPT==0.0 &&
-				cappedGlassShader==0.0 &&
-				cappedClearPT>0.0 && cappedClearShader>0.0,
-				"the endpoint estimator is live at the receiver but exact glass blocks it in both routes" );
+			for( unsigned int castsMode=0; castsMode<2; ++castsMode ) {
+				const bool castsShadows = castsMode != 0;
+				if( mutableGlassObject ) {
+					mutableGlassObject->SetShadowParams(castsShadows,true);
+				}
+				for( unsigned int transparentMode=0; transparentMode<2;
+					++transparentMode ) {
+					const bool transparentShadows = transparentMode != 0;
+					RayCaster* const casters[] = {
+						dynamic_cast<RayCaster*>(glassNEECaster),
+						dynamic_cast<RayCaster*>(clearNEECaster),
+						dynamic_cast<RayCaster*>(cappedGlassCaster),
+						dynamic_cast<RayCaster*>(cappedClearCaster)
+					};
+					bool configured = mutableGlassObject &&
+						mutableGlassObject->DoesCastShadows()==castsShadows;
+					for( RayCaster* concrete : casters ) {
+						if( concrete ) {
+							concrete->SetTransparentShadows(transparentShadows);
+						}
+						configured = configured && concrete &&
+							concrete->GetTransparentShadows()==transparentShadows;
+					}
+					const unsigned int seedOffset =
+						transparentMode*0x10000u+castsMode*0x20000u;
+					const Scalar cappedGlassPT = cappedMeanPT(
+						*glassJob,*glassNEECaster,0x61a5505u+seedOffset);
+					const Scalar cappedClearPT = cappedMeanPT(
+						*clearJob,*clearNEECaster,0x61a5506u+seedOffset);
+					const Scalar cappedGlassShader = cappedGlassCaster ?
+						cappedMeanShader(
+							*cappedGlassCaster,0x61a5507u+seedOffset) : 1.0;
+					const Scalar cappedClearShader = cappedClearCaster ?
+						cappedMeanShader(
+							*cappedClearCaster,0x61a5508u+seedOffset) : 0.0;
+					std::cout << "  capped casts=" << castsShadows <<
+						" transparent=" << transparentShadows <<
+						" glass/clear PT=" << cappedGlassPT << "/" << cappedClearPT <<
+						" shader=" << cappedGlassShader << "/" <<
+						cappedClearShader << std::endl;
+					Check( configured && cappedGlassPT==0.0 &&
+						cappedGlassShader==0.0 &&
+						cappedClearPT>0.0 && cappedClearShader>0.0,
+						"exact glass blocks the live endpoint estimator in both shadow modes" );
+				}
+			}
 
 			safe_release(cappedGlassCaster);
 			safe_release(cappedClearCaster);
@@ -3820,6 +4100,7 @@ namespace
 		safe_release(glassMarchCaster);
 		safe_release(glassNEECaster);
 		safe_release(clearJob);
+		safe_release(glassMarchJob);
 		safe_release(glassJob);
 		std::filesystem::remove(clearPath);
 		std::filesystem::remove(glassPath);
@@ -4122,6 +4403,508 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
+	void TestIsolatedSmokeConfigurationReplay()
+	{
+		std::cout << "TestIsolatedSmokeConfigurationReplay" << std::endl;
+		struct TopologyRow
+		{
+			PhaseBMatrixTopology topology;
+			bool castsShadows;
+			bool transparentShadows;
+			const char* label;
+		};
+		const TopologyRow topologyRows[] = {
+			{PhaseBMatrixTopology::Clear,true,false,"clear/transparent off"},
+			{PhaseBMatrixTopology::Clear,true,true,"clear/transparent on"},
+			{PhaseBMatrixTopology::NullCavity,false,false,"null casts off/transparent off"},
+			{PhaseBMatrixTopology::NullCavity,false,true,"null casts off/transparent on"},
+			{PhaseBMatrixTopology::NullCavity,true,false,"null casts on/transparent off"},
+			{PhaseBMatrixTopology::NullCavity,true,true,"null casts on/transparent on"},
+			{PhaseBMatrixTopology::NestedSmoke,false,false,"nested casts off/transparent off"},
+			{PhaseBMatrixTopology::NestedSmoke,false,true,"nested casts off/transparent on"},
+			{PhaseBMatrixTopology::NestedSmoke,true,false,"nested casts on/transparent off"},
+			{PhaseBMatrixTopology::NestedSmoke,true,true,"nested casts on/transparent on"},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,false,false,"opaque casts off/transparent off"},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,false,true,"opaque casts off/transparent on"},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,true,false,"opaque casts on/transparent off"},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,true,true,"opaque casts on/transparent on"}
+		};
+		enum class SmokeMechanism
+		{
+			VolumeCap,
+			Terminal,
+			RRUnit,
+			RRIntermediate,
+			RRZero
+		};
+		struct MechanismRow
+		{
+			SmokeMechanism mechanism;
+			const char* label;
+		};
+		const MechanismRow mechanisms[] = {
+			{SmokeMechanism::VolumeCap,"volume-lobe cap"},
+			{SmokeMechanism::Terminal,"terminal A_march"},
+			{SmokeMechanism::RRUnit,"RR survival one"},
+			{SmokeMechanism::RRIntermediate,"RR intermediate"},
+			{SmokeMechanism::RRZero,"RR zero/empty support"}
+		};
+		struct Moments
+		{
+			Scalar mean;
+			Scalar variance;
+			unsigned int positive;
+			Scalar nextRandom;
+		};
+		struct GuideMode
+		{
+			Implementation::PathGuidingField* guide;
+			unsigned int samplingType;
+			const char* label;
+		};
+		std::vector<GuideMode> guideModes;
+		guideModes.push_back(GuideMode{nullptr,0,"guiding off"});
+#ifdef RISE_ENABLE_OPENPGL
+		PathGuidingConfig guideConfig;
+		guideConfig.enabled = true;
+		Implementation::PathGuidingField* guide =
+			new Implementation::PathGuidingField(
+				guideConfig,Point3(-2,-2,-2),Point3(2,2,3));
+		guide->BeginTrainingIteration();
+		const Vector3 guideDirections[] = {
+			Vector3(1,0,0),Vector3(-1,0,0),Vector3(0,1,0),
+			Vector3(0,-1,0),Vector3(0,0,1),Vector3(0,0,-1)
+		};
+		for( unsigned int i=0; i<384; ++i ) {
+			guide->AddVolumeSample(Point3(0,0,-0.75),guideDirections[i%6],
+				1.0,1.0/FOUR_PI,1.0,false);
+		}
+		guide->EndTrainingIteration();
+		Check(guide->IsTrained(),
+			"isolated-smoke configuration replay guide trains");
+		guideModes.push_back(GuideMode{guide,
+			static_cast<unsigned int>(eGuidingOneSampleMIS),"guiding requested"});
+		guideModes.push_back(GuideMode{guide,
+			static_cast<unsigned int>(eGuidingRIS),"RIS requested"});
+#endif
+
+		const Scalar nm = 500.0;
+		const RasterizerState rast = {0,0};
+		const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+		unsigned int serial = 0;
+		auto withinEightStandardErrors = []( const Moments& a, const Moments& b,
+			const unsigned int samples ) {
+			const Scalar standardError = std::sqrt(
+				(a.variance+b.variance)/static_cast<Scalar>(samples));
+			return standardError>0.0 &&
+				std::fabs(a.mean-b.mean)<=8.0*standardError;
+		};
+
+		for( const MechanismRow& mechanism : mechanisms ) {
+			for( const TopologyRow& topology : topologyRows ) {
+				Moments baselinePT = {0,0,0,0};
+				Moments baselineRC = {0,0,0,0};
+				for( size_t modeIndex=0; modeIndex<guideModes.size(); ++modeIndex ) {
+					const GuideMode& guideMode = guideModes[modeIndex];
+					const std::filesystem::path scenePath =
+						std::filesystem::temp_directory_path() /
+						("rise_smoke_matrix_" +
+							std::to_string(static_cast<int>(::getpid())) + "_" +
+							std::to_string(serial++) + ".RISEscene");
+					{
+						std::ofstream output(scenePath);
+						output << IsolatedSmokeReceiverMatrixScene(
+							topology.topology,topology.castsShadows);
+					}
+					IJobPriv* onJob = nullptr;
+					IJobPriv* offJob = nullptr;
+					IRayCaster* onCaster = nullptr;
+					IRayCaster* offCaster = nullptr;
+					IsotropicPhaseFunction* offPhase = new IsotropicPhaseFunction();
+					const bool weak = mechanism.mechanism==SmokeMechanism::RRZero;
+					UnsupportedHomogeneousSmoke* offSmoke =
+						new UnsupportedHomogeneousSmoke(
+							*offPhase,0.9,weak ? 1e-16 : 0.1);
+					IsotropicPhaseFunction* weakOnPhase = weak ?
+						new IsotropicPhaseFunction() : nullptr;
+					HomogeneousMedium* weakOnSmoke = weak ?
+						new HomogeneousMedium(RISEPel(0.9),RISEPel(1e-16),
+							*weakOnPhase) : nullptr;
+					bool ready = RISE_CreateJobPriv(&onJob) && onJob &&
+						onJob->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+						RISE_CreateJobPriv(&offJob) && offJob &&
+						offJob->LoadAsciiSceneViaCst(scenePath.string().c_str());
+					if( ready ) {
+						if( weakOnSmoke ) onJob->GetScene()->SetGlobalMedium(weakOnSmoke);
+						offJob->GetScene()->SetGlobalMedium(offSmoke);
+						IShader* onShader = onJob->GetShaders()->GetItem("global");
+						IShader* offShader = offJob->GetShaders()->GetItem("global");
+						const unsigned int onDepth =
+							mechanism.mechanism==SmokeMechanism::Terminal ? 1 : 4;
+						const unsigned int offDepth =
+							mechanism.mechanism==SmokeMechanism::Terminal ? 4 : 4;
+						ready = onShader && offShader &&
+							RISE_API_CreateRayCaster(&onCaster,false,onDepth,*onShader,true) &&
+							onCaster && RISE_API_CreateRayCaster(
+								&offCaster,false,offDepth,*offShader,true) && offCaster;
+						if( ready ) {
+							onCaster->AttachScene(onJob->GetScene());
+							offCaster->AttachScene(offJob->GetScene());
+						}
+					}
+
+					StabilityConfig onConfig;
+					onConfig.maxVolumeBounce =
+						mechanism.mechanism==SmokeMechanism::VolumeCap ? 0 : 2;
+					StabilityConfig offConfig = onConfig;
+					if( mechanism.mechanism==SmokeMechanism::VolumeCap ) {
+						// A capped lobe has no march support.  Its NEE-only f_D term is
+						// compared against the physically equivalent uncapped legacy
+						// march reference, not against a second zero-valued cap.
+						offConfig.maxVolumeBounce = 2;
+					}
+					if( mechanism.mechanism==SmokeMechanism::RRIntermediate ) {
+						onConfig.rrMinDepth = offConfig.rrMinDepth = 0;
+						onConfig.rrThreshold = offConfig.rrThreshold = 1.0;
+					} else if( mechanism.mechanism==SmokeMechanism::RRZero ) {
+						onConfig.rrMinDepth = 0;
+						onConfig.rrThreshold = std::numeric_limits<Scalar>::max();
+						offConfig.rrMinDepth = 4;
+					}
+					PathTracingIntegrator* onIntegrator =
+						new PathTracingIntegrator(ManifoldSolverConfig(),onConfig);
+					PathTracingIntegrator* offIntegrator =
+						new PathTracingIntegrator(ManifoldSolverConfig(),offConfig);
+					const unsigned int pathDepth =
+						mechanism.mechanism==SmokeMechanism::Terminal ? 1 : 2;
+					onIntegrator->SetMaxPathDepth(pathDepth);
+					offIntegrator->SetMaxPathDepth(pathDepth);
+					const unsigned int samples = 30000;
+					const unsigned int seed = 0x6d00000u +
+						static_cast<unsigned int>(mechanism.mechanism)*0x10001u +
+						static_cast<unsigned int>(topology.topology)*0x1001u +
+						(topology.castsShadows ? 0x101u : 0u) +
+						(topology.transparentShadows ? 0x100000u : 0u);
+					auto configureRuntime = [&]( RuntimeContext& rc ) {
+#ifdef RISE_ENABLE_OPENPGL
+						rc.pGuidingField = guideMode.guide;
+						rc.guidingAlpha = guideMode.guide ? 0.75 : 0.0;
+						rc.guidingLearnedAlpha = false;
+						rc.maxGuidingDepth = 8;
+						rc.guidingSamplingType =
+							static_cast<GuidingSamplingType>(guideMode.samplingType);
+#else
+						(void)rc;
+#endif
+					};
+					auto momentsPT = [&]( PathTracingIntegrator& integrator,
+						IJobPriv& job, const IRayCaster& caster,
+						const unsigned int localSeed ) {
+						RandomNumberGenerator rng(localSeed);
+						RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+						configureRuntime(rc);
+						IndependentSampler sampler(rng);
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						unsigned int positive = 0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							const Scalar value = integrator.IntegrateRayNM(
+								rc,rast,ray,nm,*job.GetScene(),caster,sampler,
+								nullptr,nullptr);
+							sum += value;
+							sumSquares += static_cast<long double>(value)*value;
+							if( value>0.0 ) ++positive;
+						}
+						const long double count = static_cast<long double>(samples);
+						const long double mean = sum/count;
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						return Moments{static_cast<Scalar>(mean),
+							static_cast<Scalar>(variance>0.0 ? variance : 0.0),
+							positive,rng.CanonicalRandom()};
+					};
+					auto momentsRC = [&]( const IRayCaster& caster,
+						const bool onRoute, const unsigned int localSeed ) {
+						RandomNumberGenerator rng(localSeed);
+						RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+						configureRuntime(rc);
+						IRayCaster::RAY_STATE state;
+						if( mechanism.mechanism==SmokeMechanism::VolumeCap && onRoute ) {
+							state.volumeBounces = 64;
+						} else if( mechanism.mechanism==SmokeMechanism::Terminal &&
+							!onRoute ) {
+							state.volumeBounces = 63;
+						}
+						if( mechanism.mechanism==SmokeMechanism::RRIntermediate ||
+							(mechanism.mechanism==SmokeMechanism::Terminal && onRoute) ) {
+							state.importance = 0.05;
+						}
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						unsigned int positive = 0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							Scalar value = 0.0;
+							caster.CastRayNM(rc,rast,ray,value,state,nm,nullptr,nullptr);
+							sum += value;
+							sumSquares += static_cast<long double>(value)*value;
+							if( value>0.0 ) ++positive;
+						}
+						const long double count = static_cast<long double>(samples);
+						const long double mean = sum/count;
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						return Moments{static_cast<Scalar>(mean),
+							static_cast<Scalar>(variance>0.0 ? variance : 0.0),
+							positive,rng.CanonicalRandom()};
+					};
+
+					Moments ptOn = {0,0,0,0}, ptOff = {0,0,0,0};
+					Moments rcOn = {0,0,0,0}, rcOff = {0,0,0,0};
+					bool structural = ready;
+					if( ready ) {
+						RayCaster* concreteOn = dynamic_cast<RayCaster*>(onCaster);
+						RayCaster* concreteOff = dynamic_cast<RayCaster*>(offCaster);
+						const unsigned int onCasterRRMinDepth =
+							mechanism.mechanism==SmokeMechanism::RRIntermediate ||
+							mechanism.mechanism==SmokeMechanism::RRZero ? 0 :
+							mechanism.mechanism==SmokeMechanism::RRUnit ? 1 : 3;
+						const Scalar onCasterRRThreshold =
+							mechanism.mechanism==SmokeMechanism::RRIntermediate ? 1.0 :
+							mechanism.mechanism==SmokeMechanism::RRZero ?
+								std::numeric_limits<Scalar>::max() : 0.05;
+						if( concreteOn ) concreteOn->SetMediumContinuationRoulettePolicy(
+							onCasterRRMinDepth,onCasterRRThreshold);
+						// RR-zero's reference is an otherwise identical uncapped,
+						// unit-survival legacy march.  Every other row keeps the same
+						// roulette policy on both routes.
+						const unsigned int offCasterRRMinDepth =
+							mechanism.mechanism==SmokeMechanism::RRZero ? 3 :
+							onCasterRRMinDepth;
+						const Scalar offCasterRRThreshold =
+							mechanism.mechanism==SmokeMechanism::RRZero ? 0.05 :
+							onCasterRRThreshold;
+						if( concreteOff ) concreteOff->SetMediumContinuationRoulettePolicy(
+							offCasterRRMinDepth,offCasterRRThreshold);
+						if( concreteOn ) concreteOn->SetTransparentShadows(
+							topology.transparentShadows);
+						if( concreteOff ) concreteOff->SetTransparentShadows(
+							topology.transparentShadows);
+						const IObject* matrixObject = onJob->GetScene()->GetObjects()->
+							GetItem("smoke_matrix_object");
+						const Point3 matrixCenter(0.3,0,-0.2);
+						if( topology.topology==PhaseBMatrixTopology::Clear ) {
+							structural = structural && !matrixObject;
+						} else {
+							const Vector3 toObject = Vector3Ops::mkVector3(
+								matrixCenter,ray.origin);
+							const bool intersects = matrixObject &&
+								matrixObject->IntersectRay_IntersectionOnly(
+									Ray(ray.origin,toObject),RISE_INFINITY,true,true);
+							const bool exactNull = matrixObject &&
+								IsExactNullBoundaryMaterial(matrixObject->GetMaterial());
+							structural = structural && intersects && matrixObject &&
+								matrixObject->DoesCastShadows()==topology.castsShadows &&
+								(topology.topology==PhaseBMatrixTopology::OpaquePartialBlocker ?
+									!exactNull : exactNull);
+						}
+						// Prove that the authored row reaches the production shadow and
+						// enclosure-medium walkers.  The short probe lies wholly inside
+						// fire_box and crosses only the optional matrix sphere, so a
+						// geometry-only fixture cannot keep this gate green.
+						if( concreteOn ) {
+							const Scalar probeMargin = 0.05;
+							const Point3 probeOrigin(
+								matrixCenter.x,
+								matrixCenter.y-(0.12+probeMargin),matrixCenter.z);
+							const Vector3 probeDirection(0,1,0);
+							const Scalar probeDistance = 2.0*(0.12+probeMargin);
+							const Ray topologyRay(probeOrigin,probeDirection);
+							RISEPel interfaceTr(1,1,1);
+							const bool interfaceBlocked = concreteOn->CastShadowRayAuto(
+								topologyRay,probeDistance,true,nm,interfaceTr);
+							if( topology.topology==
+								PhaseBMatrixTopology::OpaquePartialBlocker ) {
+								structural = structural &&
+									interfaceBlocked==topology.castsShadows;
+							} else {
+								IORStack probeStack(1.0);
+								IORStackSeeding::SeedFromPoint(
+									probeStack,probeOrigin,*onJob->GetScene());
+								const IMedium* const originMedium =
+									MediumTracking::GetCurrentMedium(
+										probeStack,onJob->GetScene());
+								const IObject* const originMediumObject =
+									probeStack.topObject();
+								const unsigned int walkSamples = 2048;
+								long double walkSum = 0.0;
+								long double walkSumSquares = 0.0;
+								bool walked = originMedium != nullptr;
+								for( unsigned int walkIndex=0;
+									walked && walkIndex<walkSamples; ++walkIndex ) {
+									Scalar sampleTr = 0.0;
+									IORStack sampleStack(probeStack);
+									walked = EvaluateShadowMediumTransmittanceNM(
+										topologyRay,probeDistance,originMedium,
+										originMediumObject,onJob->GetScene(),true,nm,
+										sampleTr,&sampleStack) &&
+										sampleTr>=0.0 && sampleTr<=1.0;
+									walkSum += sampleTr;
+									walkSumSquares +=
+										static_cast<long double>(sampleTr)*sampleTr;
+								}
+								const long double walkCount =
+									static_cast<long double>(walkSamples);
+								const Scalar walkedMean =
+									static_cast<Scalar>(walkSum/walkCount);
+								const long double walkVarianceNumerator =
+									walkSumSquares-walkSum*walkSum/walkCount;
+								const Scalar walkedVariance = static_cast<Scalar>(
+									walkVarianceNumerator>0.0 ?
+										walkVarianceNumerator/(walkCount-1.0) : 0.0);
+								const Scalar walkedSE = std::sqrt(
+									walkedVariance/static_cast<Scalar>(walkSamples));
+								const Scalar innerLength =
+									topology.topology==PhaseBMatrixTopology::Clear ?
+										0.0 : 0.24;
+								const Scalar outerSigma = originMedium ?
+									originMedium->GetCoefficientsNM(probeOrigin,nm).sigma_t :
+									0.0;
+								const IMedium* const interior = matrixObject ?
+									matrixObject->GetInteriorMedium() : nullptr;
+								const Scalar innerSigma = interior ?
+									interior->GetCoefficientsNM(matrixCenter,nm).sigma_t :
+									0.0;
+								const Scalar expectedTr = std::exp(-(
+									outerSigma*(probeDistance-innerLength)+
+									innerSigma*innerLength));
+								const Scalar roundoff =
+									64.0*std::numeric_limits<Scalar>::epsilon()*
+									std::fmax(Scalar(1.0),std::fabs(expectedTr));
+								const Scalar tolerance = 8.0*walkedSE+roundoff;
+								const bool topologyTargetDistinct =
+									topology.topology==PhaseBMatrixTopology::Clear ||
+									std::fabs(expectedTr-std::exp(-outerSigma*probeDistance))>
+										roundoff;
+								const bool productionWitness = !interfaceBlocked && walked &&
+									topologyTargetDistinct &&
+									std::fabs(walkedMean-expectedTr)<=tolerance;
+								if( !productionWitness ) {
+									std::cout << "  topology witness " << topology.label <<
+										" blocked/walked/mean/target/se/tolerance/medium/object=" <<
+										interfaceBlocked << "/" << walked << "/" << walkedMean <<
+										"/" << expectedTr << "/" << walkedSE << "/" <<
+										tolerance << "/" <<
+										(originMedium!=nullptr) << "/" <<
+										(originMediumObject!=nullptr) << std::endl;
+								}
+								structural = structural && productionWitness;
+							}
+						}
+						const LightSampler* onLights = concreteOn ?
+							concreteOn->GetLightSampler() : nullptr;
+						const LightSampler* offLights = concreteOff ?
+							concreteOff->GetLightSampler() : nullptr;
+						structural = structural && concreteOn && concreteOff &&
+							concreteOn->GetTransparentShadows()==topology.transparentShadows &&
+							concreteOff->GetTransparentShadows()==topology.transparentShadows &&
+							onLights && offLights &&
+							onLights->GetVolumeEmissionMediumCount()==1 &&
+							offLights->GetVolumeEmissionMediumCount()==1;
+						ptOn = momentsPT(*onIntegrator,*onJob,*onCaster,seed+1u);
+						ptOff = momentsPT(*offIntegrator,*offJob,*offCaster,seed+2u);
+						rcOn = momentsRC(*onCaster,true,seed+3u);
+						rcOff = momentsRC(*offCaster,false,seed+4u);
+					}
+
+					bool equality = false;
+					if( structural ) {
+						equality = ptOn.mean>0.0 && ptOff.mean>0.0 &&
+							rcOn.mean>0.0 && rcOff.mean>0.0 &&
+							withinEightStandardErrors(ptOn,ptOff,samples) &&
+							withinEightStandardErrors(rcOn,rcOff,samples) &&
+							withinEightStandardErrors(ptOn,rcOn,samples) &&
+							withinEightStandardErrors(ptOff,rcOff,samples);
+						const bool endpointWitness =
+							onIntegrator->CompetingMediumVertexCount()>0 &&
+							onIntegrator->CompetingMediumEndpointAttemptCount()>0 &&
+							offIntegrator->NonCompetingMediumFallbackVertexCount()>0 &&
+							!onIntegrator->CompetingMediumReachPdfMismatch();
+						const RayCaster* const onConcrete =
+							dynamic_cast<const RayCaster*>(onCaster);
+						bool survivalWitness = true;
+						bool rayCasterSurvivalWitness = onConcrete &&
+							!onConcrete->CompetingMediumReachPdfMismatch();
+						if( mechanism.mechanism==SmokeMechanism::RRUnit ) {
+							survivalWitness =
+								onIntegrator->CompetingMediumUnitSurvivalObserved();
+							rayCasterSurvivalWitness = rayCasterSurvivalWitness &&
+								onConcrete->CompetingMediumUnitSurvivalObserved();
+						} else if( mechanism.mechanism==SmokeMechanism::RRIntermediate ) {
+							survivalWitness =
+								onIntegrator->CompetingMediumIntermediateSurvivalObserved();
+							rayCasterSurvivalWitness = rayCasterSurvivalWitness &&
+								onConcrete->CompetingMediumIntermediateSurvivalObserved();
+						} else if( mechanism.mechanism==SmokeMechanism::RRZero ) {
+							survivalWitness =
+								onIntegrator->CompetingMediumZeroSurvivalObserved();
+							rayCasterSurvivalWitness = rayCasterSurvivalWitness &&
+								onConcrete->CompetingMediumZeroSurvivalObserved();
+						}
+						equality = equality && endpointWitness && survivalWitness &&
+							rayCasterSurvivalWitness &&
+							!onIntegrator->CompetingMediumGuideAlphaNonzero() &&
+							onIntegrator->CompetingMediumGuideSampleCount()==0 &&
+							onConcrete &&
+							!onConcrete->CompetingMediumGuideAlphaNonzero() &&
+							onConcrete->CompetingMediumGuideSampleCount()==0;
+						if( modeIndex==0 ) {
+							baselinePT = ptOn;
+							baselineRC = rcOn;
+						} else {
+							equality = equality &&
+								withinEightStandardErrors(ptOn,baselinePT,samples) &&
+								withinEightStandardErrors(rcOn,baselineRC,samples);
+						}
+					}
+					if( !equality ) {
+						std::cout << "  smoke matrix " << mechanism.label << " / " <<
+							topology.label << " / " << guideMode.label <<
+							" PT=" << ptOn.mean << "/" << ptOff.mean <<
+							" RC=" << rcOn.mean << "/" << rcOff.mean <<
+							" baseline=" << baselinePT.mean << "/" << baselineRC.mean <<
+							" next=" << (ptOn.nextRandom==baselinePT.nextRandom) << "/" <<
+								(rcOn.nextRandom==baselineRC.nextRandom) <<
+							" vertices/endpoints=" <<
+							onIntegrator->CompetingMediumVertexCount() << "/" <<
+							onIntegrator->CompetingMediumEndpointAttemptCount() << "/" <<
+							offIntegrator->CompetingMediumEndpointAttemptCount() << "/" <<
+							offIntegrator->NonCompetingMediumFallbackVertexCount() <<
+							" structural=" << structural << std::endl;
+					}
+					const std::string label = std::string("isolated-smoke matrix ") +
+						mechanism.label + " / " + topology.label + " / " +
+						guideMode.label + " preserves its Phase-B partition";
+					Check(equality,label.c_str());
+
+					safe_release(onIntegrator);
+					safe_release(offIntegrator);
+					safe_release(onCaster);
+					safe_release(offCaster);
+					safe_release(onJob);
+					safe_release(offJob);
+					safe_release(weakOnSmoke);
+					safe_release(weakOnPhase);
+					safe_release(offSmoke);
+					safe_release(offPhase);
+					std::filesystem::remove(scenePath);
+				}
+			}
+		}
+#ifdef RISE_ENABLE_OPENPGL
+		safe_release(guide);
+#endif
+	}
+
 	void TestSurfaceVolumeNEEProductionRoutes()
 	{
 		std::cout << "TestSurfaceVolumeNEEProductionRoutes" << std::endl;
@@ -4134,39 +4917,27 @@ namespace
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"surface receiver and off-axis fire fixture loads" );
 		if( job ) {
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
 				"surface brute-force caster initializes without a volume-emission CDF" );
-			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*shader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,20,neeCaster),
 				"surface volume-NEE caster initializes with the fire CDF" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster ) {
 			const Scalar nm = 500.0;
 			const unsigned int samples = 240000;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			auto meanPT = [&]( PathTracingIntegrator& integrator,
+				const IScene& scene,
 				const IRayCaster& route, const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
@@ -4174,7 +4945,7 @@ namespace
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					sum += integrator.IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						rc,rast,ray,nm,scene,route,sampler,
 						nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(samples);
@@ -4199,8 +4970,10 @@ namespace
 			PathTracingIntegrator* ordinary = new PathTracingIntegrator(
 				ManifoldSolverConfig(),ordinaryConfig);
 			ordinary->SetMaxPathDepth(2);
-			const Scalar ordinaryOn = meanPT(*ordinary,*neeCaster,0x5100a1u);
-			const Scalar ordinaryOff = meanPT(*ordinary,*marchOnlyCaster,0x5100a2u);
+			const Scalar ordinaryOn = meanPT(
+				*ordinary,*job->GetScene(),*neeCaster,0x5100a1u);
+			const Scalar ordinaryOff = meanPT(
+				*ordinary,*marchJob->GetScene(),*marchOnlyCaster,0x5100a2u);
 			const Scalar shaderOn = meanShaderRoute(*neeCaster,0x5100a3u);
 			const Scalar shaderOff = meanShaderRoute(*marchOnlyCaster,0x5100a4u);
 
@@ -4209,8 +4982,10 @@ namespace
 			PathTracingIntegrator* terminal = new PathTracingIntegrator(
 				ManifoldSolverConfig(),terminalConfig);
 			terminal->SetMaxPathDepth(1);
-			const Scalar terminalOn = meanPT(*terminal,*neeCaster,0x5100b1u);
-			const Scalar terminalOff = meanPT(*terminal,*marchOnlyCaster,0x5100b2u);
+			const Scalar terminalOn = meanPT(
+				*terminal,*job->GetScene(),*neeCaster,0x5100b1u);
+			const Scalar terminalOff = meanPT(
+				*terminal,*marchJob->GetScene(),*marchOnlyCaster,0x5100b2u);
 
 			StabilityConfig cappedConfig;
 			cappedConfig.maxDiffuseBounce = 0;
@@ -4222,9 +4997,10 @@ namespace
 			PathTracingIntegrator* uncapped = new PathTracingIntegrator(
 				ManifoldSolverConfig(),uncappedConfig);
 			uncapped->SetMaxPathDepth(2);
-			const Scalar cappedOn = meanPT(*capped,*neeCaster,0x5100c1u);
+			const Scalar cappedOn = meanPT(
+				*capped,*job->GetScene(),*neeCaster,0x5100c1u);
 			const Scalar cappedReference = meanPT(
-				*uncapped,*marchOnlyCaster,0x5100c2u);
+				*uncapped,*marchJob->GetScene(),*marchOnlyCaster,0x5100c2u);
 
 			if( !(ordinaryOn>0.0 && ordinaryOff>0.0 && shaderOn>0.0 &&
 				shaderOff>0.0 && terminalOn>0.0 && terminalOff>0.0 &&
@@ -4257,6 +5033,7 @@ namespace
 
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -4314,18 +5091,24 @@ namespace
 			}
 
 			IJobPriv* job = nullptr;
+			IJobPriv* marchJob = nullptr;
 			IRayCaster* neeCaster = nullptr;
 			IRayCaster* marchOnlyCaster = nullptr;
 			const bool loaded = RISE_CreateJobPriv(&job) && job &&
-				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+				job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+				RISE_CreateJobPriv(&marchJob) && marchJob &&
+				marchJob->LoadAsciiSceneViaCst(scenePath.string().c_str());
 			Check( loaded,
 				(std::string(fixtureName) + " fallback fixture loads").c_str() );
 			if( loaded ) {
 				IObjectPriv* receiver =
 					job->GetScene()->GetObjects()->GetItem("receiver_wall");
-				Check( receiver != nullptr,
+				IObjectPriv* marchReceiver =
+					marchJob->GetScene()->GetObjects()->GetItem("receiver_wall");
+				Check( receiver != nullptr && marchReceiver != nullptr,
 					(std::string(fixtureName) + " receiver resolves").c_str() );
 				if( receiver ) receiver->AssignMaterial(material);
+				if( marchReceiver ) marchReceiver->AssignMaterial(material);
 
 				const RasterizerState rast = {0,0};
 				const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
@@ -4356,30 +5139,15 @@ namespace
 				const unsigned int callsBeforeRender = selfAttesting ?
 					selfAttesting->ClosureCalls() : 0;
 
-				IShader* shader = job->GetShaders()->GetItem("global");
-				const IMedium* fire = job->GetScene()->GetGlobalMedium();
-				if( fire ) fire->addref();
-				IsotropicPhaseFunction* vacuumPhase =
-					new IsotropicPhaseFunction();
-				UnsupportedHomogeneousSmoke* vacuum =
-					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-				job->GetScene()->SetGlobalMedium(vacuum);
-				Check( shader && RISE_API_CreateRayCaster(
-					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+				Check( InstallMarchOnlyGlobalMedium(*marchJob) &&
+					CreatePreparedCaster(*marchJob,20,marchOnlyCaster),
 					(std::string(fixtureName) +
 						" legacy-march reference caster initializes").c_str() );
-				if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-				job->GetScene()->SetGlobalMedium(fire);
-				safe_release(vacuum);
-				safe_release(vacuumPhase);
-				Check( shader && RISE_API_CreateRayCaster(
-					&neeCaster,false,20,*shader,true) && neeCaster,
+				Check( CreatePreparedCaster(*job,20,neeCaster),
 					(std::string(fixtureName) +
 						" volume-NEE caster initializes").c_str() );
-				if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-				safe_release(fire);
 
-				if( neeCaster && marchOnlyCaster ) {
+				if( neeCaster && marchOnlyCaster && marchJob ) {
 					const unsigned int diagnosticsBefore =
 						capture->MatchCount();
 					StabilityConfig config;
@@ -4393,7 +5161,8 @@ namespace
 						Scalar variance;
 					};
 					const unsigned int samples = 120000;
-					auto momentsPT = [&]( const IRayCaster& route,
+					auto momentsPT = [&]( const IScene& scene,
+						const IRayCaster& route,
 						const unsigned int seed ) {
 						RandomNumberGenerator rng(seed);
 						RuntimeContext rc(
@@ -4403,7 +5172,7 @@ namespace
 						long double sumSquares = 0.0;
 						for( unsigned int i=0; i<samples; ++i ) {
 							const Scalar value = integrator->IntegrateRayNM(
-								rc,rast,ray,500.0,*job->GetScene(),route,
+								rc,rast,ray,500.0,scene,route,
 								sampler,nullptr,nullptr);
 							sum += value;
 							sumSquares += static_cast<long double>(value)*value;
@@ -4457,10 +5226,11 @@ namespace
 						const unsigned int seedBase = 0xf44bac1u +
 							thisFixture*0x101u + batch*0x10001u;
 						const SampleMoments neeOn =
-							momentsPT(*neeCaster,seedBase);
+							momentsPT(*job->GetScene(),*neeCaster,seedBase);
 						pureOnBatches[batch] = neeOn;
 						const SampleMoments neeOff =
-							momentsPT(*marchOnlyCaster,seedBase+0x5bd1u);
+							momentsPT(*marchJob->GetScene(),*marchOnlyCaster,
+								seedBase+0x5bd1u);
 						const bool agrees = agreesWithinSixSE(neeOn,neeOff);
 						if( !agrees ) {
 							std::cout << "  " << fixtureName << " batch " << batch <<
@@ -4522,6 +5292,7 @@ namespace
 
 			safe_release(neeCaster);
 			safe_release(marchOnlyCaster);
+			safe_release(marchJob);
 			safe_release(job);
 			std::filesystem::remove(scenePath);
 		};
@@ -4552,42 +5323,26 @@ namespace
 		{
 			std::ofstream output(scenePath);
 			output << SurfaceFireReceiverScene(
-				false,SurfaceReceiverMaterial::OrenNayar);
+				PhaseBMatrixMechanism::Ordinary,
+				SurfaceReceiverMaterial::OrenNayar);
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"Oren-Nayar receiver and off-axis fire fixture loads" );
 		if( job ) {
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*shader,true) &&
-				marchOnlyCaster,
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
 				"Oren-Nayar brute-force caster initializes without a volume-emission CDF" );
-			if( marchOnlyCaster ) {
-				marchOnlyCaster->AttachScene(job->GetScene());
-			}
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*shader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,20,neeCaster),
 				"Oren-Nayar volume-NEE caster initializes with the fire CDF" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster ) {
 			const Scalar nm = 500.0;
 			const unsigned int samples = 240000;
 			const RasterizerState rast = {0,0};
@@ -4597,7 +5352,7 @@ namespace
 			PathTracingIntegrator* integrator =
 				new PathTracingIntegrator(ManifoldSolverConfig(),config);
 			integrator->SetMaxPathDepth(2);
-			auto meanPT = [&]( const IRayCaster& route,
+			auto meanPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -4606,7 +5361,7 @@ namespace
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					sum += integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,
+						rc,rast,ray,nm,scene,route,
 						sampler,nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(samples);
@@ -4627,8 +5382,10 @@ namespace
 				return sum/static_cast<Scalar>(samples);
 			};
 
-			const Scalar ptOn = meanPT(*neeCaster,0x0a3e0001u);
-			const Scalar ptOff = meanPT(*marchOnlyCaster,0x0a3e0002u);
+			const Scalar ptOn = meanPT(
+				*job->GetScene(),*neeCaster,0x0a3e0001u);
+			const Scalar ptOff = meanPT(
+				*marchJob->GetScene(),*marchOnlyCaster,0x0a3e0002u);
 			const Scalar shaderOn =
 				meanShaderRoute(*neeCaster,0x0a3e0003u);
 			const Scalar shaderOff =
@@ -4654,6 +5411,7 @@ namespace
 
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -4669,42 +5427,26 @@ namespace
 		{
 			std::ofstream output(scenePath);
 			output << SurfaceFireReceiverScene(
-				false,SurfaceReceiverMaterial::IsotropicPhong);
+				PhaseBMatrixMechanism::Ordinary,
+				SurfaceReceiverMaterial::IsotropicPhong);
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"mixed Isotropic-Phong receiver and off-axis fire fixture loads" );
 		if( job ) {
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*shader,true) &&
-				marchOnlyCaster,
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
 				"Isotropic-Phong brute-force caster initializes without a volume-emission CDF" );
-			if( marchOnlyCaster ) {
-				marchOnlyCaster->AttachScene(job->GetScene());
-			}
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*shader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,20,neeCaster),
 				"Isotropic-Phong volume-NEE caster initializes with the fire CDF" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster ) {
 			const Scalar nm = 500.0;
 			const unsigned int samples = 320000;
 			const RasterizerState rast = {0,0};
@@ -4715,7 +5457,7 @@ namespace
 			PathTracingIntegrator* integrator =
 				new PathTracingIntegrator(ManifoldSolverConfig(),config);
 			integrator->SetMaxPathDepth(2);
-			auto meanPT = [&]( const IRayCaster& route,
+			auto meanPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
@@ -4724,7 +5466,7 @@ namespace
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					sum += integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,
+						rc,rast,ray,nm,scene,route,
 						sampler,nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(samples);
@@ -4745,8 +5487,10 @@ namespace
 				return sum/static_cast<Scalar>(samples);
 			};
 
-			const Scalar ptOn = meanPT(*neeCaster,0x15070001u);
-			const Scalar ptOff = meanPT(*marchOnlyCaster,0x15070002u);
+			const Scalar ptOn = meanPT(
+				*job->GetScene(),*neeCaster,0x15070001u);
+			const Scalar ptOff = meanPT(
+				*marchJob->GetScene(),*marchOnlyCaster,0x15070002u);
 			const Scalar shaderOn =
 				meanShaderRoute(*neeCaster,0x15070003u);
 			const Scalar shaderOff =
@@ -4767,6 +5511,7 @@ namespace
 
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -5027,34 +5772,21 @@ namespace
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"hollow-cavity emissive-shell fixture loads" );
 		if( job ) {
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* preparationVacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(preparationVacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
 				"hollow-cavity reference caster prepares without a thermal CDF" );
-			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(preparationVacuum);
-			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*shader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,20,neeCaster),
 				"hollow-cavity volume-NEE caster prepares the shell CDF" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster ) {
 			const Scalar nm = 500.0;
 			const IObject* cavity = job->GetScene()->GetObjects() ?
 				job->GetScene()->GetObjects()->GetItem("cavity") : nullptr;
@@ -5142,6 +5874,7 @@ namespace
 				Scalar variance;
 			};
 			auto momentsPT = [&]( PathTracingIntegrator& testedIntegrator,
+				const IScene& scene,
 				const IRayCaster& route, const unsigned int seed,
 				const unsigned int sampleCount ) {
 				RandomNumberGenerator rng(seed);
@@ -5151,7 +5884,7 @@ namespace
 				long double sumSquares = 0.0;
 				for( unsigned int i=0; i<sampleCount; ++i ) {
 					const Scalar value = testedIntegrator.IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						rc,rast,ray,nm,scene,route,sampler,
 						nullptr,nullptr);
 					sum += value;
 					sumSquares += static_cast<long double>(value)*value;
@@ -5192,9 +5925,10 @@ namespace
 			};
 
 			const SampleMoments ptOn = momentsPT(
-				*integrator,*neeCaster,0xc4717b1u,samples);
+				*integrator,*job->GetScene(),*neeCaster,0xc4717b1u,samples);
 			const SampleMoments ptOff = momentsPT(
-				*integrator,*marchOnlyCaster,0xc4717b2u,samples);
+				*integrator,*marchJob->GetScene(),*marchOnlyCaster,
+				0xc4717b2u,samples);
 			const SampleMoments shaderOn = momentsShaderRoute(
 				*neeCaster,0xc4717b3u,samples);
 			const SampleMoments shaderOff = momentsShaderRoute(
@@ -5238,9 +5972,11 @@ namespace
 			cappedIntegrator->SetMaxPathDepth(2);
 			const unsigned int activationSamples = 30000;
 			const SampleMoments cappedOn = momentsPT(
-				*cappedIntegrator,*neeCaster,0xc4717c1u,activationSamples);
+				*cappedIntegrator,*job->GetScene(),*neeCaster,
+				0xc4717c1u,activationSamples);
 			const SampleMoments cappedOff = momentsPT(
-				*cappedIntegrator,*marchOnlyCaster,0xc4717c2u,activationSamples);
+				*cappedIntegrator,*marchJob->GetScene(),*marchOnlyCaster,
+				0xc4717c2u,activationSamples);
 			Check( cappedOn.mean>0.0 && std::isfinite(cappedOn.mean) &&
 				cappedOff.mean==0.0,
 				"capped diffuse receiver proves the shell volume-NEE estimator is active" );
@@ -5253,30 +5989,18 @@ namespace
 			StandardShader* cappedShader = new StandardShader(cappedShaderOps);
 			IRayCaster* cappedShaderNEECaster = nullptr;
 			IRayCaster* cappedShaderMarchCaster = nullptr;
-			const IMedium* fireForCappedShader =
-				job->GetScene()->GetGlobalMedium();
-			if( fireForCappedShader ) fireForCappedShader->addref();
-			IsotropicPhaseFunction* cappedVacuumPhase =
-				new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* cappedPreparationVacuum =
-				new UnsupportedHomogeneousSmoke(*cappedVacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(cappedPreparationVacuum);
 			Check( RISE_API_CreateRayCaster(
 				&cappedShaderMarchCaster,false,20,*cappedShader,true) &&
 				cappedShaderMarchCaster,
 				"capped shader-dispatch march reference initializes" );
 			if( cappedShaderMarchCaster )
-				cappedShaderMarchCaster->AttachScene(job->GetScene());
-			job->GetScene()->SetGlobalMedium(fireForCappedShader);
-			safe_release(cappedPreparationVacuum);
-			safe_release(cappedVacuumPhase);
+				cappedShaderMarchCaster->AttachScene(marchJob->GetScene());
 			Check( RISE_API_CreateRayCaster(
 				&cappedShaderNEECaster,false,20,*cappedShader,true) &&
 				cappedShaderNEECaster,
 				"capped shader-dispatch volume-NEE route initializes" );
 			if( cappedShaderNEECaster )
 				cappedShaderNEECaster->AttachScene(job->GetScene());
-			safe_release(fireForCappedShader);
 			if( cappedShaderNEECaster && cappedShaderMarchCaster ) {
 				const SampleMoments cappedShaderOn = momentsShaderRoute(
 					*cappedShaderNEECaster,0xc4717c3u,activationSamples);
@@ -5297,6 +6021,7 @@ namespace
 
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -5309,38 +6034,40 @@ namespace
 				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
 		{
 			std::ofstream output(scenePath);
-			output << SurfaceFireReceiverScene(true);
+			output << SurfaceFireReceiverScene(
+				PhaseBMatrixMechanism::PositionalLight);
 		}
 
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
+		IJobPriv* pointOnlyJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
+		IRayCaster* pointOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"point-light plus off-axis fire receiver fixture loads" );
 		if( job ) {
-			IShader* shader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
+				"point-light reference caster prepares without the volume endpoint strategy" );
+			Check( CreatePreparedCaster(*job,20,neeCaster),
+				"point-light plus flame caster prepares all three strategy entries" );
+			const bool pointLoaded = RISE_CreateJobPriv(&pointOnlyJob) && pointOnlyJob &&
+				pointOnlyJob->LoadAsciiSceneViaCst(scenePath.string().c_str());
 			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
 			UnsupportedHomogeneousSmoke* vacuum =
 				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( shader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
-				"point-light reference caster prepares without the volume endpoint strategy" );
-			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-			job->GetScene()->SetGlobalMedium(fire);
+			if( pointLoaded ) pointOnlyJob->GetScene()->SetGlobalMedium(vacuum);
+			Check( pointLoaded && CreatePreparedCaster(
+					*pointOnlyJob,20,pointOnlyCaster),
+				"point-light-only control prepares with a frozen vacuum medium" );
 			safe_release(vacuum);
 			safe_release(vacuumPhase);
-			Check( shader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*shader,true) && neeCaster,
-				"point-light plus flame caster prepares all three strategy entries" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && pointOnlyJob && neeCaster && marchOnlyCaster &&
+			pointOnlyCaster ) {
 			const RayCaster* concrete = dynamic_cast<const RayCaster*>(neeCaster);
 			const LightSampler* lights = concrete ? concrete->GetLightSampler() : nullptr;
 			Check( lights && lights->GetPositionalLightCount()==1 &&
@@ -5361,32 +6088,26 @@ namespace
 			const unsigned int samples = 280000;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
-			auto mean = [&]( const IRayCaster& route, const unsigned int seed ) {
+			auto mean = [&]( const IScene& scene, const IRayCaster& route,
+				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
 				IndependentSampler sampler(rng);
 				Scalar sum = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					sum += integrator->IntegrateRayNM(
-						rc,rast,ray,nm,*job->GetScene(),route,sampler,
+						rc,rast,ray,nm,scene,route,sampler,
 						nullptr,nullptr);
 				}
 				return sum/static_cast<Scalar>(samples);
 			};
 
-			const Scalar neeOn = mean(*neeCaster,0x3a7e001u);
-			const Scalar neeOff = mean(*marchOnlyCaster,0x3a7e002u);
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			const Scalar pointOnly = mean(*marchOnlyCaster,0x3a7e003u);
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			safe_release(fire);
+			const Scalar neeOn = mean(
+				*job->GetScene(),*neeCaster,0x3a7e001u);
+			const Scalar neeOff = mean(
+				*marchJob->GetScene(),*marchOnlyCaster,0x3a7e002u);
+			const Scalar pointOnly = mean(
+				*pointOnlyJob->GetScene(),*pointOnlyCaster,0x3a7e003u);
 			const Scalar flameOn = neeOn-pointOnly;
 			const Scalar flameOff = neeOff-pointOnly;
 			if( !(neeOn>0.0 && neeOff>0.0 && pointOnly>0.0 && flameOn>0.0 &&
@@ -5403,6 +6124,9 @@ namespace
 
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(pointOnlyCaster);
+		safe_release(pointOnlyJob);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -6768,6 +7492,7 @@ namespace
 			}
 
 			IJobPriv* job = nullptr;
+			IJobPriv* marchJob = nullptr;
 			IRayCaster* neeCaster = nullptr;
 			IRayCaster* marchOnlyCaster = nullptr;
 			const bool loaded = RISE_CreateJobPriv(&job) && job &&
@@ -6775,28 +7500,27 @@ namespace
 			Check( loaded,
 				(std::string(label) + " SSS containment fixture loads").c_str() );
 			if( loaded ) {
-				IShader* shader = job->GetShaders()->GetItem("global");
-				const IMedium* fire = job->GetScene()->GetGlobalMedium();
-				if( fire ) fire->addref();
-				IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-				UnsupportedHomogeneousSmoke* vacuum =
-					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-				job->GetScene()->SetGlobalMedium(vacuum);
-				Check( shader && RISE_API_CreateRayCaster(
-					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster,
+				Check( LoadMarchOnlyFixture(
+					scenePath,20,marchJob,marchOnlyCaster),
 					(std::string(label) + " march-only caster initializes").c_str() );
-				if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-				job->GetScene()->SetGlobalMedium(fire);
-				safe_release(vacuum);
-				safe_release(vacuumPhase);
-				Check( shader && RISE_API_CreateRayCaster(
-					&neeCaster,false,20,*shader,true) && neeCaster,
+				Check( CreatePreparedCaster(*job,20,neeCaster),
 					(std::string(label) + " volume-NEE caster initializes").c_str() );
-				if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-				safe_release(fire);
 			}
 
-			if( job && neeCaster && marchOnlyCaster ) {
+			if( job && marchJob && neeCaster && marchOnlyCaster ) {
+				const RayCaster* const concreteNeeCaster =
+					dynamic_cast<const RayCaster*>(neeCaster);
+				const RayCaster* const concreteMarchCaster =
+					dynamic_cast<const RayCaster*>(marchOnlyCaster);
+				const LightSampler* const neeLights = concreteNeeCaster ?
+					concreteNeeCaster->GetLightSampler() : nullptr;
+				const LightSampler* const marchLights = concreteMarchCaster ?
+					concreteMarchCaster->GetLightSampler() : nullptr;
+				Check( neeLights && marchLights &&
+					neeLights->GetPositionalLightCount()==1 &&
+					marchLights->GetPositionalLightCount()==1,
+					(std::string(label) +
+						" SSS containment fixture retains its ordinary surface light").c_str() );
 				StabilityConfig config;
 				config.maxTranslucentBounce = 4;
 				PathTracingIntegrator* integrator =
@@ -6807,7 +7531,7 @@ namespace
 				const Scalar nm = 500.0;
 				struct Moments { Scalar mean; Scalar variance; };
 				const unsigned int samples = 60000;
-				auto moments = [&]( const IRayCaster& route,
+				auto moments = [&]( const IScene& scene, const IRayCaster& route,
 					const unsigned int seed ) {
 					RandomNumberGenerator rng(seed);
 					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
@@ -6816,7 +7540,7 @@ namespace
 					long double sumSquares = 0.0;
 					for( unsigned int i=0; i<samples; ++i ) {
 						const Scalar value = integrator->IntegrateRayNM(
-							rc,rast,ray,nm,*job->GetScene(),route,
+							rc,rast,ray,nm,scene,route,
 							sampler,nullptr,nullptr);
 						sum += value;
 						sumSquares += static_cast<long double>(value)*value;
@@ -6832,8 +7556,10 @@ namespace
 				for( unsigned int batch=0; batch<3; ++batch ) {
 					const unsigned int seed = 0x55b5500u + fixture*0x10001u +
 						batch*0x101u;
-					const Moments on = moments(*neeCaster,seed);
-					const Moments off = moments(*marchOnlyCaster,seed+0x7a31u);
+					const Moments on = moments(
+						*job->GetScene(),*neeCaster,seed);
+					const Moments off = moments(
+						*marchJob->GetScene(),*marchOnlyCaster,seed+0x7a31u);
 					const Scalar standardError = std::sqrt(
 						(on.variance+off.variance)/static_cast<Scalar>(samples));
 					const bool agrees = on.mean>0.0 && off.mean>0.0 &&
@@ -6883,6 +7609,9 @@ namespace
 				Check( SSSContainedChildCompetitionObserved()==competitionBefore,
 					(std::string(label) +
 						" BSSRDF child starts with competitionAvailable=false").c_str() );
+				Check( integrator->SSSOrdinaryDirectContributionObserved(),
+					(std::string(label) +
+						" BSSRDF entry still receives positive ordinary-light NEE").c_str() );
 				Check( SSSContainmentDiagnosticEmitted(),
 					"SSS preview containment emits a debug diagnostic" );
 				safe_release(integrator);
@@ -6890,6 +7619,7 @@ namespace
 
 			safe_release(neeCaster);
 			safe_release(marchOnlyCaster);
+			safe_release(marchJob);
 			safe_release(job);
 			std::filesystem::remove(scenePath);
 		}
@@ -6907,39 +7637,29 @@ namespace
 			output << SSSShaderOpFireScene();
 		}
 		IJobPriv* job = nullptr;
+		IJobPriv* marchJob = nullptr;
 		IRayCaster* neeCaster = nullptr;
 		IRayCaster* marchOnlyCaster = nullptr;
 		Check( RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()),
 			"nested SSS shader-op fixture loads" );
 		if( job ) {
-			IShader* sceneShader = job->GetShaders()->GetItem("global");
-			const IMedium* fire = job->GetScene()->GetGlobalMedium();
-			if( fire ) fire->addref();
-			IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-			UnsupportedHomogeneousSmoke* vacuum =
-				new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-			job->GetScene()->SetGlobalMedium(vacuum);
-			Check( sceneShader && RISE_API_CreateRayCaster(
-				&marchOnlyCaster,false,20,*sceneShader,true) && marchOnlyCaster,
+			Check( LoadMarchOnlyFixture(
+				scenePath,20,marchJob,marchOnlyCaster),
 				"nested SSS shader-op march-only caster initializes" );
-			if( marchOnlyCaster ) marchOnlyCaster->AttachScene(job->GetScene());
-			job->GetScene()->SetGlobalMedium(fire);
-			safe_release(vacuum);
-			safe_release(vacuumPhase);
-			Check( sceneShader && RISE_API_CreateRayCaster(
-				&neeCaster,false,20,*sceneShader,true) && neeCaster,
+			Check( CreatePreparedCaster(*job,20,neeCaster),
 				"nested SSS shader-op volume-NEE caster initializes" );
-			if( neeCaster ) neeCaster->AttachScene(job->GetScene());
-			safe_release(fire);
 		}
 
-		if( job && neeCaster && marchOnlyCaster ) {
+		if( job && marchJob && neeCaster && marchOnlyCaster ) {
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			RayIntersection ri(ray,rast);
+			RayIntersection marchRI(ray,rast);
 			job->GetScene()->GetObjects()->IntersectRay(ri,true,true,false);
-			Check( ri.geometric.bHit,
+			marchJob->GetScene()->GetObjects()->IntersectRay(
+				marchRI,true,true,false);
+			Check( ri.geometric.bHit && marchRI.geometric.bHit,
 				"nested SSS shader-op fixture resolves a shading hit" );
 			RandomNumberGenerator rng(0x551100u);
 			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
@@ -6970,6 +7690,10 @@ namespace
 				"both named SSS shader ops classify as nonlocal SSS" );
 			const unsigned long long childrenBefore =
 				SSSContainedChildLaunchCount();
+			const unsigned long long unknownPivotsBefore =
+				SSSContainedVolumePivotAttemptCount();
+			const unsigned long long unknownEndpointsBefore =
+				SSSContainedVolumeEndpointAttemptCount();
 			const bool competitionBefore =
 				SSSContainedChildCompetitionObserved();
 			const VolumeEmissionSegmentState parentCompetition(
@@ -6993,11 +7717,15 @@ namespace
 			Check( SSSContainedChildLaunchCount()>=childrenBefore+2 &&
 				SSSContainedChildCompetitionObserved()==competitionBefore,
 				"named SSS nested calls record fresh competition=false children" );
+			Check( SSSContainedVolumePivotAttemptCount()==unknownPivotsBefore &&
+				SSSContainedVolumeEndpointAttemptCount()==unknownEndpointsBefore,
+				"unknown and named nested SSS calls draw no thermal pivot or endpoint" );
 			const unsigned long long pivotsBefore =
 				SSSContainedVolumePivotAttemptCount();
 			const unsigned long long endpointsBefore =
 				SSSContainedVolumeEndpointAttemptCount();
-			auto meanNamed = [&]( IShaderOp& op, const IRayCaster& route,
+			auto meanNamed = [&]( IShaderOp& op,
+				const RayIntersection& intersection, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator localRng(seed);
 				RuntimeContext localRc(
@@ -7007,19 +7735,42 @@ namespace
 				for( unsigned int i=0; i<10000; ++i ) {
 					RISEPel c(0,0,0);
 					op.PerformOperation(
-						localRc,ri,route,rs,c,stack,nullptr);
+						localRc,intersection,route,rs,c,stack,nullptr);
 					sum += c[0];
 				}
 				return sum/10000.0;
 			};
-			const Scalar simpleOn = meanNamed(*simple,*neeCaster,0x551201u);
-			const Scalar simpleOff = meanNamed(*simple,*marchOnlyCaster,0x551201u);
-			const Scalar skinOn = meanNamed(*skin,*neeCaster,0x551202u);
-			const Scalar skinOff = meanNamed(*skin,*marchOnlyCaster,0x551202u);
+			const Scalar simpleOn = meanNamed(
+				*simple,ri,*neeCaster,0x551201u);
+			const Scalar simpleOff = meanNamed(
+				*simple,marchRI,*marchOnlyCaster,0x551201u);
+			const Scalar skinOn = meanNamed(
+				*skin,ri,*neeCaster,0x551202u);
+			const Scalar skinOff = meanNamed(
+				*skin,marchRI,*marchOnlyCaster,0x551202u);
+			auto meanUnknown = [&]( const RayIntersection& intersection,
+				const IRayCaster& route, const unsigned int seed ) {
+				RandomNumberGenerator localRng(seed);
+				RuntimeContext localRc(
+					localRng,RuntimeContext::PASS_NORMAL,false);
+				localRc.bFastPreview = true;
+				Scalar sum = 0.0;
+				for( unsigned int i=0; i<10000; ++i ) {
+					sum += unknownShader->ShadeNM(
+						localRc,intersection,route,rs,500.0,stack);
+				}
+				return sum/10000.0;
+			};
+			const Scalar unknownOn = meanUnknown(
+				ri,*neeCaster,0x551203u);
+			const Scalar unknownOff = meanUnknown(
+				marchRI,*marchOnlyCaster,0x551203u);
 			Check( simpleOn>0.0 && simpleOn==simpleOff,
 				"SubSurfaceScatteringShaderOp nested NEE-on/off paths agree exactly" );
 			Check( skinOn>0.0 && skinOn==skinOff,
 				"DonnerJensenSkinSSSShaderOp nested NEE-on/off paths agree exactly" );
+			Check( unknownOn>0.0 && unknownOn==unknownOff,
+				"unknown nested shader dependency NEE-on/off paths agree exactly" );
 			Check( SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
 				SSSContainedVolumeEndpointAttemptCount()==endpointsBefore,
 				"named SSS nested transport draws zero thermal pivots/endpoints" );
@@ -7033,6 +7784,7 @@ namespace
 		}
 		safe_release(neeCaster);
 		safe_release(marchOnlyCaster);
+		safe_release(marchJob);
 		safe_release(job);
 		std::filesystem::remove(scenePath);
 	}
@@ -7048,21 +7800,34 @@ namespace
 			const char* label;
 		};
 		const MatrixRow rows[] = {
-			{ PhaseBMatrixTopology::Clear, true, false, "clear" },
-			{ PhaseBMatrixTopology::NullCavity, true, false,
-				"null boundary casts-shadows on" },
+			{ PhaseBMatrixTopology::Clear, true, false,
+				"clear, transparent-shadows off" },
+			{ PhaseBMatrixTopology::Clear, true, true,
+				"clear, transparent-shadows on" },
+			{ PhaseBMatrixTopology::NullCavity, false, false,
+				"null boundary casts off, transparent off" },
 			{ PhaseBMatrixTopology::NullCavity, false, true,
-				"null boundary casts-shadows off, transparent-shadows on" },
-			{ PhaseBMatrixTopology::NestedSmoke, true, true,
-				"nested medium casts-shadows on, transparent-shadows on" },
+				"null boundary casts off, transparent on" },
+			{ PhaseBMatrixTopology::NullCavity, true, false,
+				"null boundary casts on, transparent off" },
+			{ PhaseBMatrixTopology::NullCavity, true, true,
+				"null boundary casts on, transparent on" },
 			{ PhaseBMatrixTopology::NestedSmoke, false, false,
-				"nested medium casts-shadows off" },
-			{ PhaseBMatrixTopology::OpaquePartialBlocker, true, true,
-				"opaque blocker casts-shadows on, transparent-shadows on" },
+				"nested medium casts off, transparent off" },
+			{ PhaseBMatrixTopology::NestedSmoke, false, true,
+				"nested medium casts off, transparent on" },
+			{ PhaseBMatrixTopology::NestedSmoke, true, false,
+				"nested medium casts on, transparent off" },
+			{ PhaseBMatrixTopology::NestedSmoke, true, true,
+				"nested medium casts on, transparent on" },
 			{ PhaseBMatrixTopology::OpaquePartialBlocker, false, false,
-				"opaque blocker casts-shadows off" },
+				"opaque blocker casts off, transparent off" },
 			{ PhaseBMatrixTopology::OpaquePartialBlocker, false, true,
-				"opaque blocker casts-shadows off, transparent-shadows on" }
+				"opaque blocker casts off, transparent on" },
+			{ PhaseBMatrixTopology::OpaquePartialBlocker, true, false,
+				"opaque blocker casts on, transparent off" },
+			{ PhaseBMatrixTopology::OpaquePartialBlocker, true, true,
+				"opaque blocker casts on, transparent on" }
 		};
 		const SurfaceReceiverMaterial materials[] = {
 			SurfaceReceiverMaterial::Lambertian,
@@ -7087,11 +7852,35 @@ namespace
 		using MatrixGuidePtr = void*;
 #endif
 
+		struct MatrixResult
+		{
+			Moments ptOn;
+			Moments ptOff;
+			Moments shaderOn;
+			Moments shaderOff;
+			bool valid;
+		};
+		struct MechanismRow
+		{
+			PhaseBMatrixMechanism mechanism;
+			const char* label;
+		};
+		const MechanismRow mechanisms[] = {
+			{PhaseBMatrixMechanism::Ordinary,"ordinary"},
+			{PhaseBMatrixMechanism::TerminalTotalDepth,"terminal total depth"},
+			{PhaseBMatrixMechanism::DiffuseCapped,"diffuse per-type cap"},
+			{PhaseBMatrixMechanism::PositionalLight,"positional-light competition"},
+			{PhaseBMatrixMechanism::HollowCavity,"hollow full-sphere cavity"},
+			{PhaseBMatrixMechanism::ImmersedReceiver,"immersed receiver"},
+			{PhaseBMatrixMechanism::ThinGrazingEmitter,"thin grazing emitter"},
+			{PhaseBMatrixMechanism::GlassMarchOnly,"glass march-only ownership"}
+		};
 		auto runFixture = [&]( const SurfaceReceiverMaterial material,
 			const MatrixRow& row,
+			const MechanismRow& mechanism,
 			MatrixGuidePtr guiding,
 			const unsigned int guidingMode,
-			const char* modeLabel ) {
+			const char* modeLabel ) -> MatrixResult {
 			const std::filesystem::path scenePath =
 				std::filesystem::temp_directory_path() /
 				( "rise_phase_b_matrix_" + std::to_string(static_cast<int>(::getpid())) +
@@ -7099,70 +7888,328 @@ namespace
 			{
 				std::ofstream output(scenePath);
 				output << SurfaceFireReceiverScene(
-					false,material,row.topology,row.castsShadows);
+					mechanism.mechanism,
+					material,row.topology,row.castsShadows);
 			}
-			IJobPriv* job = nullptr;
+			IJobPriv* neeJob = nullptr;
+			IJobPriv* marchJob = nullptr;
 			IRayCaster* neeCaster = nullptr;
 			IRayCaster* marchOnlyCaster = nullptr;
-			const bool loaded = RISE_CreateJobPriv(&job) && job &&
-				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			StabilityConfig neeConfig;
+			neeConfig.maxDiffuseBounce =
+				mechanism.mechanism==PhaseBMatrixMechanism::DiffuseCapped ? 0 : 2;
+			neeConfig.maxGlossyBounce = 2;
+			neeConfig.transparentShadows = row.transparentShadows;
+			StabilityConfig marchConfig = neeConfig;
+			if( mechanism.mechanism==PhaseBMatrixMechanism::DiffuseCapped ) {
+				marchConfig.maxDiffuseBounce = 1;
+			}
+			PathTracingIntegrator* neeIntegrator =
+				new PathTracingIntegrator(ManifoldSolverConfig(),neeConfig);
+			PathTracingIntegrator* marchIntegrator =
+				new PathTracingIntegrator(ManifoldSolverConfig(),marchConfig);
+			const unsigned int pureMaxDepth =
+				mechanism.mechanism==PhaseBMatrixMechanism::TerminalTotalDepth ? 1 :
+				mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly ? 4 : 2;
+			neeIntegrator->SetMaxPathDepth(pureMaxDepth);
+			marchIntegrator->SetMaxPathDepth(pureMaxDepth);
+			PathTracingShaderOp* neeShaderOp =
+				new PathTracingShaderOp(ManifoldSolverConfig(),neeConfig);
+			PathTracingShaderOp* marchShaderOp =
+				new PathTracingShaderOp(ManifoldSolverConfig(),marchConfig);
+			// RayCaster's legacy entry state starts at depth 1, while the pure
+			// integrator starts at 0.  Offset the cap so both routes process the
+			// same two vertices and expose the same non-terminal guide site.
+			neeShaderOp->SetMaxPathDepth(pureMaxDepth+1);
+			marchShaderOp->SetMaxPathDepth(pureMaxDepth+1);
+			std::vector<IShaderOp*> neeOps;
+			neeOps.push_back(neeShaderOp);
+			std::vector<IShaderOp*> marchOps;
+			marchOps.push_back(marchShaderOp);
+			StandardShader* neeShader = new StandardShader(neeOps);
+			StandardShader* marchShader = new StandardShader(marchOps);
+			const bool loaded = RISE_CreateJobPriv(&neeJob) && neeJob &&
+				neeJob->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+				RISE_CreateJobPriv(&marchJob) && marchJob &&
+				marchJob->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+				InstallMarchOnlyGlobalMedium(*marchJob);
 			if( loaded ) {
-				IShader* shader = job->GetShaders()->GetItem("global");
-				const IMedium* fire = job->GetScene()->GetGlobalMedium();
-				if( fire ) fire->addref();
-				IsotropicPhaseFunction* vacuumPhase = new IsotropicPhaseFunction();
-				UnsupportedHomogeneousSmoke* vacuum =
-					new UnsupportedHomogeneousSmoke(*vacuumPhase,0.0,0.0);
-				job->GetScene()->SetGlobalMedium(vacuum);
-				if( shader && RISE_API_CreateRayCaster(
-					&marchOnlyCaster,false,20,*shader,true) && marchOnlyCaster ) {
-					marchOnlyCaster->AttachScene(job->GetScene());
+				if( RISE_API_CreateRayCaster(
+					&marchOnlyCaster,false,20,*marchShader,true) && marchOnlyCaster ) {
+					marchOnlyCaster->AttachScene(marchJob->GetScene());
 				}
-				job->GetScene()->SetGlobalMedium(fire);
-				safe_release(vacuum);
-				safe_release(vacuumPhase);
-				if( shader && RISE_API_CreateRayCaster(
-					&neeCaster,false,20,*shader,true) && neeCaster ) {
-					neeCaster->AttachScene(job->GetScene());
+				if( RISE_API_CreateRayCaster(
+					&neeCaster,false,20,*neeShader,true) && neeCaster ) {
+					neeCaster->AttachScene(neeJob->GetScene());
 				}
-				safe_release(fire);
 			}
 
 			bool agrees = false;
+			bool fixtureValid = false;
 			bool guideWitness = true;
-			Moments on = {0,0,0};
-			Moments off = {0,0,0};
+			unsigned long long guideCounts[8] = {};
+			bool topologyWitness = false;
+			bool mechanismWitness = false;
+			bool endpointWitness = false;
+			Moments ptOn = {0,0,0};
+			Moments ptOff = {0,0,0};
+			Moments shaderOn = {0,0,0};
+			Moments shaderOff = {0,0,0};
 			if( loaded && neeCaster && marchOnlyCaster ) {
-				StabilityConfig config;
-				config.maxDiffuseBounce = 2;
-				config.maxGlossyBounce = 2;
-				config.transparentShadows = row.transparentShadows;
-				PathTracingIntegrator* integrator =
-					new PathTracingIntegrator(ManifoldSolverConfig(),config);
-				integrator->SetMaxPathDepth(2);
-				auto moments = [&]( const IRayCaster& route,
-					const unsigned int seed ) {
-					RandomNumberGenerator rng(seed);
-					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
-#ifdef RISE_ENABLE_OPENPGL
+				const Point3 matrixPosition =
+					mechanism.mechanism==PhaseBMatrixMechanism::HollowCavity ?
+						Point3(0.3,0,-0.1) :
+					mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly ?
+						Point3(0.65,0.12,-0.65) : Point3(0.58,0.18,-0.55);
+				const Scalar matrixRadius =
+					(mechanism.mechanism==PhaseBMatrixMechanism::HollowCavity ||
+					 mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly) ?
+						0.15 : 0.5;
+				const RayCaster* const preparedNeeCaster =
+					dynamic_cast<const RayCaster*>(neeCaster);
+				const RayCaster* const preparedMarchCaster =
+					dynamic_cast<const RayCaster*>(marchOnlyCaster);
+				const LightSampler* const preparedLights = preparedNeeCaster ?
+					preparedNeeCaster->GetLightSampler() : nullptr;
+				const LightSampler* const preparedMarchLights = preparedMarchCaster ?
+					preparedMarchCaster->GetLightSampler() : nullptr;
+				mechanismWitness = preparedLights && preparedMarchLights &&
+					preparedLights->GetVolumeEmissionMediumCount()==1 &&
+					preparedMarchLights->GetVolumeEmissionMediumCount()==0;
+				if( mechanism.mechanism==PhaseBMatrixMechanism::PositionalLight ) {
+					mechanismWitness = mechanismWitness && preparedLights &&
+						preparedLights->GetPositionalLightCount()==1 &&
+						preparedLights->GetVolumeEmissionMediumCount()==1 &&
+						preparedLights->GetEquiangularPivotEntryCount()==2;
+				} else if(
+					mechanism.mechanism==PhaseBMatrixMechanism::HollowCavity ) {
+					IORStack cavityStack(1.0);
+					IORStackSeeding::SeedFromPoint(
+						cavityStack,Point3(0,0,-0.1),*neeJob->GetScene());
+					const IMedium* const cavityMedium =
+						MediumTracking::GetCurrentMedium(
+							cavityStack,neeJob->GetScene());
+					const IObject* const cavity = neeJob->GetScene()->GetObjects()->
+						GetItem("mechanism_cavity");
+					bool pivotOctants[8] = {};
+					if( preparedLights ) {
+						RandomNumberGenerator pivotRng(0xc471700u+fixtureSerial);
+						IndependentSampler pivotSampler(pivotRng);
+						for( unsigned int i=0; i<1024; ++i ) {
+							VolumeEmissionPivotState pivots;
+							if( !preparedLights->SampleVolumeEmissionPivots(
+								pivotSampler,pivots) || pivots.mediumPivots.size()!=1 ) {
+								continue;
+							}
+							const Point3& pivot = pivots.mediumPivots[0];
+							if( Vector3Ops::Magnitude(Vector3Ops::mkVector3(
+								Point3(0,0,-0.1),pivot))<=0.75 ) continue;
+							pivotOctants[(pivot.x>=0.0 ? 1u : 0u) |
+								(pivot.y>=0.0 ? 2u : 0u) |
+								(pivot.z>=-0.1 ? 4u : 0u)] = true;
+						}
+					}
+					bool pivotsSurroundReceiver = true;
+					for( const bool occupied : pivotOctants ) {
+						pivotsSurroundReceiver = pivotsSurroundReceiver && occupied;
+					}
+					mechanismWitness = mechanismWitness && cavity &&
+						IsExactNullBoundaryMaterial(cavity->GetMaterial()) &&
+						cavityMedium==cavity->GetInteriorMedium() && cavityMedium &&
+						cavityMedium->GetCoefficientsNM(
+							Point3(0,0,-0.1),nm).sigma_t==0.0 &&
+						preparedLights &&
+						preparedLights->GetVolumeEmissionMediumCount()==1 &&
+						pivotsSurroundReceiver;
+				} else if(
+					mechanism.mechanism==PhaseBMatrixMechanism::ImmersedReceiver ) {
+					const IMedium* const receiverMedium =
+						neeJob->GetScene()->GetGlobalMedium();
+					const MediumCoefficientsNM receiverCoefficients = receiverMedium ?
+						receiverMedium->GetCoefficientsNM(Point3(0,0,-0.1),nm) :
+						MediumCoefficientsNM();
+					mechanismWitness = mechanismWitness && receiverMedium &&
+						receiverMedium->IsFireMedium() &&
+						receiverCoefficients.sigma_t>0.0 && preparedLights &&
+						preparedLights->GetVolumeEmissionMediumCount()==1;
+				} else if(
+					mechanism.mechanism==PhaseBMatrixMechanism::ThinGrazingEmitter ) {
+					Point3 thinMin, thinMax;
+					const IMedium* const thinMedium = neeJob->GetScene()->GetGlobalMedium();
+					const bool bounded = thinMedium &&
+						thinMedium->GetBoundingBox(thinMin,thinMax);
+					const Vector3 toSheet = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3(Point3(0,0,-0.1),
+							Point3(0.5*(thinMin.x+thinMax.x),
+								0.5*(thinMin.y+thinMax.y),
+								0.5*(thinMin.z+thinMax.z))));
+					mechanismWitness = mechanismWitness && bounded &&
+						thinMax.z-thinMin.z<0.025 &&
+						std::fabs(toSheet.z)<0.05 && preparedLights &&
+						preparedLights->GetVolumeEmissionMediumCount()==1;
+				} else if(
+					mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly ) {
+					const IObject* const glassObject = neeJob->GetScene()->GetObjects()->
+						GetItem("mechanism_glass");
+					const IMaterial* const glassMaterial = glassObject ?
+						glassObject->GetMaterial() : nullptr;
+					mechanismWitness = mechanismWitness && glassMaterial &&
+						dynamic_cast<const PerfectRefractorMaterial*>(glassMaterial) &&
+						!IsExactNullBoundaryMaterial(glassMaterial) &&
+						preparedLights &&
+						preparedLights->GetVolumeEmissionMediumCount()==1;
+				}
+				const IObject* const matrixObject =
+					neeJob->GetScene()->GetObjects()->GetItem("matrix_object");
+				if( row.topology==PhaseBMatrixTopology::Clear ) {
+					topologyWitness = matrixObject==nullptr;
+				} else if( matrixObject ) {
+					const Vector3 towardObject = Vector3Ops::mkVector3(
+						matrixPosition,Point3(0,0,-0.1));
+					const bool geometryActive =
+						matrixObject->IntersectRay_IntersectionOnly(
+							Ray(Point3(0,0,-0.1),towardObject),
+							RISE_INFINITY,true,true);
+					const bool shadowFlagActive =
+						matrixObject->DoesCastShadows()==row.castsShadows;
+					const IMedium* const interior =
+						matrixObject->GetInteriorMedium();
+					if( row.topology==PhaseBMatrixTopology::OpaquePartialBlocker ) {
+						topologyWitness = geometryActive && shadowFlagActive &&
+							!IsExactNullBoundaryMaterial(matrixObject->GetMaterial()) &&
+							interior==nullptr;
+					} else if( IsExactNullBoundaryMaterial(
+						matrixObject->GetMaterial()) && interior ) {
+						const MediumCoefficientsNM coeff =
+							interior->GetCoefficientsNM(matrixPosition,nm);
+						const bool expectedInterior =
+							row.topology==PhaseBMatrixTopology::NestedSmoke ?
+								coeff.sigma_t>1.0 :
+								coeff.sigma_t>0.0 && coeff.sigma_t<1.0;
+						topologyWitness = geometryActive && shadowFlagActive &&
+							expectedInterior;
+					}
+					// Exercise the actual production shadow routes through the
+					// authored topology.  A geometry-only probe can stay green if
+					// boundary enumeration silently stops consulting the object.
+					const Point3 probeOrigin =
+						mechanism.mechanism==PhaseBMatrixMechanism::HollowCavity ?
+							Point3Ops::mkPoint3(
+								Point3(0,0,0),
+								Vector3Ops::Normalize(Vector3Ops::mkVector3(
+									matrixPosition,Point3(0,0,0)))*Scalar(0.121)) :
+							Point3(0,0,-0.1);
+					const Vector3 probeDirection = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3(matrixPosition,probeOrigin));
+					const Point3 offsetOrigin = Point3Ops::mkPoint3(
+						probeOrigin,probeDirection*Scalar(1e-6));
+					const Scalar probeDistance = Vector3Ops::Magnitude(
+						Vector3Ops::mkVector3(probeOrigin,matrixPosition))+
+						(matrixRadius+0.1);
+					const Ray topologyRay(offsetOrigin,probeDirection);
+					RISEPel interfaceTr(1,1,1);
+					const bool interfaceBlocked = preparedNeeCaster &&
+						preparedNeeCaster->CastShadowRayAuto(
+							topologyRay,probeDistance,true,nm,interfaceTr);
+					if( row.topology==PhaseBMatrixTopology::OpaquePartialBlocker ) {
+						topologyWitness = topologyWitness &&
+							interfaceBlocked==row.castsShadows;
+					} else {
+						Scalar walkedTr = 0.0;
+						IORStack probeStack(1.0);
+						IORStackSeeding::SeedFromPoint(
+							probeStack,offsetOrigin,*neeJob->GetScene());
+						const IMedium* const originMedium =
+							MediumTracking::GetCurrentMedium(
+								probeStack,neeJob->GetScene());
+						const IObject* const originMediumObject = probeStack.topObject();
+						const bool walked = originMedium &&
+							EvaluateShadowMediumTransmittanceNM(
+								topologyRay,probeDistance,originMedium,originMediumObject,
+								neeJob->GetScene(),true,nm,walkedTr,&probeStack);
+						const Scalar noBoundaryTr = originMedium ?
+							originMedium->EvalTransmittanceNM(
+								topologyRay,probeDistance,nm) : 0.0;
+						const Scalar separation = std::fabs(walkedTr-noBoundaryTr);
+						topologyWitness = topologyWitness && !interfaceBlocked &&
+							walked && walkedTr>=0.0 && walkedTr<=1.0 &&
+							separation>std::fmax(
+								Scalar(1e-12),std::fabs(noBoundaryTr)*Scalar(1e-6));
+					}
+				}
+				RayCaster* const concreteNeeCaster =
+					dynamic_cast<RayCaster*>(neeCaster);
+				RayCaster* const concreteMarchOnlyCaster =
+					dynamic_cast<RayCaster*>(marchOnlyCaster);
+				if( concreteNeeCaster ) {
+					concreteNeeCaster->SetTransparentShadows(
+						row.transparentShadows);
+				}
+				if( concreteMarchOnlyCaster ) {
+					concreteMarchOnlyCaster->SetTransparentShadows(
+						row.transparentShadows);
+				}
+				const bool transparentShadowConfigurationActive =
+					concreteNeeCaster && concreteMarchOnlyCaster &&
+					concreteNeeCaster->GetTransparentShadows()==
+						row.transparentShadows &&
+					concreteMarchOnlyCaster->GetTransparentShadows()==
+						row.transparentShadows;
+				const Ray fixtureRay =
+					mechanism.mechanism==PhaseBMatrixMechanism::HollowCavity ?
+						Ray(Point3(0,0,-0.5),Vector3(0,0,1)) : ray;
+				auto configureRuntime = [&]( RuntimeContext& rc ) {
+			#ifdef RISE_ENABLE_OPENPGL
 					rc.pGuidingField = guiding;
 					rc.guidingAlpha = guiding ? 0.5 : 0.0;
 					rc.guidingLearnedAlpha = false;
 					rc.maxGuidingDepth = 8;
 					rc.guidingSamplingType =
 						static_cast<GuidingSamplingType>(guidingMode);
-#else
+			#else
+					(void)rc;
 					(void)guiding;
 					(void)guidingMode;
-#endif
+			#endif
+				};
+				auto momentsPT = [&]( PathTracingIntegrator& integrator,
+					const IScene& scene, const IRayCaster& route,
+					const unsigned int seed ) {
+					RandomNumberGenerator rng(seed);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+					configureRuntime(rc);
 					IndependentSampler sampler(rng);
 					long double sum = 0.0;
 					long double sumSquares = 0.0;
 					unsigned int positive = 0;
 					for( unsigned int i=0; i<samples; ++i ) {
-						const Scalar value = integrator->IntegrateRayNM(
-							rc,rast,ray,nm,*job->GetScene(),route,
+						const Scalar value = integrator.IntegrateRayNM(
+							rc,rast,fixtureRay,nm,scene,route,
 							sampler,nullptr,nullptr);
+						sum += value;
+						sumSquares += static_cast<long double>(value)*value;
+						if( value>0.0 ) ++positive;
+					}
+					const long double count = static_cast<long double>(samples);
+					const long double mean = sum/count;
+					const long double variance =
+						(sumSquares-sum*sum/count)/(count-1.0);
+					return Moments{static_cast<Scalar>(mean),
+						static_cast<Scalar>(variance>0.0 ? variance : 0.0),positive};
+				};
+				auto momentsShader = [&]( const IRayCaster& route,
+					const unsigned int seed ) {
+					RandomNumberGenerator rng(seed);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+					configureRuntime(rc);
+					IRayCaster::RAY_STATE state;
+					long double sum = 0.0;
+					long double sumSquares = 0.0;
+					unsigned int positive = 0;
+					for( unsigned int i=0; i<samples; ++i ) {
+						Scalar value = 0.0;
+						route.CastRayNM(
+							rc,rast,fixtureRay,value,state,nm,nullptr,nullptr);
 						sum += value;
 						sumSquares += static_cast<long double>(value)*value;
 						if( value>0.0 ) ++positive;
@@ -7176,47 +8223,153 @@ namespace
 				};
 				const unsigned int seedBase = 0x7b00000u + fixtureSerial*0x101u +
 					static_cast<unsigned int>(material)*0x10001u;
-				on = moments(*neeCaster,seedBase+1u);
-				off = moments(*marchOnlyCaster,seedBase+2u);
-#ifdef RISE_ENABLE_OPENPGL
-				if( guiding ) {
+				ptOn = momentsPT(
+					*neeIntegrator,*neeJob->GetScene(),*neeCaster,seedBase+1u);
+				ptOff = momentsPT(
+					*marchIntegrator,*marchJob->GetScene(),*marchOnlyCaster,seedBase+2u);
+				shaderOn = momentsShader(*neeCaster,seedBase+3u);
+				shaderOff = momentsShader(*marchOnlyCaster,seedBase+4u);
+				endpointWitness =
+					neeIntegrator->SurfaceVolumeEndpointAttemptCount()>0 &&
+					marchIntegrator->SurfaceVolumeEndpointAttemptCount()==0 &&
+					neeShaderOp->SurfaceVolumeEndpointAttemptCount()>0 &&
+					marchShaderOp->SurfaceVolumeEndpointAttemptCount()==0;
+			#ifdef RISE_ENABLE_OPENPGL
+				if( guiding &&
+					mechanism.mechanism!=PhaseBMatrixMechanism::TerminalTotalDepth ) {
+					guideCounts[0] = marchIntegrator->
+						NonCompetingSurfaceGuideInitializationCount();
+					guideCounts[1] = marchIntegrator->
+						NonCompetingSurfaceGuidedCandidateInstalledCount();
+					guideCounts[2] = marchShaderOp->
+						NonCompetingSurfaceGuideInitializationCount();
+					guideCounts[3] = marchShaderOp->
+						NonCompetingSurfaceGuidedCandidateInstalledCount();
+					guideCounts[4] = marchIntegrator->NonCompetingSurfaceRISCount();
+					guideCounts[5] = marchIntegrator->
+						NonCompetingSurfaceRISCandidateInstalledCount();
+					guideCounts[6] = marchShaderOp->NonCompetingSurfaceRISCount();
+					guideCounts[7] = marchShaderOp->
+						NonCompetingSurfaceRISCandidateInstalledCount();
 					guideWitness =
-						integrator->NonCompetingSurfaceGuideInitializationCount()>0 &&
+						guideCounts[0]>0 && guideCounts[1]>0 &&
+						guideCounts[2]>0 && guideCounts[3]>0 &&
 						(guidingMode!=static_cast<unsigned int>(eGuidingRIS) ||
-							integrator->NonCompetingSurfaceRISCount()>0);
+							(guideCounts[4]>0 && guideCounts[5]>0 &&
+								guideCounts[6]>0 && guideCounts[7]>0));
 				}
-#endif
-				const Scalar standardError = std::sqrt(
-					(on.variance+off.variance)/static_cast<Scalar>(samples));
-				agrees = guideWitness && on.mean>0.0 && off.mean>0.0 &&
-					on.positive>100 && off.positive>100 && standardError>0.0 &&
-					std::fabs(on.mean-off.mean)<=6.0*standardError;
-				safe_release(integrator);
+			#endif
+				auto withinSixStandardErrors = [&]( const Moments& a,
+					const Moments& b ) {
+					const Scalar standardError = std::sqrt(
+						(a.variance+b.variance)/static_cast<Scalar>(samples));
+					return standardError>0.0 &&
+						std::fabs(a.mean-b.mean)<=6.0*standardError;
+				};
+				const unsigned int minimumPositive =
+					(mechanism.mechanism==PhaseBMatrixMechanism::ThinGrazingEmitter ||
+					 mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly) ? 10 : 100;
+				fixtureValid = topologyWitness && mechanismWitness &&
+					transparentShadowConfigurationActive &&
+					endpointWitness && guideWitness;
+				agrees = fixtureValid &&
+					ptOn.mean>0.0 && ptOff.mean>0.0 &&
+					shaderOn.mean>0.0 && shaderOff.mean>0.0 &&
+					ptOn.positive>minimumPositive && ptOff.positive>minimumPositive &&
+					shaderOn.positive>minimumPositive &&
+					shaderOff.positive>minimumPositive &&
+					withinSixStandardErrors(ptOn,ptOff) &&
+					withinSixStandardErrors(shaderOn,shaderOff) &&
+					withinSixStandardErrors(ptOn,shaderOn) &&
+					withinSixStandardErrors(ptOff,shaderOff);
 			}
 			if( !agrees ) {
+				const Scalar ptStandardError = std::sqrt(
+					(ptOn.variance+ptOff.variance)/static_cast<Scalar>(samples));
+				const Scalar shaderStandardError = std::sqrt(
+					(shaderOn.variance+shaderOff.variance)/static_cast<Scalar>(samples));
 				std::cout << "  matrix " << materialNames[static_cast<unsigned int>(material)] <<
-					" / " << row.label << " / " << modeLabel <<
-					" means=" << on.mean << "/" << off.mean <<
-					" variances=" << on.variance << "/" << off.variance <<
-					" positives=" << on.positive << "/" << off.positive <<
-					" guideWitness=" << guideWitness << std::endl;
+					" / " << row.label << " / " << mechanism.label <<
+					" / " << modeLabel <<
+					" PT=" << ptOn.mean << "/" << ptOff.mean <<
+					" shader=" << shaderOn.mean << "/" << shaderOff.mean <<
+					" delta/se PT=" << std::fabs(ptOn.mean-ptOff.mean) << "/" <<
+						ptStandardError << " shader=" <<
+						std::fabs(shaderOn.mean-shaderOff.mean) << "/" <<
+						shaderStandardError <<
+					" positives PT=" << ptOn.positive << "/" << ptOff.positive <<
+					" shader=" << shaderOn.positive << "/" << shaderOff.positive <<
+					" topologyWitness=" << topologyWitness <<
+					" mechanismWitness=" << mechanismWitness <<
+					" endpointWitness=" << endpointWitness <<
+					" guideWitness=" << guideWitness << " guideCounts=";
+				for( const unsigned long long count : guideCounts ) {
+					std::cout << count << ",";
+				}
+				std::cout << std::endl;
 			}
 			const std::string label = std::string("Phase-B matrix ") +
 				materialNames[static_cast<unsigned int>(material)] + " / " +
-				row.label + " / " + modeLabel +
+				row.label + " / " + mechanism.label + " / " + modeLabel +
 				" preserves volume-NEE versus march equality";
 			Check( agrees,label.c_str() );
 			safe_release(neeCaster);
 			safe_release(marchOnlyCaster);
-			safe_release(job);
+			safe_release(neeShader);
+			safe_release(marchShader);
+			safe_release(neeShaderOp);
+			safe_release(marchShaderOp);
+			safe_release(neeIntegrator);
+			safe_release(marchIntegrator);
+			safe_release(neeJob);
+			safe_release(marchJob);
 			std::filesystem::remove(scenePath);
+			return MatrixResult{ptOn,ptOff,shaderOn,shaderOff,fixtureValid};
 		};
 
-		for( const SurfaceReceiverMaterial material : materials ) {
-			for( const MatrixRow& row : rows ) {
-				runFixture(material,row,nullptr,0,"guiding off");
+		auto runMode = [&]( MatrixGuidePtr guiding,
+			const unsigned int guidingMode, const char* modeLabel ) {
+			for( const SurfaceReceiverMaterial material : materials ) {
+				for( const MechanismRow& mechanism : mechanisms ) {
+					MatrixResult results[sizeof(rows)/sizeof(rows[0])];
+					for( size_t rowIndex=0;
+						rowIndex<sizeof(rows)/sizeof(rows[0]); ++rowIndex ) {
+						results[rowIndex] = runFixture(
+							material,rows[rowIndex],mechanism,
+							guiding,guidingMode,modeLabel);
+					}
+				auto withinSixStandardErrors = [&]( const Moments& a,
+					const Moments& b ) {
+					const Scalar standardError = std::sqrt(
+						(a.variance+b.variance)/static_cast<Scalar>(samples));
+					return standardError>0.0 &&
+						std::fabs(a.mean-b.mean)<=6.0*standardError;
+				};
+					const std::string prefix = std::string("Phase-B matrix ") +
+						materialNames[static_cast<unsigned int>(material)] + " / " +
+						mechanism.label + " / " + modeLabel + " ";
+				// Exact null boundaries are transparent by class, independent of both
+				// shadow flags.  Opaque blockers are intentionally not compared across
+				// casts_shadows states: those configurations are each equality gates,
+				// but are not physically expected to have the same mean.
+				for( const size_t topologyStart : {size_t(2),size_t(6)} ) {
+					for( size_t offset=1; offset<4; ++offset ) {
+						const MatrixResult& reference = results[topologyStart];
+						const MatrixResult& toggled = results[topologyStart+offset];
+						const bool invariant = reference.valid && toggled.valid &&
+							withinSixStandardErrors(reference.ptOn,toggled.ptOn) &&
+							withinSixStandardErrors(reference.ptOff,toggled.ptOff) &&
+							withinSixStandardErrors(reference.shaderOn,toggled.shaderOn) &&
+							withinSixStandardErrors(reference.shaderOff,toggled.shaderOff);
+						Check( invariant,(prefix + rows[topologyStart].label +
+							" remains transport-equivalent under the shadow-flag cross-product").c_str() );
+					}
+				}
+				}
 			}
-		}
+		};
+
+		runMode(nullptr,0,"guiding off");
 
 #ifdef RISE_ENABLE_OPENPGL
 		PathGuidingConfig guidingConfig;
@@ -7225,24 +8378,895 @@ namespace
 			new Implementation::PathGuidingField(
 				guidingConfig,Point3(-2,-2,-2),Point3(2,2,1));
 		guiding->BeginTrainingIteration();
-		for( unsigned int i=0; i<512; ++i ) {
-			const Scalar phi = TWO_PI*static_cast<Scalar>(i%64)/64.0;
-			const Scalar z = -0.15-0.8*static_cast<Scalar>(i/64)/7.0;
+		RandomNumberGenerator guideTrainingRng(0x7b91d1u);
+		const Vector3 guideTarget = Vector3Ops::Normalize(
+			Vector3(0.58,0.18,-0.45));
+		for( unsigned int i=0; i<2048; ++i ) {
+			const Scalar z = 1.0-2.0*guideTrainingRng.CanonicalRandom();
+			const Scalar phi = TWO_PI*guideTrainingRng.CanonicalRandom();
 			const Scalar radial = std::sqrt(std::fmax(0.0,1.0-z*z));
+			const Vector3 direction(radial*std::cos(phi),radial*std::sin(phi),z);
+			const Scalar alignment = std::fmax(
+				0.0,Vector3Ops::Dot(direction,guideTarget));
 			guiding->AddSample(
-				Point3(0,0,-0.1),Vector3(radial*cos(phi),radial*sin(phi),z),
-				1.0,1.0/(2.0*PI),1.0,false);
+				Point3(0,0,-0.1),direction,
+				1.0,1.0/(2.0*PI),0.25+2.0*alignment*alignment,false);
+			guiding->AddVolumeSample(
+				Point3(0,0,-0.1),direction,
+				1.0,1.0/(2.0*PI),0.25+2.0*alignment*alignment,false);
 		}
 		guiding->EndTrainingIteration();
 		Check( guiding->IsTrained(),
 			"Phase-B configuration matrix surface guide trains" );
-		runFixture(SurfaceReceiverMaterial::Lambertian,rows[0],guiding,
-			static_cast<unsigned int>(eGuidingOneSampleMIS),
+		{
+			Implementation::GuidingDistributionHandle surfaceDistribution;
+			Implementation::GuidingVolumeDistributionHandle volumeDistribution;
+			const bool surfaceReady = guiding->InitDistribution(
+				surfaceDistribution,Point3(0,0,-0.1),0.5);
+			const bool volumeReady = guiding->InitVolumeDistribution(
+				volumeDistribution,Point3(0,0,-0.1),0.5);
+			if( surfaceReady ) {
+				guiding->ApplyCosineProduct(
+					surfaceDistribution,Vector3(0,0,-1));
+			}
+			if( volumeReady ) {
+				guiding->ApplyHGProduct(
+					volumeDistribution,Vector3(0,0,1),0.5);
+			}
+			RandomNumberGenerator normalizationRng(0x7b91d2u);
+			bool normalized = surfaceReady && volumeReady;
+			for( unsigned int i=0; i<4096 && normalized; ++i ) {
+				Scalar surfacePdf = 0.0;
+				const Vector3 surfaceDirection = guiding->Sample(
+					surfaceDistribution,
+					Point2(normalizationRng.CanonicalRandom(),
+						normalizationRng.CanonicalRandom()),surfacePdf);
+				Scalar volumePdf = 0.0;
+				const Vector3 volumeDirection = guiding->SampleVolume(
+					volumeDistribution,
+					Point2(normalizationRng.CanonicalRandom(),
+						normalizationRng.CanonicalRandom()),volumePdf);
+				normalized = std::fabs(
+					Vector3Ops::Magnitude(surfaceDirection)-1.0)<1e-14 &&
+					std::fabs(Vector3Ops::Magnitude(volumeDirection)-1.0)<1e-14 &&
+					surfacePdf==guiding->Pdf(
+						surfaceDistribution,surfaceDirection) &&
+					volumePdf==guiding->PdfVolume(
+						volumeDistribution,volumeDirection);
+			}
+			Check( normalized,
+				"OpenPGL surface and volume samples are unit directions bound to their evaluated PDFs" );
+		}
+		runMode(guiding,static_cast<unsigned int>(eGuidingOneSampleMIS),
 			"guiding one-sample MIS requested");
-		runFixture(SurfaceReceiverMaterial::Lambertian,rows[0],guiding,
-			static_cast<unsigned int>(eGuidingRIS),
+		runMode(guiding,static_cast<unsigned int>(eGuidingRIS),
 			"guiding RIS requested at the non-competing reference vertex");
 		safe_release(guiding);
+#endif
+	}
+
+	void TestPreviewContainmentConfigurationMatrix()
+	{
+		std::cout << "TestPreviewContainmentConfigurationMatrix" << std::endl;
+		struct MatrixRow
+		{
+			PhaseBMatrixTopology topology;
+			bool castsShadows;
+			bool transparentShadows;
+		};
+		const MatrixRow rows[] = {
+			{PhaseBMatrixTopology::Clear,true,false},
+			{PhaseBMatrixTopology::Clear,true,true},
+			{PhaseBMatrixTopology::NullCavity,false,false},
+			{PhaseBMatrixTopology::NullCavity,false,true},
+			{PhaseBMatrixTopology::NullCavity,true,false},
+			{PhaseBMatrixTopology::NullCavity,true,true},
+			{PhaseBMatrixTopology::NestedSmoke,false,false},
+			{PhaseBMatrixTopology::NestedSmoke,false,true},
+			{PhaseBMatrixTopology::NestedSmoke,true,false},
+			{PhaseBMatrixTopology::NestedSmoke,true,true},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,false,false},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,false,true},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,true,false},
+			{PhaseBMatrixTopology::OpaquePartialBlocker,true,true}
+		};
+#ifdef RISE_ENABLE_OPENPGL
+		using PreviewGuidePtr = Implementation::PathGuidingField*;
+#else
+		using PreviewGuidePtr = void*;
+#endif
+		struct GuideMode
+		{
+			PreviewGuidePtr guide;
+			unsigned int samplingType;
+			const char* label;
+		};
+		std::vector<GuideMode> modes;
+		modes.push_back(GuideMode{nullptr,0,"guiding off"});
+#ifdef RISE_ENABLE_OPENPGL
+		PathGuidingConfig guideConfig;
+		guideConfig.enabled = true;
+		Implementation::PathGuidingField* guide =
+			new Implementation::PathGuidingField(
+				guideConfig,Point3(-3,-3,-3),Point3(3,3,3));
+		guide->BeginTrainingIteration();
+		for( unsigned int i=0; i<512; ++i ) {
+			const Scalar phi = TWO_PI*static_cast<Scalar>(i%64)/64.0;
+			const Scalar z = -0.15-0.8*static_cast<Scalar>(i/64)/7.0;
+			const Scalar radial = std::sqrt(std::fmax(0.0,1.0-z*z));
+			guide->AddSample(Point3(0,0,-0.1),
+				Vector3(radial*cos(phi),radial*sin(phi),z),
+				1.0,1.0/(2.0*PI),1.0,false);
+		}
+		guide->EndTrainingIteration();
+		Check( guide->IsTrained(),
+			"preview-containment configuration guide trains" );
+		modes.push_back(GuideMode{guide,
+			static_cast<unsigned int>(eGuidingOneSampleMIS),
+			"guiding one-sample MIS"});
+		modes.push_back(GuideMode{guide,
+			static_cast<unsigned int>(eGuidingRIS),"guiding RIS"});
+#endif
+
+		auto configureRuntime = [&]( RuntimeContext& rc,
+			const GuideMode& mode ) {
+#ifdef RISE_ENABLE_OPENPGL
+			rc.pGuidingField = mode.guide;
+			rc.guidingAlpha = mode.guide ? 0.5 : 0.0;
+			rc.guidingLearnedAlpha = false;
+			rc.maxGuidingDepth = 8;
+			rc.guidingSamplingType =
+				static_cast<GuidingSamplingType>(mode.samplingType);
+#else
+			(void)rc;
+			(void)mode;
+#endif
+		};
+#ifdef RISE_ENABLE_OPENPGL
+		struct PreviewGuideCounts
+		{
+			unsigned long long initialized;
+			unsigned long long installed;
+			unsigned long long ris;
+			unsigned long long risInstalled;
+		};
+		auto guideCounts = []( const PathTracingIntegrator* integrator,
+			const PathTracingShaderOp* shaderOp ) {
+			PreviewGuideCounts counts = {0,0,0,0};
+			if( integrator ) {
+				counts.initialized +=
+					integrator->NonCompetingSurfaceGuideInitializationCount();
+				counts.installed +=
+					integrator->NonCompetingSurfaceGuidedCandidateInstalledCount();
+				counts.ris += integrator->NonCompetingSurfaceRISCount();
+				counts.risInstalled +=
+					integrator->NonCompetingSurfaceRISCandidateInstalledCount();
+			}
+			if( shaderOp ) {
+				counts.initialized +=
+					shaderOp->NonCompetingSurfaceGuideInitializationCount();
+				counts.installed +=
+					shaderOp->NonCompetingSurfaceGuidedCandidateInstalledCount();
+				counts.ris += shaderOp->NonCompetingSurfaceRISCount();
+				counts.risInstalled +=
+					shaderOp->NonCompetingSurfaceRISCandidateInstalledCount();
+			}
+			return counts;
+		};
+		auto guideModeActivated = []( const GuideMode& mode,
+			const PreviewGuideCounts& before,
+			const PreviewGuideCounts& after ) {
+			if( !mode.guide ) {
+				return after.initialized==before.initialized &&
+					after.installed==before.installed &&
+					after.ris==before.ris &&
+					after.risInstalled==before.risInstalled;
+			}
+			const bool guided = after.initialized>before.initialized &&
+				after.installed>before.installed;
+			return mode.samplingType!=static_cast<unsigned int>(eGuidingRIS) ?
+				guided : guided && after.ris>before.ris &&
+					after.risInstalled>before.risInstalled;
+		};
+#endif
+		auto prepareCasters = [&]( IJobPriv& neeJob, IJobPriv& marchJob,
+			const MatrixRow& row,
+			IRayCaster*& neeCaster, IRayCaster*& marchCaster ) {
+			IShader* neeShader = neeJob.GetShaders()->GetItem("global");
+			IShader* marchShader = marchJob.GetShaders()->GetItem("global");
+			const bool proxyReady = InstallMarchOnlyGlobalMedium(marchJob);
+			const bool marchReady = proxyReady && marchShader &&
+				RISE_API_CreateRayCaster(
+					&marchCaster,false,20,*marchShader,true) && marchCaster;
+			if( marchReady ) marchCaster->AttachScene(marchJob.GetScene());
+			const bool neeReady = neeShader && RISE_API_CreateRayCaster(
+				&neeCaster,false,20,*neeShader,true) && neeCaster;
+			if( neeReady ) neeCaster->AttachScene(neeJob.GetScene());
+			RayCaster* const concreteNEE = dynamic_cast<RayCaster*>(neeCaster);
+			RayCaster* const concreteMarch = dynamic_cast<RayCaster*>(marchCaster);
+			if( concreteNEE ) {
+				concreteNEE->SetTransparentShadows(row.transparentShadows);
+			}
+			if( concreteMarch ) {
+				concreteMarch->SetTransparentShadows(row.transparentShadows);
+			}
+			const LightSampler* neeLights = concreteNEE ?
+				concreteNEE->GetLightSampler() : nullptr;
+			const LightSampler* marchLights = concreteMarch ?
+				concreteMarch->GetLightSampler() : nullptr;
+			return marchReady && neeReady && concreteNEE && concreteMarch &&
+				concreteNEE->GetTransparentShadows()==row.transparentShadows &&
+				concreteMarch->GetTransparentShadows()==row.transparentShadows &&
+				neeLights && neeLights->GetVolumeEmissionMediumCount()==1 &&
+				marchLights && marchLights->GetVolumeEmissionMediumCount()==0;
+		};
+		auto topologyIsActive = []( IJobPriv& job, const MatrixRow& row,
+			const char* objectName, const Point3& rayOrigin,
+			const Point3& objectCenter ) {
+			const IObject* const object =
+				job.GetScene()->GetObjects()->GetItem(objectName);
+			if( row.topology==PhaseBMatrixTopology::Clear ) {
+				return object==nullptr;
+			}
+			if( !object || object->DoesCastShadows()!=row.castsShadows ) {
+				return false;
+			}
+			const Vector3 direction = Vector3Ops::Normalize(Vector3(
+				objectCenter.x-rayOrigin.x,
+				objectCenter.y-rayOrigin.y,
+				objectCenter.z-rayOrigin.z));
+			if( !object->IntersectRay_IntersectionOnly(
+				Ray(rayOrigin,direction),RISE_INFINITY,true,true) ) {
+				return false;
+			}
+			const IMedium* const interior = object->GetInteriorMedium();
+			if( row.topology==PhaseBMatrixTopology::OpaquePartialBlocker ) {
+				return !IsExactNullBoundaryMaterial(object->GetMaterial()) &&
+					interior==nullptr;
+			}
+			if( !IsExactNullBoundaryMaterial(object->GetMaterial()) || !interior ) {
+				return false;
+			}
+			const MediumCoefficientsNM coeff =
+				interior->GetCoefficientsNM(objectCenter,500.0);
+			return row.topology==PhaseBMatrixTopology::NestedSmoke ?
+				coeff.sigma_t>1.0 : coeff.sigma_t>0.0 && coeff.sigma_t<1.0;
+		};
+		struct PreviewMoments
+		{
+			Scalar mean;
+			Scalar variance;
+			unsigned int positive;
+		};
+		auto momentsPure = [&]( PathTracingIntegrator& integrator,
+			IJobPriv& job, const IRayCaster& neeCaster,
+			const Ray& ray,
+			const GuideMode& mode, const unsigned int seed,
+			const unsigned int samples ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			configureRuntime(rc,mode);
+			IndependentSampler sampler(rng);
+			const RasterizerState rast = {0,0};
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			unsigned int finitePositive = 0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				const Scalar value = integrator.IntegrateRayNM(
+					rc,rast,ray,500.0,*job.GetScene(),neeCaster,
+					sampler,nullptr,nullptr);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+				if( value>0.0 ) ++finitePositive;
+			}
+			const long double count = static_cast<long double>(samples);
+			const long double mean = sum/count;
+			const long double variance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return PreviewMoments{static_cast<Scalar>(mean),
+				static_cast<Scalar>(variance>0.0 ? variance : 0.0),finitePositive};
+		};
+		auto momentsShader = [&]( const IRayCaster& caster, const Ray& ray,
+			const GuideMode& mode, const unsigned int seed,
+			const unsigned int samples ) {
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			configureRuntime(rc,mode);
+			IRayCaster::RAY_STATE state;
+			const RasterizerState rast = {0,0};
+			long double sum = 0.0;
+			long double sumSquares = 0.0;
+			unsigned int finitePositive = 0;
+			for( unsigned int i=0; i<samples; ++i ) {
+				Scalar value = 0.0;
+				caster.CastRayNM(
+					rc,rast,ray,value,state,500.0,nullptr,nullptr);
+				sum += value;
+				sumSquares += static_cast<long double>(value)*value;
+				if( value>0.0 ) ++finitePositive;
+			}
+			const long double count = static_cast<long double>(samples);
+			const long double mean = sum/count;
+			const long double variance =
+				(sumSquares-sum*sum/count)/(count-1.0);
+			return PreviewMoments{static_cast<Scalar>(mean),
+				static_cast<Scalar>(variance>0.0 ? variance : 0.0),finitePositive};
+		};
+		auto agreesWithinSixSE = []( const PreviewMoments& a,
+			const PreviewMoments& b, const unsigned int samples ) {
+			const Scalar standardError = std::sqrt(
+				(a.variance+b.variance)/static_cast<Scalar>(samples));
+			return a.mean>0.0 && b.mean>0.0 && a.positive>8 && b.positive>8 &&
+				standardError>0.0 && std::fabs(a.mean-b.mean)<=6.0*standardError;
+		};
+		auto separatedBySixSE = []( const PreviewMoments& a,
+			const PreviewMoments& b, const unsigned int samples ) {
+			const Scalar standardError = std::sqrt(
+				(a.variance+b.variance)/static_cast<Scalar>(samples));
+			return a.mean>0.0 && b.mean>0.0 && a.positive>8 && b.positive>8 &&
+				standardError>0.0 && std::fabs(a.mean-b.mean)>6.0*standardError;
+		};
+		struct PreviewMatrixResult
+		{
+			PreviewMoments pureOn;
+			PreviewMoments pureOff;
+			PreviewMoments shaderOn;
+			PreviewMoments shaderOff;
+			bool valid;
+		};
+		const size_t rowCount = sizeof(rows)/sizeof(rows[0]);
+		auto validateAxes = [&]( const std::vector<PreviewMatrixResult>& results,
+			const char* fixtureName, const unsigned int samples,
+			const bool hasShaderRoute, const bool requireTransportActivation ) {
+			for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+				auto result = [&]( const size_t rowIndex ) -> const PreviewMatrixResult& {
+					return results[rowIndex*modes.size()+modeIndex];
+				};
+				for( const size_t topologyStart : {size_t(0),size_t(2),size_t(6),size_t(10)} ) {
+					const size_t groupSize = topologyStart==0 ? 2 : 4;
+					for( size_t offset=1; offset<groupSize; ++offset ) {
+						const PreviewMatrixResult& reference = result(topologyStart);
+						const PreviewMatrixResult& toggled = result(topologyStart+offset);
+						const bool invariant = reference.valid && toggled.valid &&
+							agreesWithinSixSE(reference.pureOn,toggled.pureOn,samples) &&
+							agreesWithinSixSE(reference.pureOff,toggled.pureOff,samples) &&
+							(!hasShaderRoute ||
+								(agreesWithinSixSE(reference.shaderOn,toggled.shaderOn,samples) &&
+								 agreesWithinSixSE(reference.shaderOff,toggled.shaderOff,samples)));
+						const std::string label = std::string(fixtureName) + " / " +
+							modes[modeIndex].label +
+							" keeps preview containment invariant under shadow flags";
+						Check(invariant,label.c_str());
+					}
+				}
+				if( !requireTransportActivation ) continue;
+				for( const size_t topologyStart : {size_t(2),size_t(6),size_t(10)} ) {
+					const PreviewMatrixResult& clear = result(0);
+					const PreviewMatrixResult& topology = result(topologyStart);
+					const bool active = clear.valid && topology.valid &&
+						(separatedBySixSE(clear.pureOn,topology.pureOn,samples) ||
+						 separatedBySixSE(clear.pureOff,topology.pureOff,samples) ||
+						 (hasShaderRoute &&
+							(separatedBySixSE(clear.shaderOn,topology.shaderOn,samples) ||
+							 separatedBySixSE(clear.shaderOff,topology.shaderOff,samples))));
+					const std::string label = std::string(fixtureName) + " / " +
+						modes[modeIndex].label +
+						" activates authored preview topology row " +
+						std::to_string(topologyStart);
+					Check(active,label.c_str());
+				}
+			}
+		};
+
+#ifdef RISE_ENABLE_OPENPGL
+		// The containment fixtures deliberately include vertices where guiding is
+		// ineligible (unsupported closure fallback and BSSRDF entry).  Exercise the
+		// same runtime modes at a supported, non-competing surface so a matrix run
+		// cannot pass merely because the guide/RIS configuration was ignored.
+		for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+			const GuideMode& mode = modes[modeIndex];
+			const std::filesystem::path path =
+				std::filesystem::temp_directory_path() /
+				("rise_preview_guiding_activation_" +
+					std::to_string(static_cast<int>(::getpid())) + "_" +
+					std::to_string(modeIndex) + ".RISEscene");
+			{
+				std::ofstream output(path);
+				output << SurfaceFireReceiverScene();
+			}
+			IJobPriv* job = nullptr;
+			IRayCaster* caster = nullptr;
+			PathTracingShaderOp* defaultPath = nullptr;
+			bool ready = RISE_CreateJobPriv(&job) && job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str()) &&
+				InstallMarchOnlyGlobalMedium(*job);
+			if( ready ) {
+				defaultPath = dynamic_cast<PathTracingShaderOp*>(
+					job->GetShaderOps()->GetItem("DefaultPathTracing"));
+				IShader* const shader = job->GetShaders()->GetItem("global");
+				ready = defaultPath && shader && RISE_API_CreateRayCaster(
+					&caster,false,20,*shader,true) && caster;
+				if( ready ) caster->AttachScene(job->GetScene());
+				const RayCaster* const concrete = dynamic_cast<const RayCaster*>(caster);
+				const LightSampler* const lights = concrete ?
+					concrete->GetLightSampler() : nullptr;
+				ready = ready && lights && lights->GetVolumeEmissionMediumCount()==0;
+			}
+			StabilityConfig config;
+			config.maxDiffuseBounce = 2;
+			PathTracingIntegrator* integrator =
+				new PathTracingIntegrator(ManifoldSolverConfig(),config);
+			integrator->SetMaxPathDepth(2);
+			bool pureActivated = false;
+			bool shaderActivated = false;
+			if( ready ) {
+				const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+				const PreviewGuideCounts pureBefore = guideCounts(integrator,nullptr);
+				momentsPure(*integrator,*job,*caster,ray,mode,
+					0xc430000u+static_cast<unsigned int>(modeIndex),512);
+				pureActivated = guideModeActivated(
+					mode,pureBefore,guideCounts(integrator,nullptr));
+				const PreviewGuideCounts shaderBefore = guideCounts(nullptr,defaultPath);
+				momentsShader(*caster,ray,mode,
+					0xc431000u+static_cast<unsigned int>(modeIndex),512);
+				shaderActivated = guideModeActivated(
+					mode,shaderBefore,guideCounts(nullptr,defaultPath));
+			}
+			const std::string pureLabel = std::string("preview matrix ") +
+				mode.label + " activates at a pure-PT non-competing surface";
+			const std::string shaderLabel = std::string("preview matrix ") +
+				mode.label + " activates at a shader-dispatch non-competing surface";
+			Check(ready && pureActivated,pureLabel.c_str());
+			Check(ready && shaderActivated,shaderLabel.c_str());
+			safe_release(integrator);
+			safe_release(caster);
+			safe_release(job);
+			std::filesystem::remove(path);
+		}
+#endif
+
+		UniformColorPainter* white =
+			new UniformColorPainter(RISEPel(0.8,0.8,0.8));
+		UniformColorPainter* extinction =
+			new UniformColorPainter(RISEPel(0.0,0.0,0.0));
+		UniformScalarPainter* roughness = new UniformScalarPainter(0.7);
+		LambertianMaterial* lambertianA = new LambertianMaterial(*white);
+		LambertianMaterial* lambertianB = new LambertianMaterial(*white);
+		OrenNayarMaterial* orenNayar =
+			new OrenNayarMaterial(*white,*roughness);
+		UnsupportedPluginMaterial* plugin =
+			new UnsupportedPluginMaterial(*lambertianA,*lambertianA);
+		SelfAttestingMismatchedMaterial* mismatched =
+			new SelfAttestingMismatchedMaterial(*lambertianA,*orenNayar);
+		CompositeMaterial* composite = new CompositeMaterial(
+			*lambertianA,*lambertianB,3,2,2,2,2,0.0,*extinction);
+		struct UnsupportedFixture { const char* name; IMaterial* material; };
+		const UnsupportedFixture unsupported[] = {
+			{"plugin",plugin}, {"composite",composite}, {"mismatched",mismatched}
+		};
+		unsigned int serial = 0;
+		for( const UnsupportedFixture& fixture : unsupported ) {
+			std::vector<PreviewMatrixResult> results(rowCount*modes.size());
+			for( size_t rowIndex=0; rowIndex<rowCount; ++rowIndex ) {
+				const MatrixRow& row = rows[rowIndex];
+				for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+					const GuideMode& mode = modes[modeIndex];
+					const std::filesystem::path path =
+						std::filesystem::temp_directory_path() /
+						("rise_preview_fallback_matrix_" +
+							std::to_string(static_cast<int>(::getpid())) + "_" +
+							std::to_string(serial++) + ".RISEscene");
+					{
+						std::ofstream output(path);
+						output << SurfaceFireReceiverScene(
+							PhaseBMatrixMechanism::Ordinary,
+							SurfaceReceiverMaterial::Lambertian,
+							row.topology,row.castsShadows);
+					}
+					IJobPriv* neeJob = nullptr;
+					IJobPriv* marchJob = nullptr;
+					IRayCaster* neeCaster = nullptr;
+					IRayCaster* marchCaster = nullptr;
+					bool ready = RISE_CreateJobPriv(&neeJob) && neeJob &&
+						neeJob->LoadAsciiSceneViaCst(path.string().c_str()) &&
+						RISE_CreateJobPriv(&marchJob) && marchJob &&
+						marchJob->LoadAsciiSceneViaCst(path.string().c_str());
+					if( ready ) {
+						IObjectPriv* neeReceiver = neeJob->GetScene()->GetObjects()->
+							GetItem("receiver_wall");
+						IObjectPriv* marchReceiver = marchJob->GetScene()->GetObjects()->
+							GetItem("receiver_wall");
+						ready = neeReceiver && marchReceiver;
+						if( neeReceiver ) neeReceiver->AssignMaterial(*fixture.material);
+						if( marchReceiver ) marchReceiver->AssignMaterial(*fixture.material);
+						ready = ready && prepareCasters(
+							*neeJob,*marchJob,row,neeCaster,marchCaster);
+						ready = ready && topologyIsActive(
+							*neeJob,row,"matrix_object",Point3(0,0,-0.1),
+							Point3(0.58,0.18,-0.55));
+					}
+					StabilityConfig config;
+					config.maxDiffuseBounce = 2;
+					config.maxGlossyBounce = 2;
+					PathTracingIntegrator* integrator =
+						new PathTracingIntegrator(ManifoldSolverConfig(),config);
+					integrator->SetMaxPathDepth(2);
+					const unsigned int seed = 0xc440000u+serial*0x101u;
+					const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
+					const unsigned int samples = 6000;
+					PreviewMoments pureOn = {0,0,0};
+					PreviewMoments pureOff = {0,0,0};
+					PreviewMoments shaderOn = {0,0,0};
+					PreviewMoments shaderOff = {0,0,0};
+					if( ready ) {
+						pureOn = momentsPure(*integrator,*neeJob,*neeCaster,
+							ray,mode,seed,samples);
+						pureOff = momentsPure(*integrator,*marchJob,*marchCaster,
+							ray,mode,seed+0x3151u,samples);
+						shaderOn = momentsShader(*neeCaster,
+							ray,mode,seed+0x62a3u,samples);
+						shaderOff = momentsShader(*marchCaster,
+							ray,mode,seed+0x93f7u,samples);
+					}
+					const bool equalMeans = ready &&
+						agreesWithinSixSE(pureOn,pureOff,samples) &&
+						agreesWithinSixSE(shaderOn,shaderOff,samples) &&
+						agreesWithinSixSE(pureOn,shaderOn,samples) &&
+						agreesWithinSixSE(pureOff,shaderOff,samples);
+					const bool exact = equalMeans &&
+						integrator->UnsupportedFallbackSegmentObserved() &&
+						!integrator->UnsupportedFallbackSegmentCompeted() &&
+						!integrator->UnsupportedFallbackEndpointAttempted();
+					results[rowIndex*modes.size()+modeIndex] =
+						PreviewMatrixResult{pureOn,pureOff,shaderOn,shaderOff,exact};
+					if( !exact ) {
+						std::cout << "  fallback matrix means PT=" << pureOn.mean << "/" <<
+							pureOff.mean << " shader=" << shaderOn.mean << "/" <<
+							shaderOff.mean << " ready/equal/observed/competed/endpoint=" <<
+							ready << "/" << equalMeans << "/" <<
+							integrator->UnsupportedFallbackSegmentObserved() << "/" <<
+							integrator->UnsupportedFallbackSegmentCompeted() << "/" <<
+							integrator->UnsupportedFallbackEndpointAttempted() << std::endl;
+					}
+					const std::string label = std::string("preview fallback matrix ") +
+						fixture.name + " / " + mode.label +
+						" remains exact across topology and shadow flags";
+					Check(exact,label.c_str());
+					safe_release(integrator);
+					safe_release(neeCaster);
+					safe_release(marchCaster);
+					safe_release(neeJob);
+					safe_release(marchJob);
+					std::filesystem::remove(path);
+				}
+			}
+			validateAxes(results,
+				(std::string("preview fallback ")+fixture.name).c_str(),6000,true,true);
+		}
+
+		for( unsigned int sssType=0; sssType<2; ++sssType ) {
+			std::vector<PreviewMatrixResult> results(rowCount*modes.size());
+			std::vector<Scalar> topologyProbeTransmittance(
+				rowCount*modes.size(),-1.0);
+			for( size_t rowIndex=0; rowIndex<rowCount; ++rowIndex ) {
+				const MatrixRow& row = rows[rowIndex];
+				for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+					const GuideMode& mode = modes[modeIndex];
+					const std::filesystem::path path =
+						std::filesystem::temp_directory_path() /
+						("rise_sss_preview_matrix_" +
+							std::to_string(static_cast<int>(::getpid())) + "_" +
+							std::to_string(serial++) + ".RISEscene");
+					{
+						std::ofstream output(path);
+						output << SSSFireReceiverScene(
+							sssType!=0,row.topology,row.castsShadows);
+					}
+					IJobPriv* neeJob = nullptr;
+					IJobPriv* marchJob = nullptr;
+					IRayCaster* neeCaster = nullptr;
+					IRayCaster* marchCaster = nullptr;
+					bool ready = RISE_CreateJobPriv(&neeJob) && neeJob &&
+						neeJob->LoadAsciiSceneViaCst(path.string().c_str()) &&
+						RISE_CreateJobPriv(&marchJob) && marchJob &&
+						marchJob->LoadAsciiSceneViaCst(path.string().c_str());
+					if( ready ) {
+						ready = prepareCasters(
+							*neeJob,*marchJob,row,neeCaster,marchCaster);
+						const RayCaster* const concreteNee =
+							dynamic_cast<const RayCaster*>(neeCaster);
+						const RayCaster* const concreteMarch =
+							dynamic_cast<const RayCaster*>(marchCaster);
+						const LightSampler* const neeLights = concreteNee ?
+							concreteNee->GetLightSampler() : nullptr;
+						const LightSampler* const marchLights = concreteMarch ?
+							concreteMarch->GetLightSampler() : nullptr;
+						ready = ready && neeLights && marchLights &&
+							neeLights->GetPositionalLightCount()==1 &&
+							marchLights->GetPositionalLightCount()==1;
+						ready = ready && topologyIsActive(
+							*neeJob,row,"sss_matrix_object",Point3(0,0,-3),
+							Point3(0.55,0,-1.45));
+					}
+					StabilityConfig config;
+					config.maxTranslucentBounce = 4;
+					PathTracingIntegrator* integrator =
+						new PathTracingIntegrator(ManifoldSolverConfig(),config);
+					integrator->SetMaxPathDepth(4);
+					const unsigned long long pivotsBefore =
+						SSSContainedVolumePivotAttemptCount();
+					const unsigned long long endpointsBefore =
+						SSSContainedVolumeEndpointAttemptCount();
+					const unsigned long long childrenBefore =
+						SSSContainedChildLaunchCount();
+					const bool competitionBefore =
+						SSSContainedChildCompetitionObserved();
+					const unsigned int seed = 0xc550000u+serial*0x101u;
+					const unsigned int samples = 12000;
+					PreviewMoments on = {0,0,0};
+					PreviewMoments off = {0,0,0};
+					PreviewMoments shaderOn = {0,0,0};
+					PreviewMoments shaderOff = {0,0,0};
+					if( ready ) {
+						on = momentsPure(*integrator,*neeJob,*neeCaster,
+							Ray(Point3(0,0,-3),Vector3(0,0,1)),mode,seed,samples);
+						off = momentsPure(*integrator,*marchJob,*marchCaster,
+							Ray(Point3(0,0,-3),Vector3(0,0,1)),mode,
+							seed+0x51b7u,samples);
+						shaderOn = momentsShader(*neeCaster,
+							Ray(Point3(0,0,-3),Vector3(0,0,1)),mode,
+							seed+0xa36du,samples);
+						shaderOff = momentsShader(*marchCaster,
+							Ray(Point3(0,0,-3),Vector3(0,0,1)),mode,
+							seed+0xf529u,samples);
+						Scalar probeTransmittance = 0.0;
+						const bool probeWalked = EvaluateShadowMediumTransmittanceNM(
+							Ray(Point3(0,0,-3),
+								Vector3Ops::Normalize(Vector3(0.55,0,1.55))),
+							2.2,neeJob->GetScene()->GetGlobalMedium(),nullptr,
+							neeJob->GetScene(),true,500.0,probeTransmittance);
+						topologyProbeTransmittance[
+							rowIndex*modes.size()+modeIndex] =
+							probeWalked ? probeTransmittance : -1.0;
+					}
+					const bool pairedExact = ready &&
+						agreesWithinSixSE(on,off,samples) &&
+						agreesWithinSixSE(shaderOn,shaderOff,samples) &&
+						agreesWithinSixSE(on,shaderOn,samples) &&
+						agreesWithinSixSE(off,shaderOff,samples);
+					const bool childWitness =
+						SSSContainedChildLaunchCount()>childrenBefore &&
+						SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
+						SSSContainedVolumeEndpointAttemptCount()==endpointsBefore &&
+						SSSContainedChildCompetitionObserved()==competitionBefore;
+					const bool ordinaryLightWitness =
+						integrator->SSSOrdinaryDirectContributionObserved();
+					const bool exact = pairedExact && childWitness &&
+						ordinaryLightWitness;
+					results[rowIndex*modes.size()+modeIndex] =
+						PreviewMatrixResult{on,off,shaderOn,shaderOff,exact};
+					if( !exact ) {
+						std::cout << "  SSS matrix means PT=" << on.mean << "/" << off.mean <<
+							" shader=" << shaderOn.mean << "/" << shaderOff.mean <<
+							" ready/equal/child=" << ready << "/" <<
+							pairedExact << "/" << childWitness << "/" <<
+							ordinaryLightWitness << " children=" <<
+							childrenBefore << "/" << SSSContainedChildLaunchCount() <<
+							" pivots=" << pivotsBefore << "/" <<
+							SSSContainedVolumePivotAttemptCount() << " endpoints=" <<
+							endpointsBefore << "/" <<
+							SSSContainedVolumeEndpointAttemptCount() << std::endl;
+					}
+					const std::string label = std::string("SSS preview matrix ") +
+						(sssType ? "random-walk" : "diffusion-profile") + " / " +
+						mode.label + " contains volume NEE across topology and flags";
+					Check(exact,label.c_str());
+					safe_release(integrator);
+					safe_release(neeCaster);
+					safe_release(marchCaster);
+					safe_release(neeJob);
+					safe_release(marchJob);
+					std::filesystem::remove(path);
+				}
+			}
+			validateAxes(results,
+				sssType ? "SSS random-walk" : "SSS diffusion-profile",
+				12000,true,false);
+			for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+				const Scalar clear = topologyProbeTransmittance[modeIndex];
+				for( const size_t topologyStart : {size_t(2),size_t(6),size_t(10)} ) {
+					const Scalar topology = topologyProbeTransmittance[
+						topologyStart*modes.size()+modeIndex];
+					const std::string label = std::string(
+						sssType ? "SSS random-walk" : "SSS diffusion-profile") +
+						" / " + modes[modeIndex].label +
+						" activates targeted topology probe row " +
+						std::to_string(topologyStart);
+					Check(clear>0.0 && topology>0.0 &&
+						std::fabs(clear-topology)>
+							std::fmax(Scalar(1e-12),clear*Scalar(1e-6)),
+						label.c_str());
+				}
+			}
+		}
+
+		VolumeStateTransportProbeShader* namedProbe =
+			new VolumeStateTransportProbeShader(Ray(
+				Point3(0,0,-1),Vector3Ops::Normalize(
+					Vector3(0.65,0.2,1.2))));
+		SimpleExtinction* sssExtinction =
+			new SimpleExtinction(RISEPel(1,1,1),1.0);
+		SubSurfaceScatteringShaderOp* simpleSSS =
+			new SubSurfaceScatteringShaderOp(
+				1,0.1,1,1,1.0,false,false,*namedProbe,*sssExtinction,
+				false,false);
+		DonnerJensenSkinSSSShaderOp* skinSSS =
+			new DonnerJensenSkinSSSShaderOp(
+				1,0.1,1,1,1.0,*namedProbe,false,
+				0.1,0.5,0.001,0.001,0.001,0.001,1.4,1.4,0.75);
+		UnknownNestedShaderOp* unknownSSS =
+			new UnknownNestedShaderOp(*namedProbe);
+		std::vector<IShaderOp*> unknownSSSOps(1,unknownSSS);
+		StandardShader* unknownSSSShader = new StandardShader(unknownSSSOps);
+		struct NamedSSSFixture {
+			const char* name;
+			IShaderOp* op;
+			IShader* shader;
+			bool recordsChildLaunch;
+		};
+		const NamedSSSFixture namedSSS[] = {
+			{"SubSurfaceScatteringShaderOp",simpleSSS,nullptr,true},
+			{"DonnerJensenSkinSSSShaderOp",skinSSS,nullptr,true},
+			{"unknown nested shader dependency",nullptr,unknownSSSShader,false}
+		};
+		for( const NamedSSSFixture& fixture : namedSSS ) {
+			std::vector<PreviewMatrixResult> results(rowCount*modes.size());
+			for( size_t rowIndex=0; rowIndex<rowCount; ++rowIndex ) {
+				const MatrixRow& row = rows[rowIndex];
+				for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
+					const GuideMode& mode = modes[modeIndex];
+					const std::filesystem::path path =
+						std::filesystem::temp_directory_path() /
+						("rise_named_sss_preview_matrix_" +
+							std::to_string(static_cast<int>(::getpid())) + "_" +
+							std::to_string(serial++) + ".RISEscene");
+					{
+						std::ofstream output(path);
+						output << SSSShaderOpFireScene(
+							row.topology,row.castsShadows);
+					}
+					IJobPriv* neeJob = nullptr;
+					IJobPriv* marchJob = nullptr;
+					IRayCaster* neeCaster = nullptr;
+					IRayCaster* marchCaster = nullptr;
+					bool ready = RISE_CreateJobPriv(&neeJob) && neeJob &&
+						neeJob->LoadAsciiSceneViaCst(path.string().c_str()) &&
+						RISE_CreateJobPriv(&marchJob) && marchJob &&
+						marchJob->LoadAsciiSceneViaCst(path.string().c_str());
+					RayIntersection neeIntersection(
+						Ray(Point3(0,0,-1),Vector3(0,0,1)),RasterizerState{0,0});
+					RayIntersection marchIntersection(
+						Ray(Point3(0,0,-1),Vector3(0,0,1)),RasterizerState{0,0});
+					if( ready ) {
+						neeJob->GetScene()->GetObjects()->IntersectRay(
+							neeIntersection,true,true,false);
+						marchJob->GetScene()->GetObjects()->IntersectRay(
+							marchIntersection,true,true,false);
+						ready = neeIntersection.geometric.bHit &&
+							marchIntersection.geometric.bHit &&
+							prepareCasters(
+								*neeJob,*marchJob,row,neeCaster,marchCaster) &&
+							topologyIsActive(*neeJob,row,"sss_op_matrix_object",
+								Point3(0,0,-1),Point3(0.65,0.2,0.2));
+					}
+					const unsigned long long pivotsBefore =
+						SSSContainedVolumePivotAttemptCount();
+					const unsigned long long endpointsBefore =
+						SSSContainedVolumeEndpointAttemptCount();
+					const unsigned long long childrenBefore =
+						SSSContainedChildLaunchCount();
+					const bool competitionBefore =
+						SSSContainedChildCompetitionObserved();
+					auto momentsNamed = [&]( const IRayCaster& caster,
+						const RayIntersection& intersection,
+						const unsigned int seed ) {
+						const unsigned int samples = 6000;
+						RandomNumberGenerator rng(seed);
+						RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+						configureRuntime(rc,mode);
+						rc.bFastPreview = true;
+						IRayCaster::RAY_STATE state;
+						IORStack stack(1.0);
+						long double sum = 0.0;
+						long double sumSquares = 0.0;
+						unsigned int positive = 0;
+						for( unsigned int i=0; i<samples; ++i ) {
+							const VolumeEmissionSegmentState parentCompetition(
+								true,false,nullptr,0.25,0.0,0.0);
+							const VolumeEmissionSegmentStateScope parentScope(
+								parentCompetition);
+							const Scalar value = fixture.shader ?
+								fixture.shader->ShadeNM(
+									rc,intersection,caster,state,500.0,stack) :
+								fixture.op->PerformOperationNM(
+									rc,intersection,caster,state,1.0,500.0,stack,nullptr);
+							sum += value;
+							sumSquares += static_cast<long double>(value)*value;
+							if( value>0.0 ) ++positive;
+						}
+						const long double count =
+							static_cast<long double>(samples);
+						const long double mean = sum/count;
+						const long double variance =
+							(sumSquares-sum*sum/count)/(count-1.0);
+						return PreviewMoments{static_cast<Scalar>(mean),
+							static_cast<Scalar>(variance>0.0 ? variance : 0.0),
+							positive};
+					};
+					const unsigned int seed = 0xc660000u+serial*0x101u;
+					PreviewMoments on = {0,0,0};
+					PreviewMoments off = {0,0,0};
+					if( ready ) {
+						on = momentsNamed(*neeCaster,neeIntersection,seed);
+						off = momentsNamed(
+							*marchCaster,marchIntersection,seed+0x5b91u);
+					}
+					const bool childLaunchWitness = fixture.recordsChildLaunch ?
+						SSSContainedChildLaunchCount()>childrenBefore :
+						SSSContainedChildLaunchCount()==childrenBefore;
+					const bool contained = ready &&
+						agreesWithinSixSE(on,off,6000) &&
+						childLaunchWitness &&
+						SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
+						SSSContainedVolumeEndpointAttemptCount()==endpointsBefore &&
+						SSSContainedChildCompetitionObserved()==competitionBefore &&
+						!namedProbe->sawCompetition;
+					if( !contained ) {
+						std::cout << "  named SSS matrix " << fixture.name <<
+							" means=" << on.mean << "/" << off.mean <<
+							" positive=" << on.positive << "/" << off.positive <<
+							" ready/children/pivots/endpoints/competition=" <<
+							ready << "/" <<
+							(SSSContainedChildLaunchCount()>childrenBefore) << "/" <<
+							(SSSContainedVolumePivotAttemptCount()==pivotsBefore) << "/" <<
+							(SSSContainedVolumeEndpointAttemptCount()==endpointsBefore) << "/" <<
+							(SSSContainedChildCompetitionObserved()==competitionBefore &&
+								!namedProbe->sawCompetition) << std::endl;
+					}
+					results[rowIndex*modes.size()+modeIndex] =
+						PreviewMatrixResult{on,off,PreviewMoments{0,0,0},
+							PreviewMoments{0,0,0},contained};
+					const std::string label = std::string("named SSS preview matrix ") +
+						fixture.name + " / " + mode.label +
+						" contains volume NEE across topology and flags";
+					Check(contained,label.c_str());
+					safe_release(neeCaster);
+					safe_release(marchCaster);
+					safe_release(neeJob);
+					safe_release(marchJob);
+					std::filesystem::remove(path);
+				}
+			}
+			validateAxes(results,fixture.name,6000,false,true);
+		}
+		safe_release(unknownSSSShader);
+		safe_release(unknownSSS);
+		safe_release(skinSSS);
+		safe_release(simpleSSS);
+		safe_release(sssExtinction);
+		safe_release(namedProbe);
+
+		safe_release(composite);
+		safe_release(mismatched);
+		safe_release(plugin);
+		safe_release(orenNayar);
+		safe_release(lambertianB);
+		safe_release(lambertianA);
+		safe_release(roughness);
+		safe_release(extinction);
+		safe_release(white);
+#ifdef RISE_ENABLE_OPENPGL
+		safe_release(guide);
 #endif
 	}
 }
@@ -7260,6 +9284,7 @@ int main()
 	TestCameraPrimaryDirectViewKeepsWeightOne();
 	TestFlameBehindGlassIsMarchOnly();
 	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
+	TestIsolatedSmokeConfigurationReplay();
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestUnsupportedMaterialVolumeNEEFallback();
 	TestOrenNayarSurfaceVolumeNEEEquality();
@@ -7283,6 +9308,7 @@ int main()
 	TestSSSBSSRDFPreviewContainment();
 	TestNestedSSSShaderOpContainment();
 	TestPhaseBConfigurationMatrix();
+	TestPreviewContainmentConfigurationMatrix();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }

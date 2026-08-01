@@ -1062,39 +1062,57 @@ namespace
 	{
 		const RayIntersectionGeometric ri = MakeIntersection();
 		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* zeroPel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(0.0),state);
+		const IContinuationClosureNM* zeroNM =
+			CreateLambertianContinuationClosureNM(ri,0.0,state);
+		const Vector3 direction(0,0,1);
+		Check(zeroPel && zeroPel->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel exact-zero response removes march reach density before RR");
+		Check(zeroPel && zeroPel->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel exact-zero response removes terminal roulette-free march density");
+		Check(zeroNM && zeroNM->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM exact-zero response removes march reach density before RR");
+		Check(zeroNM && zeroNM->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM exact-zero response removes terminal roulette-free march density");
+		safe_release(zeroPel); safe_release(zeroNM);
+
 		const Scalar tiny = NEARZERO*0.5;
 		const IContinuationClosurePel* pel =
 			CreateLambertianContinuationClosurePel(ri,RISEPel(tiny),state);
 		const IContinuationClosureNM* nm =
 			CreateLambertianContinuationClosureNM(ri,tiny,state);
-		const Vector3 direction(0,0,1);
 		Check(pel && pel->PdfReachMarginal(
-			eContinuationLobeDiffuse,direction)==0.0,
-			"Pel deterministic zero gate removes march reach density before RR");
+			eContinuationLobeDiffuse,direction)>0.0,
+			"Pel positive response below NEARZERO retains march reach support");
 		Check(pel && pel->PdfMarchMarginal(
-			eContinuationLobeDiffuse,direction)==0.0,
-			"Pel deterministic zero gate removes terminal roulette-free march density");
+			eContinuationLobeDiffuse,direction)>0.0,
+			"Pel positive response below NEARZERO retains terminal march support");
 		Check(nm && nm->PdfReachMarginal(
-			eContinuationLobeDiffuse,direction)==0.0,
-			"NM deterministic zero gate removes march reach density before RR");
+			eContinuationLobeDiffuse,direction)>0.0,
+			"NM positive response below NEARZERO retains march reach support");
 		Check(nm && nm->PdfMarchMarginal(
-			eContinuationLobeDiffuse,direction)==0.0,
-			"NM deterministic zero gate removes terminal roulette-free march density");
+			eContinuationLobeDiffuse,direction)>0.0,
+			"NM positive response below NEARZERO retains terminal march support");
 		if( pel ) {
 			ContinuationSamplePel regular, terminal;
 			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
 			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
-			Check(!regular.rouletteSurvived && !terminal.rouletteSurvived &&
-				regular.reachPdf==0.0 && terminal.reachPdf==0.0,
-				"Pel deterministic zero gate forbids regular and terminal segments");
+			Check(regular.rouletteSurvived && terminal.rouletteSurvived &&
+				regular.reachPdf>0.0 && terminal.reachPdf>0.0,
+				"Pel positive sub-NEARZERO response samples regular and terminal segments");
 		}
 		if( nm ) {
 			ContinuationSampleNM regular, terminal;
 			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
 			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
-			Check(!regular.rouletteSurvived && !terminal.rouletteSurvived &&
-				regular.reachPdf==0.0 && terminal.reachPdf==0.0,
-				"NM deterministic zero gate forbids regular and terminal segments");
+			Check(regular.rouletteSurvived && terminal.rouletteSurvived &&
+				regular.reachPdf>0.0 && terminal.reachPdf>0.0,
+				"NM positive sub-NEARZERO response samples regular and terminal segments");
 		}
 		safe_release(pel); safe_release(nm);
 	}

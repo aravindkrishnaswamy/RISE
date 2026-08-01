@@ -256,7 +256,7 @@ namespace
 		Scalar	logCombinedPdf;		///< Log of the same density; avoids flooring/extinction-tail underflow for fire emission.
 		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
 		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
-		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
+		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5), 1.0 in the pure-DT / analog / no-positional-light regime. Scalar NM consumes the exact T_det/P_0 cancellation as 1/noScatterPdfScale; Pel and HWSS retain their measure-specific survival formulations.
 	};
 
 	static bool PTMediumSegmentInterval(
@@ -1326,6 +1326,38 @@ namespace
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
 	{ return pMedium->EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm ); }
 
+	// Analog no-scatter continuation weight.  In the scalar NM measure the
+	// physical Beer-Lambert transmittance and the delta-tracking no-event atom
+	// are the same deterministic T_det.  Their ratio therefore cancels exactly;
+	// only the explicit strategy-selection mass (0.5 for the DT half of the
+	// equiangular mixture, otherwise 1) remains.  Evaluating a second stochastic
+	// ratio-tracking Tr here would multiply downstream null-boundary source by an
+	// unnecessary estimator and violates §7.2.2's pinned T_det/P_0 update.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTNoScatterSurvivalWeight(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist,
+		const Scalar noScatterPdfScale, const Tag& tag );
+
+	template<>
+	inline RISEPel PTNoScatterSurvivalWeight<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist,
+		const Scalar noScatterPdfScale, const PelTag& tag )
+	{
+		const RISEPel Tr = PTEvalTransmittance<PelTag>(pMedium,ray,dist,tag);
+		const Scalar pSurvival = noScatterPdfScale *
+			PTEvalNoScatterSurvivalPdf<PelTag>(pMedium,ray,dist,tag);
+		return PTSurvivalWeight<PelTag>(Tr,pSurvival);
+	}
+
+	template<>
+	inline Scalar PTNoScatterSurvivalWeight<NMTag>(
+		const IMedium*, const Ray&, const Scalar,
+		const Scalar noScatterPdfScale, const NMTag& )
+	{
+		return PathTransportUtilities::NMNoEventSurvivalWeight(
+			noScatterPdfScale);
+	}
+
 	// Volume distance sampling with optional equiangular MIS.
 	template<class Tag>
 	inline MediumSampleOutcome PTSampleMediumDistance(
@@ -1693,6 +1725,8 @@ PathTracingIntegrator::PathTracingIntegrator(
   mUnsupportedFallbackSegmentCompeted( false ),
   mUnsupportedFallbackEndpointAttempted( false ),
   mCompetingMediumVertexCount( 0 ),
+  mCompetingMediumEndpointAttemptCount( 0 ),
+  mNonCompetingMediumFallbackVertexCount( 0 ),
   mCompetingMediumGuideAlphaNonzero( false ),
   mCompetingMediumGuideSampleCount( 0 ),
   mCompetingMediumReachPdfMismatch( false ),
@@ -1701,6 +1735,10 @@ PathTracingIntegrator::PathTracingIntegrator(
   mCompetingMediumUnitSurvivalObserved( false ),
   mNonCompetingSurfaceGuideInitializationCount( 0 ),
   mNonCompetingSurfaceRISCount( 0 ),
+  mSurfaceVolumeEndpointAttemptCount( 0 ),
+  mSSSOrdinaryDirectContributionObserved( false ),
+  mNonCompetingSurfaceGuidedCandidateInstalledCount( 0 ),
+  mNonCompetingSurfaceRISCandidateInstalledCount( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
   pClayMaterial( 0 )
@@ -2064,6 +2102,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
 						volumeNEECompetes );
 					const IPhaseFunction* pPhase = phaseClosure.Get();
+					if constexpr ( !Traits::is_pel ) {
+						if( !volumeNEECompetes && pLS &&
+							pLS->GetVolumeEmissionMediumCount()>0 ) {
+							mNonCompetingMediumFallbackVertexCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
+					}
 
 					Scalar counterfactualRRSurvival = 1.0;
 					bool volumeEndpointAttempted = false;
@@ -2093,6 +2138,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								sampler,activeVolumeVertexSample);
 							volumeEndpointAttempted =
 								activeVolumeVertexSample.WasEndpointAttempted();
+							if( volumeEndpointAttempted ) {
+								mCompetingMediumEndpointAttemptCount.fetch_add(
+									1,std::memory_order_relaxed);
+							}
 							const Scalar volumeLd =
 								pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
 									scatterPt,wo,*pPhase,mediumAvailability,
@@ -2279,12 +2328,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// per-channel weight Tr / pSurvival (deterministic no-scatter
 					// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
 					// double-count attenuation.
-					const Value Tr = PTEvalTransmittance<Tag>(
-						pCurrentMedium, currentRay, maxDist, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
 					segmentNoEventProbability = pSurvival;
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+					throughput = throughput * PTNoScatterSurvivalWeight<Tag>(
+						pCurrentMedium,currentRay,maxDist,mso.noScatterPdfScale,tag );
 				}
 				else if( !scattered && !bHit )
 				{
@@ -2295,11 +2343,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// (deterministic no-scatter survival pdf; = 1 for
 					// monochrome/NM homogeneous) before the env radiance below
 					// multiplies into throughput — not Tr again.
-					const Value Tr = PTEvalTransmittance<Tag>(
-						pCurrentMedium, currentRay, maxDist, tag );
-					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+					throughput = throughput * PTNoScatterSurvivalWeight<Tag>(
+						pCurrentMedium,currentRay,maxDist,mso.noScatterPdfScale,tag );
 				}
 			}
 
@@ -2499,6 +2544,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS && pLS->GetVolumeEmissionMediumCount() > 0;
 			const bool needsTerminalFireSegment = !IsSSSContainmentActive() &&
 				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
+			bool needsGuidedFireClosure = false;
+#ifdef RISE_ENABLE_OPENPGL
+			needsGuidedFireClosure = materialSupported &&
+				!IsSSSContainmentActive() &&
+				pCurrentMedium && pCurrentMedium->IsFireMedium() &&
+				rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+				rc.guidingAlpha > NEARZERO && depth <= rc.maxGuidingDepth;
+#endif
 			if( !materialSupported &&
 				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
 				surfaceUnsupportedFallback = true;
@@ -2511,7 +2564,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 			if( materialSupported &&
-				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
+				(hasThermalVolumeEmitter || needsTerminalFireSegment ||
+					needsGuidedFireClosure) ) {
 				ContinuationPathState pathState;
 				pathState.pathDepth = depth;
 				pathState.rrMinDepth = rrMinDepth;
@@ -2532,6 +2586,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							sampler,activeVolumeVertexSample);
 						surfaceVolumeEndpointAttempted =
 							activeVolumeVertexSample.WasEndpointAttempted();
+						if( surfaceVolumeEndpointAttempted ) {
+							mSurfaceVolumeEndpointAttemptCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
 					}
 				}
 			}
@@ -2841,6 +2899,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+										if( pLS->GetPositionalLightCount()>0 &&
+											PTPositiveMagnitude(sssDirectContrib)>0.0 ) {
+											mSSSOrdinaryDirectContributionObserved.store(
+												true,std::memory_order_relaxed);
+										}
 									} else if( pDirectResult ) {
 										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
@@ -3010,6 +3073,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+										if( pLS->GetPositionalLightCount()>0 &&
+											PTPositiveMagnitude(sssDirectContrib)>0.0 ) {
+											mSSSOrdinaryDirectContributionObserved.store(
+												true,std::memory_order_relaxed);
+										}
 									} else if( pDirectResult ) {
 										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
@@ -3405,6 +3473,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 				const bool sourceOnlySegment =
 					surfaceAvailability.vertexMask != marchMask;
+				bool closureGuidingRequested = false;
+#ifdef RISE_ENABLE_OPENPGL
+				closureGuidingRequested = !surfaceVolumeNEECompetes &&
+					!sourceOnlySegment && rc.pGuidingField &&
+					rc.pGuidingField->IsTrained() &&
+					rc.guidingAlpha > NEARZERO && depth <= rc.maxGuidingDepth;
+#endif
 				const Scalar xiLobe = sampler.Get1D();
 				const Point2 xiDirection( sampler.Get1D(), sampler.Get1D() );
 				// A total-depth terminal segment has no ordinary continuation
@@ -3413,13 +3488,168 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				ContinuationSampleNM continuation;
 				if( !closure->SampleSubset(
 					marchMask,xiLobe,xiDirection,xiRoulette,
-					!sourceOnlySegment,continuation) ||
-					!continuation.horizonPassed ||
+					!sourceOnlySegment && !closureGuidingRequested,continuation) ) {
+					break;
+				}
+
+#ifdef RISE_ENABLE_OPENPGL
+				if( closureGuidingRequested ) {
+					Scalar totalMass = 0.0;
+					if( marchMask&eContinuationLobeDiffuse ) {
+						totalMass += closure->GetSelectionMass(eContinuationLobeDiffuse);
+					}
+					if( marchMask&eContinuationLobeGlossy ) {
+						totalMass += closure->GetSelectionMass(eContinuationLobeGlossy);
+					}
+					const Scalar selectedMass =
+						closure->GetSelectionMass(continuation.lobe);
+					const Scalar lobeSelectionProbability = totalMass > 0.0 ?
+						selectedMass/totalMass : 0.0;
+					Scalar guideAlpha = rc.guidingAlpha;
+					if( rs.type==IRayCaster::RAY_STATE::eRaySpecular ) {
+						guideAlpha = 0.0;
+					} else if( continuation.lobe==eContinuationLobeGlossy ) {
+						guideAlpha *= 0.5;
+					}
+
+					static thread_local GuidingDistributionHandle closureGuideDist;
+					if( guideAlpha > NEARZERO && lobeSelectionProbability > 0.0 &&
+						rc.pGuidingField->InitDistribution(
+							closureGuideDist,ri.geometric.ptIntersection,
+							sampler.Get1D()) ) {
+						mNonCompetingSurfaceGuideInitializationCount.fetch_add(
+							1,std::memory_order_relaxed);
+						if( continuation.lobe==eContinuationLobeDiffuse ) {
+							rc.pGuidingField->ApplyCosineProduct(
+								closureGuideDist,GuidingCosineNormal(ri.geometric));
+						}
+
+						Vector3 selectedDirection = continuation.ray.Dir();
+						Scalar conditionalPdf = 0.0;
+						if( rc.guidingSamplingType==eGuidingRIS ) {
+							mNonCompetingSurfaceRISCount.fetch_add(
+								1,std::memory_order_relaxed);
+							PathTransportUtilities::GuidingRISCandidate<Scalar>
+								candidates[2];
+							for( unsigned int ci=0; ci<2; ++ci ) {
+								PathTransportUtilities::GuidingRISCandidate<Scalar>& c =
+									candidates[ci];
+								if( ci==0 ) {
+									c.direction = continuation.ray.Dir();
+									c.guidePdf = rc.pGuidingField->Pdf(
+										closureGuideDist,c.direction);
+								} else {
+									c.direction = rc.pGuidingField->Sample(
+										closureGuideDist,
+										Point2(sampler.Get1D(),sampler.Get1D()),
+										c.guidePdf);
+								}
+								c.bsdfEval = closure->EvaluateSubset(
+									continuation.lobe,c.direction);
+								c.bsdfPdf = closure->BasePdf(
+									continuation.lobe,c.direction);
+								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf(
+									closureGuideDist,c.direction);
+								c.cosTheta = fabs(Vector3Ops::Dot(
+									c.direction,ri.geometric.vNormal));
+								c.risTarget = PathTransportUtilities::GuidingRISTarget(
+									fabs(c.bsdfEval),c.cosTheta,c.incomingRadPdf,guideAlpha);
+								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+									c.bsdfPdf,c.guidePdf);
+								c.risWeight =
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risPdf) ?
+									c.risTarget/c.risPdf : 0.0;
+								c.valid =
+									PathTransportUtilities::IsPositiveFiniteDensity(c.bsdfPdf) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risPdf) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.bsdfEval) &&
+									(ci==0 || PathTransportUtilities::
+										IsPositiveFiniteDensity(c.guidePdf)) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risWeight);
+								if( !c.valid ) c.risWeight = 0.0;
+							}
+							const unsigned int selected =
+								PathTransportUtilities::GuidingRISSelectCandidate(
+									candidates,2,sampler.Get1D(),conditionalPdf);
+							if( PathTransportUtilities::IsPositiveFiniteDensity(
+								conditionalPdf) && candidates[selected].valid ) {
+								selectedDirection = candidates[selected].direction;
+							} else {
+								conditionalPdf = 0.0;
+							}
+						} else if( PathTransportUtilities::ShouldUseGuidedSample(
+							guideAlpha,sampler.Get1D()) ) {
+							Scalar guidePdf = 0.0;
+							selectedDirection = rc.pGuidingField->Sample(
+								closureGuideDist,
+								Point2(sampler.Get1D(),sampler.Get1D()),guidePdf);
+							conditionalPdf =
+								PathTransportUtilities::GuidingSelectedMixturePdf(
+									guideAlpha,guidePdf,
+									closure->BasePdf(
+										continuation.lobe,selectedDirection),true);
+						} else {
+							conditionalPdf =
+								PathTransportUtilities::GuidingSelectedMixturePdf(
+									guideAlpha,
+									rc.pGuidingField->Pdf(
+										closureGuideDist,selectedDirection),
+									closure->BasePdf(
+										continuation.lobe,selectedDirection),false);
+						}
+
+						const Scalar response = closure->EvaluateSubset(
+							continuation.lobe,selectedDirection);
+						const Scalar cosine = fabs(Vector3Ops::Dot(
+							selectedDirection,ri.geometric.vNormal));
+						const Scalar jointPdf =
+							lobeSelectionProbability*conditionalPdf;
+						if( closure->PassesHorizon(continuation.lobe,selectedDirection) &&
+							PathTransportUtilities::IsPositiveFiniteDensity(response) &&
+							PathTransportUtilities::IsPositiveFiniteDensity(jointPdf) ) {
+							continuation.ray = Ray(
+								ri.geometric.ptIntersection,selectedDirection);
+							continuation.response = response;
+							continuation.pdf = jointPdf;
+							continuation.throughput = response*cosine/jointPdf;
+							continuation.horizonPassed = true;
+							mNonCompetingSurfaceGuidedCandidateInstalledCount.fetch_add(
+								1,std::memory_order_relaxed);
+							if( rc.guidingSamplingType==eGuidingRIS ) {
+								mNonCompetingSurfaceRISCandidateInstalledCount.fetch_add(
+									1,std::memory_order_relaxed);
+							}
+						} else {
+							continuation.horizonPassed = false;
+						}
+					}
+				}
+#endif
+
+				if( closureGuidingRequested ) {
+					const Scalar candidateMagnitude = fabs(continuation.throughput);
+					continuation.survivalProbability =
+						PathTransportUtilities::IsPositiveFiniteDensity(candidateMagnitude) ?
+						PathTransportUtilities::RussianRouletteSurvivalProbability(
+							depth,rrMinDepth,rrThreshold,
+							importance*candidateMagnitude,importance) : 0.0;
+					continuation.reachPdf =
+						continuation.pdf*continuation.survivalProbability;
+					continuation.rouletteSurvived =
+						continuation.survivalProbability > 0.0 &&
+						xiRoulette < continuation.survivalProbability;
+					if( continuation.rouletteSurvived &&
+						continuation.survivalProbability < 1.0 ) {
+						continuation.throughput /= continuation.survivalProbability;
+					}
+				}
+
+				if( !continuation.horizonPassed ||
 					!continuation.rouletteSurvived ||
-					continuation.pdf <= 0.0 ||
-					continuation.reachPdf <= 0.0 ||
+					!PathTransportUtilities::IsPositiveFiniteDensity(continuation.pdf) ||
+					!PathTransportUtilities::IsPositiveFiniteDensity(continuation.reachPdf) ||
 					!RISE::IsFiniteDouble(continuation.throughput) ||
-					fabs(continuation.throughput) <= NEARZERO ) {
+					continuation.throughput == 0.0 ) {
 					break;
 				}
 
@@ -4255,6 +4485,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
 				volumeNEECompetes );
 			const IPhaseFunction* pPhase = phaseClosure.Get();
+			if constexpr ( !Traits::is_pel ) {
+				if( !volumeNEECompetes && pLS &&
+					pLS->GetVolumeEmissionMediumCount()>0 ) {
+					mNonCompetingMediumFallbackVertexCount.fetch_add(
+						1,std::memory_order_relaxed);
+				}
+			}
 			VolumeEmissionVertexSample volumeVertexSample;
 			bool volumeEndpointAttempted = false;
 			Scalar counterfactualRRSurvival = 1.0;
@@ -4283,6 +4520,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				if( volumeNEECompetes && pPhase ) {
 					pLS->SampleVolumeEmissionVertex(sampler,volumeVertexSample);
 					volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
+					if( volumeEndpointAttempted ) {
+						mCompetingMediumEndpointAttemptCount.fetch_add(
+							1,std::memory_order_relaxed);
+					}
 					const Scalar volumeLd =
 						pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
 							scatterPt,wo,*pPhase,mediumAvailability,
@@ -4505,11 +4746,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
 			// monochrome/NM homogeneous) rather than Tr, which would double-count
 			// attenuation.
-			const Value Tr = PTEvalTransmittance<Tag>(
-				pCurrentMedium, cameraRay, maxDist, tag );
-			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-				pCurrentMedium, cameraRay, maxDist, tag );
-
 			if( !ri.geometric.bHit ) {
 				return Traits::zero();
 			}
@@ -4531,7 +4767,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					0, 0, 0, 0, 0, 0,
 					pAOV, tag );
 			}
-			const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			const Value survivalWeight = PTNoScatterSurvivalWeight<Tag>(
+				pCurrentMedium,cameraRay,maxDist,mso.noScatterPdfScale,tag );
 			if( pDirectResult ) {
 				*pDirectResult = *pDirectResult + survivalWeight * directAtHit;
 			}
@@ -4546,10 +4783,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// pSurvival (deterministic no-scatter survival pdf; = 1 for
 			// monochrome/NM homogeneous) for the env radiance below —
 			// multiplying the full Tr would double-count attenuation.
-			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
-			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-				pCurrentMedium, cameraRay, maxDist, tag );
-			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			escapeTr = PTNoScatterSurvivalWeight<Tag>(
+				pCurrentMedium,cameraRay,maxDist,mso.noScatterPdfScale,tag );
 		}
 	}
 

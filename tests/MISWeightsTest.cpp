@@ -206,12 +206,25 @@ static void TestExtremeRatios()
 	Check( std::isfinite( w ), "extreme values: no NaN/Inf" );
 }
 
+static void TestNMNoEventSurvivalWeight()
+{
+	std::cout << "Test 7: NM no-event survival cancellation" << std::endl;
+	using namespace PathTransportUtilities;
+	Check(NMNoEventSurvivalWeight(1.0)==1.0,
+		"pure delta tracking has exact unit no-event weight");
+	Check(NMNoEventSurvivalWeight(0.5)==2.0,
+		"the delta-tracking half of the mixture has exact weight two");
+	Check(NMNoEventSurvivalWeight(0.0)==0.0 &&
+		NMNoEventSurvivalWeight(-0.5)==0.0,
+		"nonpositive technique mass fails closed");
+}
+
 //////////////////////////////////////////////////////////////////////
 // Test 7: one-sample guiding mixture support and null-sample semantics
 //////////////////////////////////////////////////////////////////////
 static void TestGuidingSelectedMixturePdf()
 {
-	std::cout << "Test 7: GuidingSelectedMixturePdf" << std::endl;
+	std::cout << "Test 8: GuidingSelectedMixturePdf" << std::endl;
 
 	using PathTransportUtilities::GuidingSelectedMixturePdf;
 
@@ -237,11 +250,60 @@ static void TestGuidingSelectedMixturePdf()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Test 8: Phase-B thermal-volume NEE/march family partition
+// Test 8: RIS selection preserves exact finite-positive support
+//////////////////////////////////////////////////////////////////////
+static void TestGuidingRISTinyPositiveSupport()
+{
+	std::cout << "Test 9: GuidingRIS tiny-positive support" << std::endl;
+
+	PathTransportUtilities::GuidingRISCandidate<Scalar> candidates[2] = {};
+	candidates[0].risTarget = 2.0e-20;
+	candidates[0].risWeight = 2.0e-20;
+	candidates[1].risTarget = 1.0e-20;
+	candidates[1].risWeight = 1.0e-20;
+	Scalar effectivePdf = 0;
+	const unsigned int selected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.9,effectivePdf);
+	Check( selected==1,
+		"sub-NEARZERO RIS weights retain their relative selection mass" );
+	Check( PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf),
+		"sub-NEARZERO RIS weights produce a positive finite density" );
+	Check( ApproxEqual(effectivePdf,2.0/3.0,TOL),
+		"scaled RIS selection preserves the exact effective density ratio" );
+
+	candidates[0].risTarget = 2.0e300;
+	candidates[0].risWeight = 2.0e300;
+	candidates[1].risTarget = 1.0e300;
+	candidates[1].risWeight = 1.0e300;
+	effectivePdf = 0;
+	const unsigned int largeSelected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.9,effectivePdf);
+	Check( largeSelected==1 &&
+		PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf) &&
+		ApproxEqual(effectivePdf,2.0/3.0,TOL),
+		"scaled RIS selection avoids overflow without changing the density" );
+
+	candidates[0].risTarget = 0.0;
+	candidates[0].risWeight = 0.0;
+	candidates[1].risTarget = 0.25;
+	candidates[1].risWeight = 0.5;
+	effectivePdf = 0.0;
+	const unsigned int zeroBoundarySelected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.0,effectivePdf);
+	Check(zeroBoundarySelected==1 &&
+		PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf),
+		"xi zero skips a leading zero-weight RIS atom and selects supported mass");
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 9: Phase-B thermal-volume NEE/march family partition
 //////////////////////////////////////////////////////////////////////
 static void TestVolumeEmissionFamilyPartition()
 {
-	std::cout << "Test 8: VolumeEmission family partition" << std::endl;
+	std::cout << "Test 10: VolumeEmission family partition" << std::endl;
 
 	const Scalar pV = 3.0;
 	const Scalar pMarch = 4.0;
@@ -411,7 +473,9 @@ int main()
 	TestWeightSum();
 	TestPowerHeuristic();
 	TestExtremeRatios();
+	TestNMNoEventSurvivalWeight();
 	TestGuidingSelectedMixturePdf();
+	TestGuidingRISTinyPositiveSupport();
 	TestVolumeEmissionFamilyPartition();
 
 	std::cout << std::endl;

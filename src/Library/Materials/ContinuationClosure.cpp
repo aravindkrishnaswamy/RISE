@@ -303,7 +303,7 @@ namespace
 			if( pdf <= 0.0 ) return false;
 			const Scalar magnitude = ThroughputMagnitude(
 				ScatterThroughput(mask,direction,pdf));
-			return FiniteNonnegative(magnitude) && magnitude > NEARZERO;
+			return FiniteNonnegative(magnitude) && magnitude > 0.0;
 		}
 
 		Scalar MarchPdf( const unsigned int mask, const Vector3& direction ) const
