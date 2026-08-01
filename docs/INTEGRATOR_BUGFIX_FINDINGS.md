@@ -1026,10 +1026,10 @@ both with and without the flag, and in the final full suite).
 
 ---
 
-### Review rounds 3-6 (2026-07-30/31): the code held, the degenerate-index rule did not
+### Review rounds 3-7 (2026-07-30 .. 2026-08-01): the code held, the degenerate-index rule did not
 
-Four more adversarial rounds ran after round 2, the last two directly on merged
-master. **The three originally-assigned P1s (growing evanescent root, non-total
+Five more adversarial rounds ran after round 2, the last three directly on
+merged master. **The three originally-assigned P1s (growing evanescent root, non-total
 N-layer path, oracle-only test pins) were attacked in every round and never
 moved.** Round 6's correctness reviewer: *"the core algebra survives; every
 branch-rule-free invariant I could construct sits at machine precision"* — TIR
@@ -1048,7 +1048,7 @@ non-finite component) the rule was, in order:
 | 2 | make the layer ABSENT | 1.0 | the limit is an evanescent BARRIER (`N₁cos₁ → i·s`), not an absent layer |
 | 3 | return R = 1 ("cannot transmit") | 0.9987 | non-sequitur: **no transmission is not no absorption** |
 | 4 | tiny STAND-IN, un-renormalized | NaN | two zero layers overflowed the layer product |
-| 5 | stand-in + per-layer renormalization | ~1e-15 | current |
+| 5 | stand-in + per-layer renormalization | ~1e-15 | **current** |
 
 **Each of the first four was hidden by a test that was blind in exactly the
 decisive dimension** — rule 1 by an air ambient (where vacuum and absent
@@ -1056,14 +1056,30 @@ coincide), rule 3 by a lossless film (where R = 1 is right), rule 4 by zeroing
 one layer and never two. That pattern, not the physics, is the real lesson of
 this arc.
 
-**The current rule.** A ZERO index in any role takes
-`detail::kZeroIndexStandIn = 1e-40` and the ordinary math computes the limit
-(measured ~1e-15 against a 120-dps oracle in all three roles). A NON-FINITE
-index returns `detail::kNonFiniteStackReflectance = 1` — correct for the film
-and ambient roles, **not** correct for an infinite substrate under an absorbing
-film (0.5048 vs 1), retained as an engineering choice because the value must
-stay `> 0` for `GGXBRDF`'s lobe gate. The four superseded rules are recorded on
-`kZeroIndexStandIn` so none is reinvented.
+**The current rule, in full** — this file is the canonical record and for five
+formulations it never stated the one in force:
+
+- A **zero** index in any role takes `detail::kZeroIndexStandIn = 1e-40` and the
+  ordinary math computes the limit (~1e-15 against a 120-dps oracle, all three
+  roles). The limit is *not* a constant — as `N → 0` the admittance tends to
+  `i·s`, so the medium becomes an evanescent barrier whose effect depends on the
+  rest of the stack.
+- A **non-finite** index returns `detail::kNonFiniteStackReflectance = 1`.
+  Correct for the film and ambient roles; **not** correct for an infinite
+  substrate under an absorbing film (0.5048 vs 1). Retained as an engineering
+  choice because the value must stay `> 0` for `GGXBRDF`'s lobe gate.
+- `n == 0` with `k > 0` is **not** degenerate — a pure-imaginary index is a real
+  medium, and silver is already `n = 0.144`.
+- The stand-in only works alongside **`detail::RenormalizeLayerProduct`**, which
+  rescales the accumulated layer product by an exact power of two, skipped while
+  it is inside a safe binade band. Two stand-in layers separated by an ordinary
+  one otherwise reach ~1e161 and overflow the naive `c²+d²` division. The
+  rescale must use `ldexp` on each *value* — a precomputed `2^-exponent`
+  multiplier overflows for a denormal magnitude — and it is exact only while
+  every component stays normal.
+
+The three superseded constants and the un-renormalized stand-in are recorded on
+`kZeroIndexStandIn` and `RenormalizeLayerProduct` so none is reinvented.
 
 **Per-layer projective renormalization** (round 6) is what makes the stand-in
 safe: `r` is homogeneous of degree 0 in `M`, so scaling the accumulated matrix
@@ -1080,10 +1096,38 @@ file's own test — and an `R_p = 48.8` that was never reproducible at any commi
 The standing rule now: a quantitative claim must be pinned by a committed test
 or carry a complete recipe, or it does not go in.
 
-**Disclosed residuals.** An index below ~1e-77 or above ~1e154 still overflows
-under the shipped flags (the large end goes silently wrong before it goes NaN);
-strict IEEE is correct down to ~1e-154. An absorbing ambient is outside the
-passive domain and unreachable (every call site passes literal `k0 = 0`). The
-named fix for the overflow residual is to reformulate `CosThetaInMedium` around
-`η² = N² − s²`.
+**Disclosed residuals**, all far outside optical-constant range and none
+reachable from a correct scene:
+
+- a film index below ~`1e-154` overflows. The renormalization moved this cliff
+  down from `1e-77`; below ~`1e-77.5` the Airy primary form still overflows and
+  `SingleFilmReflectanceForPol`'s TMM fallback is what rescues it, so that
+  fallback is **live** there and its "measured dead" note holds only over the
+  shipped domain.
+- above ~`1e153.7` the shipped flags return the bare-stack value **silently**
+  (error 0.484) before going NaN at `1e154.06`; strict IEEE does not.
+- an absorbing ambient is outside the passive domain and unreachable — every
+  call site passes a literal `k0 = 0`.
+
+The named fix for both overflow ends is to reformulate `CosThetaInMedium` around
+`η² = N² − s²` instead of dividing by `N`.
+
+**Cost.** After round 7 cut the renormalization's magnitude computation from
+four `hypot`s to a component-wise proxy plus a binade-band skip, the per-shade
+GGX path (`ReflectanceConductor`) pays **nothing measurable** for it and
+`ReflectanceConductorStack` pays +8-12 %, i.e. the cost is confined to
+multi-layer `ar_layer` coatings. Figures and the recipe are in the `ThinFilm.h`
+file header; treat them as one machine, one run.
+
+**The durable lesson, worth more than any individual fix.** Almost every defect
+in this arc was caught by review rather than by a test, and in **five** cases
+the test that should have caught it was blind in exactly one dimension: an air
+ambient (where two candidate rules coincide), a lossless film (where `R = 1`
+happens to be right), one degenerate layer instead of two, one entry point
+instead of three, a structurally-vacuous assertion, and an index with
+`n == 0, k > 0` that nothing exercised. When a rule is chosen over alternatives,
+the test must vary the axis that *distinguishes* them — which is why `[Domain]`
+now carries an explicit non-vacuousness assertion. Related: dense measured
+claims written into comments became the next round's defects. Prefer properties
+gated by tests over measurement logs in prose.
 

@@ -203,54 +203,47 @@ TMM with M=1 reduces algebraically to the Airy result → they must match to ~ma
   0/0, and the growing evanescent root) both returned *finite, in-range, wrong* values.
 
 **INPUT DOMAIN — nothing between a scene file and the evaluator validates a number.** `GGXBRDF` /
-`GGXSPF` resolve the film thickness *and* all three media's `n` and `k` from `IScalarPainter`s, so
-a black texel, a negative `scale`, or a polynomial that dips below zero arrives at the optics
-directly — and the `[0,1]` clamp hides the result either way (`NaN < 0` and `NaN > 1` are both
-false). `ThinFilm.h` therefore normalizes at its own boundary, in two helpers whose boundaries are
-exactly 0 or the finite/non-finite line (no epsilons):
+`GGXSPF` resolve the film thickness *and* all three media's `n` and `k` from `IScalarPainter`s, and
+the `[0,1]` clamp hides a bad result either way (`NaN < 0` and `NaN > 1` are both false). So
+`ThinFilm.h` normalizes at its own boundary. **What it does today, in full:**
 
-- `detail::PhaseCoefficient` — a layer contributes phase only if `kd = 2πd/λ` is a *positive
-  finite* number. One rule covers `d < 0`, `d = ±inf`, `d = NaN`, `λ < 0`, `λ = 0`, `λ = NaN`;
-  otherwise the layer is absent, the continuous `d → 0⁺` limit. (`λ < 0` flips the sign of `kd`
-  exactly as `d < 0` does — on glass / (1.4+0.5i, 300 nm) / silver at cos θ = 0.5,
-  `|e^{+2iδ}| = 295.6` and `R_p = 17.69`, saturated to `1.0`.)
-- `detail::PhysicalIndex` — folds a medium onto the passive convention `|n| + i|k|` (note `n = 0`
-  with `k > 0` is legitimate, not degenerate — silver is `n = 0.144`). A non-passive index folds to
-  its passive twin — on one stack (glass ambient, film `|N| = 1.4+0.5i` at 300 nm, silver
-  substrate, cos θ = 0.5) the passive sign gives `R_s = 0.217`, `R_p = 0.0547` while *either*
-  flipped sign gives `R_s = 4.61`, `R_p = 18.31`, laundered into a saturated `1.0`; `R` is exactly
-  invariant under `N → −N`, so the two flipped forms necessarily agree. A **zero** index in any
-  role is replaced by a tiny stand-in (`1e-40`) so the ordinary math computes the **limit** —
-  tracked to ~1e-15 across 200,000 stacks in all three roles (film 1.3e-15,
-  substrate 1.2e-15, ambient 1.8e-15 on the sampled draw; an independent draw gave
-  1.4/1.6/7.6e-15, so read these as an order, not a bound). Four earlier rules invented a
-  constant instead and all four were wrong, because the limit depends on the stack: vacuum turned a
-  black `film_ior` texel into a mirror; "absent" was off by up to 1.0 (as `N₁ → 0` the film becomes
-  an evanescent *barrier*, not an absent layer); and "opaque, `R = 1`" was off by up to 0.9987,
-  because no transmission is not no absorption — an absorbing film still dissipates the round trip.
-  A **non-finite** index is not a limit at all, just corrupt input, and returns 1. The zero case
-  affected the **ambient and substrate as well as the film**, and reached the BRDF two ways,
-  neither benign: the RGB path yields a NaN pixel, the spectral path goes *silently black*,
-  because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
+| input | treatment | why |
+|---|---|---|
+| `kd = 2πd/λ` not positive-finite | layer contributes no phase (`kd = 0`) | covers `d < 0`, `d = ±inf`, `d = NaN`, `λ < 0`, `λ = 0`, `λ = NaN` with one rule |
+| index with `n < 0` or `k < 0` | folded to `\|n\| + i\|k\|` | a non-passive medium otherwise gives `R > 1`, laundered by the clamp into a saturated 1 |
+| index exactly `0` (both parts) | replaced by `detail::kZeroIndexStandIn = 1e-40`, then evaluated normally | **the limit is not a constant** — see below |
+| index with a non-finite part | `detail::kNonFiniteStackReflectance = 1` | not the endpoint of any limit; kept `> 0` because `GGXBRDF` gates its lobe on `if( Rfilm > 0 )` |
+| `n == 0` with `k > 0` | **not degenerate** — a legitimate medium | pure-imaginary / ENZ index; silver is already `n = 0.144` |
+| `cosθ` outside `[floor, 1]`, or NaN | clamped | see `kGrazingCosFloor` |
+
+Two things make the zero-index row work, and both are load-bearing:
+
+1. **A stand-in, not a constant.** As `N → 0` the medium's admittance tends to `i·s` — a fixed
+   *nonzero* value — so a zero-index film is an evanescent **barrier**, and a zero-index endpoint is
+   a perfect terminator whose stack can still absorb. The limit therefore depends on the stack and
+   cannot be written down. Substituting `1e-40` and evaluating normally reproduces it to ~1e-15 in
+   all three roles. Three earlier rules invented a constant instead (vacuum, "absent", and
+   `R = 1`); each was wrong by up to ~1.0, and each survived a review round because the test
+   guarding it was blind in one dimension — an air ambient, a lossless film, one degenerate layer
+   instead of two.
+2. **Per-layer renormalization** (`detail::RenormalizeLayerProduct`). A stand-in layer drives the
+   p-polarization entries to ~1/\|N\|², so two of them separated by an ordinary layer reach ~1e161 —
+   past the ~1e154 where the naive `c²+d²` complex division that `-ffast-math` selects overflows.
+   Without this the stand-in made `ReflectanceConductorStack` **non-total**. The rescale is legal
+   because `r` is homogeneous of degree 0 in `M` (the same argument that lets each layer drop its
+   `e^{-iδ}/2`), and it is applied by an exact power-of-two shift, skipped while the product is
+   already inside a safe binade band. It also, as a side effect, moved the small-index NaN cliff
+   from `1e-77` to `1e-154`.
 
 Note the asymmetry with `ar_layer`, which hard-rejects `thickness <= 0` at parse time. The GGX
-slot has no such gate, so an author whose painter dips negative renders the bare substrate and is
-never told. A parse-time diagnostic for the inline-constant case would close everything except a
+slots have no such gate, so an author whose painter dips out of range gets a normalized result and
+is never told. A parse-time diagnostic for the inline-constant case would close everything except a
 genuinely spatially-varying painter; not implemented.
 
-**Residual, measured, open:** a merely *tiny* index is still wrong, and fails differently per flag
-set — bisected in-repo, not quoted. Shipped `-ffast-math` (which implies `-fcx-limited-range`, so
-complex division is the naive `(ac+bd, bc−ad)/(c²+d²)`): the **public** result is now finite and
-correct down to `1e-154.06`, because the per-layer renormalization (2026-08-01) removed the growth;
-only the Airy *primary* form still overflows below `1e-77.02`, and the TMM fallback rescues it. By
-**overflow**
-— the p-polarization interface products grow like `1/n₁` — and above `n₁ = 1e154.06`. Strict IEEE:
-**not** NaN and not wrong either — it returns the correct value (to ~4e-16 against 120 dps) down to
-about `1e-154`. (An earlier version said it "silently returns the bare-stack value, the film
-vanishing"; that was never checked against the actual bare-stack value, which differs by 0.43.)
-No threshold was
-added, because a threshold here is the magic epsilon this codebase refuses; the named fix is to
-reformulate `CosThetaInMedium` around `η² = N² − s²` rather than dividing by `N`.
+**Residuals, all far outside optical-constant range:** a film index below ~`1e-154` overflows; above
+~`1e153.7` the shipped flags return the bare-stack value *silently* (error 0.484) before going NaN
+at `1e154.06`, where strict IEEE does not. The named fix for both ends is to reformulate
+`CosThetaInMedium` around `η² = N² − s²` instead of dividing by `N`.
 
 **AMBIENT DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
 shipped caller passes a literal `0.0`. With `k₀ > 0` the incident wave is inhomogeneous, the stack

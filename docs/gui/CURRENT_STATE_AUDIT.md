@@ -583,9 +583,9 @@ Save IS implemented incl. created-camera persistence (§1). Fix in:
   the SaveEngine size note: "85 KB" here vs "1,898 lines" in roadmap — both real.)
 - **SPECTRAL_DIFFERENTIATORS.md** — D5 correctly states the probe exists but
   per-pixel buffers are "consumed to scalars and discarded"; §10 correctly bans a
-  `GetColorNM` on `IScalarPainter`. Caveat: D3 thin-film facts are on the
-  unpushed `feature/thin-film-interference` branch, not master — add the branch
-  caveat where it says "already in the tree".
+  `GetColorNM` on `IScalarPainter`. (D3 thin-film facts were on an unpushed branch when
+  this audit was written; that branch merged to master on 2026-07-31, so
+  "already in the tree" is now literally true.)
 - **MATERIAL_EDITOR.md §1** + **GUI_ROADMAP §10.5** — correctly state `ValueKind`
   does not encode the pipe and routing is in `Job::ResolveOrDiagnoseScalar` (§4).
 - All E-direction docs correctly treat MCP server + agent runtime as absent (§13).
