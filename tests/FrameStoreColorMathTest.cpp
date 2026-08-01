@@ -1,5 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
+//  NOTE 2026-07-30: the -ffast-math folding rationale referenced below is
+//  historical -- macOS pairs -fno-finite-math-only since 2026-07-29.  The
+//  assertions remain valid.  See CLAUDE.md.
+//
 //  FrameStoreColorMathTest.cpp - L0 regression gate for the FrameStore
 //  output-side color math.
 //
@@ -24,6 +28,7 @@
 //
 //  The test is a standalone executable per the RISE convention; it
 //  prints PASS / FAIL per assertion and returns non-zero on failure.
+//
 //
 //////////////////////////////////////////////////////////////////////
 

@@ -263,7 +263,9 @@ which sidesteps the wall. This makes the **SDF benchmark potentially load-bearin
 **P0-C — SDF cost-profile probe (measured) + a blocker for the swept-V benchmark.** Two findings:
 1. **No periodic/swept SDF primitive exists today.** `SDFGeometry::ParsePartLines`
    (`SDFGeometry.cpp:1262`) implements only `sphere|box|roundbox|cylinder|torus|capsule|roundcone`;
-   `gyroid`/`menger` appear in the parser enum but are **not** wired in the part parser. A faithful
+   (`gyroid`/`menger` were never wired anywhere — they appeared only in the unrelated
+   `sdf3d_painter` `type` enum, whose backing `SDFPrimitiveType` has just
+   sphere/box/torus/cylinder; that stale advertisement was removed 2026-07-29.) A faithful
    swept-V groove field is therefore **not authorable with current parts** — building it *is* the Tier-3
    work (a new swept/periodic primitive), so the apples-to-apples cost comparison belongs to Phase 5,
    not Phase 0.

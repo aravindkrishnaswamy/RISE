@@ -1,8 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AgentLoopbackHttpServer.h - Secure-MCP slice 3+4: a LOOPBACK-ONLY
-//    HTTP/1.1 transport for AgentMcpAdapter (the same 14 agent verbs
-//    the stdio path serves, over a local TCP socket instead of a pipe).
+//    HTTP/1.1 transport for AgentMcpAdapter (the same agent verbs the
+//    stdio path serves -- whatever AgentMcpAdapter exposes, no count
+//    restated here -- over a local TCP socket instead of a pipe).
 //
 //    Slice 3 shipped the infra:
 //      * a TCP listen socket bound EXPLICITLY to 127.0.0.1 (never
@@ -189,8 +190,9 @@ namespace RISE
 			//! generously above the largest real payload this adapter
 			//! emits/consumes today (a base64 PNG read_image response body
 			//! is server->client, unbounded by this cap; the heaviest
-			//! CLIENT->server body is a propose_patch/insert_chunk chunk
-			//! of scene text, nowhere near this size).
+			//! CLIENT->server body is an insert_chunks/propose_patches BATCH
+			//! of scene text -- the batch forms, not the single-item ones,
+			//! are what sets this bound, and even they are nowhere near it).
 			static const std::size_t kMaxBodyBytes = 8u * 1024u * 1024u;
 
 			//! Maximum accepted request HEADER block size in bytes (the
@@ -256,9 +258,13 @@ namespace RISE
 			//! Secure-MCP slice 6: the mutating-verb rate limit -- a simple
 			//! FIXED WINDOW (not sliding/token-bucket) counter: every
 			//! kMutatingRateLimitWindowMs milliseconds the count resets to
-			//! zero; a mutating tools/call (propose_patch/insert_chunk/
-			//! remove_chunk/resolve_proposal -- see IsMutatingMcpToolCall in
-			//! the .cpp) increments it, and the (kMutatingRateLimitMaxCalls+1)th
+			//! zero; a mutating tools/call increments it -- the counted set is
+			//! IsMutatingMcpToolCall's in the .cpp, i.e. the 5 mutating verbs
+			//! PLUS resolve_proposal (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/resolve_proposal).  The
+			//! BATCH forms carry MORE leverage per call, not less, so they are
+			//! the last thing that should escape the cap.  The
+			//! (kMutatingRateLimitMaxCalls+1)th
 			//! call within the SAME window is refused with a structured
 			//! JSON-RPC error (kMutatingRateLimitExceeded, defined in the
 			//! .cpp) instead of reaching the adapter at all. Read-safe verbs

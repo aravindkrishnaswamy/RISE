@@ -524,7 +524,10 @@ private:
     // in -shutdown so a stale fire after dealloc is impossible.
     RISEViewportDirtyChangedBlock _dirtyChangedBlock;
 
-    // Facet 5 slice 1c-1: the live agent JSON-RPC dispatcher.  Owns a
+    // Facet 5 slice 1c-1: the live ADMINISTRATIVE agent JSON-RPC
+    // dispatcher -- the one behind -agentHandleLine (Owner authority,
+    // permanently Commit autonomy; NOT one of the two tool-call
+    // dispatchers below).  Owns a
     // non-owning AgentSession that WrapJob's the SAME IJobPriv the
     // controller wraps and is AttachController'd to `_controller`, so a
     // dispatched propose_patch routes through the controller's render-
@@ -536,16 +539,19 @@ private:
     RISE::Agent::AgentRpcDispatcher* _agentDispatcher;
 
     // Agent autonomy selector (2026-07 GUI composer chips): TWO more
-    // in-process dispatchers, sibling to `_agentDispatcher` above, that
+    // in-process dispatchers -- the TOOL-CALL sessions, sibling to the
+    // administrative `_agentDispatcher` above -- that
     // exist for the WHOLE bridge lifetime (not opt-in like the hosted
     // server below) so `-agentHandleToolCall:` never has to construct one
-    // mid-turn. `_agentToolDispatcherOwner` borrows an Owner-authority
+    // mid-turn. The tool-call Owner session `_agentToolDispatcherOwner`
+    // borrows an Owner-authority
     // AgentSession (its own instance, separate from `_agentDispatcher`'s —
     // see the .h's routing doc for why they must NOT be the same instance:
     // `_agentDispatcher` must stay permanently Commit-capable for
     // `resolve_proposal`, so ONLY this separate instance's autonomy is
     // ever toggled between Read/Commit via AgentRpcDispatcher::SetAutonomy
-    // as `agentAutonomyLevel` changes). `_agentToolDispatcherPropose`
+    // as `agentAutonomyLevel` changes). The tool-call Propose session
+    // `_agentToolDispatcherPropose`
     // borrows a SEPARATE External-authority AgentSession, fixed at Propose
     // autonomy for its whole life (mirrors -startAgentHostedServerWithLabel:'s
     // External+Propose construction, minus the HTTP server — see that
@@ -564,7 +570,8 @@ private:
     // Secure-MCP slice 5c: the GUI-hosted EXTERNAL loopback MCP server --
     // a SEPARATE AgentSession (External authority) + AgentMcpAdapter +
     // AgentLoopbackHttpServer from `_agentDispatcher` above (which is the
-    // Owner-authority, in-process dispatcher -agentHandleLine drives).
+    // Owner-authority, in-process ADMINISTRATIVE dispatcher
+    // -agentHandleLine drives).
     // Null/empty when not hosting (the default -- opt-in only via
     // -startAgentHostedServerWithLabel:). The External AgentSession
     // (WrapJob, non-owning, AttachController'd to `_controller` -- see
@@ -660,9 +667,25 @@ private:
     // (see -shutdown).  WrapJob may return null (defensive; pJob is
     // non-null here), in which case the dispatcher speaks valid JSON-RPC
     // errors for the session-backed verbs — still safe.
+    //
+    // SHARED LAST-RENDER CACHE (2026-07).  All THREE in-app sessions below
+    // are handed the SAME AgentImageCache, so a `render` performed through
+    // any one of them is readable by `read_image` through the others.  Before
+    // this, the cache was per-session and flipping the composer's autonomy
+    // chip to or from Propose between a render and the read that followed it
+    // moved the read onto a session whose cache was empty or stale — the
+    // model then re-rendered for several turns trying to get pixels back.
+    //
+    // The hosted loopback (MCP) server's External session, stood up in
+    // -startAgentHostedServerWithLabel:, deliberately gets NO handle: it must
+    // not be able to read pixels an in-app render produced. Do not "tidy" that
+    // by hoisting this handle into an ivar the hosted path can reach.
+    std::shared_ptr<RISE::Agent::AgentImageCache> inAppImageCache =
+        RISE::Agent::AgentSession::MakeSharedImageCache();
     {
         std::unique_ptr<RISE::Agent::AgentSession> session =
-            RISE::Agent::AgentSession::WrapJob(pJob);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::Owner,
+                                               inAppImageCache);
         if (session) {
             session->AttachController(_controller);
         }
@@ -677,7 +700,8 @@ private:
     // `_controller` `_agentDispatcher`'s own session is attached to.
     {
         std::unique_ptr<RISE::Agent::AgentSession> ownerSession =
-            RISE::Agent::AgentSession::WrapJob(pJob);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::Owner,
+                                               inAppImageCache);
         if (ownerSession) {
             ownerSession->AttachController(_controller);
         }
@@ -689,7 +713,8 @@ private:
             std::move(ownerSession), RISE::Agent::AgentAutonomy::Commit);
 
         std::unique_ptr<RISE::Agent::AgentSession> proposeSession =
-            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External,
+                                               inAppImageCache);
         if (proposeSession) {
             proposeSession->AttachController(_controller);
             // Diagnostic only (SceneEditController::AgentProposal::sessionLabel) --
@@ -1474,6 +1499,26 @@ private:
     double t0 = 0, t1 = 0; unsigned int nf = 0;
     if (!RISE_API_SceneEditController_GetAnimationOptions(_controller, &t0, &t1, &nf)) return 0;
     return static_cast<NSUInteger>(nf);
+}
+
+- (BOOL)getAnimationOptionsTimeStart:(double *)timeStart
+                             timeEnd:(double *)timeEnd
+                           numFrames:(NSUInteger *)numFrames {
+    if (!_controller || !timeStart || !timeEnd || !numFrames) return NO;
+    double t0 = 0, t1 = 0;
+    unsigned int nf = 0;
+    if (!RISE_API_SceneEditController_GetAnimationOptions(_controller, &t0, &t1, &nf)) return NO;
+    *timeStart = t0;
+    *timeEnd = t1;
+    *numFrames = static_cast<NSUInteger>(nf);
+    return YES;
+}
+
+- (NSInteger)animationPresence {
+    if (!_controller) return -1;
+    bool hasAnimation = false;
+    if (!RISE_API_SceneEditController_GetHasAnimation(_controller, &hasAnimation)) return -1;
+    return hasAnimation ? 1 : 0;
 }
 
 #pragma mark - Time scrubber
@@ -2278,7 +2323,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         return;  // out-of-range: no-op, keep the previous level (see the .h doc)
     }
     _agentAutonomyLevel = level;
-    // Only the OWNER tool dispatcher's autonomy ever changes at runtime —
+    // Only the tool-call OWNER session's autonomy ever changes at runtime —
     // `_agentToolDispatcherPropose` stays fixed at Propose for its whole
     // life (see the ivar block's doc), and `_agentDispatcher` (the
     // administrative path) is never touched here at all.
@@ -2290,13 +2335,26 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 }
 
 - (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest {
+    // The plain form is the level-explicit form applied to whatever the
+    // composer chip currently says -- so a tool call issued WITHOUT a pin
+    // always reflects the user's newest safety choice (see the .h doc for
+    // why only a render JOB pins, never a whole turn).
+    return [self agentHandleToolCall:jsonRpcRequest autonomy:_agentAutonomyLevel];
+}
+
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+                         autonomy:(RISEAgentAutonomyLevel)level {
     static NSString* const kNoDispatcher =
         @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
         @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
 
+    // An out-of-range `level` falls to the tool-call Owner session
+    // (`_agentToolDispatcherOwner`), matching
+    // -setAgentAutonomyLevel:'s "keep a valid posture" no-op policy rather
+    // than dispatching to nothing.
     RISE::Agent::AgentRpcDispatcher* dispatcher =
-        (_agentAutonomyLevel == RISEAgentAutonomyPropose) ? _agentToolDispatcherPropose
-                                                            : _agentToolDispatcherOwner;
+        (level == RISEAgentAutonomyPropose) ? _agentToolDispatcherPropose
+                                            : _agentToolDispatcherOwner;
     if (!dispatcher) {
         return kNoDispatcher;
     }
@@ -2312,10 +2370,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 // touching anything in this section:
 //
 //   `_agentDispatcher` (constructed in -initWithHostBridge:, Facet 5
-//   slice 1c-1) is the OWNER-authority, Commit-autonomy dispatcher the
+//   slice 1c-1) is the ADMINISTRATIVE dispatcher -- Owner authority,
+//   Commit autonomy -- the
 //   Swift ChatViewModel / the raw JSON-RPC debug panel drive via
 //   -agentHandleLine, always synchronously on the MAIN THREAD (Swift's
-//   @MainActor).
+//   @MainActor).  (The two tool-call dispatchers are main-thread-only
+//   too and play no part in this section's threading argument; "two-
+//   dispatcher" here means administrative vs hosted-EXTERNAL, the only
+//   pair with two different caller THREADS.)
 //
 //   `_agentHttpAdapter` (constructed below by
 //   -startAgentHostedServerWithLabel:) wraps a SEPARATE, SECOND
@@ -2383,8 +2445,8 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     // authority-gate doc). AttachController shares the SAME controller
     // `_agentDispatcher`'s own session is attached to, so a staged
     // proposal lands on that controller's ONE proposal queue -- the
-    // queue the Owner dispatcher's list_proposals/resolve_proposal verbs
-    // read/resolve.
+    // queue the administrative dispatcher's list_proposals/
+    // resolve_proposal verbs read/resolve.
     void* jobOpaque = [_host opaqueJobHandle];
     if (!jobOpaque) {
         return [[RISEAgentHostedServerInfo alloc]
@@ -2393,6 +2455,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     }
     IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
 
+    // ISOLATED LAST-RENDER CACHE, DELIBERATELY.  NO AgentImageCache handle is
+    // passed here, so this session allocates a PRIVATE one — a remote MCP
+    // client must never be able to `read_image` pixels an in-app render
+    // produced. The three in-app sessions in -initWithHostBridge: share one
+    // handle with each other and with nothing else; that separation is the
+    // whole reason sharing is opt-in rather than automatic. Passing a handle
+    // here would silently leak the user's viewport to whoever holds the
+    // bearer token.
     std::unique_ptr<RISE::Agent::AgentSession> session =
         RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
     if (!session) {

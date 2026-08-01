@@ -5,8 +5,9 @@
 //  Thin UI/IO driver around RISE::Agent::AgentChatLoop.  The loop owns
 //  transcript/tool-call state; this widget performs HTTPS requests and
 //  executes model-requested tools through ViewportBridge::agentHandleToolCall
-//  (autonomy-routed); agentHandleLine is administrative-only (proposals,
-//  render submit/poll, skill index).
+//  (autonomy-routed, including the async `render` submit/poll/cancel --
+//  see its two-argument pinned overload); agentHandleLine is
+//  administrative-only (proposals, skill index).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -15,6 +16,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QJsonObject>
 #include <QMap>
 #include <QDateTime>
 #include <QVector>
@@ -141,10 +143,17 @@ public slots:
     // sites even though onStateChanged's setSceneEditable(false) also
     // disables this panel, since that disable only lands on the NEXT
     // event-loop turn, which is too late for a turn already suspended in
-    // an HTTP await or a render_wait poll.
+    // an HTTP reply wait, a render_wait poll, or (FIX 2) a parked
+    // edit-tool-call retry backoff.
     void productionRenderStarting();
 
 signals:
+    // Emitted synchronously on the GUI thread immediately before an async
+    // chat-render is submitted.  MainWindow uses this last safe ownership
+    // window to close any pressed timeline slider before the render worker
+    // can acquire the controller.
+    void chatRenderWillSubmit();
+
     // P1-2 fix: fired whenever isChatRenderOutstanding() transitions
     // (both directions -- job submitted, and job resolved/cancelled).
     // MainWindow relays this into updateMenuActionStates() (undo/redo,
@@ -177,12 +186,17 @@ private slots:
 
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
-    // render_wait(timeoutMs:0) poll-once through agentHandleLine.
+    // render_wait(timeoutMs:0) poll-once through agentHandleToolCall,
+    // pinned to the SESSION the job was submitted on (see
+    // m_outstandingRenderAutonomy).
     void pollOutstandingRender();
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): poll
-    // list_proposals over the same in-process agentHandleLine transport
-    // the tool-call loop uses, and route Apply/Reject/Undo clicks from
+    // list_proposals over the in-process agentHandleLine (administrative)
+    // transport -- NOT the agentHandleToolCall session the tool-call loop
+    // uses; resolve_proposal is refused outside Owner/Commit, which is
+    // exactly why the panel keeps its own path -- and route
+    // Apply/Reject/Undo clicks from
     // the resulting ProposalCard widgets.  Mirrors the macOS
     // ChatViewModel.refreshProposals / resolveProposal.
     void refreshProposals();
@@ -280,6 +294,12 @@ private:
     // is nondeterministic for a GUI app and unwritable under Program Files).
     QString trajectoryDirectory() const;
     QString renderSkillIndex(const QString& rpcResponse) const;
+    // Latched by fetchSkillIndex(): the last index fetch came back EMPTY
+    // (the agent has NO scene-authoring skills), plus the RPC's advisory
+    // naming the skills root it tried.  Rendered as a dim centered notice
+    // by refreshTranscript() -- see the comment there.
+    bool m_skillIndexEmpty = false;
+    QString m_skillIndexNote;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
     void handleProviderError(const RISE::Agent::ChatStepResult& step);
@@ -287,14 +307,41 @@ private:
     // P1-2: the tool-call loop's state machine.  networkFinished() used to
     // run a single synchronous `for` loop over step.toolCalls; that loop
     // is now split across processNextToolCall() (one call at a time,
-    // still synchronous for non-render verbs) with a `render` call
-    // suspending into startAsyncRenderToolCall()/pollOutstandingRender()
-    // and resuming back into processNextToolCall() on completion --
-    // mirroring how networkFinished() already resumes runNextStep()
-    // across the HTTP boundary.
+    // dispatched synchronously for non-render verbs) with TWO ways to
+    // suspend back into the event loop and resume into
+    // processNextToolCall() later -- mirroring how networkFinished()
+    // already resumes runNextStep() across the HTTP boundary:
+    //   * a `render` call -> startAsyncRenderToolCall() /
+    //     pollOutstandingRender(), resuming on job completion;
+    //   * (FIX 2) an EDIT call refused with nothing applied ->
+    //     scheduleEditToolCallRetry() / deliverEditToolCallResult(),
+    //     resuming after a bounded backoff.
     void processNextToolCall();
     void startAsyncRenderToolCall(const RISE::Agent::ChatToolCall& call,
                                    const std::string& submitLine);
+    // Re-apply the `imageMaxEdge` effect that startAsyncRenderToolCall
+    // stripped off the submit, so an async-driven render returns the same
+    // one-call observe result a synchronous render{imageMaxEdge:N} does.
+    // macOS sibling: ChatViewModel.foldingInlineImage.
+    QJsonObject foldInlineImageIntoRenderResult(const QJsonObject& renderResult);
+    // FIX 2 (edit-refusal retry): park a WHOLLY-UNAPPLIED retriable edit
+    // refusal and re-issue it after a short backoff that RETURNS TO THE
+    // EVENT LOOP, instead of spending an LLM round-trip per retry.  Full
+    // rationale, the anti-double-apply gate, the head-movement guard
+    // (`baselineHead`), and the attempt/backoff
+    // budget live in ChatPanel.cpp's block comment above
+    // editRefusalIsWhollyUnapplied.  macOS sibling:
+    // ChatViewModel.retryWhollyRefusedEditToolCall.
+    void scheduleEditToolCallRetry(const RISE::Agent::ChatToolCall& call,
+                                   const std::string& line,
+                                   int attemptsSoFar,
+                                   const QString& baselineHead);
+    void deliverEditToolCallResult(const RISE::Agent::ChatToolCall& call,
+                                   const std::string& responseLine,
+                                   int attempts);
+
+    // Fire cancellation but retain the published outstanding job until the
+    // non-blocking poll observes actual worker completion.
     void cancelOutstandingRender();
     void drainPendingToolCallsAsCancelled();
     void cancelActiveTurn(const QString& statusLine);
@@ -346,8 +393,10 @@ private:
     // line has returned: relabels it "-> name  <outcome>" via
     // AgentChatLoop::ToolOutcomeLineForDisplay, fills in the args+result
     // detail, and reveals the chevron.  QPointer-guarded (see the .cpp
-    // doc) so a transcript clear that races an in-flight async render
-    // tool call is a safe no-op rather than a dangling-pointer write.
+    // doc) so a transcript clear that races a tool call PARKED across an
+    // event-loop gap -- an in-flight async render, or (FIX 2) an edit
+    // call between retry attempts -- is a safe no-op rather than a
+    // dangling-pointer write.
     void updatePendingToolRow(const RISE::Agent::ChatToolCall& call,
                               const std::string& responseLine);
 
@@ -405,9 +454,11 @@ private:
     // QPointer, not raw pointers -- see updatePendingToolRow's header
     // doc for the lifetime story. At most one tool call is ever
     // in-flight at a time (processNextToolCall drains m_pendingToolCalls
-    // one at a time, synchronously except for the `render` verb's async
-    // submit/poll suspension), so a single set suffices -- no per-call
-    // container needed.
+    // one at a time, synchronously except for the TWO verbs that park
+    // back into the event loop: the `render` verb's async submit/poll
+    // suspension, and (FIX 2) a wholly-refused edit verb's retry
+    // backoff), so a single set suffices -- no per-call container
+    // needed.
     QPointer<QLabel>      m_pendingToolRowLabel;
     QPointer<QTextEdit>   m_pendingToolRowDetail;
     QPointer<QToolButton> m_pendingToolRowChevron;
@@ -438,8 +489,9 @@ private:
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): the
     // pending/recently-resolved proposals column, shown above the
-    // transcript.  Polled on a 1s QTimer via the same in-process
-    // agentHandleLine transport the tool-call loop uses.
+    // transcript.  Polled on a 1s QTimer via the in-process
+    // agentHandleLine (administrative) transport -- NOT the
+    // agentHandleToolCall session the tool-call loop uses.
     QWidget*     m_proposalsContainer = nullptr;
     QVBoxLayout* m_proposalsLayout = nullptr;
     QTimer*      m_proposalsPollTimer = nullptr;
@@ -514,12 +566,65 @@ private:
     // state machine (valid only while m_activeRenderPending is true).
     RISE::Agent::ChatToolCall m_activeRenderCall;
     bool m_activeRenderPending = false;
+
+    // FIX 2 (edit-refusal retry): the edit tool call currently PARKED
+    // between retry attempts (valid only while m_editRetryPending is
+    // true) -- the direct sibling of m_activeRenderCall /
+    // m_activeRenderPending above, and tracked for the same reason: the
+    // call has already been popped from m_pendingToolCalls, so
+    // drainPendingToolCallsAsCancelled cannot answer it and
+    // cancelActiveTurn must.
+    RISE::Agent::ChatToolCall m_editRetryCall;
+    bool m_editRetryPending = false;
+    // Monotonic anti-stale guard.  Every scheduled retry tick captures
+    // the token it was scheduled under; cancelActiveTurn bumps it, so a
+    // tick that fires after a cancellation -- or into a LATER turn that
+    // has parked a retry of its own -- is a no-op rather than a
+    // double-advance of the tool-call state machine.
+    quint64 m_editRetryToken = 0;
     // 0 = no async chat-render job outstanding on the controller's
     // single-slot agent-render worker.  Never assign this directly --
     // go through setOutstandingRenderJobId() so isChatRenderOutstanding()
     // consumers (recomputeSceneEditable, MainWindow, TopBar) stay
     // synchronized with every transition.
     quint64 m_outstandingRenderJobId = 0;
+    // The level pinned for the outstanding render job, captured ONCE at
+    // submit time in startAsyncRenderToolCall().
+    //
+    // What it pins is the SESSION SELECTION, not the autonomy posture: the
+    // level chooses which dispatcher/session handles a call, and the live
+    // posture on the selected session still applies (the bridge's
+    // setAgentAutonomyLevel() mutates the TOOL-CALL Owner session's
+    // autonomy in place -- m_agentToolDispatcherOwner, never the
+    // administrative dispatcher), so a mid-render drop to Read is NOT
+    // defeated by this pin.
+    //
+    // Why pin at all: renderJobIds themselves are addressable from any
+    // session on the same controller (they are minted BY the controller),
+    // but ONE thing about a render job is session-scoped -- render_wait's
+    // optional `result` payload.  Poll from a sibling session and the job
+    // completes with no result to report.  (The last-render PNG cache is NOT
+    // session-scoped: the three in-app sessions share one AgentImageCache.)  Full derivation in
+    // ViewportBridge::agentHandleToolCall(const QString&, AgentAutonomyLevel).
+    //
+    // Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
+    // safety control, and a user who drops to Read mid-turn must have that
+    // bind on the agent's very next tool call.
+    AutonomyLevel m_outstandingRenderAutonomy = AutonomyLevel::Apply;
+    // The model's `imageMaxEdge` for the outstanding render, carried from
+    // startAsyncRenderToolCall (which STRIPS it out of the submit, so it
+    // cannot collide with the `async` this driver injects) to
+    // pollOutstandingRender (which re-applies its effect by fetching the
+    // image at that bound and folding it into the downgraded result).  A
+    // separate presence flag rather than a sentinel: 0 and negative values
+    // are legitimate model input, clamped to [16,1024] by the RPC.  Both
+    // are rewritten by every submit before any poll can read them.
+    bool m_outstandingRenderHasInlineImage = false;
+    double m_outstandingRenderInlineImageMaxEdge = 0.0;
+    // True after render_cancel has been sent but before render_wait observes
+    // actual worker completion.  The outstanding id deliberately remains
+    // published during this drain so scene controls stay disabled.
+    bool m_renderCancellationDraining = false;
     // Lazily created on the first async render tool call; reused
     // (started/stopped) for every subsequent one.
     QTimer* m_renderPollTimer = nullptr;

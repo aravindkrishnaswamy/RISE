@@ -69,7 +69,10 @@ target_compile_definitions(rise PRIVATE
 target_compile_options(rise PRIVATE
     -O3
     -ffast-math
-    -fno-finite-math-only       # infs/nans are used in intersection math
+    -fno-finite-math-only       # NOT because intersection math uses infs --
+                                # it deliberately uses FINITE sentinels.  See
+                                # build/make/rise/Config.OSX for the real
+                                # reasons (live isfinite/isnan guards + tests).
     -funroll-loops
     -fexceptions                # library throws std::runtime_error in a few paths
     -frtti                      # dynamic_cast usage in scene management

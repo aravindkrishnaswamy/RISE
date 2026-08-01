@@ -292,7 +292,8 @@ final class RenderViewModel: ObservableObject {
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
     // handed to the viewport bridge's `agentHandleLine`, which drives the
-    // SAME live dispatcher/session/controller the GUI edits through, so a
+    // administrative dispatcher over the SAME live controller the GUI
+    // edits through, so a
     // `propose_patch` edits the running scene and the viewport reflects it.
     //
     // Superseded by the Chat panel for everyday use (2026-07); kept ONLY
@@ -424,6 +425,12 @@ final class RenderViewModel: ObservableObject {
         }
     }
     @Published var hasAnimation: Bool = false
+    /// Equality-guarded live options for the active animation.  Unlike the
+    /// original load-time UI snapshot, these follow agent edits and active
+    /// named-animation switches without rebuilding the viewport.
+    @Published private(set) var animationTimeStart: Double = 0
+    @Published private(set) var animationTimeEnd: Double = 1
+    @Published private(set) var animationNumFrames: UInt = 30
     @Published var recentFiles: [String] = []
     /// Last-opened times for `recentFiles` entries (start-screen "2m ago"
     /// labels).  Persisted under the sibling `recentSceneMeta` key; a path
@@ -432,6 +439,15 @@ final class RenderViewModel: ObservableObject {
 
     /// Live time-scrubber state, displayed on the viewport's bottom slider.
     @Published var sceneTime: Double = 0
+    /// A model-driven range reconciliation has already applied this exact
+    /// time through the native begin/move/end scrub contract.  ViewportView
+    /// consumes the marker so its binding observer does not submit the same
+    /// time a second time outside that bracket.
+    private var preappliedSceneTime: Double? = nil
+    /// True only between a TimelineSlider drag's admitted begin/end calls.
+    /// Live option polling defers range replacement while this is set so it
+    /// never nests a model-driven jump over the user's open composite.
+    private var manualTimelineScrubActive: Bool = false
 
     /// True while the Play button is looping the active animation through
     /// the fast interactive preview renderer (frame-by-frame, looping until
@@ -698,6 +714,10 @@ final class RenderViewModel: ObservableObject {
     /// have silently staled the menu bar.  Publish it directly.
     @Published private(set) var viewportBridge: RISEViewportBridge? = nil {
         didSet {
+            if manualTimelineScrubActive {
+                _ = oldValue?.scrubTimeEnd()
+                manualTimelineScrubActive = false
+            }
             refinementPollTimer?.invalidate()
             refinementPollTimer = nil
             guard let vb = viewportBridge else {
@@ -711,6 +731,10 @@ final class RenderViewModel: ObservableObject {
                 viewportRenderMode = "preview"
                 viewportRenderModes = []
                 viewportXray = false
+                animationTimeStart = 0
+                animationTimeEnd = 1
+                animationNumFrames = 30
+                preappliedSceneTime = nil
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -851,6 +875,14 @@ final class RenderViewModel: ObservableObject {
         // BEFORE kicking production).
         chat.sceneEditable = { [weak self] in
             self?.isSceneEditableForAgents ?? false
+        }
+        chat.chatRenderWillSubmit = { [weak self] in
+            guard let self else { return }
+            self.stopPreviewPlay()
+            if let vb = self.viewportBridge {
+                self.endManualTimelineScrub(using: vb)
+                _ = vb.finalizeOpenInteractions()
+            }
         }
         // Model-B F2 slice S2b: the NARROWER sibling `productionRenderActive`
         // — see its doc on ChatViewModel for why the render tool call's own
@@ -1209,9 +1241,13 @@ final class RenderViewModel: ObservableObject {
                     self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
                     self.chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
                     self.viewportBridge?.shutdown()
+                    self.viewportBridge = nil
+                    // Seed the new job at its conventional default before
+                    // the bridge didSet poll clamps it into a non-zero live
+                    // animation range, if necessary.
+                    self.sceneTime = 0
                     let vb = RISEViewportBridge(hostBridge: bridgeRef)
                     self.viewportBridge = vb
-                    self.sceneTime = 0
                     // Wire the live-preview image callback.  The block
                     // is invoked on the main thread by the bridge.
                     vb?.setImageBlock { [weak self, weak vb] (image: NSImage) in
@@ -1865,9 +1901,12 @@ final class RenderViewModel: ObservableObject {
               // .cancelling means rasterize() has not returned yet, so
               // production workers may still read animator state.
               renderState != .rendering, renderState != .cancelling else { return }
-        let t0 = vb.animationTimeStart
-        let t1 = vb.animationTimeEnd
-        let frames = max(Int(vb.animationNumFrames), 2)
+        var t0: Double = 0
+        var t1: Double = 0
+        var numFrames: UInt = 0
+        guard vb.getAnimationOptions(timeStart: &t0, timeEnd: &t1,
+                                     numFrames: &numFrames) else { return }
+        let frames = max(Int(numFrames), 2)
         let span = t1 - t0
         guard span > 0 else { return }
         let dt = span / Double(frames - 1)
@@ -1901,11 +1940,75 @@ final class RenderViewModel: ObservableObject {
         _ = viewportBridge?.scrubTimeEnd()
     }
 
+    func beginManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard !manualTimelineScrubActive, vb.scrubTimeBegin() else { return }
+        manualTimelineScrubActive = true
+    }
+
+    func endManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        manualTimelineScrubActive = false
+        _ = vb.scrubTimeEnd()
+    }
+
+    /// Apply a manual drag step synchronously inside its known-open native
+    /// composite, then mark the already-updated Binding so the later SwiftUI
+    /// observer does not submit it again after End.
+    func applyManualTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        if vb.scrubTime(time) {
+            preappliedSceneTime = time
+        } else {
+            let canonicalTime = vb.lastSceneTime()
+            preappliedSceneTime = canonicalTime
+            sceneTime = canonicalTime
+        }
+    }
+
+    /// Apply a binding-driven playback step only while its native scrub
+    /// composite is known to be open.
+    func applyTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) -> Bool {
+        guard isPreviewPlaying else { return false }
+        return vb.scrubTime(time)
+    }
+
+    /// Rewind/to-end transport uses this direct path so the native move is
+    /// performed synchronously between Begin and End, before SwiftUI later
+    /// observes the published binding change.
+    func jumpTimelineSceneTime(to time: Double, using vb: RISEViewportBridge) {
+        reconcileSceneTime(to: time, using: vb, force: true)
+    }
+
+    /// Consume a scene-time write that `reconcileSceneTime` already applied
+    /// natively.  Any different write clears the stale marker and follows the
+    /// normal ViewportView binding path.
+    func consumePreappliedSceneTime(_ time: Double) -> Bool {
+        guard let applied = preappliedSceneTime else { return false }
+        preappliedSceneTime = nil
+        return applied == time
+    }
+
+    /// Park an out-of-range playhead through the same native composite used
+    /// by an explicit timeline jump.  Failed admission leaves both the UI
+    /// value and marker untouched so the next 2 Hz poll retries safely.
+    private func reconcileSceneTime(to time: Double, using vb: RISEViewportBridge,
+                                    force: Bool = false) {
+        guard !manualTimelineScrubActive, (force || sceneTime != time),
+              vb.scrubTimeBegin() else { return }
+        let applied = vb.scrubTime(time)
+        _ = vb.scrubTimeEnd()
+        guard applied else { return }
+        if sceneTime != time {
+            preappliedSceneTime = time
+            sceneTime = time
+        }
+    }
+
 
     // MARK: - UI redesign: refinement status poll
 
-    /// Refresh `refinementPhase` / `refinementScaleDivisor` /
-    /// `isRefinementPaused` / `undoLabel` / `redoLabel` from `vb`.
+    /// Refresh refinement, undo/redo, viewport-mode, and live animation
+    /// presence/options from `vb`.
     /// Called once immediately on bridge attach, then every 0.5 s by
     /// `refinementPollTimer` — see `viewportBridge`'s didSet.
     private func pollRefinementState(_ vb: RISEViewportBridge) {
@@ -1943,6 +2046,55 @@ final class RenderViewModel: ObservableObject {
         // scene rebind resets it without replacing the bridge object).
         let engineXray = vb.viewportXray()
         if viewportXray != engineXray { viewportXray = engineXray }
+
+        // Timeline presence is live scene state, not load metadata.  An agent
+        // can insert the first timeline after this RenderViewModel was built;
+        // conversely undo/remove can take the last one away.  The bridge
+        // snapshot is controller-mutex-safe and tri-state, so a contended
+        // external commit leaves the last published value intact until the
+        // next poll instead of briefly hiding the timeline.
+        let liveAnimationPresence = vb.animationPresence
+        if liveAnimationPresence >= 0 {
+            let liveHasAnimation = liveAnimationPresence != 0
+            if liveHasAnimation {
+                // Read the whole option tuple under one controller lock so
+                // start/end/frame count can never come from different agent
+                // commits.  Retain the last good tuple on contention.
+                var liveStart: Double = 0
+                var liveEnd: Double = 0
+                var liveFrames: UInt = 0
+                if vb.getAnimationOptions(timeStart: &liveStart,
+                                          timeEnd: &liveEnd,
+                                          numFrames: &liveFrames),
+                   liveEnd > liveStart {
+                    let optionsChanged = animationTimeStart != liveStart
+                        || animationTimeEnd != liveEnd
+                        || animationNumFrames != liveFrames
+                    // A live DragGesture owns an open native composite and
+                    // still uses the currently displayed range.  Defer a
+                    // tuple replacement until its End; the next poll applies
+                    // it.  Removal below cannot defer because the control is
+                    // about to disappear, so it explicitly finalizes first.
+                    if !optionsChanged || !manualTimelineScrubActive {
+                        if optionsChanged { stopPreviewPlay() }
+                        if animationTimeStart != liveStart { animationTimeStart = liveStart }
+                        if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
+                        if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
+                        let clampedTime = min(max(sceneTime, liveStart), liveEnd)
+                        reconcileSceneTime(to: clampedTime, using: vb)
+                    }
+                }
+            } else {
+                endManualTimelineScrub(using: vb)
+                if animationTimeStart != 0 { animationTimeStart = 0 }
+                if animationTimeEnd != 1 { animationTimeEnd = 1 }
+                if animationNumFrames != 30 { animationNumFrames = 30 }
+            }
+            if hasAnimation != liveHasAnimation {
+                if !liveHasAnimation { stopPreviewPlay() }
+                hasAnimation = liveHasAnimation
+            }
+        }
 
         // Design brief A4 — mirror the active region (full-res
         // film-pixel space). The core preserves it across production
@@ -2226,7 +2378,7 @@ final class RenderViewModel: ObservableObject {
     // MARK: - Agent surface (Facet 5 slice 1c-1)
 
     /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
-    /// agent dispatcher and return its response line.
+    /// ADMINISTRATIVE agent dispatcher and return its response line.
     ///
     /// Runs SYNCHRONOUSLY on the main actor — the bridge's
     /// `agentHandleLine` runs on the calling (main) thread, exactly like

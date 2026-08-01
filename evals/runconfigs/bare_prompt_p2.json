@@ -1,0 +1,12 @@
+{
+  "//": "P2 (design-note advisory) measurement run -- same gemini-only instrument as baseline and P1, fresh runDir for a clean phase diff (evals/runs/bare_prompt_baseline -> bare_prompt_p1 -> here). The advisory rides render/validate tool results, so the headless agent sees it live. Success bars unchanged from docs/agentic-redesign/73-creative-richness-design.md: scalar-pipe >=1/3 runs, advanced geometry >=2/3, painter_kinds floor >=2 every run, build_ambiguous_scene ask-side unmoved.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_p2"
+}

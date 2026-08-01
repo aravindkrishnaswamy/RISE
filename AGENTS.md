@@ -96,6 +96,47 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+### A FRESH CHECKOUT OR GIT WORKTREE CANNOT `make` UNTIL YOU DO THIS
+
+`build/make/rise/Config.specific` is a per-machine symlink and is
+**gitignored**, and the output directories are not tracked either.  A
+brand-new clone — and, the usual way this bites, a `git worktree add`
+used to isolate a reviewer or a parallel agent — therefore fails the
+very first `make` with a missing-include or missing-directory error
+that looks like a code problem and is not.  One-time, per checkout:
+
+```sh
+ln -s Config.OSX build/make/rise/Config.specific   # or Config.Linux
+mkdir -p bin rendered            # `make install` does the same, without -p
+```
+
+(`bin/tests` and `bin/tools` are created by the `tests` / tools targets
+themselves — only `bin/` and `rendered/` need to pre-exist.)
+
+Do this BEFORE the first `make -C build/make/rise -j8 all`.  (This cost
+a worktree-based reviewer real time; it is not obvious from the error.)
+
+**Expect `ld` search-path warnings when `extlib/oidn/install/` is
+absent, and do NOT chase them.**  That directory is a build product of
+the one-time OIDN setup in [CLAUDE.md](CLAUDE.md); it is neither tracked
+nor carried into a `git worktree add`.  The Xcode `RISE-GUI` link then
+emits, once per link action (two on a `-configuration Development`
+build here):
+
+```
+ld: warning: search path '…/extlib/oidn/install/lib' not found
+```
+
+and falls back to the system (Homebrew, CPU-only) OIDN.  Under this
+repo's "compiler warnings are bugs" rule that reads like a regression
+and it is not — it is a missing build product of the CHECKOUT, not of
+the change under review.  (The `make` build is unaffected: its
+`Config.OSX` `wildcard`-tests for the dylib and silently picks the
+Homebrew prefix instead, so no warning is emitted at all.)  Either
+populate the install (`extlib/oidn/fetch_prebuilt.sh`, run from the
+worktree) or discount exactly those `ld: warning: search path` lines;
+anything else in the log still counts as a warning you own.
+
 ### Render test scenes at lower resolution (CLI override)
 
 Production scenes often author 1920×1080 (or higher) in their `film`
@@ -247,6 +288,15 @@ and do not leave them behind when you finish a task.
   xcodebuild -project rise.xcodeproj -scheme RISE-GUI -configuration Deployment clean
   xcodebuild -project rise.xcodeproj -scheme RISE-GUI -configuration Deployment build 2>&1 | grep "warning:" | grep -v appintentsmetadataprocessor   # expect empty
   ```
+
+  ⚠ **`Deployment` is NOT the configuration that ships.**  The release DMG is
+  built from `Opto` (`scripts/create_macos_release.sh`, scheme `RISE-GUI-Opto`).
+  `Opto` carries `-ffast-math` and full `LLVM_LTO = YES`; `Deployment` carries
+  neither and uses `YES_THIN`.  This warning gate is fine for warnings, but
+  anything **FP- or LTO-sensitive must additionally be verified against `Opto`**
+  — historically the worst miscompiles only appeared with full LTO.  (The
+  finite-math half of that gap was closed 2026-07-29 when every configuration
+  gained `-fno-finite-math-only`; the rest of the gap remains.)
 
   Incremental builds will hide warnings on files that didn't recompile.
   When you've finished a task that touched headers or shared sources,

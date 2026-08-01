@@ -1,0 +1,11 @@
+{
+  "//": "P2.b (diagnostic-framing) measurement, qwen3.6:27b thinking instrument -- the reasoning-visible half. The P2 probe caught qwen dismissing the note because validate 'validated clean - no errors'; this run tests whether the same fact INSIDE the diagnostics list flips its triage. Slow (~1h/run) is accepted.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json"
+  ],
+  "providers": [
+    { "provider": "local", "model": "qwen3.6:27b" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_p2b_qwen"
+}

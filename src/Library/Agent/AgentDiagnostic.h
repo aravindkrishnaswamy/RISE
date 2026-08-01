@@ -70,6 +70,32 @@ namespace RISE
 			//! A derive-time (apply) failure not reducible to one of the
 			//! above -- carried verbatim from DeriveToJob's diagnostics.
 			static const char* const DERIVE_ERROR      = "DERIVE_ERROR";
+			//! The text holds NO scene chunk at all -- empty, whitespace, or
+			//! comments only.  DeriveToJob has nothing to complain about in
+			//! such a text, so without this an empty candidate came back with
+			//! an EMPTY diagnostics array: a CLEAN verdict on a non-document,
+			//! which reads to a model as "the scene I just wrote is fine".
+			static const char* const EMPTY_DOCUMENT    = "EMPTY_DOCUMENT";
+			//! Creative-richness P2.b (docs/agentic-redesign/73-creative-
+			//! richness-design.md sec 9): the scene has enough
+			//! standard_object chunks (>=3) to plausibly want a
+			//! spatially-varying physical-scalar parameter, but no
+			//! scalar_painter chunk exists anywhere in the document, so
+			//! every physical-scalar slot that DOES exist is necessarily a
+			//! flat constant.  Severity::Info -- ADVISORY, not a
+			//! correctness problem; the message self-disarms for a
+			//! deliberately flat/simple scene.  Fire condition is computed
+			//! ONCE, shared with the render-result "DESIGN NOTE" (see
+			//! AgentSession.cpp's ComputeDesignNoteConditionsFromDoc_).
+			static const char* const DESIGN_SCALAR_PIPE_UNUSED    = "DESIGN_SCALAR_PIPE_UNUSED";
+			//! Creative-richness P2.b: the scene has enough standard_object
+			//! chunks (>=4) to plausibly want an advanced geometry form,
+			//! but no sdf_geometry / sweep_geometry / displaced_geometry
+			//! chunk exists anywhere in the document.  Severity::Info --
+			//! same advisory/self-disarming convention as
+			//! DESIGN_SCALAR_PIPE_UNUSED, and the same shared fire
+			//! condition.
+			static const char* const DESIGN_NO_ADVANCED_GEOMETRY  = "DESIGN_NO_ADVANCED_GEOMETRY";
 		}
 	}
 }

@@ -129,9 +129,36 @@
 >   race that adding the first cross-thread reader would otherwise have introduced (red-proven:
 >   removing it → reliable UAF crash under a 3-reader × live-refinement hammer). Honest
 >   availability contract: `{available:false, reason:"no_controller"|"no_frame_yet"}` as a
->   structured success — deliberately NOT read_image's silent-empty-image shape. On the MCP
+>   structured success — deliberately NOT read_image's silent-empty-image shape. (Round-8 fix:
+>   the parked frame-copy can also be REFUSED by the controller, and those refusals used to be
+>   reported as a single hard-coded `"editor_transaction_in_progress"` regardless of cause. They
+>   now report the actual gate — `"editor_transaction_in_progress"` / `"render_in_progress"` /
+>   `"editor_shutting_down"`. Round-10 fix: two more, because folding them into the first was
+>   the same misattribution one level down —
+>   `"editor_interaction_finalize_failed"` (retriable) and
+>   `"editor_interaction_unrecoverable"` (the controller's sticky interaction-persistence
+>   failure: PERMANENT, never clears, and `render` is refused by the same gate, so neither
+>   retrying nor falling back helps). Seven reasons total — three RETRIABLE
+>   (`"editor_transaction_in_progress"`, `"render_in_progress"`,
+>   `"editor_interaction_finalize_failed"`), one that resolves on its own but not because you
+>   retried (`"no_frame_yet"`), three PERMANENT (`"no_controller"`, `"editor_shutting_down"`,
+>   `"editor_interaction_unrecoverable"`). See `AgentSession::ReadViewport`'s
+>   doc, which is the authority on the list, on which are retriable, and on when a `render`
+>   fallback actually helps — round-12 correction: it is NOT a blanket "`render` is refused
+>   too"; round-14 correction: nor is it "a plain `render {}` succeeds". For
+>   `"render_in_progress"` a plain `render {}` queues on the agent-render slot and waits up to
+>   30 s: it succeeds only if the occupant finishes inside that window, and is refused if the
+>   occupant outlives it (`SubmitProductionRenderSync` forwards onto the same single slot, so
+>   the user's own production render is the common occupant and routinely exceeds 30 s) or if a
+>   DIRECT PARKED render holds the admission gate without occupying the slot (no wait at all —
+>   `SubmitAgentRenderAsync_Locked` refuses immediately). A render carrying a film
+>   (`width`+`height`) or camera/`view` override always takes the parked path and is refused.
+>   The guidance the model-facing surfaces carry: retry the FREE `read_viewport` rather than
+>   paying that 30 s block, and when the occupant is the user's production render, wait for it
+>   instead of retrying.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
->   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
+>   posture; deliberately NOT in the chat panel's curated tool list (AgentChatCodecs.cpp's
+>   `kToolDefs` — no count restated here; every restated one in this family went stale). Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.
 > - **S2 `quality:"draft"` — SHIPPED (2026-07-09).** The render verb's optional quality param:
 >   draft renders run on a fresh, per-call interactive-preview pipeline invoked directly against
@@ -634,6 +661,31 @@ longer equal to requested until the arbiter re-renders.
 | Tool | Contract |
 |---|---|
 | `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseHeadVersion, patch }` (validate a patch applied to the current CST head). Runs **exactly the bounded synchronous semantic phase** — lex → parse → CST → bind-to-descriptor → **reference resolution (traced `ReferenceUse`)** → type/pipe/typecheck (D39) — and returns a structured `ValidationReport` (§2.5). It is **not** a full async derive: no realization/tessellation, no asset I/O beyond identity, no TLAS, no prepare, no render. **No side effects.** |
+
+**SHIPPED SHAPE (2026-07-27).** The implemented verb takes `{ text?: string }`: `text` is now
+**OPTIONAL**, and omitting it validates the **currently retained head**, additionally returning the
+`headVersion` that was checked. `node_text` and `{ baseHeadVersion, patch }` remain unbuilt. The
+no-argument form exists because requiring `text` made the model re-emit the whole scene to check its
+own three-parameter patch. Measured (trajectory `20260727T063526Z-a7ee472c`): three `propose_patch`
+calls of 183/184/184 request bytes, then a `validate` whose `text` argument was 19,828 bytes — the
+whole head, already in memory — on a turn costing 6,369 output tokens and 27.8 s. Both forms run the same `AgentSession::ValidateText`, so they agree
+diagnostic for diagnostic on identical bytes; the result's `validated` field (`"head"` / `"text"`)
+says which was checked, so a malformed-argument call that degrades to the head form can never be
+misread as a clean verdict on the candidate it meant to send. With no head loaded the `text` form
+still works (it is stateless, as below) while the no-argument form returns `-32602` rather than a
+false "clean" answer about a document that does not exist. Form selection is by **presence**: an
+omitted or explicitly-null `text` selects the head, and *any* string — including `""` — selects the
+text form. A content-free candidate (empty, whitespace-only, comments-only) comes back with an
+`EMPTY_DOCUMENT` error diagnostic from `ValidateText` itself, so the honesty lives in the validator
+rather than in a routing special case that silently checked something the caller did not ask about.
+
+The head form binds its diagnostics to its `headVersion` **atomically**, through one lock on the
+attached `SceneEditController` (`ReadAgentSceneSnapshot`), as does `read_document`. The GUI's hosted
+MCP server runs its own `AgentSession` over the same `Job` on a background thread, so reading
+"has a document", "the bytes" and "the version" separately let a main-thread commit land between
+them and pair one revision's byte offsets with another revision's stamp. Headless sessions (no
+controller attached) keep the direct unlocked reads: with no controller there is no render thread and
+no second writer, and the dispatcher is single-caller by contract.
 
 `validate` is what makes the agent **self-correcting** — it is the `tsc`/`cargo check`/`pytest` of
 RISE. **It is the bounded synchronous semantic phase (D39)** — the same code that runs as the *front*

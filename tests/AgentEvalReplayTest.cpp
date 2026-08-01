@@ -73,6 +73,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+// Per-process scratch directory -- see ScratchRunDir below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid(), fork(), pipe()
+	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -87,17 +95,72 @@ static void Check( bool c, const std::string& w )
 //----------------------------------------------------------------------
 // Small helpers: a fresh scratch runDir, and JSONL file readback.
 //----------------------------------------------------------------------
-static std::string ScratchRunDir( const char* leaf )
+// Per-process scratch root -- same rationale and convention as
+// AgentEvalCheckTest.cpp's ScratchTestRoot()/ScratchRunDir(): a FIXED root
+// means two concurrent copies of this binary (stray earlier run, manual
+// run alongside the suite, a repeat-run flake-chase loop) clobber each
+// other's fixtures/results via the remove_all() below, surfacing as a
+// bogus flaky failure.  The pid suffix makes the tree unique per process;
+// ScratchTestRoot() lets main() remove the WHOLE tree on exit.
+static std::string ScratchTestRoot()
 {
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_replay_test/";
-	dir += leaf;
+	dir += "rise_agent_eval_replay_test_";
+	dir += std::to_string( (long)getpid() );
+	return dir;
+}
+
+static std::string ScratchRunDir( const char* leaf )
+{
+	std::string dir = ScratchTestRoot() + "/" + leaf;
 	std::error_code ec;
 	std::filesystem::remove_all( dir, ec );   // start clean each run
 	return dir;
+}
+
+//----------------------------------------------------------------------
+// Collision-hazard proof: two processes calling ScratchTestRoot() must
+// get DISTINCT trees.  See AgentEvalCheckTest.cpp's twin of this test for
+// the full rationale; POSIX-only (no fork() on Windows).
+//----------------------------------------------------------------------
+static void TestScratchRootDiffersAcrossProcesses()
+{
+#ifndef _WIN32
+	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
+	int fds[2];
+	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
+	const pid_t child = fork();
+	if( child < 0 ) {
+		Check( false, "collision check: fork() succeeded" );
+		close( fds[0] ); close( fds[1] );
+		return;
+	}
+	if( child == 0 ) {
+		close( fds[0] );
+		const std::string childRoot = ScratchTestRoot();
+		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
+		(void)w;
+		close( fds[1] );
+		_exit( 0 );
+	}
+	close( fds[1] );
+	std::string childRoot;
+	char buf[4096]; ssize_t n;
+	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
+	close( fds[0] );
+	int status = 0;
+	waitpid( child, &status, 0 );
+
+	const std::string parentRoot = ScratchTestRoot();
+	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
+	Check( childRoot != parentRoot,
+		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
+#else
+	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
+#endif
 }
 
 static std::vector<JsonValue> ReadJsonl( const std::string& path )
@@ -1284,6 +1347,7 @@ int main()
 {
 	std::printf( "=== AgentEvalReplayTest (Eval-harness slice E2: replay backend + scenario runner) ===\n" );
 
+	TestScratchRootDiffersAcrossProcesses();
 	TestLoadSeedScenarios();
 	TestLoadScenarioGates();
 	TestReplaySourceLoad();
@@ -1298,5 +1362,12 @@ int main()
 	TestAskUserParallelWithDispatchedTool();
 
 	std::printf( "=== AgentEvalReplayTest: %d passed, %d failed ===\n", g_pass, g_fail );
+
+	// Leave TMPDIR clean: remove this process's entire scratch tree.
+	{
+		std::error_code ec;
+		std::filesystem::remove_all( ScratchTestRoot(), ec );
+	}
+
 	return g_fail == 0 ? 0 : 1;
 }

@@ -1,5 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
+//  NOTE 2026-07-30: -ffast-math folding remarks below are historical (macOS
+//  pairs -fno-finite-math-only since 2026-07-29).  See CLAUDE.md.
+//
 //  AgentFirstSliceTest.cpp - Facet 5 (agentic surface) slice 0c: the
 //    CAPSTONE end-to-end test.
 //
@@ -37,6 +40,7 @@
 //  Self-contained: an inline native-v7 scene (reused from slice 0b), OIDN
 //  off, no RISE_MEDIA_PATH.
 //
+//
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
@@ -59,6 +63,13 @@
 #include <fstream>
 #include <memory>
 #include <string>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 #include <vector>
 
 using namespace RISE;
@@ -168,7 +179,22 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
@@ -661,8 +687,11 @@ int main()
 		Check( env.get( "id" ).isNull(), "malformed line -> id is null (un-attributable)" );
 	}
 	{
-		// Missing required param (validate needs 'text') -> -32602.
-		const std::string resp = rpc.HandleLine( Req( 13, "validate", JsonValue::MakeObject() ) );
+		// Missing required param -> -32602.  The exemplar is insert_chunk
+		// ('chunkText'); it was `validate` with no params until FIX 4 made
+		// that verb's every parameter optional -- empty params is now its
+		// legal current-scene form, covered in AgentReadValidateTest.
+		const std::string resp = rpc.HandleLine( Req( 13, "insert_chunk", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 13 );
 		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
 		       "missing required param -> error.code == -32602" );

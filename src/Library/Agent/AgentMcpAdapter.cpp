@@ -123,9 +123,12 @@ namespace RISE
 				return o;
 			}
 
-			//! The `baseHeadVersion` object shared by propose_patch /
-			//! insert_chunk / remove_chunk -- optional optimistic-concurrency
-			//! precondition, {uuid,revision} both numeric.
+			//! The `baseHeadVersion` object shared by all 5 mutating tools
+			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
+			//! remove_chunk) -- optional optimistic-concurrency precondition,
+			//! {uuid,revision} both numeric.  The BATCH forms take it too:
+			//! the precondition is on the HEAD the batch starts from, not on
+			//! any one element.
 			JsonValue BaseHeadVersionSchema()
 			{
 				JsonValue props = JsonValue::MakeObject();
@@ -205,9 +208,10 @@ namespace RISE
 				return tool;
 			}
 
-			//! Secure-MCP slice 2: the mutating-verb refusal note prepended
-			//! to propose_patch/insert_chunk/remove_chunk's descriptions
-			//! under AgentAutonomy::Read.  DECIDED: annotate, don't hide --
+			//! Secure-MCP slice 2: the refusal note prepended to all 5
+			//! mutating tools' (propose_patch/propose_patches/insert_chunk/
+			//! insert_chunks/remove_chunk) descriptions under
+			//! AgentAutonomy::Read.  DECIDED: annotate, don't hide --
 			//! the tool stays fully visible (real inputSchema, callable
 			//! shape) so a client can still explain to its user what the
 			//! tool would do and why it is currently refused, rather than
@@ -218,8 +222,9 @@ namespace RISE
 				"--agent-autonomy=commit to enable it)] ";
 
 			//! Secure-MCP slice 5b fix round (P2-1): the sibling annotation for
-			//! propose_patch/insert_chunk/remove_chunk under
-			//! AgentAutonomy::Propose specifically.  Under Propose these three
+			//! the same 5 mutating tools (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) under
+			//! AgentAutonomy::Propose specifically.  Under Propose those
 			//! tools REACH the session (unlike Read, where kAutonomyReadNote's
 			//! tool is refused before dispatch) -- but for an External-
 			//! authority session with a live controller attached, the call
@@ -260,17 +265,17 @@ namespace RISE
 			//! width/height, camera vector shapes, the async-refused-headless
 			//! note, pinned semantics, samples clamp, the ODD/EVEN id-space
 			//! split, the baseHeadVersion conflict protocol, retriable).
-			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 5
 			//! mutating tools' descriptions are ANNOTATED (prefixed with
 			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
 			//! Secure-MCP slice 5b: resolve_proposal is annotated (with the
 			//! DISTINCT kResolveProposalOwnerOnlyNote) under BOTH Read and
 			//! Propose -- it is refused at the dispatcher under either posture
-			//! (see AgentRpc.h); the 3 mutating tools' kAutonomyReadNote
+			//! (see AgentRpc.h); the 5 mutating tools' kAutonomyReadNote
 			//! annotation, by contrast, applies ONLY under Read (Propose lets
 			//! them reach the session, which stages rather than refuses).
 			//! Secure-MCP slice 5b fix round (P2-1): under AgentAutonomy::
-			//! Propose, the SAME 3 mutating tools instead get the DISTINCT
+			//! Propose, the SAME 5 mutating tools instead get the DISTINCT
 			//! kAutonomyProposeNote -- they are not refused (readOnly is
 			//! false), but they no longer commit directly either, so leaving
 			//! their description bare (Commit-identical) would hide that from
@@ -296,19 +301,25 @@ namespace RISE
 					"optimistic-concurrency headVersion {uuid,revision}. Works with NO scene "
 					"loaded (hasDocument:false, headVersion {0,0}) -- an agent starting from "
 					"scratch calls this first. Pass the returned headVersion back as "
-					"baseHeadVersion on propose_patch/insert_chunk/remove_chunk to guard against "
-					"editing a stale head.",
+					"baseHeadVersion on any of the 5 mutating tools "
+					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk) "
+					"to guard against editing a stale head.",
 					ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
 
 				// read_schema
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "keyword", StringProp( "OPTIONAL chunk keyword (e.g. \"sphere_geometry\"). Omit for the schema of the WHOLE scene-file grammar." ) );
+					props.set( "keywords", StringArrayProp( "PREFERRED when you need more than one: an array of chunk keywords (at most 24, counting 'keyword' if you also send it) fetched in ONE call. 'schema' is then an ARRAY POSITIONALLY ALIGNED with this one -- schema[i] is keywords[i], never reordered, never collapsed -- and each entry also names its own 'keyword'. An unrecognized keyword occupies its own slot as {keyword, error}. Batch the chunk kinds you have DECIDED to use (typically 4-8); a full 24-entry batch runs roughly 30-45 KB depending on which kinds." ) );
+					props.set( "keyword", StringProp( "OPTIONAL single chunk keyword (e.g. \"sphere_geometry\"). Use 'keywords' instead when you want two or more." ) );
+					props.set( "category", StringProp( "OPTIONAL chunk category (e.g. \"material\", \"geometry\", \"painter\" -- the texture system -- \"light\", \"rasterizer\") to CHEAPLY list that category's keywords + one-line descriptions -- discovery only, no parameters. Follow it with ONE 'keywords' batch. Ignored when 'keyword' or 'keywords' is supplied." ) );
 					tools.push_back( MakeTool( "read_schema",
-						"Read the JSON Schema for one scene-file chunk keyword, or the whole "
-						"grammar when 'keyword' is omitted. STATELESS -- works with no scene loaded. "
-						"The descriptor registry IS the accepted-parameter set, so this schema can "
-						"never drift from what the parser actually accepts.",
+						"Read the JSON Schema for scene-file chunks. Pass 'keywords' (an array) to "
+						"fetch SEVERAL chunk schemas in one call -- the default way to prepare for "
+						"authoring, instead of a round-trip per chunk kind; 'keyword' for exactly "
+						"one; 'category' to cheaply discover which chunk kinds exist; all three "
+						"omitted for the WHOLE grammar (large). STATELESS -- works with no scene "
+						"loaded. The descriptor registry IS the accepted-parameter set, so this "
+						"schema can never drift from what the parser actually accepts.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -320,28 +331,40 @@ namespace RISE
 						"Progressive-disclosure scene-authoring skills. STATELESS, like read_schema "
 						"-- works with no scene loaded. Omit 'name' to list the index; pass a listed "
 						"name to fetch its markdown. An unrecognized or unsafe (path-traversal) name "
-						"is rejected.",
+						"is rejected. (The listing form is genuinely useful HERE: an external MCP "
+						"client has no RISE system prompt and so has no index until it asks. The "
+						"in-app chat transport is the opposite case -- it injects the index into its "
+						"prompt, and its own tool description says to skip the listing call.)",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
 				// validate
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "text", StringProp( "The CANDIDATE scene text to validate (a full .RISEscene document)." ) );
-					std::vector<std::string> required; required.push_back( "text" );
+					props.set( "text", StringProp( "OPTIONAL candidate scene text (a full .RISEscene document) to validate INSTEAD of the current scene. Omit it to validate the current scene -- do NOT re-send the document you just edited." ) );
 					tools.push_back( MakeTool( "validate",
-						"Validate a CANDIDATE scene text with NO side effects: parses it to a CST "
-						"and derives it into a throwaway scene, returning structured diagnostics "
-						"{severity,code,message,offset,length}. STATELESS -- works with no scene "
-						"loaded, so an agent can validate a from-scratch scene before any head "
-						"exists. An empty diagnostics array means no errors were found.",
-						ObjectProp( "", props, required ) ) );
+						"Validate a scene with NO side effects, returning structured diagnostics "
+						"{severity,code,message,offset,length}. Call it with NO ARGUMENTS to check "
+						"the CURRENT scene -- that is the normal way to verify your own edit, and "
+						"it also returns the headVersion it validated. Do NOT re-send the document "
+						"you just edited: the engine already has it, and echoing a whole scene back "
+						"costs thousands of output tokens for nothing. Pass 'text' only to check a "
+						"CANDIDATE document you have not applied (e.g. a from-scratch scene you are "
+						"composing); that form is STATELESS and works with no scene loaded, while "
+						"the no-argument form needs a loaded scene. An empty diagnostics array "
+						"means no SEMANTIC errors were found -- it does not check for the "
+						"'RISE ASCII SCENE 7' header a candidate still needs in order to load. "
+						"The result's 'validated' field ('head' or 'text') says which document "
+						"was actually checked. NOTE under a propose-only posture: an edit that "
+						"came back status='staged' is NOT in the head yet, so the no-argument "
+						"form will not see it.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
 				// propose_patch
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "target", StringProp( "The entity NAME to edit (a chunk's `name` param); an unnamed camera resolves positionally if it is the sole one." ) );
+					props.set( "target", StringProp( "The entity NAME to edit (a chunk's `name` param). For a chunk with NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead (the kind-addressed singleton form). Passing the chunk KEYWORD here as if it were a name (e.g. \"pinhole_camera\") does not resolve and is rejected." ) );
 					props.set( "kind",   StringProp( "OPTIONAL entity KIND keyword (e.g. \"material\", \"sphere_geometry\", \"camera\") to disambiguate a cross-category name clash." ) );
 					props.set( "param",  StringProp( "The parameter role to set (e.g. \"radius\", \"reflectance\", \"location\")." ) );
 					props.set( "value",  StringProp( "The new value, as a string (parsed per the parameter's declared kind by the derive layer)." ) );
@@ -536,12 +559,18 @@ namespace RISE
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					props.set( "perception", BoolProp(
 						"OPTIONAL, default true. For a production beauty render, captures albedo, world-space normal, and primary-camera-hit depth in the SAME render without changing beauty pixels. Then call read_image with representation:\"perception\" for one 2x2 atlas plus structured depth/memory metadata. Set false to avoid perception-specific allocation when beauty alone is sufficient; an OIDN-enabled render can still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes." ) );
+					props.set( "imageMaxEdge", NumberProp(
+						"OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Supply it to get the rendered PNG back INLINE in this result (png_base64/byteLength/imageWidth/imageHeight), downscaled to that bound -- one call instead of render followed by read_image. The bytes are produced by the SAME downscale+encode read_image uses, so they are exactly what read_image with that maxEdge would have returned. ~192 is enough for a modeling/placement check; omit the whole parameter to get today's lean statistics-only result and no image. REFUSED with mode:\"objectmap\" (an objectmap must be read at NATIVE size -- render without this parameter, then read_image with no maxEdge). Use read_image separately when you want a SECOND bound on a render you already have, or representation:\"perception\"." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
-						"per-object `legend` when mode:\"objectmap\"). Does NOT "
-						"return image bytes -- call read_image afterward for the rendered PNG. "
+						"per-object `legend` when mode:\"objectmap\"). Returns NO image bytes by "
+						"default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back inline "
+						"in this same result, which is the one-call form to prefer for an ordinary "
+						"look. A separate read_image is still the way to re-read a render you already "
+						"have at a different bound, to read an objectmap at native size, and to fetch "
+						"representation:\"perception\". "
 						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
 						"\"pathtracing_pel_rasterizer\"), empty when none is active -- useful to "
 						"confirm which integrator an insert_chunk activated; it does NOT change with "
@@ -559,13 +588,18 @@ namespace RISE
 						"scene lighting to evaluate) but its pixels tell you NOTHING about materials, "
 						"lighting, exposure, or colour; reserve quality:\"production\" (the default) "
 						"for any check of those. "
-						"NOTE: this adapter's headless `rise --agent-stdio --mcp` process has no "
-						"live in-app controller, so the async submission mode that the underlying "
-						"RPC surface supports (`{\"async\":true}`) is NOT exposed as an option here "
-						"-- every render through this tool is fully synchronous and blocks until "
-						"complete; there is no async/pinned-supersession semantics reachable from "
-						"this headless transport beyond the advisory `pinned` flag above (which is "
-						"a no-op without a controller).",
+						"NOTE: the async submission mode the underlying RPC surface supports "
+						"(`{\"async\":true}`) is NOT exposed as an option here -- every render "
+						"through this tool is fully synchronous and blocks until complete. "
+						"Whether `pinned` and the single-slot/30s-fairness semantics "
+						"are LIVE depends on the transport, not on this tool. Over the headless "
+						"`rise --agent-stdio --mcp` process there is no in-app controller, so "
+						"`pinned` is a no-op and there is no slot to queue on; over the "
+						"GUI-HOSTED loopback endpoint the same `tools/list` payload is served by "
+						"an adapter whose session IS controller-attached, so `pinned` is honoured "
+						"and a render really can queue behind (or be refused by) another render "
+						"-- see read_viewport's `render_in_progress` note below for what that "
+						"means in practice.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -663,10 +697,46 @@ namespace RISE
 						"primary or pane 0), so always check it before reasoning about a specific "
 						"pane's content. The pane set is READ-ONLY by design -- there is no agent "
 						"control of layout or panes. When `available` is false there is no image: `reason` is "
-						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
-						"run) or \"no_frame_yet\" (the viewport exists but has not rendered a frame "
-						"yet). available:false is a normal result, not an error -- do not retry "
-						"blindly; a headless session will never have a viewport.",
+						"one of SEVEN values. RETRIABLE (they clear on their own -- one short retry is "
+						"reasonable): \"editor_transaction_in_progress\" (the user is mid-gesture or "
+						"saving), \"render_in_progress\" (another coordinated render holds the gate), "
+						"\"editor_interaction_finalize_failed\" (an open editor interaction could not be "
+						"finalized this time). RESOLVES ON ITS OWN, BUT NOT BECAUSE YOU RETRIED: "
+						"\"no_frame_yet\" (the viewport exists but has not rendered a frame yet -- it WILL "
+						"once the user's viewport draws, so a later read_viewport can succeed, but nothing "
+						"YOU do makes that happen sooner; use `render` in the meantime). PERMANENT "
+						"(retrying can never succeed): \"no_controller\" (this session has no live GUI "
+						"viewport -- e.g. a headless run -- and never will), \"editor_shutting_down\" (the "
+						"editor is tearing down and never comes back), \"editor_interaction_unrecoverable\" "
+						"(an editor interaction failed to persist and the editor LATCHED that failure -- it "
+						"does NOT clear on its own, so read_viewport AND render both stay refused until the "
+						"scene is reopened; tell the user rather than retrying). available:false is a "
+						"normal, structured result, not an error. FALLING BACK TO `render`: it is the right "
+						"move for \"no_controller\" and \"no_frame_yet\" -- there is no live viewport to "
+						"read, but rendering works. For \"editor_transaction_in_progress\", "
+						"\"editor_interaction_finalize_failed\", \"editor_shutting_down\" and "
+						"\"editor_interaction_unrecoverable\", `render` passes through the SAME "
+						"editor/admission gate that just refused read_viewport and is refused too. "
+						"\"render_in_progress\" is the ONE exception to the same-gate rule -- but `render` "
+						"is still a POOR fallback there. A PLAIN `render {}` -- no `width`+`height` pair, "
+						"no `camera`, no `view` -- does NOT take the parked path; it queues on the "
+						"agent-render slot and WAITS up to 30 s. It SUCCEEDS if the occupant finishes "
+						"inside that window, and is REFUSED if the occupant outlives it -- and the "
+						"commonest occupant is the USER'S OWN production render, which shares that single "
+						"slot and routinely runs longer than 30 s. It is also refused with NO wait at all "
+						"when a direct parked render holds the gate (that render owns the admission gate "
+						"without occupying the render slot, so the wait is satisfied instantly and the "
+						"admission check refuses on the spot). A render carrying a film override "
+						"(`width` AND `height`) or a camera/`view` override always takes the parked path "
+						"and is refused immediately. (`quality:\"draft\"` and `mode:` alone are NOT "
+						"overrides for this purpose -- only width+height or a camera/view change the "
+						"routing.) WHAT TO DO on \"render_in_progress\": read_viewport is FREE and becomes "
+						"available the instant the gate clears, so ONE short retry of read_viewport is the "
+						"cheap poll, not `render`. If a second read still reports it, a long render (most "
+						"likely the user's own) owns the gate -- tell the user and wait for it rather than "
+						"blocking 30 s on a render that will probably be refused anyway. Call a plain "
+						"`render {}` only when you genuinely need a NEW image rather than the viewport's, "
+						"and budget for that block.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -765,9 +835,13 @@ namespace RISE
 						"Approve or reject a staged proposal. OWNER-ONLY: this call is refused for any "
 						"session that is not the document owner, including a session resolving a "
 						"proposal it staged itself -- an external/proposing agent can list and poll "
-						"proposals but never approve or reject one. Returns {resolved,status,"
-						"headVersion,message}: resolved is true only when this session's authority "
-						"permitted the resolve to run at all; status is \"applied\"/\"rejected\"/"
+						"proposals but never approve or reject one. Returns {resolved,retriable,status,"
+						"headVersion,message}: resolved is true only when the resolve actually ran, "
+						"i.e. the proposal left the pending state; retriable (meaningful only when "
+						"resolved is false) is true when a TRANSIENT gate refused -- a render in "
+						"progress, or an open editor transaction/gesture -- in which case nothing was "
+						"applied and the proposal is STILL PENDING, so the same call works once that "
+						"clears; status is \"applied\"/\"rejected\"/"
 						"\"conflict\" on a real resolve (approve RE-CHECKS the proposal's staged "
 						"baseVersion against the current head -- a proposal staged against a head that "
 						"has since moved resolves to \"conflict\", not applied) and is empty when "

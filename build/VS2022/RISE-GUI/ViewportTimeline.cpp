@@ -214,15 +214,40 @@ void ViewportTimeline::restyleTheme()
     }
 }
 
-void ViewportTimeline::setRange(double minT, double maxT)
+void ViewportTimeline::setRange(double minT, double maxT, double canonicalTime)
 {
+    // Keep the user's Begin/Move/End composite intact.  Applying an
+    // out-of-range update now would call jumpToTime(), whose nested Begin
+    // deliberately replaces the open composite; hiding/rebuilding the
+    // pressed slider can likewise prevent sliderReleased from arriving.
+    if (m_scrubbing) {
+        m_pendingMinT = minT;
+        m_pendingMaxT = maxT;
+        m_pendingCanonicalTime = canonicalTime;
+        m_hasPendingRange = true;
+        return;
+    }
+
+    const bool rangeChanged = m_minT != minT || m_maxT != maxT;
+    const bool timeChanged = m_time != canonicalTime;
+    if (!rangeChanged && !timeChanged) return;
+    stopPlayback();
     m_minT = minT;
     m_maxT = maxT;
-    updateLabels();
+    const double clampedTime = std::clamp(canonicalTime, m_minT, m_maxT);
+    if (clampedTime != canonicalTime) {
+        jumpToTime(clampedTime);
+    } else {
+        // Undo/Redo can change canonical time without touching this widget;
+        // also reproject when only the range changed.
+        setTimeValue(canonicalTime);
+    }
 }
 
 void ViewportTimeline::setAnimationFrameCount(unsigned int numFrames)
 {
+    if (m_numFrames == numFrames) return;
+    stopPlayback();
     m_numFrames = numFrames;
 }
 
@@ -245,12 +270,17 @@ void ViewportTimeline::onSliderReleased()
         m_scrubbing = false;
         emit scrubEnd();
     }
+    applyPendingRange();
 }
 
 void ViewportTimeline::onSliderMoved(int sliderValue)
 {
     const double frac = sliderValue / static_cast<double>(m_slider->maximum());
     m_time = m_minT + frac * (m_maxT - m_minT);
+    // A movement after setRange deferred its snapshot is the newer
+    // canonical user intent; preserve it when that range is applied on
+    // release instead of snapping back to the poll's earlier time.
+    if (m_hasPendingRange) m_pendingCanonicalTime = m_time;
     updateLabels();
     emit timeChanged(m_time);
 }
@@ -357,6 +387,35 @@ void ViewportTimeline::stopPlayback()
     if (m_playing && m_playButton) {
         m_playButton->setChecked(false);
     }
+}
+
+void ViewportTimeline::finalizeOpenTimelineInteraction()
+{
+    stopPlayback();
+    // A hide/disable can prevent the physical mouse-release event.  Reset
+    // QAbstractSlider's own pressed state as well as our wrapper flag, or
+    // the next press after re-show may not emit sliderPressed.  Block the
+    // synthetic sliderReleased because we close the controller bracket once
+    // through m_scrubbing below.
+    if (m_slider && m_slider->isSliderDown()) {
+        QSignalBlocker blocker(m_slider);
+        m_slider->setSliderDown(false);
+    }
+    if (m_scrubbing) {
+        m_scrubbing = false;
+        emit scrubEnd();
+    }
+    m_hasPendingRange = false;
+}
+
+void ViewportTimeline::applyPendingRange()
+{
+    if (!m_hasPendingRange) return;
+    const double minT = m_pendingMinT;
+    const double maxT = m_pendingMaxT;
+    const double canonicalTime = m_pendingCanonicalTime;
+    m_hasPendingRange = false;
+    setRange(minT, maxT, canonicalTime);
 }
 
 void ViewportTimeline::jumpToTime(double t)

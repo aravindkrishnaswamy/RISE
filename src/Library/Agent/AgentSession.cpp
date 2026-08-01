@@ -24,6 +24,9 @@
 //                                                     parameter NAME is written to
 //                                                     the LOG, not the diag string)
 //     * other apply-time messages                    (kept as DERIVE_ERROR)
+//  ...and it reports NOTHING AT ALL for a text that declares no chunks, so
+//  ValidateText screens that case itself first (EMPTY_DOCUMENT) rather than
+//  letting an empty / whitespace / comments-only text come back clean.
 //  So for the "invalid parameter(s)" case we RE-DERIVE the classification
 //  ourselves against the live descriptor: for the named chunk we walk its
 //  Param nodes and find the first param whose name is not declared on the
@@ -327,7 +330,7 @@ namespace RISE
 						for( const std::string& v : values ) {
 							// This diagnostic consumes already-tokenised numeric
 							// text, so materialise the parsed value before its
-							// finiteness test; -ffast-math can fold ordinary FP
+							// finiteness test; bare -ffast-math could fold ordinary FP (fixed 2026-07-29)
 							// classification predicates away.
 							const double dv = std::strtod( v.c_str(), nullptr );
 							if( !LooksNumeric( v ) || !RISE::IsFiniteDouble( dv ) ) { bad = true; break; }
@@ -490,11 +493,6 @@ namespace RISE
 			if( name.empty() ) {
 				bool rootFound = false;
 				const std::vector<std::string> names = ListSkillNames( root, &rootFound );
-				// An empty index is AMBIGUOUS without this: distinguish a
-				// missing skills root (miswired install / wrong cwd) from a
-				// present-but-empty directory (legitimately no skills).
-				if( !rootFound )
-					r.note = "skills root not found at '" + root + "' (set RISE_SKILLS_PATH or run from the repo root)";
 				for( std::size_t i = 0; i < names.size(); ++i ) {
 					std::string text;
 					if( !ReadFileText( root + names[i] + ".md", text ) ) continue;
@@ -503,6 +501,25 @@ namespace RISE
 					ParseSkillHeader( text, e.title, e.hook );
 					if( e.title.empty() ) e.title = e.name;   // lenient: never a blank index row
 					r.index.push_back( e );
+				}
+				// AN EMPTY INDEX IS NEVER SILENT.  A zero-skill result used
+				// to be indistinguishable from a healthy one at every layer
+				// (bare empty list here, no skills section in the system
+				// prompt), so a miswired skills root degraded the agent with
+				// no signal to anyone.  Say plainly that no skills are
+				// available, that it is abnormal, and which root was tried.
+				// The two causes stay distinguishable: a MISSING root
+				// (miswired install / wrong cwd) vs a present-but-empty one.
+				if( r.index.empty() ) {
+					r.note = std::string( "NO SKILLS ARE AVAILABLE. RISE ships scene-authoring "
+					                      "skills, so an empty index means this installation is "
+					                      "miswired, not that there is nothing to read: " ) +
+					         ( rootFound
+					           ? "the skills root '" + root + "' exists but holds no readable *.md skill."
+					           : "the skills root '" + root + "' does not exist." ) +
+					         " Tell the user their RISE install cannot find its agent skills "
+					         "(RISE_SKILLS_PATH overrides the location), and continue WITHOUT "
+					         "skill guidance -- do not keep re-listing.";
 				}
 				r.ok = true;
 				return r;
@@ -544,8 +561,77 @@ namespace RISE
 			return r;
 		}
 
-		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority )
-			: mJob( job ), mOwnsJob( owns ), mAuthority( authority )
+		//==============================================================
+		// AgentImageCache -- the last-render frame, optionally shared by a
+		// group of sessions.  Every method is a single leaf critical
+		// section; see the header for the sharing contract.
+		//==============================================================
+
+		AgentImageCache::~AgentImageCache()
+		{
+			// No lock: a destructor runs when the LAST shared_ptr owner is
+			// gone, so by definition nobody can still be calling in.  The
+			// sink may outlive this release -- a reader that leased it holds
+			// its own reference (AgentSession's lease bookkeeping addrefs
+			// before dropping the lock), so this only drops OUR reference.
+			safe_release( mSink );
+			mSink = nullptr;
+		}
+
+		void AgentImageCache::Store( std::vector<unsigned char> png,
+		                             InMemoryRasterizerOutput* sink )
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mPng.swap( png );
+			// Self-store must not release the reference it is about to keep.
+			if( mSink != sink ) safe_release( mSink );
+			mSink = sink;
+		}
+
+		std::vector<unsigned char> AgentImageCache::Png() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mPng;
+		}
+
+		std::vector<unsigned char> AgentImageCache::PngWithDims( unsigned int& outWidth,
+		                                                         unsigned int& outHeight ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			outWidth = 0;
+			outHeight = 0;
+			if( mSink ) {
+				outWidth  = mSink->Width();
+				outHeight = mSink->Height();
+			}
+			return mPng;
+		}
+
+		InMemoryRasterizerOutput* AgentImageCache::AcquireSink() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mSink ) mSink->addref();
+			return mSink;
+		}
+
+		void AgentImageCache::Take( std::vector<unsigned char>& outPng,
+		                            InMemoryRasterizerOutput*& outSink )
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			outPng.swap( mPng );
+			mPng.clear();
+			outSink = mSink;
+			mSink = nullptr;   // reference handed to the caller, not released
+		}
+
+		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority,
+		                            std::shared_ptr<AgentImageCache> sharedImageCache )
+			: mJob( job ), mOwnsJob( owns ), mAuthority( authority ),
+			  // No handle => a PRIVATE cache.  Isolation is the default; see
+			  // AgentImageCache's doc for why that matters (the hosted
+			  // loopback server's External session relies on it).
+			  mImageCache( sharedImageCache ? sharedImageCache
+			                                : std::make_shared<AgentImageCache>() )
 		{
 		}
 
@@ -558,10 +644,25 @@ namespace RISE
 				const std::uint64_t room = std::numeric_limits<std::uint64_t>::max() - total;
 				total += bytes <= room ? bytes : room;
 			};
-			add( mLastSink );
+			// The cached sink now lives in the (possibly SHARED) cache.
+			// AcquireSink takes the cache's leaf lock while we hold
+			// mAsyncCacheMutex -- the documented outer->inner order -- and
+			// hands back a reference, so the sink cannot be replaced out from
+			// under GetPerceptionInfo().
+			InMemoryRasterizerOutput* cached = mImageCache->AcquireSink();
+			add( cached );
 			for( const auto& lease : mActiveSinkReadLeases ) {
-				if( lease.first != mLastSink ) add( lease.first );
+				if( lease.first != cached ) add( lease.first );
 			}
+			safe_release( cached );
+			// SHARED-CACHE HONESTY: `mActiveSinkReadLeases` is this session's
+			// leases only, so with a shared cache a SIBLING session's lease on
+			// a SUPERSEDED sink is not counted here.  That under-reports a
+			// peak-bytes DIAGNOSTIC by the size of that sidecar; it cannot
+			// affect correctness or lifetime (the sibling holds its own
+			// reference).  Counting it would mean the cache tracking every
+			// session's leases, i.e. exactly the per-session lifetime coupling
+			// mImageCache's doc says must not be shared.
 			return total;
 		}
 
@@ -612,17 +713,22 @@ namespace RISE
 			// of that worker lifetime and are closed/drained below.
 			DrainAsyncRender_();
 
-			// Fix-round-1 P1-A: take mAsyncCacheMutex for the sink release
-			// -- mLastSink is the SAME field the (now-drained, but let's be
-			// precise about what "drained" guarantees) worker thread writes
-			// under this lock at the tail of a successful async render (see
-			// RenderCore_'s cache-population tail).  DrainAsyncRender_
-			// above already guarantees no worker call into THIS object is
-			// still in flight, so this lock is technically uncontended by
-			// the time we get here -- but taking it anyway costs nothing
-			// and removes any doubt for a future maintainer who changes the
-			// drain's bound (e.g. a shorter timeout) without re-deriving
-			// this invariant from scratch.
+			// Close ReadImage/ReadPerception admission, then wait for every
+			// call that entered before teardown -- unchanged by the cache
+			// move, and deliberately so: this protocol is about "is a call
+			// still in flight ON THIS OBJECT", which is per-session no matter
+			// where the pixels live.  A sibling session's readers are none of
+			// our business and must not hold this destructor up.
+			//
+			// WHAT THE CACHE MOVE DID CHANGE: this used to end by releasing
+			// mLastSink.  It no longer may -- the frame belongs to
+			// mImageCache, which a sibling session may still be sharing.  The
+			// handle is released with the rest of the members after this
+			// body, and the LAST session out runs ~AgentImageCache, which
+			// releases the sink exactly once.  A sink still leased by one of
+			// OUR readers is safe either way: the lease holds its own
+			// reference, and we do not get past the wait below until that
+			// lease is gone anyway.
 			std::function<void()> shutdownWaitHook;
 			{
 				std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
@@ -647,8 +753,6 @@ namespace RISE
 						return mSinkReadEntrants.load( std::memory_order_acquire ) == 0 &&
 						       mActiveSinkReadLeases.empty();
 					} );
-				safe_release( mLastSink );
-				mLastSink = nullptr;
 			}
 			if( mOwnsJob && mJob ) mJob->release();
 			mJob = nullptr;
@@ -745,13 +849,19 @@ namespace RISE
 				job->release();
 				return nullptr;
 			}
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/true, authority ) );
+			// A LoadFromFile session owns its Job outright, so there is
+			// nobody to share a last-render cache WITH -- always private.
+			return std::unique_ptr<AgentSession>(
+				new AgentSession( job, /*owns=*/true, authority,
+				                  std::shared_ptr<AgentImageCache>() ) );
 		}
 
-		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job, AgentAuthority authority )
+		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job, AgentAuthority authority,
+		                                                     std::shared_ptr<AgentImageCache> sharedImageCache )
 		{
 			if( !job ) return nullptr;
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false, authority ) );
+			return std::unique_ptr<AgentSession>(
+				new AgentSession( job, /*owns=*/false, authority, sharedImageCache ) );
 		}
 
 		void AgentSession::AttachController( SceneEditController* controller )
@@ -790,6 +900,47 @@ namespace RISE
 			return RISE::Cst::SerializeCst( *doc );
 		}
 
+		AgentSession::AgentDocumentSnapshot AgentSession::ReadDocumentSnapshot() const
+		{
+			AgentDocumentSnapshot snap;
+			if( mController ) {
+				mController->ReadAgentSceneSnapshot( snap.hasDocument, snap.document,
+				                                     snap.headVersion );
+				return snap;
+			}
+			// Headless: no controller means no render thread and no second
+			// writer -- see the header for why these unlocked reads are the
+			// correct answer here rather than a fallback.
+			snap.hasDocument = HasDocument();
+			snap.document    = ReadDocument();
+			snap.headVersion = HeadVersion();
+			return snap;
+		}
+
+		RISE::Cst::CstHeadVersion AgentSession::ReadHeadVersion() const
+		{
+			return mController ? mController->ReadAgentHeadVersion() : HeadVersion();
+		}
+
+		bool AgentSession::IsAnalysableRejection_( const AgentPatchResult& r )
+		{
+			return !r.applied && r.rawCode == 0 && !r.retriable && r.headVersion.uuid != 0;
+		}
+
+		bool AgentSession::IsAnalysableRejection_( const AgentChunkResult& r )
+		{
+			return !r.applied && r.rawCode == 0 && !r.retriable && r.headVersion.uuid != 0;
+		}
+
+		bool AgentSession::ReadHeadDocumentAt_( const RISE::Cst::CstHeadVersion& stamped,
+		                                       RISE::Cst::Document& outDoc ) const
+		{
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument || snap.headVersion != stamped ) return false;
+			outDoc = RISE::Cst::ParseToCst( snap.document );
+			return true;
+		}
+
 		std::string AgentSession::ReadSchema( const std::string& keyword ) const
 		{
 			if( keyword.empty() ) return SchemaGenAll();
@@ -802,6 +953,21 @@ namespace RISE
 			// member state, so the transport can validate a candidate with no
 			// head loaded (no-head bootstrap) via ValidateText directly.
 			return ValidateText( candidateText );
+		}
+
+		namespace
+		{
+			//! Forward declaration: AppendDesignDiagnostics_ is DEFINED further
+			//! down this file (alongside ComputeDesignNoteConditionsFromDoc_ and
+			//! ComputeDesignNoteFromDoc_ -- creative-richness P2.b,
+			//! 73-creative-richness-design.md sec 9), but ValidateText (right
+			//! below) needs to call it before that definition appears in file
+			//! order.  Every `namespace { ... }` block at this scope in this
+			//! translation unit reopens the SAME compiler-unique anonymous
+			//! namespace (see AttachParamEditRejectionIssues's forward
+			//! declaration further down for the identical pattern), so this and
+			//! the later definition refer to the same symbol.
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out );
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -819,6 +985,32 @@ namespace RISE
 				d.severity = AgentDiagnostic::Severity::Error;
 				d.code     = AgentDiagnosticCode::PARSE_ERROR;
 				d.message  = "candidate text did not round-trip through the CST parser (malformed structure)";
+				out.push_back( d );
+				return out;
+			}
+
+			// (a2) NO CHUNKS AT ALL -> EMPTY_DOCUMENT, before the derive.
+			// "", "   \n", and a comments-only text all parse and round-trip
+			// perfectly and derive with ZERO diagnostics, so the derive layer
+			// below would call them clean.  A text that declares no scene
+			// object is not a clean scene, and saying otherwise is exactly the
+			// dishonesty this surface refuses everywhere else.  Degenerate
+			// inputs are therefore ONE answer, not three: emptiness is judged
+			// on chunk COUNT, not on byte length.
+			bool anyChunk = false;
+			{
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( candidateDoc, items, starts );
+				for( std::size_t i = 0; i < items.size() && !anyChunk; ++i )
+					anyChunk = items[i] && items[i]->kind == NodeKind::Chunk;
+			}
+			if( !anyChunk ) {
+				AgentDiagnostic d;
+				d.severity = AgentDiagnostic::Severity::Error;
+				d.code     = AgentDiagnosticCode::EMPTY_DOCUMENT;
+				d.message  = "the text declares no scene chunks at all -- an empty or "
+				             "comments-only document is not a valid scene";
 				out.push_back( d );
 				return out;
 			}
@@ -928,7 +1120,267 @@ namespace RISE
 				out.push_back( d );
 			}
 
+			// (d) Creative-richness P2.b (73-creative-richness-design.md sec
+			// 9): the SAME two design-note conditions the render-result note
+			// computes (AppendDesignDiagnostics_ / ComputeDesignNoteFromDoc_
+			// share ONE conditions scan, ComputeDesignNoteConditionsFromDoc_,
+			// so the thresholds can never drift apart) -- surfaced here as
+			// Info-severity diagnostics, the exact list a model consults when
+			// it calls validate and reads "no errors" (sec 9's qwen
+			// transcript: "validated clean - no errors ... just a design
+			// suggestion").  validate-ONLY: the render-result note path is
+			// untouched (see 73-creative-richness-design.md sec 9's closing
+			// recommendation -- "keep the render-result note as-is").
+			// candidateDoc is ALREADY parsed above (step (a)), so this is a
+			// second scan of the same Document, not a re-parse.
+			AppendDesignDiagnostics_( candidateDoc, out );
+
 			return out;
+		}
+
+		namespace
+		{
+			//! Creative-richness P2 / P2.b (73-creative-richness-design.md sec
+			//! 2 P2, RE-TARGETED by sec 7 to the two MEASURED bare-prompt
+			//! deficits, DIAGNOSTIC-FRAMED by sec 9): the shared, engine-side
+			//! "design note conditions" scan CORE, over an ALREADY-PARSED
+			//! Document -- ONE function so its consumers (ComputeDesignNoteFromDoc_
+			//! below, feeding the render-result "DESIGN NOTE" string via
+			//! RenderCore_'s designNoteLocal AND the ComputeDesignNote text
+			//! wrapper; and AppendDesignDiagnostics_ below, feeding validate's
+			//! Info-severity diagnostics) can NEVER drift on the threshold
+			//! logic -- sec 9's P2.b directive is "do not duplicate", so this
+			//! is computed exactly ONCE per Document scan and both consumers
+			//! read the same struct.
+			//!
+			//! Walks the document's top-level chunks ONCE, counting:
+			//!   * `standard_object` chunks (the gate quantity for BOTH
+			//!     conditions below);
+			//!   * whether ANY `scalar_painter` chunk exists ANYWHERE in the
+			//!     document (existence, not reachability from an object -- the
+			//!     measured baseline failure was literally "no chunk of kind
+			//!     'scalar_painter' exists", so that is exactly what this
+			//!     checks);
+			//!   * whether ANY `sdf_geometry` / `sweep_geometry` /
+			//!     `displaced_geometry` chunk exists (same existence test, the
+			//!     second measured deficit);
+			//!   * a per-keyword census of every OTHER Geometry-category chunk
+			//!     (registry-resolved via DescriptorForKeyword, the same
+			//!     category lookup AgentEvalRunner.cpp's
+			//!     CheckerCollectKindFilterMatches uses) -- purely for the
+			//!     human-readable "k box_geometry, m sphere_geometry" clause;
+			//!     it plays no role in either fire condition.
+			//!
+			//! FIRE CONDITIONS (sec 7's re-target, both pure existence/count
+			//! checks -- deliberately no BuildReferenceGraph closure; a v1 that
+			//! needs one hasn't been justified by the baseline):
+			//!   A (scalar-pipe unused):  standardObjectCount >= 3 && !hasScalarPainter
+			//!   B (no advanced geometry): standardObjectCount >= 4 && !hasAdvancedGeometry
+			//! Neither condition looks at whether an object's MATERIAL actually
+			//! reaches the missing kind -- an object with no material bound at
+			//! all still counts toward the gate, matching the sec 7 text's
+			//! "walk doc.items roles" framing (a coarser, cheaper test than A1's
+			//! originally-approved reachability scan, superseded here).
+			struct DesignNoteConditions_
+			{
+				bool conditionA = false;   //!< scalar pipe unused
+				bool conditionB = false;   //!< no advanced geometry
+				int  standardObjectCount = 0;
+				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
+			};
+
+			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
+			{
+				DesignNoteConditions_ c;
+				bool hasScalarPainter    = false;
+				bool hasAdvancedGeometry = false;
+
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+					if( !id ) continue;
+					const NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					const std::string& role = item->role;
+
+					if( role == "standard_object" ) { ++c.standardObjectCount; continue; }
+					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
+					if( role == "sdf_geometry" || role == "sweep_geometry" || role == "displaced_geometry" ) {
+						hasAdvancedGeometry = true;
+						++c.geometryCensus[role];
+						continue;
+					}
+
+					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
+					if( !d ) continue;
+					if( d->category == ChunkCategory::Geometry ) ++c.geometryCensus[role];
+				}
+
+				c.conditionA = c.standardObjectCount >= 3 && !hasScalarPainter;
+				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
+				return c;
+			}
+
+			//! Shared formatter for condition B's "k box_geometry, m
+			//! sphere_geometry" clause -- factored out so the note builder and
+			//! the diagnostic builder render the SAME census string rather
+			//! than two independently-maintained loops.
+			std::string FormatGeometryCensus_( const std::map<std::string, int>& geometryCensus )
+			{
+				std::string census;
+				for( const auto& kv : geometryCensus ) {
+					if( !census.empty() ) census += ", ";
+					census += std::to_string( kv.second ) + " " + kv.first;
+				}
+				if( census.empty() ) census = "no geometry chunks bound";
+				return census;
+			}
+
+			//! RETURNS empty iff neither condition fires (the "omit the note
+			//! entirely when clean" convention -- see AgentSkillResult::note
+			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
+			//! mirrors).  When one or both fire, returns ONE combined
+			//! "DESIGN NOTE: ..." string carrying every firing clause plus the
+			//! anti-churn escape clause (load-bearing from day one, sec 2 P2 --
+			//! a loud signal with no escape clause just buys a different
+			//! wasted-turn loop).  RENDER-RESULT PATH ONLY as of sec 9's P2.b
+			//! (validate no longer attaches this string -- see
+			//! AppendDesignDiagnostics_ below, its validate-side sibling).
+			std::string ComputeDesignNoteFromDoc_( const Document& doc )
+			{
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				if( !c.conditionA && !c.conditionB ) return std::string();
+
+				std::string note = "DESIGN NOTE:";
+				if( c.conditionA ) {
+					// Review P1 fix: the ORIGINAL wording ("all N materials use
+					// constant roughness") is FALSE whenever the scene's
+					// materials don't even HAVE a roughness parameter
+					// (lambertian, perfect reflector/refractor, luminaire,
+					// SSS, ...) -- including both of this file's own test
+					// fixtures.  This wording claims only what is true
+					// regardless of material mix: the scalar pipe (a
+					// spatially-varying scalar_painter) is unused, so ANY
+					// physical-scalar parameter that DOES exist is
+					// necessarily a constant -- and names the material KINDS
+					// that actually carry a roughness slot, rather than
+					// implying every material in the scene has one.
+					// Round-3 review P1 fix named only ggx/ward here on the
+					// claim that pbr_metallic_roughness's `roughness` and
+					// cooktorrance's `facets` are baked ValueKind::Double.
+					// CORRECTION (2026-07-31, 74-creative-richness-arc-log.md
+					// sec 4.3 correction note): that claim is FALSE -- both
+					// are Reference-kind painter slots (since 64ca16bc,
+					// 2026-04-30) and the parser accepts a painter binding.
+					// The note text below therefore steers to the
+					// HIGHER-friction path and omits the cheapest true one
+					// (bind a painter to pbr `roughness` directly).  The text
+					// is deliberately left as shipped: it is measured-inert
+					// (0/24) and any wording change is a behavioural variable
+					// that belongs to a measured arc-75 phase, not a comment
+					// fix.
+					note += " the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
+						"so any physical-scalar material parameter (roughness, displacement) is a "
+						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
+						"surface, spatially-varying roughness via expression_function2d -> "
+						"scalar_painter -> alphax/alphay adds realism "
+						"(read_skill {\"name\":\"procedural-textures\"}).";
+				}
+				if( c.conditionB ) {
+					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
+						FormatGeometryCensus_( c.geometryCensus ) +
+						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
+						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+				}
+				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
+					"ignore this note and do not churn.";
+				return note;
+			}
+
+			//! validate's Info-severity sibling of ComputeDesignNoteFromDoc_
+			//! (creative-richness P2.b, 73-creative-richness-design.md sec 9's
+			//! closing recommendation): consumes the SAME
+			//! ComputeDesignNoteConditionsFromDoc_ scan -- never re-derives the
+			//! >=3 / >=4 threshold logic -- and appends ZERO, ONE, or TWO
+			//! AgentDiagnostic entries to `out`: condition A ->
+			//! DESIGN_SCALAR_PIPE_UNUSED, condition B ->
+			//! DESIGN_NO_ADVANCED_GEOMETRY.  Both severity Info (an ADVISORY,
+			//! not a correctness problem -- see AgentDiagnostic.h).
+			//!
+			//! Message text is the SAME material/parameter claim the note
+			//! clause carries (the clause substring is copied verbatim, not
+			//! reworded -- it survived two truth reviews), with the leading
+			//! space that glued it onto "DESIGN NOTE:" trimmed since this is
+			//! now a standalone message, plus a per-diagnostic self-disarm
+			//! suffix.  Sec 9's caveat is binding here: the diagnostics shape
+			//! has no escape-clause slot the way the note's trailing sentence
+			//! does, so a deliberately flat/simple scene would otherwise carry
+			//! what LOOKS like a permanent, unfixable problem -- the suffix on
+			//! EACH message is what keeps it advisory instead.
+			//!
+			//! Called ONLY from AgentSession::ValidateText -- the render-result
+			//! note path (ComputeDesignNoteFromDoc_'s OTHER two call sites, in
+			//! RenderCore_, plus the ComputeDesignNote text wrapper) is
+			//! untouched; see that function's doc for why validate no longer
+			//! calls it.
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
+			{
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
+				if( !c.conditionA && !c.conditionB ) return;
+
+				static const char* const kSelfDisarm =
+					" If flat/simple styling is intentional, this is fine -- ignore.";
+
+				if( c.conditionA ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_SCALAR_PIPE_UNUSED;
+					d.message  = "the scalar pipe is unused -- no scalar_painter chunk exists in this scene, "
+						"so any physical-scalar material parameter (roughness, displacement) is a "
+						"constant. Where a ggx_material (or ward_anisotropic_material) suits a "
+						"surface, spatially-varying roughness via expression_function2d -> "
+						"scalar_painter -> alphax/alphay adds realism "
+						"(read_skill {\"name\":\"procedural-textures\"}).";
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionB ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
+					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
+						FormatGeometryCensus_( c.geometryCensus ) +
+						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
+						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+			}
+		}
+
+		//! Thin, STATELESS wrapper (like ValidateText above) around
+		//! ComputeDesignNoteFromDoc_: parses `documentText` to its OWN
+		//! throwaway CST Document (never touches a session's retained one)
+		//! and runs the shared scan.  Used ONLY by the `validate` carrier
+		//! (AgentRpc.cpp, both its head-form and text-form branches, on the
+		//! retained-snapshot / candidate text they already have in hand).
+		//!
+		//! NEVER call this (or ReadDocumentSnapshot, or anything else that
+		//! re-enters the controller) from inside a RunPreviewRenderParked /
+		//! SubmitAgentRender* closure -- those already hold the
+		//! controller's non-recursive mMutex for the closure's whole
+		//! duration, and this wrapper's ParseToCst is also needless
+		//! SerializeCst+ParseToCst work when a live, already-parsed
+		//! Document is sitting right there.  RenderCore_'s render-result
+		//! carrier does NOT use this overload for exactly that reason: it
+		//! calls ComputeDesignNoteFromDoc_ directly on
+		//! `mJob->GetCstDocument()` from INSIDE doRenderWork's tail, while
+		//! still under the park -- see designNoteLocal's declaration and
+		//! its two call sites in RenderCore_.
+		std::string AgentSession::ComputeDesignNote( const std::string& documentText )
+		{
+			if( documentText.empty() ) return std::string();
+			return ComputeDesignNoteFromDoc_( RISE::Cst::ParseToCst( documentText ) );
 		}
 
 		namespace
@@ -1002,12 +1454,15 @@ namespace RISE
 					// enqueued (stagedHead was left untouched by
 					// StageProposal), so headVersion here reads the
 					// CURRENT head fresh, same as every other permanent
-					// reject in this function.
+					// reject in this function.  Via ReadHeadVersion, NOT
+					// the bare accessor: a controller IS attached on this
+					// branch, so an unlocked read of the 16-byte
+					// CstHeadVersion races that controller's writers.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "propose_patch refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -1064,8 +1519,15 @@ namespace RISE
 				// open-editor-transaction refusal is never second-guessed.  A
 				// rejection leaves the head UNCHANGED, so the retained Document is
 				// the correct namespace to resolve the target/reference against.
-				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachParamEditRejectionIssues( r, *mJob->GetCstDocument(),
+				// Through IsAnalysableRejection_ + ReadHeadDocumentAt_, not
+				// `rawCode == 0` + a bare GetCstDocument(): a controller is
+				// attached here, so the head must be read under its lock and
+				// must still BE the version this result stamps -- and the
+				// controller's pre-derive GATE refusals share the rawCode==0
+				// bucket while having no head to read (see both helpers).
+				RISE::Cst::Document headDoc;
+				if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachParamEditRejectionIssues( r, headDoc,
 					                                patch.target, patch.kind, patch.param, patch.value );
 				return r;
 			}
@@ -1080,12 +1542,31 @@ namespace RISE
 				r.message = "no retained CST Document -- ProposePatch needs a CST-loaded head";
 				return r;
 			}
-			if( patch.target.empty() || patch.param.empty() || patch.value.empty() ) {
+			// An EMPTY target with a NON-EMPTY kind is the KIND-ADDRESSED
+			// SINGLETON form -- the sole unnamed camera / film / rasterizer,
+			// resolved by Job::ApplyCstParamEditImpl_'s unique-in-kind
+			// fallback.  Only the BOTH-empty case is invalid.
+			//
+			// This guard used to reject every empty target, which put this
+			// direct/headless path out of step with the controller path
+			// (SceneEditController::ApplyAgentParamEdit already gates on
+			// "both empty" and documents the singleton form).  The divergence
+			// was invisible until a scene build tried to move a camera it had
+			// just created: with no name to address, the model guessed the
+			// chunk KEYWORD as the target, was rejected, and fell back to
+			// remove_chunk + insert_chunk -- three turns and two extra head
+			// revisions to set a location.
+			if( ( patch.target.empty() && patch.kind.empty() )
+			 || patch.param.empty() || patch.value.empty() ) {
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "rejected";
 				r.headVersion = mJob->GetCstHeadVersion();
-				r.message = "target, param, and value must all be non-empty";
+				r.message = patch.target.empty() && patch.kind.empty()
+					? "target and kind cannot BOTH be empty -- name the entity, or leave "
+					  "target empty and pass kind to address the sole unnamed chunk of "
+					  "that kind (camera / film / rasterizer)"
+					: "param and value must both be non-empty";
 				return r;
 			}
 
@@ -2257,12 +2738,13 @@ namespace RISE
 				if( id == 0 )
 				{
 					// Secure-MCP slice 6: see ProposePatch's identical
-					// queue-full branch for the full rationale.
+					// queue-full branch for the full rationale, including
+					// why the head-version read is controller-mediated.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "insert_chunk refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -2298,8 +2780,15 @@ namespace RISE
 				// Model-B: non-blocking dangling-reference WARNING (see
 				// AttachChunkIssueWarnings's doc) -- the controller commits through
 				// the SAME mJob, so its retained Document already reflects this insert.
-				if( r.applied && mJob && mJob->GetCstDocument() )
-					AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), chunkText );
+				// Through ReadHeadDocumentAt_ on BOTH arms: a controller is
+				// attached, so the head is read under its lock and only
+				// analysed while it still IS the version this result stamps.
+				// The reject arm additionally screens out the controller's
+				// pre-derive gate refusals (IsAnalysableRejection_).
+				RISE::Cst::Document headDoc;
+				if( r.applied && r.headVersion.uuid != 0
+				 && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachChunkIssueWarnings( r, headDoc, chunkText );
 				// ...and the REJECTION analyser on the failing side.  THIS is the
 				// GUI path -- the one where the unactionable "apply failed (e.g.
 				// unresolved reference); see log" was actually observed stalling a
@@ -2307,8 +2796,8 @@ namespace RISE
 				// as the headless path does.  A rejection leaves the head
 				// UNCHANGED, so the retained Document is the correct namespace to
 				// resolve the candidate chunk's references against.
-				else if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachRejectionIssues( r, *mJob->GetCstDocument(), chunkText );
+				else if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachRejectionIssues( r, headDoc, chunkText );
 				return r;
 			}
 
@@ -2442,12 +2931,13 @@ namespace RISE
 				if( id == 0 )
 				{
 					// Secure-MCP slice 6: see ProposePatch's identical
-					// queue-full branch for the full rationale.
+					// queue-full branch for the full rationale, including
+					// why the head-version read is controller-mediated.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "remove_chunk refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -2483,8 +2973,13 @@ namespace RISE
 				// LIVE branch (this IS the GUI path).  A rejection leaves the
 				// head UNCHANGED, so the retained Document is the correct
 				// namespace to resolve the target + its referrers against.
-				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachRemoveRejectionIssues( r, *mJob->GetCstDocument(), target, kind );
+				// Through IsAnalysableRejection_ + ReadHeadDocumentAt_ (see
+				// ProposePatch's LIVE branch): controller-mediated read, only
+				// on a real derive rejection, and only while the head still IS
+				// the version this result stamps.
+				RISE::Cst::Document headDoc;
+				if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachRemoveRejectionIssues( r, headDoc, target, kind );
 				return r;
 			}
 
@@ -2616,7 +3111,39 @@ namespace RISE
 			if( !found )
 			{
 				r.ok = false;
-				r.message = "resolve_proposal refused: no pending proposal with that id (unknown id, or it was already resolved)";
+				// `false` covers TWO cases (see SceneEditController::
+				// ResolveProposal's doc): the queue said no, or the
+				// render-admission gate refused before the queue was even
+				// consulted.  Only the first is a not-found.
+				if( cr.retriable )
+				{
+					r.retriable = true;
+					r.message = std::string( "resolve_proposal did not resolve: " )
+					          + cr.message.c_str()
+					          + " -- the proposal is STILL PENDING; resolve it again once the gate clears";
+				}
+				else
+				{
+					r.message = "resolve_proposal refused: no pending proposal with that id (unknown id, or it was already resolved)";
+				}
+				return r;
+			}
+
+			// The replay was TRANSIENTLY refused (an open editor transaction
+			// or gesture), so SceneEditController::ResolveProposal left the
+			// proposal PENDING -- see its TRANSIENT-REFUSAL EXCEPTION.  This
+			// is not a resolve: reporting ok=true with status="rejected"
+			// would put a still-approvable proposal on the wire as resolved.
+			// The predicate MIRRORS that method's status fold (applied ->
+			// conflict -> retriable) so the two cannot disagree about which
+			// outcome left the entry pending.
+			if( !cr.applied && std::string( cr.status.c_str() ) != "conflict" && cr.retriable )
+			{
+				r.ok = false;
+				r.retriable = true;
+				r.message = std::string( "resolve_proposal did not resolve: " )
+				          + cr.message.c_str()
+				          + " -- the proposal is STILL PENDING; resolve it again once the gate clears";
 				return r;
 			}
 
@@ -4106,6 +4633,17 @@ namespace RISE
 			// doRenderWork's production body, instead of re-dereferencing
 			// `rast` from the tail (see the `readBack` site below).
 			int productionSampleReadBack = -1;
+			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2 /
+			// sec 7 re-target; RELOCATED post-review from a post-park
+			// ReadDocumentSnapshot() re-lock -- see ComputeDesignNoteFromDoc_'s
+			// doc and this closure's own tail comments for the full
+			// rationale): the design-note text, computed INSIDE doRenderWork's
+			// tail (draft branch and production branch only) from the LIVE
+			// `mJob->GetCstDocument()` while still under the park -- exactly
+			// the document THIS render actually saw, no re-serialize/re-parse,
+			// no re-entering the controller.  Read back at the carrier site
+			// below, gated on res.ok/renderMode, same as productionSampleReadBack.
+			std::string designNoteLocal;
 			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
 			// sample-cap outcome, tracked separately from
 			// overrodeSamples/origSamples above -- those describe the
@@ -4144,7 +4682,7 @@ namespace RISE
 			// throw site), the normal release sites are skipped and the
 			// owning ref would leak.  safe_release() nulls the pointer, so
 			// every normal path (failure release, tail release, ownership
-			// transfer to mLastSink -- which nulls `sink` explicitly) leaves
+			// transfer to the image cache -- which nulls `sink` explicitly) leaves
 			// this a no-op.  Declared AFTER `sink` so it destructs FIRST.
 			struct SinkUnwindGuard {
 				InMemoryRasterizerOutput*& p;
@@ -4157,7 +4695,7 @@ namespace RISE
 			// active rasterizer after the render park ends.  Looking the rasterizer
 			// up through Job during unwind is a race; freeing every output can also
 			// erase a viewport sink installed by another owner in that window. On
-			// success mLastSink owns the observation, so keeping it attached would
+			// success the image cache owns the observation, so keeping it attached would
 			// strand a full image/sidecar on every inactive rasterizer after an
 			// integrator switch and invalidate the bounded-memory contract.
 			struct JobSinkAttachmentUnwindGuard {
@@ -5099,6 +5637,12 @@ namespace RISE
 				}
 				if( isDraft ) {
 					runEphemeralIsolated( doDraftRenderWork );
+					// Creative-richness P2: read the LIVE document HERE, still
+					// under the park -- never re-enter the controller
+					// (ReadDocumentSnapshot / ComputeDesignNote) from inside
+					// this closure.  See designNoteLocal's declaration above.
+					if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
+						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
 					publishCompletedToLastRender();
 					return;
 				}
@@ -5265,7 +5809,7 @@ namespace RISE
 				mJob->RemoveRasterizerOutputs();
 				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
 				// addrefs it. The attachment unwind guard removes this exact output
-				// on every exit, including success: mLastSink becomes the sole owner
+				// on every exit, including success: the image cache becomes the sole owner
 				// of a published observation, so inactive rasterizers cannot retain
 				// one full image/sidecar each after integrator switches. We drop OUR
 				// ref via safe_release(sink) after this
@@ -5529,6 +6073,13 @@ namespace RISE
 					rast->SetSampleCountOverride( origSamples );
 				}
 				sampleGuard.Disarm();
+				// Creative-richness P2: read the LIVE document HERE, still
+				// under the park -- see designNoteLocal's declaration above
+				// and the isDraft branch's twin comment for why this must
+				// never go through ReadDocumentSnapshot / ComputeDesignNote
+				// (both re-enter the controller) from inside this closure.
+				if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
+					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc );
 				publishCompletedToLastRender();
 			};
 
@@ -5612,18 +6163,31 @@ namespace RISE
 			} else if( mController && ( wantFilmOverride || wantCameraOverrideForRouting ) ) {
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool parked = false;
+				// Fix-round-8 P1: initialized to None, which is ALSO the
+				// value the callee leaves here on the throw path.  Round-10
+				// correction: NOT because "the callee never reaches a refusal
+				// site so it does not write this" -- it writes None
+				// UNCONDITIONALLY on entry, so this initializer is
+				// belt-and-braces, not the mechanism.  The mechanism is that an
+				// exception out of `fn` unwinds past every refusal site, leaving
+				// that entry write as the last one -- see
+				// RunPreviewRenderParked's header doc.
+				SceneEditController::RenderRefusal refusal =
+					SceneEditController::RenderRefusal::None;
 				std::string thrownMessage;
 				try {
 					parked = mController->RunPreviewRenderParked(
 						doRenderWork, SceneEditController::RenderClass::AgentPreview,
-						String(), &controllerJobId );
+						String(), &controllerJobId, &refusal );
 				}
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !parked && thrownMessage.empty() ) {
-					// Fix-round-1 P2-B: refused (an editor transaction is
-					// open) -- the override window could not be safely
-					// parked against the interactive render thread.
+					// Fix-round-1 P2-B: refused -- the override window could
+					// not be safely parked against the interactive render
+					// thread.  (Several causes; see the cause-discrimination
+					// note further down before assuming "a transaction is
+					// open".)
 					//
 					// DECIDED SEMANTICS: refuse HONESTLY and RETRIABLY.  The
 					// prior code fell back to an un-overridden render by
@@ -5639,10 +6203,14 @@ namespace RISE
 					// stable for the duration of one RenderCore_ call), not a
 					// real degrade path.  Mirror the edit verbs' retriable
 					// phrasing (see ApplyAgentParamEdit / ApplyAgentChunkCrud_'s
-					// "editor transaction in progress -- retry after the
-					// gesture completes") so a caller sees the identical
-					// wording whether it hit a param edit, a chunk edit, or a
-					// preview render.
+					// "editor transaction or gesture in progress -- retry after
+					// it completes") so a caller sees the identical wording
+					// whether it hit a param edit, a chunk edit, or a preview
+					// render.  Round-10 P1: this quotation used to read "editor
+					// transaction in progress -- retry after the gesture
+					// completes", which is not what either sibling says; the
+					// message emitted below was changed to the sibling's ACTUAL
+					// string, so the claim of verbatim reuse is now true.
 					// P2 fix (2026-07-19 mutation review): doRenderWork never
 					// entered the park on THIS path (RunPreviewRenderParked
 					// refused before running it) -- there is no live-render
@@ -5651,9 +6219,100 @@ namespace RISE
 					// render thread for nothing.  Leave res.integrator at its
 					// default-constructed empty string; see AgentRenderResult::
 					// integrator's field doc for the "never resolved" contract.
+					//
+					// RunPreviewRenderParked refuses at SEVEN distinct gates,
+					// and this string is surfaced VERBATIM to the model
+					// (CompareToReference puts it in `res.split.note`,
+					// QueryObjectAt in its own `message`), so it steers the
+					// next tool call.  Getting the cause wrong re-creates the
+					// retry loop this branch exists to reduce.
+					//
+					// Fix-round-6 P2 tried to discriminate by READING
+					// `CurrentRenderJob().active`.  Fix-round-8 P1: that was a
+					// REGRESSION, not a fix.  `active` is not a proxy for the
+					// agent-render gate -- RenderLoop mints an `active == true`
+					// RenderClass::Interactive job for EVERY ordinary viewport
+					// pass (SceneEditController.cpp, RenderLoop's per-pass
+					// mint), so whenever the viewport is drawing (the normal
+					// steady state) an mTxnOpen refusal was reported as "render
+					// queued or in progress -- retry after it completes",
+					// pointing the model at something that completes constantly
+					// while the transaction that actually blocks stays open.
+					// Two further windows were never even disclosed: both
+					// SubmitAgentRenderAsync_Locked and RunPreviewRenderParked
+					// CLAIM the coordinated-render gate BEFORE they mint a job
+					// record, so during those windows the reconstruction gave
+					// the wrong wording in the other direction too.
+					//
+					// PROPER FIX: stop reverse-engineering a cause the callee
+					// already knows.  RunPreviewRenderParked now REPORTS which
+					// gate fired via `outRefusal`, and this maps it.  That
+					// eliminates the whole class -- races, gate-claimed-but-
+					// not-yet-minted windows, and any refusal cause added
+					// later: the retriable transaction wording is assigned
+					// BEFORE the switch narrows it, so an enumerator somebody
+					// adds without extending this switch still yields an
+					// honest, retriable message instead of an EMPTY one --
+					// while the switch stays TOTAL (no `default:` arm) so
+					// -Wswitch flags the omission at build time first, and
+					// warnings are bugs in this repo.
+					//
+					// Wording is reused verbatim from the controller's OWN
+					// refusals so the two layers agree.  Both quotations were
+					// re-checked against their sources in round 10:
+					//   * SceneEditController's chunk-CRUD render-busy refusals
+					//     say exactly "render queued or in progress -- retry
+					//     after it completes" -- matches.
+					//   * the edit verbs (ApplyAgentParamEdit /
+					//     ApplyAgentChunkCrud_) say exactly "editor transaction
+					//     or gesture in progress -- retry after it completes".
+					//     The round-8 comment MISQUOTED this one as "editor
+					//     transaction in progress -- retry after the gesture
+					//     completes", and the string emitted below WAS that
+					//     misquote -- so the two layers did not in fact agree.
+					//     Round-10 P1 fix: emit the sibling's real string.
 					res.ok          = false;
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
-					res.message     = "editor transaction in progress -- retry after the gesture completes";
+					res.message     = "editor transaction or gesture in progress -- retry after it completes";
+					switch( refusal ) {
+					case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+						res.message = "render queued or in progress -- retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::ControllerStopped:
+						// NOT retriable -- say so rather than inviting a retry
+						// loop against a controller that is going away.
+						res.message = "render refused: the editor is shutting down";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+						res.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+						// Round-10 finding 3.  The LATCHED case: the controller's
+						// mInteractionPersistenceFailed flag is set and is NEVER
+						// cleared, so this refusal fires for every render and every
+						// viewport read for the rest of the session.  Round 8 could
+						// not tell the two apart and said "retry shortly" here --
+						// precisely the infinite-retry instruction this branch exists
+						// to remove.
+						res.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+						break;
+					case SceneEditController::RenderRefusal::PinnedRenderBusy:
+						// Not producible by RunPreviewRenderParked (no slot concept) --
+						// listed to keep the switch total so -Wswitch keeps guarding
+						// this mapping, and mapped rather than left to the pre-switch
+						// default so a future routing change cannot silently mislabel
+						// it as a transaction refusal.
+						res.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::EditorBusy:
+					case SceneEditController::RenderRefusal::None:
+						// Keep the pre-switch default.  `None` is unreachable on
+						// a refusal (the callee sets a cause at every `return
+						// false`); listed so the switch stays total and -Wswitch
+						// keeps working, and so a contract slip still produces
+						// the honest, retriable message.
+						break;
+					}
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -5675,32 +6334,77 @@ namespace RISE
 				// this thread.  This is the no-override race closure.
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool submitted = false;
+				// Round-10 finding 2b: collect the REPORTED refusal cause instead
+				// of inferring one afterwards.  Seeded to None for the same
+				// belt-and-braces reason as the override branch above.
+				SceneEditController::RenderRefusal refusal =
+					SceneEditController::RenderRefusal::None;
 				std::string thrownMessage;
 				try {
 					submitted = mController->SubmitAgentRenderSync( doRenderWork, String(), &controllerJobId,
-						/*timeoutMs=*/30000, params.pinned );
+						/*timeoutMs=*/30000, params.pinned,
+						SceneEditController::RenderClass::AgentPreview, &refusal );
 				}
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !submitted && thrownMessage.empty() ) {
-					// Refused: either an editor transaction is open (same
-					// rule as RunPreviewRenderParked), the single-slot
-					// worker already has a render queued/running, or --
-					// Model-B F2 slice S3 -- the occupant is a PINNED
-					// render (never silently superseded; see
-					// SubmitAgentRenderSync's `pinned` doc).  Honest
-					// failure -- no fallback direct call here, since a
-					// direct call is exactly the race this slice closes.
+					// Refused.  Honest failure -- no fallback direct call here,
+					// since a direct call is exactly the race S2a closes.
 					// P2 fix (2026-07-19 mutation review): doRenderWork never
 					// entered the park on THIS path (SubmitAgentRenderSync
 					// refused before running it) -- see the RunPreviewRenderParked
 					// refusal branch above and AgentRenderResult::integrator's
 					// field doc for the same reasoning.
+					//
+					// ROUND-10 finding 2 (P1).  This branch USED to pick its
+					// message by reading `CurrentRenderJob().pinned` after the
+					// refusal.  That was wrong twice over.  (1) The field was
+					// written at ONE of the three job-record mint sites, so once
+					// any pinned render had ever completed it stayed true for the
+					// session's life and this -- the path EVERY plain `render`
+					// call takes -- told the model "a pinned render is in flight"
+					// when none was.  (2) Even with the field fixed, a sync
+					// submission does not refuse on a pinned occupant at all: it
+					// WAITS for the fairness window (see SubmitAgentRenderSync's
+					// S3-P2 doc), so a pinned occupant can only surface here as a
+					// fairness-wait TIMEOUT.  Both are the same defect round 8
+					// removed from the override branch: inferring a cause the
+					// callee already knows.  The callee now reports it.
+					//
+					// As in the override branch, the retriable generic message is
+					// assigned BEFORE the switch narrows it (an enumerator added
+					// without extending this switch still yields an honest
+					// message, never an empty one) and the switch stays TOTAL so
+					// -Wswitch flags the omission at build time first.
 					res.ok = false;
-					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
-					res.message = ( cur.active && cur.pinned )
-						? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
-						: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					res.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					switch( refusal ) {
+					case SceneEditController::RenderRefusal::PinnedRenderBusy:
+						res.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+						res.message = "render queued or in progress -- retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::ControllerStopped:
+						// NOT retriable.
+						res.message = "render refused: the editor is shutting down";
+						break;
+					case SceneEditController::RenderRefusal::EditorBusy:
+						res.message = "editor transaction or gesture in progress -- retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+						res.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+						// Round-10 finding 3 -- NOT retriable, and it never clears.
+						res.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+						break;
+					case SceneEditController::RenderRefusal::None:
+						// Unreachable on a refusal (the callee sets a cause at every
+						// `return false`); listed so the switch stays total, and so a
+						// contract slip still produces the honest generic message.
+						break;
+					}
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -6019,6 +6723,38 @@ namespace RISE
 				}
 			}
 
+			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			// RE-TARGETED by sec 7): attach the observed-state design note
+			// on a successful BEAUTY render only -- "production" or
+			// "draft" `renderMode`, deliberately never "objectmap" or a
+			// view mode (those are diagnostic/segmentation renders, not
+			// the "the model just looked at its finished work" moment the
+			// note is anchored to; matches the isObjectMap/isViewMode
+			// gating precedent used throughout this function).
+			//
+			// RELOCATED post-review (concurrency review, round 2): the
+			// document is read and the note COMPUTED inside doRenderWork's
+			// tail (the isDraft branch and the production branch each set
+			// `designNoteLocal` -- see its declaration above), while this
+			// call is STILL under the park in every controller-attached
+			// branch (the worker's cancel-and-park hold for both
+			// RunPreviewRenderParked and SubmitAgentRender*, or headless's
+			// single-writer guarantee) -- so it describes EXACTLY the
+			// document this render saw, never a later edit that landed in
+			// the window after the park released.  This site only
+			// PUBLISHES the already-computed local into `res`, gated on
+			// success/renderMode; it does no document I/O of its own and
+			// never touches the controller.  This is also why the earlier
+			// `assumeParked` branch (which called ReadDocumentSnapshot()/
+			// ComputeDesignNote() from OUTSIDE the park, and for
+			// assumeParked==true self-deadlocked on the worker's own
+			// already-held mMutex -- see the historical mutation-probe log
+			// in the final report) is gone: there is no document access
+			// left here to branch on.
+			if( res.ok && ( res.renderMode == "production" || res.renderMode == "draft" ) ) {
+				res.note = designNoteLocal;
+			}
+
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --
 			// a failed render must not wipe a prior good cache (ReadImage
 			// documents "the LAST successful Render").  Also keep the SINK
@@ -6026,23 +6762,319 @@ namespace RISE
 			// re-encode a downscaled PNG from the cached full-res linear
 			// pixels without re-rendering -- `sink` already carries refcount 1
 			// (our owning ref from `new` above); we transfer that ownership to
-			// mLastSink instead of releasing it.
+			// the image cache (AgentImageCache::Store) instead of releasing it.
 			//
-			// Model-B F2 slice S2a: guarded by mAsyncCacheMutex -- when this
-			// is running on the async worker thread (assumeParked), a
-			// concurrent ReadImage() call on the submitter's thread must not
-			// observe a torn mLastPng/mLastSink update.
+			// Model-B F2 slice S2a: the store is atomic under the cache's own
+			// lock -- when this is running on the async worker thread
+			// (assumeParked), a concurrent ReadImage() call on the
+			// submitter's thread must not observe a torn png/sink update.
+			// With a SHARED cache this is also the moment a render performed
+			// through one session becomes readable through its siblings,
+			// which is the entire point.
 			if( res.ok ) {
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				mLastPng = res.png;
-				safe_release( mLastSink );
-				mLastSink = sink;
+				mImageCache->Store( res.png, sink );
 				sink = nullptr;   // ownership transferred -- the unwind guard must not release it
 				return res;
 			}
 
 			safe_release( sink );
 			return res;
+		}
+
+		// Ephemeral-render cache guard -------------------------------------------
+
+		namespace
+		{
+			//! RAII stash/restore of the LAST-RENDER cache state -- the pair
+			//! the AgentImageCache frame (the png/sink pair `ReadImage()` serves
+			//! and the `read_image` verb returns) PLUS the async-render
+			//! result record `mLastAsyncRenderResult` /
+			//! `mLastAsyncRenderResultJobId` (what `render_status` /
+			//! `render_wait` report) -- across an EPHEMERAL `Render()` whose
+			//! pixels must NEVER become "the last render the caller can read".
+			//!
+			//! WHY THIS EXISTS.  `Render()` unconditionally caches every
+			//! success into that pair (RenderCore_'s tail, above).  Two call
+			//! sites in this file fire an internal `mode:"objectmap"` render
+			//! purely as a means to an end -- `QueryObjectAt` (one pixel ->
+			//! one object name) and `CompareToReference`'s object/background
+			//! RMSE split (a per-pixel mask).  Left unguarded, either one
+			//! leaves a flat SEGMENTATION image sitting in the cache, so a
+			//! caller that renders a beauty frame and then calls
+			//! `read_image` -- exactly the sequence the
+			//! modeling-from-image-captures skill teaches -- is handed the
+			//! segmentation image and "judges" the beauty render from it.
+			//! Both sites now take this guard, so the two can never drift
+			//! apart again (they did: only CompareToReference was guarded).
+			//!
+			//! CONSTRAINTS THIS ENCODES -- do not "simplify" any of them away:
+			//!
+			//!  * The cache mutex MUST NOT be held across the guarded
+			//!    `Render()` call.  `Render()` locks that SAME non-recursive
+			//!    mutex at RenderCore_'s cache tail, so widening either the
+			//!    ctor's or the dtor's lock scope to span the call
+			//!    self-deadlocks the agent thread with no diagnostic.  Both
+			//!    bodies therefore take the lock, finish, and release it.
+			//!  * RAII rather than a plain second block: `mSavedSink` is a raw
+			//!    refcounted pointer held across a call, so an unwind between
+			//!    stash and restore would leak a full framebuffer AND silently
+			//!    wipe the stashed cache.  `Render()` happens to catch
+			//!    everything today, but it is not declared `noexcept`.  Every
+			//!    site in this file that holds a raw refcounted pointer across
+			//!    a RENDER call uses an RAII guard for exactly this reason --
+			//!    `SinkUnwindGuard` around the sink attachment, the FOUR
+			//!    `EphemeralPipelineGuard`s around the rasterizer/pipeline
+			//!    swaps (verified 2026-07-27: FOUR distinct definitions, one per
+			//!    ephemeral render closure -- doDraftRenderWork,
+			//!    doObjectMapRenderWork, doViewModeRenderWork and
+			//!    doBeautyVariantRenderWork; the count said "three"), and
+			//!    `SinkLease` in `ReadImage(maxEdge,...)`.  (The
+			//!    file's PNG codec helpers -- `DecodePngRgbAt` and
+			//!    `EncodeLinearPassthroughPng_` -- do use plain paired
+			//!    `safe_release` across their reader/writer calls; they are the
+			//!    exception, not a precedent to copy here.)
+			//!  * THE GUARDED SCOPE IS PRIMARILY A ZERO-BYTE WINDOW, not a
+			//!    "shows-the-ephemeral-render" window.  The ctor moves the
+			//!    cache OUT (AgentImageCache::Take leaves the png empty and
+			//!    the sink null, and it zeroes the async-result id), so
+			//!    from the ctor until SOME render's cache tail repopulates
+			//!    it -- i.e. THE WHOLE RENDER DURATION -- a concurrent
+			//!    `ReadImage()` on another thread returns ZERO BYTES,
+			//!    `ReadImage(unsigned int,...)` returns empty too (by TWO
+			//!    different lines: for `maxEdge > 0` from the `if( !sink )`
+			//!    early-out right after that function's lock scope; for
+			//!    `maxEdge == 0` from the IN-LOCK `PngWithDims` read inside
+			//!    its `maxEdge == 0` branch, which hands back the emptied
+			//!    cache and leaves outWidth/outHeight at 0 because
+			//!    the cached sink is null), and `ReadPerception` likewise.
+			//!    HOW WIDE, stated honestly: the ephemeral render is an
+			//!    OBJECTMAP IDENTITY render, not a beauty pass -- measured
+			//!    ~20ms at 256x256 (see QueryObjectAt's header doc);
+			//!    CompareToReference's split runs it at the REFERENCE dims,
+			//!    so it scales with pixel count but stays in that class.  A
+			//!    multi-SECOND window is therefore QUEUEING, not rendering,
+			//!    and only ONE of the two routes below can queue at all --
+			//!    see the ROUTES bullet.  Only AFTER a cache tail
+			//!    lands inside the window do the fields hold pixels again --
+			//!    the ephemeral render's own segmentation image, or, if an
+			//!    async render completed in here first, THAT render's beauty
+			//!    frame.  Triage rule, stated in the direction that holds:
+			//!    a "read_image returned byteLength 0 right after a
+			//!    successful render" report MUST count this window as a live
+			//!    suspect (cross-thread ReadImage is a designed call shape --
+			//!    see mAsyncCacheMutex's doc); the converse does NOT follow,
+			//!    since getting bytes back does not prove the reader was
+			//!    outside the window.  The window is bounded by the scope and
+			//!    never persists past it.
+			//!  * ROUTES -- the two ephemeral call sites do NOT reach the
+			//!    controller the same way, and which way decides whether an
+			//!    in-flight async render's cache write is swallowed by this
+			//!    window.  `RenderCore_` picks the route on
+			//!    `wantFilmOverride` (`params.width > 0 && params.height > 0`)
+			//!    or a camera override:
+			//!
+			//!      (A) NO OVERRIDE -- `query_object_at {x,y}` with no
+			//!          width/height/camera, the common shape a model emits.
+			//!          Routes through `SubmitAgentRenderSync`, which takes a
+			//!          FIFO fairness ticket and WAITS (up to the 30000ms
+			//!          `timeoutMs` RenderCore_ passes) for the single
+			//!          agent-render slot; it does NOT cancel the occupant.
+			//!          An async render in flight when the ctor runs
+			//!          therefore runs to FULL completion INSIDE the window
+			//!          -- cache write included, since the async closure
+			//!          stores `mLastAsyncRenderResult` under
+			//!          mAsyncCacheMutex before the worker releases the slot
+			//!          the fairness wait is blocked on -- and the dtor then
+			//!          discards it.  On this route the zero-byte window
+			//!          really is seconds wide, and the RESIDUAL below is
+			//!          the ordinary case, not a race.
+			//!
+			//!      (B) WITH OVERRIDE -- `CompareToReference`'s split (it
+			//!          forces `omParams.width/height = refW/refH`, so
+			//!          `wantFilmOverride` is ALWAYS true there) and
+			//!          `query_object_at` whenever width/height/camera are
+			//!          supplied.  Routes through
+			//!          `SceneEditController::RunPreviewRenderParked`, which
+			//!          tests `mAgentRenderBlocksInteractive` and returns
+			//!          FALSE IMMEDIATELY, BEFORE it ever takes the
+			//!          controller's render mutex (its own comment: checking
+			//!          afterward would "wait for the render only to
+			//!          refuse").  An async submission claims that gate at
+			//!          SUBMIT time and holds it through worker completion,
+			//!          so with one in flight this route does NOT wait -- it
+			//!          is REFUSED in microseconds, `omr.ok` is false, and
+			//!          the guard's window closes long before the async
+			//!          render finishes.  That render's cache write then
+			//!          lands AFTER the window and SURVIVES.  The caller is
+			//!          told: CompareToReference records the refusal message
+			//!          in `res.split.note`, QueryObjectAt in its own
+			//!          `message`.
+			//!
+			//!  * RESIDUAL, accepted: an async render that completes INSIDE
+			//!    the window loses its ENTIRE cache write -- its pixels (the
+			//!    dtor restores png/sink unconditionally) AND its result
+			//!    record.  On route (A) this is the ORDINARY outcome, per
+			//!    the wait described above.  On route (B) it shrinks to a
+			//!    genuinely narrow race: the async render must complete in
+			//!    the microseconds between the ctor and
+			//!    RunPreviewRenderParked's gate test (complete any earlier
+			//!    and the gate is already clear, so the split render simply
+			//!    runs with nothing of the async render's left to lose;
+			//!    complete any later and its write lands outside the
+			//!    window).  Either way the handling is the same, and
+			//!    stashing the result record alongside the pixels is
+			//!    deliberate: the pixels are lost either way, so KEEPING an
+			//!    `ok:true` record would make `render_wait` answer
+			//!    `completed:true` with a full `{ok,width,height,meanR,...}`
+			//!    payload for a frame `read_image` can no longer serve -- the
+			//!    exact "success reported over stale pixels" lie this guard
+			//!    exists to prevent.  Discarding both makes the loss uniform
+			//!    and surfaces through `render_wait`'s ALREADY-HANDLED
+			//!    completed-but-no-cached-result path (AgentRpc.cpp sets the
+			//!    additive `result` key only `if( ar.found )`, and that
+			//!    verb's doc already lists "absent" as a normal outcome).
+			//!    KNOWN COST of that uniformity, stated plainly: the async
+			//!    closure caches FAILURES too (no `if( r.ok )`, unlike the
+			//!    pixel tail), and an `ok:false` record has no pixels to be
+			//!    inconsistent with -- so discarding it costs the caller a
+			//!    failure MESSAGE ("render cancelled", an encode throw) it
+			//!    could honestly have read back.  Judged the better trade
+			//!    against a conditional restore whose rule ("keep it iff it
+			//!    failed") is harder to hold in the head than "the window
+			//!    leaves no trace".  The principled fix for the WHOLE
+			//!    residual is upstream and out of scope here: give
+			//!    `RenderCore_` a "do not cache this one" flag so an
+			//!    ephemeral render never writes the cache at all and no
+			//!    stash/restore is needed.
+			//!
+			//!  * SHARED-CACHE SCOPE (2026-07).  The cache this guard stashes
+			//!    is now an `AgentImageCache` that a host may SHARE across
+			//!    several sessions (the GUIs' three in-app ones), so the
+			//!    zero-byte window and the RESIDUAL above are no longer
+			//!    confined to the session running the ephemeral render --
+			//!    they now apply to every session sharing the handle.  What
+			//!    that does and does not mean:
+			//!      - A SIBLING'S SYNCHRONOUS read cannot land in the window.
+			//!        Both bridges drive all three in-app sessions from the
+			//!        host UI thread (RISEViewportBridge's
+			//!        -agentHandleToolCall:autonomy: / -agentHandleLine:,
+			//!        ViewportBridge's agentHandleToolCall / agentHandleLine),
+			//!        and the guarded render blocks that thread for the whole
+			//!        window.  There is no thread left to observe it.
+			//!      - A SIBLING'S ASYNC render completing inside the window
+			//!        loses its cache write, exactly as a same-session one
+			//!        already does.  This widens an accepted residual; it
+			//!        does not introduce a new failure mode, and the upstream
+			//!        fix named above closes both at once.  It is now worth
+			//!        more than it was.
+			//!      - The hosted loopback server's External session is NOT in
+			//!        the group (nobody hands it the handle), so none of this
+			//!        reaches it.
+			//!
+			//! Takes the pieces of state by reference rather than an
+			//! `AgentSession&` so it stays a file-local helper with no access
+			//! to the class's private section (no friendship, no header churn).
+			class EphemeralRenderCacheGuard
+			{
+			public:
+				EphemeralRenderCacheGuard( std::mutex& sessionMutex,
+				                           AgentImageCache& imageCache,
+				                           AgentRenderResult& lastAsyncResult,
+				                           std::uint64_t& lastAsyncResultJobId )
+					: mSessionMutex( sessionMutex ), mImageCache( imageCache ),
+					  mLastAsyncResult( lastAsyncResult ), mLastAsyncResultJobId( lastAsyncResultJobId )
+				{
+					// THE STASH ORDER BELOW IS NOT LOAD-BEARING -- this
+					// static_assert is what makes that true, so nobody has to
+					// hold it in their head.  TWO sites bind the property, and
+					// the DESTRUCTOR is the stronger one:
+					//
+					//  * ~EphemeralRenderCacheGuard also move-assigns
+					//    AgentRenderResult, and a destructor is implicitly
+					//    noexcept -- a throwing move there is std::terminate,
+					//    which no restructuring of any constructor can avoid.
+					//  * the ctor takes ownership of the sink's raw ref
+					//    (mSavedSink) BEFORE its two AgentRenderResult
+					//    move-assignments; a throw there unwinds out of the
+					//    ctor, and a ctor that throws never runs its own dtor,
+					//    so the stashed framebuffer would leak AND the caller's
+					//    cache would stay wiped for the rest of the session.
+					//
+					// Fix-round-8 P2: the assert message used to name only the
+					// ctor and suggest "restructure this ctor to stash the
+					// result record first" -- an escape hatch that would
+					// satisfy a future maintainer while leaving the dtor's
+					// terminate hazard fully in place.  Naming the dtor, and
+					// offering no alternative, is the honest framing: the only
+					// fix is to keep the type nothrow-move-assignable.
+					// Asserted at COMPILE time so the breakage is a build error
+					// at the offending member, not a runtime terminate/leak
+					// nobody traces back to here.
+					static_assert( std::is_nothrow_move_assignable<AgentRenderResult>::value,
+						"EphemeralRenderCacheGuard move-assigns AgentRenderResult in BOTH its ctor and "
+						"its dtor.  ~EphemeralRenderCacheGuard is implicitly noexcept, so a throwing "
+						"move-assign there is std::terminate; in the ctor it leaks the stashed "
+						"framebuffer and leaves the last-render cache permanently wiped (a throwing "
+						"ctor never runs its own dtor).  Keep AgentRenderResult's members "
+						"nothrow-move-assignable -- there is no safe restructuring that avoids the "
+						"destructor case." );
+
+					// BOTH halves under the session lock, with the cache's
+					// leaf lock nested inside it (AgentImageCache::Take takes
+					// it) -- the documented outer->inner order.  Doing them in
+					// two SEPARATE scopes would open a window where the pixels
+					// are stashed but the async-result record is not, i.e.
+					// render_wait answering "completed, here is your result"
+					// for a frame read_image can no longer serve: the exact lie
+					// this guard exists to prevent.
+					std::lock_guard<std::mutex> lk( mSessionMutex );
+					// Take() moves the frame OUT and leaves the cache empty,
+					// handing us the sink's reference.  That transfer is what
+					// makes the stash MEMORY-SAFE, not merely invisible (round-8
+					// sabotage finding, recorded so nobody "simplifies" it): the
+					// guarded Render()'s cache tail releases whatever sink the
+					// cache holds before storing its own.  Leave the stashed
+					// pointer ALSO reachable from the cache and that release
+					// frees the framebuffer we still owe back, so the dtor hands
+					// a DANGLING sink to the session.  Verified: breaking this
+					// segfaults the suite.
+					mImageCache.Take( mSavedPng, mSavedSink );
+					// Same move-out for the async-render result record: the
+					// window must leave NO trace of anything that completed
+					// inside it, pixels and result alike (see the RESIDUAL
+					// bullet above).  Zeroing the id is what makes
+					// LastAsyncRenderResult() report "not found" for the
+					// duration -- 0 is never a real job id.
+					mSavedAsyncResult      = std::move( mLastAsyncResult );
+					mLastAsyncResult       = AgentRenderResult();
+					mSavedAsyncResultJobId = mLastAsyncResultJobId;
+					mLastAsyncResultJobId  = 0;
+				}
+
+				~EphemeralRenderCacheGuard()
+				{
+					std::lock_guard<std::mutex> lk( mSessionMutex );
+					// Store() releases whatever the ephemeral render left in
+					// the cache and takes over our stashed sink's reference.
+					mImageCache.Store( std::move( mSavedPng ), mSavedSink );
+					mSavedSink = nullptr;
+					mLastAsyncResult      = std::move( mSavedAsyncResult );
+					mLastAsyncResultJobId = mSavedAsyncResultJobId;
+				}
+
+				EphemeralRenderCacheGuard( const EphemeralRenderCacheGuard& ) = delete;
+				EphemeralRenderCacheGuard& operator=( const EphemeralRenderCacheGuard& ) = delete;
+
+			private:
+				std::mutex&                 mSessionMutex;
+				AgentImageCache&            mImageCache;
+				AgentRenderResult&          mLastAsyncResult;
+				std::uint64_t&              mLastAsyncResultJobId;
+				std::vector<unsigned char>  mSavedPng;
+				InMemoryRasterizerOutput*   mSavedSink = nullptr;
+				AgentRenderResult           mSavedAsyncResult;
+				std::uint64_t               mSavedAsyncResultJobId = 0;
+			};
 		}
 
 		// Toolkit slice 3b: query_object_at -------------------------------------
@@ -6078,7 +7110,42 @@ namespace RISE
 			rparams.height = params.height;
 			rparams.camera = params.camera;
 
-			const AgentRenderResult rr = Render( rparams );
+			// This objectmap render is EPHEMERAL -- it exists only to resolve
+			// ONE pixel to ONE object name -- but Render() unconditionally
+			// caches every success into the image cache for ReadImage().
+			// Left unguarded it would clobber whatever beauty frame the
+			// caller last rendered, so the `read_image` that typically
+			// follows would hand the model a flat SEGMENTATION image to judge
+			// a beauty render from.  Same hazard, same guard, as
+			// CompareToReference's split-mask render below -- see
+			// EphemeralRenderCacheGuard's doc for the deadlock/refcount/
+			// zero-byte-window constraints it encodes.  `rr` is the render's OWN returned
+			// result and is unaffected by the restore: everything below
+			// decodes rr.png / rr.legend, never the session cache.
+			AgentRenderResult rr;
+			{
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+				// Fix-round-8 P2 seam: the guard's ctor has run (cache and
+				// async-result record moved OUT to its stash) and the guarded
+				// render has NOT started -- the documented "ONE window reports
+				// found == false" property is observable from here, so a test can
+				// pin the ctor half -- see ForTest_SetEphemeralCacheGuardOpenHook's
+				// doc.  Round-10 P2 correction: the previous wording said "the
+				// ONLY place" it is observable.  It is not -- CompareToReference
+				// opens the same window with its own EphemeralRenderCacheGuard
+				// around the split-mask render.  What is true, and what the
+				// header phrases correctly, is that ONE seam is enough to pin the
+				// ctor half: the two sites share the guard type, so a test that
+				// observes the window here covers the property for both.
+				// No AgentSession mutex is held here (the ctor took and
+				// released mAsyncCacheMutex), so the hook may re-enter the
+				// session's read paths.
+				if( mEphemeralCacheGuardOpenHookForTest ) {
+					mEphemeralCacheGuardOpenHookForTest();
+				}
+				rr = Render( rparams );
+			}
 
 			if( !rr.ok ) {
 				res.message = rr.message.empty()
@@ -6559,7 +7626,7 @@ namespace RISE
 
 				// The objectmap render below is EPHEMERAL -- it exists only to
 				// build a mask -- but Render() unconditionally caches every
-				// success into mLastPng/mLastSink for ReadImage().  Left
+				// success into the image cache for ReadImage().  Left
 				// alone it would clobber the beauty frame this compare just
 				// graded, silently breaking the contract documented on
 				// CompareToReference ("a caller CAN read_image afterward to
@@ -6569,50 +7636,18 @@ namespace RISE
 				// skill would get handed a flat segmentation image.  Stash
 				// the beauty cache, let the objectmap render populate a
 				// throwaway, then put the beauty cache back.
-				std::vector<unsigned char>  savedPng;
-				InMemoryRasterizerOutput*   savedSink = nullptr;
-				{
-					// MUST NOT be held across Render() below -- Render locks
-					// this SAME non-recursive mutex at RenderCore_'s cache
-					// tail, so widening either scope to span the call
-					// self-deadlocks the agent thread with no diagnostic.
-					std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-					savedPng.swap( mLastPng );
-					savedSink = mLastSink;
-					mLastSink = nullptr;
-				}
-
-				// RAII rather than a plain second block: `savedSink` is a raw
-				// refcounted pointer held across a call, so an unwind between
-				// the stash and the restore would leak a full framebuffer AND
-				// silently wipe the beauty cache.  Render() happens to catch
-				// everything today, but it is not declared noexcept -- every
-				// sibling raw-refcount-across-a-call site in this file uses a
-				// guard for exactly this reason.
+				//
+				// Shared with QueryObjectAt (the file's other ephemeral-render
+				// site) so the two can never drift apart -- they did once, and
+				// the unguarded one shipped the exact bug described above.
+				// EphemeralRenderCacheGuard's doc carries the deadlock
+				// ("never hold mAsyncCacheMutex across Render()"), refcount,
+				// zero-byte-window, and discarded-async-result constraints
+				// this scope relies on.
 				AgentRenderResult omr;
 				{
-					struct CacheRestoreGuard
-					{
-						AgentSession*               self;
-						std::vector<unsigned char>* png;
-						InMemoryRasterizerOutput**  sink;
-						~CacheRestoreGuard()
-						{
-							std::lock_guard<std::mutex> lk( self->mAsyncCacheMutex );
-							safe_release( self->mLastSink );   // drop the objectmap sink
-							self->mLastPng.swap( *png );       // beauty bytes back in place
-							self->mLastSink = *sink;           // ownership handed back
-							*sink = nullptr;
-						}
-					} restoreGuard{ this, &savedPng, &savedSink };
-
-					// NOTE: for the width of this scope ONLY, mLastPng/mLastSink
-					// transiently hold the objectmap.  A concurrent ReadImage()
-					// on another thread would observe it (see mAsyncCacheMutex's
-					// doc -- cross-thread ReadImage IS a designed call shape).
-					// The window is bounded by this scope and never persists
-					// past the call; an async render that completes inside it
-					// has its cache write discarded (refcount-safe, lost update).
+					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+					                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 					omr = Render( omParams );
 				}
 
@@ -6894,7 +7929,7 @@ namespace RISE
 			// worker discards (`r` below), only OUT via
 			// SubmitAgentRenderAsync's `outJobId` param, which the caller
 			// already has.  The cache-population tail inside RenderCore_
-			// (guarded by mAsyncCacheMutex) stashes mLastPng/mLastSink on a
+			// (guarded by the image cache's own lock) populates it on a
 			// successful render, which is how ReadImage() picks up the async
 			// result once it completes.  S2a's minimal surface exposes
 			// completion via RenderStatus/RenderWait + ReadImage rather than
@@ -6970,6 +8005,10 @@ namespace RISE
 			// reason about here.
 			std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
 
+			// Round-10 finding 2b: collect the REPORTED refusal cause rather
+			// than inferring it from a status read after the fact.
+			SceneEditController::RenderRefusal refusal =
+				SceneEditController::RenderRefusal::None;
 			const bool accepted = mController->SubmitAgentRenderAsync(
 				[this, params, ownJobIdCell]() {
 					struct OutstandingGuard {
@@ -7023,23 +8062,56 @@ namespace RISE
 				},
 				String( "render_async" ),
 				&jobId,
-				params.pinned );
+				params.pinned,
+				SceneEditController::RenderClass::AgentPreview,
+				&refusal );
 
 			if( !accepted ) {
 				out.accepted = false;
-				// Model-B F2 slice S3: distinguish "a PINNED render is
+				// Model-B F2 slice S3 distinguished "a PINNED render is
 				// occupying the slot" from the generic busy/transaction
-				// refusal -- CurrentRenderJob() is a fast mJobStatusMutex
-				// read (never blocks behind an in-flight render; see that
-				// method's doc), so this check is cheap even though the
-				// slot was JUST found busy a moment ago.  A benign race
-				// (the pinned job completes between the refusal above and
-				// this read) just falls back to the generic message,
-				// which is still accurate (the submission WAS refused).
-				const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
-				out.message = ( cur.active && cur.pinned )
-					? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
-					: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				// refusal by reading CurrentRenderJob().pinned here.
+				// ROUND-10 finding 2 (P1): that read was STALE, not merely
+				// racy.  `pinned` was written at ONE of the three job-record
+				// mint sites, so once ANY pinned render had completed the
+				// field stayed true for the session's life and this branch
+				// announced a pinned render that did not exist.  Both halves
+				// are fixed: the record is now published whole (so the field
+				// is no longer stale) AND this branch no longer infers --
+				// SubmitAgentRenderAsync reports the cause it decided under
+				// the slot lock, which no after-the-fact status read can
+				// reconstruct anyway.
+				//
+				// Generic retriable message first, switch narrows it, switch
+				// stays TOTAL (no `default:`) so -Wswitch catches an
+				// unmapped enumerator at build time -- same discipline as
+				// RenderCore_'s two switches.
+				out.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				switch( refusal ) {
+				case SceneEditController::RenderRefusal::PinnedRenderBusy:
+					out.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+					out.message = "render queued or in progress -- retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::ControllerStopped:
+					// NOT retriable.
+					out.message = "render refused: the editor is shutting down";
+					break;
+				case SceneEditController::RenderRefusal::EditorBusy:
+					out.message = "editor transaction or gesture in progress -- retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+					out.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+					// Round-10 finding 3 -- NOT retriable, and it never clears.
+					out.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+					break;
+				case SceneEditController::RenderRefusal::None:
+					// Unreachable on a refusal; listed to keep the switch total.
+					break;
+				}
 				return out;
 			}
 
@@ -7110,9 +8182,12 @@ namespace RISE
 		std::vector<unsigned char> AgentSession::ReadImage() const
 		{
 			SinkReadEntrantGuard entrant( *this );
+			// mAsyncCacheMutex still gates the closing check; the cache's own
+			// leaf lock is taken INSIDE it (the documented order), which keeps
+			// "a closing session reads empty" exactly as atomic as before.
 			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 			if( mSinkReadsClosing ) return std::vector<unsigned char>();
-			return mLastPng;
+			return mImageCache->Png();
 		}
 
 		std::vector<unsigned char> AgentSession::ReadImage( unsigned int maxEdge,
@@ -7129,24 +8204,21 @@ namespace RISE
 				if( maxEdge == 0 ) {
 					// No bound requested -- byte-compatible with ReadImage(): same
 					// cached bytes, dims read off the cached sink when available.
-					if( mLastSink ) {
-						outWidth  = mLastSink->Width();
-						outHeight = mLastSink->Height();
-					}
-					return mLastPng;
+					// ONE cache-lock scope so the bytes and the dimensions
+					// cannot come from two different renders.
+					return mImageCache->PngWithDims( outWidth, outHeight );
 				}
-				sink = mLastSink;
+				// AcquireSink hands back a REFERENCE, so the sink is already
+				// safe from a replacing render before the registry insert
+				// below; the try/catch is now only about not leaking that
+				// reference if the map allocation throws.
+				sink = mImageCache->AcquireSink();
 				if( sink ) {
-					// Register first: map insertion may allocate and throw, while
-					// mLastSink still owns the object under this lock. Roll the
-					// registry back if the legacy virtual addref() ever throws.
-					++mActiveSinkReadLeases[sink];
 					try {
-						sink->addref();
+						++mActiveSinkReadLeases[sink];
 					}
 					catch( ... ) {
-						auto it = mActiveSinkReadLeases.find( sink );
-						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						safe_release( sink );
 						throw;
 					}
 				}
@@ -7176,17 +8248,15 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				if( mSinkReadsClosing ) return std::vector<unsigned char>();
-				sink = mLastSink;
+				// See ReadImage(maxEdge): AcquireSink returns an already-held
+				// reference, so the only failure to unwind is the map insert.
+				sink = mImageCache->AcquireSink();
 				if( sink ) {
-					// See ReadImage(maxEdge): registry insertion must precede the
-					// new reference so std::bad_alloc cannot leak an untracked sink.
-					++mActiveSinkReadLeases[sink];
 					try {
-						sink->addref();
+						++mActiveSinkReadLeases[sink];
 					}
 					catch( ... ) {
-						auto it = mActiveSinkReadLeases.find( sink );
-						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						safe_release( sink );
 						throw;
 					}
 				}
@@ -7257,6 +8327,17 @@ namespace RISE
 			bool copiedFrame = false;
 			SceneEditController::PaneSetSnapshot paneSnap;   // user-review P1-3
 			bool haveSnap = false;
+			// Fix-round-8 P1 (sibling site): this call used to take the
+			// one-arg overload and hard-code `editor_transaction_in_progress`
+			// as the reason for EVERY refusal -- the same
+			// misattribute-the-cause defect fixed in RenderCore_, just
+			// expressed as a constant instead of a bad inference.  Route
+			// through the identity-tracking overload purely to collect
+			// `outRefusal` (the id is discarded, the class/label are exactly
+			// what the one-arg forwarder passes, so this is behaviourally
+			// identical apart from the reason string).
+			SceneEditController::RenderRefusal refusal =
+				SceneEditController::RenderRefusal::None;
 			const bool parked = mController->RunPreviewRenderParked( [&]() {
 				// Keep the frame copy and its live display-transform lookup in the
 				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
@@ -7276,9 +8357,51 @@ namespace RISE
 				if( copiedFrame ) {
 					ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
 				}
-			} );
+			}, SceneEditController::RenderClass::AgentPreview, String(),
+			   /*outJobId=*/nullptr, &refusal );
 			if( !parked ) {
+				// The pre-existing reason is assigned FIRST and the switch
+				// narrows it, so the gesture/save causes keep their exact
+				// pre-round-8 wire value (this change is additive), a future
+				// enumerator cannot produce an EMPTY reason, and the switch
+				// still has no `default:` arm so -Wswitch catches the omission.
 				outReason = "editor_transaction_in_progress";
+				switch( refusal ) {
+				case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+					outReason = "render_in_progress";
+					break;
+				case SceneEditController::RenderRefusal::ControllerStopped:
+					outReason = "editor_shutting_down";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+					// Round-10 finding 3: this used to fall through to
+					// "editor_transaction_in_progress", which is a different
+					// cause -- no transaction need be open for a finalize to
+					// fail.  Still retriable, but named for what it is.
+					outReason = "editor_interaction_finalize_failed";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+					// Round-10 finding 3: the LATCHED variant.  It shared
+					// "editor_transaction_in_progress" with the cases above,
+					// and both AgentSession.h and the model-facing
+					// AgentMcpAdapter tool description say that value clears on
+					// its own -- so the model was told to retry a gate that can
+					// never open again.  Distinct value, documented as
+					// permanent, on every surface.
+					outReason = "editor_interaction_unrecoverable";
+					break;
+				case SceneEditController::RenderRefusal::PinnedRenderBusy:
+					// Not producible here (RunPreviewRenderParked has no slot
+					// concept) -- listed to keep the switch total, and mapped
+					// rather than silently reported as a transaction.
+					outReason = "render_in_progress";
+					break;
+				case SceneEditController::RenderRefusal::EditorBusy:
+				case SceneEditController::RenderRefusal::None:
+					// Keep the pre-existing reason.  `None` is unreachable on a
+					// refusal; listed to keep the switch total.
+					break;
+				}
 				return std::vector<unsigned char>();
 			}
 

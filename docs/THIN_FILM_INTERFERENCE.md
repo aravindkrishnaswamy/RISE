@@ -119,9 +119,28 @@ Implement **both** the characteristic-matrix TMM (general, N-layer) and the clos
 single-film sum, and assert they agree. The two-implementation cross-check is the point: it
 catches the classic p-polarization sign-convention bugs a single implementation can't.
 
+> **CORRECTED 2026-07-30 — read this before the code block below.** The
+> forward-root rule stated in this section was **backwards**, and shipped that
+> way: it tested `Re(N·cosθ)` first. The `Re == 0` tie-break that rule needs for
+> the evanescent case **never fires where it is needed** (0 firings for an
+> evanescent medium in 4,000,000 evaluations — `std::sqrt` of a negative real
+> leaves a ~6.1e-17 real residue; it fires only when `η` is exactly 0, at a
+> medium's own critical angle, where both roots are 0 anyway),
+> so the branch was decided by the sign of that residue and selected the
+> **growing** root. Measured consequence on the shipped evaluator over
+> 3,000,000 adversarial stacks: 206,884 non-finite results, plus silent
+> finite-but-wrong ones (an evanescent film returning `R = 0.5` where the truth
+> is exactly 1). The correct rule is the **decaying** root: `Im(N·cosθ) > 0`,
+> tie-broken by `Re(N·cosθ) > 0` — testing `Im` FIRST, because *its* zero is
+> exact (1,224,959 exact firings in the same 4,000,000). See
+> `detail::PickForwardCos` in
+> [ThinFilm.h](../src/Library/Utilities/ThinFilm.h) for the derivation and
+> `ThinFilmProductionTest` `[Branch]` for the gate.
+
 Conventions: complex index `N = n + i·k`, `k ≥ 0` (absorbing); time convention so absorbing
 media decay (`e^{−iωt}`; Born & Wolf / Macleod). Take the **forward-travelling** `cosθ` root —
-`Re(N·cosθ) > 0`, tie-broken by `Im(N·cosθ) > 0` — which keeps `cosθ = +1` at normal incidence
+the **decaying** one, `Im(N·cosθ) > 0`, tie-broken by `Re(N·cosθ) > 0` for a lossless medium at
+a propagating angle — which keeps `cosθ = +1` at normal incidence
 even for an absorbing medium. **The cosθ-branch, the matrix off-diagonal sign, and the Airy
 round-trip exponent below must be mutually consistent**: pairing a forward-root branch with the
 opposite-convention `+i sinδ` matrix / `e^{−2iδ}` Airy factor produces a *growing* wave and
@@ -130,14 +149,40 @@ is built to catch. (Verified by the P1-A reference; see `tests/thinfilm/TmmRefer
 
 ```
 Media: 0 = ambient (air, N₀=1), 1..M = films, s = substrate (semi-infinite conductor).
-Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), forward root Re(Nⱼcosθⱼ)>0 (tie Im>0)
+Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), forward root Im(Nⱼcosθⱼ)>0 (tie Re>0)
 Admittance:   ηⱼ(s) = Nⱼ cosθⱼ ;   ηⱼ(p) = Nⱼ / cosθⱼ        (per-polarization)
 Phase:        δⱼ = (2π/λ) Nⱼ dⱼ cosθⱼ                        (complex if film absorbs)
 
 TMM (per pol):  Mⱼ = [[cosδⱼ, −i sinδⱼ/ηⱼ], [−i ηⱼ sinδⱼ, cosδⱼ]] ;  M = Π Mⱼ
-                [B;C] = M·[1; η_s] ;  Y = C/B ;  r = (η₀ − Y)/(η₀ + Y) ;  R = |r|²
+                [B;C] = M·[1; η_s] ;  r = (η₀B − C)/(η₀B + C) ;  R = |r|²
+                (Y = C/B ELIMINATED 2026-07-29: every term is carried pre-scaled
+                 by 1 (s) / cosθ (p), so no 1/cosθ appears and cosθ = 0 — exactly
+                 at the critical angle, or exactly grazing — yields |r| = 1
+                 instead of Inf/Inf = NaN.  See ThinFilm.h AdmittanceScale /
+                 ScaledAdmittance.  An earlier version of this line also cited
+                 `InterfaceReflection`, which has never existed in ThinFilm.h;
+                 the interface helper is `InterfaceTerms`.)
+                Mⱼ IS NOT EVALUATED AS WRITTEN (2026-07-30).  cosδ and sinδ each
+                 grow like e^{|Im δ|} and overflow on a thick absorbing or
+                 evanescent layer, which made the N-layer entry point non-total
+                 (329,823 NaN of 3,000,000 adversarial stacks, incl. a
+                 parser-legal 3-layer `ar_layer` coating).  Both implementations
+                 factor the growing exponential out analytically:
+                   Mⱼ = (e^{−iδⱼ}/2)·M̂ⱼ ,  M̂ⱼ = [[1+φ, (1−φ)/ηⱼ], [ηⱼ(1−φ), 1+φ]]
+                 with φ = e^{+2iδⱼ}, |φ| ≤ 1 for the decaying root.  The dropped
+                 scalar cancels EXACTLY because r is homogeneous of degree 0 in
+                 M.  Writing (1−φ) = −z·E(z) at z = 2iδ, E = (e^z−1)/z, reuses
+                 the same cleared δ/η and δ·η products, so M̂ is finite at
+                 cosθ = 0 as well.  Measured total to d = 1e12 nm.
 Airy (1 film):  r = (r₀₁ + r₁s e^{+2iδ₁}) / (1 + r₀₁ r₁s e^{+2iδ₁}) ;  R = |r|²
                 with r_{ab} = (η_a − η_b)/(η_a + η_b)  (per-pol admittances)
+                ALSO NOT EVALUATED AS WRITTEN (2026-07-30): dividing at each
+                 interface first destroys the common 2·N₁·cos₁ factor, and when
+                 the FILM is at its own critical angle the quotient is 0/0 —
+                 silently returning exactly 1 (a perfect mirror, wrong by up to
+                 0.477 on Ti) on any absorbing substrate.  Both implementations
+                 keep each interface as a cleared (numerator, denominator) pair
+                 (`InterfaceTerms`) and factor 2·N₁·cos₁ out analytically.
 Unpolarized:    R = ½(R_s + R_p)
 ```
 
@@ -149,6 +194,69 @@ TMM with M=1 reduces algebraically to the Airy result → they must match to ~ma
 - **Quarter-wave AR (exact):** lossless `n₁` on lossless `n₂` in air, `d = λ₀/(4n₁)` at normal
   incidence → `R = ((n₀n₂ − n₁²)/(n₀n₂ + n₁²))²`, and `R = 0` when `n₁ = √(n₀n₂)`. Unambiguous.
 - **Energy / physical sanity:** `R ∈ [0,1]` ∀(λ,θ,d); correct branch cuts for absorbing media.
+- **A 120-decimal-digit mpmath evaluation** of the plain textbook Airy quotient and the plain
+  textbook characteristic matrix. At 120 dps the quantities that make the double evaluator
+  degenerate are merely *small*, not zero, so the naive forms are accurate — which is what makes
+  it an independent oracle. `ThinFilmProductionTest` `[Truth]` and `[Helpers]` carry absolute
+  values derived from it. **This anchor is load-bearing:** finiteness and range checks are NOT
+  sufficient here, because the two worst thin-film defects found to date (the unfactored Airy
+  0/0, and the growing evanescent root) both returned *finite, in-range, wrong* values.
+
+**INPUT DOMAIN — nothing between a scene file and the evaluator validates a number.** `GGXBRDF` /
+`GGXSPF` resolve the film thickness *and* all three media's `n` and `k` from `IScalarPainter`s, so
+a black texel, a negative `scale`, or a polynomial that dips below zero arrives at the optics
+directly — and the `[0,1]` clamp hides the result either way (`NaN < 0` and `NaN > 1` are both
+false). `ThinFilm.h` therefore normalizes at its own boundary, in two helpers whose boundaries are
+exactly 0 or the finite/non-finite line (no epsilons):
+
+- `detail::PhaseCoefficient` — a layer contributes phase only if `kd = 2πd/λ` is a *positive
+  finite* number. One rule covers `d < 0`, `d = ±inf`, `d = NaN`, `λ < 0`, `λ = 0`, `λ = NaN`;
+  otherwise the layer is absent, the continuous `d → 0⁺` limit. (`λ < 0` flips the sign of `kd`
+  exactly as `d < 0` does — on glass / (1.4+0.5i, 300 nm) / silver at cos θ = 0.5,
+  `|e^{+2iδ}| = 295.6` and `R_p = 17.69`, saturated to `1.0`.)
+- `detail::PhysicalIndex` — folds a medium onto the passive convention `|n| + i|k|` (note `n = 0`
+  with `k > 0` is legitimate, not degenerate — silver is `n = 0.144`). A non-passive index folds to
+  its passive twin — on one stack (glass ambient, film `|N| = 1.4+0.5i` at 300 nm, silver
+  substrate, cos θ = 0.5) the passive sign gives `R_s = 0.217`, `R_p = 0.0547` while *either*
+  flipped sign gives `R_s = 4.61`, `R_p = 18.31`, laundered into a saturated `1.0`; `R` is exactly
+  invariant under `N → −N`, so the two flipped forms necessarily agree. A **zero** index in any
+  role is replaced by a tiny stand-in (`1e-40`) so the ordinary math computes the **limit** —
+  tracked to ~1e-15 across 200,000 stacks in all three roles (film 1.3e-15,
+  substrate 1.2e-15, ambient 1.8e-15 on the sampled draw; an independent draw gave
+  1.4/1.6/7.6e-15, so read these as an order, not a bound). Four earlier rules invented a
+  constant instead and all four were wrong, because the limit depends on the stack: vacuum turned a
+  black `film_ior` texel into a mirror; "absent" was off by up to 1.0 (as `N₁ → 0` the film becomes
+  an evanescent *barrier*, not an absent layer); and "opaque, `R = 1`" was off by up to 0.9987,
+  because no transmission is not no absorption — an absorbing film still dissipates the round trip.
+  A **non-finite** index is not a limit at all, just corrupt input, and returns 1. The zero case
+  affected the **ambient and substrate as well as the film**, and reached the BRDF two ways,
+  neither benign: the RGB path yields a NaN pixel, the spectral path goes *silently black*,
+  because `GGXBRDF`'s `if( Rfilm > 0 )` is false for NaN.
+
+Note the asymmetry with `ar_layer`, which hard-rejects `thickness <= 0` at parse time. The GGX
+slot has no such gate, so an author whose painter dips negative renders the bare substrate and is
+never told. A parse-time diagnostic for the inline-constant case would close everything except a
+genuinely spatially-varying painter; not implemented.
+
+**Residual, measured, open:** a merely *tiny* index is still wrong, and fails differently per flag
+set — bisected in-repo, not quoted. Shipped `-ffast-math` (which implies `-fcx-limited-range`, so
+complex division is the naive `(ac+bd, bc−ad)/(c²+d²)`): NaN below `n₁ = 1e-77.03`, by **overflow**
+— the p-polarization interface products grow like `1/n₁` — and above `n₁ = 1e154.06`. Strict IEEE:
+**not** NaN and not wrong either — it returns the correct value (to ~4e-16 against 120 dps) down to
+about `1e-154`. (An earlier version said it "silently returns the bare-stack value, the film
+vanishing"; that was never checked against the actual bare-stack value, which differs by 0.43.)
+No threshold was
+added, because a threshold here is the magic epsilon this codebase refuses; the named fix is to
+reformulate `CosThetaInMedium` around `η² = N² − s²` rather than dividing by `N`.
+
+**AMBIENT DOMAIN.** The supported ambient is NON-ABSORBING (`k₀ = 0`) — air, glass, enamel; every
+shipped caller passes a literal `0.0`. With `k₀ > 0` the incident wave is inhomogeneous, the stack
+is no longer passive, and `R` exceeds 1 on most sampled stacks by an effectively *unbounded*
+margin. No single maximum is quoted: three independent samples gave 59.4, 202 and 1516, so the
+figure is a property of the sampling distribution rather than of the evaluator. (Two early samples,
+1.093 and 1.287, suggested ~30 %; they were simply the first two taken.) The evaluators stay total there and the `[0,1]` clamp
+reports the saturated 1, but that is a saturation, not a physical answer. (Byrnes' `tmm` rejects
+an absorbing incident medium outright.)
 
 Reference code uses `std::complex<double>` (clarity over speed; this is the oracle). Written
 N-layer so graded/multi-oxide is a future special-case, not a rewrite.
@@ -386,7 +494,9 @@ independent verification; workers adversarially reviewed; nothing pushed):
 - **P2-A** `src/Library/Utilities/ThinFilm.h` (`b75f69fd`) — production Airy evaluator
   (`ReflectanceConductor{,RGB}`, N-layer-capable), registered in the header-tracking build projects
   (VS + Xcode; `plutil` clean). Production ≡ Phase-1 oracle to 3.3e-16 (3271 asserts). A grazing
-  `cosθ=0` NaN was caught + fixed (input clamp).
+  `cosθ=0` NaN was caught + fixed (input clamp).  **Superseded 2026-07-29:** the
+  TMM/Airy reformulation makes `cosθ = 0` return R → 1 directly, so the clamp is no
+  longer the NaN defence — it is retained only for Snell-invariant representability.
 - **P2-B** GGX `eFresnelThinFilmConductor` + `film_*` slots (`fab1d8e8`) — **exact** spectral path
   (`ScatterNM`/`valueNM`; HWSS companions route through `valueNM`); RGB albedo-basis integral
   (von-Kries E→D65; the 2D LUT was **deferred** — §13.1). Conductor/Schlick paths byte-identical
@@ -431,7 +541,9 @@ thread-safety, post-fix re-review, "what's left").
   getters/setters; `tests/ThinFilmIntrospectionTest.cpp` (29 asserts). The GUI/Blender property panels
   can now view + edit a thin-film material's defining parameters.
 - **Cleared with no findings:** the §5 optics convention + numerics (incl. the principled-fix audit
-  of the grazing-`cosθ` clamp — it has a derivable bound), spectral `ScatterNM`≡`valueNM` twins +
+  of the grazing-`cosθ` clamp — it has a derivable bound; note that audit's premise
+  changed 2026-07-29, when the reformulation removed the NaN the clamp was defending
+  against), spectral `ScatterNM`≡`valueNM` twins +
   HWSS companions + BDPT/VCM/MLT safety, energy conservation, reference-counting of the new slots,
   ABI preservation, thread-safety/reentrancy (the RGB integral uses load-init CMF tables, not a lazy
   singleton), MIS lobe classification (`isDelta=false`, glossy), parser diagnostics, n/k data, and

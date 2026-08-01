@@ -31,6 +31,13 @@
 #include <fstream>
 #include <memory>
 #include <string>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 #include <vector>
 
 using namespace RISE;
@@ -64,7 +71,22 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
@@ -312,13 +334,24 @@ int main()
 			       "propose_patch inputSchema.required == {target,param,value}" );
 		}
 
-		// Spot-check 2: validate requires text.
+		// Spot-check 2: validate requires NOTHING -- `text` is OPTIONAL.
+		// FIX 4: the no-argument form validates the CURRENT scene.  While
+		// `text` was required, the model re-emitted the whole scene to check
+		// its own three-parameter patch (measured: 6,369 output tokens / 27.8 s
+		// in one GUI turn), so a schema that still marked it required would
+		// re-create that turn even with the RPC side fixed.
 		{
 			JsonValue tool = FindTool( "validate" );
 			Check( tool.isObject(), "found validate tool" );
-			const JsonValue& required = tool.get( "inputSchema" ).get( "required" );
-			Check( required.size() == 1 && required.at( 0 ).asString() == "text",
-			       "validate inputSchema.required == [\"text\"]" );
+			const JsonValue& schema = tool.get( "inputSchema" );
+			const JsonValue& required = schema.get( "required" );
+			Check( !required.isArray() || required.size() == 0,
+			       "validate inputSchema declares NO required parameters (the no-arg form is legal)" );
+			Check( schema.get( "properties" ).get( "text" ).isObject(),
+			       "validate inputSchema still declares the optional text parameter" );
+			const std::string desc = tool.get( "description" ).asString();
+			Check( desc.find( "NO ARGUMENTS" ) != std::string::npos,
+			       "validate description leads with the no-argument current-scene form" );
 		}
 
 		// Spot-check 3: render_status requires renderJobId.
@@ -473,7 +506,7 @@ int main()
 
 	//----------------------------------------------------------------------
 	// tools/call TOOL-EXECUTION error: the wrapped verb itself returns a
-	// genuine JSON-RPC error (validate with NO 'text' param -> the wrapped
+	// genuine JSON-RPC error (validate with a NON-STRING 'text' -> the wrapped
 	// dispatcher's own -32602) -> MCP isError:true, still a JSON-RPC SUCCESS
 	// envelope at the tools/call layer (NOT a protocol error at THIS
 	// layer -- the protocol-error cases are unknown tool name / malformed
@@ -485,16 +518,21 @@ int main()
 	// split is keyed on the right condition (inner JSON-RPC error vs.
 	// inner JSON-RPC success vs. this adapter's own protocol-layer error).
 	//----------------------------------------------------------------------
-	std::printf( "[tools/call] tool-execution error (validate missing 'text') -> isError:true\n" );
+	// (Pre-FIX-4 this used validate with NO arguments; that form is now the
+	// legal current-scene check, so the exemplar is a non-string 'text',
+	// which the verb still refuses with its own -32602.)
+	std::printf( "[tools/call] tool-execution error (validate with a non-string 'text') -> isError:true\n" );
 	{
-		const std::string resp = mcp.HandleLine( ReqToolCall( 24, "validate", JsonValue::MakeObject() ) );
+		JsonValue badArgs = JsonValue::MakeObject();
+		badArgs.set( "text", JsonValue::MakeNumber( 42.0 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 24, "validate", badArgs ) );
 		JsonValue env = ParseResponse( resp, 24 );
 		Check( !env.has( "error" ),
-		       "tools/call(validate, missing text) is a JSON-RPC SUCCESS envelope (tool errors are not protocol errors)" );
-		Check( env.has( "result" ), "tools/call(validate, missing text) has a result field" );
+		       "tools/call(validate, non-string text) is a JSON-RPC SUCCESS envelope (tool errors are not protocol errors)" );
+		Check( env.has( "result" ), "tools/call(validate, non-string text) has a result field" );
 		const JsonValue& result = env.get( "result" );
 		Check( result.get( "isError" ).asBool( false ) == true,
-		       "tools/call(validate, missing text) isError == true (the wrapped verb's own -32602 becomes a tool-execution error)" );
+		       "tools/call(validate, non-string text) isError == true (the wrapped verb's own -32602 becomes a tool-execution error)" );
 		const JsonValue& content = result.get( "content" );
 		Check( content.isArray() && content.size() >= 1, "tool-execution error result carries content" );
 		const std::string text = content.at( 0 ).get( "text" ).asString();

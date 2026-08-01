@@ -65,8 +65,9 @@
 //    Secure-MCP slice 2 (headless autonomy policy): the OPTIONAL
 //    `autonomy` constructor argument flows straight through to the
 //    wrapped AgentRpcDispatcher -- this adapter performs NO independent
-//    policy check.  A `tools/call` on a mutating verb (propose_patch/
-//    insert_chunk/remove_chunk) under AgentAutonomy::Read surfaces the
+//    policy check.  A `tools/call` on one of the 5 mutating verbs
+//    (propose_patch/propose_patches/insert_chunk/insert_chunks/
+//    remove_chunk) under AgentAutonomy::Read surfaces the
 //    wrapped dispatcher's kAutonomyRefused JSON-RPC error through the
 //    SAME "tool-execution error" path every other wrapped-verb error
 //    already takes: a SUCCESS envelope whose CallToolResult carries
@@ -75,7 +76,7 @@
 //    documented split (see the class doc above): the tool NAME and
 //    argument SHAPE were valid, so this is not a protocol failure, but
 //    invoking it was refused, so it is not a clean result either.
-//    `tools/list` additionally ANNOTATES (never hides) the three mutating
+//    `tools/list` additionally ANNOTATES (never hides) the 5 mutating
 //    tools' descriptions under Read with a leading
 //    "[REFUSED under --agent-autonomy=read: ...]" note -- the tool stays
 //    fully visible (with its real inputSchema) so a client can still

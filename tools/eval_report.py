@@ -18,7 +18,17 @@ subdirectory is written per (scenario, provider, model, repeat):
                                          (AgentEvalRunner.cpp ~line 584-601)
         results.jsonl                   E3 checker output, appended: scenarioId,
                                          checkpointFraction, allPassed,
-                                         checkpoints[] = {kind,passed,weight,detail}
+                                         checkpoints[] = {kind,passed,weight,detail,
+                                         metricValue?,metricLabel?} -- metricValue
+                                         is OMITTED entirely except on the two
+                                         "document" ops that populate it
+                                         ("distinct_chunk_kinds" / geometry scope
+                                         expansion's "objects_reaching_kinds");
+                                         metricLabel rides ALONGSIDE it (the
+                                         checkpoint's explicit "metricLabel", else
+                                         its op name) and is likewise omitted when
+                                         metricValue is.  AGGREGATED PER LABEL --
+                                         see compute_group_stats' mean_metrics.
                                          (AgentEvalRunner.cpp ~line 1520-1544)
 
 Directory-name separator is literally "__"; the model segment is present only
@@ -810,6 +820,11 @@ def check_staleness(records, warnings):
 # Grouping + stats
 # ---------------------------------------------------------------------------
 
+# The fallback metricLabel bucket for a metricValue-carrying checkpoint that
+# has no (or an empty/non-string) "metricLabel" -- see compute_group_stats.
+_UNLABELED_METRIC = "unlabeled"
+
+
 def group_key(rec):
     return (rec.scenario_id, rec.provider, rec.model)
 
@@ -829,6 +844,20 @@ def compute_group_stats(key, recs):
     status_counter = Counter()
     total_input = total_output = total_cached = 0
     wall_ms_list = []
+    # material-richness P0 (geometry scope expansion, 2026-07-29): any
+    # checkpoint carrying a numeric "metricValue" (today: the "document" ops
+    # "distinct_chunk_kinds" / "objects_reaching_kinds" -- see
+    # AgentEvalRunner.cpp's CheckOutcome::metricValue) contributes to a mean,
+    # so richness is a trend line across repeats/providers, not just
+    # pass/fail. AGGREGATED PER metricLabel (never pooled ACROSS labels --
+    # a scenario with painter-diversity AND geometry-diversity checkpoints
+    # would otherwise blend two unrelated measurements into one meaningless
+    # number). A checkpoint carrying metricValue but no metricLabel (an
+    # older results.jsonl predating this field, or a hand-built dict in a
+    # test) falls back to the constant _UNLABELED_METRIC bucket rather than
+    # being dropped -- so old data still surfaces, just not attributable to
+    # a specific measured aspect.
+    metric_values_by_label = defaultdict(list)
 
     for r in recs:
         all_passed = False
@@ -841,6 +870,14 @@ def compute_group_stats(key, recs):
             checkpoint_fracs.append(r.check["checkpointFraction"])
         else:
             checkpoint_fracs.append(0.0)
+
+        if r.check is not None and isinstance(r.check.get("checkpoints"), list):
+            for cp in r.check["checkpoints"]:
+                if isinstance(cp, dict) and isinstance(cp.get("metricValue"), (int, float)):
+                    label = cp.get("metricLabel")
+                    if not isinstance(label, str) or not label:
+                        label = _UNLABELED_METRIC
+                    metric_values_by_label[label].append(cp["metricValue"])
 
         if r.result is not None and isinstance(r.result.get("terminalStatus"), str):
             status = r.result["terminalStatus"]
@@ -893,6 +930,18 @@ def compute_group_stats(key, recs):
     lower, upper = wilson_score_interval(successes, n)
     mean_ckpt = (sum(checkpoint_fracs) / len(checkpoint_fracs)) if checkpoint_fracs else None
     mean_wall_ms = (sum(wall_ms_list) / len(wall_ms_list)) if wall_ms_list else None
+    # PER-LABEL means -- never pooled across labels. Empty dict when this
+    # group carries no metricValue-carrying checkpoint at all.
+    mean_metrics = {
+        label: (sum(values) / len(values))
+        for label, values in metric_values_by_label.items()
+    }
+    # Back-compat "mean_metric_value": kept ONLY when the group carries
+    # EXACTLY ONE label (pooling would be meaningless with more than one,
+    # and this key never appeared in a committed run with more than one
+    # metric-carrying checkpoint -- geometry scope expansion is the first).
+    # None with zero or multiple labels.
+    mean_metric_value = next(iter(mean_metrics.values())) if len(mean_metrics) == 1 else None
 
     cost, priced = estimate_cost(provider, model, total_input, total_output, total_cached)
     cps = cost_per_success(cost, priced, successes)
@@ -920,6 +969,8 @@ def compute_group_stats(key, recs):
         "estimated_cost_usd": cost if priced else None,
         "cost_per_success": cps,
         "mean_wall_ms": mean_wall_ms,
+        "mean_metric_value": mean_metric_value,
+        "mean_metrics": mean_metrics,
         "terminal_status_counts": dict(status_counter),
         "has_unversioned": has_unversioned,
         "has_stale": has_stale,
@@ -981,6 +1032,18 @@ def fmt_status_counts(counts):
     return " ".join(f"{k}:{v}" for k, v in sorted(counts.items())) if counts else "-"
 
 
+def all_metric_labels(stats_list):
+    """Every distinct metricLabel carried by ANY group in this report,
+    sorted for a deterministic column order.  Empty when no group carries
+    a metricValue-carrying checkpoint at all -- render_text_report /
+    render_markdown_report use this to add ZERO columns in that case, so a
+    report with no metricValue checkpoints stays byte-for-byte unchanged."""
+    labels = set()
+    for s in stats_list:
+        labels.update(s.get("mean_metrics", {}).keys())
+    return sorted(labels)
+
+
 def stale_cell_suffix(stats):
     """"†" ('†') when the group contains any unversioned
     (pre-content-hash) record, "!" when it contains any stale
@@ -997,22 +1060,42 @@ def stale_cell_suffix(stats):
 
 
 def render_text_report(stats_list, warnings):
+    # geometry scope expansion: ONE column PER metricLabel present anywhere
+    # in this report (e.g. "metric[painter_kinds]", "metric[geometry_kinds]"),
+    # added ONLY for labels that are actually present -- keeps every
+    # pre-existing report (no metricValue checkpoints anywhere in the run)
+    # byte-for-byte unchanged, and keeps two unrelated measurements from
+    # sharing one column.
+    metric_labels = all_metric_labels(stats_list)
+    show_metric = bool(metric_labels)
+
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
         "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
+    if show_metric:
+        for i, label in enumerate(metric_labels):
+            headers.insert(8 + i, f"metric[{label}]")
     rows = []
     for s in stats_list:
-        rows.append([
+        row = [
             s["scenarioId"] + stale_cell_suffix(s), s["provider"], s["model"] or "-",
             str(s["n"]), fmt_pct(s["pass_at_1"]),
             fmt_ci(s["wilson_lower"], s["wilson_upper"]),
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
+        ]
+        if show_metric:
+            group_metrics = s.get("mean_metrics", {})
+            for label in metric_labels:
+                mv = group_metrics.get(label)
+                row.append("-" if mv is None else f"{mv:.2f}")
+        row.extend([
             fmt_cost(s["cost_per_success"]),
             fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]),
         ])
+        rows.append(row)
 
     widths = [len(h) for h in headers]
     for row in rows:
@@ -1054,6 +1137,11 @@ def render_text_report(stats_list, warnings):
         "† = contains unversioned (pre-content-hash) results -- not tied to "
         "the current scenario definitions; re-run the matrix to refresh. "
         "! = contains results graded under a different checkpoint count (stale)."
+        + (" metric[label] = mean of checkpoints' numeric \"metricValue\" carrying "
+           "that \"metricLabel\" (default: the op name), across N repeats -- a "
+           "richness trend line per MEASURED ASPECT, never pooled across labels; "
+           "\"-\" when this group carries none with that label."
+           if show_metric else "")
     )
 
     if warnings:
@@ -1065,10 +1153,21 @@ def render_text_report(stats_list, warnings):
 
 
 def render_markdown_report(stats_list, warnings):
+    # geometry scope expansion: see render_text_report's identical
+    # per-label column logic -- one "metric[label]" column per label
+    # present anywhere in this report, so a report with none is
+    # byte-for-byte unchanged and two unrelated measurements never share a
+    # column.
+    metric_labels = all_metric_labels(stats_list)
+    show_metric = bool(metric_labels)
+
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
         "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
+    if show_metric:
+        for i, label in enumerate(metric_labels):
+            headers.insert(8 + i, f"metric[{label}]")
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("|" + "|".join(["---"] * len(headers)) + "|")
@@ -1079,10 +1178,17 @@ def render_markdown_report(stats_list, warnings):
             fmt_ci(s["wilson_lower"], s["wilson_upper"]),
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
+        ]
+        if show_metric:
+            group_metrics = s.get("mean_metrics", {})
+            for label in metric_labels:
+                mv = group_metrics.get(label)
+                row.append("-" if mv is None else f"{mv:.2f}")
+        row.extend([
             fmt_cost(s["cost_per_success"]),
             fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]).replace("|", "\\|"),
-        ]
+        ])
         lines.append("| " + " | ".join(row) + " |")
 
     ov = compute_overall_rollup(stats_list)
@@ -1108,6 +1214,12 @@ def render_markdown_report(stats_list, warnings):
         "† = contains unversioned (pre-content-hash) results -- not tied to "
         "the current scenario definitions; re-run the matrix to refresh. "
         "! = contains results graded under a different checkpoint count (stale)."
+        + (" `metric[label]` = mean of checkpoints' numeric `metricValue` "
+           "carrying that `metricLabel` (default: the op name), across N "
+           "repeats -- a richness trend line per MEASURED ASPECT, never "
+           "pooled across labels; `-` when this group carries none with "
+           "that label."
+           if show_metric else "")
     )
     if warnings:
         lines.append("")
@@ -1514,6 +1626,165 @@ def selftest():
     stats_mixed = compute_group_stats(("scenC", "anthropic", ""), [_mk_rec(True), r_untimed, r_nowall])
     _assert_close(stats_mixed["mean_wall_ms"], 1200.0, 1e-9,
                   "mean_wall_ms excludes -1 and missing (only the one timed 1200ms run counts)")
+
+    # --- geometry scope expansion: mean_metrics (AgentEvalRunner.cpp's
+    # optional per-checkpoint "metricValue"/"metricLabel") is aggregated
+    # PER LABEL, never pooled across labels; mean_metric_value is kept ONLY
+    # as a back-compat convenience for the single-label case.  The
+    # RENDERED reports show one "metric[label]" column per label present
+    # anywhere in the report. ---
+    def _mk_rec_with_metric(metric_value, metric_label="distinct_chunk_kinds"):
+        r = RunRecord()
+        r.check = {
+            "allPassed": True,
+            "checkpointFraction": 1.0,
+            "checkpoints": [
+                {"kind": "document", "passed": True, "weight": 1.0, "detail": "chunk_count ok"},
+                {"kind": "document", "passed": True, "weight": 2.0, "detail": "distinct ok",
+                 "metricValue": metric_value, "metricLabel": metric_label},
+            ],
+        }
+        r.result = {"terminalStatus": "final_text", "wallMs": 500}
+        r.input_tokens = r.output_tokens = r.cached_tokens = 0
+        return r
+
+    # Single-label group: mean_metrics carries exactly one entry, and
+    # mean_metric_value is kept (trivial back-compat: exactly one label).
+    stats_metric = compute_group_stats(("scenF", "anthropic", ""), [_mk_rec_with_metric(2), _mk_rec_with_metric(4)])
+    if stats_metric["mean_metrics"] != {"distinct_chunk_kinds": 3.0}:
+        raise AssertionError(f"expected mean_metrics == {{'distinct_chunk_kinds': 3.0}}, got {stats_metric['mean_metrics']}")
+    _assert_close(stats_metric["mean_metric_value"], 3.0, 1e-12,
+                  "mean_metric_value (single-label back-compat) == the one label's mean (2,4 -> 3.0)")
+    print("PASS: mean_metrics aggregates a single label correctly, mean_metric_value back-compat holds")
+
+    # A group with NO metricValue-carrying checkpoint reports an EMPTY
+    # mean_metrics dict and mean_metric_value None (never a spurious 0.0 --
+    # distinguishes "no metric-carrying checkpoint here" from "count was 0").
+    stats_no_metric = compute_group_stats(("scenG", "anthropic", ""), [_mk_rec(True)])
+    if stats_no_metric["mean_metrics"] != {}:
+        raise AssertionError(f"expected mean_metrics == {{}} with no metricValue checkpoints, got {stats_no_metric['mean_metrics']}")
+    if stats_no_metric["mean_metric_value"] is not None:
+        raise AssertionError(f"expected mean_metric_value None with no metricValue checkpoints, got {stats_no_metric['mean_metric_value']}")
+    print("PASS: mean_metrics/mean_metric_value are empty/None for a group with no metricValue-carrying checkpoint")
+
+    # TWO-LABEL group (the geometry scope expansion's actual shape: a
+    # scenario carrying BOTH a painter_kinds and a geometry_kinds
+    # distinct_chunk_kinds checkpoint) -- each label's mean is computed
+    # INDEPENDENTLY, never blended into one pooled number.  painter_kinds:
+    # (2,4) -> 3.0; geometry_kinds: (5,7) -> 6.0.
+    def _mk_rec_with_two_metrics(painter_v, geometry_v):
+        r = RunRecord()
+        r.check = {
+            "allPassed": True,
+            "checkpointFraction": 1.0,
+            "checkpoints": [
+                {"kind": "document", "passed": True, "weight": 2.0, "detail": "painter diversity",
+                 "metricValue": painter_v, "metricLabel": "painter_kinds"},
+                {"kind": "document", "passed": True, "weight": 1.5, "detail": "geometry diversity",
+                 "metricValue": geometry_v, "metricLabel": "geometry_kinds"},
+            ],
+        }
+        r.result = {"terminalStatus": "final_text", "wallMs": 500}
+        r.input_tokens = r.output_tokens = r.cached_tokens = 0
+        return r
+
+    stats_two_label = compute_group_stats(
+        ("scenH", "anthropic", ""),
+        [_mk_rec_with_two_metrics(2, 5), _mk_rec_with_two_metrics(4, 7)],
+    )
+    if stats_two_label["mean_metrics"] != {"painter_kinds": 3.0, "geometry_kinds": 6.0}:
+        raise AssertionError(
+            f"expected mean_metrics == {{'painter_kinds': 3.0, 'geometry_kinds': 6.0}}, got {stats_two_label['mean_metrics']}"
+        )
+    # mean_metric_value is None with >1 label -- pooling two unrelated
+    # measurements into one number would be exactly the bug this aggregation
+    # exists to prevent.
+    if stats_two_label["mean_metric_value"] is not None:
+        raise AssertionError(
+            f"expected mean_metric_value None for a >1-label group (pooling would be meaningless), "
+            f"got {stats_two_label['mean_metric_value']}"
+        )
+    print("PASS: mean_metrics aggregates two labels independently; mean_metric_value is None (not pooled)")
+
+    # A checkpoint carrying metricValue but NO metricLabel falls back to the
+    # _UNLABELED_METRIC bucket, never dropped and never silently merged into
+    # a same-valued real label.
+    stats_unlabeled = compute_group_stats(
+        ("scenI", "anthropic", ""),
+        [_mk_rec_with_metric(9, metric_label=None)],
+    )
+    if stats_unlabeled["mean_metrics"] != {_UNLABELED_METRIC: 9.0}:
+        raise AssertionError(f"expected the unlabeled bucket, got {stats_unlabeled['mean_metrics']}")
+    print("PASS: a metricValue with no metricLabel falls back to the unlabeled bucket")
+
+    # The rendered text/markdown reports add ONE "metric[label]" COLUMN PER
+    # LABEL present anywhere in the report -- a report with none is
+    # byte-for-byte unaffected by this feature (the no-metric byte-compat
+    # guarantee).
+    text_with_metric = render_text_report([stats_metric], [])
+    if "metric[distinct_chunk_kinds]" not in text_with_metric:
+        raise AssertionError("render_text_report: metric[distinct_chunk_kinds] column missing when a group carries that label")
+    text_without_metric = render_text_report([stats_no_metric], [])
+    if "metric[" in text_without_metric:
+        raise AssertionError("render_text_report: a metric[...] column is present with NO group carrying any metricValue")
+    md_with_metric = render_markdown_report([stats_metric], [])
+    if "metric[distinct_chunk_kinds]" not in md_with_metric:
+        raise AssertionError("render_markdown_report: metric[distinct_chunk_kinds] column missing when a group carries that label")
+    md_without_metric = render_markdown_report([stats_no_metric], [])
+    if "metric[" in md_without_metric:
+        raise AssertionError("render_markdown_report: a metric[...] column is present with NO group carrying any metricValue")
+    print("PASS: text/markdown reports show metric[label] columns only for labels actually present")
+
+    # Two-label report: BOTH columns appear, each group's OWN cell shows its
+    # own label's mean, and a group missing one of the report's labels shows
+    # "-" (not 0, not the other label's value) in that column.  Columns are
+    # fixed-width (ljust to a report-wide max, joined by "  "), so a given
+    # column's character START OFFSET is IDENTICAL on the header line and
+    # every data row -- extract each row's cell by slicing at that offset
+    # rather than fragile substring search.
+    text_two_label = render_text_report([stats_two_label, stats_metric], [])
+    lines_two_label = text_two_label.splitlines()
+    header_line = lines_two_label[0]
+    for expect_header in ("metric[distinct_chunk_kinds]", "metric[geometry_kinds]", "metric[painter_kinds]"):
+        if expect_header not in header_line:
+            raise AssertionError(f"render_text_report: '{expect_header}' column missing from header: {header_line}")
+
+    def _cell_at(row, col_header):
+        start = header_line.index(col_header)
+        return row[start:].split("  ", 1)[0].strip()
+
+    scenH_row = next(l for l in lines_two_label if l.startswith("scenH"))
+    scenF_row = next(l for l in lines_two_label if l.startswith("scenF"))
+    if _cell_at(scenH_row, "metric[painter_kinds]") != "3.00":
+        raise AssertionError(f"render_text_report: scenH painter_kinds cell should be '3.00', got {_cell_at(scenH_row, 'metric[painter_kinds]')!r}")
+    if _cell_at(scenH_row, "metric[geometry_kinds]") != "6.00":
+        raise AssertionError(f"render_text_report: scenH geometry_kinds cell should be '6.00', got {_cell_at(scenH_row, 'metric[geometry_kinds]')!r}")
+    if _cell_at(scenH_row, "metric[distinct_chunk_kinds]") != "-":
+        raise AssertionError(f"render_text_report: scenH distinct_chunk_kinds cell (a label it doesn't carry) should be '-', got {_cell_at(scenH_row, 'metric[distinct_chunk_kinds]')!r}")
+    if _cell_at(scenF_row, "metric[distinct_chunk_kinds]") != "3.00":
+        raise AssertionError(f"render_text_report: scenF distinct_chunk_kinds cell should be '3.00', got {_cell_at(scenF_row, 'metric[distinct_chunk_kinds]')!r}")
+    if _cell_at(scenF_row, "metric[painter_kinds]") != "-":
+        raise AssertionError(f"render_text_report: scenF painter_kinds cell (a label it doesn't carry) should be '-', got {_cell_at(scenF_row, 'metric[painter_kinds]')!r}")
+    if _cell_at(scenF_row, "metric[geometry_kinds]") != "-":
+        raise AssertionError(f"render_text_report: scenF geometry_kinds cell (a label it doesn't carry) should be '-', got {_cell_at(scenF_row, 'metric[geometry_kinds]')!r}")
+    print("PASS: a multi-label report renders every label's column, each group's own means, and '-' for labels it lacks")
+
+    # The JSON report always threads mean_metrics/mean_metric_value through
+    # (structured data, not a human column layout -- no gating).
+    json_report = json.loads(render_json_report([stats_metric, stats_no_metric, stats_two_label], []))
+    if json_report["groups"][0]["mean_metrics"] != {"distinct_chunk_kinds": 3.0}:
+        raise AssertionError("render_json_report: mean_metrics not threaded through for scenF")
+    if json_report["groups"][0]["mean_metric_value"] != 3.0:
+        raise AssertionError("render_json_report: mean_metric_value not threaded through for scenF")
+    if json_report["groups"][1]["mean_metrics"] != {}:
+        raise AssertionError("render_json_report: mean_metrics should be {} for scenG")
+    if json_report["groups"][1]["mean_metric_value"] is not None:
+        raise AssertionError("render_json_report: mean_metric_value should be null for scenG")
+    if json_report["groups"][2]["mean_metrics"] != {"painter_kinds": 3.0, "geometry_kinds": 6.0}:
+        raise AssertionError("render_json_report: mean_metrics not threaded through for scenH")
+    if json_report["groups"][2]["mean_metric_value"] is not None:
+        raise AssertionError("render_json_report: mean_metric_value should be null for scenH (2 labels)")
+    print("PASS: render_json_report threads mean_metrics/mean_metric_value through unconditionally")
 
     # --- DEGENERATE NO-OP RUN classification (a run that answered on its
     # first LLM turn without ever calling a tool did not attempt the task).

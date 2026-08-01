@@ -11,7 +11,12 @@ import UniformTypeIdentifiers
 // (wrapped by RISEAgentChatBridge); this file is the thin I/O driver
 // the sans-IO core was designed for: it performs the HTTP round-trips,
 // executes tool calls against the live scene via the viewport bridge's
-// synchronous `agentHandleLine`, and renders a display transcript.
+// synchronous `agentHandleToolCall` (the AUTONOMY-ROUTED dispatcher —
+// every model-requested verb, `render` included since the 2026-07
+// per-session image-cache fix), and renders a display transcript.  The
+// bridge's `agentHandleLine` is a SEPARATE administrative session; this
+// driver calls it only for its own housekeeping (proposals polling /
+// resolution, the one-time skill-index fetch), never for a tool call.
 //
 // SECRET HYGIENE (hard rule): API keys live in the macOS Keychain (or
 // arrive via environment variables), never in UserDefaults, never
@@ -285,6 +290,19 @@ final class ChatViewModel: ObservableObject {
     }
 
     @Published private(set) var transcript: [Entry] = []
+
+    /// Highest `compactedEntryCount` already reported to the user as a
+    /// `.notice` row -- so one compaction event produces one notice, not
+    /// one per subsequent request.  Reset wherever `transcript` is, since
+    /// the loop's own counter is cleared by Reset()/SetProvider() too.
+    private var lastReportedCompactedEntryCount: UInt = 0
+
+    /// Highest `driverNoteCount` already reported as a `.notice` row — the
+    /// same one-event-one-notice watermark as above, for the notes the LOOP
+    /// injects into the conversation (today: the blind-edit nudge).  Reset
+    /// alongside `lastReportedCompactedEntryCount`; the loop's own counter
+    /// is cleared by Reset()/SetProvider() too.
+    private var lastReportedDriverNoteCount: UInt = 0
     @Published var inputText: String = ""
     /// Images queued to go out with the NEXT send() (Model-B F5 chat
     /// image attachments) — populated by attachImageFile(at:), shown as
@@ -488,9 +506,15 @@ final class ChatViewModel: ObservableObject {
     /// being dropped on the next refresh.
     private static let resolvedProposalLingerSeconds: TimeInterval = 4.0
 
-    /// Poll list_proposals through the OWNER dispatcher (agentHandleLine
-    /// — the SAME in-process path the chat driver and the raw JSON-RPC
-    /// debug panel use), NOT the external hosted server. Cheap: a single
+    /// Poll list_proposals through the ADMINISTRATIVE dispatcher
+    /// (`agentHandleLine` → the bridge's `_agentDispatcher` — the same
+    /// in-process path the raw JSON-RPC debug panel drives, and a
+    /// GENUINELY DIFFERENT AgentSession from `agentHandleToolCall`'s
+    /// `_agentToolDispatcherOwner`, which is where every model-requested
+    /// tool call goes). This panel keeps its own path because
+    /// resolve_proposal is refused outside Owner/Commit and
+    /// `agentHandleLine`'s session is permanently Commit-capable. NOT the
+    /// external hosted server. Cheap: a single
     /// synchronous HandleLine call returning the controller's in-memory
     /// queue — safe to call from a timer at a modest interval (see
     /// ChatPanel's ProposalsPanel, which drives this on a few-times-a-
@@ -587,10 +611,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Approve or reject proposal `id` through the OWNER dispatcher (the
-    /// Owner-only + Commit-only gates on resolve_proposal — see
-    /// AgentRpc.h — mean this MUST go through `_agentDispatcher`, never
-    /// the external hosted server's own dispatcher, which would be
+    /// Approve or reject proposal `id` through the ADMINISTRATIVE
+    /// dispatcher (the Owner-only + Commit-only gates on resolve_proposal
+    /// — see AgentRpc.h — mean this MUST go through `agentHandleLine`'s
+    /// `_agentDispatcher`, never the tool-call sessions
+    /// `agentHandleToolCall` selects and never the external hosted
+    /// server's own dispatcher, which would be
     /// refused outright). Refreshes the listing immediately afterward so
     /// the panel reflects the new status without waiting for the next
     /// timer tick.
@@ -690,13 +716,21 @@ final class ChatViewModel: ObservableObject {
     /// state should abandon rather than proceed.
     var productionRenderActive: () -> Bool = { true }
 
+    /// Invoked synchronously on the MainActor immediately before any chat
+    /// render tool call reaches the controller.  RenderViewModel uses this
+    /// last safe ownership window to stop timeline playback and close open
+    /// viewport interactions before the render worker can acquire the scene.
+    var chatRenderWillSubmit: () -> Void = {}
+
     private let chatBridge = RISEAgentChatBridge()
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
     /// also nils this) BEFORE shutting the bridge down, so the driver
-    /// never calls `agentHandleLine` on a torn-down scene.  Even if a
-    /// stale call slipped through, `agentHandleLine` is total — it
-    /// answers with a JSON-RPC -32603 error rather than crashing.
+    /// never calls into the bridge's agent dispatchers
+    /// (`agentHandleToolCall` for tool calls, `agentHandleLine` for its
+    /// own housekeeping) on a torn-down scene.  Even if a stale call
+    /// slipped through, both entry points are total — they answer with a
+    /// JSON-RPC -32603 error rather than crashing.
     private weak var viewportBridge: RISEViewportBridge?
     private var driverTask: Task<Void, Never>? = nil
     /// The Stop button's flag.  Checked between HTTP rounds and
@@ -746,6 +780,31 @@ final class ChatViewModel: ObservableObject {
     /// SubmitAgentRenderAsync's single-slot policy).  MainActor-only,
     /// like every other piece of driver state in this class.
     private var outstandingChatRenderJobId: UInt64 = 0
+
+    /// The level pinned for the currently-outstanding chat render job
+    /// (captured once at submit time in `executeRenderToolCallAsync`).
+    ///
+    /// What it pins is the SESSION SELECTION, not the autonomy posture: the
+    /// level chooses which dispatcher/session handles a call, and the live
+    /// posture on the selected session still applies (the bridge's
+    /// `setAgentAutonomyLevel` mutates the TOOL-CALL Owner session's
+    /// autonomy in place — `_agentToolDispatcherOwner`, never the
+    /// administrative dispatcher), so a mid-render drop to Read is NOT
+    /// defeated by this pin.
+    ///
+    /// Why pin at all: renderJobIds themselves are addressable from any
+    /// session on the same controller (they are minted BY the controller),
+    /// but ONE thing about a render job is session-scoped — `render_wait`'s
+    /// optional `result` payload.  Poll from a sibling session and the job
+    /// completes with no result to report.  (The last-render PNG cache is
+    /// NOT session-scoped: the three in-app sessions share one
+    /// AgentImageCache, so read_image reaches the pixels from any of them.)  Full derivation in
+    /// `-agentHandleToolCall:autonomy:`'s doc in RISEViewportBridge.h.
+    ///
+    /// Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
+    /// safety control, and a user who drops to Read mid-turn must have that
+    /// bind on the agent's very next tool call.
+    private var outstandingChatRenderAutonomy: RISEAgentAutonomyLevel = .apply
 
     /// The controller worker is still occupied by this chat render, including
     /// after a fire-and-forget cancellation request. RenderViewModel forwards
@@ -1041,6 +1100,8 @@ final class ChatViewModel: ObservableObject {
         currentScenePath = scenePath
         chatBridge.reset()
         transcript = []
+        lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         pendingAttachments = []
@@ -1058,8 +1119,24 @@ final class ChatViewModel: ObservableObject {
         resolvedProposalObservedAt = [:]
 
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
-        chatBridge.setSkillIndex(
-            Self.renderSkillIndex(fromRpcResponse: vb.agentHandleLine(indexLine)))
+        let indexResponse = vb.agentHandleLine(indexLine)
+        let indexText = Self.renderSkillIndex(fromRpcResponse: indexResponse)
+        chatBridge.setSkillIndex(indexText)
+        // AN AGENT WITH NO SKILLS IS A DEGRADED PRODUCT, NOT A NEUTRAL
+        // STATE — say so.  This app SHIPS the skills (bundle resource, see
+        // SkillsRootBootstrap), so an empty index here always means a
+        // broken install or a miswired root; there is no legitimate
+        // empty-install case to over-warn about.  It used to be invisible
+        // at every layer: an empty index omits the whole skills section of
+        // the system prompt, and the model was told nothing.
+        if indexText.isEmpty {
+            transcript.append(Entry(
+                kind: .notice,
+                text: "No scene-authoring skills are loaded — the agent is running without "
+                    + "RISE's scene conventions. This is an installation problem, not a "
+                    + "normal state.",
+                detailText: Self.skillIndexNote(fromRpcResponse: indexResponse)))
+        }
 
         // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
         // file (the skill index is set above, so the session record captures
@@ -1106,6 +1183,8 @@ final class ChatViewModel: ObservableObject {
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: "", headVersion: -1, enabled: false)
         transcript = []
+        lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
@@ -1132,6 +1211,20 @@ final class ChatViewModel: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// The read_skill index result's `note` — the RPC's advisory, set
+    /// whenever the index came back empty (it names the skills root that
+    /// was tried).  nil when absent or unparseable, which leaves the
+    /// empty-skills notice without a detail disclosure rather than
+    /// inventing one.
+    private static func skillIndexNote(fromRpcResponse line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let note = result["note"] as? String,
+              !note.isEmpty else { return nil }
+        return note
+    }
+
     // MARK: Provider / model / key settings
 
     var hasConversation: Bool { !transcript.isEmpty }
@@ -1153,6 +1246,8 @@ final class ChatViewModel: ObservableObject {
         provider = newProvider
         modelId = chatBridge.modelId
         transcript = []
+        lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         // Eval-harness E1: setProvider closed the old session (a
@@ -1714,6 +1809,8 @@ final class ChatViewModel: ObservableObject {
         cancelTurn()
         chatBridge.reset()
         transcript = []
+        lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
@@ -1773,7 +1870,7 @@ final class ChatViewModel: ObservableObject {
     /// SAME single-slot worker (SceneEditController::SubmitAgentRenderAsync's
     /// single-slot policy would otherwise serialize them).
     ///
-    /// Fire-and-forget: `agentHandleLine` is synchronous but render_cancel
+    /// Fire-and-forget: `agentHandleToolCall` is synchronous but render_cancel
     /// itself does not block for the render's duration (it only trips the
     /// shared cancel flag — see AgentSession::CancelAsyncRender's doc), so
     /// this call returns promptly regardless of whether a render is
@@ -1788,6 +1885,13 @@ final class ChatViewModel: ObservableObject {
     private func cancelAnyOutstandingChatRender() {
         guard outstandingChatRenderJobId != 0 else { return }
         let jobId = outstandingChatRenderJobId
+        // The job's pinned SESSION SELECTION — render_cancel and the drain
+        // poll that follows must reach the session that RAN this job, not
+        // whichever session the autonomy chip happens to select right now:
+        // the drain's render_wait only sees this job's cached `result` on
+        // that session (see `outstandingChatRenderAutonomy`).  The live
+        // autonomy posture still applies to the pinned session.
+        let autonomy = outstandingChatRenderAutonomy
         outstandingChatRenderJobId = 0
         guard let vb = viewportBridge else {
             // No live bridge remains that UI can call. A subsequent
@@ -1803,24 +1907,32 @@ final class ChatViewModel: ObservableObject {
         // this call site already knows a job WAS outstanding (the guard
         // above), and the fire-and-forget contract means we don't wait to
         // find out whether it actually stopped.
-        _ = vb.agentHandleLine(line)
-        beginChatRenderDrain(jobId: jobId, bridge: vb)
+        _ = vb.agentHandleToolCall(line, autonomy: autonomy)
+        beginChatRenderDrain(jobId: jobId, bridge: vb, autonomy: autonomy)
     }
 
     /// Poll the already-cancelled worker without coupling it to the turn task:
     /// cancelling that task is precisely what leaves its normal render_wait
     /// loop early. Every dispatcher call remains on MainActor, preserving the
     /// bridge's single-caller contract.
-    private func beginChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) {
+    private func beginChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge,
+                                      autonomy: RISEAgentAutonomyLevel) {
         guard chatRenderWorkerOccupied, chatRenderOccupancyJobId == jobId else { return }
         chatRenderDrainTask?.cancel()
         chatRenderDrainTask = Task { @MainActor [weak self, weak vb] in
             guard let self, let vb else { return }
-            await self.waitForChatRenderDrain(jobId: jobId, bridge: vb)
+            await self.waitForChatRenderDrain(jobId: jobId, bridge: vb, autonomy: autonomy)
         }
     }
 
-    private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) async {
+    /// `autonomy` is the job's pinned SESSION SELECTION, threaded down from
+    /// `cancelAnyOutstandingChatRender` — this loop must poll the session
+    /// that RAN `jobId`, because only that session holds the job's cached
+    /// completion result.  (The id resolves on any session attached to the
+    /// controller; the cached result does not.)  The live autonomy posture
+    /// still applies to the pinned session.
+    private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge,
+                                        autonomy: RISEAgentAutonomyLevel) async {
         let sliceMs: UInt64 = 250
         while !Task.isCancelled && chatRenderOccupancyJobId == jobId {
             // sceneClosed() detaches this bridge before shutdown. Its
@@ -1829,7 +1941,7 @@ final class ChatViewModel: ObservableObject {
             guard viewportBridge === vb else { return }
             let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
                 "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
-            let waitResponse = vb.agentHandleLine(waitLine)
+            let waitResponse = vb.agentHandleToolCall(waitLine, autonomy: autonomy)
             if Self.renderWaitCompleted(waitResponse) {
                 finishChatRenderOccupancy(jobId: jobId)
                 return
@@ -1914,18 +2026,28 @@ final class ChatViewModel: ObservableObject {
     /// One conversation turn: HTTP round-trips + tool rounds until the
     /// model finishes with text, errors, or the user stops.  Runs on
     /// the main actor; the URLSession await leaves the main thread, and
-    /// (since Model-B F2 slice S2b) so does a `render` tool call's
-    /// render_wait polling loop — see executeRenderToolCallAsync's doc
+    /// so do BOTH of the in-loop suspension families — a `render` tool
+    /// call's render_wait polling loop (Model-B F2 slice S2b) and a
+    /// refused EDIT call's retry backoff (FIX 2) — see
+    /// executeRenderToolCallAsync's doc
     /// for why that is same-actor SLICING (short synchronous
-    /// `agentHandleLine` calls separated by `await Task.sleep`), not a
+    /// `agentHandleToolCall` calls separated by `await Task.sleep`), not a
     /// second thread calling the dispatcher; `AgentRpcDispatcher::
     /// HandleLine` is documented single-caller, and every actual call
     /// into it — submit, each poll slice — still happens on this
     /// MainActor Task, never concurrently with anything else.  EVERY
-    /// OTHER tool call still executes SYNCHRONOUSLY on main via
-    /// `agentHandleLine` in one shot (the 1c-1 contract: same thread the
-    /// GUI's own SetProperty edits drive) — they are fast CST reads/
-    /// edits with no render-duration cost to amortize.
+    /// OTHER tool call still DISPATCHES SYNCHRONOUSLY on main via
+    /// `agentHandleToolCall` (the 1c-1 contract: same thread the GUI's
+    /// own SetProperty edits drive) — they are fast CST reads/edits
+    /// with no render-duration cost to amortize.  ONE REFINEMENT (FIX
+    /// 2): an EDIT verb whose first dispatch comes back a
+    /// wholly-unapplied retriable refusal is re-dispatched up to
+    /// `editRetryMaxAttempts` times by `retryWhollyRefusedEditToolCall`
+    /// — the SAME same-actor slicing shape as the render path (each
+    /// individual dispatch is still one synchronous MainActor call into
+    /// the single-caller dispatcher; only the gaps between them are
+    /// `await Task.sleep`).  Every other verb, and every edit call that
+    /// is not refused, is still exactly one shot.
     ///
     /// PRODUCTION-RENDER INVARIANT (B2 review round 1; refined S2b):
     /// tool calls must never execute while the production rasterizer's
@@ -1934,13 +2056,29 @@ final class ChatViewModel: ObservableObject {
     /// is one synchronous MainActor slice.  Pre-S2b the tool loop had NO
     /// awaits at all, so `startRender` (also MainActor) could only ever
     /// interleave at the outer URLSession await.  S2b's render_wait
-    /// polling loop adds NEW suspension points INSIDE the tool loop —
-    /// the invariant is preserved by re-checking `Task.isCancelled`,
-    /// `stopRequested`, `viewportBridge`, and `sceneEditable()` at the
-    /// top of every render_wait slice (inside
-    /// executeRenderToolCallAsync) AND again at the call site
-    /// immediately after `await executeRenderToolCallAsync(...)`
-    /// returns, before the result is ever handed to `addToolResult`.
+    /// polling loop added the FIRST suspension points INSIDE the tool
+    /// loop, and FIX 2's edit-refusal backoff added a second family of
+    /// them — the invariant is preserved by re-checking the driver's
+    /// standing gates after EVERY such suspension.  The gate SET is NOT
+    /// identical across the three sites, and the difference is
+    /// deliberate:
+    ///   * render_wait slice (inside executeRenderToolCallAsync):
+    ///     `Task.isCancelled`, `stopRequested`, `viewportBridge`, and
+    ///     `productionRenderActive()` — the NARROWER predicate, because
+    ///     `sceneEditable()` folds in `isChatRenderOutstanding` and this
+    ///     loop would otherwise read its OWN in-flight render as a
+    ///     conflict on its first slice (see `productionRenderActive`'s
+    ///     doc);
+    ///   * edit-retry backoff (inside retryWhollyRefusedEditToolCall):
+    ///     the same three plus the FULL `sceneEditable()` — an edit call
+    ///     has no render of its own to be confused by, and it must not
+    ///     re-dispatch a MUTATION while ANY render (production or
+    ///     chat-driven) owns the scene, so the stricter predicate is the
+    ///     correct one here;
+    ///   * the call site below, immediately after either awaited call
+    ///     returns and before the result is handed to `addToolResult`:
+    ///     the same three plus `sceneEditableOrReportRenderConflict()`
+    ///     (`sceneEditable()` plus a user-visible error row).
     /// `startRender`'s `productionRenderStarting()` additionally calls
     /// `cancelAnyOutstandingChatRender()` (via `cancelTurn()`), which
     /// trips `render_cancel` on the controller so a production render
@@ -1977,6 +2115,56 @@ final class ChatViewModel: ObservableObject {
             }
 
             let request = chatBridge.buildRequest(apiKey: apiKey)
+            // buildRequest is where span compaction runs, so this is the
+            // moment to notice it did.  THIS DRIVER'S display transcript is
+            // append-only and independent of the wire transcript, so a
+            // dropped span costs it nothing visually -- which is precisely
+            // the hazard: the panel keeps showing turns the model can no
+            // longer see, and the resulting amnesia is indistinguishable
+            // from a model defect.  Say so once per compaction event.
+            // (The Windows panel renders the wire transcript directly and
+            // therefore has the OPPOSITE symptom -- the turns visibly
+            // disappear -- so its notice is worded differently.  Both are
+            // guarded by SourceHygieneTest.)
+            let droppedNow = chatBridge.compactedEntryCount
+            if droppedNow > lastReportedCompactedEntryCount {
+                // Report the DELTA, and name the running total separately --
+                // the bridge counter is cumulative, so printing it bare would
+                // read as additive on a second compaction event.
+                let droppedJustNow = droppedNow - lastReportedCompactedEntryCount
+                lastReportedCompactedEntryCount = droppedNow
+                transcript.append(Entry(
+                    kind: .notice,
+                    // "transcript row(s)", NOT "turn(s)": compactedEntryCount
+                    // counts ERASED TRANSCRIPT ENTRIES, and one compacted span
+                    // is a user message plus every assistant/tool round it
+                    // provoked — many entries per conversational turn.
+                    // Windows says the same thing in the same unit.
+                    text: "\(droppedJustNow) earlier transcript row(s) of history — messages "
+                        + "and their tool results — were dropped from the model's memory to "
+                        + "stay within the context budget (\(droppedNow) in total this "
+                        + "conversation). They are still shown above, but the agent can "
+                        + "no longer see them."))
+            }
+
+            // DRIVER NOTES (Role::DriverNote — today the blind-edit nudge).
+            // The loop injects these into the conversation itself, so the
+            // model reads them and changes course.  This driver renders its
+            // own display list, not the wire transcript, so without this the
+            // note would be invisible here and the agent would appear to
+            // stop editing and render for no reason the user can see.
+            // Checked at the SAME place as the compaction notice: a note is
+            // appended when a tool round flushes, and the next thing that
+            // happens is always the buildRequest that carries it to the
+            // model — so the user is told at (or just before) the moment it
+            // takes effect.  The Windows panel paints the transcript entry
+            // itself; both end up showing the same text.
+            let notesNow = chatBridge.driverNoteCount
+            if notesNow > lastReportedDriverNoteCount {
+                lastReportedDriverNoteCount = notesNow
+                transcript.append(Entry(kind: .notice,
+                                        text: chatBridge.lastDriverNoteText))
+            }
             guard !request.isEmpty, let url = URL(string: request.url) else { return }
 
             var urlRequest = URLRequest(url: url)
@@ -2043,19 +2231,17 @@ final class ChatViewModel: ObservableObject {
                                             text: step.assistantDisplayText))
                 }
                 for call in step.toolCalls {
-                    // Stop / scene-close checks (defensive): on the
-                    // MainActor these flags cannot flip inside this
-                    // awaitless loop (clicks queue until the slice
-                    // ends), so a user Stop actually lands at the next
-                    // URLSession await -- these checks matter for the
-                    // cancelTurn()-from-within-a-tool-call path (a tool
-                    // side effect triggering scene teardown): abandon
-                    // the rest; the loop synthesizes cancelled results
-                    // for them at the next flush.  The scene-editable
-                    // check cannot actually flip inside this loop
-                    // (no awaits — one MainActor slice, per the
-                    // invariant comment above); it is kept alongside
-                    // the others so every tool call is visibly gated.
+                    // Stop / scene-close / scene-editable checks: these
+                    // matter for the cancelTurn()-from-within-a-tool-call
+                    // path (a tool side effect triggering scene teardown)
+                    // AND for a real user Stop, which can now land inside
+                    // this loop — the loop is NO LONGER awaitless (an
+                    // async `render` slices at every render_wait poll, and
+                    // FIX 2's edit-refusal retry slices at every backoff),
+                    // so a click queued while we were suspended is
+                    // delivered before the next iteration starts.  On a
+                    // failure: abandon the rest; the loop synthesizes
+                    // cancelled results for them at the next flush.
                     if Task.isCancelled || stopRequested { return }
                     guard let vb = viewportBridge else { return }
                     guard sceneEditableOrReportRenderConflict() else { return }
@@ -2093,28 +2279,92 @@ final class ChatViewModel: ObservableObject {
                     // main/MainActor — see executeRenderToolCallAsync's
                     // doc for why this is a same-actor slicing scheme, NOT
                     // a second thread calling into the dispatcher).  Every
-                    // OTHER tool call keeps the 1c-1 synchronous contract
-                    // unchanged (they are all fast CST reads/edits with no
-                    // render-duration cost to amortize).
+                    // OTHER tool call keeps the 1c-1 synchronous DISPATCH
+                    // contract (they are all fast CST reads/edits with no
+                    // render-duration cost to amortize) — with the one
+                    // FIX-2 refinement noted in the `else` branch below: a
+                    // refused EDIT verb is re-dispatched a bounded number
+                    // of times, each dispatch still one synchronous
+                    // MainActor call, with an `await` only in the gaps.
+                    //
+                    // SESSION-ROUTING INVARIANT (2026-07 fix): BOTH branches
+                    // below now reach the SAME autonomy-selected session.
+                    // `render` used to go to `agentHandleLine`'s separate
+                    // administrative session while every other verb went
+                    // through `agentHandleToolCall` — and because
+                    // AgentSession's last-render PNG cache was PER-SESSION,
+                    // the agent's `read_image` then read a cache its own
+                    // `render` had never written: zero bytes, or the stale
+                    // objectmap PNG left by `query_object_at`'s internal
+                    // render.  (That second symptom has since been fixed at
+                    // its own source too — `query_object_at`'s internal render
+                    // is stash/restore-guarded and no longer clobbers the
+                    // cache; see AgentSession.cpp's
+                    // EphemeralRenderCacheGuard.  It is named here because it
+                    // is what the split ACTUALLY surfaced in production
+                    // trajectories.)
+                    //
+                    // THE CACHE HALF OF THAT IS NOW CLOSED (2026-07): the
+                    // bridge hands all THREE in-app sessions ONE shared
+                    // AgentImageCache (RISEViewportBridge's
+                    // -initWithHostBridge:), so whichever of them ran the
+                    // render, the follow-up `read_image` reads it.  The
+                    // autonomy-flip residual this comment used to carry —
+                    // "a flip TO or FROM Propose between a render and the
+                    // read_image after it lands on the other session and sees
+                    // an empty/stale cache" — is gone; `render` and
+                    // `read_image` no longer have to be on one session for
+                    // the PIXELS to line up.  Library-level coverage:
+                    // AgentRenderAsyncTest's "(shared-img-cache)" case.
+                    //
+                    // KEEP THE ROUTING ANYWAY.  render_status / render_wait
+                    // answer out of PER-SESSION state (the async result record
+                    // keyed by a session-local render job id), and that is
+                    // deliberately NOT shared — a session must not report on
+                    // another session's jobs.  So a render and the calls that
+                    // poll it still belong on one session; only the image
+                    // cache stopped caring.  A render JOB therefore still pins
+                    // its session (`outstandingChatRenderAutonomy`), while the
+                    // live posture governs what that pinned session may do.
+                    // Windows/Qt sibling of this routing site:
+                    // build/VS2022/RISE-GUI/ChatPanel.cpp's
+                    // processNextToolCall / startAsyncRenderToolCall.
                     let responseLine: String
                     if call.name == "render" {
                         responseLine = await executeRenderToolCallAsync(
                             call: call, submitLine: line, vb: vb)
                     } else {
-                        // Synchronous, on main — the 1c-1 executor contract.
+                        // Each dispatch below is synchronous, on main —
+                        // the 1c-1 executor contract.
                         // Agent autonomy selector: routes to whichever
                         // dispatcher matches the composer's CURRENT level
                         // (see RISEViewportBridge.h's `-agentHandleToolCall:`
                         // doc) — Read refuses edit verbs, Propose stages
                         // them, Apply commits them directly (today's
-                        // behaviour). `render` is excluded from this
-                        // routing on purpose (handled in the `if` branch
-                        // above via the level-independent `agentHandleLine`).
-                        responseLine = vb.agentHandleToolCall(line)
+                        // behaviour).  `render` goes through the SAME
+                        // selector, just via the pinned overload — see the
+                        // SESSION-ROUTING INVARIANT comment in the `if`
+                        // branch above.  (Round-15 P2: this pointer existed
+                        // only on the Qt side; the two halves now match.)
+                        let firstResponse = vb.agentHandleToolCall(line)
+                        // FIX 2 (edit-refusal retry): if that first attempt
+                        // came back a WHOLLY-UNAPPLIED retriable refusal
+                        // ("editor transaction or gesture in progress"), do
+                        // NOT burn an LLM round-trip on it — re-issue it
+                        // here, yielding the MainActor between attempts so
+                        // the blocking gesture can actually finish.  Returns
+                        // `firstResponse` unchanged for every other verb and
+                        // every other outcome.  See the method's doc for the
+                        // correctness constraint that makes this safe.
+                        responseLine = await retryWhollyRefusedEditToolCall(
+                            call: call, line: line, vb: vb,
+                            firstResponse: firstResponse)
                     }
 
-                    // The awaited render path above can suspend across
-                    // Stop / scene-close / a production render starting;
+                    // BOTH awaited paths above can suspend across Stop /
+                    // scene-close / a production render starting — the
+                    // render path's render_wait poll loop AND (FIX 2) the
+                    // edit-refusal retry backoff;
                     // re-verify before touching shared driver state, same
                     // as every other post-await site in this file.  A
                     // failure here means the turn is already being torn
@@ -2126,9 +2376,10 @@ final class ChatViewModel: ObservableObject {
                     guard sceneEditableOrReportRenderConflict() else { return }
 
                     // GUI stage 2: update the dispatch-time row IN
-                    // PLACE now that a result line exists — covers BOTH
-                    // the synchronous and the async-render path, since
-                    // both funnel into the same `responseLine` above.
+                    // PLACE now that a result line exists — covers ALL
+                    // THREE paths (one-shot synchronous, async render,
+                    // and FIX 2's retried edit), since they all funnel
+                    // into the same `responseLine` above.
                     // The one-liner is the SAME deterministic summary
                     // (ToolOutcomeLineForDisplay) FlushPendingToolResults
                     // uses for the wire-side ChatToolDisplaySummary, so
@@ -2572,25 +2823,401 @@ final class ChatViewModel: ObservableObject {
         return sendUnmodified()
     }
 
+    // ================================================================
+    // FIX 2 — client-side retry of a WHOLLY-UNAPPLIED retriable edit
+    // refusal.
+    //
+    // THE MEASURED PROBLEM.  In a production GUI trajectory ("make the
+    // middle object red", gemini-3.5-flash) the agent's edits were
+    // refused five times in a row with `retriable:true` and the message
+    // "editor transaction or gesture in progress -- retry after it
+    // completes" (12 matching warnings in the GUI log, from
+    // SceneEditController's ApplyAgentParamEditInner_ /
+    // ApplyAgentChunkCrud_ `mTxnOpen || mEditor.IsCompositeOpen()`
+    // pre-flight — NOT the thin `ApplyAgentParamEdit` admission wrapper,
+    // whose own refusal is the different, render-admission one described
+    // under THE ATTEMPT BUDGET below).  Every one of
+    // those retries cost a FULL LLM round-trip: the model re-read the
+    // 21.5 KB document between attempts and thrashed between four
+    // different approaches because it did not believe the refusal.
+    // Roughly 13 of that session's 23 turns were this loop.  When the
+    // gesture finally cleared, the very first thing it tried worked.
+    //
+    // WHY THIS CANNOT BE FIXED SERVER-SIDE.  A GUI agent tool call runs
+    // SYNCHRONOUSLY on the MainActor (the 1c-1 executor contract, see
+    // `driveTurn`), and the editor transaction/composite that is
+    // blocking is owned by that SAME thread.  Blocking inside the RPC to
+    // wait for it would guarantee the gesture can never complete — a
+    // self-deadlock for the whole wait.  The retry therefore has to live
+    // in the driver, where it can YIELD the thread (`await Task.sleep`)
+    // between attempts.
+    //
+    // THE CORRECTNESS CONSTRAINT (get this wrong and the fix is worse
+    // than the bug).  The batch verbs are SEQUENTIAL and BEST-EFFORT,
+    // not atomic — AgentRpc.cpp documents it for both `insert_chunks`
+    // and `propose_patches`: every element is attempted in order and a
+    // rejected element does not stop the batch, so a batch can be
+    // PARTIALLY applied.  Blindly re-issuing a call whose result merely
+    // says `retriable` would DOUBLE-APPLY whatever already succeeded.
+    // So `editRefusalIsWhollyUnapplied` retries ONLY when NOTHING was
+    // applied — see its doc for the exact per-shape gate — and only
+    // while the head has not moved under it, see
+    // `refusalHeadVersionKey` and the HEAD-VERSION GUARD note on
+    // `retryWhollyRefusedEditToolCall`.
+    //
+    // Windows/Qt sibling: build/VS2022/RISE-GUI/ChatPanel.cpp's
+    // `scheduleEditToolCallRetry` / `editRefusalIsWhollyUnapplied` /
+    // `refusalHeadVersionKey` (a
+    // QTimer::singleShot chain rather than `await`, because Qt returns
+    // to the event loop instead of suspending a Task — the retry gate,
+    // the head guard, the attempt bound, the backoff table and the
+    // driver stamp are deliberately identical, and
+    // tests/SourceHygieneTest.cpp pins each of them on both platforms).
+    // ================================================================
+
+    /// The FIVE mutating verbs whose results carry the `applied` +
+    /// `retriable` pair this retry gate reads — exactly the set
+    /// `AgentRpc.cpp`'s `IsProposeSafeVerb` enumerates, and exactly the
+    /// set whose result JSON is built by `ChunkResultJson` /
+    /// `propose_patch`'s inline result / `propose_patches`' per-element
+    /// result (the only three sites in AgentRpc.cpp that emit
+    /// `retriable` at all).  Checked BEFORE parsing the response so a
+    /// multi-megabyte `read_image` result is never JSON-parsed twice.
+    /// tests/SourceHygieneTest.cpp derives this set from
+    /// `IsProposeSafeVerb` and fails if the two drift.
+    private static let retriableEditVerbs: Set<String> = [
+        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk"
+    ]
+
+    /// THE ATTEMPT BUDGET.  Total dispatch attempts for one refused edit
+    /// call, the first included.  Five attempts spread over the backoff
+    /// table below is ~2.25 s of added wall-clock in the WORST case,
+    /// against a measured alternative of ~5 LLM round-trips (seconds
+    /// each, plus a 21.5 KB document re-read per round).
+    ///
+    /// There are TWO retriable blocking conditions, not one, and the
+    /// budget is sized for the first:
+    ///   * an open editor TRANSACTION / composite
+    ///     (`ApplyAgentParamEditInner_` / `ApplyAgentChunkCrud_`'s
+    ///     `mTxnOpen || mEditor.IsCompositeOpen()` pre-flight) — a
+    ///     human-scale gesture (a viewport drag, a property-slider
+    ///     scrub) that ends when the user releases the mouse, well under
+    ///     a second in the common case.  This is the measured failure
+    ///     this fix is for, and 2.25 s comfortably covers it;
+    ///   * the RENDER-ADMISSION gate (`mAgentRenderBlocksInteractive`,
+    ///     checked by the thin `ApplyAgentParamEdit` /
+    ///     `ApplyAgentInsertChunk` / `ApplyAgentRemoveChunk` wrappers) —
+    ///     "render queued or in progress".  That clears on a RENDER
+    ///     duration, which 2.25 s will usually NOT outlast, so a retry
+    ///     of this kind normally exhausts the budget and hands the
+    ///     refusal to the model anyway.  It costs at most the 2.25 s;
+    ///     it is not the case the budget is tuned for.  (The permanently
+    ///     LATCHED form of that same gate — set by
+    ///     `~SceneEditController` / `PrepareForDestruction` and never
+    ///     cleared — is reported `retriable:false` by the controller
+    ///     precisely so it is never retried here.)
+    ///
+    /// Past ~2 s the block is no longer a transient gesture (a user is
+    /// holding a drag, or a render is running), and the honest move is
+    /// to hand the refusal to the model — which now also learns, from
+    /// the stamp below, that the driver already tried.
+    private static let editRetryMaxAttempts = 5
+
+    /// Backoff BEFORE attempt i+1 (index i-1), in milliseconds.  Starts
+    /// short so the overwhelmingly common "we caught the tail of a
+    /// gesture" case costs a sixth of a second, then doubles so the
+    /// total stays bounded and the controller's `mMutex` (which every
+    /// attempt takes) is not hammered.  Sum = 2250 ms across the four
+    /// gaps between five attempts.
+    private static let editRetryBackoffMs: [UInt64] = [150, 300, 600, 1200]
+
+    /// Is this tool result a refusal with **nothing applied** — the only
+    /// shape a client-side retry may re-issue?
+    ///
+    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`):
+    /// `applied == false` AND `retriable == true` AND
+    /// `status == "rejected"`.  The rejection contract guarantees the
+    /// head is byte-identical on a reject (SceneEditController refuses
+    /// BEFORE any mutation or park), so re-issuing is a true
+    /// no-op-then-retry.
+    ///
+    /// BATCH verbs (`insert_chunks`, `propose_patches`): `applied` is a
+    /// COUNT, and it must be 0, AND EVERY element must itself be
+    /// `applied == false` + `retriable == true` + `status == "rejected"`.
+    /// A PARTIALLY applied batch is handed to the model exactly as
+    /// today — re-issuing it would double-apply the elements that
+    /// already landed.
+    ///
+    /// WHY `status == "rejected"` IS TESTED EXPLICITLY (and is not
+    /// redundant with `retriable`).  `applied` means CLEAN APPLY ONLY.
+    /// A `status:"diagnosed"` outcome reports `applied:false` even
+    /// though the Document WAS mutated and the live managers WERE
+    /// replaced (SceneEditController's code-3 arm says so in as many
+    /// words), so `{"applied":0,...,"results":[{"applied":false,
+    /// "status":"diagnosed",...}]}` is a real shape in which the count
+    /// is zero and the head HAS moved.  What excludes it today is only
+    /// that all five `retriable = true` origins in SceneEditController
+    /// happen to be pre-mutation, pre-park refusals — an observation
+    /// about today's controller, not a contract, and nothing pins it.
+    /// Requiring the status makes the exclusion STRUCTURAL: `diagnosed`,
+    /// `conflict` and (should it ever gain `retriable`) `staged` all
+    /// fall out on the status alone.  `staged` is the one with teeth:
+    /// `SceneEditController::StageProposal` has NO dedupe, so a future
+    /// `staged` + `retriable:true` would enqueue up to
+    /// `editRetryMaxAttempts` identical proposals for the Owner to
+    /// resolve.  Today the check is a no-op; that is the point.
+    ///
+    /// BATCH-FIRST ordering is DEFENCE IN DEPTH, not load-bearing.  A
+    /// batch envelope carries no TOP-LEVEL `retriable` (AgentRpc.cpp
+    /// emits only `{applied,total,results}`), so the singular arm would
+    /// reject it on the missing key even if it ran first; and a
+    /// PARTIALLY applied batch has `applied >= 1`, which bridges to
+    /// `true`, not `false`.  What is real is the bridging hazard the
+    /// ordering removes the need to reason about: `JSONSerialization`
+    /// decodes JSON booleans and JSON numbers alike into `NSNumber`, and
+    /// `NSNumber(0) as? Bool` succeeds as `false`.  Testing the batch
+    /// shape first — and rejecting a CFBoolean in the count position
+    /// below — means neither arm ever has to answer the other's
+    /// question.
+    private static func editRefusalIsWhollyUnapplied(_ responseLine: String) -> Bool {
+        guard
+            let data = responseLine.data(using: .utf8),
+            let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            envelope["error"] == nil,
+            let result = envelope["result"] as? [String: Any]
+        else { return false }
+
+        // BATCH FIRST — see the BATCH-FIRST note above.
+        if let results = result["results"] as? [[String: Any]] {
+            guard
+                !results.isEmpty,
+                let appliedCount = result["applied"] as? NSNumber,
+                // A JSON boolean ALSO bridges to NSNumber, so type-check
+                // it out — the Qt sibling's `isDouble()` rejects a bool
+                // outright and the two halves must not diverge on shape
+                // validation.
+                CFGetTypeID(appliedCount) != CFBooleanGetTypeID(),
+                appliedCount.intValue == 0
+            else { return false }
+            for element in results {
+                guard
+                    let elementApplied = element["applied"] as? Bool, elementApplied == false,
+                    let elementRetriable = element["retriable"] as? Bool, elementRetriable,
+                    let elementStatus = element["status"] as? String, elementStatus == "rejected"
+                else { return false }
+            }
+            return true
+        }
+
+        guard
+            let applied = result["applied"] as? Bool, applied == false,
+            let retriable = result["retriable"] as? Bool, retriable,
+            let status = result["status"] as? String, status == "rejected"
+        else { return false }
+        return true
+    }
+
+    /// The refusal's reported head, canonicalized to `"<uuid>:<revision>"`
+    /// — or `nil` when the response does not report one at all.
+    ///
+    /// This is the C2 guard's observable.  The retry is timed to land the
+    /// instant the blocking gesture commits, which is EXACTLY when the
+    /// head is most likely to have just moved, and — unlike the
+    /// model-mediated retry this replaces — the driver does NOT re-read
+    /// the document in between.  That matters because `insert_chunks` has
+    /// no batch-fatal rule (`AgentSession::InsertChunks` gives only
+    /// element 0 the caller's `baseHeadVersion` and attempts elements
+    /// 1..N-1 unconditionally, unlike `ProposePatches`, which stops):
+    /// re-issuing a batch whose head moved during the backoff returns
+    /// `results[0].status:"conflict"` while the other N-1 chunks insert
+    /// against a head the model never read.
+    ///
+    /// Singular results carry `headVersion` at the top of `result`;
+    /// batch envelopes carry it per element, and a WHOLLY-refused batch
+    /// refused every element against the same head, so element 0's is
+    /// the batch's.  Returns `nil` on a missing/malformed field, which
+    /// the caller treats as "cannot verify" and therefore "do not
+    /// retry" — fail-safe, not fail-open.
+    private static func refusalHeadVersionKey(_ responseLine: String) -> String? {
+        guard
+            let data = responseLine.data(using: .utf8),
+            let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let result = envelope["result"] as? [String: Any]
+        else { return nil }
+        var holder = result
+        if let results = result["results"] as? [[String: Any]], let first = results.first {
+            holder = first
+        }
+        guard
+            let head = holder["headVersion"] as? [String: Any],
+            let uuid = head["uuid"] as? NSNumber,
+            let revision = head["revision"] as? NSNumber
+        else { return nil }
+        // `doubleValue` (not `stringValue`) so the key does not depend on
+        // which numeric NSNumber flavour JSONSerialization happened to
+        // pick; AgentRpc.cpp's HeadVersionJson emits both fields as JSON
+        // numbers.  Swift's Double description is deterministic, so equal
+        // heads always produce equal keys.
+        return "\(uuid.doubleValue):\(revision.doubleValue)"
+    }
+
+    /// OBSERVABILITY.  Stamp a DRIVER-ATTRIBUTED retry record onto the
+    /// tool result the driver hands to `addToolResult`.
+    ///
+    /// The trajectory's `tool` record (AgentChatLoop.cpp's
+    /// `AddToolResult`) stores the raw JSON-RPC response line verbatim
+    /// as `jsonRpcResponse`, so stamping the response is what makes the
+    /// retries visible in the trajectory JSONL.  `latencyMs` needs
+    /// nothing: it is stamped at `toolCallToJsonRpcLine` (before attempt
+    /// 1) and completed at `addToolResult` (after the last attempt), so
+    /// it already spans the retries honestly.
+    ///
+    /// The model sees this too — the codecs pack `result` (not the
+    /// envelope) into the tool_result block.  That is DELIBERATE and is
+    /// why the key is namespaced `guiDriverRetry` and carries a note
+    /// saying who added it: a model that learns the driver already spent
+    /// five attempts should stop re-issuing the same call itself, which
+    /// is the whole point of this fix.  Nothing is fabricated — every
+    /// other field is the engine's own last-attempt result, carried
+    /// through FIELD-FOR-FIELD.  Not byte-for-byte: this decodes and
+    /// RE-SERIALIZES the envelope (Swift emits `Dictionary` hash order;
+    /// the Qt sibling emits QJsonDocument's sorted-key order), so the
+    /// line AgentChatLoop.cpp:~993 documents as "the raw JSON-RPC
+    /// response line verbatim" is, on a stamped result only, a
+    /// re-serialization of it — same keys, same values, possibly
+    /// different key order and whitespace.  Stamping happens ONLY when
+    /// at least one retry happened (`attempts > 1`), so the response
+    /// really is byte-for-byte unchanged on the overwhelmingly common
+    /// single-attempt path.
+    private static func stampDriverRetry(onResponseLine line: String, attempts: Int) -> String {
+        guard
+            let data = line.data(using: .utf8),
+            var envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            var result = envelope["result"] as? [String: Any]
+        else { return line }
+        result["guiDriverRetry"] = [
+            "attempts": attempts,
+            "note": "Added by the RISE GUI chat driver, not by the scene engine: this "
+                + "call was refused as retriable with NOTHING applied, so the driver "
+                + "re-issued it verbatim, yielding the GUI thread between attempts. "
+                + "Only the last attempt's outcome is reported above; no earlier "
+                + "attempt applied anything."
+        ]
+        envelope["result"] = result
+        guard
+            let outData = try? JSONSerialization.data(withJSONObject: envelope),
+            let outLine = String(data: outData, encoding: .utf8)
+        else { return line }
+        return outLine
+    }
+
+    /// Re-issue an edit tool call that came back a wholly-unapplied
+    /// retriable refusal, up to `editRetryMaxAttempts` attempts total,
+    /// yielding the MainActor between them.  `firstResponse` is the
+    /// already-executed attempt 1 from `driveTurn`'s dispatch site (kept
+    /// there so the ordinary dispatch path — and the source-hygiene
+    /// marker that pins it to `agentHandleToolCall` — stays visible at
+    /// the call site, and so the Qt sibling can have the same shape).
+    ///
+    /// Returns `firstResponse` untouched for every non-edit verb and for
+    /// every outcome that is not a wholly-unapplied retriable refusal.
+    ///
+    /// POST-AWAIT RE-VERIFICATION: `Task.sleep` is a real suspension
+    /// point, so the driver's standing gates are re-checked before the
+    /// next attempt: `Task.isCancelled`, `stopRequested`,
+    /// `viewportBridge`, and the FULL `sceneEditable()`.
+    ///
+    /// That is NOT the same predicate `executeRenderToolCallAsync` uses
+    /// at the top of each render_wait poll slice, and the difference is
+    /// deliberate.  The render slice checks the NARROWER
+    /// `productionRenderActive()` because `sceneEditable()` folds in
+    /// `isChatRenderOutstanding`, which would make that loop read its OWN
+    /// in-flight render as a conflict (see `productionRenderActive`'s
+    /// doc).  A retried EDIT has no render of its own to be confused by,
+    /// and it must not re-dispatch a MUTATION while ANY render — the
+    /// production rasterizer or a chat-driven one — owns the scene, so
+    /// the stricter `sceneEditable()` is the correct gate here.  It IS
+    /// the same predicate `driveTurn` re-checks immediately after this
+    /// call returns (there via `sceneEditableOrReportRenderConflict()`,
+    /// which adds a user-visible error row).
+    ///
+    /// A Stop, a scene close, a production render starting, or a
+    /// cancelled Task abandons the retry rather than resuming into a
+    /// torn-down world; the caller's own guards then return without
+    /// recording anything for this call, and the next send's flush
+    /// synthesizes the cancelled result (the same recovery every other
+    /// interrupted tool call uses).
+    ///
+    /// HEAD-VERSION GUARD (C2): the retry is timed to land the instant
+    /// the blocking gesture commits — precisely when the head is most
+    /// likely to have JUST moved — and the driver never re-reads the
+    /// document across the backoff.  So a re-issue is admitted only
+    /// while the refusal keeps reporting the SAME head it reported on
+    /// attempt 1 (`refusalHeadVersionKey`); the first refusal that
+    /// reports a different head ends the retry and is handed to the
+    /// model, which re-reads before deciding.  A response that reports
+    /// no head at all is treated as unverifiable and also ends the
+    /// retry.  RESIDUAL, stated honestly: this cannot make the count
+    /// zero.  The head can move DURING a backoff, and the driver has no
+    /// way to observe that without issuing a read of its own, so ONE
+    /// re-issue can still land against a moved head — the guard bounds
+    /// it to one instead of `editRetryMaxAttempts - 1`.  Element 0 of a
+    /// batch is still protected by its own `baseHeadVersion`
+    /// precondition; elements 1..N-1 of an `insert_chunks` are not (see
+    /// `refusalHeadVersionKey`'s doc for why `InsertChunks` differs from
+    /// `ProposePatches` here).
+    private func retryWhollyRefusedEditToolCall(
+        call: RISEAgentChatToolCall, line: String, vb: RISEViewportBridge,
+        firstResponse: String
+    ) async -> String {
+        guard Self.retriableEditVerbs.contains(call.name) else { return firstResponse }
+        // Evaluated ONCE per response, here and at the bottom of the loop,
+        // so the common (applied) path parses the envelope exactly once.
+        guard
+            Self.editRefusalIsWhollyUnapplied(firstResponse),
+            let baselineHead = Self.refusalHeadVersionKey(firstResponse)
+        else { return firstResponse }
+
+        var responseLine = firstResponse
+        var attempts = 1
+        while attempts < Self.editRetryMaxAttempts {
+            let backoffMs = Self.editRetryBackoffMs[
+                min(attempts - 1, Self.editRetryBackoffMs.count - 1)]
+            try? await Task.sleep(nanoseconds: backoffMs * 1_000_000)
+            if Task.isCancelled || stopRequested { break }
+            guard viewportBridge != nil else { break }
+            guard sceneEditable() else { break }
+            attempts += 1
+            responseLine = vb.agentHandleToolCall(line)
+            guard
+                Self.editRefusalIsWhollyUnapplied(responseLine),
+                Self.refusalHeadVersionKey(responseLine) == baselineHead
+            else { break }
+        }
+        guard attempts > 1 else { return responseLine }
+        return Self.stampDriverRetry(onResponseLine: responseLine, attempts: attempts)
+    }
+
     /// Model-B F2 slice S2b: execute a `render` tool call WITHOUT
     /// blocking the UI for the render's duration.
     ///
     /// THREAD-CONTRACT FINDING THAT DRIVES THIS SHAPE: `AgentRpcDispatcher`
     /// (src/Library/Agent/AgentRpc.h) is documented "NOT thread-safe (slice
     /// 0c is single-threaded, matching AgentSession)" — HandleLine (which
-    /// `agentHandleLine` calls straight through to on the calling thread)
-    /// is a single-caller API, not a thread-safe one.  So the fix is NOT
-    /// "poll render_status/render_wait from a second thread while the
-    /// MainActor does something else" — that would be a second concurrent
-    /// caller into the SAME dispatcher/session the MainActor might also be
-    /// driving (e.g. the Agent JSON-RPC debug panel, or another tool call
-    /// in a future parallel-calls world). The correct shape, and the one
-    /// used here, is SAME-ACTOR SLICING: every `agentHandleLine` call in
-    /// this method still runs synchronously on the MainActor (preserving
-    /// the single-caller contract exactly), but the render itself runs on
-    /// the controller's dedicated agent-render worker thread (submitted
-    /// via `render{"async":true}`), so each individual `agentHandleLine`
-    /// call this method makes is fast — a submit, or (S2b P2-2) a
+    /// `agentHandleToolCall` calls straight through to on the calling
+    /// thread) is a single-caller API, not a thread-safe one.  So the fix
+    /// is NOT "poll render_status/render_wait from a second thread while
+    /// the MainActor does something else" — that would be a second
+    /// concurrent caller into the SAME dispatcher/session the MainActor
+    /// might also be driving (e.g. the Agent JSON-RPC debug panel, or
+    /// another tool call in a future parallel-calls world). The correct
+    /// shape, and the one used here, is SAME-ACTOR SLICING: every
+    /// `agentHandleToolCall` call in this method still runs synchronously
+    /// on the MainActor (preserving the single-caller contract exactly),
+    /// but the render itself runs on the controller's dedicated
+    /// agent-render worker thread (submitted via `render{"async":true}`),
+    /// so each individual `agentHandleToolCall` call this method makes is
+    /// fast — a submit, or (S2b P2-2) a
     /// render_wait(timeoutMs:0) POLL-ONCE call that hits
     /// `WaitForRenderJob`'s "no wait" early return and so costs a single
     /// mutex-guarded status read, near-instant rather than up to
@@ -2601,6 +3228,22 @@ final class ChatViewModel: ObservableObject {
     /// all run in that gap), not any actual parallelism against the
     /// dispatcher.  See `executeRenderToolCallAsync`'s poll-loop comment
     /// below for the full before/after of the per-cycle MainActor cost.
+    ///
+    /// SESSION ROUTING: every call this method makes goes through
+    /// `agentHandleToolCall(_:autonomy:)` with the session PINNED at submit
+    /// time — the same autonomy-selected session every OTHER tool call in
+    /// the turn uses.  (Since 2026-07 the last-render PNG cache is SHARED by
+    /// the three in-app sessions, so `read_image` would find this render's
+    /// pixels either way; the pin is no longer about them.)
+    /// The pin keeps every poll on the session that RAN the job, which is
+    /// where `render_wait`'s optional `result` payload lives — not because
+    /// the `renderJobId` would otherwise be unresolvable (it resolves on any
+    /// session attached to the same controller; the ids are minted BY the
+    /// controller).  The pin fixes the SESSION, not the autonomy posture:
+    /// the live posture still applies to the pinned session.  See the
+    /// routing site in `driveTurn` for the residual, and
+    /// `-agentHandleToolCall:autonomy:` in RISEViewportBridge.h for the full
+    /// derivation.
     ///
     /// CONTRACT WITH THE LLM: the taught `render` tool schema
     /// (AgentChatCodecs.cpp) has no `async` parameter — the LLM never
@@ -2621,6 +3264,26 @@ final class ChatViewModel: ObservableObject {
     /// param fields (width/height/camera/samples all pass through
     /// unchanged).
     ///
+    /// ONE EXCEPTION, and the reason for it: `imageMaxEdge`. The RPC
+    /// refuses that parameter together with `async` (AgentRpc.cpp), and
+    /// for a raw async caller that refusal is correct — the submit
+    /// returns before any pixels exist. But this driver injects `async`
+    /// behind the model's back on EVERY render, so the pair collided on
+    /// a call the model was explicitly taught to make, and the one-call
+    /// observe form was unreachable from in-app chat: in the recorded
+    /// 2026-07-29 GUI trajectory the model called
+    /// `render{imageMaxEdge:192,samples:32}`, got -32602, and fell back
+    /// to render + read_image for all five later looks. So this method
+    /// STRIPS `imageMaxEdge` before injecting `async` and re-applies its
+    /// EFFECT itself once the render completes, fetching the image at
+    /// that same bound on the SAME pinned session and folding
+    /// png_base64/byteLength/imageWidth/imageHeight into the downgraded
+    /// result — the model sees precisely what the synchronous one-call
+    /// form returns. The RPC-level refusal is left intact for genuine
+    /// async callers, and every case the driver cannot honour itself
+    /// (mode:"objectmap", a non-numeric value) is left in the line so
+    /// the RPC still answers it — see `stageInlineImageMaxEdge`.
+    ///
     /// Returns the JSON-RPC response line to feed into `addToolResult`.
     /// On any refusal/malformed-response/timeout-exhaustion path this
     /// returns an HONEST result (a JSON-RPC success envelope whose
@@ -2632,18 +3295,51 @@ final class ChatViewModel: ObservableObject {
     private func executeRenderToolCallAsync(
         call: RISEAgentChatToolCall, submitLine: String, vb: RISEViewportBridge
     ) async -> String {
+        chatRenderWillSubmit()
+
+        // PIN the SESSION SELECTION for this render job's whole lifecycle,
+        // captured ONCE, here, before the submit, so every later call about
+        // this job (the render_wait polls below, and render_cancel / the
+        // drain poll in cancelAnyOutstandingChatRender) reaches the session
+        // that actually RAN it.  Not because the job id would otherwise be
+        // unresolvable — it resolves on any session attached to the same
+        // controller — but because render_wait's `result` payload lives on
+        // the running session.  NOT the PNG cache: the three in-app
+        // sessions deliberately share one AgentImageCache, so pixels are
+        // reachable from any of them.
+        //
+        // This pins WHICH SESSION, not what that session may do: the live
+        // autonomy posture still applies to it, so a mid-render drop to
+        // Read is not defeated here.  And it is scoped to the JOB, never to
+        // the turn.  See `outstandingChatRenderAutonomy` and
+        // RISEViewportBridge.h's `-agentHandleToolCall:autonomy:` doc.
+        let pinnedAutonomy = vb.agentAutonomyLevel
+        outstandingChatRenderAutonomy = pinnedAutonomy
+
+        // Take the model's `imageMaxEdge` (the one-call observe form) out
+        // of the line the RPC will see, so it does not collide with the
+        // `async` this driver is about to inject, and remember the bound
+        // so the completion path below can honour it itself.  See this
+        // method's doc for why the RPC's own refusal is right and must
+        // stay.  Absent / not-ours-to-honour → nil, line unchanged.
+        let staged = Self.stageInlineImageMaxEdge(fromJsonRpcLine: submitLine)
+
         // Inject {"async":true} into the params object.  A parse failure
         // here (should not happen — toolCallToJsonRpcLine always emits
         // well-formed JSON) falls back to the ORIGINAL synchronous call:
         // still correct, just blocking, which is strictly better than
-        // fabricating a bogus response.
-        guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: submitLine) else {
-            return vb.agentHandleLine(submitLine)
+        // fabricating a bogus response.  That fallback uses the UNSTAGED
+        // line, so the RPC's own synchronous handler attaches the inline
+        // image exactly as it always did.  Still routed to the pinned
+        // session, so the ReadImage cache it populates is the one a
+        // following `read_image` tool call will read.
+        guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: staged.line) else {
+            return vb.agentHandleToolCall(submitLine, autonomy: pinnedAutonomy)
         }
 
         // Submit.  Synchronous but fast — this is a queue-and-return
         // call, not the render itself (see AgentSession::RenderAsync).
-        let submitResponse = vb.agentHandleLine(asyncLine)
+        let submitResponse = vb.agentHandleToolCall(asyncLine, autonomy: pinnedAutonomy)
         guard
             let submitData = submitResponse.data(using: .utf8),
             let submitObj = (try? JSONSerialization.jsonObject(with: submitData)) as? [String: Any]
@@ -2701,7 +3397,7 @@ final class ChatViewModel: ObservableObject {
         // Poll render_wait(timeoutMs:0) — a POLL-ONCE call, not a bounded
         // wait — separated by an `await Task.sleep`.  S2b P2-2: the prior
         // shape passed `timeoutMs:250` to render_wait, and because
-        // `agentHandleLine` runs synchronously on the MainActor (see the
+        // `agentHandleToolCall` runs synchronously on the MainActor (see the
         // method doc), that made each slice's MainActor-blocking cost up
         // to 250ms — WaitForRenderJob's `wait_until` loop (SceneEditController.cpp)
         // really does block the calling thread for up to `timeoutMs`
@@ -2710,7 +3406,7 @@ final class ChatViewModel: ObservableObject {
         // SwiftUI redraws all stalling on each slice).  `timeoutMs:0` hits
         // WaitForRenderJob's explicit "poll-once contract: no wait" early
         // return (`if( timeoutMs == 0 ) return false;` before any condvar
-        // wait) — so this `agentHandleLine` call is now a single mutex-
+        // wait) — so this `agentHandleToolCall` call is now a single mutex-
         // guarded status read, not a wait, and the MainActor-blocking
         // portion of each cycle is near-instant. The actual pacing between
         // polls moves entirely to the `await Task.sleep` below, which
@@ -2745,7 +3441,7 @@ final class ChatViewModel: ObservableObject {
 
             let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
                 "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
-            let waitResponse = vb.agentHandleLine(waitLine)
+            let waitResponse = vb.agentHandleToolCall(waitLine, autonomy: pinnedAutonomy)
             if let waitData = waitResponse.data(using: .utf8),
                let waitObj = (try? JSONSerialization.jsonObject(with: waitData)) as? [String: Any],
                let waitResult = waitObj["result"] as? [String: Any],
@@ -2760,7 +3456,14 @@ final class ChatViewModel: ObservableObject {
                 // returned for this same tool call.
                 finishChatRenderOccupancy(jobId: jobId)
                 if let inner = waitResult["result"] as? [String: Any] {
-                    return Self.makeSyntheticResponseLine(result: inner)
+                    // Re-apply the `imageMaxEdge` effect the submit could
+                    // not carry (see this method's doc).  A no-op when the
+                    // model did not ask for it, and when the render did
+                    // not succeed.
+                    return Self.makeSyntheticResponseLine(
+                        result: Self.foldingInlineImage(
+                            into: inner, maxEdge: staged.inlineImageMaxEdge,
+                            vb: vb, autonomy: pinnedAutonomy))
                 }
                 // completed==true but no cached result (shouldn't happen
                 // for a job this method itself submitted — the session
@@ -2795,6 +3498,113 @@ final class ChatViewModel: ObservableObject {
             let outLine = String(data: outData, encoding: .utf8)
         else { return nil }
         return outLine
+    }
+
+    /// Split the model's `imageMaxEdge` out of a `render` request line.
+    ///
+    /// Returns the line to submit and, when the parameter was present AND
+    /// this driver can honour it itself, its value.  The parameter is left
+    /// IN PLACE (and the value reported as nil) in exactly the cases where
+    /// the RPC must remain the one to answer, so the model sees the same
+    /// -32602 the synchronous one-call form would have produced:
+    ///
+    ///   * `mode:"objectmap"` — an objectmap must be read at native size;
+    ///     a box downscale blends the flat identity colours and breaks the
+    ///     exact-byte legend match.  Refused, never folded.  (The RPC
+    ///     checks objectmap BEFORE async, so the model gets the
+    ///     objectmap-specific message with its read_image route out.)
+    ///   * a value the RPC would REJECT rather than clamp — a non-number,
+    ///     a boolean, or a number outside `ParseClampedUInt`'s accepted
+    ///     window.  Its `-32602` is the message to give, not a driver
+    ///     guess.  `imageMaxEdge:null` reads as absent to both sides.
+    ///
+    /// The accepted window is the subtle one, and getting it wrong is
+    /// silent: `ParseClampedUInt` (AgentRpc.cpp) CLAMPS into [16,1024]
+    /// only for values it accepts, and it accepts only finite numbers in
+    /// [-2^31, 2^31-1] — anything else is a `-32602`. So the driver may
+    /// stage exactly the values the RPC would have clamped. Staging a
+    /// value it would have REJECTED (e.g. `1e30`) runs the render, then
+    /// hands the same rejection to the fold's own `read_image`, which
+    /// attaches nothing — and the model gets `ok:true` with no image and
+    /// no error, which is the one outcome this whole path exists to
+    /// prevent. Inside the window the raw value is passed through
+    /// untouched, so the clamp is reproduced rather than re-implemented.
+    private static func stageInlineImageMaxEdge(fromJsonRpcLine line: String)
+        -> (line: String, inlineImageMaxEdge: Double?)
+    {
+        guard
+            let data = line.data(using: .utf8),
+            var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            var params = obj["params"] as? [String: Any],
+            let raw = params["imageMaxEdge"]
+        else { return (line, nil) }
+        if (params["mode"] as? String) == "objectmap" { return (line, nil) }
+        // JSONSerialization bridges JSON `true`/`false` to NSNumber too, and
+        // `as? NSNumber` would happily accept them — but the RPC's
+        // JsonValue::isNumber() does not, so a bool has to reach it.
+        guard
+            CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+            let number = raw as? NSNumber,
+            number.doubleValue.isFinite,
+            // ParseClampedUInt's own bounds, mirrored exactly.
+            number.doubleValue >= -2147483648.0,
+            number.doubleValue <= 2147483647.0
+        else { return (line, nil) }
+        params.removeValue(forKey: "imageMaxEdge")
+        obj["params"] = params
+        guard
+            let outData = try? JSONSerialization.data(withJSONObject: obj),
+            let outLine = String(data: outData, encoding: .utf8)
+        else { return (line, nil) }
+        return (outLine, number.doubleValue)
+    }
+
+    /// Fold the inline render image into a completed async render's
+    /// downgraded result, reproducing what `render{imageMaxEdge:N}` does
+    /// synchronously in AgentRpc.cpp.
+    ///
+    /// Two guards mirror that handler exactly:
+    ///   * `ok` must be true.  On a failed or cancelled render the session
+    ///     cache still holds the PREVIOUS frame, and returning those pixels
+    ///     as this call's image would be a lie.
+    ///   * an empty payload attaches nothing (the handler's `!png.empty()`).
+    ///
+    /// The fetch goes through `agentHandleToolCall(_:autonomy:)` with the
+    /// JOB'S PINNED autonomy, for the same reason every other call in this
+    /// job's lifecycle does — NOT because the pixels would otherwise be
+    /// unreachable.  Since 2026-07 the last-render PNG cache is SHARED by
+    /// the three in-app sessions, so a sibling would find this render's
+    /// pixels either way (see `executeRenderToolCallAsync`'s SESSION
+    /// ROUTING note).  What the pin buys here is that the fold runs under
+    /// the same session and posture as the render it belongs to, instead
+    /// of re-selecting a session mid-job.  `read_image` is on the
+    /// read-safe allowlist, so no posture refuses it.  It is a MainActor-synchronous
+    /// call like every other one in this method, and costs one PNG encode
+    /// of a ≤1024px image — the same encode the model's own follow-up
+    /// `read_image` used to cost, now without the round trip.
+    private static func foldingInlineImage(
+        into result: [String: Any], maxEdge: Double?,
+        vb: RISEViewportBridge, autonomy: RISEAgentAutonomyLevel
+    ) -> [String: Any] {
+        guard let maxEdge = maxEdge else { return result }
+        guard (result["ok"] as? Bool) == true else { return result }
+        let readLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_image\"," +
+            "\"params\":{\"maxEdge\":\(maxEdge)}}"
+        let response = vb.agentHandleToolCall(readLine, autonomy: autonomy)
+        guard
+            let data = response.data(using: .utf8),
+            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let readResult = obj["result"] as? [String: Any],
+            let b64 = readResult["png_base64"] as? String, !b64.isEmpty
+        else { return result }
+        var out = result
+        out["png_base64"] = b64
+        out["byteLength"] = readResult["byteLength"] ?? 0
+        // NOT "width"/"height" — those are the RENDER's dims, already in
+        // `result`.  These are the returned image's, same as the handler.
+        out["imageWidth"] = readResult["width"] ?? 0
+        out["imageHeight"] = readResult["height"] ?? 0
+        return out
     }
 
     /// Build a plain JSON-RPC success envelope {"jsonrpc":"2.0","id":0,

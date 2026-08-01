@@ -511,6 +511,14 @@ QString RenderEngine::versionString() const
         .arg(debug ? " (DEBUG)" : "");
 }
 
+bool RenderEngine::updateHasAnimation(bool hasAnimation)
+{
+    if (m_hasAnimation == hasAnimation) return false;
+    m_hasAnimation = hasAnimation;
+    emit hasAnimationChanged(m_hasAnimation);
+    return true;
+}
+
 QString RenderEngine::autoResolvedIntegrator() const
 {
     if (!m_job) return QString();
@@ -658,8 +666,7 @@ void RenderEngine::loadScene(const QString& filePath, bool untitled)
         QMetaObject::invokeMethod(this, [guard, ok]() {
             if (!guard) return;
             if (ok) {
-                guard->m_hasAnimation = guard->m_job->AreThereAnyKeyframedObjects();
-                emit guard->hasAnimationChanged(guard->m_hasAnimation);
+                guard->updateHasAnimation(guard->m_job->AreThereAnyKeyframedObjects());
                 guard->setState(SceneLoaded);
             } else {
                 guard->setState(Error);
@@ -1046,14 +1053,13 @@ void RenderEngine::clearScene()
     }
 
     m_loadedFilePath.clear();
-    m_hasAnimation = false;
+    updateHasAnimation(false);
     m_pixelBuffer.clear();
     m_hdrPixelBuffer.clear();  // L5b — drop the binary16 cache too
     m_imageWidth = 0;
     m_imageHeight = 0;
     m_sizeDetected = false;
 
-    emit hasAnimationChanged(false);
     emit imageUpdated(QImage());
     // Empty HDR signal so HDRRenderWidget can clear its swap chain.
     emit hdrImageUpdated(QByteArray(), 0, 0);

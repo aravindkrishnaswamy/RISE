@@ -2176,3 +2176,18 @@ lambertian_luminaire_material
 > modify object sdfminute material lume_glow_night
 > modify object pin material lume_glow_night
 */
+
+timeline
+{
+	animation	GlintSweep
+	element_type	object
+	element			sdfsec
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -160
+
+	time		1.00
+	value		0 0 -520
+}

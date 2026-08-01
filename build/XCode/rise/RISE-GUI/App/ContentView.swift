@@ -322,13 +322,10 @@ struct ContentView: View {
                         image: $viewModel.renderedImage,
                         timelineVisible: viewModel.hasAnimation,
                         sceneTime: $viewModel.sceneTime,
-                        // Pull the timeline range from the scene's
-                        // animation_options chunk via the bridge.  Falls
-                        // back to 5.0 only if the scene declares no
-                        // animation options at all (animationTimeEnd == 0),
-                        // so we avoid a 0-length slider that would clamp
-                        // every scrub to t=0.
-                        timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                        // The equality-guarded model snapshot follows agent
+                        // option edits and active named-animation switches.
+                        // Visibility remains an independent keyframe signal.
+                        timelineRange: viewModel.animationTimeStart...viewModel.animationTimeEnd,
                         interactionEnabled: interacting,
                         isProductionRendering: (viewModel.renderState == .rendering),
                         onSelectionMayHaveChanged: { propertyRefresh += 1 },
@@ -898,8 +895,8 @@ private struct ExposureSliderRow: View {
 
 /// The minimal live "agent + user co-edit" affordance: a multiline field
 /// for a JSON-RPC request, a Send button that drives the viewport bridge's
-/// `agentHandleLine` (which routes through the SAME live dispatcher /
-/// session / controller the GUI edits through), and a read-only response
+/// `agentHandleLine` (which routes through the administrative dispatcher
+/// over the SAME live controller the GUI edits through), and a read-only response
 /// area.  A `propose_patch` edits the running scene; the viewport re-renders
 /// and the Save button enables automatically via the controller's kick +
 /// dirty-changed block (see `RenderViewModel.sendAgentRequest`), so this

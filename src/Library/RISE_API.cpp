@@ -8474,6 +8474,16 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_GetHasAnimation(
+		SceneEditController* p, bool* outHasAnimation )
+	{
+		if( !p || !outHasAnimation ) return false;
+		bool hasAnimation = false;
+		if( !p->GetHasAnimation( hasAnimation ) ) return false;
+		*outHasAnimation = hasAnimation;
+		return true;
+	}
+
 
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH )

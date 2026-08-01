@@ -47,7 +47,11 @@
 #include <cstdio>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
+#include <map>
+#include <set>
 #include <vector>
 
 #include "../src/Library/Job.h"
@@ -61,6 +65,12 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid() -- per-process fixture path
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -92,9 +102,72 @@ public:
 
 	unsigned int CompletedCount() const { return mCompletedCount.load(); }
 
+	//! Block until at least `count` passes have run to COMPLETION (i.e. were
+	//! not cancelled).  Unlike ForTest_WaitForRenders -- which counts every
+	//! pass, including one that returned early because an edit cancelled it --
+	//! this only advances on real work, so "the edit kicked a FRESH pass" stays
+	//! a real assertion even when the edit also cancelled a held predecessor.
+	bool WaitForCompleted( unsigned int count, unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mHoldMutex );
+		return mHoldCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mCompletedCount.load() >= count; } );
+	}
+
+	//! Arm the NEXT render pass to enter flight and STAY there until something
+	//! trips the rasterizer cancel flag.
+	//!
+	//! Why this exists: SceneEditController::CancelAndParkRender_ only bumps
+	//! the cancel counter `if( mRendering )`.  A test that asserts "this edit
+	//! cancel-and-PARKED the in-flight pass" is therefore asserting an effect
+	//! whose PRECONDITION is "a pass is in flight right now" -- and the render
+	//! loop goes idle after each pass, so the precondition is not free.  Doing
+	//! it by sleeping (or by hoping the loop happens to be busy) is a race that
+	//! fails whenever the machine is loaded enough to slip the edit into the
+	//! idle gap.  Arm this, kick a render, WaitForHeldPass(), and the pass is
+	//! PROVABLY in flight when the code under test runs -- no timing assumption
+	//! at all.  The hold is bounded so a genuine "nobody ever cancels" bug
+	//! surfaces as a failed assertion rather than a hung suite.
+	void ArmHeldPass()
+	{
+		std::lock_guard<std::mutex> lk( mHoldMutex );
+		mHoldArmed = true;
+		mHoldReached = false;
+	}
+
+	//! Block until the armed pass has entered flight (mRendering is true and
+	//! the pass body is holding).  False on timeout.
+	bool WaitForHeldPass( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mHoldMutex );
+		return mHoldCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mHoldReached; } );
+	}
+
 protected:
 	void DoOneRenderPass() override
 	{
+		bool held = false;
+		{
+			std::lock_guard<std::mutex> lk( mHoldMutex );
+			if( mHoldArmed ) { mHoldArmed = false; mHoldReached = true; held = true; }
+		}
+		if( held )
+		{
+			mHoldCV.notify_all();
+			// Stay in flight until the code under test cancels us.  The bound
+			// only exists so a regression cannot wedge the suite; it is not a
+			// timing assumption -- the assertion that follows is on the cancel
+			// counter, which is what actually proves the park happened.
+			const auto deadline = std::chrono::steady_clock::now()
+				+ std::chrono::seconds( 10 );
+			while( !IsCancelRequested()
+			    && std::chrono::steady_clock::now() < deadline )
+			{
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+			return;   // cancelled: deliberately NOT counted as completed
+		}
 		const unsigned int sliceMs = 2;
 		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
 		for( unsigned int i = 0; i < slices; ++i )
@@ -102,12 +175,20 @@ protected:
 			if( IsCancelRequested() ) return;
 			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
 		}
-		mCompletedCount.fetch_add( 1 );
+		{
+			std::lock_guard<std::mutex> lk( mHoldMutex );
+			mCompletedCount.fetch_add( 1 );
+		}
+		mHoldCV.notify_all();
 	}
 
 private:
 	unsigned int              mSimulatedRenderMs;
 	std::atomic<unsigned int> mCompletedCount;
+	std::mutex                mHoldMutex;
+	std::condition_variable   mHoldCV;
+	bool                      mHoldArmed = false;
+	bool                      mHoldReached = false;
 };
 
 // A base (variant-free) scene.  `lum` is a UNIQUELY-named luminaire so both
@@ -529,12 +610,18 @@ static void TestRenderParkedDuringEdit()
 	if( !pJob ) return;
 
 	{
-		// Long simulated render (300ms) so an edit reliably lands mid-pass.
 		TestController c( *pJob, /*simulatedRenderMs*/300 );
 		c.Start();
 
-		// Let a render pass get in flight, then fire an agent commit.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		// Put a pass PROVABLY in flight, then fire an agent commit.  This used
+		// to be "sleep 40 ms into a 300 ms pass and hope" -- generous, but
+		// still a bet on scheduler latency (and the same bet Test 5c lost).
+		// The gate removes the bet entirely: the pass is holding in flight
+		// until this very edit cancels it.
+		c.ArmHeldPass();
+		c.ForTest_KickRender();
+		Check( c.WaitForHeldPass( 5000 ),
+		       "a render pass is provably in flight before the agent commit" );
 		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
 
 		const SceneEditController::AgentCommitResult r =
@@ -792,8 +879,21 @@ static void TestInsertChunksLive()
 		//------------------------------------------------------------------
 		{
 			Check( !c.HasUnsavedChanges(), "scene is CLEAN before the live insert_chunks batch" );
+			// Put a pass PROVABLY in flight before the batch runs.  The
+			// cancel-and-park assertion below is about what the batch does to
+			// an in-flight pass, and the render loop is idle between passes --
+			// without this gate the batch could simply land in the idle gap,
+			// bump no counter, and fail an assertion that describes correct
+			// behaviour.  That was this test's flake (it inherited Test 4's
+			// assertion without inheriting Test 4's mid-pass setup).
+			c.ArmHeldPass();
+			c.ForTest_KickRender();
+			Check( c.WaitForHeldPass( 5000 ),
+			       "(a) a render pass is provably in flight before the live batch" );
+			// Sample the counters only ONCE the pass is holding, so the kick's
+			// own (conditional) cancel can never be miscredited to the batch.
 			const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
-			const unsigned int rendersBefore = c.ForTest_GetRenderCount();
+			const unsigned int completedBefore = c.CompletedCount();
 
 			std::vector<std::string> chunks;
 			chunks.push_back( "uniformcolor_painter\n{\nname pnt_ic\ncolor 0.2 0.4 0.6\n}\n" );
@@ -830,7 +930,10 @@ static void TestInsertChunksLive()
 			Check( c.ForTest_GetCancelCount() > cancelsBefore,
 			       "(a) the live batch cancel-and-PARKED the in-flight pass" );
 			Check( c.HasUnsavedChanges(), "(a) the live batch marked the editor DIRTY (Save enables)" );
-			Check( c.ForTest_WaitForRenders( rendersBefore + 1, 3000 ),
+			// Count COMPLETED passes, not all passes: the held predecessor the
+			// batch just cancelled returns early and is deliberately not
+			// counted, so this stays a real "a fresh pass ran" assertion.
+			Check( c.WaitForCompleted( completedBefore + 1, 5000 ),
 			       "(a) the live batch KICKED a fresh viewport pass" );
 			Check( c.IsRunning(), "(a) render thread alive after the live insert_chunks batch" );
 		}
@@ -1631,10 +1734,14 @@ static void TestPreviewRenderParked()
 	if( !pJob ) return;
 
 	{
-		// (a) Long simulated render so a callback reliably lands mid-pass.
+		// (a) Hold a pass in flight so the callback provably lands mid-pass --
+		// see ArmHeldPass for why "sleep 40 ms and hope" is not good enough.
 		TestController c( *pJob, /*simulatedRenderMs*/300 );
 		c.Start();
-		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		c.ArmHeldPass();
+		c.ForTest_KickRender();
+		Check( c.WaitForHeldPass( 5000 ),
+		       "a render pass is provably in flight before RunPreviewRenderParked" );
 		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
 
 		std::atomic<bool> ran{ false };
@@ -4417,9 +4524,9 @@ static void TestExternalStageBaseVersionCoherentUnderConcurrency()
 //
 //   (a) an EXTERNAL dispatcher's wire propose_patch -> {applied:false,
 //       status:"staged"} -- the document is unchanged.
-//   (b) the OWNER dispatcher's wire list_proposals -> the one pending entry,
+//   (b) `ownerDisp`'s wire list_proposals -> the one pending entry,
 //       with the real field shapes (kind, target, param, value, status).
-//   (c) the OWNER dispatcher's wire resolve_proposal{approve:true} ->
+//   (c) `ownerDisp`'s wire resolve_proposal{approve:true} ->
 //       {resolved:true, status:"applied"} and the live scene actually moved.
 //   (d) the EXTERNAL dispatcher calling wire resolve_proposal on a fresh
 //       stage -> {resolved:false} (Owner-only, refused at the SESSION layer
@@ -4449,8 +4556,9 @@ static void TestProposalWireRoundTrip()
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
-		// Owner dispatcher: Owner-authority session, Commit autonomy (the
-		// in-process GUI shape -- unaffected by this slice).
+		// `ownerDisp`: Owner-authority session, Commit autonomy (the shape
+		// the GUI's in-process ADMINISTRATIVE dispatcher runs at --
+		// unaffected by this slice).
 		std::unique_ptr<Agent::AgentSession> ownerSess =
 			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
 		Check( ownerSess != nullptr, "owner session wraps the live Job" );
@@ -5252,6 +5360,495 @@ static void TestProposalHistoryEvictionSurvivesPending()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// A TRANSIENTLY refused resolve is reported as "did not resolve", not
+// as "resolved and rejected" / "unknown id".
+//
+// SceneEditController::ResolveProposal leaves the proposal PENDING on
+// both transient refusals -- the render-admission gate (it returns
+// false WITHOUT ever consulting the queue) and a replay that hit an
+// open editor transaction/gesture (it returns true with a retriable
+// AgentCommitResult).  Before this fix AgentSession folded the first
+// into "no pending proposal with that id (unknown id, or it was already
+// resolved)" and the second into ok=true/status="rejected": in both
+// cases a still-approvable proposal was reported as permanently gone.
+//
+// RED-PROVE for each leg is the pair (!ok, retriable) plus the
+// still-"pending" listing, and then the SAME resolve succeeding once
+// the gate clears -- the property the old shape denied.
+//////////////////////////////////////////////////////////////////////
+static void TestTransientResolveLeavesProposalPending()
+{
+	std::cout << "Test 45: a transiently refused resolve reports !ok+retriable and stays PENDING..." << std::endl;
+
+	const char* tmp = "agentlive_resolve_transient.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( ownerSess != nullptr && ext != nullptr, "both sessions wrap the live Job" );
+		if( !ownerSess || !ext ) { c.Stop(); pJob->release(); std::remove( tmp ); return; }
+		ownerSess->AttachController( &c );
+		ext->AttachController( &c );
+		Agent::AgentSession* owner = ownerSess.get();
+
+		auto stagePending = [&]( const char* value ) -> std::uint64_t {
+			Agent::AgentSetPatch p;
+			p.target = "lum";
+			p.kind   = "lambertian_luminaire_material";
+			p.param  = "scale";
+			p.value  = value;
+			const Agent::AgentPatchResult pr = ext->ProposePatch( p );
+			Check( pr.status == "staged", "external propose stages the proposal" );
+			std::uint64_t staged = 0;
+			for( const auto& e : owner->ListProposals() ) if( e.status == "pending" ) staged = e.id;
+			return staged;
+		};
+		auto isPending = [&]( std::uint64_t id ) -> bool {
+			for( const auto& e : owner->ListProposals() ) if( e.id == id ) return e.status == "pending";
+			return false;
+		};
+
+		//------------------------------------------------------------------
+		// (a) OPEN EDITOR TRANSACTION -- the replay refuses, the controller
+		// leaves the entry pending (its TRANSIENT-REFUSAL EXCEPTION).
+		//------------------------------------------------------------------
+		const std::uint64_t txnId = stagePending( "9.25" );
+		Check( txnId != 0, "the txn-leg proposal is staged pending" );
+		const double beforeTxn = LumR( *pJob );
+		Check( c.BeginTransaction(), "transaction opens" );
+
+		const Agent::AgentSession::AgentResolveResult rrTxn = owner->ResolveProposal( txnId, /*approve=*/true );
+		std::cout << "    [txn leg] ok=" << rrTxn.ok << " retriable=" << rrTxn.retriable
+		          << " status=\"" << rrTxn.status << "\" message=\"" << rrTxn.message << "\"" << std::endl;
+		Check( !rrTxn.ok,
+		       "MONEY RED-PROVE: a transaction-refused approve reports ok=FALSE -- it used to report "
+		       "ok=true/status=\"rejected\" for a proposal the controller left PENDING" );
+		Check( rrTxn.retriable, "MONEY: the refusal is flagged retriable (transient, resolvable again)" );
+		Check( rrTxn.status.empty(), "no resolve ran, so `status` stays empty (AgentRpc.h: empty when resolved is false)" );
+		Check( rrTxn.message.find( "transaction" ) != std::string::npos,
+		       "the message names the transaction that is actually blocking" );
+		Check( isPending( txnId ), "MONEY RED-PROVE: the proposal is STILL PENDING after the refused approve" );
+		Check( LumR( *pJob ) == beforeTxn, "the refused approve left the document UNCHANGED" );
+
+		// The same refusal on the WIRE: resolved=false AND retriable=true.
+		{
+			std::unique_ptr<Agent::AgentSession> wireSess =
+				Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+			Check( wireSess != nullptr, "wire owner session wraps the live Job" );
+			if( wireSess ) wireSess->AttachController( &c );
+			Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ), Agent::AgentAutonomy::Commit );
+			char line[200];
+			std::snprintf( line, sizeof( line ),
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":true}}",
+				static_cast<unsigned long long>( txnId ) );
+			Agent::JsonValue wireResult;
+			Check( JsonResultObj( wireDisp.HandleLine( line ), wireResult ),
+			       "wire resolve_proposal returns a result object mid-transaction" );
+			const Agent::JsonValue* wResolved = wireResult.find( "resolved" );
+			const Agent::JsonValue* wRetriable = wireResult.find( "retriable" );
+			Check( wResolved && wResolved->isBool() && !wResolved->asBool(),
+			       "MONEY RED-PROVE: the wire reports resolved=false mid-transaction" );
+			Check( wRetriable && wRetriable->isBool() && wRetriable->asBool(),
+			       "MONEY: the wire carries retriable=true, so a client can tell this apart from an unknown id" );
+			Check( isPending( txnId ), "the wire attempt also left the proposal pending" );
+		}
+
+		Check( c.RollbackTransaction(), "transaction rolls back" );
+
+		// The gate cleared -- the SAME resolve now works.  This is the whole
+		// point of leaving it pending.
+		const Agent::AgentSession::AgentResolveResult rrTxn2 = owner->ResolveProposal( txnId, /*approve=*/true );
+		Check( rrTxn2.ok && rrTxn2.status == "applied",
+		       "MONEY: the SAME proposal resolves cleanly once the transaction closes (it was not burned)" );
+		Check( !rrTxn2.retriable, "a real resolve carries retriable=false" );
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 10.0, "the retried approve reached the live scene (~9.25)" );
+
+		//------------------------------------------------------------------
+		// (b) RENDER-ADMISSION GATE -- SceneEditController::ResolveProposal
+		// returns false WITHOUT consulting the queue.  This used to reach
+		// the model as "no pending proposal with that id".
+		//------------------------------------------------------------------
+		const std::uint64_t busyId = stagePending( "2.0" );
+		Check( busyId != 0, "the busy-leg proposal is staged pending" );
+		const double beforeBusy = LumR( *pJob );
+
+		std::atomic<bool> release{ false };
+		std::atomic<bool> entered{ false };
+		SceneEditController::RenderJobId jobId = 0;
+		const bool accepted = c.SubmitAgentRenderAsync(
+			[&] {
+				entered.store( true, std::memory_order_release );
+				while( !release.load( std::memory_order_acquire ) )
+					std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			},
+			String( "resolve-transient-occupant" ), &jobId );
+		Check( accepted && jobId != 0, "the occupying agent render is accepted" );
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			while( !entered.load( std::memory_order_acquire ) &&
+			       std::chrono::steady_clock::now() < deadline )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+		Check( entered.load( std::memory_order_acquire ), "the occupying agent render is running" );
+		Check( !c.IsTransactionOpen(), "PRECONDITION: NO transaction is open in this leg" );
+
+		const Agent::AgentSession::AgentResolveResult rrBusy = owner->ResolveProposal( busyId, /*approve=*/true );
+		std::cout << "    [busy leg] ok=" << rrBusy.ok << " retriable=" << rrBusy.retriable
+		          << " message=\"" << rrBusy.message << "\"" << std::endl;
+		Check( !rrBusy.ok, "the admission-gate refusal reports ok=false" );
+		Check( rrBusy.retriable, "MONEY: it is flagged retriable -- the render clears and the proposal survives" );
+		Check( rrBusy.message.find( "no pending proposal with that id" ) == std::string::npos,
+		       "MONEY RED-PROVE: it does NOT claim the id is unknown/already resolved -- that permanent "
+		       "message was what a transient render-admission refusal used to report" );
+		Check( rrBusy.message.find( "render" ) != std::string::npos,
+		       "the message names the render that is actually blocking" );
+		Check( isPending( busyId ), "MONEY RED-PROVE: the proposal is STILL PENDING after the gate refusal" );
+		Check( LumR( *pJob ) == beforeBusy, "the gate refusal left the document UNCHANGED" );
+
+		release.store( true, std::memory_order_release );
+		Check( c.WaitForRenderJob( jobId, 15000 ), "the occupying agent render completes" );
+
+		const Agent::AgentSession::AgentResolveResult rrBusy2 = owner->ResolveProposal( busyId, /*approve=*/true );
+		Check( rrBusy2.ok && rrBusy2.status == "applied",
+		       "MONEY: the SAME proposal resolves cleanly once the render releases the gate" );
+		Check( LumR( *pJob ) > 1.5 && LumR( *pJob ) < 2.5, "the retried approve reached the live scene (~2.0)" );
+
+		//------------------------------------------------------------------
+		// (c) CONTROL: a genuinely unknown id is still PERMANENT -- the new
+		// `retriable` bit must not smear the two together.
+		//------------------------------------------------------------------
+		const Agent::AgentSession::AgentResolveResult rrUnknown = owner->ResolveProposal( 987654321u, /*approve=*/true );
+		Check( !rrUnknown.ok && !rrUnknown.retriable,
+		       "an unknown id is ok=false AND retriable=false (permanent, not a retry invitation)" );
+		Check( rrUnknown.message.find( "no pending proposal with that id" ) != std::string::npos,
+		       "the unknown-id message is unchanged" );
+
+		// And re-resolving an ALREADY-resolved proposal stays permanent too.
+		const Agent::AgentSession::AgentResolveResult rrAgain = owner->ResolveProposal( busyId, /*approve=*/true );
+		Check( !rrAgain.ok && !rrAgain.retriable,
+		       "re-resolving an already-applied proposal is ok=false AND retriable=false" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 53: RED-PROVE -- the READ verbs bind their document to their
+// headVersion ATOMICALLY.
+//
+// read_document and validate's head form both hand the model byte offsets
+// (or bytes) together with the headVersion those bytes are supposed to BE.
+// Built from three independent unlocked AgentSession accessor calls
+// (HasDocument / ReadDocument / HeadVersion) a commit on another thread can
+// land BETWEEN them, so the answer serializes revision N and stamps revision
+// N+1 -- and the serialization itself races the mutation.
+//
+// THE ORACLE: revision -> document bytes must be a FUNCTION.  A revision
+// names exactly one committed head, so two reads that report the same
+// revision must report byte-identical documents.  A split read breaks that
+// the moment the writer thread lands a commit inside the reader's window.
+// (Which document a reader sees is NOT constrained -- lagging is legitimate;
+// only the PAIRING is.)
+//
+// Topology mirrors the GUI's hosted-MCP wiring: one Job, one controller, a
+// writer thread committing through it, and a SECOND AgentSession + dispatcher
+// answering read verbs from another thread.
+//
+// RED-PROVED by reverting AgentRpc.cpp's read_document to the three separate
+// s->ReadDocument()/HasDocument()/HeadVersion() calls -- read_document ALONE,
+// the harder half (validate left fixed, so its lock still convoys the writer).
+// MEASURED on that mutant, 15 runs: 15/15 detected -- 9 by this oracle
+// (mispaired 14..114 of 4000 reads) and 6 by SIGSEGV, since serializing a
+// Document another thread is mutating is a real data race, not merely a
+// stale pairing.  12/12 clean runs on the fixed code, mispaired=0 every time.
+//
+// THE TEST IS PROBABILISTIC AND SAYS SO.  It cannot force the interleave
+// without a hook that parks the writer mid-commit, so it buys margin instead:
+// 4000 reads per run, and -- load-bearing -- the two verbs on SEPARATE reader
+// threads.  With both on one thread an earlier revision of this test detected
+// the same mutant in only 8 of 25 runs: the shared thread took mMutex every
+// iteration for the still-fixed `validate` call, which serialized it against
+// the writer and shrank the race window to ~24 distinct revisions per 4000
+// reads.  Split, the read_document reader races the writer directly (149-343
+// distinct revisions on the mutant).  On the FIXED code distinctRevisions
+// drops back to 2-4 -- that is the lock working, not the test failing, which
+// is why the non-vacuity guard asserts only that the head MOVED, not a floor
+// on overlap.
+//////////////////////////////////////////////////////////////////////
+//! The `scale` value declared in a serialized kBaseScene head, or "" when
+//! the text does not carry exactly one such line.  The oracle below needs
+//! the CONTENT of the snapshot, not just its length.
+static std::string ScaleValueOf( const std::string& doc )
+{
+	const std::string key = "\nscale ";
+	const std::string::size_type a = doc.find( key );
+	if( a == std::string::npos ) return std::string();
+	if( doc.find( key, a + 1 ) != std::string::npos ) return std::string();   // ambiguous
+	const std::string::size_type b = doc.find( '\n', a + key.size() );
+	if( b == std::string::npos ) return std::string();
+	return doc.substr( a + key.size(), b - a - key.size() );
+}
+
+static void TestReadVerbsBindDocumentToHeadVersion()
+{
+	std::cout << "Test 53: RED-PROVE -- read_document/validate bind the document to the headVersion atomically..." << std::endl;
+
+	const char* tmp = "agentlive_read_snapshot.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> writer =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		writer->AttachController( &c );
+
+		std::unique_ptr<Agent::AgentSession> readerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		readerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher readDisp( std::move( readerSess ) );
+
+		std::unique_ptr<Agent::AgentSession> validateSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		validateSess->AttachController( &c );
+		Agent::AgentRpcDispatcher validateDisp( std::move( validateSess ) );
+
+		const RISE::Cst::CstHeadVersion startHead = pJob->GetCstHeadVersion();
+
+		// THE TRUTH TABLE.  Every clean commit reports the revision it
+		// produced, so the writer can record revision -> the exact `scale`
+		// text that revision's document MUST carry.  Checked after the join,
+		// so a reader that outran the writer's record is not a false positive.
+		std::mutex truthMutex;
+		std::map<std::uint64_t, std::string> revToScale;
+		revToScale[startHead.revision] = "5.0";   // kBaseScene's authored value
+
+		// The READERS are the bounded side and the WRITER runs until they say
+		// stop.  The reverse (a bounded writer) does not reliably overlap: a
+		// read is microseconds and each commit cancel-and-parks a simulated
+		// render, so a fixed-count reader finishes long before the writer
+		// lands its first commit and the oracle passes vacuously.
+		//
+		// TWO reader threads, one verb each, NOT one thread alternating.
+		// mMutex is a barging lock and the two verbs convoy viciously through
+		// it: with both verbs on one thread, a regression in read_document
+		// ALONE still has that thread taking the lock every iteration for the
+		// validate call, which serializes it against the writer and shrinks
+		// the race window to almost nothing (measured: ~24 distinct revisions
+		// across 4000 reads, and the mutant detected in only 8 of 25 runs).
+		// Split, the read_document reader races the writer directly.
+		const int kReads           = 4000;
+		const int kWriterSafetyCap = 400000;   // never spin forever if a reader dies
+		std::atomic<int>  commitOk( 0 );
+		std::atomic<int>  readersDone( 0 );
+
+		// WRITER: give `lum.scale` a DIFFERENT value on every commit, so the
+		// document a revision names is uniquely identifiable from its bytes.
+		std::thread writerThread( [&]{
+			for( int i = 0; i < kWriterSafetyCap && readersDone.load( std::memory_order_acquire ) < 2; ++i ) {
+				char v[32];
+				std::snprintf( v, sizeof(v), "%d.5", ( i % 900 ) + 10 );
+				Agent::AgentSetPatch p;
+				p.target = "lum";
+				p.kind   = "lambertian_luminaire_material";
+				p.param  = "scale";
+				p.value  = v;
+				const Agent::AgentPatchResult r = writer->ProposePatch( p );
+				if( r.applied ) {
+					commitOk.fetch_add( 1 );
+					std::lock_guard<std::mutex> lk( truthMutex );
+					revToScale[r.headVersion.revision] = v;
+				}
+			}
+		} );
+
+		// READER A: read_document, carrying the oracle.
+		int reads = 0, foreignUuid = 0, notHead = 0;
+		std::vector<std::pair<std::uint64_t, std::string> > observed;
+		std::thread docReader( [&]{
+			for( int i = 0; i < kReads; ++i )
+			{
+				const std::string resp = readDisp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}" );
+				Agent::JsonValue result;
+				if( JsonResultObj( resp, result ) )
+				{
+					++reads;
+					const std::string doc = result.get( "document" ).asString();
+					const Agent::JsonValue& hv = result.get( "headVersion" );
+					if( static_cast<std::uint64_t>( hv.get( "uuid" ).asNumber() ) != startHead.uuid )
+						++foreignUuid;
+					const std::string scale = ScaleValueOf( doc );
+					if( scale.empty() || doc.find( "lum" ) == std::string::npos ) ++notHead;
+					else observed.push_back( std::make_pair(
+						static_cast<std::uint64_t>( hv.get( "revision" ).asNumber() ), scale ) );
+				}
+				std::this_thread::yield();
+			}
+			readersDone.fetch_add( 1 );
+		} );
+
+		// READER B: validate's head form -- the SAME snapshot call, on its own
+		// thread and its own dispatcher (AgentRpcDispatcher is single-caller
+		// by contract, so the two readers must not share one).
+		int validates = 0, validateNotClean = 0;
+		std::thread validateReader( [&]{
+			for( int i = 0; i < kReads; ++i )
+			{
+				const std::string vResp = validateDisp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"validate\",\"params\":{}}" );
+				Agent::JsonValue vResult;
+				if( JsonResultObj( vResp, vResult ) )
+				{
+					++validates;
+					if( vResult.get( "validated" ).asString() != "head" ) ++validateNotClean;
+					if( vResult.get( "diagnostics" ).size() != 0 ) ++validateNotClean;
+					const Agent::JsonValue& hv = vResult.get( "headVersion" );
+					if( static_cast<std::uint64_t>( hv.get( "uuid" ).asNumber() ) != startHead.uuid )
+						++foreignUuid;
+				}
+				else ++validateNotClean;
+				std::this_thread::yield();
+			}
+			readersDone.fetch_add( 1 );
+		} );
+		docReader.join();
+		validateReader.join();
+		writerThread.join();
+
+		// THE ORACLE: a revision names exactly one committed head, so the
+		// document reported alongside a revision must be THAT revision's
+		// document.  A split read serializes revision N and stamps revision
+		// N+1, which shows up here as revision N+1 carrying N's `scale`.
+		int mispaired = 0, checked = 0;
+		std::set<std::uint64_t> distinctRevisions;
+		for( std::size_t i = 0; i < observed.size(); ++i ) {
+			distinctRevisions.insert( observed[i].first );
+			const std::map<std::uint64_t, std::string>::const_iterator it =
+				revToScale.find( observed[i].first );
+			if( it == revToScale.end() ) continue;   // revision from a rejected/unrecorded path
+			++checked;
+			if( it->second != observed[i].second ) ++mispaired;
+		}
+
+		std::cout << "    commits=" << commitOk.load() << " reads=" << reads
+		          << " validates=" << validates
+		          << " distinctRevisions=" << distinctRevisions.size()
+		          << " checked=" << checked << " mispaired=" << mispaired << std::endl;
+
+		// The storm must actually have raced: both sides did real work and the
+		// reader observed the head MOVING under it.  Without this the oracle
+		// would pass vacuously on a serialized run.
+		Check( commitOk.load() > 0, "the writer landed commits during the read storm" );
+		Check( reads > 0 && validates > 0, "the reader completed reads and validates during the storm" );
+		Check( distinctRevisions.size() > 1,
+		       "the reader observed the head MOVE mid-storm (the race window was real)" );
+		Check( checked > 0, "the oracle had reader observations it could actually check" );
+
+		Check( mispaired == 0,
+		       "read_document: the document reported alongside a revision IS that revision's "
+		       "document -- bytes and headVersion come from one locked snapshot" );
+		Check( foreignUuid == 0, "every read reports the LIVE head's uuid" );
+		Check( notHead == 0, "no read returned a partial/unparseable document" );
+		Check( validateNotClean == 0,
+		       "validate {} stayed a clean head verdict throughout the storm" );
+
+		c.Stop();
+		Check( !c.IsRunning(), "controller stops + joins cleanly after the read storm" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// The KIND-ADDRESSED SINGLETON patch form: an EMPTY target plus a kind
+// addresses the sole unnamed chunk of that kind (camera / film /
+// rasterizer).  The capability already existed -- SceneEditController's
+// agent commit documents it, and Job::ApplyCstParamEditImpl_ resolves it
+// via the unique-in-kind fallback -- but NOTHING the model reads said so.
+//
+// Measured consequence (20260729T100542Z-331b6cd1): building a scene from
+// scratch, the model wanted to move the camera it had just created, sent
+// target:"pinhole_camera" (the chunk KEYWORD as if it were a name), was
+// correctly rejected, and fell back to remove_chunk + insert_chunk -- three
+// turns to set a camera location, in a scene where remove/insert also
+// churns the head twice.
+//
+// This pins the capability so the prompt/tool-description guidance that now
+// teaches it cannot drift away from something that actually works, and
+// pins the keyword-as-name mistake as a genuine rejection rather than a
+// silent no-op.
+//////////////////////////////////////////////////////////////////////
+static void TestUnnamedSingletonPatchAddressing()
+{
+	std::printf( "Unnamed-singleton patch addressing (empty target + kind)...\n" );
+
+	// Per-process path in TMPDIR, deliberately NOT this file's prevailing
+	// fixed-name-in-cwd idiom: that pattern lets two concurrent runs clobber
+	// each other's fixture mid-load (the same hazard the WriteTemp helpers
+	// elsewhere in tests/ were pid-suffixed to close).
+	std::string scenePath;
+	{
+		const char* base = std::getenv( "TMPDIR" );
+		std::string dir = base ? base : "/tmp";
+		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+		scenePath = dir + std::to_string( (long)getpid() ) + "_rise_unnamed_singleton.RISEscene";
+		std::ofstream o( scenePath.c_str() );
+		o << kU2RasterizerScene;
+	}
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::LoadFromFile( scenePath );
+	Check( sess != nullptr, "singleton: scene with an UNNAMED pinhole_camera loads" );
+	if( !sess ) return;
+
+	// The mistake the model actually made: the chunk KEYWORD in `target`.
+	// It must be REJECTED, not silently applied to something.
+	Agent::AgentSetPatch byKeyword;
+	byKeyword.target = "pinhole_camera";
+	byKeyword.param  = "location";
+	byKeyword.value  = "0 1 4";
+	const Agent::AgentPatchResult rKeyword = sess->ProposePatch( byKeyword );
+	Check( !rKeyword.applied,
+	       "singleton: MONEY -- target=\"pinhole_camera\" (the KEYWORD as a name) is REJECTED" );
+	Check( rKeyword.status == "rejected",
+	       "singleton: the keyword-as-name attempt reports status=rejected" );
+
+	// The form that works, and that the guidance now teaches.
+	Agent::AgentSetPatch byKind;
+	byKind.target = "";              // EMPTY -- this is what selects the singleton form
+	byKind.kind   = "camera";
+	byKind.param  = "location";
+	byKind.value  = "0 1 4";
+	const Agent::AgentPatchResult rKind = sess->ProposePatch( byKind );
+	Check( rKind.applied,
+	       "singleton: MONEY -- empty target + kind=\"camera\" PATCHES the unnamed camera "
+	       "(so a model never needs remove_chunk + insert_chunk to move one)" );
+	Check( rKind.status == "applied", "singleton: the kind-addressed patch reports applied" );
+
+	// It really reached the document, not just the result envelope.
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "0 1 4" ) != std::string::npos,
+	       "singleton: the new camera location is in the retained document" );
+
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -5305,6 +5902,9 @@ int main()
 	TestProposalListingTruncation();
 	TestProposalListingUtf8BoundarySafety();
 	TestProposalHistoryEvictionSurvivesPending();
+	TestTransientResolveLeavesProposalPending();
+	TestReadVerbsBindDocumentToHeadVersion();
+	TestUnnamedSingletonPatchAddressing();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

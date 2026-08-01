@@ -357,10 +357,132 @@ namespace RISE
 			Production   = 2
 		};
 
-		//! Snapshot of the CURRENT render job, read under mMutex.  `active`
-		//! is false when no render is presently in flight; `id`/`renderClass`
-		//! then reflect the MOST RECENTLY assigned job (stale, informational
-		//! only).
+		//! Fix-round-8 P1: WHY a coordinated-render entry point refused.
+		//! Reported through the optional `outRefusal` out-param of
+		//! RunPreviewRenderParked, SubmitAgentRenderAsync and
+		//! SubmitAgentRenderSync.
+		//!
+		//! Those methods refuse at many distinct gates (RunPreviewRenderParked
+		//! at seven) and used to return a bare `false`, so the caller had to
+		//! reverse-engineer the cause.  AgentSession did that by reading
+		//! CurrentRenderJob() -- which is NOT a proxy for any gate here:
+		//! RenderLoop mints an `active == true` RenderClass::Interactive job
+		//! for EVERY ordinary viewport pass, so in the normal steady state
+		//! (viewport drawing) an mTxnOpen refusal was reported to the model
+		//! as "render queued or in progress", pointing it at something that
+		//! completes constantly while the transaction that actually blocks
+		//! stays open.  The callee already knows which gate fired; it now
+		//! says so, which closes the whole class (races,
+		//! gate-claimed-but-not-yet-minted windows, future causes) rather
+		//! than narrowing one case.
+		//!
+		//! ROUND-10: renamed from `RenderRefusal`.  The submit paths
+		//! now report through this same enum (round-10 finding 2b: they were
+		//! INFERRING their refusal cause from CurrentRenderJob().pinned, the
+		//! exact defect round 8 removed from RunPreviewRenderParked's
+		//! callers), and a Production-class submission refusal is not a
+		//! "preview" refusal.  Two enumerators were added at the same time:
+		//! PinnedRenderBusy (submit paths only) and
+		//! InteractionFinalizeLatched (round-10 finding 3).
+		//!
+		//! RETRIABILITY is part of each enumerator's contract and is stated
+		//! per-value below.  It is load-bearing: these values become
+		//! model-facing strings, and telling a model to retry something that
+		//! can never succeed is the infinite-retry failure this branch
+		//! exists to remove.
+		enum class RenderRefusal
+		{
+			//! No refusal.  The value left in `*outRefusal` whenever the
+			//! call returns true, and also on the throw path (an exception
+			//! out of `fn` propagates past the refusal sites entirely).
+			None = 0,
+
+			//! Terminal Stop()/teardown is in progress -- mDirectRenderStopping
+			//! (registration closed) or mAgentRenderStop (controller stopped).
+			//! NOT retriable: the controller is going away.
+			ControllerStopped,
+
+			//! An editor transaction, pointer gesture, time scrub, save, or a
+			//! direct SceneEditor composite is open (mTxnOpen / mSaving /
+			//! mPointerDown / mScrubInProgress / IsCompositeOpen).
+			//! Retriable once the gesture completes.
+			//! Round-10 P2: RunPreviewRenderParked reports this from THREE
+			//! sites, not the two the previous wording claimed -- the
+			//! pre-admission mTxnOpen check, the post-admission
+			//! txn/save/composite check, and the post-park revalidation.
+			//! The submit paths report it from four sites BETWEEN them, but
+			//! NOT symmetrically (round-12 P2 -- the previous wording credited
+			//! both with a pre-flight check): only SubmitAgentRenderAsync has
+			//! its own pre-flight mTxnOpen check; SubmitAgentRenderSync goes
+			//! straight to the fairness ticket and can only reach EditorBusy
+			//! through the three nested mTxnOpen / mSaving / IsCompositeOpen
+			//! checks in the shared SubmitAgentRenderAsync_Locked.
+			EditorBusy,
+
+			//! Another coordinated (agent/production) render owns the
+			//! admission gate -- queued or running
+			//! (mAgentRenderBlocksInteractive), or, from the submit paths,
+			//! the single agent-render slot is already occupied by a
+			//! NON-pinned job / a fair-queue waiter owns the next turn / the
+			//! synchronous fairness wait timed out still waiting for it.
+			//! Retriable once that render completes.
+			//! NOTE this gate is claimed BEFORE the job record is minted, by
+			//! both SubmitAgentRenderAsync_Locked and RunPreviewRenderParked,
+			//! so a CurrentRenderJob()-based reconstruction cannot see it
+			//! during that window -- another reason the cause is reported
+			//! directly.
+			CoordinatedRenderBusy,
+
+			//! An open platform interaction could not be finalized
+			//! (FinalizeOpenInteractions returned false) for a TRANSIENT
+			//! reason: a pointer gesture / property scrub / timeline scrub /
+			//! controller-opened composite was still open when the finalize
+			//! attempt ended, or the admission gate was taken underneath it.
+			//! Retriable -- the next attempt can succeed.
+			InteractionFinalizeFailed,
+
+			//! ROUND-10 finding 3.  FinalizeOpenInteractions returned false
+			//! because mInteractionPersistenceFailed is LATCHED -- a pending
+			//! CST object-transform / camera-pose commit failed (a CST route
+			//! failed, or a dragged camera/object vanished from the scene
+			//! mid-gesture).  That flag is a deliberate STICKY truth flag: it
+			//! is set at five production sites (plus the
+			//! ForTest_TripInteractionPersistenceFailure seam) and NEVER
+			//! cleared, because once a live
+			//! gesture's delta failed to reach the Document the controller can
+			//! no longer claim the Document matches what the user did.
+			//!
+			//! **NOT retriable, and it will NOT clear on its own.**  Every
+			//! subsequent preview render and every read_viewport refuses for
+			//! the life of the controller.  This value exists precisely so
+			//! that fact is REPORTED rather than dressed up as the retriable
+			//! InteractionFinalizeFailed above -- reporting it as retriable is
+			//! what produced the infinite-retry loop this branch removes.
+			//! The discrimination is exact, not heuristic: whenever the flag
+			//! is set, FinalizeOpenInteractions returns false unconditionally,
+			//! so "flag set at the refusal site" == "this refusal is
+			//! permanent" and "flag clear" == "one of the transient causes".
+			InteractionFinalizeLatched,
+
+			//! ROUND-10 finding 2b.  SUBMIT PATHS ONLY (never produced by
+			//! RunPreviewRenderParked, which has no slot concept): the single
+			//! agent-render slot is occupied by a PINNED job, which refuses
+			//! every new submission rather than being superseded.  Retriable
+			//! once that job completes.  Previously AgentSession INFERRED
+			//! this by reading CurrentRenderJob().pinned after the refusal --
+			//! a stale-field read that claimed a pinned render was in flight
+			//! for the rest of the session once any pinned render had ever
+			//! completed.
+			PinnedRenderBusy
+		};
+
+		//! Snapshot of the CURRENT render job, read under mJobStatusMutex
+		//! (NOT mMutex -- see CurrentRenderJob()'s doc for why that
+		//! distinction is load-bearing).  `active` is false when no render
+		//! is presently in flight; `id`/`renderClass` then reflect the MOST
+		//! RECENTLY assigned job (stale, informational only).  `active ==
+		//! true` covers EVERY render class, interactive passes included --
+		//! it is not an agent-render-gate indicator.
 		//!
 		//! Fix-round-1 P3-c: `clientLabel` echoes the diagnostic tag a
 		//! caller passed to SubmitAgentRenderAsync / SubmitAgentRenderSync
@@ -374,13 +496,31 @@ namespace RISE
 		//! CURRENT agent-slot occupant was submitted as a PINNED render
 		//! (see SubmitAgentRenderAsync / SubmitAgentRenderSync's `pinned`
 		//! parameter).  Always false for an Interactive-class job (the
-		//! interactive loop has no pinned concept); meaningful for an
-		//! AgentPreview-class job for as long as `active` is true (stale
-		//! once the job completes, same "informational only" caveat as
-		//! `id`/`renderClass` above).  A pinned job in flight is what
-		//! makes SubmitAgentRenderAsync / SubmitAgentRenderSync refuse a
-		//! NEW submission with the pinned-specific message -- see those
-		//! methods' docs.
+		//! interactive loop has no pinned concept) and for a
+		//! RunPreviewRenderParked job (that path takes no `pinned`
+		//! argument); meaningful for a submitted job for as long as
+		//! `active` is true (stale once the job completes, same
+		//! "informational only" caveat as `id`/`renderClass` above).
+		//!
+		//! ROUND-10 finding 2a: `pinned` used to be written at ONE of the
+		//! three mint sites (SubmitAgentRenderAsync_Locked).  The other
+		//! two -- RunPreviewRenderParked and RenderLoop's per-pass
+		//! Interactive mint -- overwrote id/renderClass/active/clientLabel
+		//! and left `pinned` STALE, so once ANY pinned render had
+		//! completed the field read `true` for the rest of the session.
+		//! All three sites now publish a WHOLE, freshly default-
+		//! constructed RenderJobStatus, so a record always fully describes
+		//! ITS OWN job and a field added later cannot repeat this.
+		//! Regression-pinned by AgentRenderAsyncTest's
+		//! RunPinnedFieldNotStaleAfterCompletionTest.
+		//!
+		//! DO NOT use this field to explain WHY a submission was refused.
+		//! That was the round-10 bug: the refusal messages read it and
+		//! announced "a pinned render is in flight" when none was.  The
+		//! submit paths now report RenderRefusal::PinnedRenderBusy through
+		//! their own `outRefusal` out-param -- decided by the slot state
+		//! under the slot lock at the moment of refusal, which no
+		//! after-the-fact status read can reconstruct.
 		struct RenderJobStatus
 		{
 			RenderJobId  id          = kInvalidRenderJobId;
@@ -564,7 +704,8 @@ namespace RISE
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
-			//! to propose_patch/insert_chunk/remove_chunk) and StageProposal
+			//! to one of the 5 mutating verbs -- propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) and StageProposal
 			//! passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
@@ -662,11 +803,28 @@ namespace RISE
 		//! Returns false (no such id, or already resolved -- resolving an
 		//! already-applied/rejected/conflict proposal is refused rather
 		//! than silently re-run) with the queue left untouched; true
-		//! otherwise, with `outResult` filled from the replay (meaningful
-		//! only when `approve` was true AND the version check passed --
-		//! i.e. a real apply actually ran; a reject or a conflict leaves
-		//! `outResult` default-constructed since no ApplyAgent* call was
-		//! made).
+		//! otherwise, with `outResult` filled from the replay.  The
+		//! render-admission gate ALSO returns false without consulting the
+		//! queue, so `false` alone does not mean "unknown id": that path
+		//! fills `outResult` with a refusal whose `retriable` says whether
+		//! resolving again later can work (true while a render is queued
+		//! or running, false once the controller is being destroyed).  A
+		//! caller that passes `outResult == nullptr` cannot tell the two
+		//! apart.  A REJECT
+		//! never calls ApplyAgent* at all, but still fills `outResult`
+		//! with status="rejected" plus the REAL current head (Secure-MCP
+		//! slice 5b fix round P2-2 -- leaving it default-constructed put
+		//! the {0,0} "no head to report" sentinel on the wire).
+		//!
+		//! TRANSIENT-REFUSAL EXCEPTION (round-2 FIX-2 review, C5): when
+		//! the approve replay comes back `retriable` -- ApplyAgent*
+		//! refused on an open editor transaction/gesture BEFORE touching
+		//! the Document -- the proposal is deliberately LEFT PENDING and
+		//! this still returns true with `outResult` carrying that
+		//! refusal.  Folding it to "rejected" would permanently burn a
+		//! staged proposal because an Owner clicked Approve mid-gesture;
+		//! nothing was applied and the head is byte-identical, so simply
+		//! approving again a moment later is a true retry.
 		//!
 		//! CALLER CONTRACT (enforced ONE LAYER UP, in AgentSession, not
 		//! here): the controller has no notion of "authority" -- it cannot
@@ -691,11 +849,15 @@ namespace RISE
 		//! DoOneRenderPass's swap of the SAME shared Film/cameras.  `fn` is
 		//! invoked exactly once, synchronously, on the calling thread, with
 		//! the render thread parked and mMutex HELD; `fn` must not re-enter
-		//! the controller -- in particular it must not call
-		//! CurrentRenderJob() or any other mMutex-taking method on this
+		//! the controller by calling any mMutex-taking method on this
 		//! object.  mMutex is a plain (non-recursive) std::mutex, so
 		//! re-entering it from `fn` is an immediate self-deadlock, not a
-		//! stall-and-retry.  Refused (returns false, `fn` NOT invoked) while
+		//! stall-and-retry.  (Fix-round-8 P1: CurrentRenderJob() used to be
+		//! named here as an example of a forbidden call -- it is NOT one.
+		//! It takes mJobStatusMutex, never mMutex, precisely so a status
+		//! read cannot block behind a render-duration hold; calling it from
+		//! `fn` is safe.  The prohibition applies to the mMutex-taking
+		//! methods, not to this one.)  Refused (returns false, `fn` NOT invoked) while
 		//! an editor transaction/gesture or save is open, or while another
 		//! direct/coordinated render owns the admission gate. Direct renders
 		//! publish that same gate before waiting for mMutex, so UI callbacks
@@ -728,15 +890,50 @@ namespace RISE
 		//! contract to the base overload) -- note a throw out of `fn`
 		//! propagates PAST this call (it returns true only on the ordinary
 		//! path; an exception unwinds through instead of returning at all).
+		//!
+		//! Fix-round-8 P1: `outRefusal` (optional) receives WHY the call
+		//! refused -- see RenderRefusal.  ROUND-10 CORRECTION to this
+		//! paragraph: the implementation writes `None` UNCONDITIONALLY as its
+		//! very first statement and then overwrites it at whichever of the
+		//! seven refusal paths fires, so a caller's pre-seeded value never
+		//! survives -- the earlier wording ("it is NOT written when an
+		//! exception unwinds ... the value the caller initialized it with
+		//! survives") was false.  The property callers actually rely on is
+		//! unchanged and IS true: once this call returns or throws,
+		//! `*outRefusal` holds `None` iff `fn` ran -- a throw out of `fn`
+		//! unwinds past every refusal site, so that leading `None` write is
+		//! the last one that happened -- and the specific cause otherwise.
+		//! Initializing the local to `None` anyway is still recommended: it
+		//! keeps the variable from ever being read indeterminate if this
+		//! contract is weakened, and it documents the intended default.
+		//! `outRefusal` exists because the caller CANNOT reconstruct the
+		//! cause: CurrentRenderJob() reports the interactive loop's own
+		//! per-pass job as active, and two of the gates here are claimed
+		//! BEFORE any job record is minted.
 		bool RunPreviewRenderParked(
 			const std::function<void()>& fn,
 			RenderClass                  renderClass,
 			const String&                clientLabel,
-			RenderJobId*                 outJobId );
+			RenderJobId*                 outJobId,
+			RenderRefusal*               outRefusal = nullptr );
 
-		//! Model-B F2 slice S1: snapshot of the current render job under
-		//! mMutex.  See RenderJobStatus's doc for the "stale when inactive"
-		//! semantics.
+		//! Model-B F2 slice S1: snapshot of the current render job, taken
+		//! under mJobStatusMutex.  See RenderJobStatus's doc for the "stale
+		//! when inactive" semantics.
+		//!
+		//! Fix-round-8 P1: this doc used to say "under mMutex", contradicting
+		//! the implementation.  mJobStatusMutex is DELIBERATE and load-bearing
+		//! (slice S2a) -- reading via mMutex would block this call for an
+		//! entire in-flight render's duration, which is exactly what a status
+		//! read must never do.  Consequences that follow from the real lock,
+		//! and that the stale doc hid: this method is safe to call from
+		//! inside a RunPreviewRenderParked / SubmitAgentRender* closure (it
+		//! does NOT self-deadlock on the non-recursive mMutex those hold),
+		//! and it is NOT a proxy for any admission gate -- RenderLoop mints
+		//! an `active == true` Interactive job for every ordinary viewport
+		//! pass, so `active` says "some render is in flight", never "the
+		//! agent-render gate is claimed".  Use RunPreviewRenderParked's
+		//! `outRefusal` for the latter.
 		RenderJobStatus CurrentRenderJob() const;
 
 		//! Model-B F2 slice S2a: submit `fn` to run OFF the calling thread on
@@ -822,12 +1019,26 @@ namespace RISE
 		//! ordinary agent submission is this tag; every fair-queue /
 		//! pinned / Stop() refusal rule is IDENTICAL and shared via
 		//! SubmitAgentRenderAsync_Locked.
+		//! ROUND-10 finding 2b: `outRefusal` (optional) receives WHY this
+		//! call refused, exactly as RunPreviewRenderParked's out-param
+		//! does -- see RenderRefusal.  Same write contract: it is seeded
+		//! with `None` unconditionally on entry and overwritten at
+		//! whichever refusal site fires, so `None` on return means
+		//! "accepted".  This exists because AgentSession was inferring the
+		//! cause from CurrentRenderJob().pinned AFTER the refusal -- a read
+		//! that is both racy (the slot lock is released by then) and, until
+		//! the round-10 whole-record fix, STALE (the field survived its
+		//! job's completion), so it announced a phantom pinned render to
+		//! the model on the commonest refusal path there is.  A pinned
+		//! occupant now reports RenderRefusal::PinnedRenderBusy, decided
+		//! under the slot lock at the moment of refusal.
 		bool SubmitAgentRenderAsync(
 			std::function<void()> fn,
 			const String&         clientLabel,
 			RenderJobId*          outJobId,
 			bool                  pinned = false,
-			RenderClass           renderClass = RenderClass::AgentPreview );
+			RenderClass           renderClass = RenderClass::AgentPreview,
+			RenderRefusal*        outRefusal = nullptr );
 
 		//! Model-B F2 slice S2a: the SYNCHRONOUS convenience wrapper --
 		//! submits `fn` exactly like SubmitAgentRenderAsync, then blocks the
@@ -916,14 +1127,21 @@ namespace RISE
 		//! from under an in-flight render, not against fair queuing behind
 		//! it.  A sync caller with a `timeoutMs` shorter than the pinned
 		//! render's remaining duration simply times out (the ordinary
-		//! fairness-wait timeout above), which reads identically to "no
-		//! occupant at all, but the wait ran out" -- there is no separate
-		//! pinned-specific rejection message on this path (contrast
-		//! SubmitAgentRenderAsync, which DOES refuse a pinned-occupied slot
-		//! immediately with the dedicated pinned message, since it never
-		//! waits).  A sync caller with a GENEROUS `timeoutMs` instead waits
-		//! out the pinned render's remaining duration and then proceeds
-		//! normally once the slot frees.
+		//! fairness-wait timeout above): the OUTCOME is the same bool
+		//! `false` a non-pinned occupant would produce -- pinned does not
+		//! give this path a distinct refusal RULE.  ROUND-10 amendment:
+		//! this paragraph used to add "there is no separate pinned-specific
+		//! rejection MESSAGE on this path".  There now is one, and it is
+		//! not a policy change: `outRefusal` classifies the timeout by
+		//! reading the occupant's pinned-ness under the SAME slot-lock hold
+		//! the wait woke under, so a caller can tell the model WHY its wait
+		//! ran out.  The admission rule is unchanged (wait, do not refuse);
+		//! only the honesty of the reported reason improved.  Contrast
+		//! SubmitAgentRenderAsync, which REFUSES a pinned-occupied slot
+		//! immediately, since it never waits.  A sync caller with a
+		//! GENEROUS `timeoutMs` instead waits out the pinned render's
+		//! remaining duration and then proceeds normally once the slot
+		//! frees.
 		//!
 		//! `pinned` (default false, same semantics as
 		//! SubmitAgentRenderAsync's parameter) marks THIS submission as
@@ -934,13 +1152,30 @@ namespace RISE
 		//! method's own doc describes, only what CurrentRenderJob /
 		//! GetRenderJobStatus report while this submission occupies the
 		//! slot.
+		//! ROUND-10 finding 2b: `outRefusal` (optional) receives WHY this
+		//! call refused -- see RenderRefusal and the identical param on
+		//! SubmitAgentRenderAsync.  On THIS path the fairness-wait timeout
+		//! is also classified: the occupant's pinned-ness is read under
+		//! the SAME mAgentRenderSlotMutex hold the wait just woke under,
+		//! so a timeout caused by a pinned occupant reports
+		//! PinnedRenderBusy and one caused by an ordinary occupant reports
+		//! CoordinatedRenderBusy.  That is a genuine, non-stale read --
+		//! unlike the CurrentRenderJob().pinned inference it replaces,
+		//! which ran after the lock was released and (before round 10's
+		//! whole-record mint fix) reported a LONG-COMPLETED pinned job.
+		//! Note the S3-P2 paragraph above still holds: this path never
+		//! reaches SubmitAgentRenderAsync_Locked's pinned branch, because
+		//! the fairness predicate only wakes it once the slot is free.
+		//! The timeout classification is where a pinned occupant becomes
+		//! visible to a sync caller.
 		bool SubmitAgentRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
 			RenderJobId*          outJobId,
 			unsigned int          timeoutMs = 30000,
 			bool                  pinned = false,
-			RenderClass           renderClass = RenderClass::AgentPreview );
+			RenderClass           renderClass = RenderClass::AgentPreview,
+			RenderRefusal*        outRefusal = nullptr );
 
 		//! Model-B F2 slice S4: route a PRODUCTION render (a platform
 		//! shell's "Render" / "Render Animation" / "Render Region" action)
@@ -1738,10 +1973,21 @@ namespace RISE
 		//! Reads the scene's animation options — start time, end time,
 		//! number of frames — for sizing the timeline scrubber's
 		//! range.  Defaults are (0, 1, 30) when no `animation_options`
-		//! chunk was declared in the .RISEscene file.  Returns false
-		//! if the underlying job is unavailable.
+		//! chunk was declared in the .RISEscene file.  Returns false without
+		//! touching the outputs while a render owns the scene or another editor
+		//! operation holds the commit mutex; polling callers retain their last
+		//! successful tuple and retry.
 		bool GetAnimationOptions( double& timeStart, double& timeEnd,
 		                          unsigned int& numFrames ) const;
+
+		//! Read whether the live scene currently contains any keyframed
+		//! elements.  Agent edits can add or remove timelines after the GUI
+		//! has loaded, so platform shells poll this alongside the animation
+		//! options instead of treating the load-time answer as permanent.
+		//! Returns false without touching `hasAnimation` while a render owns
+		//! the scene or another editor operation holds the commit mutex; the
+		//! caller should retain its last successful snapshot and try again.
+		bool GetHasAnimation( bool& hasAnimation ) const;
 
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
@@ -1888,6 +2134,32 @@ namespace RISE
 			    != DestructionOpen;
 		}
 
+		//! ROUND-10 finding 3 test seam.  Trip mInteractionPersistenceFailed
+		//! -- the STICKY flag a failed pending-CST commit sets -- so a test
+		//! can exercise the PERMANENT FinalizeOpenInteractions refusal
+		//! (RenderRefusal::InteractionFinalizeLatched) without having to
+		//! stage a CST route failure or a vanished dragged camera.  There is
+		//! deliberately NO un-trip: the production flag is never cleared
+		//! either, and a test that needs a clean controller builds one.
+		void ForTest_TripInteractionPersistenceFailure()
+		{
+			mInteractionPersistenceFailed.store( true, std::memory_order_release );
+		}
+		//! ROUND-10 finding 3 test seam, the TRANSIENT twin of the above.
+		//! Makes the NEXT FinalizeOpenInteractions() call return false
+		//! WITHOUT setting the sticky flag, i.e. exactly the retriable
+		//! RenderRefusal::InteractionFinalizeFailed shape, then clears
+		//! itself.  Needed because the production transient causes (an
+		//! OnTimeScrubEnd failure, a scrub/composite that survives its own
+		//! finalize) have no deterministic black-box trigger, and an
+		//! untested arm of a model-facing retriability mapping is a claim,
+		//! not a fact.  Consulted at exactly one point, immediately before
+		//! FinalizeOpenInteractions' final return, so it cannot skip any of
+		//! the real finalization work.
+		void ForTest_FailNextFinalizeOpenInteractions()
+		{
+			mForTestFinalizeFailOnce.store( true, std::memory_order_release );
+		}
 		//! T0 pause-state oracle setup: arm the current pane's normal
 		//! final-to-polish transition without synthesizing a pointer gesture.
 		void ForTest_ArmFinalRegularPolish()
@@ -1975,6 +2247,57 @@ namespace RISE
 		//! document is retained.
 		void GetSceneTextVersion( std::uint64_t& outUuid,
 		                          std::uint64_t& outRevision ) const;
+
+		//! The AGENT surface's read of the head: an ATOMIC
+		//! {hasDocument, document, headVersion} capture under ONE mMutex hold.
+		//!
+		//! read_document and validate's head form report byte offsets INTO a
+		//! document ALONGSIDE the headVersion those offsets are supposed to
+		//! describe.  Reading the three separately -- as three independent
+		//! unlocked AgentSession accessor calls -- lets a commit on another
+		//! thread land between them, so the answer pairs one revision's
+		//! offsets with another revision's stamp, and the serialization
+		//! itself races the mutation.  One lock, one snapshot, no window.
+		//!
+		//! Unlike SerializedSceneText / GetSceneTextVersion above (UI POLLS:
+		//! render-owns-scene guard + try-lock, silently serving nothing when
+		//! busy) this BLOCKS on mMutex.  A poll that skips a beat is
+		//! harmless; an agent read that answers "" / {0,0} while a head
+		//! exists is a lie the model cannot detect.  So: AGENT RPC THREAD
+		//! ONLY -- never from a UI frame callback, and never from inside a
+		//! render closure (mMutex is non-recursive -- see
+		//! RunPreviewRenderParked's `fn` contract).
+		//!
+		//! DISCLOSED LIVENESS COST of choosing to block.  The interactive
+		//! render loop takes only brief per-pass mMutex holds and a
+		//! cancel-and-park commit is bounded, so the ordinary wait is short.
+		//! The long one is an ASYNC AGENT RENDER (`render {async:true}` ->
+		//! AgentSession::RenderAsync), whose worker holds mMutex for the
+		//! render's whole duration: a read verb issued from ANOTHER thread
+		//! while one is in flight waits for it to finish.  That is a
+		//! deliberate trade -- a slow honest answer over a fast wrong one --
+		//! but it means a driver on the UI thread should not dispatch read
+		//! verbs while it has an async render outstanding (poll render_status
+		//! / render_wait, which take mJobStatusMutex and never block on
+		//! mMutex).  mMutex is also a BARGING lock: under a sustained commit
+		//! storm a reader can wait through many commits before winning it.
+		//!
+		//! TERMINAL LIFECYCLE.  Refuses BEFORE borrowing mJob (reporting the
+		//! "no head" answer: false / "" / {0,0}) once ~SceneEditController or
+		//! PrepareForDestruction has claimed the controller -- the same test
+		//! StageProposal and the agent-edit funnels' destroying arm make, and
+		//! for the same reason: past that point the owner may already have
+		//! released the Job.  Checked on the atomics alone, so it NARROWS the
+		//! window rather than closing it; owner quiescence is still the real
+		//! guarantee, exactly as the gate-publication sites say.
+		void ReadAgentSceneSnapshot( bool& outHasDocument,
+		                             std::string& outDocument,
+		                             RISE::Cst::CstHeadVersion& outVersion ) const;
+
+		//! The head-version half of ReadAgentSceneSnapshot without paying
+		//! for the serialization -- same lock, same thread contract.  For
+		//! the result-stamping sites that need only the version.
+		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
 
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
@@ -2827,6 +3150,42 @@ namespace RISE
 		//! Last Render callback/start barrier.
 		virtual void ForTest_OnLastRenderTransitionAttempt( unsigned int ) {}
 
+		//! Called from SetViewportLayout's shrink branch -- but ONLY on the
+		//! sub-branch that actually PARKS, i.e. when the shrink hides the
+		//! currently-scheduled pane or pins an active pointer gesture to a
+		//! now-invisible one (`currentHidden || gestureHidden`).  A shrink
+		//! that hides neither never parks and therefore never stamps: there
+		//! is no in-flight pass to make provably idle, so the epoch this seam
+		//! exists to publish would not be true.  A TEST that relies on the
+		//! stamp must construct a shrink that hides the scheduled or the
+		//! gesture pane, and must treat a missing stamp as a FATAL setup
+		//! failure -- a non-fatal precondition check silently degrades the
+		//! assertion it guards back to an unsynchronised whole-sequence scan.
+		//! At the instant it does fire, the new layout is authoritative and
+		//! the render thread is provably idle:
+		//! mMutex is held, the park wait has already returned (mRendering is
+		//! false), and the scheduler has not yet been relocated to a visible
+		//! pane.  No interactive pass can be running or minting here -- a mint
+		//! needs this same mMutex, and a pass BODY (DoOneRenderPass) only runs
+		//! with mRendering true -- so a test subclass can stamp a STABLE
+		//! "everything after this point was scheduled by the post-shrink
+		//! layout" epoch.  Without such an epoch a test that clears its
+		//! recorder and then calls SetViewportLayout has an unsynchronised gap
+		//! in which a legitimate pre-shrink pass (an idle-refinement tick on
+		//! the still-visible, gesture-pinned pane) can land and masquerade as a
+		//! post-shrink scheduling violation.
+		//!
+		//! SCOPE of the stability guarantee: it covers state written ONLY from
+		//! inside the pass body, under the mRendering gate.  It does NOT extend
+		//! to state written from the UNLOCKED pass tail that runs after
+		//! DoOneRenderPass returns and after ActiveFlipGuard publishes
+		//! mRendering=false -- DrainSharedDirectPublishes_, the output detach /
+		//! ForTest_OnInteractivePassBeforeOutputDetach seam, the Last Render
+		//! drain.  A recorder driven from one of THOSE seams can still be
+		//! running concurrently with this branch's continuation, so it gets no
+		//! epoch guarantee here.  No-op in production.
+		virtual void ForTest_OnViewportShrinkParked() {}
+
 		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
 		//! ForTest_OnAboutToMintInteractivePass above.  Called by
 		//! AgentRenderWorkerLoop_ once per occupant, unlocked, immediately
@@ -2921,6 +3280,38 @@ namespace RISE
 		//! Model-B F2 slice S4: `renderClass` (default AgentPreview) tags
 		//! the minted mCurrentRenderJob.renderClass -- see
 		//! SubmitAgentRenderAsync's overload doc.
+		//! ROUND-10 finding 3: map a FinalizeOpenInteractions() == false
+		//! into the right RenderRefusal.  FinalizeOpenInteractions returns
+		//! false for two structurally different reasons, and only one of
+		//! them can ever succeed on a retry:
+		//!   * mInteractionPersistenceFailed is LATCHED -- a pending CST
+		//!     transform/camera commit failed earlier.  That flag is set at
+		//!     five production sites plus the test seam, and never cleared
+		//!     (see its member doc), and it
+		//!     short-circuits FinalizeOpenInteractions unconditionally, so
+		//!     every later render and viewport read refuses FOREVER.
+		//!     -> InteractionFinalizeLatched (NOT retriable).
+		//!   * anything else (a gesture/scrub/composite still open, the
+		//!     admission gate taken underneath it) -> InteractionFinalize-
+		//!     Failed (retriable).
+		//! The discrimination is EXACT rather than a guess: the latched
+		//! flag forces the false return, so "set at the refusal site"
+		//! is precisely "this refusal cannot clear".
+		//!
+		//! This deliberately does NOT clear the sticky flag.  The flag's
+		//! purpose is that once a live gesture's delta failed to reach the
+		//! Document, the controller can no longer claim the Document
+		//! matches what the user did -- rendering or handing out viewport
+		//! pixels from that state would publish a scene the user never
+		//! authored.  The round-10 fix is to stop LYING about it, not to
+		//! weaken it.
+		RenderRefusal ClassifyFinalizeFailure_() const;
+
+		//! ROUND-10 finding 2b: `outRefusal` (optional) receives the
+		//! RenderRefusal cause on every `return false` here.  Unlike the
+		//! public entry points this helper does NOT seed it -- the caller
+		//! that owns the out-param seeds `None` before its own pre-flight
+		//! checks, and this helper only ever overwrites on refusal.
 		bool SubmitAgentRenderAsync_Locked(
 			std::unique_lock<std::mutex>& slotLk,
 			std::function<void()>         fn,
@@ -2928,7 +3319,8 @@ namespace RISE
 			RenderJobId*                  outJobId,
 			bool                          bypassFairQueueCheck,
 			bool                          pinned = false,
-			RenderClass                   renderClass = RenderClass::AgentPreview );
+			RenderClass                   renderClass = RenderClass::AgentPreview,
+			RenderRefusal*                outRefusal = nullptr );
 
 		//! Fix-round-3 (churn UAF): GROUND-TRUTH predicate for "the agent-
 		//! render worker is not (and will never be, without a fresh
@@ -3807,7 +4199,25 @@ namespace RISE
 		//! helpers consume their pending sets even on failure, so admitting a
 		//! later render as though persistence succeeded would silently lose the
 		//! live edit on re-derive.  Finalize/Prepare report false once tripped.
+		//!
+		//! Set at five PRODUCTION sites, plus the
+		//! ForTest_TripInteractionPersistenceFailure test seam (a sixth
+		//! store(true) in this same header); NEVER cleared, deliberately -- see
+		//! ClassifyFinalizeFailure_ for why that is the right safety
+		//! behaviour and what round 10 changed instead.  The CONSEQUENCE a
+		//! reader must know: once tripped, FinalizeOpenInteractions returns
+		//! false unconditionally, so EVERY later coordinated render and
+		//! EVERY read_viewport refuses for the life of this controller.
+		//! That refusal is reported as RenderRefusal::Interaction-
+		//! FinalizeLatched and surfaced to the model as explicitly NOT
+		//! retriable; do not re-describe it anywhere as "retry shortly".
 		std::atomic<bool>           mInteractionPersistenceFailed { false };
+		//! ROUND-10 finding 3: one-shot TEST-ONLY forcing of a TRANSIENT
+		//! FinalizeOpenInteractions failure -- see
+		//! ForTest_FailNextFinalizeOpenInteractions.  Always false in
+		//! production; the single read is an already-cheap acquire on a path
+		//! that runs once per render admission, not per sample.
+		std::atomic<bool>           mForTestFinalizeFailOnce { false };
 
 		//! Round-8 review P1 fix: POINTER-ACTIVITY clock for the watchdog
 		//! above -- deliberately NOT mLastEditTimeMs.  That timestamp is

@@ -57,16 +57,14 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() override;
 
     // Shutdown-order fix (2026-07-24): QObject::deleteChildren destroys
     // children in CREATION order, and m_engine (created first, in the
     // constructor) precedes m_viewportBridge (created on scene load) in
     // that list -- so the default teardown freed the RenderEngine before
-    // the bridge's destructor ran its detach sequence against it
-    // (attachSceneEditController(nullptr) wrote into freed memory,
-    // 0xC0000005 on every exit with a scene loaded).  The destructor
-    // deletes the bridge explicitly while the engine is still alive.
+    // the bridge's destructor ran its detach sequence against it.  The
+    // destructor uses the ordered viewport teardown to detach every bridge
+    // borrower before deleting the bridge while the engine is still alive.
     ~MainWindow() override;
 
 private slots:
@@ -123,15 +121,14 @@ private slots:
     // until then).
     void onSaveRenderedImage();
 
-    // CST <-> scene-file live sync (UI refinement item 1) -- ~2 Hz poll
-    // of the live CST while a viewport bridge is attached, mirroring
-    // macOS RenderViewModel.pollRefinementState's item 1.  Started/
-    // stopped alongside the bridge in rebuildViewportForLoadedScene /
-    // teardownViewport.  Explicit-save-only (user decision 2026-07-12):
-    // this poll mirrors the live CST into the SceneEditor buffer ONLY --
-    // there is no debounced auto-save branch anymore (formerly "item 2").
-    // A disk write happens ONLY via performSceneSave(), triggered by the
-    // TopBar's Save pill or File > Save Scene.
+    // Live-scene UI sync -- ~2 Hz poll while a viewport bridge is attached,
+    // mirroring macOS RenderViewModel.pollRefinementState.  It mirrors CST
+    // text into the editor and refreshes animation presence/options so an
+    // agent-added first timeline appears without rebuilding the viewport.
+    // Started/stopped alongside the bridge in rebuildViewportForLoadedScene /
+    // teardownViewport.  Explicit-save-only (user decision 2026-07-12): no
+    // branch here writes the .RISEscene to disk; writes happen only via
+    // performSceneSave(), triggered by the TopBar or File menu.
     void onCstSyncTick();
 
 protected:
@@ -288,7 +285,7 @@ private:
     /// or set at bridge-attach time so the file-on-disk bytes and the
     /// live CST start in agreement.  Invalid before any bridge attaches.
     SceneTextVersion m_lastSyncedSceneTextVersion;
-    /// ~2 Hz poll driving onCstSyncTick.  Started in
+    /// ~2 Hz live-scene poll driving onCstSyncTick.  Started in
     /// rebuildViewportForLoadedScene, stopped in teardownViewport.
     QTimer* m_cstSyncTimer = nullptr;
 

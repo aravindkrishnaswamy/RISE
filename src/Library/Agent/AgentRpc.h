@@ -16,19 +16,74 @@
 //
 //    Methods (mapped to AgentSession):
 //      read_document                     -> {document:string, hasDocument:bool, headVersion:{uuid,revision}}
-//      read_schema  {keyword?}           -> the schema JSON (as a nested object)
+//      read_schema  {keyword?,keywords?,
+//                    category?}          -> {schema:...}.  `keywords` (array) is the
+//                                           BATCH form: `schema` is an ARRAY
+//                                           POSITIONALLY ALIGNED with it -- schema[i]
+//                                           is keywords[i], not deduped and not
+//                                           reordered -- with `keyword`, if also
+//                                           given, APPENDED after.  At most 24 chunk
+//                                           keywords across BOTH parameters.  Every
+//                                           entry names its own `keyword`, including
+//                                           an unresolved one, which is
+//                                           {keyword, error} in its own slot.
+//                                           `keyword` alone -> that one chunk's schema
+//                                           object; `category` alone -> the cheap
+//                                           keyword listing; neither -> the whole
+//                                           grammar.
 //      read_skill   {name?}              -> no name: {skills:[{name,title,hook},...], note?:string}
-//                                           (the INDEX; `note` appears only when the
-//                                            skills ROOT directory is missing, telling
-//                                            a miswired root from a present-but-empty
-//                                            one); a name: {name, markdown}
+//                                           (the INDEX; `note` appears whenever the
+//                                            index is EMPTY -- it says no skills are
+//                                            available and names the root tried,
+//                                            distinguishing a MISSING root from a
+//                                            present-but-empty one); a name:
+//                                            {name, markdown}
 //                                           (Facet 5 slice S1: progressive-disclosure
 //                                            scene-authoring skills; STATELESS like
 //                                            read_schema.  Name must be BARE -- '/',
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
-//      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
+//      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
+//                                            validated:"head"|"text"}
+//                                           (TWO forms, both read-only.  WITH `text`:
+//                                            validate that CANDIDATE document --
+//                                            STATELESS, works with no head loaded.
+//                                            WITHOUT it: validate the CURRENTLY
+//                                            RETAINED head, and additionally return
+//                                            the `headVersion` that was validated.
+//                                            EITHER WAY the result says which it
+//                                            checked in `validated` ("head"/"text"),
+//                                            so a call whose arguments were malformed
+//                                            (and therefore degraded to the head form)
+//                                            can never be misread as a clean verdict
+//                                            on the candidate it meant to send --
+//                                            the cheap post-edit check, so a model
+//                                            never has to re-emit the whole scene to
+//                                            verify its own patch.  A present-but-null
+//                                            `text` reads as absent; any other
+//                                            non-string -> -32602.  An EMPTY STRING
+//                                            does NOT read as absent -- PRESENCE of a
+//                                            string selects the text form, and a
+//                                            content-free candidate comes back with an
+//                                            EMPTY_DOCUMENT diagnostic rather than a
+//                                            clean verdict.  No head AND no
+//                                            `text` -> -32602 rather than a false
+//                                            "clean" verdict about a document that
+//                                            does not exist.)
+//    DRIVER-INJECTED KEY, on the five mutating verbs below ONLY.  The two GUI
+//    chat drivers (build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+//    stampDriverRetry and build/VS2022/RISE-GUI/ChatPanel.cpp's, "FIX 2") may
+//    ADD one key the dispatcher never emits:
+//        "guiDriverRetry": {attempts:number, note:string}
+//    It appears iff that driver re-issued a WHOLLY-UNAPPLIED retriable refusal
+//    (attempts > 1); it is namespaced and self-attributed for exactly this
+//    reason, and the model IS meant to see it (a model that learns the driver
+//    already spent five attempts should stop re-issuing the call itself).
+//    Every OTHER field on such a result is the engine's own last-attempt
+//    result, field-for-field.  No non-GUI transport (MCP adapter, loopback
+//    HTTP, headless chat loop) ever produces it.
+//
 //      propose_patch{target,kind?,param,value,baseHeadVersion?:{uuid,revision}}
 //                                        -> {applied,rawCode,status,retriable,headVersion:{uuid,revision},message}
 //                                           (retriable=true marks the ONE transient
@@ -81,11 +136,43 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
+//                    imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
-//                                            legend?}
+//                                            legend?,png_base64?,byteLength?,imageWidth?,imageHeight?}
+//                                           (`imageMaxEdge` (OPTIONAL number,
+//                                            clamped [16,1024]) returns the
+//                                            rendered PNG INLINE so an ordinary
+//                                            look costs ONE call instead of
+//                                            render + read_image.  The bytes come
+//                                            from the SAME
+//                                            AgentSession::ReadImage(maxEdge,...)
+//                                            call read_image makes, so they equal
+//                                            what a following
+//                                            read_image{maxEdge:N} would have
+//                                            returned.  Omit it and the result is
+//                                            byte-for-byte today's.  REFUSED
+//                                            (-32602) with mode:"objectmap" --
+//                                            that must be read at NATIVE size --
+//                                            and with async, which returns before
+//                                            any pixels exist.  That async refusal
+//                                            is for RAW async callers only: the two
+//                                            GUI chat drivers inject async into
+//                                            every render behind the model's back,
+//                                            so they STRIP `imageMaxEdge` before
+//                                            submitting and re-apply its effect
+//                                            themselves once the render completes
+//                                            (ChatViewModel.stageInlineImageMaxEdge
+//                                            / foldingInlineImage, ChatPanel's
+//                                            stripInlineImageMaxEdge /
+//                                            foldInlineImageIntoRenderResult) --
+//                                            the one-call form IS reachable from
+//                                            in-app chat.  Still use the
+//                                            separate read_image for a SECOND
+//                                            bound on the same render, and for
+//                                            representation:"perception".)
 //                                           (Toolkit slice 3a: `mode` (OPTIONAL
 //                                            string, "beauty"|"objectmap",
 //                                            default "beauty") selects the render
@@ -278,7 +365,15 @@
 //                                            NATIVE size -- OMIT maxEdge, since a
 //                                            box-downscale blends the flat identity
 //                                            colours and breaks the exact-byte
-//                                            legend match.)
+//                                            legend match.
+//                                            For an ordinary look at your OWN
+//                                            render, render{imageMaxEdge:N} returns
+//                                            the same bytes in one call.  This verb
+//                                            remains the way to read an ALREADY
+//                                            rendered frame at a different bound
+//                                            without re-rendering, to read an
+//                                            objectmap at native size, and to read
+//                                            representation:"perception".)
 //      read_viewport {maxEdge?}          -> {available:bool, reason:string,
 //                                            png_base64:string, byteLength:number,
 //                                            width:number, height:number}
@@ -289,11 +384,35 @@
 //                                            read_image).  NEVER triggers a render --
 //                                            the cheapest observe; it copies whatever
 //                                            the interactive render loop last produced.
-//                                            `available` is false with reason
-//                                            "no_controller" (headless session, no
-//                                            viewport) or "no_frame_yet" (controller
-//                                            attached but no interactive frame produced
-//                                            yet); png_base64 is "" and the numeric
+//                                            `available` is false with one of SEVEN
+//                                            reasons: "no_controller" (headless session,
+//                                            no viewport -- PERMANENT), "no_frame_yet"
+//                                            (controller attached but no interactive frame
+//                                            produced yet -- resolves when the viewport
+//                                            draws, but NOT because the caller retried),
+//                                            or -- when the parked frame copy is
+//                                            refused -- "editor_transaction_in_progress"
+//                                            / "render_in_progress" /
+//                                            "editor_interaction_finalize_failed"
+//                                            (all three RETRIABLE) /
+//                                            "editor_shutting_down" /
+//                                            "editor_interaction_unrecoverable" (both
+//                                            PERMANENT -- retrying can never succeed;
+//                                            round-10).  AgentSession::ReadViewport's
+//                                            doc is the authority on all seven, on
+//                                            which are retriable, and on when a
+//                                            `render` fallback actually helps
+//                                            (round-12: it is NOT a blanket
+//                                            "render is refused too"; round-14:
+//                                            nor is it "a plain render always
+//                                            succeeds" -- for
+//                                            "render_in_progress" a plain render
+//                                            waits up to 30 s and is still
+//                                            refused if the occupant outlives
+//                                            that window, or immediately when
+//                                            a direct parked render owns the
+//                                            admission gate);
+//                                            png_base64 is "" and the numeric
 //                                            fields 0 in that case.  available:false is
 //                                            a STRUCTURED SUCCESS result, NOT an error
 //                                            (the list_proposals precedent) -- only "no
@@ -460,8 +579,8 @@
 //                                            is true iff this entry's listing was
 //                                            actually clipped.)
 //      resolve_proposal {proposalId,approve:bool}
-//                                        -> {resolved:bool,status:string,headVersion,
-//                                            message}
+//                                        -> {resolved:bool,retriable:bool,status:string,
+//                                            headVersion,message}
 //                                           (Secure-MCP slice 5b: approve or reject
 //                                            a staged proposal.  OWNER-ONLY: routes
 //                                            to AgentSession::ResolveProposal, which
@@ -479,6 +598,16 @@
 //                                            against a head that has since moved
 //                                            resolves to "conflict", not applied);
 //                                            empty when `resolved` is false.
+//                                            `retriable` splits resolved=false in
+//                                            two: true = a TRANSIENT gate refused
+//                                            (a render in progress, or an open
+//                                            editor transaction/gesture), nothing
+//                                            was applied and the proposal is STILL
+//                                            PENDING, so the same call works once
+//                                            the gate clears; false = permanent
+//                                            (unknown id, already resolved,
+//                                            non-Owner authority, teardown).
+//                                            Always false when `resolved` is true.
 //                                            `headVersion` is the head AFTER the
 //                                            call on a real resolve (whatever the
 //                                            underlying ApplyAgent* replay reports
@@ -592,7 +721,7 @@
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
 //    Read and Commit.  Under `Propose`, the read-safe allowlist
 //    (IsReadSafeVerb -- includes list_proposals, read-safe under every
-//    posture, see below) still passes (same as Read) PLUS the 3 mutating
+//    posture, see below) still passes (same as Read) PLUS the 5 mutating
 //    verbs (propose_patch, propose_patches, insert_chunk, insert_chunks,
 //    remove_chunk) are let THROUGH
 //    to the wrapped
@@ -715,7 +844,7 @@ namespace RISE
 			//! part of this set).  Secure-MCP slice 2 hardening: under
 			//! AgentAutonomy::Read, any method NOT on the read-safe
 			//! allowlist (IsReadSafeVerb, the single source of truth for
-			//! membership) -- the 3 mutating verbs, an
+			//! membership) -- the 5 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.

@@ -5,10 +5,62 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <QApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <cstdlib>
 #include "MainWindow.h"
 #include "Theme.h"
+
+namespace {
+
+// Bind the agent's skills root to the INSTALLATION, once, at launch.
+//
+// WHY.  AgentSession::SkillsRoot() resolves, first hit wins:
+// $RISE_SKILLS_PATH -> $RISE_MEDIA_PATH + "skills/agent/" ->
+// "./skills/agent/".  Tier 2 is a trap for a GUI: RenderEngine's
+// setupMediaPaths() re-points RISE_MEDIA_PATH on EVERY scene load (it
+// walks up from the open scene to the nearest global.options), so the
+// agent's skills silently became a property of whichever scene was open
+// -- open one outside a RISE project tree and every skill vanished, with
+// no signal at any layer.  Skills belong to the app, not the document.
+//
+// Tier 1 takes first precedence in the core, so nothing in the library
+// changes and the CLI / MCP paths are unaffected.  RISE_MEDIA_PATH is
+// left alone; it is doing its own correct job for scene media.
+//
+// Resolution walks up from the EXECUTABLE (there is no app bundle to
+// carry resources on Windows), so an install that keeps skills/ beside
+// or above the .exe resolves.  Nothing is set when nothing resolves --
+// leaving the core's fallbacks intact beats pointing the variable at a
+// directory that is not there.
+//
+// UNVERIFIED: the Windows GUI cannot be compiled or run in the
+// environment where this fix was authored; it is the by-symmetry twin of
+// the macOS fix in RISEApp.swift (SkillsRootBootstrap), which was built.
+void installSkillsRoot()
+{
+    if (!qEnvironmentVariableIsEmpty("RISE_SKILLS_PATH")) return;   // operator override wins
+
+    QDir dir(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 8; ++i) {
+        const QString candidate = dir.filePath(QStringLiteral("skills/agent"));
+        if (QFileInfo(candidate).isDir()) {
+            const QByteArray utf8 = QDir::toNativeSeparators(
+                QDir(candidate).absolutePath()).toUtf8();
+#ifdef _WIN32
+            _putenv_s("RISE_SKILLS_PATH", utf8.constData());
+#else
+            setenv("RISE_SKILLS_PATH", utf8.constData(), 1);
+#endif
+            return;
+        }
+        if (!dir.cdUp()) break;
+    }
+}
+
+}   // namespace
 
 int main(int argc, char* argv[])
 {
@@ -38,6 +90,11 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     app.setApplicationName("RISE");
     app.setOrganizationName("RISE");
+
+    // Anchor the agent's skills to the INSTALLATION before any scene can
+    // load (ChatPanel::fetchSkillIndex is what reads the index).  Needs
+    // QCoreApplication::applicationDirPath(), hence after construction.
+    installSkillsRoot();
 
     // App icon for window decorations / Alt-Tab (the .exe/taskbar icon
     // is set separately via RISE-GUI.rc's ICON resource, wired into the

@@ -51,6 +51,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -122,7 +129,22 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
@@ -5258,6 +5280,902 @@ static void RunRenderOwnsSceneGuardTest()
 	controller.Stop();
 }
 
+//////////////////////////////////////////////////////////////////////
+// (img-cache) CHARACTERIZATION: AgentSession's last-render PNG cache --
+// the one ReadImage() serves and the one the `read_image` JSON-RPC verb
+// returns -- is PRIVATE PER SESSION unless a host explicitly shares one
+// (AgentSession::MakeSharedImageCache + WrapJob's third argument).  Two
+// sessions built over the same Job with NO shared handle do not see each
+// other's renders, even with the SAME live SceneEditController attached.
+//
+// THIS TEST EXISTS TO DOCUMENT WHY A GUI CHAT DRIVER MUST ROUTE `render`
+// AND `read_image` TO THE SAME SESSION.  Both GUI chat drivers stand up
+// THREE AgentSessions over one Job -- an administrative Owner session
+// (agentHandleLine) plus TWO tool-call sessions (agentHandleToolCall):
+// an Owner-authority one shared by the Read and Apply postures, which
+// differ only in the autonomy set on it, and a separate External-
+// authority one for Propose.  Every one of the three is
+// controller-attached, so ANY of them can service a render.
+// Both drivers used to send the `render` tool call to a DIFFERENT
+// session than every other tool call -- so the agent's render populated
+// session A's cache while its follow-up `read_image` read session B's,
+// which was either empty (byteLength 0) or held a stale image left by
+// `query_object_at`'s internal objectmap render.  The assertions below
+// are exactly that failure, reproduced at the library level.
+//
+// The GUI-side routing itself is guarded by source markers in
+// SourceHygieneTest ("chat render session routing") -- this case would
+// still pass if someone reverted that routing entirely.
+//
+// The two GUI routing sites this pins down -- keep them consistent:
+//   * build/XCode/rise/RISE-GUI/App/ChatViewModel.swift
+//       (driveTurn's `call.name == "render"` branch +
+//        executeRenderToolCallAsync)
+//   * build/VS2022/RISE-GUI/ChatPanel.cpp
+//       (processNextToolCall's `call.name == "render"` branch +
+//        startAsyncRenderToolCall / pollOutstandingRender /
+//        cancelOutstandingRender)
+//
+// This is a CHARACTERIZATION of the DEFAULT: a session constructed with
+// no shared cache handle keeps a private one, and an External MCP client
+// therefore cannot see an in-app render's pixels.  Isolation being the
+// default is load-bearing -- see RunSharedImageCacheTest below, which
+// covers the opt-in sharing the GUIs now use for their THREE in-app
+// sessions, and asserts that an unshared session is still shut out.
+//////////////////////////////////////////////////////////////////////
+static void RunPerSessionImageCacheTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (img-cache) ReadImage()'s cache is PER-SESSION ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_per_session_image_cache.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the per-session-image-cache scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (per-session image-cache test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	// Mirrors the GUI topology: TWO AgentSessions over the SAME Job, both
+	// attached to the SAME live controller -- so either one is capable of
+	// servicing a render, exactly as in the bridges.
+	std::unique_ptr<AgentSession> sessionA = AgentSession::WrapJob( pJob );
+	std::unique_ptr<AgentSession> sessionB = AgentSession::WrapJob( pJob );
+	Check( sessionA != nullptr && sessionB != nullptr,
+	       "two AgentSessions wrap the SAME Job (the GUI's multi-session topology)" );
+	if( sessionA && sessionB )
+	{
+		sessionA->AttachController( &controller );
+		sessionB->AttachController( &controller );
+
+		Check( sessionA->ReadImage().empty(), "A's ReadImage cache starts EMPTY" );
+		Check( sessionB->ReadImage().empty(), "B's ReadImage cache starts EMPTY" );
+
+		// --- render through A -------------------------------------------
+		AgentRenderParams noOverride;
+		const AgentRenderResult ra = sessionA->Render( noOverride );
+		Check( ra.ok, "session A's render succeeds" );
+		Check( !ra.png.empty(), "session A's render produces PNG bytes" );
+
+		const std::vector<unsigned char> aAfterA = sessionA->ReadImage();
+		const std::vector<unsigned char> bAfterA = sessionB->ReadImage();
+		Check( !aAfterA.empty(),
+		       "MONEY: A's ReadImage returns the bytes A's OWN render produced" );
+		Check( aAfterA == ra.png,
+		       "A's cached bytes ARE that render's PNG (not some other frame)" );
+		Check( bAfterA.empty(),
+		       "MONEY (red-proof): B's ReadImage is STILL EMPTY after A rendered -- "
+		       "the cache is PER-SESSION, so a GUI that renders on A and reads on B gets byteLength 0" );
+
+		// --- render through B, at a DIFFERENT resolution ----------------
+		// A different size guarantees the two PNGs cannot coincidentally
+		// compare equal, so the independence assertion below is real.
+		AgentRenderParams bParams;
+		bParams.width  = 32;
+		bParams.height = 32;
+		const AgentRenderResult rb = sessionB->Render( bParams );
+		Check( rb.ok, "session B's render succeeds" );
+		Check( !rb.png.empty(), "session B's render produces PNG bytes" );
+
+		const std::vector<unsigned char> aAfterB = sessionA->ReadImage();
+		const std::vector<unsigned char> bAfterB = sessionB->ReadImage();
+		Check( !bAfterB.empty(),
+		       "MONEY: B's ReadImage is now populated by B's OWN render" );
+		Check( bAfterB == rb.png,
+		       "B's cached bytes ARE B's render's PNG" );
+		Check( aAfterB == aAfterA,
+		       "MONEY: A's cache is UNTOUCHED by B's render -- the two caches are fully independent" );
+		Check( bAfterB != aAfterB,
+		       "A and B hold DIFFERENT images (B rendered 32x32, A rendered the scene's 24x24)" );
+
+		sessionA->AttachController( nullptr );
+		sessionB->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (img-cache) per-session ReadImage cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (shared-img-cache) The OPT-IN shared last-render cache.
+//
+// WHAT IT FIXES.  Both GUIs stand up THREE in-app AgentSessions over one
+// Job (an administrative one behind agentHandleLine, plus a tool-call
+// Owner session and a tool-call Propose session).  With a per-session
+// cache, a user who flipped the autonomy chip to or from Propose BETWEEN
+// a `render` and the `read_image` that followed it moved the read onto
+// the other session and got an empty (or stale) cache back.  Routing
+// render and read_image through one dispatcher fixed the common case but
+// could not fix that one, and it was carried as a documented residual in
+// ChatViewModel.swift and ViewportBridge.h.  The three in-app sessions
+// now share ONE AgentImageCache handle, so it does not matter which of
+// them ran the render.
+//
+// WHAT MUST NOT CHANGE.  The hosted loopback (MCP) server's External
+// session is NOT in that group -- a remote client must never read pixels
+// an in-app render produced.  That isolation is not a side effect of
+// where the fields live any more; it is now a property of WHO IS HANDED
+// THE HANDLE, so it is asserted here directly.
+//
+// RED-PROVE: against the pre-fix build every "sibling sees it" assertion
+// fails with an EMPTY read (that is exactly what RunPerSessionImageCacheTest
+// above pins for the unshared case).
+//////////////////////////////////////////////////////////////////////
+static void RunSharedImageCacheTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (shared-img-cache) the OPT-IN shared last-render cache ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_shared_image_cache.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the shared-image-cache scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (shared image-cache test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	{
+		// The GUI topology exactly: THREE in-app sessions on ONE handle
+		// (administrative + tool-call Owner + tool-call Propose), plus the
+		// hosted server's External session on NO handle.
+		std::shared_ptr<AgentImageCache> inApp = AgentSession::MakeSharedImageCache();
+		std::unique_ptr<AgentSession> admin =
+			AgentSession::WrapJob( pJob, AgentAuthority::Owner, inApp );
+		std::unique_ptr<AgentSession> owner =
+			AgentSession::WrapJob( pJob, AgentAuthority::Owner, inApp );
+		std::unique_ptr<AgentSession> propose =
+			AgentSession::WrapJob( pJob, AgentAuthority::External, inApp );
+		std::unique_ptr<AgentSession> hosted =
+			AgentSession::WrapJob( pJob, AgentAuthority::External );
+		Check( admin && owner && propose && hosted,
+		       "three in-app sessions share ONE cache handle; the hosted one gets none" );
+		if( admin && owner && propose && hosted )
+		{
+			admin->AttachController( &controller );
+			owner->AttachController( &controller );
+			propose->AttachController( &controller );
+			hosted->AttachController( &controller );
+
+			Check( admin->ReadImage().empty() && owner->ReadImage().empty()
+			       && propose->ReadImage().empty() && hosted->ReadImage().empty(),
+			       "every cache starts EMPTY" );
+
+			// --- render on the Owner session, read on its siblings -------
+			// This IS the autonomy-flip sequence: render under Apply, flip
+			// the chip to Propose, read_image.
+			AgentRenderParams noOverride;
+			const AgentRenderResult ro = owner->Render( noOverride );
+			Check( ro.ok && !ro.png.empty(), "the Owner session's render succeeds" );
+
+			Check( propose->ReadImage() == ro.png,
+			       "MONEY: the PROPOSE session reads the OWNER session's render -- an autonomy "
+			       "flip between render and read_image no longer hands back an empty cache" );
+			Check( admin->ReadImage() == ro.png,
+			       "MONEY: the ADMINISTRATIVE session reads it too (all three in-app sessions "
+			       "share one view of 'the last render')" );
+			Check( hosted->ReadImage().empty(),
+			       "MONEY (the property that must not regress): the HOSTED External session "
+			       "sees NOTHING -- a remote MCP client cannot read in-app pixels" );
+
+			// --- the SINK is shared, not just the bytes ------------------
+			// ReadImage(maxEdge) re-encodes from the cached full-res linear
+			// pixels, so this only works if the sibling can reach the sink.
+			unsigned int w = 0, h = 0;
+			const std::vector<unsigned char> small = propose->ReadImage( 8, w, h );
+			Check( !small.empty() && w > 0 && h > 0 && w <= 8 && h <= 8,
+			       "MONEY: a sibling re-encodes a DOWNSCALE from the shared sink (the cached "
+			       "pixels are shared, not merely the encoded PNG)" );
+			unsigned int hw = 0, hh = 0;
+			Check( hosted->ReadImage( 8, hw, hh ).empty(),
+			       "... and the hosted session still gets nothing from that path either" );
+
+			// --- last writer wins, across sessions -----------------------
+			AgentRenderParams smallParams;
+			smallParams.width  = 32;
+			smallParams.height = 32;
+			// perception:true so the sink carries the AOV sidecar the
+			// lease-across-teardown case below reads through.
+			smallParams.perception = true;
+			const AgentRenderResult ra = admin->Render( smallParams );
+			Check( ra.ok && !ra.png.empty(), "the administrative session's render succeeds" );
+			Check( ra.png != ro.png, "setup -- the two renders really are different images" );
+			Check( owner->ReadImage() == ra.png && propose->ReadImage() == ra.png,
+			       "MONEY: the newest render replaces the shared frame for EVERY sharer" );
+			Check( hosted->ReadImage().empty(),
+			       "... and STILL not for the hosted session" );
+
+			// --- the cache outlives the session that produced it ---------
+			// The handle is shared_ptr-owned, so destroying the producer
+			// must not take the frame (or the sink) with it.
+			admin->AttachController( nullptr );
+			admin.reset();
+			Check( owner->ReadImage() == ra.png,
+			       "MONEY (lifetime): destroying the session that RAN the render leaves the "
+			       "shared frame intact for the sessions still holding the handle" );
+			unsigned int w2 = 0, h2 = 0;
+			Check( !propose->ReadImage( 8, w2, h2 ).empty(),
+			       "... including the SINK -- the last sharer out owns it, not the producer" );
+
+			// --- a lease held ACROSS a sibling's teardown ----------------
+			// The delicate case: `propose` is inside ReadPerception with the
+			// shared sink leased and the cache lock DROPPED, and `owner` --
+			// a sibling on the same handle -- is destroyed underneath it.
+			// The lease holds its own reference, and owner's teardown must
+			// not touch the shared frame, so the encode below must still
+			// produce a valid PNG.
+			bool siblingTornDownInsideLease = false;
+			propose->ForTest_SetReadPerceptionAfterLeaseHook(
+				[&owner, &siblingTornDownInsideLease]() {
+					if( owner ) {
+						owner->AttachController( nullptr );
+						owner.reset();          // sibling dies WHILE the lease is held
+						siblingTornDownInsideLease = true;
+					}
+				} );
+			unsigned int pw = 0, ph = 0;
+			AgentPerceptionInfo info;
+			const std::vector<unsigned char> perception =
+				propose->ReadPerception( 16, pw, ph, info );
+			propose->ForTest_SetReadPerceptionAfterLeaseHook( std::function<void()>() );
+			Check( siblingTornDownInsideLease,
+			       "setup -- the sibling really was destroyed inside the lease window" );
+			Check( !perception.empty() && pw > 0 && ph > 0,
+			       "MONEY (lifetime): a read holding a lease on the SHARED sink survives a "
+			       "SIBLING session's teardown -- the lease's own reference keeps the sink "
+			       "alive and the sibling's drain never touches the shared frame" );
+
+			// The surviving sharer still reads the same frame afterwards.
+			Check( propose->ReadImage() == ra.png,
+			       "... and the shared frame is unchanged by that teardown" );
+
+			propose->AttachController( nullptr );
+			hosted->AttachController( nullptr );
+		}
+		// Every session (and then the handle) goes out of scope here: the
+		// LAST one out runs ~AgentImageCache, which releases the sink
+		// exactly once.  A double release would trip the refcount/allocator
+		// here rather than somewhere unrelated later.
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (shared-img-cache) opt-in shared cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (guard-async) AgentSession.cpp's EphemeralRenderCacheGuard stashes and
+// restores FOUR pieces of state around an internal objectmap render:
+// the last-render PNG pair (mLastPng / mLastSink, what ReadImage() and
+// the `read_image` verb serve) AND the async-render result record
+// (mLastAsyncRenderResult / mLastAsyncRenderResultJobId, what
+// `render_status` / `render_wait` report through LastAsyncRenderResult).
+//
+// WHY THIS CASE EXISTS.  A mutation audit sabotaged the guard's dtor one
+// restore at a time and rebuilt each time.  Numbers RE-MEASURED on this
+// branch's current state in ROUND 10 (the round-8 set had the right COUNTS
+// but got the async-result row's ATTRIBUTION wrong; the round-7 set before
+// that had drifted on counts too):
+//   * drop the SINK restore  -> AgentObjectMapTest 2, AgentViewportReadTest 3,
+//     AgentRenderAsyncTest 0, AgentProposeRenderTest 0.
+//     (AgentRenderAsyncTest is unaffected because ReadImage() with no maxEdge
+//     serves mLastPng, which IS restored; only the maxEdge>0 read goes
+//     through the sink.)
+//   * drop the PNG restore   -> AgentObjectMapTest 2, AgentViewportReadTest 2,
+//     AgentRenderAsyncTest 1, AgentProposeRenderTest 0.  The one
+//     AgentRenderAsyncTest failure is THIS case's "the beauty frame is still
+//     what ReadImage() serves" assertion.
+//   * drop the ASYNC-RESULT restore (BOTH lines) -> AgentObjectMapTest 0,
+//     AgentViewportReadTest 0, AgentProposeRenderTest 0, AgentRenderAsyncTest 4.
+//     Round-10 correction: the round-8 comment claimed "all four failures are
+//     THIS case".  They are not -- THREE are (the two MONEY assertions plus
+//     the byte-identity one) and the FOURTH is the (guard-ctor) case's
+//     "after QueryObjectAt returns, the async result record is found again
+//     (window closed)" assertion.  The point the row was making still holds
+//     and is now sharper: before these two cases existed the whole row was
+//     green, i.e. the async-result half of the restore was pinned by NOTHING,
+//     and it is now pinned from BOTH sides of the window.
+//
+// This case is that missing pin, and it discriminates the two dtor lines
+// SEPARATELY:
+//   * drop `mLastAsyncRenderResultJobId = mSavedAsyncResultJobId;`
+//       -> the id stays at the 0 the ctor wrote, so LastAsyncRenderResult
+//          reports found=false (0 is never a real job id).  Caught by the
+//          `.found` assertion.
+//   * drop `mLastAsyncRenderResult = std::move( mSavedAsyncResult );`
+//       -> found=true, but over a DEFAULT-CONSTRUCTED record: ok=false,
+//          width/height 0, renderJobId 0.  Caught by the field assertions.
+//   * drop both -> found=false.  Caught by the `.found` assertion.
+//
+// ROUTE.  QueryObjectAt is called with NO width/height/camera override on
+// purpose.  That is the shape a model usually emits (`query_object_at
+// {x,y}`), and it is the route that goes through
+// SubmitAgentRenderSync -- the one that WAITS for the single agent-render
+// slot.  (Supplying any override instead routes through
+// SceneEditController::RunPreviewRenderParked, which REFUSES immediately
+// rather than waiting whenever another coordinated render holds the gate;
+// see EphemeralRenderCacheGuard's ROUTES bullet.)  Here the async render
+// has already completed, so the slot is free and the ephemeral render
+// runs straight away -- the deterministic ordering this case needs.
+//
+// NOT covered here, and deliberately: the DISCARD side of the same
+// machinery (an async render that completes INSIDE the window loses its
+// cache write).  That requires an async render still in flight when the
+// guard's ctor runs, which has no deterministic hook today; it is the
+// documented, accepted residual, not a contract a test can pin without
+// a new test seam.
+//
+// The guard's CTOR half is pinned separately -- see the (guard-ctor) case
+// immediately below.
+//////////////////////////////////////////////////////////////////////
+static void RunEphemeralGuardRestoresAsyncResultTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (guard-async) query_object_at RESTORES the async-render result record ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_guard_async_restore.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the guard-async-restore scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (guard-async-restore test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (guard-async-restore test)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+
+		// --- an async render, driven to completion ----------------------
+		AgentRenderParams p;   // no override
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+		Check( ar.accepted && ar.renderJobId != 0, "the async render is accepted with a nonzero id" );
+		Check( session->RenderWait( ar.renderJobId, 15000 ), "the async render completes within the timeout" );
+
+		const AgentSession::AgentLastAsyncRenderResult before =
+			session->LastAsyncRenderResult( ar.renderJobId );
+		Check( before.found, "PRE-CONDITION: the completed async render's result record is cached" );
+		Check( before.result.ok, "PRE-CONDITION: that cached record reports ok=true" );
+		Check( before.result.width > 0 && before.result.height > 0,
+		       "PRE-CONDITION: that cached record carries nonzero dims" );
+		const std::vector<unsigned char> pngBefore = session->ReadImage();
+		Check( !pngBefore.empty(), "PRE-CONDITION: the beauty frame is in the PNG cache" );
+
+		// --- the ephemeral objectmap render, via query_object_at --------
+		// Centre pixel of the authored 24x24 film: the sphere sits at the
+		// origin facing the camera, so this hits obj_sph.  A HIT is what
+		// proves the internal objectmap render actually RAN (and therefore
+		// that the guard was actually engaged) -- without it the whole case
+		// would pass vacuously.
+		const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 12, 12 );
+		Check( !qr.outOfRange, "query_object_at(12,12) is inside the authored 24x24 film" );
+		Check( qr.hit, "query_object_at RAN its internal objectmap render and hit an object "
+		               "(if this fails the rest of the case proves nothing)" );
+		Check( qr.name == "obj_sph", "query_object_at resolves the centre pixel to obj_sph" );
+
+		// --- MONEY: the guard put the async-render result record back ----
+		const AgentSession::AgentLastAsyncRenderResult after =
+			session->LastAsyncRenderResult( ar.renderJobId );
+		Check( after.found,
+		       "MONEY: LastAsyncRenderResult STILL FINDS the async job after query_object_at's "
+		       "ephemeral render -- EphemeralRenderCacheGuard's dtor restored mLastAsyncRenderResultJobId "
+		       "(drop that line and the id stays at the ctor's 0, so this reports found=false)" );
+		Check( after.result.ok && after.result.width == before.result.width
+		       && after.result.height == before.result.height
+		       && after.result.renderJobId == before.result.renderJobId,
+		       "MONEY: the RECORD ITSELF came back intact, not a default-constructed shell -- "
+		       "EphemeralRenderCacheGuard's dtor restored mLastAsyncRenderResult (drop that line and "
+		       "found stays true but ok/width/height/renderJobId all read 0/false)" );
+		Check( after.result.meanR == before.result.meanR
+		       && after.result.meanG == before.result.meanG
+		       && after.result.meanB == before.result.meanB,
+		       "the restored record's image signature is byte-identical to the pre-query one "
+		       "(no partial/lossy restore)" );
+
+		// The PNG/sink half of the same restore, asserted here too so all
+		// four stashed pieces are pinned in ONE place -- the objectmap
+		// image must NOT be what read_image serves afterwards.
+		Check( session->ReadImage() == pngBefore,
+		       "the beauty frame is still what ReadImage() serves -- the ephemeral objectmap image "
+		       "never became 'the last render the caller can read'" );
+
+		// Strict identity survives the round trip: a DIFFERENT id must
+		// still miss, so the restore did not widen the match.
+		Check( !session->LastAsyncRenderResult( ar.renderJobId + 1000 ).found,
+		       "a non-matching id still reports found=false after the restore (strict identity intact)" );
+
+		session->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (guard-async) ephemeral guard restores the async result: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (guard-ctor) The OTHER half of EphemeralRenderCacheGuard.
+//
+// The case above pins the DESTRUCTOR (the restore).  Its CONSTRUCTOR --
+// the move-OUT that opens the window -- was pinned by NOTHING: a
+// round-8 mutation audit zeroed both of the ctor's stash-out lines and
+// AgentRenderAsyncTest, AgentObjectMapTest and AgentViewportReadTest all
+// stayed green.  Yet the ctor's own comment states outright that
+// "Zeroing the id is what makes LastAsyncRenderResult() report 'not
+// found' for the duration", and AgentSession.h documents a "ONE window
+// reports found == false" property.  A documented property that no test
+// enforces is a claim, not a fact.
+//
+// The window is only observable FROM INSIDE it, so this case uses the
+// test seam added for exactly that -- ForTest_SetEphemeralCacheGuardOpenHook,
+// fired by QueryObjectAt between the guard's ctor and the guarded
+// objectmap Render(), with no session mutex held.  Same hook SHAPE as
+// the file's other seams (ForTest_SetReadViewportAfterParkHook,
+// ForTest_SetReadPerceptionBeforeCacheHook).
+//
+// WHAT THE ASSERTIONS PIN.  Sabotage RE-MEASURED in round 10 (counts and
+// per-case attribution both re-derived from the run, not carried forward):
+//   * drop `mLastAsyncResultJobId = 0;` (alone) -> AgentRenderAsyncTest 1
+//     failure, THIS case's in-window `!found` assertion; AgentObjectMapTest
+//     and AgentViewportReadTest stay 0/0.  Dropping BOTH async-result
+//     stash-out zeroing lines gives the identical 1 / 0 / 0 -- that is
+//     exactly the mutation the round-7 audit ran when it found the ctor half
+//     unpinned, so this case is the pin that mutation was missing.
+//   * drop `mSavedPng.swap( mLastPng );` -> AgentRenderAsyncTest 3,
+//     AgentObjectMapTest 3, AgentViewportReadTest 3.  Round-10 correction:
+//     the round-8 comment split those three as "one here, two in
+//     (guard-async)".  That is INVERTED.  TWO are THIS case's -- the
+//     in-window `ReadImage().empty()` assertion AND the post-return "serves
+//     the beauty frame again" assertion -- and ONE is (guard-async)'s "the
+//     beauty frame is still what ReadImage() serves".  So this line was
+//     already partly covered from the (guard-async) side, and it is the
+//     IN-WINDOW assertion here that makes the failure name the WINDOW rather
+//     than the restore.
+//
+// HONEST LIMITS -- do not read more into this case than it proves:
+//   * `mLastSink = nullptr;` CANNOT be red-proved by any assertion.  It is
+//     not merely a visibility line: the guarded Render()'s cache tail
+//     `safe_release()`s whatever mLastSink holds before storing its own
+//     sink, so leaving the stashed pointer aliased there frees it out from
+//     under mSavedSink and the dtor restores a dangling pointer.  Verified:
+//     dropping the line SEGFAULTs (exit 139) -- and so does the
+//     "alias-safe" variant that also guards the dtor's release, because the
+//     free happens inside Render(), not in the dtor.  The in-window
+//     maxEdge assertion below still earns its place (that read goes through
+//     the sink, NOT through mLastPng, so it pins the second of the two
+//     independent lines the guard's doc claims make the window zero-byte);
+//     it just cannot be isolated by a mutation.
+//   * `mLastAsyncResult = AgentRenderResult();` is not independently
+//     pinned and cannot be.  Once the id is 0, LastAsyncRenderResult
+//     reports found=false and hands back a default record regardless of
+//     what that field holds, and the dtor overwrites it on the way out --
+//     so the line is defensive hygiene (it replaces a moved-from object
+//     with a definite value), not observable behaviour.
+//////////////////////////////////////////////////////////////////////
+static void RunEphemeralGuardCtorWindowTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (guard-ctor) the ephemeral window really OPENS (ctor half) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_guard_ctor_window.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the guard-ctor-window scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (guard-ctor-window test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (guard-ctor-window test)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+
+		// Populate BOTH stashed halves: an async render caches its result
+		// record AND its beauty pixels.
+		AgentRenderParams p;   // no override -> the SubmitAgentRenderSync route
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+		Check( ar.accepted && ar.renderJobId != 0, "the async render is accepted with a nonzero id" );
+		Check( session->RenderWait( ar.renderJobId, 15000 ), "the async render completes within the timeout" );
+
+		Check( session->LastAsyncRenderResult( ar.renderJobId ).found,
+		       "PRE-CONDITION: outside the window, the async result record IS found" );
+		Check( !session->ReadImage().empty(),
+		       "PRE-CONDITION: outside the window, ReadImage() serves the beauty frame" );
+		{
+			unsigned int w = 0, h = 0;
+			Check( !session->ReadImage( 32, w, h ).empty() && w > 0 && h > 0,
+			       "PRE-CONDITION: outside the window, the maxEdge read re-encodes from the cached sink" );
+		}
+
+		// Observe from INSIDE the guarded window.
+		bool         hookFired      = false;
+		bool         inWindowFound  = true;    // start at the value that FAILS
+		bool         inWindowPngEmpty = false;
+		bool         inWindowScaledEmpty = false;
+		unsigned int inWindowW = 999, inWindowH = 999;
+		session->ForTest_SetEphemeralCacheGuardOpenHook(
+			[&]() {
+				hookFired        = true;
+				inWindowFound    = session->LastAsyncRenderResult( ar.renderJobId ).found;
+				inWindowPngEmpty = session->ReadImage().empty();
+				inWindowScaledEmpty =
+					session->ReadImage( 32, inWindowW, inWindowH ).empty();
+			} );
+
+		const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 12, 12 );
+
+		Check( hookFired,
+		       "the ephemeral-guard open hook FIRED -- QueryObjectAt really constructed the guard "
+		       "(without this the rest of the case would pass vacuously)" );
+		Check( qr.hit && qr.name == "obj_sph",
+		       "the guarded objectmap render still ran correctly through the hook "
+		       "(the seam does not disturb the verb)" );
+
+		Check( !inWindowFound,
+		       "MONEY: INSIDE the window LastAsyncRenderResult reports found=FALSE -- the guard's ctor "
+		       "zeroed mLastAsyncRenderResultJobId (drop that line and the record is still found here)" );
+		Check( inWindowPngEmpty,
+		       "MONEY: INSIDE the window ReadImage() returns ZERO BYTES -- the guard's ctor swapped the "
+		       "PNG cache out (drop that swap and the beauty frame is still served here)" );
+		Check( inWindowScaledEmpty && inWindowW == 0 && inWindowH == 0,
+		       "INSIDE the window the maxEdge read is empty with 0x0 dims too -- the SECOND of the two "
+		       "independent lines the guard's doc claims make the window zero-byte (this read goes "
+		       "through mLastSink, not mLastPng).  Not mutation-isolable -- see the HONEST LIMITS note" );
+
+		// And the window CLOSED: this is what makes the assertions above a
+		// statement about a bounded window rather than about permanent loss.
+		Check( session->LastAsyncRenderResult( ar.renderJobId ).found,
+		       "after QueryObjectAt returns, the async result record is found again (window closed)" );
+		Check( !session->ReadImage().empty(),
+		       "after QueryObjectAt returns, ReadImage() serves the beauty frame again (window closed)" );
+
+		session->ForTest_SetEphemeralCacheGuardOpenHook( nullptr );
+		session->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (guard-ctor) ephemeral guard opens the window: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (pinned-stale) ROUND-10 finding 2 RED-PROVE: a COMPLETED pinned render
+// must not make a LATER, unrelated refusal claim a pinned render is in
+// flight.
+//
+// WHAT WENT WRONG.  RenderJobStatus::pinned was written at exactly ONE of
+// the three job-record mint sites (SubmitAgentRenderAsync_Locked).  The
+// other two -- RunPreviewRenderParked's mint and RenderLoop's per-pass
+// Interactive mint -- set id/renderClass/active/clientLabel and left
+// `pinned` untouched.  RenderLoop's site even cleared `clientLabel` by
+// hand "to clear any stale value left by a prior AgentPreview job record"
+// while leaving `pinned` stale right beside it.
+//
+// So once ANY pinned render had completed, mCurrentRenderJob.pinned stayed
+// true for the session's life, and the very next ordinary viewport pass
+// re-minted an ACTIVE record that still carried it.  Both refusal paths
+// that chose their message with `cur.active && cur.pinned` -- RenderCore_'s
+// no-override branch (the path EVERY plain `render` takes) and RenderAsync's
+// -- then told the model "a pinned render is in flight ... retry after it
+// completes" when none existed.  That is the same infer-the-cause defect
+// round 8 removed from the override branch, in a commoner path.
+//
+// THE SHAPE OF THIS CASE.  A pinned render is submitted and allowed to
+// COMPLETE.  An interactive viewport pass is then parked mid-flight
+// (SeamController), so an ACTIVE Interactive record exists -- the bug's
+// precondition.  Two things are asserted:
+//   1. the ACTIVE record's `pinned` is false (the stale-field fix itself);
+//   2. an unrelated refusal driven through that state does NOT mention a
+//      pinned render, and DOES name what actually blocked it.
+// Both are asserted, not just (2): (1) is the defect, (2) is the harm.
+//////////////////////////////////////////////////////////////////////
+static void RunPinnedFieldNotStaleAfterCompletionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (pinned-stale) round-10 finding 2 RED-PROVE: a completed pinned render does not poison later refusals ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_pinned_stale.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the pinned-stale scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (pinned-stale test)" );
+
+	SeamController controller( *pJob );
+	controller.Start( /*suppressInitialRender=*/true );   // no interactive pass yet
+
+	// --- step 1: a PINNED render that runs to completion ---------------
+	SceneEditController::RenderJobId pinnedJobId = 0;
+	{
+		const bool accepted = controller.SubmitAgentRenderAsync(
+			[](){}, String( "pinned-stale-occupant" ), &pinnedJobId, /*pinned=*/true );
+		Check( accepted && pinnedJobId != 0, "the PINNED render is accepted" );
+		Check( controller.WaitForRenderJob( pinnedJobId, 15000 ), "the PINNED render completes" );
+	}
+	{
+		const SceneEditController::RenderJobStatus done = controller.CurrentRenderJob();
+		Check( !done.active, "PRECONDITION: the pinned job is no longer active" );
+		Check( done.pinned,
+		       "PRECONDITION: its record still reports pinned=true -- that is the documented "
+		       "\"stale but informational once inactive\" state, unchanged by this fix; the bug "
+		       "was the NEXT job's mint inheriting it" );
+	}
+
+	// --- step 2: an ordinary interactive pass, parked mid-flight -------
+	controller.ForTest_KickRender();
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+		while( !controller.passEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.passEntered.load( std::memory_order_acquire ),
+	       "an ordinary interactive viewport pass is genuinely mid-flight" );
+
+	{
+		const SceneEditController::RenderJobStatus cur = controller.CurrentRenderJob();
+		Check( cur.active && cur.renderClass == SceneEditController::RenderClass::Interactive,
+		       "PRECONDITION (the bug's trigger): the ACTIVE record is an ordinary Interactive pass" );
+		Check( !cur.pinned,
+		       "MONEY 1: the Interactive pass's record reports pinned=FALSE.  Before the round-10 "
+		       "whole-record mint fix this read TRUE -- inherited from the pinned job that finished "
+		       "in step 1 -- and stayed true for the rest of the session" );
+	}
+
+	// --- step 3: drive an unrelated refusal through that state ---------
+	// A transaction is what actually blocks.  It is opened here, with the
+	// interactive pass parked, via SeamController's gate: BeginTransaction
+	// takes mMutex, which the parked pass holds -- so release the gate,
+	// open the transaction, and re-park a fresh pass.
+	controller.releaseGate.store( true, std::memory_order_release );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+	Check( controller.BeginTransaction(), "a transaction opens (the thing that will actually block)" );
+	controller.passEntered.store( false, std::memory_order_release );
+	controller.releaseGate.store( false, std::memory_order_release );
+	controller.ForTest_KickRender();
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+		while( !controller.passEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.passEntered.load( std::memory_order_acquire ),
+	       "a fresh interactive pass is mid-flight with the transaction open" );
+	{
+		const SceneEditController::RenderJobStatus cur = controller.CurrentRenderJob();
+		Check( cur.active && !cur.pinned,
+		       "PRECONDITION: the active record is still non-pinned after the re-park" );
+	}
+
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (pinned-stale test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			// RenderAsync is the async submit path: it refuses IMMEDIATELY on
+			// the pre-flight mTxnOpen check without touching mMutex, so it can
+			// be driven while the interactive pass holds it.
+			AgentRenderParams plain;   // pinned = false
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( plain );
+			std::printf( "    [pinned-stale] async refusal message=\"%s\"\n", ar.message.c_str() );
+			Check( !ar.accepted, "the async submission is refused (a transaction is open)" );
+			Check( ar.message.find( "pinned" ) == std::string::npos,
+			       "MONEY 2 RED-PROVE: the refusal does NOT mention a pinned render.  Before the "
+			       "round-10 fix this said \"a pinned render is in flight -- ... retry after it "
+			       "completes\" against a pinned render that had ALREADY COMPLETED" );
+			Check( ar.message.find( "editor transaction" ) != std::string::npos,
+			       "MONEY 3: it names the TRANSACTION -- the thing that is actually blocking" );
+
+			session->AttachController( nullptr );
+		}
+	}
+
+	controller.releaseGate.store( true, std::memory_order_release );
+	Check( controller.RollbackTransaction(), "transaction rolls back (pinned-stale test)" );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (pinned-stale) round-10 finding 2: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (refusal-cause) Round-8 P1 RED-PROVE: an override render refused by
+// SceneEditController::RunPreviewRenderParked must name the RIGHT cause.
+//
+// The refusal string is surfaced VERBATIM to the model (RenderCore_ puts
+// it in AgentRenderResult::message; CompareToReference relays it in
+// res.split.note, QueryObjectAt in its own message), so a wrong cause
+// steers the model's next tool call -- it retries against a condition
+// that is not the one blocking it.
+//
+// WHAT WENT WRONG.  Round 6 discriminated the cause by reading
+// CurrentRenderJob().active, treating it as "a coordinated agent render
+// holds the gate".  It is not: RenderLoop mints an active
+// RenderClass::Interactive job for EVERY ordinary viewport pass, so as
+// soon as the viewport is DRAWING -- the normal steady state -- an
+// mTxnOpen refusal was reported as "render queued or in progress --
+// retry after it completes".
+//
+// WHY NO TEST CAUGHT IT.  (k) above covers the txn-open refusal, but it
+// starts its controller with suppressInitialRender=true, so nothing is
+// ever drawing and `active` is false -- the bug's precondition is
+// absent.  This case supplies it: SeamController's DoOneRenderPass parks
+// inside a live interactive pass, so `active` is provably TRUE (asserted
+// as a precondition, so the case cannot pass vacuously) while the
+// transaction is what actually blocks.
+//
+// It then pins the OTHER arm too -- with no transaction and the
+// coordinated gate genuinely claimed by a queued agent render, the
+// message MUST be the render one -- so the fix cannot degenerate into
+// "always say transaction".
+//////////////////////////////////////////////////////////////////////
+static void RunRefusalCauseAttributionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (refusal-cause) round-8 P1 RED-PROVE: refusals name the RIGHT cause ===\n" );
+
+	AgentRenderParams withOverride;
+	withOverride.camera.hasLocation = true;  withOverride.camera.location = "3.5 0 0";
+	withOverride.camera.hasLookAt   = true;  withOverride.camera.lookAt   = "0 0 0";
+
+	// --- ARM 1: transaction open WHILE the viewport is drawing ----------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_refusal_cause_txn.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the refusal-cause (txn arm) scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the native-v7 scene via the CST path (refusal-cause txn arm)" );
+
+		SeamController controller( *pJob );
+		// Open the transaction BEFORE Start(): once the interactive pass is
+		// parked on the gate it holds mMutex, and BeginTransaction takes
+		// mMutex, so opening it afterwards would deadlock on our own gate.
+		Check( controller.BeginTransaction(), "transaction opens (before the render loop starts)" );
+		controller.Start();   // NOT suppressed -- we need a live interactive pass
+
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			while( !controller.passEntered.load( std::memory_order_acquire ) &&
+			       std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+		}
+		Check( controller.passEntered.load( std::memory_order_acquire ),
+		       "the interactive pass is genuinely mid-flight (refusal-cause txn arm)" );
+
+		const SceneEditController::RenderJobStatus cur = controller.CurrentRenderJob();
+		Check( cur.active && cur.renderClass == SceneEditController::RenderClass::Interactive,
+		       "PRECONDITION (this is the bug's trigger): CurrentRenderJob().active is TRUE for an "
+		       "ORDINARY interactive viewport pass -- without this the case would prove nothing" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (refusal-cause txn arm)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+			const AgentRenderResult r = session->Render( withOverride );
+			std::printf( "    [txn arm] message=\"%s\"\n", r.message.c_str() );
+			Check( !r.ok, "the override render is refused while the transaction is open" );
+			Check( r.message.find( "editor transaction" ) != std::string::npos,
+			       "MONEY: the refusal names the TRANSACTION -- the thing that is actually blocking" );
+			Check( r.message.find( "render queued or in progress" ) == std::string::npos,
+			       "MONEY RED-PROVE: it does NOT say \"render queued or in progress\" -- the round-6 "
+			       "CurrentRenderJob().active inference said exactly that here, pointing the model at "
+			       "the viewport pass (which completes constantly) instead of the open transaction" );
+			session->AttachController( nullptr );
+		}
+
+		controller.releaseGate.store( true, std::memory_order_release );
+		Check( controller.RollbackTransaction(), "transaction rolls back (refusal-cause txn arm)" );
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- ARM 2: no transaction, the coordinated gate genuinely claimed ---
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_refusal_cause_busy.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the refusal-cause (busy arm) scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the native-v7 scene via the CST path (refusal-cause busy arm)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (refusal-cause busy arm)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			// A coordinated agent render that OCCUPIES the slot until we let
+			// it go: the gate is claimed at SUBMIT time, so the override
+			// render below is refused for CoordinatedRenderBusy -- with no
+			// transaction anywhere in sight.
+			std::atomic<bool> release{ false };
+			std::atomic<bool> entered{ false };
+			SceneEditController::RenderJobId jobId = 0;
+			const bool accepted = controller.SubmitAgentRenderAsync(
+				[&] {
+					entered.store( true, std::memory_order_release );
+					while( !release.load( std::memory_order_acquire ) ) {
+						std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+					}
+				},
+				String( "refusal-cause-occupant" ), &jobId );
+			Check( accepted && jobId != 0, "the occupying agent render is accepted (busy arm)" );
+			{
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+				while( !entered.load( std::memory_order_acquire ) &&
+				       std::chrono::steady_clock::now() < deadline ) {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+				}
+			}
+			Check( entered.load( std::memory_order_acquire ), "the occupying agent render is running (busy arm)" );
+			Check( !controller.IsTransactionOpen(), "PRECONDITION: NO transaction is open in this arm" );
+
+			const AgentRenderResult r = session->Render( withOverride );
+			std::printf( "    [busy arm] message=\"%s\"\n", r.message.c_str() );
+			Check( !r.ok, "the override render is refused while another coordinated render holds the gate" );
+			Check( r.message.find( "render queued or in progress" ) != std::string::npos,
+			       "MONEY: the refusal names the OTHER RENDER -- the fix did not degenerate into "
+			       "always reporting a transaction" );
+			Check( r.message.find( "editor transaction" ) == std::string::npos,
+			       "the busy-arm refusal does NOT mention a transaction (there is none)" );
+
+			release.store( true, std::memory_order_release );
+			Check( controller.WaitForRenderJob( jobId, 15000 ), "the occupying agent render completes" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== (refusal-cause) refusals name the right cause: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -5300,6 +6218,12 @@ int main()
 	RunAgentRenderRestoresPersistentCallbackRedProveTest();
 	RunLegacyProductionPreservesAgentWorkerTest();
 	RunGestureRenderAdmissionTest();
+	RunPerSessionImageCacheTest();
+	RunSharedImageCacheTest();
+	RunEphemeralGuardRestoresAsyncResultTest();
+	RunEphemeralGuardCtorWindowTest();
+	RunRefusalCauseAttributionTest();
+	RunPinnedFieldNotStaleAfterCompletionTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
