@@ -750,6 +750,62 @@ namespace RISE
 				return std::norm( num / den );		// |r|²
 			}
 
+			//! Rescales an accumulated 2x2 layer product to O(1), IN PLACE,
+			//! by an exact power of two.
+			//!
+			//! Free AND exact.  Free because the reflectance
+			//!   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
+			//! is homogeneous of degree 0 in M -- the same argument that lets
+			//! each layer drop its e^{-i delta}/2 -- so any nonzero scalar may
+			//! be divided out.  Exact because a power of two only shifts the
+			//! exponent: every mantissa is preserved, so no result moves.
+			//!
+			//! Needed because a layer whose cos is enormous -- which is what a
+			//! near-zero index produces, and what PhysicalIndex deliberately
+			//! substitutes -- contributes ~1/|N|^2 to the p-polarization
+			//! entries.  ONE such layer is harmless; TWO separated by an
+			//! ordinary layer reach ~1e161, and the naive c^2+d^2 complex
+			//! division that -ffast-math selects (-fcx-limited-range)
+			//! overflows above ~1e154.  Measured before this existed:
+			//! glass / [ zero-index 300 nm, MgF2 100 nm, zero-index 300 nm ] /
+			//! 1.46 returned NaN under the shipped flags while strict IEEE
+			//! gave the correct 0.99999989915.  The per-layer bound is
+			//! 10^(-154/2m) for m such layers, so no single stand-in constant
+			//! can close it for the kMaxFilms = 8 this path allows -- the
+			//! growth has to be REMOVED, not out-ranged.
+			//!
+			//! Note it scales each component with ldexp DIRECTLY rather than
+			//! multiplying by a precomputed 2^-exponent.  That reciprocal is
+			//! not always representable: for a DENORMAL magnitude the exponent
+			//! reaches -1073 and ldexp(1, +1073) overflows to inf -- which a
+			//! finiteness check on the magnitude cannot see, because the
+			//! magnitude is finite and it is the MULTIPLIER that overflows.
+			//! Pinned by ThinFilmProductionTest [Renormalize].
+			inline void RenormalizeLayerProduct(
+				Complex& m00, Complex& m01, Complex& m10, Complex& m11 )
+			{
+				Scalar mag = std::abs( m00 );
+				const Scalar a01 = std::abs( m01 );
+				const Scalar a10 = std::abs( m10 );
+				const Scalar a11 = std::abs( m11 );
+				if( a01 > mag ) mag = a01;
+				if( a10 > mag ) mag = a10;
+				if( a11 > mag ) mag = a11;
+				if( !( mag > Scalar(0) ) || !std::isfinite( mag ) ) {
+					return;
+				}
+				int exponent = 0;
+				std::frexp( mag, &exponent );
+				m00 = Complex( std::ldexp( m00.real(), -exponent ),
+				               std::ldexp( m00.imag(), -exponent ) );
+				m01 = Complex( std::ldexp( m01.real(), -exponent ),
+				               std::ldexp( m01.imag(), -exponent ) );
+				m10 = Complex( std::ldexp( m10.real(), -exponent ),
+				               std::ldexp( m10.imag(), -exponent ) );
+				m11 = Complex( std::ldexp( m11.real(), -exponent ),
+				               std::ldexp( m11.imag(), -exponent ) );
+			}
+
 			//! N-layer characteristic-matrix reflectance for one
 			//! polarization.  Allocation-free: the film indices/thicknesses
 			//! are passed as fixed-capacity C arrays.  With nFilms == 1 this
@@ -887,22 +943,7 @@ namespace RISE
 					// kMaxFilms = 8 that this path allows -- the growth has to
 					// be removed rather than out-ranged.
 					// Pinned by ThinFilmProductionTest [Domain].
-					{
-						Scalar mag = std::abs( m00 );
-						const Scalar m01a = std::abs( m01 );
-						const Scalar m10a = std::abs( m10 );
-						const Scalar m11a = std::abs( m11 );
-						if( m01a > mag ) mag = m01a;
-						if( m10a > mag ) mag = m10a;
-						if( m11a > mag ) mag = m11a;
-						if( mag > Scalar(0) && std::isfinite( mag ) ) {
-							int exponent = 0;
-							std::frexp( mag, &exponent );
-							const Scalar inv = std::ldexp( Scalar(1), -exponent );
-							m00 *= inv; m01 *= inv;
-							m10 *= inv; m11 *= inv;
-						}
-					}
+					RenormalizeLayerProduct( m00, m01, m10, m11 );
 				}
 
 				const Complex cosS = CosThetaInMedium( Ns, sinInvariant );

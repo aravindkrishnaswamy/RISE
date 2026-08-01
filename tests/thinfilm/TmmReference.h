@@ -404,9 +404,18 @@ namespace RISE
 					if( mag > 0.0 && std::isfinite( mag ) ) {
 						int exponent = 0;
 						std::frexp( mag, &exponent );
-						const double inv = std::ldexp( 1.0, -exponent );
-						m00 *= inv; m01 *= inv;
-						m10 *= inv; m11 *= inv;
+						// ldexp on each VALUE, not multiplication by a
+						// precomputed 2^-exponent: for a denormal mag that
+						// reciprocal overflows to inf.  See production
+						// ThinFilm.h.
+						m00 = Complex( std::ldexp( m00.real(), -exponent ),
+						               std::ldexp( m00.imag(), -exponent ) );
+						m01 = Complex( std::ldexp( m01.real(), -exponent ),
+						               std::ldexp( m01.imag(), -exponent ) );
+						m10 = Complex( std::ldexp( m10.real(), -exponent ),
+						               std::ldexp( m10.imag(), -exponent ) );
+						m11 = Complex( std::ldexp( m11.real(), -exponent ),
+						               std::ldexp( m11.imag(), -exponent ) );
 					}
 				}
 			}

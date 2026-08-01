@@ -1390,6 +1390,69 @@ int main()
 	}
 
 	// ------------------------------------------------------------------
+	// [Renormalize] detail::RenormalizeLayerProduct (2026-08-01).
+	//
+	// The layer-product rescale is what makes the N-layer path total when a
+	// stand-in index drives an entry to ~1e161.  Two properties matter and
+	// neither is observable from a reflectance alone, which is why the helper
+	// was extracted from the loop to be pinned directly:
+	//   * it is EXACT -- a power-of-two rescale preserves every mantissa, so
+	//     the ratios the reflectance depends on are bit-unchanged;
+	//   * it is TOTAL -- including for a DENORMAL magnitude, where the obvious
+	//     implementation (multiply by a precomputed 2^-exponent) overflows the
+	//     multiplier to inf while the magnitude itself is still finite.
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[Renormalize] exactness and totality of the layer-product rescale\n" );
+		using RISE::ThinFilm::Complex;
+		const double den = 1e-310;					// denormal
+		const double tiny = std::numeric_limits<double>::denorm_min();
+		const struct { const char* tag; Complex a, b, c, d; } cases[] = {
+			{ "O(1)",            Complex(1,2), Complex(3,-4), Complex(-5,6), Complex(7,8) },
+			{ "huge (1e161)",    Complex(1e161,2e160), Complex(3,-4), Complex(-5,6), Complex(7,8) },
+			{ "near overflow",   Complex(1e300,0), Complex(1e299,0), Complex(0,0), Complex(1,0) },
+			{ "DENORMAL",        Complex(den,0), Complex(den/2,0), Complex(0,0), Complex(den/4,0) },
+			{ "denorm_min",      Complex(tiny,0), Complex(0,0), Complex(0,0), Complex(0,0) },
+			{ "all zero",        Complex(0,0), Complex(0,0), Complex(0,0), Complex(0,0) },
+		};
+		for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
+			Complex m00 = cases[i].a, m01 = cases[i].b, m10 = cases[i].c, m11 = cases[i].d;
+			RISE::ThinFilm::detail::RenormalizeLayerProduct( m00, m01, m10, m11 );
+			// TOTAL: nothing may become non-finite.
+			Check( std::isfinite(m00.real()) && std::isfinite(m00.imag())
+			    && std::isfinite(m01.real()) && std::isfinite(m01.imag())
+			    && std::isfinite(m10.real()) && std::isfinite(m10.imag())
+			    && std::isfinite(m11.real()) && std::isfinite(m11.imag()),
+			       "renormalize stays finite (incl. denormal magnitudes)" );
+			// EXACT: every RATIO is bit-identical, which is all the
+			// reflectance depends on.  Compare against the original in a
+			// scale-free way, skipping the all-zero row.
+			const double n0 = std::abs( cases[i].a ), r0 = std::abs( m00 );
+			const double n1 = std::abs( cases[i].b ), r1 = std::abs( m01 );
+			if( n0 > 0.0 && n1 > 0.0 && r0 > 0.0 && r1 > 0.0 ) {
+				Check( std::fabs( (r1/r0) - (n1/n0) ) <= 1e-15 * (n1/n0),
+				       "renormalize preserves the ratios exactly" );
+			}
+		}
+		// The reason it exists: the same stack, rescaled or not, must agree.
+		// (The un-rescaled form is NaN under the shipped flags, so this is a
+		// one-way check -- it pins that the rescaled answer is the right one.)
+		{
+			const RISE::ThinFilm::Complex N0( 1.5, 0.0 ), Ns( 1.46, 0.0 );
+			const RISE::ThinFilm::Complex f[3] = {
+				RISE::ThinFilm::Complex(0,0), RISE::ThinFilm::Complex(1.38,0),
+				RISE::ThinFilm::Complex(0,0) };
+			const RISE::Scalar t[3] = { 300.0, 100.0, 300.0 };
+			const double R = double( RISE::ThinFilm::ReflectanceConductorStack(
+				0.6, 550.0, N0, f, t, 3, Ns ) );
+			// 120-dps limit for this stack.
+			Check( std::isfinite( R ) && std::fabs( R - 0.99999989915178811 ) < 1e-12,
+			       "two stand-in layers around an ordinary one match the 120-dps limit" );
+			std::printf( "  two-stand-in-layer stack: R = %.17g (120-dps 0.99999989915178811)\n", R );
+		}
+	}
+
+	// ------------------------------------------------------------------
 	// [Invariant] Branch-rule-FREE physics invariants (2026-07-30).
 	//
 	// Every other block in this file scores the evaluator against a reference
