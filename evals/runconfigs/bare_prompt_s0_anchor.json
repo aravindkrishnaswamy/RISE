@@ -1,0 +1,13 @@
+{
+  "//": "Arc-75 S0 anchor, gemini instrument (75-expressive-surface-arc.md sec 2 S0 item 5). Fresh baseline on the S0-instrumented harness: param_binding varied_microsurface metric live (a17921c5), headless SetSkillIndex parity (2ebc244b -- deliberately changes turn structure vs all archived bare_prompt_* runDirs), cozy-study anti-overfit subject (5969e929). NOT comparable to archived runDirs at the pass@1 level (the new required checkpoint flips allPassed) nor at turn level (skills index now in system prompt) -- that discontinuity is this anchor's reason to exist. Cozy-study's indoor meanLumaMax 0.35 is PROVISIONAL; this run calibrates it (70-doc sec 6.3: cross-check surprising failures against trajectories before believing them).",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_s0_anchor"
+}

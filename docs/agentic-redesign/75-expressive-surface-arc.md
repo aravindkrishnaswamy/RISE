@@ -276,6 +276,39 @@ main checkout after any worktree agent.  Runs: gemini via
   hallucinated `gallery` field that reportedly failed SILENTLY — spun
   off as its own investigation (agent-side insert validation vs the
   descriptor hard-fail scene loading gets).
+- **2026-07-31 — S0.1 LANDED** (`a17921c5`): `param_binding` op + the
+  `varied_microsurface` checkpoint (10-kind slots) on the courtyard
+  scenario.  Two review rounds to zero P1: round 1 found 5 P1s
+  (cross-slot dedup, occurrence handling ×2, multi-edge collapse,
+  undisclosed slot-coverage gap) — all fixed; round 2 zero code P1s +
+  two test-vacuity gaps closed with discriminating fixtures, each
+  verified by re-applying its target mutation.  Known interpretation
+  discontinuity: the new required checkpoint flips `allPassed` on runs
+  that previously passed — archived bare_prompt runDirs are not
+  comparable at the pass@1 level (reviewer R3's quantification: the
+  fraction shift is only 1.0→0.96, the pass/fail flip is the real
+  break).
+- **2026-07-31 — S0.2 LANDED** (`2ebc244b`): headless SetSkillIndex
+  parity via a new shared `AgentSession::RenderSkillIndex` single-source
+  helper (Qt/Swift GUI copies carry lockstep comments — delegation
+  impossible across their input/language boundaries).  Two fresh
+  reviewers, zero P1s; one P2 (rendering triplication) fixed; one
+  supervisor-caught truth defect in the new header comment (claimed a
+  Qt delegation that doesn't exist) — §4.3's lesson, again, caught by
+  the supervisor truth-pass this time.  Deliberate instrument change:
+  headless runs now carry the skills index (turn structure differs from
+  every archived runDir).
+- **2026-07-31 — S0.3 LANDED** (`5969e929`): `bare_prompt_build_cozy_study`
+  — byte-identical measurement structure to courtyard, indoor
+  provisional luma band (0.35), study vocabulary.  One fresh data
+  reviewer, zero P1s; confirmed `eval_report.py` aggregates labels per
+  (scenario, provider, model) group so cross-scenario label reuse never
+  pools — the anti-overfit A/B interpretation is safe.
+- **2026-07-31 — S0.6 anchor OPENED**: runconfigs
+  `bare_prompt_s0_anchor{,_qwen}.json` — 3 scenarios (courtyard +
+  cozy-study + counterweight) × N=3 per instrument, serialized, gemini
+  first then qwen.  This anchor is the sole valid comparison base for
+  every subsequent arc-75 phase.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
