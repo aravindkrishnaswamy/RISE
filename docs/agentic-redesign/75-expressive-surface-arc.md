@@ -309,6 +309,22 @@ main checkout after any worktree agent.  Runs: gemini via
   cozy-study + counterweight) × N=3 per instrument, serialized, gemini
   first then qwen.  This anchor is the sole valid comparison base for
   every subsequent arc-75 phase.
+- **2026-08-01 — the anchor's first payoff was a CRASH, fixed to zero-P1
+  over 3 rounds (`d07a0994`)**: both gemini cozy-study attempts
+  segfaulted (null `Object::pGeometry` via `RebuildLightSamplers` —
+  CSGObject never sets it; the model bound an emissive material to a
+  csg_object lamp shade).  Courtyard never triggers it; the anti-overfit
+  subject found a latent product crash on day one.  Fix hardened 7 sites
+  (5 found only by successive fresh-review rounds — the audit-by-bug-
+  pattern lesson compounding), added the first real Warning-severity
+  diagnostic (`LUMINAIRE_NULL_GEOMETRY`) and with it closed 74-log open
+  item 2 (the CheckDiagnosticsKind Warning fixture).  **Eval-semantics
+  change to carry forward**: a live run that binds emissive to CSG now
+  FAILS `diagnostics: clean` (truthfully — the emitter is never
+  light-sampled) instead of crashing the harness; anchor numbers must be
+  read with that in mind.  **Deferred, tracked**: pre-existing BDPT
+  remap0 phantom-NEE-term energy deficit for non-light-sampled emitters
+  (fenced MIS work; comments at both sites).
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
