@@ -1326,6 +1326,27 @@ namespace
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& )
 	{ return pMedium->EvalTransmittance( ray, dist ); }
 
+	// A fire-Pel collision is evaluated against the deterministic projected
+	// coefficient field.  Its distance density is deterministic as well, so a
+	// stochastic ratio-tracking numerator would form a biased ratio and would
+	// change with tracker variance.  Ordinary Pel media retain their legacy
+	// stochastic transmittance path.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalCollisionTransmittance(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const Tag& tag )
+	{
+		return PTEvalTransmittance<Tag>( pMedium, ray, dist, tag );
+	}
+
+	template<>
+	inline RISEPel PTEvalCollisionTransmittance<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& tag )
+	{
+		return pMedium->IsFireMedium() ?
+			pMedium->EvalDeterministicTransmittancePel( ray, dist ) :
+			PTEvalTransmittance<PelTag>( pMedium, ray, dist, tag );
+	}
+
 	template<>
 	inline Scalar PTEvalTransmittance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
@@ -1934,16 +1955,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	for( unsigned int depth = startDepth; ; depth += depthIncrement )
 	{
 		depthIncrement = 1;
-		// A spectral continuation segment is transport, not a new continuation
+		// A continuation segment is transport, not a new continuation
 		// decision: even when the preceding vertex consumed the final path-depth
 		// slot, §7.1 requires its additive source and any finite thermal collision
 		// to be scored before the path-depth gate.  Permit exactly that one
-		// intersection/medium pass.  Pel retains its historical depth behavior,
-		// and a pre-computed surface hit never receives an extra vertex.
+		// intersection/medium pass; a pre-computed surface hit never receives an
+		// extra vertex.
 		const bool pathDepthAllowsContinuation = depth < maxDepth;
-		const bool scoreCappedSpectralSegment =
-			!Traits::is_pel && needsIntersection && !pathDepthAllowsContinuation;
-		if( !pathDepthAllowsContinuation && !scoreCappedSpectralSegment ) {
+		const bool scoreCappedSourceSegment =
+			needsIntersection && !pathDepthAllowsContinuation;
+		if( !pathDepthAllowsContinuation && !scoreCappedSourceSegment ) {
 			break;
 		}
 
@@ -2032,6 +2053,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				if( scattered )
 				{
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const MediumContinuationAvailability mediumAvailability =
+						ResolveMediumContinuationAvailability(
+							depth+1 < maxDepth,volumeBounces,stabilityConfig);
 					if constexpr ( Traits::is_pel ) {
 						result = result + throughput * PTEventThermalEmissionPel(
 							*pCurrentMedium,currentRay,maxDist,t_m,mso );
@@ -2060,22 +2084,40 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// The collision exists, and therefore emits, independently of
 					// whether the volume-scatter continuation budget is exhausted.
-					if( !pathDepthAllowsContinuation ||
-						(Traits::is_pel &&
-						 volumeBounces >= stabilityConfig.maxVolumeBounce) ) {
+					if constexpr ( Traits::is_pel ) {
+						if( !mediumAvailability.vertexAllowed ) break;
+					} else if( !pathDepthAllowsContinuation ) {
 						break;
 					}
 
 					// Volume scatter event
 					const Vector3 wo = currentRay.Dir();
 					const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
-					const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, currentRay, t_m, tag );
+					const Value Tr = PTEvalCollisionTransmittance<Tag>(
+						pCurrentMedium, currentRay, t_m, tag );
 
 					Value medWeight = Traits::zero();
 					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
 					{
 						// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
 						medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
+					}
+					else if constexpr ( Traits::is_pel )
+					{
+						if( pCurrentMedium->IsFireMedium() ) {
+							const Scalar collisionPdf = pCurrentMedium->EvalDistancePdf(
+								currentRay,t_m,true,maxDist);
+							if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+								medWeight = PTDivByScalar(
+									Tr*coeff.sigma_s,collisionPdf);
+							}
+						} else if( coeff.sigmaTReduced > 0 ) {
+							const Scalar Tr_scalar = PTTrReduced( Tr );
+							if( Tr_scalar > 0 ) {
+								medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+									coeff.sigmaTReduced * Tr_scalar );
+							}
+						}
 					}
 					else if( coeff.sigmaTReduced > 0 )
 					{
@@ -2108,10 +2150,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							true,std::memory_order_relaxed);
 					}
 #endif
-					const MediumContinuationAvailability mediumAvailability =
-						ResolveMediumContinuationAvailability(
-							depth+1 < maxDepth,volumeBounces,stabilityConfig);
-
 	#ifdef RISE_ENABLE_OPENPGL
 					PGLPathSegmentData* volSegment =
 						(!volumeNEECompetes && guidingRecorder && guidingRecorder->active) ?
@@ -3717,6 +3755,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		}
 
 		ScatteredRayContainer scattered;
+		const bool pelTerminalFireSourceSegment = Traits::is_pel &&
+			!IsSSSContainmentActive() && pLS && pLS->SceneHasFireMedia() &&
+			depth+1 >= maxDepth;
 		{
 			RISE_PROFILE_PHASE(BSDFScatter);
 			RISE_PROFILE_INC(nBSDFScatterCalls);
@@ -4014,7 +4055,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 			// Russian roulette
-			if( !skipContinuation )
+			if( !skipContinuation && !pelTerminalFireSourceSegment )
 			{
 				const PathTransportUtilities::RussianRouletteResult rr =
 					PathTransportUtilities::EvaluateRussianRoulette(
@@ -4458,7 +4499,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				mediumSource = mediumSource + thermalEmission;
 			}
 			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
-			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
+			const Value Tr = PTEvalCollisionTransmittance<Tag>(
+				pCurrentMedium, cameraRay, t_m, tag );
 			Value result = mediumSource;
 
 			Value medWeight = Traits::zero();
@@ -4466,6 +4508,23 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			{
 				// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
 				medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
+			}
+			else if constexpr ( Traits::is_pel )
+			{
+				if( pCurrentMedium->IsFireMedium() ) {
+					const Scalar collisionPdf = pCurrentMedium->EvalDistancePdf(
+						cameraRay,t_m,true,maxDist);
+					if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+						medWeight = PTDivByScalar(
+							Tr*coeff.sigma_s,collisionPdf);
+					}
+				} else if( coeff.sigmaTReduced > 0 ) {
+					const Scalar Tr_scalar = PTTrReduced( Tr );
+					if( Tr_scalar > 0 ) {
+						medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+							coeff.sigmaTReduced * Tr_scalar );
+					}
+				}
 			}
 			else if( coeff.sigmaTReduced > 0 )
 			{
@@ -4692,72 +4751,43 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			const Ray scatteredRay( scatterPt, wi );
-			if constexpr ( Traits::is_pel ) {
-				// Pel is outside steps 1-6: retain its pre-fire continuation
-				// arithmetic and direct intersection path byte-for-byte.
-				RayIntersection ri2( scatteredRay, rast );
-				scene.GetObjects()->IntersectRay( ri2, true, true, false );
-
-				if( !ri2.geometric.bHit ) {
-					if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
-					 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
-						const Value TrEsc = PTEvalTransmittance<Tag>(
-							pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
-						const Value volumeEnv = volThroughput * TrEsc *
-							PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
-						if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-							if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
-						} else {
-							result = result + volumeEnv;
-						}
-					}
-					return result;
+			// Start the iterative loop from the continuation ray itself.  Its
+			// un-hit record makes the first iteration march the outgoing medium
+			// segment before considering a surface or environment.  This is required
+			// for Pel as well as NM: direct-intersecting the Pel ray would silently
+			// skip every downstream collision and source event.
+			RayIntersection continuation( scatteredRay, rast );
+			const Scalar marchDirectionPdf =
+				mediumAvailability.vertexAllowed ?
+					phasePdf*counterfactualRRSurvival : phasePdf;
+			if( volumeNEECompetes ) {
+				const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+				const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
+					retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
+				if( retainedPhasePdf != phasePdf ||
+					marchDirectionPdf != expectedReachPdf ) {
+					mCompetingMediumReachPdfMismatch.store(
+						true,std::memory_order_relaxed);
 				}
-
-				Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
+			}
+			const VolumeEmissionSegmentState downstreamVolumeState(
+				volumeEndpointAttempted,false,
+				volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
+					&volumeVertexSample.Pivots() : 0,
+				marchDirectionPdf,0.0,0.0);
+			Value continuationResult;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(
+					downstreamVolumeState);
+				continuationResult = IntegrateFromHitForTag<Tag>(
+					rc, rast, continuation, scene, caster,
 					sampler, pRadianceMap, 1, iorStack, effectivePdf,
 					Traits::zero(), true, 1.0,
 					IRayCaster::RAY_STATE::eRayDiffuse,
 					0, 0, 0, 0, 1, 0,
 					pAOV, tag );
-				return result + volThroughput * hitResult;
-				} else {
-					// Start the iterative NM loop from the continuation ray itself.
-					// Its un-hit record makes the first loop iteration sample this
-					// segment's medium before looking for a surface or environment.
-					RayIntersection continuation( scatteredRay, rast );
-					const Scalar marchDirectionPdf =
-						mediumAvailability.vertexAllowed ?
-							phasePdf*counterfactualRRSurvival : phasePdf;
-					if( volumeNEECompetes ) {
-						const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
-						const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
-							retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
-						if( retainedPhasePdf != phasePdf ||
-							marchDirectionPdf != expectedReachPdf ) {
-							mCompetingMediumReachPdfMismatch.store(
-								true,std::memory_order_relaxed);
-						}
-					}
-					const VolumeEmissionSegmentState downstreamVolumeState(
-						volumeEndpointAttempted,false,
-						volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
-							&volumeVertexSample.Pivots() : 0,
-						marchDirectionPdf,0.0,0.0);
-					Value continuationResult;
-					{
-						const VolumeEmissionSegmentStateScope volumeStateScope(
-							downstreamVolumeState);
-						continuationResult = IntegrateFromHitForTag<Tag>(
-							rc, rast, continuation, scene, caster,
-							sampler, pRadianceMap, 1, iorStack, effectivePdf,
-							Traits::zero(), true, 1.0,
-							IRayCaster::RAY_STATE::eRayDiffuse,
-							0, 0, 0, 0, 1, 0,
-							pAOV, tag );
-					}
-					return result + volThroughput * continuationResult;
 			}
+			return result + volThroughput * continuationResult;
 		}
 		else if( ri.geometric.bHit )
 		{

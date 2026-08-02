@@ -58,6 +58,7 @@ namespace
 	const Scalar kRedWavelengthNM = 700.0;
 	const Scalar kTemperatureK = 1800.0;
 	const unsigned int kSamples = 80000;
+	const RISEPel kPelCollisionRadiance( 2.0, 3.0, 5.0 );
 
 	void Check( const bool condition, const char* label )
 	{
@@ -255,6 +256,10 @@ namespace
 		{
 			return sigmaT_ * PlanckSpectralRadianceNM( nm, kTemperatureK );
 		}
+		RISEPel GetThermalEmissionPel( const Point3& ) const override
+		{
+			return kPelCollisionRadiance * sigmaT_;
+		}
 
 	protected:
 		~PureDTFireMedium() override = default;
@@ -428,22 +433,47 @@ namespace
 			"surviving continuation does not roulette-weight the thermal collision score"
 		};
 		for( unsigned int i = 0; i < 2; ++i ) {
-			RandomNumberGenerator rng( seeds[i] );
-			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
 			const RasterizerState rast = { 0, 0 };
 			IRayCaster::RAY_STATE state;
+			state.depth = 0;
 			state.importance = 0.005;
 			state.volumeBounces = 64;
-			Scalar value = 0.0;
-			Scalar distance = 0.0;
-			const bool hasSource = thick.caster->CastRayNM(
-				rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
-				value, state, kWavelengthNM, &distance, nullptr );
-			Check( hasSource && distance > 0.0,
-				"thermal collision is sampled before continuation roulette terminates" );
-			Check( NearRelative( value,
-				PlanckSpectralRadianceNM( kWavelengthNM, kTemperatureK ), 1e-13 ),
-				labels[i] );
+			{
+				RandomNumberGenerator rng( seeds[i] );
+				RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+				Scalar value = 0.0;
+				Scalar distance = 0.0;
+				const bool hasSource = thick.caster->CastRayNM(
+					rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+					value, state, kWavelengthNM, &distance, nullptr );
+				Check( hasSource && distance > 0.0,
+					"spectral thermal collision is sampled before continuation roulette terminates" );
+				Check( NearRelative( value,
+					PlanckSpectralRadianceNM( kWavelengthNM, kTemperatureK ), 1e-13 ),
+					labels[i] );
+			}
+
+			// Re-seed so this Pel call exercises the same deterministic roulette
+			// outcome as the spectral call.  A mean-only comparison would miss an
+			// implementation that drops rejected samples and compensates survivors:
+			// unbiased in expectation, but with needless 1/p variance.
+			{
+				RandomNumberGenerator rng( seeds[i] );
+				RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+				RISEPel value( 0.0 );
+				Scalar distance = 0.0;
+				const bool hasSource = thick.caster->CastRay(
+					rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+					value, state, &distance, nullptr );
+				Check( hasSource && distance > 0.0,
+					"Pel thermal collision is sampled before continuation roulette terminates" );
+				Check( NearRelative( value[0], kPelCollisionRadiance[0], 1e-13 ) &&
+					NearRelative( value[1], kPelCollisionRadiance[1], 1e-13 ) &&
+					NearRelative( value[2], kPelCollisionRadiance[2], 1e-13 ),
+					i == 0 ?
+						"rejected Pel continuation retains the unweighted thermal collision score" :
+						"surviving Pel continuation does not roulette-weight the thermal collision score" );
+			}
 		}
 	}
 

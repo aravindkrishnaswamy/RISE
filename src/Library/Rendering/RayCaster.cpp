@@ -1198,7 +1198,9 @@ bool RayCaster::CastRayImpl_(
 			}
 
 			const MediumCoefficients coeff = pMedium->GetCoefficients( scatterPt );
-			const RISEPel Tr = pMedium->EvalTransmittance( ray, t_m );
+			const RISEPel Tr = pMedium->IsFireMedium() ?
+				pMedium->EvalDeterministicTransmittancePel( ray, t_m ) :
+				pMedium->EvalTransmittance( ray, t_m );
 			RISEPel throughput( 0, 0, 0 );
 
 			if( useExplicitThroughput && combinedPdf > 0 )
@@ -1207,9 +1209,22 @@ bool RayCaster::CastRayImpl_(
 				// where combined_pdf = 0.5 * pdf_dt + 0.5 * pdf_eq.
 				// Both pdf_dt and pdf_eq are deterministic: pdf_dt uses
 				// majorant transmittance T_bar (DDA), pdf_eq is analytic.
-				// The stochastic Tr in the numerator is correct — it's
-				// the integrand estimate, not a technique density.
+				// Fire uses its deterministic projected transmittance so this
+				// numerator and the labeled density share one coefficient field;
+				// ordinary media retain their historical stochastic integrand.
 				throughput = Tr * coeff.sigma_s * (1.0 / combinedPdf);
+			}
+			else if( pMedium->IsFireMedium() )
+			{
+				// Fire-Pel tracking uses a deterministic projected coefficient field.
+				// Divide by the actual deterministic collision density; reducing a
+				// stochastic ratio-tracking estimate to its minimum channel would form
+				// a biased ratio and can select the wrong channel along chromatic paths.
+				const Scalar collisionPdf = pMedium->EvalDistancePdf(
+					ray,t_m,true,maxDist);
+				if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+					throughput = Tr*coeff.sigma_s*(1.0/collisionPdf);
+				}
 			}
 			else
 			{

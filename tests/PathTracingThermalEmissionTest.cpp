@@ -642,7 +642,7 @@ namespace
 		MediumCoefficients GetCoefficients( const Point3& ) const override
 		{
 			MediumCoefficients result;
-			result.sigma_t = RISEPel(0,0,0);
+			result.sigma_t = RISEPel(1,1,1);
 			result.sigma_s = RISEPel(0,0,0);
 			result.emission = RISEPel(0,0,0);
 			return result;
@@ -661,9 +661,13 @@ namespace
 		const IPhaseFunction* GetPhaseFunction() const override { return nullptr; }
 
 		Scalar SampleDistance(
-			const Ray&, const Scalar maxDist, ISampler&,
+			const Ray& ray, const Scalar maxDist, ISampler&,
 			bool& scattered ) const override
 		{
+			if( ray.origin.z > -0.2 && ray.Dir().z < 0.0 ) {
+				scattered = true;
+				return 0.25;
+			}
 			scattered = false;
 			return maxDist;
 		}
@@ -676,9 +680,17 @@ namespace
 		}
 
 		RISEPel EvalTransmittance(
-			const Ray&, const Scalar ) const override
+			const Ray& ray, const Scalar dist ) const override
 		{
-			return RISEPel(1,1,1);
+			const Scalar tr = ray.origin.z > -0.2 && ray.Dir().z < 0.0 ?
+				std::exp(-dist) : 1.0;
+			return RISEPel(tr,tr,tr);
+		}
+		Scalar EvalDistancePdf(
+			const Ray&, const Scalar t, const bool scattered,
+			const Scalar ) const override
+		{
+			return scattered ? std::exp(-t) : 1.0;
 		}
 
 		Scalar EvalTransmittanceNM(
@@ -690,6 +702,11 @@ namespace
 		bool IsHomogeneous() const override { return false; }
 		bool IsFireMedium() const override { return true; }
 		bool GetBoundingBox( Point3&, Point3& ) const override { return false; }
+
+		RISEPel GetThermalEmissionPel( const Point3& ) const override
+		{
+			return RISEPel(0.25);
+		}
 
 		Scalar EstimateChemEmissionSegmentNM(
 			const Ray& ray,
@@ -714,8 +731,13 @@ namespace
 	{
 	public:
 		Scalar Evaluate( const Vector3&, const Vector3& ) const override { return 1.0; }
+		RISEPel EvaluatePel( const Vector3&, const Vector3& ) const override
+		{
+			return RISEPel( 1.0, 1.0, 1.0 );
+		}
 		Vector3 Sample( const Vector3& wi, ISampler& ) const override { return wi; }
 		Scalar Pdf( const Vector3&, const Vector3& ) const override { return 1.0; }
+		Scalar PdfProposal( const Vector3&, const Vector3& ) const override { return 1.0; }
 	protected:
 		~ForwardPhase() override = default;
 	};
@@ -1787,11 +1809,15 @@ namespace
 
 		mutable unsigned int chemSegmentCalls;
 
-		MediumCoefficients GetCoefficients( const Point3& ) const override
+		MediumCoefficients GetCoefficients( const Point3& pt ) const override
 		{
 			MediumCoefficients c;
-			c.sigma_t = RISEPel( 1, 1, 1 );
-			c.sigma_s = RISEPel( 1, 1, 1 );
+			// The dominant extinction channel switches at z=0.5.  This makes
+			// MinValue(stochastic Tr) unusable as a collision-density surrogate.
+			c.sigma_t = pt.z < 0.5 ?
+				RISEPel( 3.0, 1.0, 2.0 ) : RISEPel( 1.0, 3.0, 2.0 );
+			c.sigma_s = pt.z < 0.5 ?
+				RISEPel( 1.5, 0.5, 1.0 ) : RISEPel( 0.5, 1.5, 1.0 );
 			c.emission = RISEPel( 0, 0, 0 );
 			return c;
 		}
@@ -1810,9 +1836,22 @@ namespace
 			pPhase->addref();
 			return pPhase;
 		}
-		Scalar SampleDistance(
-			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		const IPhaseFunction* MakePhaseClosurePel( const Point3& ) const override
 		{
+			pPhase->addref();
+			return pPhase;
+		}
+		Scalar SampleDistance(
+			const Ray& ray, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		{
+			if( ray.origin.z < 0.1 ) {
+				scattered = true;
+				return 0.25;
+			}
+			if( ray.origin.z < 0.5 ) {
+				scattered = true;
+				return 0.5;
+			}
 			scattered = false;
 			return maxDist;
 		}
@@ -1831,10 +1870,39 @@ namespace
 			scattered = false;
 			return maxDist;
 		}
-		RISEPel EvalTransmittance( const Ray&, const Scalar dist ) const override
+		RISEPel EvalTransmittance( const Ray& ray, const Scalar dist ) const override
 		{
+			if( ray.origin.z < 0.1 ) {
+				// Deliberately unrelated ratio-tracking realization.  A correct fire
+				// collision estimator never divides by or otherwise depends on it.
+				return RISEPel( 0.91, 0.07, 0.43 );
+			}
+			if( ray.origin.z < 0.5 ) {
+				return RISEPel( std::exp(-1.0), std::exp(-1.0), std::exp(-1.0) );
+			}
 			const Scalar tr = std::exp( -dist );
 			return RISEPel( tr, tr, tr );
+		}
+		RISEPel EvalDeterministicTransmittancePel(
+			const Ray& ray, const Scalar dist ) const override
+		{
+			if( ray.origin.z < 0.1 ) {
+				return RISEPel(
+					std::exp(-3.0*dist),std::exp(-dist),std::exp(-2.0*dist));
+			}
+			if( ray.origin.z < 0.5 ) {
+				return RISEPel( std::exp(-1.0), std::exp(-1.0), std::exp(-1.0) );
+			}
+			const Scalar tr = std::exp(-dist);
+			return RISEPel(tr,tr,tr);
+		}
+		Scalar EvalDistancePdf(
+			const Ray& ray, const Scalar, const bool scattered,
+			const Scalar maxDist ) const override
+		{
+			if( !scattered ) return std::exp(-maxDist);
+			return ray.origin.z < 0.1 ?
+				3.0*std::exp(-0.75) : 3.0*std::exp(-1.5);
 		}
 		Scalar EvalTransmittanceNM(
 			const Ray&, const Scalar dist, const Scalar ) const override
@@ -1852,6 +1920,12 @@ namespace
 		Scalar GetThermalEmissionNM( const Point3& pt, const Scalar ) const override
 		{
 			return !chemOnlyContinuation_ && pt.z > 0.5 ? 1.0 : 0.0;
+		}
+		RISEPel GetThermalEmissionPel( const Point3& pt ) const override
+		{
+			if( chemOnlyContinuation_ || pt.z <= 0.5 ) return RISEPel(0.0);
+			const Scalar densityOverTr = 3.0*std::exp(-0.5);
+			return RISEPel(2.0,3.0,5.0)*densityOverTr;
 		}
 		Scalar EstimateChemEmissionSegmentNM(
 			const Ray& ray,
@@ -6701,6 +6775,71 @@ namespace
 			Check( NearRelative( value, 1.0, 1e-13 ),
 				"path-depth-capped post-scatter segment still scores its thermal event" );
 
+			// Pel uses the same two collision events, but the first interval has
+			// chromatic extinction whose dominant channel changes downstream.  The
+			// medium deliberately returns a poisoned stochastic EvalTransmittance;
+			// all three entry routes must instead use T_det*sigma_s/p_distance.
+			StabilityConfig pelStability;
+			pelStability.rrMinDepth = 100;
+			pelStability.rrThreshold = 2.0;
+			pelStability.maxVolumeBounce = 2;
+			PathTracingIntegrator* pelIntegrator = new PathTracingIntegrator(
+				ManifoldSolverConfig(),pelStability);
+			pelIntegrator->SetMaxPathDepth( 3 );
+			const Ray pelRay( Point3(0,0,0), Vector3(0,0,1) );
+			const RISEPel expectedPel(
+				1.0,
+				0.5*std::exp(0.5),
+				(5.0/3.0)*std::exp(0.25) );
+			RandomNumberGenerator pelCameraRng( 0x2e7e180u );
+			RuntimeContext pelCameraRc(
+				pelCameraRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler pelCameraSampler(pelCameraRng);
+			const RISEPel pelCamera = pelIntegrator->IntegrateRay(
+				pelCameraRc,rast,pelRay,*job->GetScene(),*caster,
+				pelCameraSampler,nullptr,nullptr);
+
+			RandomNumberGenerator pelIterativeRng( 0x2e7e181u );
+			RuntimeContext pelIterativeRc(
+				pelIterativeRng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler pelIterativeSampler(pelIterativeRng);
+			const RayIntersection pelEntry(pelRay,rast);
+			const IORStack pelStack(1.0);
+			const RISEPel pelIterative = pelIntegrator->IntegrateFromHit(
+				pelIterativeRc,rast,pelEntry,*job->GetScene(),*caster,
+				pelIterativeSampler,nullptr,0,pelStack,0.0,RISEPel(0.0),
+				true,1.0,IRayCaster::RAY_STATE::eRayView,
+				0,0,0,0,0,0.0,false,false,nullptr);
+
+			RandomNumberGenerator pelCasterRng( 0x2e7e182u );
+			RuntimeContext pelCasterRc(
+				pelCasterRng,RuntimeContext::PASS_NORMAL,false);
+			IRayCaster::RAY_STATE pelState;
+			RISEPel pelRayCaster(0.0);
+			caster->CastRay(
+				pelCasterRc,rast,pelRay,pelRayCaster,pelState,nullptr,nullptr);
+			auto ExactExpectedPel = [&expectedPel]( const RISEPel& actual ) {
+				return NearRelative(actual.r,expectedPel.r,1e-13) &&
+					NearRelative(actual.g,expectedPel.g,1e-13) &&
+					NearRelative(actual.b,expectedPel.b,1e-13);
+			};
+			if( !ExactExpectedPel(pelCamera) || !ExactExpectedPel(pelIterative) ||
+				!ExactExpectedPel(pelRayCaster) ) {
+				std::cout << "  deterministic Pel target/camera/iterative/RayCaster=(" <<
+					expectedPel.r << "," << expectedPel.g << "," << expectedPel.b << ")/(" <<
+					pelCamera.r << "," << pelCamera.g << "," << pelCamera.b << ")/(" <<
+					pelIterative.r << "," << pelIterative.g << "," << pelIterative.b << ")/(" <<
+					pelRayCaster.r << "," << pelRayCaster.g << "," << pelRayCaster.b << ")" <<
+					std::endl;
+			}
+			Check( ExactExpectedPel(pelCamera),
+				"camera-first Pel collision continuation uses deterministic chromatic density and reaches the second source" );
+			Check( ExactExpectedPel(pelIterative),
+				"iterative Pel collision continuation uses deterministic chromatic density and reaches the second source" );
+			Check( ExactExpectedPel(pelRayCaster),
+				"RayCaster Pel collision continuation uses deterministic chromatic density and reaches the second source" );
+			safe_release(pelIntegrator);
+
 			TwoEventFireMedium* chemMedium =
 				new TwoEventFireMedium( *phase, true );
 			job->GetScene()->SetGlobalMedium( chemMedium );
@@ -6838,6 +6977,36 @@ namespace
 			}
 			Check( expected > 0.0 && everySample,
 				"terminal Lambertian A_march segment collects chem without a roulette atom when thermal NEE is absent" );
+
+			// Pel has no chem segment estimator.  The same terminal Lambertian
+			// launches a source-only segment into a deterministic thermal collision.
+			// The separate terminal-collision fixtures above carry a bright point-light
+			// RED control, so together the gates prove source retention and exclusion
+			// of forbidden downstream phase/NEE processing.
+			const RISEPel expectedPel = white ?
+				white->GetColor(referenceIntersection)*0.25 : RISEPel(0.0);
+			bool everyPelSample = true;
+			RISEPel firstPel(0.0);
+			for( unsigned int i=0; i<256; ++i ) {
+				RandomNumberGenerator rng(0x57facf00u+i);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				const RISEPel value = integrator->IntegrateRay(
+					rc,rast,ray,*job->GetScene(),*caster,sampler,nullptr,nullptr);
+				if( i==0 ) firstPel=value;
+				everyPelSample = everyPelSample &&
+					NearRelative(value.r,expectedPel.r,1e-12) &&
+					NearRelative(value.g,expectedPel.g,1e-12) &&
+					NearRelative(value.b,expectedPel.b,1e-12);
+			}
+			if( !everyPelSample ) {
+				std::cout << "  terminal Pel expected/first=(" <<
+					expectedPel.r << "," << expectedPel.g << "," << expectedPel.b <<
+					")/(" << firstPel.r << "," << firstPel.g << "," <<
+					firstPel.b << ")" << std::endl;
+			}
+			Check( ColorMath::MaxValue(expectedPel)>0.0 && everyPelSample,
+				"terminal Pel surface launches one source-only segment and excludes the downstream collision vertex" );
 		}
 
 		safe_release( integrator );
