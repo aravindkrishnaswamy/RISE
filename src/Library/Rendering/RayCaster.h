@@ -182,7 +182,10 @@ namespace RISE
 				const RuntimeContext& rc, const RasterizerState& rast,
 				const Ray& ray, RISEPel& c, const RAY_STATE& rs,
 				Scalar* distance, const IRadianceMap* pRadianceMap,
-				const IORStack& ior_stack, bool skipEntryGates ) const;
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				RISEPel* sameSegmentMediumSource = 0 ) const;
 			bool CastRayNMImpl_(
 				const RuntimeContext& rc, const RasterizerState& rast,
 				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,

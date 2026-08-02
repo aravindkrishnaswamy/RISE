@@ -33,6 +33,7 @@
 #include "../src/Library/Materials/HomogeneousMedium.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 #include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/MediumTransport.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
@@ -70,6 +71,50 @@ namespace
 	{
 		const Scalar scale = std::fmax( std::fabs( expected ), Scalar( 1e-300 ) );
 		return std::fabs( actual - expected ) <= tolerance * scale;
+	}
+
+	RISEPel PelResponse( const Scalar nm )
+	{
+		XYZPel xyz;
+		if( !ColorUtils::XYZFromNM(xyz,nm) ) return RISEPel(0.0);
+		return ColorUtils::XYZtoRec709RGBMatrixOnly(xyz) *
+			(1.0/ColorUtils::CIE_Y_Integral(380.0,780.0));
+	}
+
+	RISEPel ResponsePowerMean( const Scalar exponent )
+	{
+		RISEPel mass(0.0);
+		RISEPel weighted(0.0);
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			mass[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel](const Scalar nm) { return PelResponse(nm)[channel]; } );
+			weighted[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel,exponent](const Scalar nm) {
+					return PelResponse(nm)[channel]*pow(633.0/nm,exponent);
+				} );
+			weighted[channel] /= mass[channel];
+		}
+		return weighted;
+	}
+
+	RISEPel ResponseMass()
+	{
+		RISEPel mass(0.0);
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			mass[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel](const Scalar nm) { return PelResponse(nm)[channel]; } );
+		}
+		return mass;
+	}
+
+	Scalar SamplingPowerMass( const Scalar exponent )
+	{
+		return GaussLegendre21::IntegrateVisibleBand(
+			[exponent](const Scalar nm) {
+				XYZPel xyz;
+				if( !ColorUtils::XYZFromNM(xyz,nm) ) return Scalar(0.0);
+				return (xyz.X+xyz.Y+xyz.Z)*pow(633.0/nm,exponent);
+			} );
 	}
 
 	Scalar ScalarFromBits( const std::uint64_t bits )
@@ -576,6 +621,30 @@ namespace
 		return !created && !medium;
 	}
 
+	void TestMatrixOnlyFilmResponse()
+	{
+		std::cout << "TestMatrixOnlyFilmResponse" << std::endl;
+		XYZPel xyz;
+		Check( ColorUtils::XYZFromNM(xyz,500.0),
+			"500 nm lies inside the film response support" );
+		const RISEPel linear = ColorUtils::XYZtoRec709RGBMatrixOnly(xyz);
+		const RISEPel mapped = ColorUtils::XYZtoRec709RGB(xyz);
+		Check( linear.r < 0.0 && linear.g > 0.0 && linear.b > 0.0,
+			"matrix-only spectral response preserves the signed 500 nm red lobe" );
+		Check( !Near(linear.r,mapped.r,1e-12),
+			"matrix-only response is distinct from nonlinear gamut mapping" );
+		const RISEPel responseMass = ResponseMass();
+		Check( responseMass.r > 1.15 && responseMass.r < 1.25 &&
+			responseMass.g > 0.90 && responseMass.g < 1.00 &&
+			responseMass.b > 0.85 && responseMass.b < 0.95,
+			"each signed film-response mass K_c is positive and near its recorded value" );
+		const RISEPel greyMean = ResponsePowerMean(0.0);
+		Check( NearRelative(greyMean.r,1.0,1e-14) &&
+			NearRelative(greyMean.g,1.0,1e-14) &&
+			NearRelative(greyMean.b,1.0,1e-14),
+			"response-weighted means divide by each positive K_c" );
+	}
+
 	void TestBakedTrilinearChannelsAndOptics()
 	{
 		std::cout << "TestBakedTrilinearChannelsAndOptics" << std::endl;
@@ -612,15 +681,24 @@ namespace
 		const Scalar hotScattering = hotAbsorption * 0.10 / 0.90;
 		const Scalar coolExtinction = expectedCarbon * (1.0 - expectedPhi) * 8.7;
 		const Scalar coolScattering = coolExtinction * 0.6;
-		const Scalar expectedSigmaS = hotScattering + coolScattering;
-		const Scalar expectedSigmaT = hotAbsorption + hotScattering + coolExtinction;
 		const MediumCoefficients c = fire->GetCoefficients( p );
-		Check( Near( c.sigma_t[0], expectedSigmaT, 1e-11 ) &&
-			Near( c.sigma_t[1], expectedSigmaT, 1e-11 ) &&
-			Near( c.sigma_t[2], expectedSigmaT, 1e-11 ),
-			"grey 633-nm extinction follows the hot/cool carbon partition" );
-		Check( Near( c.sigma_s[0], expectedSigmaS, 1e-11 ),
-			"grey scattering applies both authored single-scattering albedos" );
+		const RISEPel hotMean = ResponsePowerMean(1.0);
+		const RISEPel coolMean = ResponsePowerMean(1.2);
+		const RISEPel expectedPelSigmaT = hotMean*(hotAbsorption+hotScattering) +
+			coolMean*coolExtinction;
+		const RISEPel expectedPelSigmaS = hotMean*hotScattering +
+			coolMean*coolScattering;
+		Check( NearRelative(c.sigma_t[0],expectedPelSigmaT[0],1e-13) &&
+			NearRelative(c.sigma_t[1],expectedPelSigmaT[1],1e-13) &&
+			NearRelative(c.sigma_t[2],expectedPelSigmaT[2],1e-13),
+			"Pel extinction is the signed-response weighted mean of spectral extinction" );
+		Check( NearRelative(c.sigma_s[0],expectedPelSigmaS[0],1e-13) &&
+			NearRelative(c.sigma_s[1],expectedPelSigmaS[1],1e-13) &&
+			NearRelative(c.sigma_s[2],expectedPelSigmaS[2],1e-13),
+			"Pel scattering is projected independently from absorption" );
+		Check( ColorMath::MinValue(c.sigma_t) >= 0.0 &&
+			ColorMath::MinValue(c.sigma_s) >= 0.0,
+			"admitted broadband optics satisfy the nonnegative projected-coefficient invariant" );
 		const Scalar hotScale500 = 633.0 / 500.0;
 		const Scalar coolScale500 = std::pow( hotScale500, 1.2 );
 		const Scalar expectedSigmaS500 =
@@ -806,6 +884,51 @@ namespace
 			}
 			safe_release( closure );
 
+			const Scalar hotScattering633 = 0.5*hotAbsorptionMass*0.10/0.90;
+			const Scalar coolScattering633 = 0.5*8.7*0.6;
+			const Scalar condScattering633 = expectedCondensed*4.0*0.9;
+			const RISEPel hotProjected = ResponsePowerMean(1.0)*hotScattering633;
+			const RISEPel coolProjected = ResponsePowerMean(1.2)*coolScattering633;
+			const RISEPel condProjected = ResponsePowerMean(0.5)*condScattering633;
+			const Scalar hotProposal = hotScattering633*SamplingPowerMass(1.0);
+			const Scalar coolProposal = coolScattering633*SamplingPowerMass(1.2);
+			const Scalar condProposal = condScattering633*SamplingPowerMass(0.5);
+			const Scalar proposalTotal = hotProposal+coolProposal+condProposal;
+			const Scalar expectedPelMean =
+				(hotProposal*0.5+coolProposal*-0.4+condProposal*0.7)/proposalTotal;
+			const IPhaseFunction* pelClosure = fire->MakePhaseClosurePel(p);
+			Check( pelClosure && NearRelative(
+				pelClosure->GetMeanCosine(),expectedPelMean,1e-13),
+				"Pel closure guiding mean uses the nonnegative CMF-sum proposal mixture" );
+			if( pelClosure ) {
+				const Scalar cosine = 0.25;
+				const Vector3 wi(0,0,1);
+				const Vector3 wo(std::sqrt(1.0-cosine*cosine),0,cosine);
+				const Scalar pHot = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,0.5);
+				const Scalar pCool = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,-0.4);
+				const Scalar pCond = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,0.7);
+				RISEPel expectedPel(0.0);
+				for( unsigned int channel = 0; channel < 3u; ++channel ) {
+					const Scalar total = hotProjected[channel]+coolProjected[channel]+
+						condProjected[channel];
+					expectedPel[channel] = (hotProjected[channel]*pHot+
+						coolProjected[channel]*pCool+condProjected[channel]*pCond)/total;
+				}
+				const RISEPel actualPel = pelClosure->EvaluatePel(wi,wo);
+				const Scalar expectedProposal = (hotProposal*pHot+coolProposal*pCool+
+					condProposal*pCond)/proposalTotal;
+				Check( NearRelative(actualPel.r,expectedPel.r,1e-13) &&
+					NearRelative(actualPel.g,expectedPel.g,1e-13) &&
+					NearRelative(actualPel.b,expectedPel.b,1e-13),
+					"Pel closure Evaluate retains signed per-channel projected lobe weights" );
+				Check( NearRelative(pelClosure->PdfProposal(wi,wo),expectedProposal,1e-13) &&
+					NearRelative(pelClosure->Pdf(wi,wo),expectedProposal,1e-13),
+					"Pel closure samples and reports the same nonnegative proposal density" );
+				Check( std::fabs(SampleMeanCosine(*pelClosure,0x9e1u)-expectedPelMean)<0.015,
+					"Pel proposal mixture controls sampled directions" );
+			}
+			safe_release(pelClosure);
+
 			const Scalar majorant = fire->TrackingMajorantAtNM( p, 500.0 );
 			Check( majorant >= fire->GetCoefficientsNM( p, 380.0 ).sigma_t &&
 				majorant >= coeff.sigma_t &&
@@ -928,8 +1051,23 @@ namespace
 
 		const Point3 coolPoint( 0.125, 0.5, 0.5 );
 		const Point3 hotPoint( 0.875, 0.5, 0.5 );
-		Check( medium->MakeContinuationPhaseClosurePel(coolPoint) == nullptr,
-			"fire medium remains fail-closed on the pre-step-7 Pel continuation path" );
+		const IPhaseFunction* pelClosure =
+			medium->MakeContinuationPhaseClosurePel(coolPoint);
+		Check( pelClosure != nullptr && Near(pelClosure->GetMeanCosine(),coolG,1e-12),
+			"step-7 Pel continuation binds the local cool-constituent lobe" );
+		if( pelClosure ) {
+			const Vector3 wi(0,0,1);
+			const Vector3 wo = Vector3Ops::Normalize(Vector3(0.6,0,0.8));
+			const RISEPel value = pelClosure->EvaluatePel(wi,wo);
+			const Scalar expected =
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(0.8,coolG);
+			Check( NearRelative(value.r,expected,1e-13) &&
+				NearRelative(value.g,expected,1e-13) &&
+				NearRelative(value.b,expected,1e-13) &&
+				NearRelative(pelClosure->PdfProposal(wi,wo),expected,1e-13),
+				"single-constituent Pel Evaluate and proposal density reduce to the same HG lobe" );
+		}
+		safe_release(pelClosure);
 		const Scalar wavelengths[] = { 450.0, 750.0 };
 		for( const Scalar nm : wavelengths )
 		{
@@ -1135,7 +1273,7 @@ namespace
 			const Ray rayCM( Point3( 50, 50, 12.5 ), Vector3( 0, 0, 1 ) );
 			const Scalar transM = m->EvalDistancePdf( rayM, 0.5, false, 0.5 );
 			const Scalar transCM = cm->EvalDistancePdf( rayCM, 50.0, false, 50.0 );
-			const Scalar expectedTau = cM.sigma_t[0] * 0.5;
+			const Scalar expectedTau = ColorMath::MaxValue(cM.sigma_t) * 0.5;
 			Check( Near( -std::log( transM ), expectedTau, 1e-10 ),
 				"deterministic optical depth matches the uniform slab" );
 			Check( Near( transCM, transM, 1e-12 ),
@@ -1183,11 +1321,16 @@ namespace
 		Check( created && fire, "adversarial majorant fixture constructs" );
 		if( fire ) {
 			const Point3 interior( 0.5, 0.5, 0.5 );
-			const Scalar sigmaT = fire->GetCoefficients( interior ).sigma_t[0];
-			const Scalar majorant = fire->TrackingMajorantAt( interior );
-			Check( Near( sigmaT, 25.25, 1e-11 ),
+			const RISEPel sigmaT = fire->GetCoefficients( interior ).sigma_t;
+			const RISEPel hotMean = ResponsePowerMean(1.0);
+			const RISEPel coolMean = ResponsePowerMean(1.2);
+			const RISEPel expected = hotMean*25.0 + coolMean*0.25;
+			const Scalar majorant = fire->TrackingMajorantAtPel( interior );
+			Check( NearRelative(sigmaT.r,expected.r,1e-13) &&
+				NearRelative(sigmaT.g,expected.g,1e-13) &&
+				NearRelative(sigmaT.b,expected.b,1e-13),
 				"opposing carbon/temperature gradients create the intended interior maximum" );
-			Check( majorant >= sigmaT,
+			Check( majorant >= ColorMath::MaxValue(sigmaT),
 				"phi-sup carbon majorant bounds the nonlinear interior extinction" );
 			const Scalar spectralMajorant = fire->TrackingMajorantAtNM( interior, 500.0 );
 			Check( spectralMajorant >= fire->GetCoefficientsNM( interior, 380.0 ).sigma_t &&
@@ -1893,10 +2036,15 @@ namespace
 			if( fire ) {
 				const Scalar hotAbsorptionMass =
 					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
-				const Scalar expectedSigmaT = 0.01 *
-					(0.5 * (hotAbsorptionMass / 0.90 + 8.7) + 2.0 * 4.0);
-				Check( Near( fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t[0],
-					expectedSigmaT, 1e-12 ),
+				const RISEPel expectedSigmaT = 0.01 *
+					(ResponsePowerMean(1.0)*(0.5*hotAbsorptionMass/0.90) +
+					 ResponsePowerMean(1.2)*(0.5*8.7) +
+					 ResponsePowerMean(0.5)*(2.0*4.0));
+				const RISEPel actualSigmaT =
+					fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t;
+				Check( NearRelative(actualSigmaT.r,expectedSigmaT.r,1e-13) &&
+					NearRelative(actualSigmaT.g,expectedSigmaT.g,1e-13) &&
+					NearRelative(actualSigmaT.b,expectedSigmaT.b,1e-13),
 					"scene_options.scene_unit reaches medium construction" );
 				Check( Near(fire->GetChemSPDAuthoredArea(0),10.0,1e-15),
 					"authored CH fixture curve uses its own normalization interval" );
@@ -1943,6 +2091,7 @@ namespace
 
 int main()
 {
+	TestMatrixOnlyFilmResponse();
 	TestBakedTrilinearChannelsAndOptics();
 	TestChromaticNMTrackingAndTransmittance();
 	TestCondensedConstituentOpticsAndClosure();

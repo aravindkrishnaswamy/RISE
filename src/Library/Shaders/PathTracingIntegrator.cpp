@@ -398,6 +398,28 @@ namespace
 		return epsilonThermal / coeff.sigma_t;
 	}
 
+	static RISEPel PTEventThermalEmissionPel(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar t,
+		const MediumSampleOutcome& sample
+		)
+	{
+		if( !medium.IsFireMedium() ) return RISEPel( 0.0 );
+		const Point3 eventPoint = ray.PointAtLength( t );
+		const MediumCoefficients coeff = medium.GetCoefficients( eventPoint );
+		if( ColorMath::MaxValue(coeff.sigma_t) <= 0.0 ) return RISEPel( 0.0 );
+		const RISEPel epsilonThermal = medium.GetThermalEmissionPel( eventPoint );
+		const Scalar pdf = sample.useExplicitThroughput ? sample.combinedPdf :
+			medium.EvalDistancePdf( ray,t,true,maxDist );
+		if( !PathTransportUtilities::IsPositiveFiniteDensity(pdf) ) {
+			return RISEPel( 0.0 );
+		}
+		return medium.EvalDeterministicTransmittancePel(ray,t) *
+			epsilonThermal * (1.0/pdf);
+	}
+
 	//
 	// Medium distance sampling runs on an IndependentSampler (pure i.i.d.)
 	// rather than the main QMC path sampler.  Rationale: the equiangular
@@ -426,7 +448,9 @@ namespace
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
 
-		const bool useEquiangularMIS = pLS &&
+		// Phase-B volume NEE is spectral-only.  A fire Pel collision therefore
+		// has no matching equiangular endpoint strategy and stays on pure DT.
+		const bool useEquiangularMIS = !pMedium->IsFireMedium() && pLS &&
 			pLS->IsEquiangularPivotDistributionValid() &&
 			pLS->GetEquiangularPivotEntryCount() > 0;
 		if( !useEquiangularMIS )
@@ -2005,16 +2029,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
-				// Preserve the pre-fire Pel cap behavior exactly: an RGB event at
-				// the cap skips this block and follows its historical fallthrough.
-				// NM must enter so it can score thermal emission before applying
-				// the continuation-only cap.
-				const bool handleScatteredEvent = !Traits::is_pel ||
-					volumeBounces < stabilityConfig.maxVolumeBounce;
-				if( scattered && handleScatteredEvent )
+				if( scattered )
 				{
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
-					if constexpr ( !Traits::is_pel ) {
+					if constexpr ( Traits::is_pel ) {
+						result = result + throughput * PTEventThermalEmissionPel(
+							*pCurrentMedium,currentRay,maxDist,t_m,mso );
+					} else {
 						Scalar thermalEmission = PTEventThermalEmissionNM(
 							*pCurrentMedium, currentRay, maxDist, t_m, tag.nm, mso );
 						if( thermalEmission != 0.0 &&
@@ -2039,7 +2060,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// The collision exists, and therefore emits, independently of
 					// whether the volume-scatter continuation budget is exhausted.
-					if( !pathDepthAllowsContinuation ) {
+					if( !pathDepthAllowsContinuation ||
+						(Traits::is_pel &&
+						 volumeBounces >= stabilityConfig.maxVolumeBounce) ) {
 						break;
 					}
 
@@ -2181,7 +2204,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 
 					Vector3 wi = pPhase->Sample( wo, sampler );
-					Scalar phasePdf = pPhase->Pdf( wo, wi );
+					Scalar phasePdf = Traits::is_pel ?
+						pPhase->PdfProposal( wo, wi ) : pPhase->Pdf( wo, wi );
 					Scalar effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2218,7 +2242,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								if( guidePdf > 0 )
 								{
 									wi = guidedDir;
-									phasePdf = pPhase->Pdf( wo, wi );
+									phasePdf = Traits::is_pel ?
+										pPhase->PdfProposal(wo,wi) : pPhase->Pdf(wo,wi);
 								}
 								effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
 									alpha, guidePdf, phasePdf, true );
@@ -2238,18 +2263,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						break;
 					}
 
-					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					const Scalar volScatterScalar = phaseVal / effectivePdf;
-					// Pel multiplies channel-wise by RISEPel(s,s,s); NM
-					// multiplies by the scalar.  Both reduce throughput by
-					// phaseVal/effectivePdf — kept distinct so each matches
-					// its original arithmetic exactly.
 					Value volScatterThroughput;
 					if constexpr ( Traits::is_pel ) {
-						volScatterThroughput = RISEPel(
-							volScatterScalar, volScatterScalar, volScatterScalar );
+						volScatterThroughput =
+							pPhase->EvaluatePel(wo,wi) * (1.0/effectivePdf);
 					} else {
-						volScatterThroughput = volScatterScalar;
+						volScatterThroughput = pPhase->Evaluate(wo,wi)/effectivePdf;
 					}
 #ifdef RISE_ENABLE_OPENPGL
 					const Value preRRVolScatterThroughput = volScatterThroughput;
@@ -4203,10 +4222,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		( globalMedium && globalMedium->IsFireMedium() ) ) {
 		bool expected = false;
 		if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
-			GlobalLog()->PrintEasyError(
-				"PathTracingIntegrator::IntegrateFromHit:: fire media require spectral rendering until the Phase-A Pel preview lands" );
+			GlobalLog()->PrintEasyWarning(
+				"PathTracingIntegrator::IntegrateFromHit:: fire medium uses the approximate Pel preview; predictive output is spectral-only" );
 		}
-		return RISEPel( 0.0 );
 	}
 
 	return IntegrateFromHitTemplated<PelTag>(
@@ -4305,10 +4323,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			( globalMedium && globalMedium->IsFireMedium() ) ) {
 			bool expected = false;
 			if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
-				GlobalLog()->PrintEasyError(
-					"PathTracingIntegrator::IntegrateRay:: fire media require spectral rendering until the Phase-A Pel preview lands" );
+				GlobalLog()->PrintEasyWarning(
+					"PathTracingIntegrator::IntegrateRay:: fire medium uses the approximate Pel preview; predictive output is spectral-only" );
 			}
-			return Traits::zero();
 		}
 	}
 
@@ -4416,7 +4433,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// delegate continuation to IntegrateFromHit if we get a hit.
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
-			if constexpr ( !Traits::is_pel ) {
+			if constexpr ( Traits::is_pel ) {
+				mediumSource = mediumSource + PTEventThermalEmissionPel(
+					*pCurrentMedium,cameraRay,maxDist,t_m,mso );
+			} else {
 				Scalar thermalEmission = PTEventThermalEmissionNM(
 					*pCurrentMedium, cameraRay, maxDist, t_m, tag.nm, mso );
 				if( thermalEmission != 0.0 &&
@@ -4476,6 +4496,15 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				ResolveMediumContinuationAvailability(
 					1 < EffectivePathTracingMaxDepth(rc,mMaxPathDepth),0,
 					stabilityConfig);
+			if constexpr ( Traits::is_pel ) {
+				// The collision terminates the source-only camera segment when
+				// either total/path depth or the volume-lobe cap excludes this
+				// vertex.  Thermal pickup above remains valid; no NEE, guiding,
+				// continuation, surface, or environment event may follow.
+				if( !mediumAvailability.vertexAllowed ) {
+					return result;
+				}
+			}
 
 			Scalar phaseNM = 0.0;
 			if constexpr ( !Traits::is_pel ) {
@@ -4580,7 +4609,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			Vector3 wi = pPhase->Sample( wo, sampler );
-			Scalar phasePdf = pPhase->Pdf( wo, wi );
+			Scalar phasePdf = Traits::is_pel ?
+				pPhase->PdfProposal( wo, wi ) : pPhase->Pdf( wo, wi );
 			Scalar effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -4589,46 +4619,45 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// retained collision closure for the HG product, phase evaluation,
 			// and continuation density; otherwise the first visible fire scatter
 			// silently bypasses guiding while later scatters do not.
-			if constexpr ( !Traits::is_pel ) {
-					if( rc.pGuidingField &&
-						rc.pGuidingField->IsTrained() &&
-						volumeGuidingAlpha > 0 )
+			if( rc.pGuidingField &&
+				rc.pGuidingField->IsTrained() &&
+				volumeGuidingAlpha > 0 )
+			{
+				static thread_local Implementation::GuidingVolumeDistributionHandle
+					cameraVolumeGuideHandle;
+				if( rc.pGuidingField->InitVolumeDistribution(
+						cameraVolumeGuideHandle, scatterPt, sampler.Get1D() ) )
 				{
-					static thread_local Implementation::GuidingVolumeDistributionHandle
-						cameraVolumeGuideHandle;
-					if( rc.pGuidingField->InitVolumeDistribution(
-							cameraVolumeGuideHandle, scatterPt, sampler.Get1D() ) )
-					{
-						const Scalar meanCosine = pPhase->GetMeanCosine();
-						if( fabs( meanCosine ) > 1e-6 ) {
-							rc.pGuidingField->ApplyHGProduct(
-								cameraVolumeGuideHandle, wo, meanCosine );
-						}
+					const Scalar meanCosine = pPhase->GetMeanCosine();
+					if( fabs( meanCosine ) > 1e-6 ) {
+						rc.pGuidingField->ApplyHGProduct(
+							cameraVolumeGuideHandle, wo, meanCosine );
+					}
 
-						const Scalar alpha = volumeGuidingAlpha;
-						if( PathTransportUtilities::ShouldUseGuidedSample(
-								alpha, sampler.Get1D() ) )
-						{
-							if( volumeNEECompetes ) {
-								mCompetingMediumGuideSampleCount.fetch_add(
-									1,std::memory_order_relaxed);
-							}
-							Scalar guidePdf = 0;
-							const Vector3 guidedDir = rc.pGuidingField->SampleVolume(
-								cameraVolumeGuideHandle,
-								Point2( sampler.Get1D(), sampler.Get1D() ), guidePdf );
-							if( guidePdf > 0 ) {
-								wi = guidedDir;
-								phasePdf = pPhase->Pdf( wo, wi );
-							}
-							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
-								alpha, guidePdf, phasePdf, true );
-						} else {
-							const Scalar guidePdf = rc.pGuidingField->PdfVolume(
-								cameraVolumeGuideHandle, wi );
-							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
-								alpha, guidePdf, phasePdf, false );
+					const Scalar alpha = volumeGuidingAlpha;
+					if( PathTransportUtilities::ShouldUseGuidedSample(
+							alpha, sampler.Get1D() ) )
+					{
+						if( volumeNEECompetes ) {
+							mCompetingMediumGuideSampleCount.fetch_add(
+								1,std::memory_order_relaxed);
 						}
+						Scalar guidePdf = 0;
+						const Vector3 guidedDir = rc.pGuidingField->SampleVolume(
+							cameraVolumeGuideHandle,
+							Point2( sampler.Get1D(), sampler.Get1D() ), guidePdf );
+						if( guidePdf > 0 ) {
+							wi = guidedDir;
+							phasePdf = Traits::is_pel ?
+								pPhase->PdfProposal(wo,wi) : pPhase->Pdf(wo,wi);
+						}
+						effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+							alpha, guidePdf, phasePdf, true );
+					} else {
+						const Scalar guidePdf = rc.pGuidingField->PdfVolume(
+							cameraVolumeGuideHandle, wi );
+						effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+							alpha, guidePdf, phasePdf, false );
 					}
 				}
 			}
@@ -4638,19 +4667,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				return result;
 			}
 
-			const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-			// Preserve the per-variant arithmetic exactly: the Pel path
-			// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
-			// path evaluates `medWeight * phaseVal / phasePdf` left-to-right
-			// (multiply-then-divide).  These differ at the ULP level, so the
-			// two forms are kept distinct rather than unified.
 			Value volThroughput;
 			if constexpr ( Traits::is_pel ) {
-				volThroughput = medWeight * RISEPel(
-					phaseVal / effectivePdf, phaseVal / effectivePdf,
-					phaseVal / effectivePdf );
+				volThroughput = medWeight * pPhase->EvaluatePel(wo,wi) *
+					(1.0/effectivePdf);
 			} else {
-				volThroughput = medWeight * phaseVal / effectivePdf;
+				volThroughput = medWeight * pPhase->Evaluate(wo,wi) / effectivePdf;
 			}
 			if constexpr ( !Traits::is_pel ) {
 				if( mediumAvailability.vertexAllowed ) {

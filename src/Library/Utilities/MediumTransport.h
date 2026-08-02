@@ -57,11 +57,10 @@ namespace RISE
 
 	namespace MediumTransport
 	{
-		/// Owns the phase object used for one medium collision.  NM fire
-		/// collisions can only acquire a wavelength-bound MakePhaseClosure;
-		/// there is no code path from that branch to GetPhaseFunction.  Ordinary
-		/// media borrow their legacy stateless phase.  Pel fire is unsupported
-		/// until the separate preview increment and therefore resolves to null.
+		/// Owns the phase object used for one medium collision.  Fire collisions
+		/// acquire only their point-bound Pel or wavelength-bound NM closure;
+		/// there is no path from either branch to GetPhaseFunction.  Ordinary
+		/// media borrow their legacy stateless phase.
 		class CollisionPhaseClosure
 		{
 			const IPhaseFunction* m_pPhase;

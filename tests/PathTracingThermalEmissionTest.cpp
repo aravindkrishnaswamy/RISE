@@ -64,6 +64,8 @@
 #include "../src/Library/Shaders/SSS/SSSContainment.h"
 #include "../src/Library/Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "../src/Library/Utilities/EquiangularSampler.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
+#include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Utilities/MediumTracking.h"
@@ -132,17 +134,20 @@ namespace
 		const Scalar slabLength,
 		const bool positionalLight,
 		const Scalar sootAlbedoHot = 0.0,
-		const Scalar positionalLightPower = 1.0 )
+		const Scalar positionalLightPower = 1.0,
+		const bool greyPel = false )
 	{
 		const Scalar scale = 1.0 / sceneUnitMeters;
-		const Scalar carbon = kTargetSigmaSI / HotAbsorptionMass633();
+		const Scalar temperatureK = greyPel ? 700.0 : kTemperatureK;
+		const Scalar carbon = greyPel ? kTargetSigmaSI/8.7 :
+			kTargetSigmaSI / HotAbsorptionMass633();
 		std::ostringstream ss;
 		ss << std::setprecision( 17 ) <<
 			"RISE ASCII SCENE 7\n"
 			"scene_options\n{\nscene_unit " << sceneUnitMeters << "\n}\n"
 			"standard_shader\n{\nname global\n}\n"
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
-			"scalar_painter\n{\nname temperature\nvalue " << kTemperatureK << "\n}\n"
+			"scalar_painter\n{\nname temperature\nvalue " << temperatureK << "\n}\n"
 			"multichannel_heterogeneous_medium\n{\n"
 			"name fire\n"
 			"channel_carbon painter carbon\n"
@@ -156,8 +161,8 @@ namespace
 			"soot_albedo_hot " << sootAlbedoHot << "\n"
 			"soot_g_hot 0.5\n"
 			"smoke_km_carbon 8.7\n"
-			"smoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0.6\n"
+			"smoke_n_carbon " << (greyPel ? 0.0 : 1.2) << "\n"
+			"smoke_albedo_carbon " << (greyPel ? 0.0 : 0.6) << "\n"
 			"smoke_g_carbon 0.6\n"
 			"}\n"
 			"global_medium\n{\nmedium fire\n}\n"
@@ -180,8 +185,10 @@ namespace
 		PathTracingIntegrator* integrator;
 		std::filesystem::path scenePath;
 		Scalar slabLength;
+		Scalar temperatureK;
 
-		Fixture() : job( nullptr ), caster( nullptr ), integrator( nullptr ), slabLength( 0 ) {}
+		Fixture() : job( nullptr ), caster( nullptr ), integrator( nullptr ),
+			slabLength( 0 ), temperatureK( kTemperatureK ) {}
 
 		~Fixture()
 		{
@@ -197,9 +204,13 @@ namespace
 			const Scalar length,
 			const bool positionalLight = false,
 			const Scalar sootAlbedoHot = 0.0,
-			const Scalar positionalLightPower = 1.0 )
+			const Scalar positionalLightPower = 1.0,
+			const bool greyPel = false,
+			const unsigned int maxVolumeBounce = 0,
+			const unsigned int rayCasterMaxDepth = 0 )
 		{
 			slabLength = length;
+			temperatureK = greyPel ? 700.0 : kTemperatureK;
 			char filename[176];
 			std::snprintf( filename, sizeof(filename),
 				"rise_pathtracing_thermal_%s_%d.RISEscene", tag, static_cast<int>( ::getpid() ) );
@@ -209,18 +220,18 @@ namespace
 				if( !output.is_open() ) return false;
 				output << SceneText(
 					sceneUnitMeters, length, positionalLight, sootAlbedoHot,
-					positionalLightPower );
+					positionalLightPower,greyPel );
 			}
 
 			if( !RISE_CreateJobPriv( &job ) || !job ||
 				!job->LoadAsciiSceneViaCst( scenePath.string().c_str() ) ) return false;
 			IShader* shader = job->GetShaders()->GetItem( "global" );
 			if( !shader || !RISE_API_CreateRayCaster(
-				&caster, false, 0, *shader, true ) || !caster ) return false;
+				&caster, false, rayCasterMaxDepth, *shader, true ) || !caster ) return false;
 			caster->AttachScene( job->GetScene() );
 
 			StabilityConfig stability;
-			stability.maxVolumeBounce = 0;
+			stability.maxVolumeBounce = maxVolumeBounce;
 			integrator = new PathTracingIntegrator( ManifoldSolverConfig(), stability );
 			return true;
 		}
@@ -260,6 +271,47 @@ namespace
 					*job->GetScene(), *caster, sampler, nullptr, nullptr );
 			}
 			return sum / Scalar( kSamples );
+		}
+
+		RISEPel MeanRayCasterPel(
+			const unsigned int seed,
+			const unsigned int depth = 0,
+			const unsigned int volumeBounces = 64,
+			const Scalar importance = 1.0,
+			const unsigned int sampleCount = kSamples ) const
+		{
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+			IRayCaster::RAY_STATE state;
+			state.depth = depth;
+			state.volumeBounces = volumeBounces;
+			state.importance = importance;
+			RISEPel sum(0.0);
+			for( unsigned int i = 0; i < sampleCount; ++i ) {
+				RISEPel value(0.0);
+				caster->CastRay(rc,rast,ray,value,state,nullptr,nullptr);
+				sum = sum+value;
+			}
+			return sum*(1.0/Scalar(sampleCount));
+		}
+
+		RISEPel MeanPathTracingPel(
+			const unsigned int seed,
+			const unsigned int sampleCount = kSamples ) const
+		{
+			RandomNumberGenerator rng(seed);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			IndependentSampler sampler(rng);
+			const RasterizerState rast = {0,0};
+			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+			RISEPel sum(0.0);
+			for( unsigned int i = 0; i < sampleCount; ++i ) {
+				sum = sum+integrator->IntegrateRay(rc,rast,ray,
+					*job->GetScene(),*caster,sampler,nullptr,nullptr);
+			}
+			return sum*(1.0/Scalar(sampleCount));
 		}
 
 		Scalar MeanRayCasterNMWithSegmentState(
@@ -306,7 +358,55 @@ namespace
 		const MediumCoefficientsNM coeff = medium->GetCoefficientsNM(
 			Point3( 0, 0, 0.5 * fixture.slabLength ), nm );
 		const Scalar tau = coeff.sigma_t * fixture.slabLength;
-		return PlanckSpectralRadianceNM( nm, kTemperatureK ) * ( -std::expm1( -tau ) );
+		return PlanckSpectralRadianceNM( nm, fixture.temperatureK ) *
+			( -std::expm1( -tau ) );
+	}
+
+	RISEPel ProjectedSpectralSlab( const Fixture& fixture )
+	{
+		RISEPel projected(0.0);
+		const Scalar yIntegral = ColorUtils::CIE_Y_Integral(380.0,780.0);
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			projected[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[&fixture,yIntegral,channel](const Scalar nm) {
+					XYZPel xyz;
+					if( !ColorUtils::XYZFromNM(xyz,nm) ) return Scalar(0.0);
+					const RISEPel response =
+						ColorUtils::XYZtoRec709RGBMatrixOnly(xyz)*(1.0/yIntegral);
+					return response[channel]*ExpectedSlab(fixture,nm);
+				} );
+		}
+		return projected;
+	}
+
+	void TestPelGreyStructuralIdentity()
+	{
+		std::cout << "TestPelGreyStructuralIdentity" << std::endl;
+		Fixture fixture;
+		Check( fixture.Initialize("pel_grey",1.0,1.0,false,0.0,1.0,true),
+			"grey Pel structural-identity fixture initializes" );
+		if( !fixture.integrator || !fixture.caster || !fixture.Medium() ) return;
+		const MediumCoefficients coeff = fixture.Medium()->GetCoefficients(
+			Point3(0,0,0.5));
+		Check( NearRelative(coeff.sigma_t.r,kTargetSigmaSI,1e-13) &&
+			NearRelative(coeff.sigma_t.g,kTargetSigmaSI,1e-13) &&
+			NearRelative(coeff.sigma_t.b,kTargetSigmaSI,1e-13),
+			"response-weighted coefficient means preserve grey extinction exactly" );
+		const RISEPel expected = ProjectedSpectralSlab(fixture);
+		const RISEPel pt = fixture.MeanPathTracingPel(0x6a7e11u);
+		const RISEPel rc = fixture.MeanRayCasterPel(0x6a7e11u);
+		std::cout << std::setprecision(12) << "  projected=(" << expected.r << "," <<
+			expected.g << "," << expected.b << ") PT=(" << pt.r << "," << pt.g <<
+			"," << pt.b << ") RC=(" << rc.r << "," << rc.g << "," << rc.b <<
+			")" << std::endl;
+		Check( NearRelative(pt.r,expected.r,0.015) &&
+			NearRelative(pt.g,expected.g,0.015) &&
+			NearRelative(pt.b,expected.b,0.015),
+			"PathTracing Pel grey slab equals the projected spectral slab" );
+		Check( NearRelative(rc.r,expected.r,0.015) &&
+			NearRelative(rc.g,expected.g,0.015) &&
+			NearRelative(rc.b,expected.b,0.015),
+			"RayCaster Pel grey slab equals the projected spectral slab" );
 	}
 
 	class SpatialAdditiveMedium :
@@ -1528,6 +1628,13 @@ namespace
 			return 1.0 / FOUR_PI;
 		}
 
+		RISEPel EvaluatePel( const Vector3&, const Vector3& ) const override
+		{
+			++m_audit.evaluateCalls;
+			m_audit.Record( m_audit.evaluateId, m_id );
+			return RISEPel( 1.0/FOUR_PI, 2.0/FOUR_PI, 3.0/FOUR_PI );
+		}
+
 		Vector3 Sample( const Vector3&, ISampler& ) const override
 		{
 			m_audit.Record( m_audit.sampleId, m_id );
@@ -1535,6 +1642,12 @@ namespace
 		}
 
 		Scalar Pdf( const Vector3&, const Vector3& ) const override
+		{
+			m_audit.Record( m_audit.pdfId, m_id );
+			return 1.0 / FOUR_PI;
+		}
+
+		Scalar PdfProposal( const Vector3&, const Vector3& ) const override
 		{
 			m_audit.Record( m_audit.pdfId, m_id );
 			return 1.0 / FOUR_PI;
@@ -1596,9 +1709,22 @@ namespace
 			return new AuditedPhaseClosure( m_audit, ++m_audit.nextId );
 		}
 
-		Scalar SampleDistance(
-			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		const IPhaseFunction* MakePhaseClosurePel(
+			const Point3& pt ) const override
 		{
+			++m_audit.makeCalls;
+			m_audit.positions.push_back( pt );
+			m_audit.wavelengths.push_back( 0.0 );
+			return new AuditedPhaseClosure( m_audit, ++m_audit.nextId );
+		}
+
+		Scalar SampleDistance(
+			const Ray& ray, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		{
+			if( std::fabs( ray.origin.z ) < 1e-15 ) {
+				scattered = true;
+				return 0.25;
+			}
 			scattered = false;
 			return maxDist;
 		}
@@ -6233,28 +6359,175 @@ namespace
 			"PT and RayCaster consume the same collision-side march partition" );
 	}
 
-	void TestDirectPelEntryRejectsFire()
+	void TestDirectPelEntryRunsFirePreview()
 	{
-		std::cout << "TestDirectPelEntryRejectsFire" << std::endl;
+		std::cout << "TestDirectPelEntryRunsFirePreview" << std::endl;
 		Fixture fixture;
-		Check( fixture.Initialize( "pel_reject", 1.0, 1.0 ),
-			"direct Pel rejection fixture initializes" );
+		Check( fixture.Initialize( "pel_preview", 1.0, 1.0 ),
+			"direct Pel preview fixture initializes" );
 		if( !fixture.integrator || !fixture.caster || !fixture.job ) return;
-
-		RandomNumberGenerator rng( 0x9e1f17eu );
-		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
-		IndependentSampler sampler( rng );
-		const RasterizerState rast = { 0, 0 };
-		const RISEPel value = fixture.integrator->IntegrateRay(
-			rc, rast, Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
-			*fixture.job->GetScene(), *fixture.caster, sampler, nullptr, nullptr );
-		Check( value.r == 0.0 && value.g == 0.0 && value.b == 0.0,
-			"pure PathTracingPel entry rejects fire until Phase-A step 7" );
+		const RISEPel pt = fixture.MeanPathTracingPel(0x9e1f17eu);
+		const RISEPel rc = fixture.MeanRayCasterPel(0x9e1f17eu);
+		Check( std::isfinite(pt.r) && std::isfinite(pt.g) && std::isfinite(pt.b) &&
+			ColorMath::MaxValue(pt)>0.0,
+			"pure PathTracingPel entry runs fire without NaN or rejection" );
+		Check( std::isfinite(rc.r) && std::isfinite(rc.g) && std::isfinite(rc.b) &&
+			ColorMath::MaxValue(rc)>0.0,
+			"RayCaster Pel entry runs the same fire preview" );
+		Check( NearRelative(pt.r,rc.r,0.02) && NearRelative(pt.g,rc.g,0.02) &&
+			NearRelative(pt.b,rc.b,0.02),
+			"Pel PT and RayCaster collision estimators agree channel-wise" );
 	}
 
-	void TestBoundedObjectFireRejectsShaderDispatchPel()
+	void TestPelTerminalSegmentsCollectThermalSourceBeforeContinuationGates()
 	{
-		std::cout << "TestBoundedObjectFireRejectsShaderDispatchPel" << std::endl;
+		std::cout <<
+			"TestPelTerminalSegmentsCollectThermalSourceBeforeContinuationGates" <<
+			std::endl;
+		const unsigned int exactSamples = 4096;
+		const Scalar lightPower = 1.0e9;
+		auto EqualPel = []( const RISEPel& a, const RISEPel& b ) {
+			return a.r==b.r && a.g==b.g && a.b==b.b;
+		};
+
+		Fixture totalDark;
+		Fixture totalLight;
+		Check( totalDark.Initialize(
+			"pel_total_dark",1.0,1.0,false,0.2,lightPower,false,1,0 ) &&
+			totalLight.Initialize(
+			"pel_total_light",1.0,1.0,true,0.2,lightPower,false,1,0 ),
+			"Pel total-depth terminal fixtures initialize" );
+		if( totalDark.integrator && totalLight.integrator &&
+			totalDark.caster && totalLight.caster ) {
+			totalDark.integrator->SetMaxPathDepth(1);
+			totalLight.integrator->SetMaxPathDepth(1);
+			const RISEPel ptDark = totalDark.MeanPathTracingPel(
+				0x7e1a100u,exactSamples);
+			const RISEPel ptLight = totalLight.MeanPathTracingPel(
+				0x7e1a100u,exactSamples);
+			const RISEPel rcDark = totalDark.MeanRayCasterPel(
+				0x7e1a101u,0,0,1.0,exactSamples);
+			const RISEPel rcLight = totalLight.MeanRayCasterPel(
+				0x7e1a101u,0,0,1.0,exactSamples);
+			Check( ColorMath::MaxValue(ptDark)>0.0 && EqualPel(ptDark,ptLight),
+				"PT total-depth terminal segment scores thermal source but no downstream light vertex" );
+			Check( ColorMath::MaxValue(rcDark)>0.0 && EqualPel(rcDark,rcLight),
+				"RayCaster total-depth terminal segment scores thermal source but no downstream light vertex" );
+		}
+
+		Fixture typeDark;
+		Fixture typeLight;
+		Check( typeDark.Initialize(
+			"pel_type_dark",1.0,1.0,false,0.2,lightPower,false,0,2 ) &&
+			typeLight.Initialize(
+			"pel_type_light",1.0,1.0,true,0.2,lightPower,false,0,2 ),
+			"Pel volume-lobe terminal fixtures initialize" );
+		if( typeDark.integrator && typeLight.integrator &&
+			typeDark.caster && typeLight.caster ) {
+			const RISEPel ptDark = typeDark.MeanPathTracingPel(
+				0x7e1a200u,exactSamples);
+			const RISEPel ptLight = typeLight.MeanPathTracingPel(
+				0x7e1a200u,exactSamples);
+			const RISEPel rcDark = typeDark.MeanRayCasterPel(
+				0x7e1a201u,0,64,1.0,exactSamples);
+			const RISEPel rcLight = typeLight.MeanRayCasterPel(
+				0x7e1a201u,0,64,1.0,exactSamples);
+			Check( ColorMath::MaxValue(ptDark)>0.0 && EqualPel(ptDark,ptLight),
+				"PT volume-lobe cap confines the collision to thermal source pickup" );
+			Check( ColorMath::MaxValue(rcDark)>0.0 && EqualPel(rcDark,rcLight),
+				"RayCaster volume-lobe cap confines the collision to thermal source pickup" );
+
+			const RISEPel ordinary = typeDark.MeanRayCasterPel(
+				0x7e1a202u,0,64,1.0,32000);
+			const RISEPel lowImportance = typeDark.MeanRayCasterPel(
+				0x7e1a203u,0,64,0.005,32000);
+			Check( NearRelative(lowImportance.r,ordinary.r,0.025) &&
+				NearRelative(lowImportance.g,ordinary.g,0.025) &&
+				NearRelative(lowImportance.b,ordinary.b,0.025),
+				"RayCaster entry roulette cannot discard or compensate same-segment thermal source" );
+		}
+
+		Fixture liveDark;
+		Fixture liveLight;
+		Check( liveDark.Initialize(
+			"pel_live_dark",1.0,1.0,false,0.2,lightPower,false,1,2 ) &&
+			liveLight.Initialize(
+			"pel_live_light",1.0,1.0,true,0.2,lightPower,false,1,2 ),
+			"Pel non-terminal control fixtures initialize" );
+		if( liveDark.integrator && liveLight.integrator &&
+			liveDark.caster && liveLight.caster ) {
+			const RISEPel ptDark = liveDark.MeanPathTracingPel(0x11ae001u,16000);
+			const RISEPel ptLight = liveLight.MeanPathTracingPel(0x11ae002u,16000);
+			const RISEPel rcDark = liveDark.MeanRayCasterPel(
+				0x11ae003u,0,0,1.0,16000);
+			const RISEPel rcLight = liveLight.MeanRayCasterPel(
+				0x11ae004u,0,0,1.0,16000);
+			Check( ColorMath::MaxValue(ptLight)>10.0*ColorMath::MaxValue(ptDark),
+				"PT non-terminal control proves the positional-light fixture has downstream energy" );
+			Check( ColorMath::MaxValue(rcLight)>10.0*ColorMath::MaxValue(rcDark),
+				"RayCaster non-terminal control proves the positional-light fixture has downstream energy" );
+		}
+
+		const std::filesystem::path boundaryScene =
+			std::filesystem::temp_directory_path() /
+			( "rise_pel_terminal_null_boundary_" +
+				std::to_string(static_cast<int>(::getpid())) + ".RISEscene" );
+		{
+			std::ofstream output(boundaryScene);
+			output <<
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\nname global\n}\n"
+				"null_boundary_material\n{\nname boundary\n}\n"
+				"scalar_painter\n{\nname carbon\nvalue 0.2\n}\n"
+				"scalar_painter\n{\nname temperature\nvalue 1800\n}\n"
+				"multichannel_heterogeneous_medium\n{\nname fire\n"
+				"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+				"chem_model none\nbake_resolution 4 4 4\n"
+				"bbox_min -1 -1 1\nbbox_max 1 1 3\n"
+				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
+				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
+				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"box_geometry\n{\nname enclosure_geometry\nwidth 2\nheight 2\ndepth 2\n}\n"
+				"standard_object\n{\nname enclosure\ngeometry enclosure_geometry\n"
+				"material boundary\ninterior_medium fire\nposition 0 0 2\n}\n";
+		}
+		IJobPriv* boundaryJob = nullptr;
+		IRayCaster* boundaryCaster = nullptr;
+		Check( RISE_CreateJobPriv(&boundaryJob) && boundaryJob &&
+			boundaryJob->LoadAsciiSceneViaCst(boundaryScene.string().c_str()),
+			"terminal null-boundary fire fixture initializes" );
+		if( boundaryJob ) {
+			IShader* shader = boundaryJob->GetShaders()->GetItem("global");
+			Check( shader && RISE_API_CreateRayCaster(
+				&boundaryCaster,false,0,*shader,true) && boundaryCaster,
+				"terminal null-boundary fire caster initializes" );
+			if( boundaryCaster ) boundaryCaster->AttachScene(boundaryJob->GetScene());
+		}
+		if( boundaryCaster ) {
+			RandomNumberGenerator rng(0xb0a0da7u);
+			RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+			const RasterizerState rast = {0,0};
+			IRayCaster::RAY_STATE state;
+			state.depth = 1;
+			RISEPel sum(0.0);
+			for( unsigned int i=0; i<16000; ++i ) {
+				RISEPel value(0.0);
+				boundaryCaster->CastRay(rc,rast,
+					Ray(Point3(0,0,0),Vector3(0,0,1)),value,state,
+					nullptr,nullptr);
+				sum = sum+value;
+			}
+			Check( ColorMath::MaxValue(sum)>0.0,
+				"over-depth RayCaster crosses an exact null boundary to collect terminal fire source" );
+		}
+		safe_release(boundaryCaster);
+		safe_release(boundaryJob);
+		std::filesystem::remove(boundaryScene);
+	}
+
+	void TestBoundedObjectFireAllowsShaderDispatchPel()
+	{
+		std::cout << "TestBoundedObjectFireAllowsShaderDispatchPel" << std::endl;
 		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
 			( "rise_pt_bounded_pel_reject_" +
 				std::to_string( static_cast<int>( ::getpid() ) ) + ".RISEscene" );
@@ -6287,13 +6560,13 @@ namespace
 		PathTracingIntegrator* integrator = nullptr;
 		Check( RISE_CreateJobPriv( &job ) && job &&
 			job->LoadAsciiSceneViaCst( scenePath.string().c_str() ),
-			"bounded-object Pel rejection fixture initializes" );
+			"bounded-object Pel preview fixture initializes" );
 		if( job ) {
 			IShader* shader = job->GetShaders()->GetItem( "global" );
 			IShader* emissionShader = job->GetShaders()->GetItem( "emission_only" );
 			Check( shader && emissionShader && RISE_API_CreateRayCaster(
 				&caster, false, 10, *shader, true ) && caster,
-				"bounded-object PT Pel rejection caster initializes" );
+				"bounded-object PT Pel preview caster initializes" );
 			Check( emissionShader && RISE_API_CreateRayCaster(
 				&emissionCaster, false, 10, *emissionShader, true ) && emissionCaster,
 				"bounded-object non-PT emission caster initializes" );
@@ -6320,15 +6593,15 @@ namespace
 				nullptr, 0, iorStack, 0.0, RISEPel( 0.0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
 				0, 0, 0, 0, 0, 0.0, false, false, nullptr );
-			Check( direct.r == 0.0 && direct.g == 0.0 && direct.b == 0.0,
-				"public IntegrateFromHit rejects scene-wide bounded fire" );
+			Check( ColorMath::MaxValue(direct)>1.0,
+				"public IntegrateFromHit no longer rejects scene-wide bounded fire" );
 
 			IRayCaster::RAY_STATE state;
-			RISEPel dispatched( 1.0 );
+			RISEPel dispatched( 0.0 );
 			const bool hit = emissionCaster->CastRay(
 				rc, rast, ray, dispatched, state, nullptr, nullptr );
-			Check( !hit && dispatched.r == 0.0 && dispatched.g == 0.0 && dispatched.b == 0.0,
-				"RayCaster rejects bounded fire before a non-PT emission shader" );
+			Check( hit && ColorMath::MaxValue(dispatched)>1.0,
+				"RayCaster permits bounded fire before a non-PT emission shader" );
 
 			// Matched no-fire control: clear only the interior binding.  The
 			// same visible emitter must then be nonzero through both entry routes,
@@ -6358,6 +6631,9 @@ namespace
 				0, 0, 0, 0, 0, 0.0, false, false, nullptr );
 			Check( ColorMath::MaxValue( directControl ) > 1.0,
 				"no-fire IntegrateFromHit control sees the emissive boundary" );
+			Check( directControl.r==direct.r && directControl.g==direct.g &&
+				directControl.b==direct.b,
+				"bounded fire outside the current enclosure leaves surface Pel transport unchanged" );
 			RISEPel dispatchedControl( 0.0 );
 			const bool controlHitResult = emissionCaster->CastRay(
 				rc, rast, ray, dispatchedControl, state, nullptr, nullptr );
@@ -6368,6 +6644,10 @@ namespace
 			}
 			Check( controlHitResult && ColorMath::MaxValue( dispatchedControl ) > 1.0,
 				"no-fire non-PT RayCaster control sees the emissive boundary" );
+			Check( dispatchedControl.r==dispatched.r &&
+				dispatchedControl.g==dispatched.g &&
+				dispatchedControl.b==dispatched.b,
+				"bounded fire outside the current enclosure leaves shader-dispatch Pel unchanged" );
 		}
 
 		safe_release( integrator );
@@ -7370,6 +7650,28 @@ namespace
 				}
 			}
 
+			for( unsigned int route = 0; route < 2; ++route ) {
+				const Scalar x = route == 0 ? positions[0] : positions[1];
+				audit.Reset();
+				RandomNumberGenerator rng( 0x0e10000u + route );
+				RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+				IndependentSampler sampler( rng );
+				const Ray ray( Point3( x, 0, 0 ), Vector3( 0, 0, 1 ) );
+				if( route == 0 ) {
+					integrator->IntegrateRay( rc, rast, ray,
+						*job->GetScene(), *caster, sampler, nullptr, nullptr );
+					CheckOneCollision( x, 0.0, false,
+						"Pel PT NEE and continuation share one point-bound closure" );
+				} else {
+					IRayCaster::RAY_STATE state;
+					RISEPel value( 0.0 );
+					caster->CastRay( rc, rast, ray, value, state,
+						nullptr, nullptr );
+					CheckOneCollision( x, 0.0, false,
+						"Pel RayCaster NEE and continuation share one point-bound closure" );
+				}
+			}
+
 #ifdef RISE_ENABLE_OPENPGL
 			PathGuidingConfig guidingConfig;
 			guidingConfig.enabled = true;
@@ -7392,9 +7694,11 @@ namespace
 			guiding->EndTrainingIteration();
 			Check( guiding->IsTrained(), "volume-guiding closure fixture trains" );
 
-			for( unsigned int route = 0; route < 2; ++route ) {
-				const Scalar x = route == 0 ? positions[0] : positions[1];
-				const Scalar nm = route == 0 ? wavelengths[0] : wavelengths[1];
+			for( unsigned int route = 0; route < 4; ++route ) {
+				const Scalar x = (route & 1u) == 0 ? positions[0] : positions[1];
+				const bool pel = route >= 2;
+				const Scalar nm = pel ? 0.0 :
+					((route & 1u) == 0 ? wavelengths[0] : wavelengths[1]);
 				audit.Reset();
 				RandomNumberGenerator rng( 0x6a1d000u + route );
 				RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
@@ -7409,13 +7713,25 @@ namespace
 						*job->GetScene(), *caster, sampler, nullptr, nullptr );
 					CheckOneCollision( x, nm, true,
 						"guided PT uses the collision closure for HG product and transport" );
-				} else {
+				} else if( route == 1 ) {
 					IRayCaster::RAY_STATE state;
 					Scalar value = 0.0;
 					caster->CastRayNM( rc, rast, ray, value, state,
 						nm, nullptr, nullptr );
 					CheckOneCollision( x, nm, true,
 						"guided RayCaster uses the collision closure for HG product and transport" );
+				} else if( route == 2 ) {
+					integrator->IntegrateRay( rc, rast, ray,
+						*job->GetScene(), *caster, sampler, nullptr, nullptr );
+					CheckOneCollision( x, 0.0, true,
+						"guided Pel PT uses one point-bound closure for HG product, proposal, evaluation, and NEE" );
+				} else {
+					IRayCaster::RAY_STATE state;
+					RISEPel value( 0.0 );
+					caster->CastRay( rc, rast, ray, value, state,
+						nullptr, nullptr );
+					CheckOneCollision( x, 0.0, true,
+						"guided Pel RayCaster uses one point-bound closure for HG product, proposal, evaluation, and NEE" );
 				}
 			}
 			safe_release( guiding );
@@ -9297,8 +9613,10 @@ int main()
 	TestPointLightFlameThreeStrategyEquality();
 	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestCollisionEmissionConsumesMarchCompetitionState();
-	TestDirectPelEntryRejectsFire();
-	TestBoundedObjectFireRejectsShaderDispatchPel();
+	TestPelGreyStructuralIdentity();
+	TestDirectPelEntryRunsFirePreview();
+	TestPelTerminalSegmentsCollectThermalSourceBeforeContinuationGates();
+	TestBoundedObjectFireAllowsShaderDispatchPel();
 	TestPostScatterSegmentRunsMediumTransport();
 	TestTerminalSurfaceChemSegmentSkipsRoulette();
 	TestForcedNullProposalsThroughPathTracing();

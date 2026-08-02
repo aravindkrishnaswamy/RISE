@@ -368,6 +368,25 @@ namespace RISE
 			ISampler& sampler
 			) const { return 0.0; }
 
+		// Phase-A step-7 Pel-preview factories and source.  These remain at
+		// the absolute vtable tail.  The closure is immutable and point-bound;
+		// its proposal density is exposed by IPhaseFunction::PdfProposal().
+		virtual const IPhaseFunction* MakePhaseClosurePel(
+			const Point3& pt
+			) const { return 0; }
+
+		virtual RISEPel GetThermalEmissionPel(
+			const Point3& pt
+			) const { return RISEPel( 0.0, 0.0, 0.0 ); }
+
+		/// Deterministic channel transmittance used by the Pel fire collision
+		/// estimator.  Ordinary media retain their historical evaluator; fire
+		/// overrides with its knot-aligned deterministic quadrature.
+		virtual RISEPel EvalDeterministicTransmittancePel(
+			const Ray& ray,
+			const Scalar dist
+			) const { return EvalTransmittance( ray, dist ); }
+
 	};
 }
 

@@ -227,6 +227,11 @@ Rec709RGBPel ColorUtils::XYZtoRec709RGB( const XYZPel& xyz_ )
 //	return ret;
 }
 
+Rec709RGBPel ColorUtils::XYZtoRec709RGBMatrixOnly( const XYZPel& xyz )
+{
+	return XYZtoRGBMatrixMultiply<Rec709RGBPel>( xyz, mxXYZtoRec709 );
+}
+
 XYZPel ColorUtils::ROMMRGBtoXYZ( const ROMMRGBPel& p )
 {
 	XYZPel xyzD50 = RGBtoXYZMatrixMultiply<ROMMRGBPel>( p, mxROMMtoXYZD50 );

@@ -260,6 +260,64 @@ static ImageStats RenderAndComputeStats(
 	return result;
 }
 
+static ImageStats RenderFireReferencePreview(
+	const char* scenePath,
+	const char* rasterizerKeyword )
+{
+	ImageStats result{};
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv(&pJob) || !pJob ) return result;
+	if( !pJob->LoadAsciiSceneViaCst(scenePath) ||
+		!pJob->SetFilm(32,48,1.0) ||
+		!pJob->SetRasterizerParameter(rasterizerKeyword,"samples","256") ||
+		!pJob->SetRasterizerParameter(rasterizerKeyword,"oidn_denoise","false") ) {
+		safe_release(pJob);
+		return result;
+	}
+
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew(pCap,__FILE__,__LINE__,"fire preview capture output");
+	pJob->GetRasterizer()->AddRasterizerOutput(pCap);
+	if( pJob->Rasterize() ) result = ComputeStats(*pCap);
+	safe_release(pCap);
+	safe_release(pJob);
+	return result;
+}
+
+static void TestFirePelPreviewDivergence()
+{
+	const ImageStats pel = RenderFireReferencePreview(
+		"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene",
+		"pathtracing_pel_rasterizer" );
+	const ImageStats spectral = RenderFireReferencePreview(
+		"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+		"pathtracing_spectral_rasterizer" );
+	Check( pel.valid && spectral.valid,
+		"Phase-A Pel and spectral reference scenes both render in-process" );
+	if( !pel.valid || !spectral.valid ) return;
+
+	double divergence[3] = {0.0,0.0,0.0};
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
+		divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
+	}
+	std::cout << "  Phase-A Pel/spectral means Pel=(" << pel.mean[0] << ","
+		<< pel.mean[1] << "," << pel.mean[2] << ") spectral=("
+		<< spectral.mean[0] << "," << spectral.mean[1] << ","
+		<< spectral.mean[2] << ") divergence=(" << divergence[0] << ","
+		<< divergence[1] << "," << divergence[2] << ")" << std::endl;
+
+	// Recorded on the 32x48, 256-spp Phase-A reference across repeated
+	// multi-thread runs: (1.13%,0.73%,0.08%) and (0.16%,2.51%,0.20%).
+	// The 5% cap leaves measured accumulation-order headroom while remaining
+	// a useful gross-regression guard.  These are consistency-only bounds,
+	// deliberately not an absolute Pel radiance or fidelity requirement.
+	Check( divergence[0] < 0.05 && divergence[1] < 0.05 &&
+		divergence[2] < 0.05,
+		"Pel preview channel-mean divergence stays inside the recorded bound" );
+}
+
 static bool ChannelsAgree( const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
@@ -1183,6 +1241,9 @@ int main()
 	}
 
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
+	std::cout << std::endl;
+	std::cout << "--- Fire Pel preview consistency ---" << std::endl;
+	TestFirePelPreviewDivergence();
 
 	// Pinned delegations: auto(X) must resolve to X and match X_pel_rasterizer.
 	CheckDelegation( "pin pt   -> pathtracing_pel", kAutoPT,   "auto_pt",   kRefPT,   "ref_pt",   AutoIntegratorChoice::PT );

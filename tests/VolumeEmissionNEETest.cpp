@@ -323,7 +323,17 @@ namespace
 			library/"Materials"/"HeterogeneousMedium.cpp" );
 		const std::string lightSource = ReadFile(
 			library/"Interfaces"/"ILight.h" );
-		Check( CountOccurrences(mediumSource,
+		const std::string importanceSignature =
+			"bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()";
+		const std::string nextFunctionSignature =
+			"Scalar MultichannelHeterogeneousMedium::LookupChannel(";
+		const size_t importanceBegin = mediumSource.find(importanceSignature);
+		const size_t importanceEnd = importanceBegin == std::string::npos ?
+			std::string::npos : mediumSource.find(nextFunctionSignature,importanceBegin);
+		const std::string importanceSource = importanceBegin != std::string::npos &&
+			importanceEnd != std::string::npos ?
+			mediumSource.substr(importanceBegin,importanceEnd-importanceBegin) : std::string();
+		Check( !importanceSource.empty() && CountOccurrences(importanceSource,
 			"GaussLegendre21::IntegrateVisibleBand(") == 1,
 			"thermal-emission importance calls the shared visible-band integrator" );
 		Check( CountOccurrences(lightSource,

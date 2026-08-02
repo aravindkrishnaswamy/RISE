@@ -20,6 +20,7 @@
 #include "../Utilities/PlanckRadiance.h"
 #include "../Utilities/GaussLegendreQuadrature.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/Color/ColorUtils.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
 #include <algorithm>
@@ -333,6 +334,141 @@ namespace
 		{
 			return m_hotWeight * m_hotG + m_coolWeight * m_coolG +
 				m_condWeight * m_condG;
+		}
+	};
+
+	static RISEPel FirePelResponse( const Scalar nm )
+	{
+		XYZPel xyz;
+		if( !ColorUtils::XYZFromNM( xyz, nm ) ) return RISEPel( 0.0 );
+		static const Scalar yIntegral =
+			ColorUtils::CIE_Y_Integral( 380.0, 780.0 );
+		if( !RISE::IsFiniteDouble(yIntegral) || yIntegral <= 0.0 ) {
+			return RISEPel( 0.0 );
+		}
+		return ColorUtils::XYZtoRec709RGBMatrixOnly( xyz ) * (1.0/yIntegral);
+	}
+
+	static RISEPel IntegrateFirePelResponsePower( const Scalar exponent )
+	{
+		RISEPel result( 0.0 );
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			result[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[exponent,channel]( const Scalar nm ) {
+					return FirePelResponse(nm)[channel] *
+						pow( Scalar(633.0)/nm, exponent );
+				} );
+		}
+		return result;
+	}
+
+	static Scalar IntegrateFireSamplingPower( const Scalar exponent )
+	{
+		return GaussLegendre21::IntegrateVisibleBand(
+			[exponent]( const Scalar nm ) {
+				XYZPel xyz;
+				if( !ColorUtils::XYZFromNM( xyz, nm ) ) return Scalar(0.0);
+				const Scalar weight = xyz.X + xyz.Y + xyz.Z;
+				return weight * pow( Scalar(633.0)/nm, exponent );
+			} );
+	}
+
+	class ConstituentHGPelPhaseClosure :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+		RISEPel m_hotWeight;
+		RISEPel m_coolWeight;
+		RISEPel m_condWeight;
+		Scalar m_hotProposalWeight;
+		Scalar m_coolProposalWeight;
+		Scalar m_condProposalWeight;
+		const Scalar m_hotG;
+		const Scalar m_coolG;
+		const Scalar m_condG;
+
+	protected:
+		~ConstituentHGPelPhaseClosure() override = default;
+
+	public:
+		ConstituentHGPelPhaseClosure(
+			const RISEPel& hotScattering,
+			const RISEPel& coolScattering,
+			const RISEPel& condScattering,
+			const Scalar hotProposal,
+			const Scalar coolProposal,
+			const Scalar condProposal,
+			const Scalar hotG,
+			const Scalar coolG,
+			const Scalar condG
+			) :
+		  m_hotWeight( 0.0 ),
+		  m_coolWeight( 0.0 ),
+		  m_condWeight( 0.0 ),
+		  m_hotProposalWeight( hotProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_coolProposalWeight( coolProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_condProposalWeight( condProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_hotG( hotG ),
+		  m_coolG( coolG ),
+		  m_condG( condG )
+		{
+			for( unsigned int channel = 0; channel < 3u; ++channel ) {
+				const Scalar total = hotScattering[channel] +
+					coolScattering[channel] + condScattering[channel];
+				if( total > 0.0 ) {
+					m_hotWeight[channel] = hotScattering[channel]/total;
+					m_coolWeight[channel] = coolScattering[channel]/total;
+					m_condWeight[channel] = condScattering[channel]/total;
+				}
+			}
+		}
+
+		Scalar Evaluate( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return PdfProposal( wi, wo );
+		}
+
+		RISEPel EvaluatePel( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			const Scalar hot = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_hotG );
+			const Scalar cool = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_coolG );
+			const Scalar cond = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_condG );
+			return m_hotWeight*hot + m_coolWeight*cool + m_condWeight*cond;
+		}
+
+		Vector3 Sample( const Vector3& wi, ISampler& sampler ) const override
+		{
+			const Scalar select = sampler.Get1D();
+			const Scalar g = select < m_hotProposalWeight ? m_hotG :
+				(select < m_hotProposalWeight + m_coolProposalWeight ?
+					m_coolG : m_condG);
+			return HenyeyGreensteinPhaseFunction::SampleWithG( wi, sampler, g );
+		}
+
+		Scalar Pdf( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return PdfProposal( wi, wo );
+		}
+
+		Scalar PdfProposal( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			return m_hotProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_hotG) +
+				m_coolProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_coolG) +
+				m_condProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_condG);
+		}
+
+		Scalar GetMeanCosine() const override
+		{
+			return m_hotProposalWeight*m_hotG + m_coolProposalWeight*m_coolG +
+				m_condProposalWeight*m_condG;
 		}
 	};
 
@@ -833,6 +969,11 @@ Scalar HeterogeneousMedium::SpectralTrackingMajorant( const Scalar ) const
 	return ColorMath::Luminance( m_max_sigma_t );
 }
 
+Scalar HeterogeneousMedium::PelTrackingMajorant() const
+{
+	return m_sigma_t_majorant;
+}
+
 const IPhaseFunction* HeterogeneousMedium::GetPhaseFunction() const
 {
 	return m_pPhase;
@@ -883,7 +1024,9 @@ Scalar HeterogeneousMedium::SampleDistance(
 	const HeterogeneousMedium* self = this;
 	const Ray& rayRef = ray;
 	ISampler& samplerRef = sampler;
-	const Scalar sigma_t_max_channel = ColorMath::MaxValue( m_max_sigma_t );
+	const Scalar pelMajorant = PelTrackingMajorant();
+	const Scalar majorantRatio = m_sigma_t_majorant > 0.0 ?
+		pelMajorant/m_sigma_t_majorant : 1.0;
 	Scalar scatterDist = 0;
 	bool didScatter = false;
 
@@ -892,12 +1035,13 @@ Scalar HeterogeneousMedium::SampleDistance(
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		ISampler* pSampler;
-		Scalar sigma_t_max_channel;
+		Scalar majorantRatio;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
 
-		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorantBase )
 		{
+			const Scalar cellMajorant = cellMajorantBase*majorantRatio;
 			// Skip empty cells (zero majorant)
 			if( cellMajorant <= 0 )
 				return true;  // Continue to next cell
@@ -916,11 +1060,13 @@ Scalar HeterogeneousMedium::SampleDistance(
 				if( t >= tCellExit )
 					return true;
 
-				// Evaluate local density at sample point
+				// Evaluate the actual projected local extinction.  For ordinary
+				// heterogeneous media this reduces exactly to max_sigma_t*density;
+				// fire media are not separable in one density channel.
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_max_channel * density;
+				const Scalar sigma_t_local = ColorMath::MaxValue(
+					self->GetCoefficients(samplePt).sigma_t );
 
 				// Accept/reject with local majorant
 				const Scalar xi2 = pSampler->Get1D();
@@ -940,7 +1086,7 @@ Scalar HeterogeneousMedium::SampleDistance(
 	visitor.self = self;
 	visitor.pRay = &rayRef;
 	visitor.pSampler = &samplerRef;
-	visitor.sigma_t_max_channel = sigma_t_max_channel;
+	visitor.majorantRatio = majorantRatio;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
 
@@ -1096,16 +1242,20 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 
 	RISEPel w( 1, 1, 1 );
 	const HeterogeneousMedium* self = this;
+	const Scalar pelMajorant = PelTrackingMajorant();
+	const Scalar majorantRatio = m_sigma_t_majorant > 0.0 ?
+		pelMajorant/m_sigma_t_majorant : 1.0;
 	struct RatioTrackingVisitor
 	{
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		RandomNumberGenerator* pRng;
 		RISEPel* pW;
-		RISEPel max_sigma_t;
+		Scalar majorantRatio;
 
-		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorantBase )
 		{
+			const Scalar cellMajorant = cellMajorantBase*majorantRatio;
 			if( cellMajorant <= 0 )
 				return true;  // Skip empty cells
 
@@ -1136,12 +1286,13 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
+				const MediumCoefficients coefficients =
+					self->GetCoefficients( samplePt );
 
 				// Per-channel ratio tracking weight
 				for( int ch = 0; ch < 3; ch++ )
 				{
-					const Scalar sigma_t_ch = max_sigma_t[ch] * density;
+					const Scalar sigma_t_ch = coefficients.sigma_t[ch];
 					(*pW)[ch] *= fmax( 0.0, 1.0 - sigma_t_ch * invCellMaj );
 				}
 
@@ -1169,11 +1320,24 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 	visitor.pRay = &ray;
 	visitor.pRng = &tl_rng;
 	visitor.pW = &w;
-	visitor.max_sigma_t = m_max_sigma_t;
+	visitor.majorantRatio = majorantRatio;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
 
 	return w;
+}
+
+RISEPel HeterogeneousMedium::EvalDeterministicTransmittancePel(
+	const Ray& ray,
+	const Scalar dist
+	) const
+{
+	RISEPel transmittance;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		transmittance[channel] = exp(
+			-EvalDeterministicOpticalDepthPelChannel(ray,dist,channel) );
+	}
+	return transmittance;
 }
 
 Scalar HeterogeneousMedium::EvalTransmittanceNM(
@@ -1323,7 +1487,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 	) const
 {
 	return EvalDeterministicOpticalDepthImpl(
-		ray, targetDist, sigma_t_eff, false, 0.0 );
+		ray, targetDist, sigma_t_eff, false, 0.0, -1 );
 }
 
 Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthNM(
@@ -1333,7 +1497,17 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthNM(
 	) const
 {
 	return EvalDeterministicOpticalDepthImpl(
-		ray, targetDist, 1.0, true, nm );
+		ray, targetDist, 1.0, true, nm, -1 );
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthPelChannel(
+	const Ray& ray,
+	const Scalar targetDist,
+	const unsigned int channel
+	) const
+{
+	return EvalDeterministicOpticalDepthImpl(
+		ray,targetDist,1.0,false,0.0,static_cast<int>(channel) );
 }
 
 Scalar HeterogeneousMedium::InterpolationAccessorOffset(
@@ -1355,9 +1529,10 @@ void HeterogeneousMedium::AppendOpticalDepthBreakpoints(
 Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 	const Ray& ray,
 	const Scalar targetDist,
-	const Scalar sigma_t_eff,
+	const Scalar,
 	const bool spectral,
-	const Scalar nm
+	const Scalar nm,
+	const int pelChannel
 	) const
 {
 	// Deterministic optical depth via voxel-lattice DDA + Gauss-
@@ -1546,9 +1721,14 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
 					const Scalar tq = midPt + halfLen*glNodes[q];
 					const Point3 samplePt = Point3Ops::mkPoint3(
 						ray.origin, ray.Dir()*tq );
-					const Scalar dq = spectral
-						? GetCoefficientsNM( samplePt, nm ).sigma_t
-						: sigma_t_eff*LookupDensity( samplePt );
+					Scalar dq = 0.0;
+					if( spectral ) {
+						dq = GetCoefficientsNM( samplePt, nm ).sigma_t;
+					} else {
+						const RISEPel sigmaT = GetCoefficients(samplePt).sigma_t;
+						dq = pelChannel >= 0 ? sigmaT[pelChannel] :
+							ColorMath::MaxValue(sigmaT);
+					}
 					segIntegral += glWeights[q]*dq;
 				}
 				opticalDepth += halfLen*segIntegral;
@@ -1610,16 +1790,15 @@ Scalar HeterogeneousMedium::EvalDistancePdf(
 	// sampler: MaxValue(m_max_sigma_t) for RGB.
 	//
 	// Reference: Miller, Georgiev, Jarosz, SIGGRAPH 2019 §3.3
-	const Scalar sigma_t_eff = m_sigma_t_majorant;  // = MaxValue(m_max_sigma_t)
 	const Scalar targetDist = scattered ? t : maxDist;
-	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar tau = EvalDeterministicOpticalDepth(
+		ray, targetDist, PelTrackingMajorant() );
 	const Scalar T_real = exp( -tau );
 
 	if( scattered )
 	{
 		const Point3 pt = ray.PointAtLength( t );
-		const Scalar density = LookupDensity( pt );
-		return sigma_t_eff * density * T_real;
+		return ColorMath::MaxValue(GetCoefficients(pt).sigma_t) * T_real;
 	}
 	else
 	{
@@ -1818,6 +1997,13 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		  : 0.0 ),
 	  m_coolExtinctionMass633( smokeKmCarbon ),
 	  m_condExtinctionMass633( smokeKmCond ),
+	  m_pelResponseMass( 0.0 ),
+	  m_pelHotMean( 0.0 ),
+	  m_pelCoolMean( 0.0 ),
+	  m_pelCondMean( 0.0 ),
+	  m_samplingHotMass( 0.0 ),
+	  m_samplingCoolMass( 0.0 ),
+	  m_samplingCondMass( 0.0 ),
 	  m_emissionBinSize( 0, 0, 0 ),
 	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
@@ -1867,6 +2053,64 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 			chemPainters[2]->HasPerChannelVariation())) ) {
 		GlobalLog()->PrintEasyError(
 			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or constituent optical parameter" );
+		return;
+	}
+
+	m_pelResponseMass = IntegrateFirePelResponsePower( 0.0 );
+	const RISEPel hotIntegral = IntegrateFirePelResponsePower( 1.0 );
+	const RISEPel coolIntegral = IntegrateFirePelResponsePower( m_smokeNCarbon );
+	const RISEPel condIntegral = condensedPainter ?
+		IntegrateFirePelResponsePower( m_smokeNCond ) : m_pelResponseMass;
+	bool validPelProjection = true;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		const Scalar responseMass = m_pelResponseMass[channel];
+		assert( RISE::IsFiniteDouble(responseMass) && responseMass > 0.0 );
+		if( !RISE::IsFiniteDouble(responseMass) || responseMass <= 0.0 ) {
+			validPelProjection = false;
+			continue;
+		}
+		m_pelHotMean[channel] = hotIntegral[channel]/responseMass;
+		m_pelCoolMean[channel] = coolIntegral[channel]/responseMass;
+		m_pelCondMean[channel] = condIntegral[channel]/responseMass;
+		const Scalar projectedHotSigmaA =
+			m_hotAbsorptionMass633*m_pelHotMean[channel];
+		const Scalar projectedHotSigmaS = projectedHotSigmaA *
+			m_sootAlbedoHot/(1.0-m_sootAlbedoHot);
+		const Scalar projectedCoolSigmaA = m_coolExtinctionMass633 *
+			(1.0-m_smokeAlbedoCarbon)*m_pelCoolMean[channel];
+		const Scalar projectedCoolSigmaS = m_coolExtinctionMass633 *
+			m_smokeAlbedoCarbon*m_pelCoolMean[channel];
+		const Scalar projectedCondSigmaA = m_condExtinctionMass633 *
+			(1.0-m_smokeAlbedoCond)*m_pelCondMean[channel];
+		const Scalar projectedCondSigmaS = m_condExtinctionMass633 *
+			m_smokeAlbedoCond*m_pelCondMean[channel];
+		assert( projectedHotSigmaA >= 0.0 && projectedHotSigmaS >= 0.0 &&
+			projectedCoolSigmaA >= 0.0 && projectedCoolSigmaS >= 0.0 &&
+			projectedCondSigmaA >= 0.0 && projectedCondSigmaS >= 0.0 );
+		if( !RISE::IsFiniteDouble(projectedHotSigmaA) || projectedHotSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedHotSigmaS) || projectedHotSigmaS < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCoolSigmaA) || projectedCoolSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCoolSigmaS) || projectedCoolSigmaS < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCondSigmaA) || projectedCondSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCondSigmaS) || projectedCondSigmaS < 0.0 ) {
+			validPelProjection = false;
+		}
+	}
+	if( !validPelProjection ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: Pel response mass or projected extinction is non-positive" );
+		return;
+	}
+	m_samplingHotMass = IntegrateFireSamplingPower( 1.0 );
+	m_samplingCoolMass = IntegrateFireSamplingPower( m_smokeNCarbon );
+	m_samplingCondMass = condensedPainter ?
+		IntegrateFireSamplingPower( m_smokeNCond ) : 0.0;
+	if( !RISE::IsFiniteDouble(m_samplingHotMass) || m_samplingHotMass <= 0.0 ||
+		!RISE::IsFiniteDouble(m_samplingCoolMass) || m_samplingCoolMass <= 0.0 ||
+		(condensedPainter &&
+			(!RISE::IsFiniteDouble(m_samplingCondMass) || m_samplingCondMass <= 0.0)) ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: nonnegative Pel phase-sampling response is invalid" );
 		return;
 	}
 
@@ -2366,6 +2610,15 @@ Scalar MultichannelHeterogeneousMedium::TrackingMajorantAt( const Point3& worldP
 	return m_pMajorantGrid->GetCellMajorant( x, y, z );
 }
 
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtPel(
+	const Point3& worldPt
+	) const
+{
+	const Scalar majorant633 = TrackingMajorantAt(worldPt);
+	return m_sigma_t_majorant > 0.0 ?
+		majorant633*PelTrackingMajorant()/m_sigma_t_majorant : 0.0;
+}
+
 Scalar MultichannelHeterogeneousMedium::SpectralTrackingMajorant(
 	const Scalar
 	) const
@@ -2380,6 +2633,20 @@ Scalar MultichannelHeterogeneousMedium::SpectralTrackingMajorant(
 	const Scalar condMax = m_condExtinctionMass633 *
 		pow( visibleBlueScale, m_smokeNCond );
 	return m_sceneUnitMeters * fmax( hotMax, fmax( coolMax, condMax ) );
+}
+
+Scalar MultichannelHeterogeneousMedium::PelTrackingMajorant() const
+{
+	Scalar projectedMassMaximum = 0.0;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_hotExtinctionMass633*m_pelHotMean[channel] );
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_coolExtinctionMass633*m_pelCoolMean[channel] );
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_condExtinctionMass633*m_pelCondMean[channel] );
+	}
+	return m_sceneUnitMeters*projectedMassMaximum;
 }
 
 Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtNM(
@@ -2398,23 +2665,34 @@ MediumCoefficients MultichannelHeterogeneousMedium::GetCoefficients(
 {
 	const Scalar carbon = LookupCarbon( pt );
 	const Scalar phi = HotOpticsFraction( pt );
-	const Scalar hotAbsorption = carbon * phi * m_hotAbsorptionMass633;
-	const Scalar hotScattering = hotAbsorption * m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
-	const Scalar coolExtinction = carbon * (1.0 - phi) * m_coolExtinctionMass633;
-	const Scalar coolScattering = coolExtinction * m_smokeAlbedoCarbon;
-	const Scalar condExtinction = LookupCondensed( pt ) * m_condExtinctionMass633;
-	const Scalar condScattering = condExtinction * m_smokeAlbedoCond;
+	const Scalar hotAbsorption633 = carbon * phi * m_hotAbsorptionMass633;
+	const Scalar hotScattering633 = hotAbsorption633 *
+		m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
+	const Scalar coolExtinction633 = carbon * (1.0 - phi) *
+		m_coolExtinctionMass633;
+	const Scalar coolScattering633 = coolExtinction633 * m_smokeAlbedoCarbon;
+	const Scalar condExtinction633 = LookupCondensed( pt ) * m_condExtinctionMass633;
+	const Scalar condScattering633 = condExtinction633 * m_smokeAlbedoCond;
 
-	const Scalar sigmaA = m_sceneUnitMeters *
-		(hotAbsorption + coolExtinction - coolScattering +
-		 condExtinction - condScattering);
-	const Scalar sigmaS = m_sceneUnitMeters *
-		(hotScattering + coolScattering + condScattering);
+	const RISEPel sigmaA = m_sceneUnitMeters *
+		(m_pelHotMean*hotAbsorption633 +
+		 m_pelCoolMean*(coolExtinction633-coolScattering633) +
+		 m_pelCondMean*(condExtinction633-condScattering633));
+	const RISEPel sigmaS = m_sceneUnitMeters *
+		(m_pelHotMean*hotScattering633 +
+		 m_pelCoolMean*coolScattering633 +
+		 m_pelCondMean*condScattering633);
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		assert( sigmaA[channel] >= 0.0 && sigmaS[channel] >= 0.0 );
+	}
 
 	MediumCoefficients c;
-	c.sigma_t = RISEPel( sigmaA + sigmaS, sigmaA + sigmaS, sigmaA + sigmaS );
-	c.sigma_s = RISEPel( sigmaS, sigmaS, sigmaS );
-	c.emission = RISEPel( 0, 0, 0 );
+	c.sigma_t = sigmaA + sigmaS;
+	c.sigma_s = sigmaS;
+	// Thermal emission has its own collision-estimator source API, matching
+	// GetThermalEmissionNM.  MediumCoefficients::emission remains the distinct
+	// absorption-independent additive source contract.
+	c.emission = RISEPel( 0.0 );
 	return c;
 }
 
@@ -2480,6 +2758,34 @@ const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
 		m_sootGHot, m_smokeGCarbon, m_smokeGCond );
 }
 
+const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosurePel(
+	const Point3& pt
+	) const
+{
+	if( !m_valid ) return 0;
+
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar hotScattering633 = carbon*phi*m_hotAbsorptionMass633 *
+		m_sootAlbedoHot/(1.0-m_sootAlbedoHot);
+	const Scalar coolScattering633 = carbon*(1.0-phi)*
+		m_coolExtinctionMass633*m_smokeAlbedoCarbon;
+	const Scalar condScattering633 = LookupCondensed(pt)*
+		m_condExtinctionMass633*m_smokeAlbedoCond;
+	const RISEPel hotScattering = m_pelHotMean*hotScattering633;
+	const RISEPel coolScattering = m_pelCoolMean*coolScattering633;
+	const RISEPel condScattering = m_pelCondMean*condScattering633;
+	const Scalar hotProposal = hotScattering633*m_samplingHotMass;
+	const Scalar coolProposal = coolScattering633*m_samplingCoolMass;
+	const Scalar condProposal = condScattering633*m_samplingCondMass;
+	const Scalar totalProposal = hotProposal+coolProposal+condProposal;
+	if( !RISE::IsFiniteDouble(totalProposal) || totalProposal <= 0.0 ) return 0;
+	return new ConstituentHGPelPhaseClosure(
+		hotScattering,coolScattering,condScattering,
+		hotProposal,coolProposal,condProposal,
+		m_sootGHot,m_smokeGCarbon,m_smokeGCond );
+}
+
 Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
 	const Point3& pt,
 	const Scalar nm
@@ -2491,6 +2797,24 @@ Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
 	return sigmaA > 0.0
 		? sigmaA * PlanckSpectralRadianceNM( nm, LookupTemperature( pt ) )
 		: 0.0;
+}
+
+RISEPel MultichannelHeterogeneousMedium::GetThermalEmissionPel(
+	const Point3& pt
+	) const
+{
+	if( !m_valid ) return RISEPel( 0.0 );
+	RISEPel emission( 0.0 );
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		emission[channel] = GaussLegendre21::IntegrateVisibleBand(
+			[this,&pt,channel]( const Scalar nm ) {
+				const MediumCoefficientsNM coeff = GetCoefficientsNM(pt,nm);
+				const Scalar sigmaA = coeff.sigma_t-coeff.sigma_s;
+				return sigmaA > 0.0 ? FirePelResponse(nm)[channel]*sigmaA*
+					PlanckSpectralRadianceNM(nm,LookupTemperature(pt)) : 0.0;
+			} );
+	}
+	return emission;
 }
 
 Scalar MultichannelHeterogeneousMedium::GetChemEmissionNM(

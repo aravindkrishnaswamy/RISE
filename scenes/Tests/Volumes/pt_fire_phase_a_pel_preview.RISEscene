@@ -1,0 +1,127 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#
+#   File:           pt_fire_phase_a_pel_preview.RISEscene
+#   Description:    Phase-A Pel-preview fire handback.  A scene-authored 2D flame silhouette is baked into
+#                   the multichannel carbon + temperature lattice and extruded through its shallow Z extent.
+#                   The RGB PT rasterizer exercises the signed film-response projection of the spectral
+#                   collision-emission estimator.  This path is approximate and preview-only.
+#
+#                   The EXR is unmodified scene-linear radiance.  The PNG is an ACES display preview at -4 EV.
+#                   This is a procedural estimator demonstration, not a predictive combustion simulation.
+#
+#############################################################################################################
+
+scene_options
+{
+	scene_unit			1.0
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				64
+	max_volume_bounce		8
+	pixel_filter			gaussian
+	oidn_denoise			true
+	oidn_prefilter			accurate
+	progressive_rendering		false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_fire_phase_a_pel_preview
+	type				EXR
+	bpp				16
+	color_space			Rec709RGB_Linear
+	exr_compression			piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_fire_phase_a_pel_preview
+	type				PNG
+	bpp				8
+	color_space			sRGB
+	exposure			-4.0
+	display_transform		aces
+}
+
+film
+{
+	width				300
+	height				450
+}
+
+pinhole_camera
+{
+	location			0.0 0.06 -0.32
+	lookat				0.0 0.06 0.0
+	up				0 1 0
+	fov				25.0
+}
+
+#############################################################################################################
+# Flame field.  The medium bake supplies u=x and v=y over the authored bbox.  The centreline waviness and
+# taper make a flame silhouette; the field is deliberately extruded in Z because Phase A exposes 2D scene
+# functions through scalar_painter.  Carbon is zero outside the silhouette.  Temperature stays positive
+# everywhere, rising from 700 K to 2300 K inside it.
+#############################################################################################################
+
+expression_function2d
+{
+	name				flame_shape
+	def				center 0.09*sin(11*v)+0.025*sin(29*v)
+	def				dx abs((2*u-1)-center)
+	def				width 0.62*(1-v)+0.07
+	def				side 1-smoothstep(0.72*width,width,dx)
+	def				base smoothstep(0.01,0.10,v)
+	def				tip 1-smoothstep(0.88,1.0,v)
+	expr				clamp(side*base*tip,0,1)
+}
+
+scalar_painter
+{
+	name				carbon_field
+	function2d			flame_shape
+	scale				2.0
+	bias				0.0
+}
+
+scalar_painter
+{
+	name				temperature_field
+	function2d			flame_shape
+	scale				1600.0
+	bias				700.0
+}
+
+multichannel_heterogeneous_medium
+{
+	name				phase_a_fire
+	channel_carbon			painter carbon_field
+	channel_temperature		painter temperature_field
+	chem_model			none
+	bake_resolution			96 160 12
+	bbox_min			-0.035 0.0 -0.018
+	bbox_max			 0.035 0.12 0.018
+
+	soot_em				0.26
+	soot_density			1800
+	soot_albedo_hot			0.10
+	soot_g_hot			0.5
+	smoke_km_carbon			8.7
+	smoke_n_carbon			1.2
+	smoke_albedo_carbon		0.6
+	smoke_g_carbon			0.6
+}
+
+global_medium
+{
+	medium				phase_a_fire
+}

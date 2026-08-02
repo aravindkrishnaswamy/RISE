@@ -41,6 +41,9 @@ CollisionPhaseClosure::CollisionPhaseClosure(
 		if( spectral && IsContinuationPhaseClosureNMPreflightAllowlisted(medium) ) {
 			m_pPhase = medium.MakeContinuationPhaseClosureNM(scatterPoint,nm);
 			m_owned = m_pPhase != 0;
+		} else if( !spectral ) {
+			m_pPhase = medium.MakeContinuationPhaseClosurePel(scatterPoint);
+			m_owned = m_pPhase != 0;
 		}
 		return;
 	}
@@ -49,8 +52,10 @@ CollisionPhaseClosure::CollisionPhaseClosure(
 	{
 		if( spectral ) {
 			m_pPhase = medium.MakePhaseClosure( scatterPoint, nm );
-			m_owned = m_pPhase != 0;
+		} else {
+			m_pPhase = medium.MakePhaseClosurePel( scatterPoint );
 		}
+		m_owned = m_pPhase != 0;
 		return;
 	}
 
@@ -111,8 +116,7 @@ RISEPel MediumScatterBSDF::value(
 	// Phase function is isotropic w.r.t. the surface normal —
 	// it depends only on the angle between incoming and outgoing
 	// directions.  No cosine-weighted hemisphere clamping.
-	const Scalar p = m_pPhase->Evaluate( vLightIn, m_wo );
-	return RISEPel( p, p, p );
+	return m_pPhase->EvaluatePel( vLightIn, m_wo );
 }
 
 Scalar MediumScatterBSDF::valueNM(
@@ -144,7 +148,7 @@ Scalar MediumScatterMaterial::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	return m_pPhase->Pdf( vToLight, m_wo );
+	return m_pPhase->PdfProposal( vToLight, m_wo );
 }
 
 Scalar MediumScatterMaterial::PdfNM(

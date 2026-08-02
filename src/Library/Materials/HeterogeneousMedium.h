@@ -134,12 +134,19 @@ namespace RISE
 			const Scalar nm
 			) const;
 
+		Scalar EvalDeterministicOpticalDepthPelChannel(
+			const Ray& ray,
+			const Scalar targetDist,
+			const unsigned int channel
+			) const;
+
 		Scalar EvalDeterministicOpticalDepthImpl(
 			const Ray& ray,
 			const Scalar targetDist,
 			const Scalar sigma_t_eff,
 			const bool spectral,
-			const Scalar nm
+			const Scalar nm,
+			const int pelChannel
 			) const;
 
 		/// Accessor-coordinate offset used by the deterministic knot walk.
@@ -161,6 +168,11 @@ namespace RISE
 		/// Scalar majorant used by the NM tracker.  Fire overrides this with
 		/// the locked conservative max over the visible wavelength interval.
 		virtual Scalar SpectralTrackingMajorant( const Scalar nm ) const;
+
+		/// Scalar majorant used by the RGB tracker.  Ordinary media retain the
+		/// historical max-channel coefficient; fire uses a conservative visible-
+		/// band bound for its projected coefficients.
+		virtual Scalar PelTrackingMajorant() const;
 
 		/// Construct the tracking substrate without an accessor.  Used by
 		/// derived baked media that must create their channel accessors after
@@ -269,6 +281,11 @@ namespace RISE
 			const Scalar dist
 			) const override;
 
+		RISEPel EvalDeterministicTransmittancePel(
+			const Ray& ray,
+			const Scalar dist
+			) const override;
+
 		Scalar EvalTransmittanceNM(
 			const Ray& ray,
 			const Scalar dist,
@@ -328,8 +345,8 @@ namespace RISE
 	/// condensed-organic concentrations [g/m^3], plus temperature [K], on one
 	/// shared trilinear lattice.
 	///
-	/// Pel remains a grey 633-nm preview placeholder, while the NM path uses
-	/// the wavelength-dependent §4.1/§4.3 hot-soot and cool-smoke laws.
+	/// The NM path uses the wavelength-dependent §4.1/§4.3 laws.  Pel is the
+	/// signed-response projection specified for the approximate Phase-A preview.
 	class MultichannelHeterogeneousMedium :
 		public HeterogeneousMedium
 	{
@@ -359,6 +376,13 @@ namespace RISE
 		Scalar m_hotExtinctionMass633;
 		Scalar m_coolExtinctionMass633;
 		Scalar m_condExtinctionMass633;
+		RISEPel m_pelResponseMass;
+		RISEPel m_pelHotMean;
+		RISEPel m_pelCoolMean;
+		RISEPel m_pelCondMean;
+		Scalar m_samplingHotMass;
+		Scalar m_samplingCoolMass;
+		Scalar m_samplingCondMass;
 
 		struct EmissionCell
 		{
@@ -376,6 +400,7 @@ namespace RISE
 
 		virtual ~MultichannelHeterogeneousMedium();
 		Scalar SpectralTrackingMajorant( const Scalar nm ) const override;
+		Scalar PelTrackingMajorant() const override;
 		Scalar InterpolationAccessorOffset(
 			const unsigned int dimension
 			) const override;
@@ -529,6 +554,7 @@ namespace RISE
 		Scalar HotOpticsFraction( const Point3& worldPt ) const;
 		Scalar HotSootVolumeFraction( const Point3& worldPt ) const;
 		Scalar TrackingMajorantAt( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAtPel( const Point3& worldPt ) const;
 		Scalar TrackingMajorantAtNM(
 			const Point3& worldPt,
 			const Scalar nm
@@ -549,11 +575,13 @@ namespace RISE
 			const Point3& pt,
 			const Scalar nm
 			) const override;
+		const IPhaseFunction* MakePhaseClosurePel(
+			const Point3& pt
+			) const override;
 		const IPhaseFunction* MakeContinuationPhaseClosurePel(
-			const Point3& ) const override
+			const Point3& pt ) const override
 		{
-			// RGB fire remains deliberately unsupported until Phase-A step 7.
-			return 0;
+			return MakePhaseClosurePel(pt);
 		}
 		const IPhaseFunction* MakeContinuationPhaseClosureNM(
 			const Point3& pt,
@@ -565,6 +593,9 @@ namespace RISE
 		Scalar GetThermalEmissionNM(
 			const Point3& pt,
 			const Scalar nm
+			) const override;
+		RISEPel GetThermalEmissionPel(
+			const Point3& pt
 			) const override;
 		Scalar GetChemEmissionNM(
 			const Point3& pt,

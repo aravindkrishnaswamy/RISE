@@ -6,8 +6,8 @@
 //  solution, proves metre/centimetre invariance, keeps thermal scoring ahead
 //  of continuation roulette and the volume-bounce cap, verifies optically
 //  thick densities are not floored, and forces both distance sampling and
-//  ratio tracking past more than 1024 null proposals.  Pel is deliberately
-//  rejected until the ordered preview step.
+//  ratio tracking past more than 1024 null proposals.  The final Phase-A
+//  increment also gates the approximate Pel preview entry route.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -35,6 +35,8 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/FiniteMath.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -343,12 +345,43 @@ namespace
 		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
 		const RasterizerState rast = { 0, 0 };
 		IRayCaster::RAY_STATE state;
-		RISEPel pel( 1, 1, 1 );
-		Scalar distance = -1.0;
-		const bool pelHit = metres.caster->CastRay( rc, rast,
-			Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), pel, state, &distance, nullptr );
-		Check( !pelHit && pel.r == 0.0 && pel.g == 0.0 && pel.b == 0.0,
-			"Pel RayCaster rejects fire media until the preview step" );
+		state.volumeBounces = 64;
+		RISEPel pelSum(0.0);
+		bool allFinite = true;
+		unsigned int pelHits = 0;
+		for( unsigned int i = 0; i < 20000u; ++i ) {
+			RISEPel pel(0.0);
+			if( metres.caster->CastRay( rc, rast,
+				Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), pel, state,
+				nullptr, nullptr ) ) ++pelHits;
+			allFinite = allFinite && RISE::IsFiniteDouble(pel.r) &&
+				RISE::IsFiniteDouble(pel.g) && RISE::IsFiniteDouble(pel.b);
+			pelSum = pelSum+pel;
+		}
+		if( !allFinite || ColorMath::MaxValue(pelSum)<=0.0 ) {
+			const Point3 midpoint(0,0,0.5);
+			const MediumCoefficients pelCoeff = mediumM->GetCoefficients(midpoint);
+			const RISEPel pelSource = mediumM->GetThermalEmissionPel(midpoint);
+			std::cout << "  Pel hits=" << pelHits << " sum=(" << pelSum.r << "," << pelSum.g << "," <<
+				pelSum.b << ") sigma_t=(" << pelCoeff.sigma_t.r << "," <<
+				pelCoeff.sigma_t.g << "," << pelCoeff.sigma_t.b << ") source=(" <<
+				pelSource.r << "," << pelSource.g << "," << pelSource.b << ")" <<
+				std::endl;
+			RandomNumberGenerator sampleRng(0x991u);
+			IndependentSampler sampleSampler(sampleRng);
+			unsigned int sampledEvents = 0;
+			for( unsigned int i = 0; i < 1000u; ++i ) {
+				bool sampled = false;
+				mediumM->SampleDistance(Ray(Point3(0,0,0),Vector3(0,0,1)),
+					1.0,sampleSampler,sampled);
+				if( sampled ) ++sampledEvents;
+			}
+			std::cout << "  direct Pel sampled events=" << sampledEvents <<
+				" pdf@0.5=" << mediumM->EvalDistancePdf(
+					Ray(Point3(0,0,0),Vector3(0,0,1)),0.5,true,1.0) << std::endl;
+		}
+		Check( allFinite && ColorMath::MaxValue(pelSum)>0.0,
+			"Pel RayCaster runs fire transport without NaN or rejection" );
 	}
 
 	void TestOpticallyThickDensityIsNotFloored()

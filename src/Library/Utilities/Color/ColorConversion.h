@@ -24,6 +24,10 @@ namespace RISE
 
 		XYZPel Rec709RGBtoXYZ( const Rec709RGBPel& p );
 		Rec709RGBPel XYZtoRec709RGB( const XYZPel& xyz );
+		/// Linear XYZ(D65) -> Rec.709 matrix only.  Unlike XYZtoRec709RGB,
+		/// this performs no gamut mapping and is therefore suitable for
+		/// constructing signed spectral response functions.
+		Rec709RGBPel XYZtoRec709RGBMatrixOnly( const XYZPel& xyz );
 
 		// sRGB linearization/non-linearization
 		Rec709RGBPel Linearize_sRGB( const sRGBPel& srgb );
