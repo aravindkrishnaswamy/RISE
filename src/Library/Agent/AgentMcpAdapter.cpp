@@ -208,10 +208,14 @@ namespace RISE
 				return tool;
 			}
 
-			//! Secure-MCP slice 2: the refusal note prepended to all 5
+			//! Secure-MCP slice 2: the refusal note prepended to the
 			//! mutating tools' (propose_patch/propose_patches/insert_chunk/
-			//! insert_chunks/remove_chunk) descriptions under
-			//! AgentAutonomy::Read.  DECIDED: annotate, don't hide --
+			//! insert_chunks/insert_material_scaffold/remove_chunk)
+			//! descriptions under AgentAutonomy::Read (arc-75 S2.1 added
+			//! insert_material_scaffold to this note's set, but NOT to
+			//! IsProposeSafeVerb -- see kScaffoldProposeRefusedNote's doc
+			//! for why it needs its OWN, distinct note under Propose
+			//! instead of kAutonomyProposeNote).  DECIDED: annotate, don't hide --
 			//! the tool stays fully visible (real inputSchema, callable
 			//! shape) so a client can still explain to its user what the
 			//! tool would do and why it is currently refused, rather than
@@ -258,7 +262,35 @@ namespace RISE
 				"Commit (the posture the document owner's own session runs at) -- an external/"
 				"proposing session can list and poll proposals but never approve or reject one] ";
 
-			//! Build the `tools/list` result: the 16 existing AgentRpc verbs,
+			//! Arc-75 slice S2.1: insert_material_scaffold's OWN annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY.  It is a mutating
+			//! tool, but -- unlike the 5 tools kAutonomyProposeNote covers
+			//! -- it is DELIBERATELY excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb (the ripple across dozens of "N mutating
+			//! verbs" prose restatements plus the two GUI client-side
+			//! retry-verb sets SourceHygieneTest.cpp mechanically pins to
+			//! IsProposeSafeVerb was judged out of scope for this slice;
+			//! see the arc log).  So under Propose it is refused with the
+			//! SAME kAutonomyRefused error Read gives it (it never reaches
+			//! AgentSession, so it never gets a chance to STAGE a proposal
+			//! the way propose_patch/insert_chunk do) -- kAutonomyReadNote
+			//! is reused VERBATIM for the Read posture (accurate: "this
+			//! session is read-only" IS true there), but that text would be
+			//! misleading under Propose (the session is NOT read-only,
+			//! only this one tool is unreachable), so Propose gets this
+			//! dedicated note instead.  Deliberately contains NEITHER
+			//! magic substring AgentAutonomyPolicyTest's per-note counters
+			//! key on ("[REFUSED under --agent-autonomy=read" /
+			//! "[NOTE under --agent-autonomy=propose") -- this tool is
+			//! neither read-refused-with-that-wording nor propose-staged,
+			//! so counting it in either bucket would corrupt those RED-
+			//! PROVE counts.
+			const std::string kScaffoldProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: insert_material_scaffold is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 20 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -507,6 +539,56 @@ namespace RISE
 						"succeeded just because the call itself returned. REQUIRES a scene to be "
 						"loaded; `chunks` must be a non-empty array of strings." );
 					tools.push_back( MakeTool( "insert_chunks", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// insert_material_scaffold (Arc-75 slice S2.1)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "family", StringProp(
+						"One of: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic." ) );
+					props.set( "name", StringProp(
+						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
+						"chunk is named tmpl_<name>_<role>, e.g. tmpl_desk1_mat, tmpl_desk1_grain." ) );
+					props.set( "tone", StringProp(
+						"Base colour as \"r g b\", each 0..1, e.g. \"0.55 0.42 0.30\"." ) );
+					props.set( "wear", NumberProp( "Variation intensity, 0..1." ) );
+					props.set( "scale", NumberProp( "Spatial frequency of the variation, > 0 (larger = tighter/finer features)." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "family" ); required.push_back( "name" ); required.push_back( "tone" );
+					required.push_back( "wear" );   required.push_back( "scale" );
+					// insert_material_scaffold is Commit-only (see
+					// kScaffoldProposeRefusedNote's doc) -- readOnly and
+					// proposeOnly BOTH refuse it, but with different text
+					// (kAutonomyReadNote is accurate under Read; the
+					// dedicated propose note is accurate under Propose).
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kScaffoldProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"Expand ONE of five material-family templates into a small wired painter graph "
+						"(2-4 painters + 1 material) added to the scene in one call. Families: "
+						"\"weathered_wood\" (pbr_metallic_roughness, base_color AND roughness both bound to a "
+						"domainwarp3d wood-grain painter), \"rough_stone\" (cooktorrance, rd bound to a worley3d "
+						"pebble field, facets bound to a spatially-varying scalar field), \"brushed_metal\" "
+						"(ward_anisotropic, alphax/alphay both bound to a spatially-varying scalar field at "
+						"different scale for the anisotropic groove), \"aged_bronze\" (cooktorrance, rd bound to "
+						"a reactiondiffusion3d oxidation-patina field, facets bound to a spatially-varying "
+						"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay both "
+						"bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT LEAST "
+						"ONE microsurface parameter to a real painter chunk. ALL FIVE params are REQUIRED, no "
+						"defaults -- a missing one is a blocking error naming it. Internal graph constants are "
+						"jittered deterministically from `name`: the SAME name reproduces byte-identical chunks, "
+						"a DIFFERENT name visibly differs. Every generated chunk is an ORDINARY, EDITABLE "
+						"document chunk named tmpl_<name>_<role> -- read_document shows them, and propose_patch/"
+						"remove_chunk work on them exactly like any hand-authored chunk. Applied IN ORDER "
+						"through the SAME batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT). Returns "
+						"{applied,total,results:[...]} -- the EXACT insert_chunk per-element shape -- plus "
+						"`material` ({name,kind} of the one material chunk) and `boundSlots` "
+						"([{param,painter},...], purely factual). Check every element's own status. A missing/"
+						"invalid param, an unrecognized family, or a NAME COLLISION refuses the WHOLE call "
+						"before any chunk is generated (document unchanged) -- reported as a tool error, not a "
+						"partial result. Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "insert_material_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -895,13 +977,14 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 19 tool names this adapter recognizes --
+			//! The list of the 20 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
-					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
+					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
+					"insert_material_scaffold", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"compare_to_reference",

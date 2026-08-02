@@ -1772,6 +1772,111 @@ namespace RISE
 			std::vector<AgentChunkResult> InsertChunks( const std::vector<std::string>& chunkTexts,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! Arc-75 slice S2.1 (insert_material_scaffold): the one of FIVE
+			//! material-family templates this call expanded -- pin the
+			//! strings, they are the wire/tool-schema enum.
+			enum class MaterialScaffoldFamily
+			{
+				WeatheredWood,
+				RoughStone,
+				BrushedMetal,
+				AgedBronze,
+				GlazedCeramic,
+			};
+
+			//! The structured result of InsertMaterialScaffold.  `ok==false`
+			//! means the call was refused BEFORE any chunk was generated --
+			//! a missing/invalid param, an unknown family, or a NAME
+			//! collision against an existing (kind,name) in the document
+			//! (checked up front against a document snapshot, precisely so
+			//! a collision refuses the WHOLE expansion cleanly instead of
+			//! landing a partial graph -- see the .cpp for why InsertChunks'
+			//! own best-effort per-element semantics are not enough here).
+			//! `message` carries the actionable reason.  The document is
+			//! BYTE-IDENTICAL to before the call on any ok==false result.
+			//!
+			//! `ok==true` means generation succeeded and the batch was
+			//! submitted via InsertChunks -- `chunkResults` is one
+			//! AgentChunkResult per generated chunk, IN INSERTION ORDER
+			//! (the exact per-element shape InsertChunks/insert_chunks
+			//! returns); a caller must still check each element's own
+			//! `applied`/`status` -- ok==true is NOT a promise every chunk
+			//! landed, only that the request itself was well-formed and
+			//! collision-free at submission time (a later element can still
+			//! be rejected by the SAME dry-run-guarded derive insert_chunk
+			//! uses, e.g. an unrelated concurrent edit).  `materialName` /
+			//! `materialKind` name the ONE material chunk the family
+			//! produced; `boundSlots` lists every microsurface PARAMETER
+			//! this family bound to a spatially-varying painter (param name
+			//! + the painter chunk name it references) -- purely factual,
+			//! no advisory prose.  Some families bind more than one slot
+			//! (e.g. brushed_metal's alphax AND alphay).
+			struct AgentScaffoldResult
+			{
+				bool        ok = false;
+				std::string message;
+				std::string family;
+				std::string materialName;
+				std::string materialKind;
+				std::vector<std::pair<std::string,std::string>> boundSlots;   //!< (param, painterName)
+				std::vector<AgentChunkResult> chunkResults;
+			};
+
+			//! Expand material `family` into a small wired painter graph (2-4
+			//! painters + 1 material, every chunk named `tmpl_<name>_<role>`)
+			//! and submit it through InsertChunks -- so richness costs ONE
+			//! tool call and the model never hand-types a microsurface slot
+			//! or assembles the painter graph itself.  See
+			//! docs/agentic-redesign/75-expressive-surface-arc.md S2 for the
+			//! design and AgentSession.cpp's BuildMaterialScaffold for the
+			//! per-family chunk-graph design + the binding-form rationale
+			//! (which slots take a colour-pipe painter vs a
+			//! scalar_painter{function2d}).  ALL FIVE params are REQUIRED --
+			//! `family` (one of the MaterialScaffoldFamily strings), `name`
+			//! (a fresh, unique prefix), `tone` ("r g b", each 0..1),
+			//! `wear` (0..1, variation intensity), `scale` (>0, spatial
+			//! frequency).  Internal graph constants (noise phase/frequency,
+			//! secondary darkening factors, per-axis anisotropy) are
+			//! jittered DETERMINISTICALLY from a hash of `name` -- no RNG,
+			//! no clock, so two calls with the SAME name produce
+			//! byte-identical chunk text and two DIFFERENT names visibly
+			//! differ beyond their explicit params.  Routes entirely through
+			//! InsertChunks (see that method's doc): AUTHORITY (Owner vs
+			//! External) staging-vs-commit, conflict detection, and per-chunk
+			//! `issues` diagnostics are ALL inherited unchanged for a caller
+			//! at THIS C++ API -- including the Secure-MCP External-authority
+			//! staging behaviour (an External session with a live controller
+			//! attached STAGES every generated chunk instead of committing,
+			//! exactly like InsertChunk).
+			//!
+			//! CAVEAT (arc-75 S2.1 fix-round P1): that "inherited unchanged"
+			//! claim is about AUTHORITY, a SESSION-level concept this method
+			//! never touches directly (it only ever sees whatever mAuthority
+			//! the session was constructed with).  AUTONOMY is a DIFFERENT,
+			//! WIRE-TRANSPORT-level concept (AgentRpcDispatcher's launch-time
+			//! Read/Propose/Commit posture) this method has NO visibility into
+			//! at all -- a caller reaching THIS method directly (as every
+			//! path above does) has, by construction, already cleared
+			//! whatever autonomy gate its transport enforces.  Deliberately
+			//! NOT added to AgentRpc.cpp's IsProposeSafeVerb (the ripple
+			//! across dozens of "N mutating verbs" prose restatements plus
+			//! two GUI client-side retry-verb sets SourceHygieneTest.cpp
+			//! mechanically pins to it was judged out of scope for this
+			//! slice), so a WIRE caller (tools/call over MCP, or a raw
+			//! insert_material_scaffold JSON-RPC request) running under
+			//! AgentAutonomy::Propose is refused with kAutonomyRefused
+			//! BEFORE ever reaching this method -- mirroring the identical
+			//! caveat AgentMcpAdapter.cpp's kScaffoldProposeRefusedNote
+			//! already carries for the MCP tools/list surface.  A DIRECT
+			//! session-API caller (this method, called in-process) is
+			//! unaffected -- there is no autonomy gate at this layer.
+			AgentScaffoldResult InsertMaterialScaffold( const std::string& family,
+			                                            const std::string& name,
+			                                            const std::string& tone,
+			                                            double wear,
+			                                            double scale,
+			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
 			//! narrowing -- the SAME resolution rules as ProposePatch,

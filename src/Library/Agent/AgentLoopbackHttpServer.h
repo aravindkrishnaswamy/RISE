@@ -259,9 +259,13 @@ namespace RISE
 			//! FIXED WINDOW (not sliding/token-bucket) counter: every
 			//! kMutatingRateLimitWindowMs milliseconds the count resets to
 			//! zero; a mutating tools/call increments it -- the counted set is
-			//! IsMutatingMcpToolCall's in the .cpp, i.e. the 5 mutating verbs
-			//! PLUS resolve_proposal (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk/resolve_proposal).  The
+			//! IsMutatingMcpToolCall's in the .cpp: the mutating verbs
+			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
+			//! insert_material_scaffold/remove_chunk) PLUS resolve_proposal --
+			//! NOT the same set as AgentRpc.cpp's IsProposeSafeVerb (that one
+			//! excludes insert_material_scaffold and resolve_proposal both;
+			//! see AgentMcpAdapter.cpp's kScaffoldProposeRefusedNote doc for
+			//! why).  The
 			//! BATCH forms carry MORE leverage per call, not less, so they are
 			//! the last thing that should escape the cap.  The
 			//! (kMutatingRateLimitMaxCalls+1)th

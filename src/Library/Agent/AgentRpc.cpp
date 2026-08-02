@@ -231,24 +231,30 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 5b: the sibling refusal for AgentAutonomy::Propose
-			//! -- used ONLY for resolve_proposal, the one verb deliberately left
-			//! off Propose's extended allowlist (see IsProposeSafeVerb's doc and
+			//! -- used for any verb that falls through Propose's extended
+			//! allowlist (IsProposeSafeVerb -- see that function's doc and
 			//! AgentRpc.h's file header).  Same shape as MakeAutonomyRefusedError
 			//! above (kAutonomyRefused, structured {verb,autonomy} data) so a
-			//! caller can branch on it identically; `autonomy:"propose"` and a
-			//! message naming resolve_proposal specifically (an Owner-only verb,
-			//! not something --agent-autonomy=commit alone would fix for an
-			//! External session -- so this message does NOT suggest relaunching
-			//! at commit, unlike the Read refusal, which would genuinely unblock
-			//! the caller).
-			std::string MakeProposeAutonomyRefusedError( const JsonValue& id, const std::string& verb )
+			//! caller can branch on it identically -- but `autonomy:"propose"`
+			//! here, TRUTHFULLY: a caller invoking one of these verbs under
+			//! --agent-autonomy=propose is NOT running a read-only session (most
+			//! other verbs work fine), so reusing MakeAutonomyRefusedError's
+			//! hardcoded `autonomy:"read"` / "this session is read-only" text
+			//! would be a FALSE value in the exact field built for programmatic
+			//! branching (arc-75 S2.1 fix-round P1 -- caught by review: that
+			//! defect is exactly what this function exists to prevent, so the
+			//! ONE thing every call site must get right is passing an accurate,
+			//! verb-SPECIFIC `message` -- resolve_proposal's reason (Owner-only;
+			//! --agent-autonomy=commit alone does not fix it for an External
+			//! session) is entirely different from insert_material_scaffold's
+			//! (simply not on the allowlist; --agent-autonomy=commit DOES let it
+			//! reach AgentSession, same as any IsProposeSafeVerb verb).
+			std::string MakeProposeAutonomyRefusedError( const JsonValue& id, const std::string& verb,
+			                                             const std::string& message )
 			{
 				JsonValue err = JsonValue::MakeObject();
 				err.set( "code", JsonValue::MakeNumber( static_cast<double>( kAutonomyRefused ) ) );
-				err.set( "message", JsonValue::MakeString(
-					"refused: this session runs with --agent-autonomy=propose; resolve_proposal is "
-					"Owner-only (an External/propose session may not resolve ANY proposal, including "
-					"its own -- the document owner resolves it from their own Commit-posture session)" ) );
+				err.set( "message", JsonValue::MakeString( message ) );
 				JsonValue data = JsonValue::MakeObject();
 				data.set( "verb", JsonValue::MakeString( verb ) );
 				data.set( "autonomy", JsonValue::MakeString( "propose" ) );
@@ -835,7 +841,7 @@ namespace RISE
 				// -- letting them REACH AgentSession, whose own Owner/External
 				// authority decides staging-vs-commit (see AgentRpc.h's file
 				// header).  resolve_proposal is deliberately excluded from
-				// Propose's extension -- it is refused here with the Propose-
+				// Propose's extension -- it is refused here with a Propose-
 				// specific message (MakeProposeAutonomyRefusedError) rather
 				// than falling through to the generic Read-flavoured one,
 				// since "relaunch with --agent-autonomy=commit" is not this
@@ -843,12 +849,42 @@ namespace RISE
 				// document owner, at their own Commit-posture session, can
 				// resolve a proposal -- see AgentSession::ResolveProposal's
 				// doc for the session-layer gate this mirrors).
+				//
+				// Arc-75 S2.1 fix-round P1: insert_material_scaffold is
+				// ALSO excluded from Propose's extension (deliberately not
+				// added to IsProposeSafeVerb -- see AgentSession.h's
+				// InsertMaterialScaffold doc), so it falls through the SAME
+				// `!IsReadSafeVerb && !IsProposeSafeVerb` gate resolve_proposal
+				// does.  It MUST take the SAME Propose-specific branch, not
+				// the generic MakeAutonomyRefusedError fallback below: that
+				// fallback hardcodes `autonomy:"read"` and "this session is
+				// read-only" -- a FALSE value/message under an actually-
+				// Propose session (most other verbs work fine here; only
+				// this one tool is unreachable).  Unlike resolve_proposal,
+				// though, --agent-autonomy=commit REALLY IS this verb's
+				// escape hatch (it reaches AgentSession exactly like any
+				// IsProposeSafeVerb verb once dispatched under Commit), so
+				// it gets its OWN message saying so, not resolve_proposal's
+				// Owner-only wording.
 				if( mAutonomy == AgentAutonomy::Read && !IsReadSafeVerb( m ) ) {
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 				if( mAutonomy == AgentAutonomy::Propose &&
 				    !IsReadSafeVerb( m ) && !IsProposeSafeVerb( m ) ) {
-					if( m == "resolve_proposal" ) return MakeProposeAutonomyRefusedError( idValue, m );
+					if( m == "resolve_proposal" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; resolve_proposal is "
+							"Owner-only (an External/propose session may not resolve ANY proposal, including "
+							"its own -- the document owner resolves it from their own Commit-posture session)" );
+					}
+					if( m == "insert_material_scaffold" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; insert_material_scaffold "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
+							"STAGE proposals as usual" );
+					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 
@@ -1516,6 +1552,98 @@ namespace RISE
 					result.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
 					result.set( "total",   JsonValue::MakeNumber( static_cast<double>( results.size() ) ) );
 					result.set( "results", resultsArr );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// insert_material_scaffold {family, name, tone, wear, scale, baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
+				//       family, name, material:{name,kind}, boundSlots:[{param,painter},...]}
+				//   Arc-75 slice S2.1: expand one of FIVE material-family
+				//   templates ("weathered_wood", "rough_stone",
+				//   "brushed_metal", "aged_bronze", "glazed_ceramic") into a
+				//   small wired painter graph (2-4 painters + 1 material,
+				//   every chunk named tmpl_<name>_<role>) with a
+				//   microsurface slot painter-BOUND -- one tool call instead
+				//   of hand-typing a scalar/painter graph.  ALL FIVE params
+				//   are REQUIRED (no defaults): a missing param is a
+				//   BLOCKING error naming it, deliberately (the surface is
+				//   new and the creative micro-decision is the point).
+				//   `tone` is "r g b" (each 0..1); `wear` is 0..1 (variation
+				//   intensity); `scale` is >0 (spatial frequency).  Chunk
+				//   generation, family/tone/wear/scale validation, and the
+				//   name-collision precheck (refuses the WHOLE expansion,
+				//   document unchanged, before any chunk is generated) all
+				//   happen in AgentSession::InsertMaterialScaffold; this
+				//   handler only extracts params and serializes the result.
+				//   The actual insert is submitted through the SAME
+				//   InsertChunks path insert_chunks uses, so authority/
+				//   autonomy staging-vs-commit, conflict detection, and
+				//   per-chunk `issues` are all inherited unchanged.
+				//--------------------------------------------------------------
+				if( m == "insert_material_scaffold" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* familyVal = params.find( "family" );
+					if( !familyVal || !familyVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'family' (string) is required -- one of weathered_wood, "
+							"rough_stone, brushed_metal, aged_bronze, glazed_ceramic" );
+					}
+					const JsonValue* nameVal = params.find( "name" );
+					if( !nameVal || !nameVal->isString() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
+					}
+					const JsonValue* toneVal = params.find( "tone" );
+					if( !toneVal || !toneVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'tone' (string, \"r g b\" each 0..1) is required" );
+					}
+					const JsonValue* wearVal = params.find( "wear" );
+					if( !wearVal || !wearVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'wear' (number, 0..1) is required" );
+					}
+					const JsonValue* scaleVal = params.find( "scale" );
+					if( !scaleVal || !scaleVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'scale' (number, > 0) is required" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentScaffoldResult sr = s->InsertMaterialScaffold(
+						familyVal->asString(), nameVal->asString(), toneVal->asString(),
+						wearVal->asNumber(), scaleVal->asNumber(), ( b == 1 ) ? &base : nullptr );
+
+					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
+
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_material_scaffold" );
+					}
+					std::size_t appliedCount = 0;
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.applied ) ++appliedCount;
+						resultsArr.push_back( ChunkResultJson( cr ) );
+					}
+					JsonValue material = JsonValue::MakeObject();
+					material.set( "name", JsonValue::MakeString( sr.materialName ) );
+					material.set( "kind", JsonValue::MakeString( sr.materialKind ) );
+					JsonValue boundSlots = JsonValue::MakeArray();
+					for( const auto& kv : sr.boundSlots ) {
+						JsonValue e = JsonValue::MakeObject();
+						e.set( "param",   JsonValue::MakeString( kv.first ) );
+						e.set( "painter", JsonValue::MakeString( kv.second ) );
+						boundSlots.push_back( e );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",    JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
+					result.set( "total",      JsonValue::MakeNumber( static_cast<double>( sr.chunkResults.size() ) ) );
+					result.set( "results",    resultsArr );
+					result.set( "family",     JsonValue::MakeString( sr.family ) );
+					result.set( "name",       JsonValue::MakeString( nameVal->asString() ) );
+					result.set( "material",   material );
+					result.set( "boundSlots", boundSlots );
 					return MakeSuccess( idValue, result );
 				}
 

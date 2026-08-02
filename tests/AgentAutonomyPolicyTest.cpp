@@ -564,6 +564,65 @@ static void TestProposePosture()
 		       "refusal (resolved:false, unknown id) -- not a dispatcher policy refusal" );
 	}
 
+	// --- Arc-75 S2.1 fix-round P1 WIRE-LEVEL RED-PROOF: insert_material_scaffold
+	// is (like resolve_proposal) excluded from IsProposeSafeVerb, so it is
+	// refused under BOTH Read and Propose at the DISPATCHER -- but unlike
+	// resolve_proposal, it must NOT be told it is under a Read-posture session.
+	// Pre-fix, this verb fell through to the generic MakeAutonomyRefusedError,
+	// which hardcodes data.autonomy="read" and "this session runs with
+	// --agent-autonomy=read" -- a FALSE value/message under an actually-
+	// Propose session. This block is the assertion that failed on that
+	// pre-fix code (data.autonomy=="propose" / message names "propose", not
+	// the read-posture wording; manually red-proved by temporarily reverting
+	// AgentRpc.cpp's fix -- exactly 2 of these Checks fail, both on the
+	// truthfulness of the autonomy report, not on refusal happening at all).
+	// Reaches the session cleanly under Commit (a real chunk-graph
+	// application, not a dispatcher refusal).
+	// ---
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "family", JsonValue::MakeString( "weathered_wood" ) );
+		params.set( "name",   JsonValue::MakeString( "wireposture" ) );
+		params.set( "tone",   JsonValue::MakeString( "0.5 0.4 0.3" ) );
+		params.set( "wear",   JsonValue::MakeNumber( 0.5 ) );
+		params.set( "scale",  JsonValue::MakeNumber( 1.0 ) );
+
+		JsonValue envRead = ParseResponse(
+			rpcRead.HandleLine( Req( 6, "insert_material_scaffold", params ) ), 6 );
+		Check( envRead.has( "error" ), "insert_material_scaffold under Read is refused at the dispatcher" );
+		Check( envRead.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "insert_material_scaffold under Read carries kAutonomyRefused (-32011)" );
+		Check( envRead.get( "error" ).get( "data" ).get( "autonomy" ).asString() == "read",
+		       "insert_material_scaffold's Read refusal truthfully names autonomy=\"read\"" );
+
+		JsonValue envPropose = ParseResponse(
+			rpcPropose.HandleLine( Req( 6, "insert_material_scaffold", params ) ), 6 );
+		Check( envPropose.has( "error" ),
+		       "RED-PROVE: insert_material_scaffold under Propose is ALSO refused at the dispatcher "
+		       "(deliberately excluded from Propose's mutating-verb extension, like resolve_proposal)" );
+		Check( envPropose.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "insert_material_scaffold under Propose carries kAutonomyRefused (-32011), the SAME code as Read" );
+		Check( envPropose.get( "error" ).get( "data" ).get( "autonomy" ).asString() == "propose",
+		       "P1 FIX RED-PROOF: insert_material_scaffold's Propose refusal TRUTHFULLY names "
+		       "autonomy=\"propose\" -- NOT \"read\" (pre-fix this fell through to the generic "
+		       "read-refusal envelope, which hardcodes autonomy=\"read\" even though this session "
+		       "is genuinely running Propose autonomy)" );
+		Check( envPropose.get( "error" ).get( "message" ).asString().find( "propose" ) != std::string::npos,
+		       "P1 FIX RED-PROOF: the Propose refusal's message NAMES propose autonomy (not the "
+		       "--agent-autonomy=read wording the generic refusal would have used)" );
+		Check( envPropose.get( "error" ).get( "message" ).asString().find( "--agent-autonomy=read" ) == std::string::npos,
+		       "P1 FIX RED-PROOF: the Propose refusal's message does NOT claim \"this session runs "
+		       "with --agent-autonomy=read\" -- the generic MakeAutonomyRefusedError's EXACT wording, "
+		       "which would be false under an actually-Propose session" );
+
+		JsonValue envCommit = ParseResponse(
+			rpcCommit.HandleLine( Req( 6, "insert_material_scaffold", params ) ), 6 );
+		Check( !envCommit.has( "error" ),
+		       "insert_material_scaffold under Commit REACHES the session (not refused at the dispatcher)" );
+		Check( envCommit.get( "result" ).get( "applied" ).asNumber( -1 ) > 0.0,
+		       "insert_material_scaffold under Commit + Owner-authority session actually applies chunks" );
+	}
+
 	std::remove( scenePathRead.c_str() );
 	std::remove( scenePathPropose.c_str() );
 	std::remove( scenePathCommit.c_str() );
@@ -682,10 +741,11 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 19,
-		       "tools/list under Read STILL lists all 19 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 20,
+		       "tools/list under Read STILL lists all 20 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
+		bool sawInsertMaterialScaffold = false;
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -699,6 +759,13 @@ static void TestMcpLayer()
 			if( name == "propose_patches" ) { sawProposePatches = true; Check( annotated, "propose_patches tool description is ANNOTATED under Read" ); }
 			if( name == "insert_chunk" )    { sawInsertChunk    = true; Check( annotated, "insert_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "insert_chunks" )   { sawInsertChunks   = true; Check( annotated, "insert_chunks tool description is ANNOTATED under Read" ); }
+			// Arc-75 S2.1: insert_material_scaffold reuses kAutonomyReadNote
+			// VERBATIM under Read (see kScaffoldProposeRefusedNote's doc in
+			// AgentMcpAdapter.cpp) -- it is annotated exactly like the other
+			// 5 mutating tools here, even though it is NOT on
+			// IsProposeSafeVerb's set (that asymmetry only shows up under
+			// Propose, tested below).
+			if( name == "insert_material_scaffold" ) { sawInsertMaterialScaffold = true; Check( annotated, "insert_material_scaffold tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )    { sawRemoveChunk    = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "render" )          { sawRender         = true; Check( !annotated, "render tool description is NOT annotated under Read (it is allowed)" ); }
 			if( name == "list_proposals" ) {
@@ -711,9 +778,9 @@ static void TestMcpLayer()
 				Check( ownerOnlyAnnotated, "resolve_proposal tool description IS annotated with the OWNER-ONLY note under Read" );
 			}
 		}
-		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
+		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 5, "EXACTLY 5 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 6, "EXACTLY 6 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/insert_material_scaffold, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -723,7 +790,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 19, "tools/list under Commit lists all 19 tools" );
+		Check( tools.isArray() && tools.size() == 20, "tools/list under Commit lists all 20 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -761,9 +828,10 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 19, "tools/list under Propose lists all 19 tools" );
+		Check( tools.isArray() && tools.size() == 20, "tools/list under Propose lists all 20 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
+		bool sawInsertMaterialScaffold = false;
 		int proposeNotedCount = 0, readNotedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& t = tools.at( i );
@@ -792,13 +860,28 @@ static void TestMcpLayer()
 				sawInsertChunks = true;
 				Check( proposeNoted, "insert_chunks (batch) tool description carries the propose-staging note under Propose" );
 			}
+			// Arc-75 S2.1: insert_material_scaffold is NOT on
+			// IsProposeSafeVerb's set (deliberate scope decision -- see
+			// kScaffoldProposeRefusedNote's doc in AgentMcpAdapter.cpp), so
+			// under Propose it is refused exactly like Read, but with its
+			// OWN distinct wording that deliberately carries NEITHER the
+			// propose-staging note NOR the generic read-refusal note --
+			// asserting that keeps proposeNotedCount/readNotedCount below
+			// correct WITHOUT this tool inflating either bucket.
+			if( name == "insert_material_scaffold" ) {
+				sawInsertMaterialScaffold = true;
+				Check( !proposeNoted, "insert_material_scaffold tool description does NOT carry the propose-staging note under Propose (it never reaches AgentSession, so it can never stage)" );
+				Check( !readNoted, "insert_material_scaffold tool description does NOT carry the generic read-refusal note under Propose (that wording would be misleading -- the session is not read-only)" );
+				Check( desc.find( "[UNAVAILABLE at --agent-autonomy=propose" ) != std::string::npos,
+				       "insert_material_scaffold tool description carries its OWN dedicated Propose-refusal note" );
+			}
 			if( name == "remove_chunk" ) {
 				sawRemoveChunk = true;
 				Check( proposeNoted, "remove_chunk tool description carries the propose-staging note under Propose" );
 			}
 		}
-		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk,
-		       "all 5 mutating tools were found in tools/list under Propose" );
+		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk && sawInsertMaterialScaffold,
+		       "all 5 IsProposeSafeVerb mutating tools + insert_material_scaffold were found in tools/list under Propose" );
 		Check( proposeNotedCount == 5,
 		       "RED-PROVE: EXACTLY 5 tool descriptions carry the propose-staging note under Propose" );
 		Check( readNotedCount == 0,

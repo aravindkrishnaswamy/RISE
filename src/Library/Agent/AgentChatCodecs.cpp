@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the THIRTEEN provider-neutral tool definitions -- twelve are
+//    (1) the FIFTEEN provider-neutral tool definitions -- fourteen are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -319,6 +319,59 @@ namespace RISE
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"chunks\"]}"
+				},
+				{
+					"insert_material_scaffold",
+					"Expand ONE of five material-family templates into a small wired painter graph "
+					"(2-4 painters + 1 material) added to the scene in one call -- so a richly-varied "
+					"material costs one tool call instead of hand-typing a scalar/painter graph and "
+					"choosing which slot takes a painter yourself. Families: \"weathered_wood\" "
+					"(pbr_metallic_roughness, base_color AND roughness both bound to a domainwarp3d wood-"
+					"grain painter), \"rough_stone\" (cooktorrance, rd bound to a worley3d pebble field, "
+					"facets bound to a spatially-varying scalar field), \"brushed_metal\" "
+					"(ward_anisotropic, alphax/alphay both bound to a spatially-varying scalar field at "
+					"different scale for the anisotropic groove), \"aged_bronze\" (cooktorrance, rd bound "
+					"to a reactiondiffusion3d oxidation-patina field, facets bound to a spatially-varying "
+					"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay "
+					"both bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT "
+					"LEAST ONE microsurface parameter to a real painter chunk -- that is the whole point "
+					"of the tool. ALL FIVE params are REQUIRED, no defaults: `family` (exactly one of the "
+					"five names above), `name` (a fresh, unique prefix -- every generated chunk is named "
+					"tmpl_<name>_<role>, e.g. tmpl_desk1_mat, tmpl_desk1_grain; a name whose derived chunks "
+					"collide with existing ones is refused, document unchanged), `tone` (\"r g b\", each "
+					"0..1 -- the base colour), `wear` (0..1 -- variation intensity), `scale` (>0 -- spatial "
+					"frequency of the variation). Internal graph constants (noise phase/frequency, "
+					"secondary darkening, per-axis anisotropy) are jittered deterministically from `name` "
+					"-- the SAME name reproduces byte-identical chunks, a DIFFERENT name visibly differs. "
+					"Every generated chunk is an ORDINARY, EDITABLE document chunk -- read_document shows "
+					"them at the exact site of any future edit, and propose_patch/remove_chunk work on "
+					"them exactly like any hand-authored chunk (change tmpl_desk1_grain's `scale` to "
+					"retune the grain, or point a different material at tmpl_desk1_glaze). Applied IN "
+					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; "
+					"see that tool's description) -- returns {applied,total,results:[...]} (the EXACT "
+					"insert_chunk per-element shape) plus `material` ({name,kind} of the one material "
+					"chunk) and `boundSlots` ([{param,painter},...] -- every microsurface parameter this "
+					"expansion bound, purely factual). Check every element's own status; do not assume "
+					"the whole expansion landed just because the call returned. A missing/invalid param, "
+					"an unrecognized family, or a name collision refuses the WHOLE call before any chunk "
+					"is generated (document unchanged) -- these come back as a tool error, not a partial "
+					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"tone\":{\"type\":\"string\",\"description\":"
+						"\"Base colour as \\\"r g b\\\", each 0..1, e.g. \\\"0.55 0.42 0.30\\\".\"},"
+						"\"wear\":{\"type\":\"number\",\"description\":"
+						"\"Variation intensity, 0..1.\"},"
+						"\"scale\":{\"type\":\"number\",\"description\":"
+						"\"Spatial frequency of the variation, > 0 (larger = tighter/finer features).\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"tone\",\"wear\",\"scale\"]}"
 				},
 				{
 					"remove_chunk",

@@ -6460,8 +6460,9 @@ namespace RISE
 								// record ("asked before building") -- mirrors the
 								// blind-edit-nudge mutation set AgentChatLoop::
 								// AddToolResult already tracks (insert_chunk/
-								// insert_chunks/propose_patch/propose_patches/
-								// remove_chunk).  EVERY mutating verb must be
+								// insert_chunks/insert_material_scaffold/
+								// propose_patch/propose_patches/remove_chunk).
+								// EVERY mutating verb must be
 								// listed: a verb missing here is silently treated
 								// as non-mutating, so a run that built via that
 								// verb before asking would VACUOUSLY PASS the
@@ -6502,6 +6503,11 @@ namespace RISE
 									// mutating verb ships, add it to BOTH.
 									static const char* const kMutatingToolNames[] = {
 										"insert_chunk", "insert_chunks",
+										// Arc-75 slice S2.1: insert_material_scaffold mutates
+										// the document (via the same InsertChunks path
+										// insert_chunks uses) -- same "did the MODEL mutate,
+										// and when?" membership; see the comment above.
+										"insert_material_scaffold",
 										"propose_patch", "propose_patches", "remove_chunk"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {

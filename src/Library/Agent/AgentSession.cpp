@@ -87,6 +87,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdint>  // Arc-75 S2.1: std::uint64_t for the material-scaffold jitter hash
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 #include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
@@ -2969,6 +2970,615 @@ namespace RISE
 				out.push_back( InsertChunk( chunkTexts[i], base ) );
 			}
 
+			return out;
+		}
+
+		namespace
+		{
+			//----------------------------------------------------------------
+			// Arc-75 slice S2.1 (insert_material_scaffold): deterministic
+			// jitter + the five family chunk-graph generators.  See
+			// AgentSession::InsertMaterialScaffold's header doc for the
+			// contract; this namespace holds pure text-generation helpers
+			// with NO session/controller/lock interaction at all -- the
+			// generated chunk texts are submitted through the EXISTING
+			// InsertChunks path, so nothing here touches
+			// SceneEditController::mMutex.
+			//----------------------------------------------------------------
+
+			//! FNV-1a 64-bit -- byte-stable across platforms/compilers/runs
+			//! (unlike std::hash<std::string>, which the standard leaves
+			//! implementation-defined).  The determinism red-proof (same
+			//! `name` twice -> byte-identical chunk text) depends on this
+			//! function NEVER changing for a given input.  Weak-avalanche
+			//! caveat: FNV-1a's per-byte diffusion is modest, so two SHORT
+			//! salts differing only in a trailing sequential digit (e.g.
+			//! "axis1" vs "axis2") can correlate more than a stronger hash
+			//! would -- every call site below therefore uses a distinctive
+			//! WORD per knob ("wood_persist", "stone_axis", ...), never a
+			//! numbered/sequential salt scheme, so this weakness is never
+			//! actually exercised.
+			std::uint64_t ScaffoldFnv1a64( const std::string& s )
+			{
+				std::uint64_t h = 14695981039346656037ull;
+				for( unsigned char c : s ) { h ^= c; h *= 1099511628211ull; }
+				return h;
+			}
+
+			//! Deterministic value in [0,1) from `name` + a per-knob `salt`
+			//! string -- different salts decorrelate different knobs of the
+			//! SAME scaffold; different `name`s decorrelate different
+			//! scaffolds (two families with the same name still differ
+			//! because each knob's salt is also family-specific text).
+			double ScaffoldJitter01( const std::string& name, const char* salt )
+			{
+				const std::uint64_t h = ScaffoldFnv1a64( name + "|" + salt );
+				// Top 53 bits -> a double in [0,1) (mirrors the standard
+				// generate_canonical technique for a one-shot deterministic
+				// draw, no distribution object needed).
+				return static_cast<double>( ( h >> 11 ) & ( ( 1ull << 53 ) - 1 ) )
+				     / static_cast<double>( 1ull << 53 );
+			}
+			double ScaffoldJitterRange( const std::string& name, const char* salt, double lo, double hi )
+			{
+				return lo + ScaffoldJitter01( name, salt ) * ( hi - lo );
+			}
+			unsigned int ScaffoldJitterUInt( const std::string& name, const char* salt, unsigned int lo, unsigned int hi )
+			{
+				return lo + static_cast<unsigned int>( ScaffoldJitter01( name, salt ) * static_cast<double>( hi - lo + 1 ) );
+			}
+
+			//! Fixed 4-decimal formatting -- deterministic text (no
+			//! scientific notation at the magnitudes used here).
+			std::string ScaffoldFmt( double v )
+			{
+				char buf[64];
+				std::snprintf( buf, sizeof( buf ), "%.4f", v );
+				return buf;
+			}
+			double ScaffoldClamp01( double v ) { return v < 0.0 ? 0.0 : ( v > 1.0 ? 1.0 : v ); }
+
+			std::string ScaffoldChunkText( const char* keyword,
+			                               const std::vector<std::pair<std::string,std::string>>& params )
+			{
+				std::string out = std::string( keyword ) + "\n{\n";
+				for( const auto& kv : params ) out += kv.first + " " + kv.second + "\n";
+				out += "}\n";
+				return out;
+			}
+
+			std::string ScaffoldVec3( double a, double b, double c )
+			{
+				return ScaffoldFmt( a ) + " " + ScaffoldFmt( b ) + " " + ScaffoldFmt( c );
+			}
+
+			std::string ScaffoldUniformColorText( const std::string& name, double r, double g, double b )
+			{
+				return ScaffoldChunkText( "uniformcolor_painter", {
+					{ "name",  name },
+					{ "color", ScaffoldVec3( r, g, b ) },
+				} );
+			}
+
+			//! A genuinely UV-varying [0,1] scalar field, defined directly
+			//! as a math expression of u,v.  IMPORTANT -- this is the ONLY
+			//! chunk kind this generator wraps in scalar_painter's
+			//! `function2d` slot for a truly spatially-varying scalar.  The
+			//! 3D-SOLID noise painters (perlin3d/worley3d/domainwarp3d/
+			//! reactiondiffusion3d/...) dual-register into the SAME
+			//! Function2D manager (Job::RegisterPainterDual), so
+			//! scalar_painter{function2d <a_3d_noise_painter>} PARSES and
+			//! RENDERS non-black -- but their GetColor reads
+			//! ri.ptIntersection (world-space), which the base
+			//! Painter::Evaluate(x,y)'s synthetic RayIntersectionGeometric
+			//! (Painter.cpp) never populates (it sets only ptCoord), so
+			//! that binding is silently evaluated at the SAME fixed point
+			//! every time -- spatially CONSTANT, not varying.  Verified by
+			//! reading Perlin3DPainter::GetColor / Painter::Evaluate /
+			//! Function2DScalarPainter::GetValuesAt directly; not used here.
+			//! expression_function2d has no such trap (its value IS u,v).
+			std::string ScaffoldExprFunction2DText( const std::string& name, double freqU, double freqV, double phase )
+			{
+				std::string out = "expression_function2d\n{\n";
+				out += "name " + name + "\n";
+				out += "param freq_u " + ScaffoldFmt( freqU ) + "\n";
+				out += "param freq_v " + ScaffoldFmt( freqV ) + "\n";
+				out += "param ph " + ScaffoldFmt( phase ) + "\n";
+				out += "expr 0.5 + 0.5 * sin(freq_u * u * 6.283185 + ph) * cos(freq_v * v * 6.283185 + ph)\n";
+				out += "}\n";
+				return out;
+			}
+
+			std::string ScaffoldScalarFn2DText( const std::string& name, const std::string& fn2d, double scale, double bias )
+			{
+				return ScaffoldChunkText( "scalar_painter", {
+					{ "name",       name },
+					{ "function2d", fn2d },
+					{ "scale",      ScaffoldFmt( scale ) },
+					{ "bias",       ScaffoldFmt( bias ) },
+				} );
+			}
+
+			std::string ScaffoldDomainWarp3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                      double persistence, unsigned int octaves, double warpAmp, unsigned int warpLevels,
+			                                      double axisA, double axisB, double axisC, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "domainwarp3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "persistence", ScaffoldFmt( persistence ) }, { "octaves", std::to_string( octaves ) },
+					{ "warp_amplitude", ScaffoldFmt( warpAmp ) }, { "warp_levels", std::to_string( warpLevels ) },
+					{ "scale", ScaffoldVec3( axisA, axisB, axisC ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldWorley3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                  double jitter, const std::string& output,
+			                                  double axis, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "worley3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "jitter", ScaffoldFmt( jitter ) }, { "output", output },
+					{ "scale", ScaffoldVec3( axis, axis, axis ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldReactionDiffusion3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                             unsigned int gridSize, double feed, double kill, unsigned int iterations,
+			                                             double axis, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "reactiondiffusion3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "grid_size", std::to_string( gridSize ) },
+					{ "feed", ScaffoldFmt( feed ) }, { "kill", ScaffoldFmt( kill ) },
+					{ "iterations", std::to_string( iterations ) },
+					{ "scale", ScaffoldVec3( axis, axis, axis ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldPbrMetallicRoughnessText( const std::string& name, const std::string& baseColor,
+			                                              const std::string& roughness, double metallic )
+			{
+				return ScaffoldChunkText( "pbr_metallic_roughness_material", {
+					{ "name", name }, { "base_color", baseColor },
+					{ "metallic", ScaffoldFmt( metallic ) }, { "roughness", roughness },
+				} );
+			}
+
+			std::string ScaffoldCookTorranceText( const std::string& name, const std::string& rd, const std::string& rs,
+			                                      const std::string& facets )
+			{
+				return ScaffoldChunkText( "cooktorrance_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs }, { "facets", facets },
+				} );
+			}
+
+			std::string ScaffoldWardAnisotropicText( const std::string& name, const std::string& rd, const std::string& rs,
+			                                         const std::string& alphax, const std::string& alphay )
+			{
+				return ScaffoldChunkText( "ward_anisotropic_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs },
+					{ "alphax", alphax }, { "alphay", alphay },
+				} );
+			}
+
+			std::string ScaffoldGGXText( const std::string& name, const std::string& rd, const std::string& rs,
+			                            const std::string& alphax, const std::string& alphay, const std::string& fresnelMode )
+			{
+				return ScaffoldChunkText( "ggx_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs },
+					{ "alphax", alphax }, { "alphay", alphay },
+					{ "fresnel_mode", fresnelMode },
+				} );
+			}
+
+			//! `tone` is "r g b", each 0..1 -- parsed strictly (no trailing
+			//! junk beyond whitespace) so a malformed value is refused
+			//! rather than silently truncated.
+			bool ScaffoldParseTone( const std::string& tone, double& r, double& g, double& b )
+			{
+				char trailing[8] = { 0 };
+				if( std::sscanf( tone.c_str(), "%lf %lf %lf %7s", &r, &g, &b, trailing ) != 3 ) return false;
+				if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) return false;
+				if( r < 0.0 || r > 1.0 || g < 0.0 || g > 1.0 || b < 0.0 || b > 1.0 ) return false;
+				return true;
+			}
+
+			//! Arc-75 S2.1 fix-round P3: a sane upper bound on `name`'s
+			//! length.  Nothing downstream is unsafe past this (every
+			//! generated chunk name is a plain `std::string` concatenation,
+			//! no fixed buffer involved) -- this is purely a SANITY cap
+			//! against a pathological caller-supplied prefix bloating every
+			//! generated chunk name (`tmpl_<name>_<role>`) past what any
+			//! honest scene-authoring `name` should ever need.  64 is
+			//! generous against every real chunk name in this codebase's
+			//! own scenes/tests.
+			const std::size_t kScaffoldMaxNameLength = 64;
+
+			//! `name` is embedded directly into generated `name <token>`
+			//! lines and `tmpl_<name>_<role>` chunk names -- restrict to
+			//! characters that can never split a line or open/close a brace
+			//! early (the same token-safety policy every other chunk name
+			//! in this file relies on implicitly), and cap the length
+			//! (kScaffoldMaxNameLength) against a pathological caller.
+			bool ScaffoldNameIsValid( const std::string& name )
+			{
+				if( name.empty() || name.size() > kScaffoldMaxNameLength ) return false;
+				for( unsigned char c : name ) {
+					if( !( std::isalnum( c ) || c == '_' || c == '-' ) ) return false;
+				}
+				return true;
+			}
+
+			//! One generated chunk: its kind (for the collision precheck),
+			//! its own chunk `name` (ditto), and its full chunk text.
+			struct ScaffoldChunkEntry
+			{
+				std::string kind;
+				std::string name;
+				std::string text;
+			};
+
+			//! The whole expansion for one family: every chunk in insertion
+			//! order, plus the factual material/bound-slot summary
+			//! InsertMaterialScaffold's result reports.
+			struct ScaffoldGraph
+			{
+				std::vector<ScaffoldChunkEntry> chunks;
+				std::string materialName;
+				std::string materialKind;
+				std::vector<std::pair<std::string,std::string>> boundSlots;   //!< (param, painterName)
+			};
+
+			//! weathered_wood: pbr_metallic_roughness_material, base_color
+			//! AND roughness both bound to the SAME domainwarp3d grain
+			//! painter (a real wood ridge is both darker-and-rougher at the
+			//! same grain lines, so sharing one painter across both slots
+			//! is the honest choice, not just the cheap one).  `wear` warps
+			//! the grain harder and darkens the low end more; `scale`
+			//! stretches the grain frequency (anisotropic per-axis, for a
+			//! grain direction rather than blobs).
+			ScaffoldGraph BuildWeatheredWood( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nLight = "tmpl_" + name + "_tonelight";
+				const std::string nDark  = "tmpl_" + name + "_tonedark";
+				const std::string nGrain = "tmpl_" + name + "_grain";
+				const std::string nMat   = "tmpl_" + name + "_mat";
+
+				const double darkFactor = ScaffoldClamp01(
+					ScaffoldJitterRange( name, "wood_dark", 0.35, 0.60 ) - wear * 0.15 );
+				out.chunks.push_back( { "uniformcolor_painter", nLight, ScaffoldUniformColorText( nLight, r, g, b ) } );
+				out.chunks.push_back( { "uniformcolor_painter", nDark,
+					ScaffoldUniformColorText( nDark, r * darkFactor, g * darkFactor, b * darkFactor ) } );
+
+				const double persistence  = ScaffoldJitterRange( name, "wood_persist", 0.50, 0.80 );
+				const unsigned int octaves = ScaffoldJitterUInt( name, "wood_octaves", 3, 5 );
+				const double warpAmp      = ScaffoldJitterRange( name, "wood_warpamp", 2.0, 6.0 ) * ( 0.5 + wear );
+				const unsigned int warpLevels = ScaffoldJitterUInt( name, "wood_warplevels", 1, 3 );
+				const double axisA = ScaffoldJitterRange( name, "wood_axisa", 0.6, 1.4 ) * scale;
+				const double axisB = ScaffoldJitterRange( name, "wood_axisb", 2.0, 4.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "wood_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "wood_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "wood_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "domainwarp3d_painter", nGrain,
+					ScaffoldDomainWarp3DText( nGrain, nDark, nLight, persistence, octaves, warpAmp, warpLevels,
+						axisA, axisB, axisA, shiftX, shiftY, shiftZ ) } );
+
+				out.chunks.push_back( { "pbr_metallic_roughness_material", nMat,
+					ScaffoldPbrMetallicRoughnessText( nMat, nGrain, nGrain, 0.0 ) } );
+				out.materialName = nMat;
+				out.materialKind = "pbr_metallic_roughness_material";
+				out.boundSlots.push_back( { "roughness", nGrain } );
+				out.boundSlots.push_back( { "base_color", nGrain } );
+				return out;
+			}
+
+			//! rough_stone: cooktorrance_material, rd bound to a worley3d
+			//! pebble/cell field (colora=tone, colorb="none"), facets bound
+			//! to scalar_painter{function2d} over a jittered
+			//! expression_function2d.  `wear` widens and raises the facet
+			//! band; `scale` sets the pebble frequency.
+			ScaffoldGraph BuildRoughStone( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTone   = "tmpl_" + name + "_tone";
+				const std::string nPebble = "tmpl_" + name + "_pebble";
+				const std::string nWear   = "tmpl_" + name + "_wearfield";
+				const std::string nFacets = "tmpl_" + name + "_facets";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTone, ScaffoldUniformColorText( nTone, r, g, b ) } );
+
+				const double jitterAmt = ScaffoldJitterRange( name, "stone_jitter", 0.6, 1.0 );
+				const std::string output = ( ScaffoldJitter01( name, "stone_output" ) < 0.5 ) ? "f1" : "f2-f1";
+				const double axis  = ScaffoldJitterRange( name, "stone_axis", 3.0, 8.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "stone_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "stone_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "stone_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "worley3d_painter", nPebble,
+					ScaffoldWorley3DText( nPebble, nTone, "none", jitterAmt, output, axis, shiftX, shiftY, shiftZ ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "stone_frequ", 6.0, 14.0 );
+				const double freqV = ScaffoldJitterRange( name, "stone_freqv", 6.0, 14.0 );
+				const double phase = ScaffoldJitterRange( name, "stone_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nWear,
+					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nFacets,
+					ScaffoldScalarFn2DText( nFacets, nWear, 0.05 + 0.30 * wear, 0.04 + 0.05 * wear ) } );
+
+				out.chunks.push_back( { "cooktorrance_material", nMat,
+					ScaffoldCookTorranceText( nMat, nPebble, "none", nFacets ) } );
+				out.materialName = nMat;
+				out.materialKind = "cooktorrance_material";
+				out.boundSlots.push_back( { "facets", nFacets } );
+				out.boundSlots.push_back( { "rd", nPebble } );
+				return out;
+			}
+
+			//! brushed_metal: ward_anisotropic_material, alphax (narrow,
+			//! along the brush direction) AND alphay (wide, across it) both
+			//! bound to scalar_painter{function2d} wrapping the SAME
+			//! groove expression_function2d at different scale/bias --
+			//! the anisotropy IS the two bands reading a shared groove
+			//! field differently, not two unrelated noises.  `wear` widens
+			//! both bands (a more-worn brushed surface scatters more in
+			//! both directions); `scale` sets the groove pitch.
+			ScaffoldGraph BuildBrushedMetal( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTint   = "tmpl_" + name + "_tint";
+				const std::string nGroove = "tmpl_" + name + "_groove";
+				const std::string nAlphaX = "tmpl_" + name + "_alphax";
+				const std::string nAlphaY = "tmpl_" + name + "_alphay";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTint, ScaffoldUniformColorText( nTint, r, g, b ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "metal_frequ", 20.0, 40.0 ) * scale;
+				const double freqV = ScaffoldJitterRange( name, "metal_freqv", 1.0, 3.0 ) * scale;
+				const double phase = ScaffoldJitterRange( name, "metal_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nGroove,
+					ScaffoldExprFunction2DText( nGroove, freqU, freqV, phase ) } );
+
+				out.chunks.push_back( { "scalar_painter", nAlphaX,
+					ScaffoldScalarFn2DText( nAlphaX, nGroove, 0.01 + 0.02 * wear, 0.015 + 0.01 * wear ) } );
+				out.chunks.push_back( { "scalar_painter", nAlphaY,
+					ScaffoldScalarFn2DText( nAlphaY, nGroove, 0.05 + 0.25 * wear, 0.10 + 0.10 * wear ) } );
+
+				out.chunks.push_back( { "ward_anisotropic_material", nMat,
+					ScaffoldWardAnisotropicText( nMat, "none", nTint, nAlphaX, nAlphaY ) } );
+				out.materialName = nMat;
+				out.materialKind = "ward_anisotropic_material";
+				out.boundSlots.push_back( { "alphax", nAlphaX } );
+				out.boundSlots.push_back( { "alphay", nAlphaY } );
+				return out;
+			}
+
+			//! aged_bronze: cooktorrance_material, rd bound to a
+			//! reactiondiffusion3d patina field (its OWN description names
+			//! "oxidation blooms" -- the honest fit for bronze patina,
+			//! deliberately distinct from rough_stone's worley so the two
+			//! families don't read as the same recipe in different paint),
+			//! rs reuses the base tone (a warm specular tint), facets bound
+			//! to scalar_painter{function2d} like rough_stone.  `wear`
+			//! raises the facet band (more pitting); `scale` sets the
+			//! patina blotch frequency.
+			ScaffoldGraph BuildAgedBronze( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTone   = "tmpl_" + name + "_tone";
+				const std::string nPatina = "tmpl_" + name + "_patina";
+				const std::string nWear   = "tmpl_" + name + "_wearfield";
+				const std::string nFacets = "tmpl_" + name + "_facets";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTone, ScaffoldUniformColorText( nTone, r, g, b ) } );
+
+				const unsigned int gridSize   = ScaffoldJitterUInt( name, "bronze_grid", 14, 20 );
+				const double feed             = ScaffoldJitterRange( name, "bronze_feed", 0.030, 0.045 );
+				const double kill             = ScaffoldJitterRange( name, "bronze_kill", 0.055, 0.065 );
+				const unsigned int iterations = ScaffoldJitterUInt( name, "bronze_iter", 300, 700 );
+				const double axis  = ScaffoldJitterRange( name, "bronze_axis", 2.0, 5.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "bronze_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "bronze_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "bronze_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "reactiondiffusion3d_painter", nPatina,
+					ScaffoldReactionDiffusion3DText( nPatina, nTone, "none", gridSize, feed, kill, iterations,
+						axis, shiftX, shiftY, shiftZ ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "bronze_frequ", 6.0, 14.0 );
+				const double freqV = ScaffoldJitterRange( name, "bronze_freqv", 6.0, 14.0 );
+				const double phase = ScaffoldJitterRange( name, "bronze_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nWear,
+					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nFacets,
+					ScaffoldScalarFn2DText( nFacets, nWear, 0.03 + 0.20 * wear, 0.03 + 0.04 * wear ) } );
+
+				out.chunks.push_back( { "cooktorrance_material", nMat,
+					ScaffoldCookTorranceText( nMat, nPatina, nTone, nFacets ) } );
+				out.materialName = nMat;
+				out.materialKind = "cooktorrance_material";
+				out.boundSlots.push_back( { "facets", nFacets } );
+				out.boundSlots.push_back( { "rd", nPatina } );
+				return out;
+			}
+
+			//! glazed_ceramic: ggx_material, fresnel_mode schlick_f0 (a
+			//! dielectric glaze, not a conductor), rd is the body colour,
+			//! rs is a small F0 tint (the glaze coat), alphax AND alphay
+			//! both bound to the SAME LOW-amplitude scalar_painter{function2d}
+			//! (isotropic, "low-alpha with subtle scalar variation" per the
+			//! family brief).  `wear` nudges the alpha band up slightly;
+			//! `scale` sets the ripple frequency.
+			ScaffoldGraph BuildGlazedCeramic( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nBody      = "tmpl_" + name + "_body";
+				const std::string nGlaze     = "tmpl_" + name + "_glaze";
+				const std::string nVariation = "tmpl_" + name + "_variation";
+				const std::string nAlpha     = "tmpl_" + name + "_alpha";
+				const std::string nMat       = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nBody, ScaffoldUniformColorText( nBody, r, g, b ) } );
+
+				const double f0 = ScaffoldJitterRange( name, "ceramic_f0", 0.04, 0.06 );
+				out.chunks.push_back( { "uniformcolor_painter", nGlaze,
+					ScaffoldUniformColorText( nGlaze, ScaffoldClamp01( f0 + 0.02 * r ),
+						ScaffoldClamp01( f0 + 0.02 * g ), ScaffoldClamp01( f0 + 0.02 * b ) ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "ceramic_frequ", 8.0, 16.0 ) * scale;
+				const double freqV = ScaffoldJitterRange( name, "ceramic_freqv", 8.0, 16.0 ) * scale;
+				const double phase = ScaffoldJitterRange( name, "ceramic_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nVariation,
+					ScaffoldExprFunction2DText( nVariation, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nAlpha,
+					ScaffoldScalarFn2DText( nAlpha, nVariation, 0.005 + 0.015 * wear, 0.01 + 0.01 * wear ) } );
+
+				out.chunks.push_back( { "ggx_material", nMat,
+					ScaffoldGGXText( nMat, nBody, nGlaze, nAlpha, nAlpha, "schlick_f0" ) } );
+				out.materialName = nMat;
+				out.materialKind = "ggx_material";
+				out.boundSlots.push_back( { "alphax", nAlpha } );
+				out.boundSlots.push_back( { "alphay", nAlpha } );
+				return out;
+			}
+
+			bool ScaffoldParseFamily( const std::string& family, AgentSession::MaterialScaffoldFamily& out )
+			{
+				if( family == "weathered_wood" ) { out = AgentSession::MaterialScaffoldFamily::WeatheredWood; return true; }
+				if( family == "rough_stone" )    { out = AgentSession::MaterialScaffoldFamily::RoughStone;    return true; }
+				if( family == "brushed_metal" )  { out = AgentSession::MaterialScaffoldFamily::BrushedMetal;  return true; }
+				if( family == "aged_bronze" )    { out = AgentSession::MaterialScaffoldFamily::AgedBronze;    return true; }
+				if( family == "glazed_ceramic" ) { out = AgentSession::MaterialScaffoldFamily::GlazedCeramic; return true; }
+				return false;
+			}
+
+			ScaffoldGraph BuildScaffoldGraph( AgentSession::MaterialScaffoldFamily family, const std::string& name,
+			                                  double r, double g, double b, double wear, double scale )
+			{
+				switch( family )
+				{
+					case AgentSession::MaterialScaffoldFamily::WeatheredWood:  return BuildWeatheredWood( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::RoughStone:     return BuildRoughStone( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::BrushedMetal:   return BuildBrushedMetal( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::AgedBronze:     return BuildAgedBronze( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::GlazedCeramic:  return BuildGlazedCeramic( name, r, g, b, wear, scale );
+				}
+				return ScaffoldGraph();
+			}
+		}
+
+		AgentSession::AgentScaffoldResult AgentSession::InsertMaterialScaffold(
+			const std::string& family, const std::string& name, const std::string& tone,
+			double wear, double scale, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentScaffoldResult out;
+			out.family = family;
+
+			MaterialScaffoldFamily fam;
+			if( !ScaffoldParseFamily( family, fam ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: unknown family `" + family +
+					"` -- valid families are: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic";
+				return out;
+			}
+			if( !ScaffoldNameIsValid( name ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `name` must be a non-empty token "
+					"(letters, digits, underscore, hyphen only) -- got `" + name + "`";
+				return out;
+			}
+			double r = 0.0, g = 0.0, b = 0.0;
+			if( !ScaffoldParseTone( tone, r, g, b ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `tone` must be three numbers `r g b`, "
+					"each in [0,1] -- got `" + tone + "`";
+				return out;
+			}
+			if( !std::isfinite( wear ) || wear < 0.0 || wear > 1.0 ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `wear` must be a finite number in [0,1]";
+				return out;
+			}
+			if( !std::isfinite( scale ) || scale <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `scale` must be a finite number > 0";
+				return out;
+			}
+
+			const ScaffoldGraph graph = BuildScaffoldGraph( fam, name, r, g, b, wear, scale );
+
+			// Collision precheck: refuse the WHOLE expansion, document
+			// UNCHANGED, if ANY generated (kind,name) already exists AT
+			// SNAPSHOT TIME.  InsertChunks' own duplicate rejection is
+			// per-ELEMENT and best-effort by design (see its header doc)
+			// -- a mid-batch collision would still land the chunks before
+			// and after it, leaving a half-wired graph -- so without this
+			// precheck a caller reusing a colliding `name` could end up
+			// with a partial scaffold instead of a clean refusal.
+			//
+			// Arc-75 S2.1 fix-round P2c (precision correction -- the prior
+			// comment here overclaimed "atomic: either the whole graph
+			// lands, or nothing does", which AgentScaffoldResult's OWN doc
+			// already hedges more carefully).  What this precheck DOES
+			// guarantee: ok==false refuses BEFORE any chunk is generated,
+			// so a genuine collision (the common case: replaying the same
+			// `name`) never partially lands.  What it does NOT guarantee:
+			//   * TOCTOU -- there is a real window between this snapshot
+			//     read and the InsertChunks submission below.  A
+			//     CONCURRENT live writer (another session, or the
+			//     interactive editor, mutating the SAME controller's
+			//     document) that inserts a colliding chunk inside that
+			//     window is invisible to this precheck; the collision then
+			//     surfaces as InsertChunks' own ordinary per-element
+			//     "rejected" result for THAT chunk -- best-effort, not a
+			//     whole-batch rollback (see InsertChunks' header doc).
+			//   * Once the precheck passes, everything downstream is
+			//     InsertChunks' EXISTING best-effort semantics, unchanged:
+			//     a LATER element can still be rejected for an unrelated
+			//     reason (e.g. a concurrent edit invalidating an earlier-
+			//     landed reference), leaving a partially-applied graph on
+			//     the document -- callers must check every `chunkResults[i]`
+			//     rather than trusting ok==true as "the whole graph
+			//     landed" (see AgentScaffoldResult's own doc).
+			//   * Optimistic concurrency (`baseOrNull`) is honored exactly
+			//     as InsertChunks documents it: checked against the FIRST
+			//     element only: a stale head surfaces as that element's
+			//     own "conflict" status, not a distinct scaffold-level
+			//     guarantee.
+			//   * A chunk that APPLIES but references a name the document
+			//     has no definition for yet is a non-blocking WARNING
+			//     (`issues`), never a failure -- same AttachChunkIssueWarnings
+			//     contract InsertChunk/InsertChunks already carry.
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+					for( const ScaffoldChunkEntry& c : graph.chunks ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocFindByName( headDoc, c.kind + "/" + c.name );
+						if( id != 0 ) {
+							out.ok = false;
+							out.message = "insert_material_scaffold refused: a `" + c.kind + "` named `" + c.name +
+								"` already exists -- every generated chunk is named tmpl_<name>_<role>, "
+								"and this collides; pick a different `name` -- document unchanged";
+							return out;
+						}
+					}
+				}
+			}
+
+			std::vector<std::string> chunkTexts;
+			chunkTexts.reserve( graph.chunks.size() );
+			for( const ScaffoldChunkEntry& c : graph.chunks ) chunkTexts.push_back( c.text );
+
+			out.chunkResults = InsertChunks( chunkTexts, baseOrNull );
+			out.ok           = true;
+			out.materialName = graph.materialName;
+			out.materialKind = graph.materialKind;
+			out.boundSlots   = graph.boundSlots;
 			return out;
 		}
 

@@ -120,6 +120,11 @@
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Agent/AgentSession.h"
@@ -3189,6 +3194,446 @@ static void TestProposePatchesConflictIsBatchFatal()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// MS1-MS6: Arc-75 slice S2.1 -- insert_material_scaffold.
+//----------------------------------------------------------------------
+
+//! Every generated chunk is named tmpl_<name>_<role>; helper for the
+//! per-family expected-shape table below.
+static std::string TmplName( const std::string& name, const char* role )
+{
+	return "tmpl_" + name + "_" + role;
+}
+
+//! Arc-75 S2.1 fix-round P2a: PIN the tool against the "resolves to a
+//! painter but is actually spatially CONSTANT" decoy landmine (a real
+//! bug class -- the 3D-solid noise painters dual-register into the
+//! Function2D manager and PARSE/RENDER fine when wrapped in
+//! scalar_painter{function2d}, but silently evaluate at a fixed point
+//! every time; see ScaffoldExprFunction2DText's doc in AgentSession.cpp).
+//! Render-pixel non-black checks are VACUOUS here (Monte Carlo noise
+//! varies every pixel regardless of whether the material itself is
+//! spatially varying) -- so these two helpers EVALUATE the resolved
+//! live painter DIRECTLY, through the SAME accessor the renderer uses
+//! (IPainter::GetColor / IScalarPainter::GetValuesAt), at several
+//! distinct synthetic points, and report the max spread observed.  A
+//! genuinely-varying painter spreads well past any honest epsilon; a
+//! spatially-constant one (the decoy) returns EXACTLY the same value at
+//! every point, spread == 0.0.
+//!
+//! Colour-pipe (world-space 3D noise painters): distinct `ptIntersection`
+//! points, mirroring how Perlin3DPainter::GetColor etc. actually sample.
+static double ColorPainterMaxSpread( IPainterManager* mgr, const std::string& name )
+{
+	IPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
+	if( !p ) return -1.0;   // sentinel: not found in this manager
+	double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+	for( int i = 0; i < 8; ++i ) {
+		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+		ri.bHit = true;
+		ri.ptIntersection = Point3( i * 0.37, i * 0.71 - 1.3, i * 1.9 + 0.5 );
+		const RISEPel c = p->GetColor( ri );
+		for( int ch = 0; ch < 3; ++ch ) { lo[ch] = std::min( lo[ch], c[ch] ); hi[ch] = std::max( hi[ch], c[ch] ); }
+	}
+	double spread = 0.0;
+	for( int ch = 0; ch < 3; ++ch ) spread = std::max( spread, hi[ch] - lo[ch] );
+	return spread;
+}
+
+//! Scalar-pipe (scalar_painter{function2d expression_function2d}): distinct
+//! `ptCoord` (u,v) points -- mirroring Function2DScalarPainter::GetValuesAt,
+//! which calls `pFunc->Evaluate(ri.ptCoord.x, ri.ptCoord.y)` for real.
+static double ScalarPainterMaxSpread( IScalarPainterManager* mgr, const std::string& name )
+{
+	IScalarPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
+	if( !p ) return -1.0;   // sentinel: not found in this manager
+	double lo = 1e30, hi = -1e30;
+	for( int i = 0; i < 8; ++i ) {
+		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+		ri.bHit = true;
+		ri.ptCoord = Point2( ( i % 8 ) / 8.0, ( ( i * 3 ) % 8 ) / 8.0 );
+		const double v = p->GetValuesAt( ri ).v[0];
+		lo = std::min( lo, v ); hi = std::max( hi, v );
+	}
+	return hi - lo;
+}
+
+//! MS1: each of the 5 families, at a FIXED name -- the expansion
+//! applies, the document contains the expected chunk set, the
+//! microsurface slot resolves to a real painter (checked via the
+//! DOCUMENT and the LIVE managers, not the generator string), EVERY
+//! bound slot is a GENUINELY spatially-varying painter (evaluated
+//! directly at several points through the renderer's own accessor --
+//! see ColorPainterMaxSpread/ScalarPainterMaxSpread's doc for why this,
+//! not a render-pixel check, is what actually pins the decoy landmine),
+//! and the scene derive+renders clean and non-black once an object is
+//! bound to the new material.
+static void TestMaterialScaffoldFamilies()
+{
+	std::printf( "MS1: insert_material_scaffold -- all 5 families, applies + binds + renders...\n" );
+
+	struct FamilyCase
+	{
+		const char* family;
+		const char* materialKind;
+		std::size_t expectedChunkCount;
+		// Honest-against-amplitude epsilons for the spread checks below
+		// (see each family's own comment in AgentSession.cpp's
+		// BuildXxx functions for the designed bias/scale ranges this is
+		// derived from) -- deliberately well BELOW the smallest
+		// expected spread so the check has real headroom, and well
+		// ABOVE 0.0 so the decoy (spread identically 0.0) still fails
+		// it by a wide margin.
+		double colorEps;    // for boundSlots resolved in the colour-pipe manager
+		double scalarEps;   // for boundSlots resolved in the scalar-pipe manager
+	};
+	const FamilyCase cases[] = {
+		// weathered_wood: colour-pipe only (roughness+base_color share
+		// the grain painter); dark/light tone endpoints differ by a
+		// 0.35-0.60 factor, easily > 0.01 spread.
+		{ "weathered_wood",  "pbr_metallic_roughness_material", 4, 0.01,  0.0   },
+		// rough_stone: rd (colour, worley pebble) + facets (scalar,
+		// bias 0.04-0.09 + scale 0.05-0.35 at wear=0.6 -> span ~0.23).
+		{ "rough_stone",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// brushed_metal: alphax/alphay (scalar only) -- the NARROWEST
+		// amplitude family by design (alphax span ~0.02 at wear=0.6).
+		{ "brushed_metal",   "ward_anisotropic_material",       5, 0.0,   0.002 },
+		// aged_bronze: rd (colour, reaction-diffusion patina) + facets
+		// (scalar, span ~0.15 at wear=0.6).
+		{ "aged_bronze",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// glazed_ceramic: alphax/alphay (scalar only) -- DELIBERATELY
+		// "low-alpha with SUBTLE scalar variation" (span ~0.014 at
+		// wear=0.6) -- the tightest epsilon of the five, honestly so.
+		{ "glazed_ceramic",  "ggx_material",                     5, 0.0,   0.001 },
+	};
+
+	for( const FamilyCase& fc : cases ) {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_ms1_" ) + fc.family + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( "MS1(" ) + fc.family + ") fixture loads" );
+		if( !pJob ) continue;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+			fc.family, "deskA", "0.55 0.42 0.30", 0.6, 1.5, &v0 );
+
+		Check( sr.ok, std::string( "MS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
+		Check( sr.chunkResults.size() == fc.expectedChunkCount,
+		       std::string( "MS1(" ) + fc.family + ") generated the expected chunk count" );
+		Check( sr.materialKind == fc.materialKind,
+		       std::string( "MS1(" ) + fc.family + ") material chunk kind matches the family design" );
+		Check( sr.materialName == TmplName( "deskA", "mat" ),
+		       std::string( "MS1(" ) + fc.family + ") material chunk is named tmpl_deskA_mat" );
+		Check( !sr.boundSlots.empty(),
+		       std::string( "MS1(" ) + fc.family + ") at least one microsurface slot is bound (the tool's reason to exist)" );
+
+		bool allApplied = true;
+		for( const Agent::AgentChunkResult& cr : sr.chunkResults ) if( !cr.applied ) allApplied = false;
+		Check( allApplied, std::string( "MS1(" ) + fc.family + ") every generated chunk applied" );
+
+		// The microsurface slot resolves to a painter -- via the DOCUMENT
+		// (the material's own chunk literally names the bound painter) AND
+		// via the LIVE MANAGERS (Job::Add*Material only succeeds, and the
+		// chunk only comes back applied==true, when every referenced
+		// painter/scalar_painter name actually resolved -- an unresolved
+		// slot would have rejected the material chunk).
+		const std::string doc = sess->ReadDocument();
+		for( const auto& kv : sr.boundSlots ) {
+			Check( doc.find( kv.first + " " + kv.second ) != std::string::npos,
+			       std::string( "MS1(" ) + fc.family + ") document binds `" + kv.first + "` to `" + kv.second + "`" );
+		}
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( sr.materialName.c_str() ) != nullptr,
+		       std::string( "MS1(" ) + fc.family + ") the live material manager resolved the whole graph" );
+
+		// P2a: EVERY bound slot is a GENUINELY spatially-varying painter,
+		// not just a name that happens to resolve.  Try the scalar-pipe
+		// manager first (scalar_painter chunks register ONLY there, never
+		// dual-registered), then the colour-pipe manager -- exactly one
+		// must resolve (a boundSlot painter that resolves in NEITHER, or a
+		// spread <= its family's honest epsilon, both fail loudly).
+		for( const auto& kv : sr.boundSlots ) {
+			IScalarPainter* asScalar = pJob->GetScalarPainters() ? pJob->GetScalarPainters()->GetItem( kv.second.c_str() ) : nullptr;
+			if( asScalar ) {
+				const double spread = ScalarPainterMaxSpread( pJob->GetScalarPainters(), kv.second );
+				Check( spread > fc.scalarEps,
+				       std::string( "MS1(" ) + fc.family + ") scalar slot `" + kv.first + "` -> `" + kv.second +
+				       "` is GENUINELY spatially varying (spread " + std::to_string( spread ) +
+				       " > epsilon " + std::to_string( fc.scalarEps ) + ", evaluated directly via IScalarPainter::GetValuesAt "
+				       "at distinct UVs -- NOT a render-pixel check)" );
+				continue;
+			}
+			IPainter* asColor = pJob->GetPainters() ? pJob->GetPainters()->GetItem( kv.second.c_str() ) : nullptr;
+			Check( asColor != nullptr,
+			       std::string( "MS1(" ) + fc.family + ") bound painter `" + kv.second +
+			       "` resolves in EITHER the scalar or colour painter manager" );
+			if( asColor ) {
+				const double spread = ColorPainterMaxSpread( pJob->GetPainters(), kv.second );
+				Check( spread > fc.colorEps,
+				       std::string( "MS1(" ) + fc.family + ") colour slot `" + kv.first + "` -> `" + kv.second +
+				       "` is GENUINELY spatially varying (spread " + std::to_string( spread ) +
+				       " > epsilon " + std::to_string( fc.colorEps ) + ", evaluated directly via IPainter::GetColor "
+				       "at distinct world points -- NOT a render-pixel check)" );
+			}
+		}
+
+		// Bind an object to the new material and render a small non-black
+		// check -- "derive+render clean" per the family's own binding, not
+		// a hand-typed sanity material.
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "sphere_geometry\n{\nname sph_" + std::string( fc.family ) + "\nradius 0.5\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_" + std::string( fc.family ) +
+			"\ngeometry sph_" + fc.family + "\nmaterial " + sr.materialName + "\nposition 1.6 0 0\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		Check( objResults.size() == 2 && objResults[0].applied && objResults[1].applied,
+		       std::string( "MS1(" ) + fc.family + ") the follow-up object binding the scaffold material applied" );
+
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, std::string( "MS1(" ) + fc.family + ") the scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       std::string( "MS1(" ) + fc.family + ") the render is non-black" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! Extract the value on the FIRST line starting with `param ` that
+//! appears AFTER chunk `chunkName`'s own `name <chunkName>` line --
+//! good enough for these single-chunk-per-name fixtures (no nested
+//! braces to worry about).
+static std::string ExtractParamAfter( const std::string& doc, const std::string& chunkName, const std::string& param )
+{
+	const std::string nameMarker = "name " + chunkName + "\n";
+	const std::size_t namePos = doc.find( nameMarker );
+	if( namePos == std::string::npos ) return std::string();
+	const std::string paramMarker = "\n" + param + " ";
+	const std::size_t paramPos = doc.find( paramMarker, namePos );
+	if( paramPos == std::string::npos ) return std::string();
+	const std::size_t valStart = paramPos + paramMarker.size();
+	const std::size_t valEnd = doc.find( '\n', valStart );
+	return doc.substr( valStart, valEnd - valStart );
+}
+
+//! MS2: determinism -- the SAME name, in TWO FRESH documents, produces
+//! BYTE-IDENTICAL generated chunk text (no RNG, no clock); a DIFFERENT
+//! name visibly differs in its jittered constants (not just the renamed
+//! chunk tokens).
+static void TestMaterialScaffoldDeterminism()
+{
+	std::printf( "MS2: insert_material_scaffold -- determinism (same name twice byte-identical; different name differs)...\n" );
+
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_ms2_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+			"weathered_wood", name, "0.5 0.4 0.3", 0.5, 1.0 );
+		Check( sr.ok, "MS2 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "scafA" );
+	const std::string docA2 = expandFresh( "scafA" );
+	Check( !docA1.empty() && !docA2.empty(), "MS2 both `scafA` fixtures produced a document" );
+	Check( docA1 == docA2,
+	       "MS2 SAME name, two FRESH documents -> BYTE-IDENTICAL generated chunk text (deterministic, no RNG/clock)" );
+
+	const std::string docB = expandFresh( "scafB" );
+	Check( !docB.empty(), "MS2 `scafB` fixture produced a document" );
+	Check( docA1 != docB, "MS2 a DIFFERENT name produces a different document (trivially true from the renamed chunks alone)" );
+
+	// The STRONGER claim: the JITTERED NUMERIC CONSTANTS differ, not just
+	// the renamed chunk tokens -- extract the grain painter's own
+	// `persistence` value for each name and require them to differ.
+	const std::string persA = ExtractParamAfter( docA1, TmplName( "scafA", "grain" ), "persistence" );
+	const std::string persB = ExtractParamAfter( docB,  TmplName( "scafB", "grain" ), "persistence" );
+	Check( !persA.empty() && !persB.empty(), "MS2 extracted a `persistence` value from both fixtures' grain painter" );
+	Check( persA != persB,
+	       "MS2 a DIFFERENT name jitters a DIFFERENT `persistence` value (the internal constants really do vary with `name`, not just the labels)" );
+}
+
+//! MS3: each of the 5 required params, omitted in turn, is a BLOCKING
+//! error naming the missing param -- driven through the REAL wire
+//! (AgentRpcDispatcher::HandleLine), mirroring IC3's style.
+static void TestMaterialScaffoldMissingParams()
+{
+	std::printf( "MS3: insert_material_scaffold -- each missing required param -> blocking -32602...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"name\":\"x1\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5,\"scale\":1.0}", "family" },
+		{ "2", "{\"family\":\"weathered_wood\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5,\"scale\":1.0}", "name" },
+		{ "3", "{\"family\":\"weathered_wood\",\"name\":\"x3\",\"wear\":0.5,\"scale\":1.0}", "tone" },
+		{ "4", "{\"family\":\"weathered_wood\",\"name\":\"x4\",\"tone\":\"0.5 0.5 0.5\",\"scale\":1.0}", "wear" },
+		{ "5", "{\"family\":\"weathered_wood\",\"name\":\"x5\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5}", "scale" },
+	};
+	int id = 10;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_material_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "MS3(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "MS3(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "MS3 none of the 5 missing-param refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS4: an unrecognized `family` is refused with a message listing the
+//! valid families -- document unchanged.
+static void TestMaterialScaffoldBadFamily()
+{
+	std::printf( "MS4: insert_material_scaffold -- unknown family -> error listing valid families...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"rusty_chrome", "x", "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( !sr.ok, "MS4 an unknown family refuses the call (ok==false)" );
+	Check( sr.chunkResults.empty(), "MS4 no chunks were generated for an unknown family" );
+	const char* families[] = { "weathered_wood", "rough_stone", "brushed_metal", "aged_bronze", "glazed_ceramic" };
+	for( const char* f : families ) {
+		Check( sr.message.find( f ) != std::string::npos,
+		       std::string( "MS4 the error message lists valid family `" ) + f + "`" );
+	}
+	Check( sess->ReadDocument() == headBefore, "MS4 the refusal mutated nothing" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS4b (fix-round P3): `name` past the sane length cap (kScaffoldMaxNameLength
+//! == 64 in AgentSession.cpp) is refused, same as any other invalid `name`.
+static void TestMaterialScaffoldNameLengthCap()
+{
+	std::printf( "MS4b: insert_material_scaffold -- `name` past the length cap is refused...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms4b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS4b fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string tooLongName( 65, 'a' );   // one past the 64-char cap
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"weathered_wood", tooLongName, "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( !sr.ok, "MS4b a 65-char `name` (one past the cap) is refused" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS5: a name collision -- a family/name expanded once, then the SAME
+//! family+name expanded again -- refuses the WHOLE second call cleanly
+//! (document unchanged), rather than landing a partial second graph.
+static void TestMaterialScaffoldNameCollision()
+{
+	std::printf( "MS5: insert_material_scaffold -- name collision -> clean refusal, document unchanged...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS5 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const Agent::AgentSession::AgentScaffoldResult sr1 = sess->InsertMaterialScaffold(
+		"rough_stone", "dup1", "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( sr1.ok && !sr1.chunkResults.empty() && sr1.chunkResults.back().applied,
+	       "MS5 the FIRST expansion under this name applies cleanly" );
+
+	const std::string headAfterFirst = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+	// A SECOND expansion, same family AND name -- every generated chunk
+	// name collides with the first expansion's.
+	const Agent::AgentSession::AgentScaffoldResult sr2 = sess->InsertMaterialScaffold(
+		"rough_stone", "dup1", "0.9 0.1 0.1", 0.9, 2.0 );
+	Check( !sr2.ok, "MS5 the SECOND expansion (same family+name) is refused (ok==false)" );
+	Check( sr2.chunkResults.empty(), "MS5 the refused expansion generated NO chunk results (refused before InsertChunks ran)" );
+	Check( sr2.message.find( "dup1" ) != std::string::npos, "MS5 the refusal message names the colliding `name`" );
+
+	Check( sess->ReadDocument() == headAfterFirst, "MS5 the document is BYTE-IDENTICAL to before the collision (no partial graph landed)" );
+	Check( sess->HeadVersion() == vAfterFirst, "MS5 the head revision did not move" );
+
+	// A collision against a DIFFERENT family sharing the same `name` also
+	// refuses cleanly (rough_stone and aged_bronze both emit tmpl_<name>_tone
+	// and tmpl_<name>_mat).
+	const Agent::AgentSession::AgentScaffoldResult sr3 = sess->InsertMaterialScaffold(
+		"aged_bronze", "dup1", "0.5 0.5 0.3", 0.4, 1.0 );
+	Check( !sr3.ok, "MS5 a collision against a DIFFERENT family sharing the same `name` is also refused" );
+	Check( sess->ReadDocument() == headAfterFirst, "MS5 that cross-family collision ALSO left the document byte-identical" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS6: under External authority with a live controller attached (the
+//! same Secure-MCP staging posture insert_chunk/insert_chunks use), the
+//! expansion STAGES proposals rather than committing -- every generated
+//! chunk comes back status=="staged", applied==false, and the document
+//! is untouched until an Owner resolves them.
+static void TestMaterialScaffoldProposalMode()
+{
+	std::printf( "MS6: insert_material_scaffold -- External authority STAGES, does not commit...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS6 fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+	sess->AttachController( &c );
+	Check( sess->Authority() == Agent::AgentAuthority::External, "MS6 session reports External authority" );
+
+	const std::string headBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"glazed_ceramic", "extA", "0.8 0.8 0.75", 0.3, 1.0 );
+
+	Check( sr.ok, "MS6 the call itself is well-formed under External authority (ok==true -- generation + collision-precheck succeeded)" );
+	Check( !sr.chunkResults.empty(), "MS6 the expansion produced per-chunk results" );
+	bool allStaged = true;
+	for( const Agent::AgentChunkResult& cr : sr.chunkResults ) {
+		if( cr.applied || cr.status != "staged" ) allStaged = false;
+	}
+	Check( allStaged, "MS6 EVERY generated chunk is staged (applied==false, status==\"staged\"), none committed directly" );
+	Check( sess->ReadDocument() == headBefore, "MS6 the document is UNCHANGED -- nothing committed, only proposals queued" );
+
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -3224,6 +3669,13 @@ int main()
 	TestProposePatchesBestEffort();
 	TestProposePatchesValidation();
 	TestProposePatchesConflictIsBatchFatal();
+	TestMaterialScaffoldFamilies();
+	TestMaterialScaffoldDeterminism();
+	TestMaterialScaffoldMissingParams();
+	TestMaterialScaffoldBadFamily();
+	TestMaterialScaffoldNameLengthCap();
+	TestMaterialScaffoldNameCollision();
+	TestMaterialScaffoldProposalMode();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

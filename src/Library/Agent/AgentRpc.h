@@ -126,6 +126,38 @@
 //                                            the batch, because an insert is ADDITIVE and
 //                                            racing a co-editor merely interleaves new
 //                                            entities.  Contrast propose_patches above.)
+//      insert_material_scaffold {family,name,tone,wear,scale,baseHeadVersion?}
+//                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
+//                                            family,name,material:{name,kind},boundSlots:[{param,painter},...]}
+//                                           (Arc-75 slice S2.1: expand ONE of five
+//                                            material-family templates -- weathered_wood/
+//                                            rough_stone/brushed_metal/aged_bronze/
+//                                            glazed_ceramic -- into a small wired painter
+//                                            graph (2-4 painters + 1 material, every chunk
+//                                            named tmpl_<name>_<role>) with a microsurface
+//                                            slot painter-BOUND, submitted through the SAME
+//                                            batch machinery insert_chunks uses.  ALL FIVE
+//                                            params are REQUIRED, no defaults -- a missing
+//                                            one, an unrecognized family, or a NAME
+//                                            COLLISION refuses the WHOLE call BEFORE any
+//                                            chunk is generated (document unchanged),
+//                                            reported as a tool ERROR, not a partial
+//                                            result.  `material` names the one material
+//                                            chunk; `boundSlots` lists every microsurface
+//                                            parameter this family bound, purely factual.
+//                                            Internal graph constants are jittered
+//                                            DETERMINISTICALLY from `name` (no RNG, no
+//                                            clock).  DELIBERATELY excluded from
+//                                            IsProposeSafeVerb (see that function's doc) --
+//                                            unlike the 5 verbs above, this one is refused
+//                                            under BOTH Read AND Propose autonomy, with a
+//                                            dedicated Propose-specific message
+//                                            (MakeProposeAutonomyRefusedError) so the
+//                                            refusal's `data.autonomy` field stays truthful
+//                                            ("propose", never the generic Read refusal's
+//                                            hardcoded "read") -- see AgentSession.h's
+//                                            InsertMaterialScaffold doc for the full
+//                                            autonomy-vs-authority caveat.)
 //      remove_chunk {target,kind?,baseHeadVersion?}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: REMOVE the chunk
