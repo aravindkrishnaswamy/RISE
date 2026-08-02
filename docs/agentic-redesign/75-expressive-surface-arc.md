@@ -437,6 +437,27 @@ main checkout after any worktree agent.  Runs: gemini via
   now has prose 0/24 (74-arc), advice 0/24 (74-arc), copy-source 0/12
   (this rung, exposure/reach-verified) — S2 proceeds for BOTH domains
   per the rule.
+- **2026-08-02 — S2 SHIPPED (`f5187349` tool, `28e39f1e`
+  discoverability+metrics) and the gemini leg MOVED THE METRIC — the
+  first nonzero in 42 measured runs.**  varied_microsurface 1.67/1.33
+  (was 0.00 everywhere, ever); scaffold_expanded 7.00/6.00; cozy-study
+  posted the workstream's first nonzero bare-prompt pass@1 (33%).
+  Census (validated to reproduce the metric values exactly):
+  **8 scaffold calls across 4/6 runs, zero failures, 100% survival to
+  final documents; success floor MET (needs ≥2/6); kill rule 2 NOT
+  triggered** (family spread tops at 50% rough_stone; edit rate 1/8
+  nonzero — one genuine rebind+retune where the model rewired a
+  scaffold facets painter into a NEW hand-authored material and
+  retuned the scaffold's pebble painter).  Discovery is SKILL-DRIVEN:
+  every first call lands within 1-2 tool calls after reading
+  materials-and-media-basics; no tool-list browsing; exposure is
+  necessary but not sufficient (cozy r3 read all four example skills
+  and still hand-typed).  The law's boundary re-confirmed even in
+  success: hand-authored materials stayed numeric in 9/10 cases — the
+  in-document tmpl_ graphs did NOT teach hand-authored imitation;
+  the richness is expansion-carried.  Structure moved behavior by
+  RESTRUCTURING THE COST LANDSCAPE, exactly as designed.  qwen leg in
+  flight; phase verdict completes on it.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
