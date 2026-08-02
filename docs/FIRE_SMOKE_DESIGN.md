@@ -3040,7 +3040,14 @@ frame-advance step with the majorant rebuild (§10.3).
 
 **7.2.4 Equiangular interaction and strategy selection.** There are two
 distinct distributions and implementations must not reuse one random roll for
-the other. **Volume NEE is always attempted once at every eligible non-delta
+the other. **Volume NEE — all of §7.2's machinery — is NM-only (r47,
+recording the implementation's scope choice under r36's preview rule):**
+the Pel preview transports volume emission through the collision march at
+weight 1 (`competitionAvailable` is never set in Pel), which converges to
+the same image with more variance — acceptable for a path whose gates are
+consistency, not radiometry, and it keeps every MIS-partition invariant
+out of a measure the design does not certify. "Always attempted" below is
+therefore an NM statement. **Volume NEE is always attempted once at every eligible non-delta
 vertex whenever at least one emissive medium has W_m>0**. Here eligible means
 the immutable continuation closure is supported and the site is not either
 BSSRDF entry contained in §7.2.2; no other depth/roulette gate suppresses the

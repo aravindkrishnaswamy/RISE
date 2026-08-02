@@ -900,3 +900,16 @@ it was already tried and refuted here.
   root-split 7-point quadrature (23bf6e33), both zero-P1 with green
   suites.
 
+- **r47 (2026-08-01):** recorded the implementation's Pel/NEE scope choice
+  at the Phase-A completion handback: volume NEE — all of §7.2's
+  machinery — is NM-only; the Pel preview transports volume emission
+  through the collision march at weight 1. The agent implemented this
+  (consistent with r36's preview rule and the consistency-only Pel gates)
+  but §7.2.4's "always attempted" carried no measure qualifier, leaving a
+  design/implementation divergence a future reviewer would flag. Phase A
+  is complete as of this revision: condensed constituent, φ-aware
+  quadrature, chem SPD binding with scene migrations, the auto-rasterizer
+  PT rule, and the Pel preview (measured divergence from the projected
+  spectral reference 1.126/0.725/0.084 % R/G/B against the recorded 5 %
+  bound), all zero-P1 with green suites.
+
