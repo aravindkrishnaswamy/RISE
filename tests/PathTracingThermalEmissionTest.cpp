@@ -1846,11 +1846,15 @@ namespace
 		{
 			if( ray.origin.z < 0.1 ) {
 				scattered = true;
-				return 0.25;
+				// Cross the z=0.5 coefficient switch before the continued
+				// collision.  The actual majorant density then differs from
+				// max(sigma_t)*min(T_det), which is the legacy biased surrogate
+				// this fixture must reject.
+				return 0.75;
 			}
-			if( ray.origin.z < 0.5 ) {
+			if( ray.origin.z < 0.8 ) {
 				scattered = true;
-				return 0.5;
+				return 0.1;
 			}
 			scattered = false;
 			return maxDist;
@@ -1877,9 +1881,6 @@ namespace
 				// collision estimator never divides by or otherwise depends on it.
 				return RISEPel( 0.91, 0.07, 0.43 );
 			}
-			if( ray.origin.z < 0.5 ) {
-				return RISEPel( std::exp(-1.0), std::exp(-1.0), std::exp(-1.0) );
-			}
 			const Scalar tr = std::exp( -dist );
 			return RISEPel( tr, tr, tr );
 		}
@@ -1887,11 +1888,12 @@ namespace
 			const Ray& ray, const Scalar dist ) const override
 		{
 			if( ray.origin.z < 0.1 ) {
+				// Integrated extinction over [0,0.5] and [0.5,dist].
+				const Scalar upperLength = dist-0.5;
 				return RISEPel(
-					std::exp(-3.0*dist),std::exp(-dist),std::exp(-2.0*dist));
-			}
-			if( ray.origin.z < 0.5 ) {
-				return RISEPel( std::exp(-1.0), std::exp(-1.0), std::exp(-1.0) );
+					std::exp(-(3.0*0.5+upperLength)),
+					std::exp(-(0.5+3.0*upperLength)),
+					std::exp(-2.0*dist));
 			}
 			const Scalar tr = std::exp(-dist);
 			return RISEPel(tr,tr,tr);
@@ -1902,7 +1904,7 @@ namespace
 		{
 			if( !scattered ) return std::exp(-maxDist);
 			return ray.origin.z < 0.1 ?
-				3.0*std::exp(-0.75) : 3.0*std::exp(-1.5);
+				3.0*std::exp(-2.25) : 3.0*std::exp(-0.3);
 		}
 		Scalar EvalTransmittanceNM(
 			const Ray&, const Scalar dist, const Scalar ) const override
@@ -1923,8 +1925,8 @@ namespace
 		}
 		RISEPel GetThermalEmissionPel( const Point3& pt ) const override
 		{
-			if( chemOnlyContinuation_ || pt.z <= 0.5 ) return RISEPel(0.0);
-			const Scalar densityOverTr = 3.0*std::exp(-0.5);
+			if( chemOnlyContinuation_ || pt.z <= 0.8 ) return RISEPel(0.0);
+			const Scalar densityOverTr = 3.0*std::exp(-0.2);
 			return RISEPel(2.0,3.0,5.0)*densityOverTr;
 		}
 		Scalar EstimateChemEmissionSegmentNM(
@@ -6788,9 +6790,9 @@ namespace
 			pelIntegrator->SetMaxPathDepth( 3 );
 			const Ray pelRay( Point3(0,0,0), Vector3(0,0,1) );
 			const RISEPel expectedPel(
-				1.0,
-				0.5*std::exp(0.5),
-				(5.0/3.0)*std::exp(0.25) );
+				std::exp(0.5)/3.0,
+				1.5*std::exp(1.0),
+				(5.0/3.0)*std::exp(0.75) );
 			RandomNumberGenerator pelCameraRng( 0x2e7e180u );
 			RuntimeContext pelCameraRc(
 				pelCameraRng,RuntimeContext::PASS_NORMAL,false);
