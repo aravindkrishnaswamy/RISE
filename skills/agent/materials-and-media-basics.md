@@ -299,6 +299,20 @@ directional_light
 }
 ```
 
+## A one-call route to a wired varied material
+
+The four starters above are hand-typed, one painter and one material at
+a time.  `insert_material_scaffold` gets a comparable richly-varied
+material -- base colour AND microsurface both bound to a real painter --
+in one call instead of a multi-chunk hand-wired graph:
+`insert_material_scaffold {family:"aged_bronze", name:"urn1",
+tone:"0.35 0.22 0.12", wear:0.5, scale:2.5}` expands into a
+`cooktorrance_material` (`tmpl_urn1_mat`) with `rd` bound to a
+reaction-diffusion patina field and `facets` bound to a spatially-varying
+scalar field.  Every generated `tmpl_*` chunk is an ordinary chunk like
+any other -- `propose_patch`/`remove_chunk` retune or rebind it exactly
+as they would a hand-authored one.
+
 ## Colors vs physical scalars — why `scalar_painter` matters
 
 RISE has TWO painter pipes.  `IPainter` is the COLOR pipe (reflectance,

@@ -80,6 +80,20 @@ directional_light
 }
 ```
 
+## A one-call alternative for a varied material
+
+Hand-typing a painter + material pair like `pnt_white`/`mat_white` above
+is fine for a flat colour.  When the material should have real spatial
+variation instead of a single flat colour, `insert_material_scaffold`
+expands one of five family templates (`weathered_wood`, `rough_stone`,
+`brushed_metal`, `aged_bronze`, `glazed_ceramic`) into a small wired
+painter graph in a single call, e.g. `insert_material_scaffold
+{family:"glazed_ceramic", name:"bowl1", tone:"0.85 0.82 0.76", wear:0.3,
+scale:3.0}` -- this lands `tmpl_bowl1_mat` (a `ggx_material`) plus its
+wired painters as ordinary, editable chunks; point a
+`standard_object.material` at `tmpl_bowl1_mat` exactly like `mat_white`
+above.
+
 ## Convention traps (each has caused real bugs)
 
 1. **`directional_light.direction` is FROM-surface-TO-light**, not the

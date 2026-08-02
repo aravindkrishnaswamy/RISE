@@ -121,6 +121,16 @@ render -- the same observe loop, applied at the object level:
    frame (silhouette, proportion relationships) rather than just check
    the render's channel means -- the image rides back in that one call.
 
+**A one-call materials pass.** Once the blockout proportions are
+confirmed, `insert_material_scaffold {family:"rough_stone",
+name:"block1", tone:"0.5 0.48 0.44", wear:0.6, scale:1.2}` expands a
+family template (`weathered_wood`, `rough_stone`, `brushed_metal`,
+`aged_bronze`, `glazed_ceramic`) into a wired painter graph -- here a
+`cooktorrance_material` (`tmpl_block1_mat`) with both `rd` and `facets`
+bound to real painters -- in place of hand-typing the painter chain
+yourself; point any `standard_object.material` at `tmpl_block1_mat` and
+continue the refine pass from there.
+
 ## Recipe 1: a mug (`csg_object` hollow body + `torus_geometry` handle)
 
 A cylinder body with a second, slightly-taller and narrower cylinder

@@ -52,7 +52,7 @@
     {
       "kind": "document",
       "op": "param_binding",
-      "//": "Measurement, not a gate (see the scenario-level comment above). Taste-blind: ANY non-excluded painter counts however crude -- a scalar_painter bound to a flat 0.7 with zero spatial variation scores identically to a genuinely varied microsurface; this op cannot see the difference. Decoy caveats are inherited from distinct_chunk_kinds/objects_reaching_kinds above, and this op's own gap is STRICTLY WORSE than either: unlike objects_reaching_kinds, param_binding has NO reachability filter at all -- an ORPHANED material (bound to a painter but referenced by zero standard_object, zero geometry, not even a hidden 0.001-unit decoy box) still counts. A one-line, never-instantiated ggx_material with alphax bound to a scalar_painter satisfies this checkpoint on its own; objects_reaching_kinds' render-side closer (deferred A2/P3) does not cover this op either, since there may be no object to reach in the first place.",
+      "//": "Measurement, not a gate (see the scenario-level comment above). Taste-blind: ANY non-excluded painter counts however crude -- a scalar_painter bound to a flat 0.7 with zero spatial variation scores identically to a genuinely varied microsurface; this op cannot see the difference. Decoy caveats are inherited from distinct_chunk_kinds/objects_reaching_kinds above, and this op's own gap is STRICTLY WORSE than either: unlike objects_reaching_kinds, param_binding has NO reachability filter at all -- an ORPHANED material (bound to a painter but referenced by zero standard_object, zero geometry, not even a hidden 0.001-unit decoy box) still counts. A one-line, never-instantiated ggx_material with alphax bound to a scalar_painter satisfies this checkpoint on its own; objects_reaching_kinds' render-side closer (deferred A2/P3) does not cover this op either, since there may be no object to reach in the first place. Arc-75 S2.3: a scaffold-expanded material (insert_material_scaffold's tmpl_<name>_mat) legitimately satisfies this checkpoint -- expansion-driven richness is NOT a decoy or a gaming pattern, it is the mechanism S2 exists to encourage. Read this count TOGETHER with the chunk_name_prefix_count checkpoint below (metricLabel 'scaffold_expanded'): the two are never summed, but side by side they split expansion-driven microsurface variation from hand-authored microsurface variation.",
       "slots": [
         { "chunkKind": "pbr_metallic_roughness_material", "params": ["roughness", "metallic"] },
         { "chunkKind": "ggx_material", "params": ["alphax", "alphay"] },
@@ -70,6 +70,15 @@
       "max": 100,
       "weight": 0.5,
       "metricLabel": "varied_microsurface"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_name_prefix_count",
+      "//": "Arc-75 S2.3 provenance metric. PURE metric, never gates (weight 0, min 0 passes vacuously on any document, including one with zero scaffold calls) -- the kill rules read the trend on this label across runs, not a pass/fail here. Counts chunks named tmpl_<name>_<role> -- the insert_material_scaffold naming convention -- so scaffold_expanded is expansion count ONLY; it says nothing about whether the model then edited what the scaffold generated (propose_patch/set_param targeting a tmpl_* chunk). That post-expansion edit rate is the creativity signal and is measured from the TRAJECTORY (tool calls after the scaffold call), not from a checkpoint op -- there is deliberately no op for it here.",
+      "prefix": "tmpl_",
+      "min": 0,
+      "weight": 0,
+      "metricLabel": "scaffold_expanded"
     },
     {
       "kind": "document",

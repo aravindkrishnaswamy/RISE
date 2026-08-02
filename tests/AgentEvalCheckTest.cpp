@@ -6816,6 +6816,293 @@ static void TestParamBindingCheckpoint()
 	}
 }
 
+//----------------------------------------------------------------------
+// T-cnp: Arc-75 slice S2.3's "chunk_name_prefix_count" document op --
+// counts chunks whose bare `name` starts with a given prefix, the
+// insert_material_scaffold provenance convention (tmpl_<name>_<role>).
+// Unlike distinct_chunk_kinds/objects_reaching_kinds/no_orphan_chunks,
+// the kind filter here is OPTIONAL: 0 (every kind) or 1 (narrowed) of
+// kindSuffix/kinds/category, never a required exactly-one.
+//
+// kChunkNamePrefixScene carries THREE chunks named tmpl_bowl1_* across
+// TWO different kinds (tmpl_bowl1_body/tmpl_bowl1_glaze are
+// uniformcolor_painter; tmpl_bowl1_mat is ggx_material) -- proving the
+// op counts across kinds when unfiltered, and narrows correctly when a
+// single kind filter is given.  pnt_flat and mat_other are NOT
+// tmpl_-prefixed, the absent-prefix control.
+//----------------------------------------------------------------------
+
+static const char* const kChunkNamePrefixScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_bowl1_body\n\tcolor 0.6 0.5 0.4\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_bowl1_glaze\n\tcolor 0.8 0.8 0.7\n}\n\n"
+	"ggx_material\n{\n\tname tmpl_bowl1_mat\n\trd tmpl_bowl1_body\n\trs tmpl_bowl1_glaze\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"lambertian_material\n{\n\tname mat_other\n\treflectance pnt_flat\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial tmpl_bowl1_mat\n}\n";
+
+static void TestChunkNamePrefixCountCheckpoint()
+{
+	std::printf( "T-cnp: Arc-75 S2.3 -- \"chunk_name_prefix_count\" document op...\n" );
+	const std::string dir = ScratchRunDir( "t_cnp_chunk_name_prefix_count" );
+
+	AgentEvalScenario sBase = MakeScenario( "cnp_base", kChunkNamePrefixScene, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( sBase, opts );
+	Check( h.result.terminalStatus == "final_text", "cnp_base: run reached final_text" );
+	Check( h.dispatcher != nullptr, "cnp_base: run has a live dispatcher" );
+
+	auto checkAgainst = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+	auto metricValueOf = [&]( const std::string& cpJson, const std::string& label ) -> double {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+		return ( r.checkpoints.size() == 1 ) ? r.checkpoints[0].metricValue : -1.0;
+	};
+
+	// ---- prefix present, no kind filter: counts across BOTH kinds ----
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":3,\"max\":3}]",
+		true, "chunk_name_prefix_count: unfiltered prefix count == 3 (min==max==3)" );
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (unfiltered)" );
+		Check( mv == 3.0, "chunk_name_prefix_count: metricValue == 3 across both kinds (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- prefix present, kind filter narrows to ONE kind (kinds:[...]) ----
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"kinds\":[\"ggx_material\"],\"min\":0}]",
+			"chunk_name_prefix_count metricValue (kinds filter)" );
+		Check( mv == 1.0, "chunk_name_prefix_count: kinds:[\"ggx_material\"] narrows to 1 (tmpl_bowl1_mat; got " +
+			std::to_string( mv ) + ")" );
+	}
+	// kindSuffix filter (uniformcolor_painter ends in "_painter") -> the two painters.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"kindSuffix\":\"_painter\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (kindSuffix filter)" );
+		Check( mv == 2.0, "chunk_name_prefix_count: kindSuffix:\"_painter\" narrows to 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category filter (painter) -> same two painters.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"category\":\"painter\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (category filter)" );
+		Check( mv == 2.0, "chunk_name_prefix_count: category:\"painter\" narrows to 2 (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- prefix absent (no chunk carries it) -> count 0 ----
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (absent prefix)" );
+		Check( mv == 0.0, "chunk_name_prefix_count: metricValue == 0 for a prefix that matches nothing (got " +
+			std::to_string( mv ) + ")" );
+	}
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]",
+		true, "chunk_name_prefix_count: min:0 passes VACUOUSLY on an absent prefix (the pure-metric shape S2.3 relies on)" );
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":1}]",
+		false, "chunk_name_prefix_count: min:1 FAILS on an absent prefix" );
+
+	// A chunk NAMED like the prefix but not a genuine prefix match (e.g. the
+	// prefix "tmpl_bowl1_matx" -- longer than any real name) still counts 0.
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_bowl1_matx\",\"min\":0,\"max\":0}]",
+		true, "chunk_name_prefix_count: a prefix longer than any real name matches nothing (min==max==0)" );
+
+	// max exceeded -- FAILS.
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"max\":2}]",
+		false, "chunk_name_prefix_count: count 3 > max:2 FAILS" );
+
+	// ---- Loader validation: malformed chunk_name_prefix_count configs are hard load errors ----
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kChunkNamePrefixScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// Missing "prefix" entirely -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_no_prefix",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: missing \"prefix\" FAILS to load" );
+		Check( err.find( "\"prefix\"" ) != std::string::npos,
+			"the load error names prefix (got: " + err + ")" );
+	}
+	// Empty "prefix" -- refused (non-empty is required).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_empty_prefix",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: empty \"prefix\" FAILS to load" );
+		Check( err.find( "\"prefix\"" ) != std::string::npos,
+			"the load error names prefix (got: " + err + ")" );
+	}
+	// Missing "min" -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_no_min",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\"}]", err ),
+			"chunk_name_prefix_count: missing \"min\" FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// Negative "min" -- refused (a chunk count can never be negative).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_negative_min",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":-1}]", err ),
+			"chunk_name_prefix_count: negative \"min\" FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// "max" < "min" -- refused (inverted band can never pass).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_inverted_band",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":5,\"max\":1}]", err ),
+			"chunk_name_prefix_count: max 1 < min 5 FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// MORE than one of kindSuffix/kinds/category -- refused (the OPTIONAL
+	// filter still enforces AT MOST ONE when more than one is given; this is
+	// the one place this op's validation differs from distinct_chunk_kinds'
+	// EXACTLY ONE -- proven by the "zero filters loads cleanly" case below).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_two_filters",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,"
+			"\"kindSuffix\":\"_painter\",\"kinds\":[\"ggx_material\"]}]", err ),
+			"chunk_name_prefix_count: kindSuffix AND kinds both given FAILS to load" );
+		Check( err.find( "kindSuffix" ) != std::string::npos && err.find( "kinds" ) != std::string::npos,
+			"the load error names both kindSuffix and kinds (got: " + err + ")" );
+	}
+	// ZERO kind filters loads cleanly -- the defining difference from
+	// distinct_chunk_kinds/objects_reaching_kinds' REQUIRED exactly-one.
+	{
+		std::string err;
+		Check( writeAndLoad( "cnp_good_no_filter",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: zero kind filters loads cleanly (" + err + ")" );
+	}
+	// The correctly-shaped, single-filter sibling also loads cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "cnp_good_one_filter",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"category\":\"painter\",\"min\":0,\"max\":10}]", err ),
+			"chunk_name_prefix_count: single-filter checkpoint loads cleanly (" + err + ")" );
+	}
+
+	// ---- metricLabel: chunk_name_prefix_count participates in the SAME
+	// cross-checkpoint dedupe pass as distinct_chunk_kinds/
+	// objects_reaching_kinds/param_binding ----
+
+	// Two chunk_name_prefix_count checkpoints, neither carrying an explicit
+	// metricLabel -- both default to the op name, collide, FAILS to load.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_label_default_collision",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: two checkpoints with no metricLabel (both default-collide) FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Cross-op collision: distinct_chunk_kinds (default label
+	// "distinct_chunk_kinds") + chunk_name_prefix_count EXPLICITLY relabeled
+	// to the same string -- still a collision (op-agnostic, keyed on the
+	// EFFECTIVE label).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_label_cross_op_collision",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,"
+			"\"metricLabel\":\"distinct_chunk_kinds\"}]", err ),
+			"chunk_name_prefix_count: relabeled to collide with distinct_chunk_kinds' default label FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// A DISTINCT explicit label ("scaffold_expanded", the real S2.3 label)
+	// loads cleanly and threads its own metricValue/metricLabel through
+	// CheckScenario -- proving the dedupe guard doesn't over-fire.
+	{
+		std::string err;
+		const bool loaded = writeAndLoad( "cnp_good_label",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"metricLabel\":\"scaffold_expanded\"}]", err );
+		Check( loaded, "chunk_name_prefix_count: distinct explicit label loads cleanly alongside another metric-carrying op (" + err + ")" );
+		if( loaded ) {
+			JsonValue cps; std::string perr;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+				"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"metricLabel\":\"scaffold_expanded\"}]",
+				cps, perr ), "chunk_name_prefix_count: two-label checkpoint JSON re-parses for the runtime check" );
+			AgentEvalScenario s2; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 2, "chunk_name_prefix_count: two checkpoint results" );
+			if( r.checkpoints.size() == 2 ) {
+				Check( r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricLabel == "painter_kinds",
+					"chunk_name_prefix_count: checkpoint[0] carries label 'painter_kinds' (got '" + r.checkpoints[0].metricLabel + "')" );
+				Check( r.checkpoints[1].hasMetricValue && r.checkpoints[1].metricLabel == "scaffold_expanded",
+					"chunk_name_prefix_count: checkpoint[1] carries label 'scaffold_expanded' (got '" + r.checkpoints[1].metricLabel + "')" );
+				Check( r.checkpoints[1].metricValue == 3.0,
+					"chunk_name_prefix_count: checkpoint[1] metricValue == 3 (got " + std::to_string( r.checkpoints[1].metricValue ) + ")" );
+			}
+		}
+	}
+	// Unknown "category" name -- refused at CHECK time (matching
+	// distinct_chunk_kinds' own convention: category NAMES are validated at
+	// runtime via CheckerCategoryFromName, not at load time).
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"bogus_category_xyz\",\"min\":0}]",
+		false, "chunk_name_prefix_count: unknown category name FAILS at check time" );
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -6859,6 +7146,7 @@ int main()
 	TestAdversarialControlNeverAsksStillBuilds();
 	TestMaterialRichnessCheckpoints();
 	TestParamBindingCheckpoint();
+	TestChunkNamePrefixCountCheckpoint();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 

@@ -562,7 +562,7 @@ namespace RISE
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam",
-					"kindSuffix", "category", "rootKind" };
+					"kindSuffix", "category", "rootKind", "prefix" };
 				for( const char* f : kStringFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
 				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
@@ -692,6 +692,42 @@ namespace RISE
 						if( cp.get( "max" ).asNumber() < cp.get( "min" ).asNumber() ) {
 							err = pfx + " \"max\" must be >= \"min\" (an inverted band can never pass)"; return false;
 						}
+					}
+				} else if( op == "chunk_name_prefix_count" ) {
+					// Arc-75 slice S2.3: {prefix,kinds?|kindSuffix?|category?,min,
+					// max?} -- counts chunks whose bare `name` param starts with
+					// "prefix", optionally narrowed by kind.  The kind filter here is
+					// OPTIONAL (0 or 1 of kindSuffix/kinds/category) -- UNLIKE
+					// distinct_chunk_kinds/no_orphan_chunks/objects_reaching_kinds,
+					// which REQUIRE exactly one -- because a scaffold expansion's
+					// generated chunks (material + N painters) share one name prefix
+					// across several different chunk KINDS; "count everything under
+					// this prefix" is the common case, kind-narrowing is the
+					// exception.  "min"/"max" share the same sign/ordering guards as
+					// every other count-grading op above.
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op 'chunk_name_prefix_count'";
+					if( !cp.has( "prefix" ) || !cp.get( "prefix" ).isString() || cp.get( "prefix" ).asString().empty() ) {
+						err = pfx + " REQUIRES a non-empty string \"prefix\""; return false;
+					}
+					if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"min\""; return false;
+					}
+					if( cp.get( "min" ).asNumber() < 0 ) {
+						err = pfx + " \"min\" must be >= 0 (a chunk COUNT can never be negative)"; return false;
+					}
+					if( cp.has( "max" ) ) {
+						if( !cp.get( "max" ).isNumber() ) {
+							err = pfx + " \"max\", when present, must be a number"; return false;
+						}
+						if( cp.get( "max" ).asNumber() < cp.get( "min" ).asNumber() ) {
+							err = pfx + " \"max\" must be >= \"min\" (an inverted band can never pass)"; return false;
+						}
+					}
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+					if( ( hasSuffix ? 1 : 0 ) + ( hasKinds ? 1 : 0 ) + ( hasCategory ? 1 : 0 ) > 1 ) {
+						err = pfx + " accepts AT MOST ONE of \"kindSuffix\"/\"kinds\"/\"category\" (0 = every chunk kind)"; return false;
 					}
 				}
 
@@ -1316,9 +1352,10 @@ namespace RISE
 			//! (CheckScenario's own reader), plus the OPTIONAL "metricLabel"
 			//! string every kind shares too (geometry scope expansion) --
 			//! type-checked generically here since a checkpoint of ANY kind may
-			//! in principle carry one, even though today only three "document" ops
-			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding) ever
-			//! populate a metricValue for it to label.  An unrecognized kind name is
+			//! in principle carry one, even though today only four "document" ops
+			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding /
+			//! chunk_name_prefix_count) ever populate a metricValue for it to
+			//! label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
 			//! loudly at runtime ("unknown checkpoint kind").
 			bool ValidateCheckpointFieldTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
@@ -1583,9 +1620,10 @@ namespace RISE
 
 				// Geometry scope expansion / metric labeling: every METRIC-CARRYING
 				// checkpoint (today: "document" ops "distinct_chunk_kinds",
-				// "objects_reaching_kinds", and "param_binding" (S0.1) -- the
-				// THREE CheckOneCheckpoint populates CheckOutcome::metricValue
-				// from) resolves to an EFFECTIVE label --
+				// "objects_reaching_kinds", "param_binding" (S0.1), and
+				// "chunk_name_prefix_count" (S2.3) -- the FOUR CheckOneCheckpoint
+				// populates CheckOutcome::metricValue from) resolves to an
+				// EFFECTIVE label --
 				// its explicit "metricLabel" string when present and non-empty, else
 				// its "op" name (so a single such checkpoint needs no metricLabel at
 				// all).  Two metric-carrying checkpoints in the SAME scenario that
@@ -1604,7 +1642,8 @@ namespace RISE
 						const std::string cpKind = ( cp.has( "kind" ) && cp.get( "kind" ).isString() ) ? cp.get( "kind" ).asString() : std::string();
 						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
 						const bool carriesMetric = cpKind == "document" &&
-							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" );
+							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" ||
+							  cpOp == "chunk_name_prefix_count" );
 						if( !carriesMetric ) continue;
 						std::string label = cpOp;
 						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
@@ -3736,11 +3775,13 @@ namespace RISE
 				//! AgentEvalCheckpointResult (adding kind/weight).  `hasMetricValue`/
 				//! `metricValue` are an OPTIONAL numeric payload -- populated only by
 				//! "distinct_chunk_kinds" (the distinct-painter-kind count),
-				//! "objects_reaching_kinds" (the qualifying-root count), and
-				//! "param_binding" (the bound-chunk-instance count) so the richness
-				//! signal is a trend line, not just pass/fail; every other op leaves
-				//! hasMetricValue false (the aggregate-init default), and
-				//! CheckOneCheckpoint/CheckScenario thread it through unchanged.
+				//! "objects_reaching_kinds" (the qualifying-root count),
+				//! "param_binding" (the bound-chunk-instance count), and
+				//! "chunk_name_prefix_count" (S2.3 -- the name-prefix-matching chunk
+				//! count) so the richness signal is a trend line, not just
+				//! pass/fail; every other op leaves hasMetricValue false (the
+				//! aggregate-init default), and CheckOneCheckpoint/CheckScenario
+				//! thread it through unchanged.
 				struct CheckOutcome { bool passed; std::string detail; bool hasMetricValue = false; double metricValue = 0.0; };
 
 				//----------------------------------------------------------
@@ -4144,6 +4185,68 @@ namespace RISE
 					return true;
 				}
 
+				//! Sibling scan for "chunk_name_prefix_count" (Arc-75 S2.3): same
+				//! document-wide walk as CheckerCollectKindFilterMatches, but the
+				//! kind filter is OPTIONAL (0 or 1 of "kindSuffix"/"kinds"/
+				//! "category" -- load-validated to at most one) and matching is by
+				//! bare `name` PREFIX rather than by chunk keyword.  A chunk with no
+				//! `name` param (CheckerChunkName returns "") never matches any
+				//! non-empty prefix.
+				bool CheckerCollectNamePrefixMatches( const Document& doc, const JsonValue& cp, const std::string& prefix,
+				                                      std::vector<std::pair<RISE::Cst::NodeId, NodeRef>>& out, std::string& errOut )
+				{
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+
+					std::string suffix;
+					std::vector<std::string> kinds;
+					ChunkCategory wantCategory = ChunkCategory::Painter;
+					if( hasSuffix ) {
+						suffix = cp.get( "kindSuffix" ).asString();
+					} else if( hasKinds ) {
+						const JsonValue& arr = cp.get( "kinds" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() || arr.at( i ).asString().empty() ) {
+								errOut = "chunk_name_prefix_count: \"kinds\"[" + std::to_string( i ) + "] must be a non-empty string";
+								return false;
+							}
+							kinds.push_back( arr.at( i ).asString() );
+						}
+					} else if( hasCategory ) {
+						const std::string catName = cp.get( "category" ).asString();
+						if( !CheckerCategoryFromName( catName, wantCategory ) ) {
+							errOut = "chunk_name_prefix_count: unknown \"category\" '" + catName + "'";
+							return false;
+						}
+					}
+
+					out.clear();
+					const int n = RISE::Cst::DocItemCount( doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						const std::string& role = item->role;
+
+						if( hasSuffix ) {
+							if( !( role.size() >= suffix.size() &&
+							       role.compare( role.size() - suffix.size(), suffix.size(), suffix ) == 0 ) ) continue;
+						} else if( hasKinds ) {
+							if( std::find( kinds.begin(), kinds.end(), role ) == kinds.end() ) continue;
+						} else if( hasCategory ) {
+							const ChunkDescriptor* d = RISE::DescriptorForKeyword( role.c_str() );
+							if( !( d && d->category == wantCategory ) ) continue;
+						}
+
+						const std::string nm = CheckerChunkName( item );
+						if( nm.size() < prefix.size() || nm.compare( 0, prefix.size(), prefix ) != 0 ) continue;
+						out.emplace_back( id, item );
+					}
+					return true;
+				}
+
 				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
 				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
 				//! deliberately NOT named "kind": that name is already the top-level
@@ -4228,7 +4331,7 @@ namespace RISE
 				//! mitigation distinct_chunk_kinds/no_orphan_chunks cannot express
 				//! (both only see EXISTENCE + boundness, not WHICH object a binding
 				//! reaches); grades the qualifying-root count against min/max (both
-				//! bounds INCLUSIVE); one of THREE metricValue emitters.
+				//! bounds INCLUSIVE); one of FOUR metricValue emitters.
 				//! {op:"param_binding",slots:[{chunkKind,params:[...]}],
 				//! excludeReferencedKinds?,min,max?} (eval-harness S0.1) counts CHUNK
 				//! INSTANCES (never twice, even when several of a chunk's listed
@@ -4241,8 +4344,24 @@ namespace RISE
 				//! specifically a scalar_painter).  A numeric literal, an inline
 				//! `r g b`, "none", or a name that resolves to nothing are all NOT a
 				//! binding.  Grades the qualifying-instance count against min
-				//! (required) / max (optional), both bounds INCLUSIVE; the THIRD
-				//! metricValue emitter.
+				//! (required) / max (optional), both bounds INCLUSIVE; one of FOUR
+				//! metricValue emitters.
+				//! {op:"chunk_name_prefix_count",prefix,kindSuffix?|kinds?|category?,
+				//! min,max?} (Arc-75 S2.3, provenance metrics) counts chunks whose
+				//! bare `name` param starts with "prefix" -- the `tmpl_<name>_<role>`
+				//! naming convention insert_material_scaffold's expansions carry, so
+				//! this op is what tells expansion-driven richness (a scaffold call)
+				//! apart from hand-authored richness (a model typing out its own
+				//! painter graph) on the SAME param_binding count above: a
+				//! scaffold-expanded material legitimately satisfies param_binding,
+				//! and this op is the disclosed split -- read both labels TOGETHER,
+				//! never summed.  The kind filter is OPTIONAL here (0 or 1 of
+				//! kindSuffix/kinds/category), unlike distinct_chunk_kinds/
+				//! objects_reaching_kinds' REQUIRED exactly-one, because a scaffold
+				//! expansion's chunks span several different kinds (one material,
+				//! several painters) under one shared prefix.  Grades the count
+				//! against min (required) / max (optional), both bounds INCLUSIVE;
+				//! the FOURTH metricValue emitter.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -5154,6 +5273,57 @@ namespace RISE
 						}
 						oc.passed = true;
 						oc.detail = "param_binding: " + std::to_string( boundCount ) + " bound chunk instance(s) [" + list + "]";
+						return oc;
+					}
+
+					// chunk_name_prefix_count: {prefix,kindSuffix?|kinds?|category?,
+					// min,max?} -- Arc-75 S2.3 provenance metric.  Counts chunks
+					// whose bare `name` starts with "prefix" -- the
+					// `tmpl_<name>_<role>` convention insert_material_scaffold's
+					// generated chunks carry -- optionally narrowed to at most one
+					// kind filter.  Populates CheckOutcome::metricValue with the
+					// count (the FOURTH metricValue emitter; see this op's doc
+					// comment above CheckDocumentKind).
+					if( op == "chunk_name_prefix_count" ) {
+						if( !cp.has( "prefix" ) || !cp.get( "prefix" ).isString() || cp.get( "prefix" ).asString().empty() )
+							return { false, "chunk_name_prefix_count requires a non-empty string \"prefix\"" };
+						if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() )
+							return { false, "chunk_name_prefix_count requires numeric \"min\"" };
+						const long minCount = static_cast<long>( cp.get( "min" ).asNumber() );
+						const bool hasMax = cp.has( "max" ) && cp.get( "max" ).isNumber();
+						const long maxCount = hasMax ? static_cast<long>( cp.get( "max" ).asNumber() ) : 0;
+						const std::string prefix = cp.get( "prefix" ).asString();
+
+						std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> matches;
+						std::string filterErr;
+						if( !CheckerCollectNamePrefixMatches( doc, cp, prefix, matches, filterErr ) )
+							return { false, filterErr };
+
+						std::string namesList;
+						for( const auto& kv : matches ) {
+							const std::string nm = CheckerChunkName( kv.second );
+							if( !namesList.empty() ) namesList += ", ";
+							namesList += "'" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) + "' (kind '" + kv.second->role + "')";
+						}
+						const long count = static_cast<long>( matches.size() );
+
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = static_cast<double>( count );
+						if( count < minCount ) {
+							oc.passed = false;
+							oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix +
+								"*' [" + namesList + "] < min " + std::to_string( minCount );
+							return oc;
+						}
+						if( hasMax && count > maxCount ) {
+							oc.passed = false;
+							oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix +
+								"*' [" + namesList + "] > max " + std::to_string( maxCount );
+							return oc;
+						}
+						oc.passed = true;
+						oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix + "*' [" + namesList + "]";
 						return oc;
 					}
 
