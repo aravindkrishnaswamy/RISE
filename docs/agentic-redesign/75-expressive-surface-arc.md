@@ -458,6 +458,33 @@ main checkout after any worktree agent.  Runs: gemini via
   the richness is expansion-carried.  Structure moved behavior by
   RESTRUCTURING THE COST LANDSCAPE, exactly as designed.  qwen leg in
   flight; phase verdict completes on it.
+- **2026-08-02 — S2 qwen leg: 0/6 calls under FULL exposure — and the
+  workstream's first ARTICULATED decline.  Phase verdict: PARTIAL
+  BANK.**  Every qwen run read scene-skeleton (which carries an
+  example); 4/6 never engaged the concept in reasoning; one fleeting
+  consideration was derailed by an unrelated parse bug; and one run
+  EXPLICITLY DECLINED with a stated reason: "it only handles five
+  specific material types, whereas my scene needs a broader palette
+  including plaster and fabric... so I'll stick with manual
+  authoring" — the reason is half-true (weathered_wood would have
+  covered its wood surfaces; it declined wholesale rather than
+  mixing).  This is not habituation and not never-considered — it is
+  a coverage-based rejection, the first reasoned engagement with any
+  mechanism in 60+ measured runs.  Named next lever if ever wanted
+  (NOT scheduled): family breadth or a description clarifying
+  mix-and-match use.  Kill rules: rule 1 does not fire (gemini 4/6);
+  rule 2 clear; success floor met on gemini only.  VERDICT: scaffold +
+  snippets BANKED on the gemini result; qwen recorded as
+  exposed-and-declined.
+  Secondary findings: qwen cozy painter_kinds moved 0→1.67 (2/3 runs
+  nonzero vs 6/6 zero in S0+S1) — ALL hand-authored colour painters on
+  reflectance, unrelated to the scaffold treatment; a real qualitative
+  shift of ambiguous cause (recorded, not credited to any lever).
+  qwen degenerate-turn rate worsened (3/9 this batch, same
+  reasoning-without-tool-call shape) — instrument reliability item,
+  spun off.  The crash file in this window was the KNOWN
+  file_rasterizeroutput CLI segfault (tracked separately), not the
+  eval.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
