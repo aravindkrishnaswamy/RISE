@@ -158,6 +158,73 @@ with anything.
      semantics in the sdf descriptor — structure on the `read_schema`
      carrier both models measurably read.
   Stop rule: `advanced_geometry` ≥2/6 → bank; 0/6 → S3b decision point.
+
+**S3 CONCRETE DESIGN (2026-08-02, post-S2 amendment — supersedes the
+sketch above; drafted against the full S0–S2 evidence):**
+
+*Why the S1 failure does NOT pre-doom S3a examples:* S1's copy-source
+failure was about overriding a value-shape prior INSIDE an existing
+slot (roughness = a number).  The geometry deficit is chunk-ADDITION —
+the class that measurably moved in the 74-arc (painter families,
+floor 1→3) — and the S0.4 audit showed displaced_geometry's zero
+adoption coincides with ZERO copyable examples anywhere.  The
+aligned-example rung was never actually tried for displaced.  It is
+one small slice; run it first.
+
+**S3a — drop-in examples (one skill-edit slice + one batch):**
+- The ~11-line displaced_geometry recipe (noise painter + displaced
+  bolt-on over an existing base shape; no colour vocabulary — the
+  audit's Job.cpp:5338 finding) placed in the read-set skills models
+  actually consult for geometry (modeling-workflow-and-geometry,
+  object-modeling-recipes; plus the compact standalone sweep idiom
+  re-anchored from scenes/Tests/Geometry/sweep_instances.RISEscene
+  replacing the scenario-glued flask example).  Execution-validated;
+  zero subject vocabulary; hooks frozen.
+- Stop rule (pre-committed): census-verified HAND-AUTHORED
+  displaced/sweep usage in ≥2/6 runs per model → bank A, S3b optional;
+  0/6 both models → A dead, S3b proceeds; 1/6 → one re-run then
+  decide.  (`advanced_geometry` is the metric; census must attribute
+  hand-vs-scaffold once S3b exists.)
+
+**S3b — `insert_geometry_scaffold` (the S2-proven mechanism, geometry
+form; scaffold-not-prefab per the standing taste ruling — expands into
+ordinary editable chunks, never an opaque asset):**
+- Families (4): `displaced_slab` (base slab + noise painter +
+  displaced_geometry bolt-on), `sweep_rail` (compact profile swept
+  along a short path — the sweep_instances idiom), `blended_vessel`
+  (sdf roundcone+smin chain), `sdf_column` (base/shaft/capital smin
+  chain).  Every family emits the GEOMETRY graph only (painters/
+  functions + geometry chunks, `tmpl_<name>_*`); the model wires the
+  standard_object + material — the exact division the material
+  scaffold proved models handle (S2 census: expanded materials were
+  object-bound by the model in all 8 cases).
+- Params (ALL required, mirroring S2's proven shape): `family`,
+  `name`, `size` (overall scale), `detail` (0-1: displacement
+  amplitude / profile complexity / smin tightness), `aspect` (>0:
+  elongation).  Name-hash jitter on bump frequencies, profile wobble,
+  smin k, segment counts — same FNV mechanism, same determinism bar.
+- **The qwen articulated-decline lesson applied**: the tool
+  description states factually that scaffolds compose with
+  hand-authored geometry ("families cover common forms; anything else
+  is hand-authored alongside") — addressing the measured
+  wholesale-decline failure mode at the surface the decline reasoned
+  about.  Facts, not advice.
+- Metrics: `scaffold_geo_expanded` via the existing
+  chunk_name_prefix_count op with `category:"geometry"` filter (no
+  new ops); `advanced_geometry` unchanged; census splits
+  hand-vs-expansion.
+- Stop rules (S2's, transposed): floor = called ≥1× in ≥2/6 runs per
+  model with survival; kill-1 = 0/6 both models → snippets removed,
+  tool judged on product merit; kill-2 = never-edited AND one family
+  >80% → one iteration, one re-measure, accept-or-revert.
+- **Strict sequencing**: S3b's tool must NOT be in the tree during
+  S3a's measurement (a visible tool contaminates the example-only
+  treatment).  Build S3b only after S3a's batch completes.
+
+**S3c (parked, unscheduled):** sdf descriptor per-primitive semantics
+enrichment (structure on the read_schema carrier, for the one verb
+models already use).  Revisit only if S3a+S3b leave sdf-specific
+authoring quality as the residual complaint.
 - **S3b** (structural; needs explicit user taste sign-off before detailed
   design): parametric scaffold expansion into editable sdf/sweep chunks.
   Same stop-rule shape as S2.
