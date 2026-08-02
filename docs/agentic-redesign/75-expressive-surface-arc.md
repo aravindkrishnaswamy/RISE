@@ -415,6 +415,28 @@ main checkout after any worktree agent.  Runs: gemini via
   qwen leg (in flight) completes the phase verdict — its
   copy-verbatim-constants habit is the strongest remaining test of the
   hypothesis.
+- **2026-08-01 — S1 CLOSED by its own stop rule: 0/6 both models; the
+  two models fail for DIFFERENT structural reasons.**  qwen census:
+  5/6 reach-failure (lambertian-only documents — metal lamps modeled
+  as diffuse, one literally named mat_lamp_metal; qwen opens the
+  materials skill only AFTER deciding via read_schema that it wants a
+  non-diffuse material, 1/6 runs) + 1/6 exposed-and-authored-constants
+  (cozy r2: read the edited demo, then authored pbr with numeric
+  roughness; its reasoning between read and insert never mentions
+  roughness/binding at all — never-engaged, not noticed-and-overrode).
+  Also: one provider_error = the known degenerate reasoning-only-turn
+  class, pre-materials, uninformative.  Combined S1 verdict:
+  - gemini: slot-TYPING prior survives a perfectly-exposed copy-source
+    (33/33 constants with full reach).
+  - qwen: material-CHOICE prior (lambertian default) makes the
+    copy-source unreachable, and consultation order runs
+    schema→skill only after the choice is made.
+  Both failure structures are exactly what the S2 scaffold bypasses:
+  one tool call authors the whole wired graph — no slot is ever typed
+  by the model, no material family chosen chunk-by-chunk.  The ladder
+  now has prose 0/24 (74-arc), advice 0/24 (74-arc), copy-source 0/12
+  (this rung, exposure/reach-verified) — S2 proceeds for BOTH domains
+  per the rule.
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
