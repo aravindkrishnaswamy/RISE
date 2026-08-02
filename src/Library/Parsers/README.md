@@ -134,7 +134,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
 | Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
-| Rasterizer outputs | 1 | `file_rasterizeroutput` |
+| Rasterizer outputs | 1 | `file_rasterizeroutput` (attaches to the active rasterizer — its rasterizer chunk must be declared before it, else the load fails with a "no rasterizer is set" diagnostic) |
 | Lights | 5 | `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |

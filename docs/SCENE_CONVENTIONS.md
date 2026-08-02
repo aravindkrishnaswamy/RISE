@@ -322,6 +322,13 @@ The recommended pattern for any new scene is to declare **two**
 `file_rasterizeroutput` chunks: an HDR primary and a tone-mapped
 display preview.
 
+**Declaration order matters:** a `file_rasterizeroutput` chunk
+attaches to the rasterizer that is active when it is parsed, so the
+rasterizer chunk must appear **before** it (same convention as
+`camera_defaults` before cameras).  A scene that declares
+`file_rasterizeroutput` first — or omits the rasterizer chunk
+entirely — fails to load with a "no rasterizer is set" diagnostic.
+
 ```
 # HDR primary — the integrator's verbatim radiometric output.
 # No exposure, no display transform.  Use as the source of truth

@@ -47,6 +47,7 @@
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Job.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -655,6 +656,138 @@ namespace
 		std::remove( fullPath.c_str() );
 		safe_release( img );
 	}
+
+	// ------------------------------------------------------------------
+	// Job::AddFileRasterizerOutput / Job::RemoveRasterizerOutputs
+	// null-rasterizer crash-class regression guard.
+	//
+	// Job::pRasterizer is null until a rasterizer chunk finalizes, and
+	// scene chunks finalize in document order (Cst.cpp PASS 2).  Pre-fix,
+	// Job::AddFileRasterizerOutput (Job.cpp ~8347) and
+	// Job::RemoveRasterizerOutputs (Job.cpp ~9880) both dereferenced
+	// pRasterizer without a null check -- any scene whose
+	// file_rasterizeroutput chunk preceded its rasterizer chunk (or that
+	// declared no rasterizer chunk at all) segfaulted at load, and the
+	// interactive console's `remove rasterizeroutputs` command segfaulted
+	// on a Job with no rasterizer set.  Both sites now null-guard: Add
+	// fails cleanly (Finalize returns false, so Cst's PASS 2 stops and
+	// LoadAsciiSceneAuto/LoadAsciiSceneViaCst returns false with a
+	// diagnostic); Remove returns false.  These load calls not crashing
+	// IS the regression guard for what was a segfault before the fix.
+	// ------------------------------------------------------------------
+
+	bool WriteSceneFile( const std::string& path, const std::string& text )
+	{
+		std::ofstream f( path.c_str() );
+		if ( !f ) return false;
+		f << text;
+		return f.good();
+	}
+
+	std::string GuardRasterizerChunk()
+	{
+		return "pathtracing_pel_rasterizer\n{\nsamples 4\n}\n\n";
+	}
+
+	std::string GuardFroChunk( const std::string& pattern )
+	{
+		return "file_rasterizeroutput\n{\npattern " + pattern +
+		       "\ntype PNG\nbpp 8\ncolor_space sRGB\n}\n\n";
+	}
+
+	// Shared minimal-but-complete scene tail: film + camera + one
+	// painter/material/geometry/object.  Same shape as the minimal
+	// scenes used by the other Agent* tests (AgentAutonomyPolicyTest.cpp
+	// et al.) so this is a known-loadable fixture, not a novel one.
+	std::string GuardSceneTail()
+	{
+		return
+			"film\n{\nwidth 16\nheight 16\n}\n\n"
+			"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\nname pnt_albedo\ncolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\nname mat_diffuse\nreflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\nname sph\nradius 0.8\n}\n\n"
+			"standard_object\n{\nname obj_sph\ngeometry sph\nmaterial mat_diffuse\n}\n";
+	}
+
+	void TestNullRasterizerGuard()
+	{
+		const std::string shader =
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n";
+		const std::string froPattern = MakeTempPathWithoutExt() + "_fro_guard_test";
+
+		// Case 1: file_rasterizeroutput chunk PRECEDES the rasterizer
+		// chunk.  Pre-fix this segfaulted inside
+		// Job::AddFileRasterizerOutput's unguarded
+		// `pRasterizer->AddRasterizerOutput(...)`.  Post-fix: the load
+		// must fail cleanly (not crash).
+		{
+			const std::string scene = "RISE ASCII SCENE 7\n" + shader +
+				GuardFroChunk( froPattern + "_1" ) + GuardRasterizerChunk() + GuardSceneTail();
+			const std::string path = MakeTempPathWithoutExt() + "_fro_before_rast.RISEscene";
+			Check( WriteSceneFile( path, scene ),
+				"[null-guard] FRO-before-rasterizer: temp scene written" );
+
+			Job* j = new Job();
+			const bool ok = j->LoadAsciiSceneAuto( path.c_str() );
+			Check( !ok,
+				"[null-guard] FRO-before-rasterizer: LoadAsciiSceneAuto fails cleanly "
+				"(process survives -- pre-fix this segfaulted)" );
+			j->release();
+			std::remove( path.c_str() );
+		}
+
+		// Case 2: file_rasterizeroutput chunk with NO rasterizer chunk
+		// anywhere in the scene.  Same unguarded deref, reached via the
+		// "no rasterizer ever declared" path instead of "declared later".
+		{
+			const std::string scene = "RISE ASCII SCENE 7\n" + shader +
+				GuardFroChunk( froPattern + "_2" ) + GuardSceneTail();
+			const std::string path = MakeTempPathWithoutExt() + "_fro_no_rast.RISEscene";
+			Check( WriteSceneFile( path, scene ),
+				"[null-guard] FRO-no-rasterizer: temp scene written" );
+
+			Job* j = new Job();
+			const bool ok = j->LoadAsciiSceneAuto( path.c_str() );
+			Check( !ok,
+				"[null-guard] FRO-no-rasterizer: LoadAsciiSceneAuto fails cleanly "
+				"(process survives -- pre-fix this segfaulted)" );
+			j->release();
+			std::remove( path.c_str() );
+		}
+
+		// Case 3 (control): rasterizer chunk precedes the FRO chunk --
+		// the correctly-ordered scene.  The null-guard must not
+		// false-reject this; the load must SUCCEED.
+		{
+			const std::string scene = "RISE ASCII SCENE 7\n" + shader +
+				GuardRasterizerChunk() + GuardFroChunk( froPattern + "_3" ) + GuardSceneTail();
+			const std::string path = MakeTempPathWithoutExt() + "_rast_before_fro.RISEscene";
+			Check( WriteSceneFile( path, scene ),
+				"[null-guard] control (rasterizer-before-FRO): temp scene written" );
+
+			Job* j = new Job();
+			const bool ok = j->LoadAsciiSceneAuto( path.c_str() );
+			Check( ok,
+				"[null-guard] control (rasterizer-before-FRO): LoadAsciiSceneAuto SUCCEEDS" );
+			j->release();
+			std::remove( path.c_str() );
+		}
+
+		// Case 4: Job::RemoveRasterizerOutputs on a fresh Job that has
+		// never had a rasterizer chunk finalize.  Pre-fix this was the
+		// same unguarded `pRasterizer->FreeRasterizerOutputs()` deref,
+		// reachable from the interactive console's
+		// `remove rasterizeroutputs` command before any rasterizer is set.
+		{
+			Job* j = new Job();
+			const bool ok = j->RemoveRasterizerOutputs();
+			Check( !ok,
+				"[null-guard] RemoveRasterizerOutputs on a rasterizer-less Job returns "
+				"false (process survives -- pre-fix this segfaulted)" );
+			j->release();
+		}
+	}
 }
 
 int main()
@@ -693,6 +826,7 @@ int main()
 	TestDenoiseDualWrite();
 	TestAnimationFrameNumbering();
 	TestMultiFrameReuse();
+	TestNullRasterizerGuard();
 
 	std::cout << "----------------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

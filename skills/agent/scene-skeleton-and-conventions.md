@@ -126,3 +126,6 @@ anything else.
 scene run via the CLI writes NO image unless the scene carries a
 `file_rasterizeroutput` chunk — see docs/SCENE_CONVENTIONS.md §10 for
 the standard dual EXR (HDR archive) + PNG (display preview) idiom.
+Declare the rasterizer chunk BEFORE any `file_rasterizeroutput`
+chunk; FRO-first (or no rasterizer chunk) fails the load with a
+"no rasterizer is set" diagnostic.
