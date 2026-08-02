@@ -965,6 +965,113 @@ first `point` is outside the body's radius at that height -- move it
 inward until it is buried, and confirm with a render, not with
 arithmetic.
 
+## Recipe 5: a compact standalone sweep (no vessel)
+
+Recipe 4's sweep is scenario-glued to the flask's neck; this is the
+generic form -- a closed profile tapered at both ends via
+`end_scale_x`/`end_scale_y`, carried along a short 3-point path, with
+no cross-object coordination required.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0 -9 4.5
+	lookat		0 0 0.6
+	up			0 0 1
+	fov			42.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name	pnt_rail
+	color	0.75 0.45 0.15
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+lambertian_material
+{
+	name		mat_rail
+	reflectance	pnt_rail
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 0 -0.6
+}
+
+sweep_geometry
+{
+	name			rail1geom
+	profile_point	0.5 0.5
+	profile_point	-0.5 0.5
+	profile_point	-0.5 -0.5
+	profile_point	0.5 -0.5
+	point			-3 0 0
+	point			0 0 1.2
+	point			3 0 0
+	n_len			32
+	end_scale_x		0.2
+	end_scale_y		0.2
+}
+
+standard_object
+{
+	name		rail1
+	geometry	rail1geom
+	material	mat_rail
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
 ## Traps specific to object modeling
 
 1. **`torus_geometry`'s ring axis is always Y** -- there is no `axis`

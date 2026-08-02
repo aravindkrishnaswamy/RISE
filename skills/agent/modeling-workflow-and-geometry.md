@@ -224,6 +224,95 @@ invent kinds not listed here.
   real chunks but more specialized -- reach for the analytic
   primitives and meshes above first.
 
+**Drop-in: a bumpy slab via `displaced_geometry`.** A small noise
+source bolted onto an existing base shape -- no colour painter needed
+for the noise source, since `displaced_geometry`'s `displacement`
+resolves through the Function2D manager, not the colour pipe
+(`Job::AddDisplacedGeometry`, `src/Library/Job.cpp` ~5338).
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	2.4 1.8 3.2
+	lookat		0 0 0
+	up			0 1 0
+	fov			42.0
+}
+
+box_geometry
+{
+	name	slab_base
+	width	3.0
+	height	0.3
+	depth	3.0
+}
+
+perlin2d_painter
+{
+	name		fn_bump
+	octaves		3
+	persistence	0.5
+	scale		6.0 6.0
+}
+
+displaced_geometry
+{
+	name			slab1_disp
+	base_geometry	slab_base
+	detail			32
+	displacement	fn_bump
+	disp_scale		0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_slab
+	color	0.6 0.6 0.6
+}
+
+lambertian_material
+{
+	name		mat_slab
+	reflectance	pnt_slab
+}
+
+standard_object
+{
+	name		slab1
+	geometry	slab1_disp
+	material	mat_slab
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
 **One override to "reach for the analytic primitives first": turned
 forms.**  If an object's silhouette is a solid of revolution -- bottle,
 jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,

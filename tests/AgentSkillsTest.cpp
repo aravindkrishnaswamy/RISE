@@ -568,9 +568,9 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
 	// A rot guard for the extraction itself: the eight seed skills ship
-	// SEVENTEEN snippets total (lighting-recipes 3, materials-and-media-
+	// NINETEEN snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 2, object-modeling-recipes 4, observe-modes 1,
+	// geometry 3, object-modeling-recipes 5, observe-modes 1,
 	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
 	// fence tag or extraction regresses, this trips before a snippet
 	// silently escapes checking.  object-modeling-recipes gained Recipe 4
@@ -578,8 +578,14 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// sweep_geometry neck) with the lathe-forms guidance; procedural-
 	// textures added the nested-perlin3d wood top and the domainwarp3d
 	// marble slab (whose scalar-pipe roughness is the ISCALARPAINTER-trap
-	// worked example).
-	Check( totalSnippets == 17, "the seed skills carry the expected 17 ```rise snippets in total (got " +
+	// worked example).  Arc-75 S3a added two more: modeling-workflow-and-
+	// geometry's displaced_geometry bumpy-slab drop-in (the bolt-on noise-
+	// source recipe, execution-validated bumpy-vs-flat) and object-
+	// modeling-recipes' Recipe 5 (a compact standalone sweep_geometry rail,
+	// re-anchored on the scenes/Tests/Geometry/sweep_instances.RISEscene
+	// horn idiom, replacing Recipe 4's scenario-glued flask neck as the
+	// generic form -- Recipe 4 itself is untouched).
+	Check( totalSnippets == 19, "the seed skills carry the expected 19 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
