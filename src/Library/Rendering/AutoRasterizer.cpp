@@ -22,6 +22,7 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IMedium.h"
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IEnumCallback.h"
@@ -112,6 +113,54 @@ namespace
 			}
 		}
 		return false;
+	}
+
+	//! G10 Tier-1 guard: PT is the only fire/smoke target, and the other
+	//! candidate integrators do not share its heterogeneous/emissive-volume
+	//! feature set.  A medium therefore requires PT when it is spatially
+	//! heterogeneous, or when its homogeneous coefficients carry emission.
+	//! Scan both object interiors and the global medium; stop at the first
+	//! match.  Homogeneous media ignore the query point by contract.
+	bool SceneHasPTOnlyMedium( const IScene& scene )
+	{
+		auto requiresPT = []( const IMedium* medium ) -> bool {
+			if( !medium ) {
+				return false;
+			}
+			if( !medium->IsHomogeneous() ) {
+				return true;
+			}
+			const MediumCoefficients coeff = medium->GetCoefficients( Point3(0,0,0) );
+			return coeff.emission[0] != 0.0 || coeff.emission[1] != 0.0 ||
+				coeff.emission[2] != 0.0 || medium->GetThermalEmissionImportance() > 0.0;
+		};
+
+		if( requiresPT( scene.GetGlobalMedium() ) ) {
+			return true;
+		}
+
+		struct MediumScan : public IEnumCallback<IObject>
+		{
+			const decltype(requiresPT)& predicate;
+			bool found;
+			explicit MediumScan( const decltype(requiresPT)& p ) : predicate(p), found(false) {}
+			bool operator()( const IObject& obj )
+			{
+				if( predicate( obj.GetInteriorMedium() ) ) {
+					found = true;
+					return false;
+				}
+				return true;
+			}
+		};
+
+		const IObjectManager* objects = scene.GetObjects();
+		if( !objects ) {
+			return false;
+		}
+		MediumScan scan( requiresPT );
+		objects->EnumerateObjects( scan );
+		return scan.found;
 	}
 
 	//! Capturing output for the render-time probe.  Stores the final
@@ -348,15 +397,25 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	}
 
 	// Tier 1 — cheap, conservative static best-guess over the assembled
-	// scene (docs/AUTO_RASTERIZER_DESIGN.md §5).  Two early-out scans give
-	// the only two signals the routing keys on; everything else defaults
-	// to PT, the matrix's converged-bulk winner.  `scene` is the assembled
+	// scene (docs/AUTO_RASTERIZER_DESIGN.md §5 plus fire/smoke G10).  Early-
+	// out scans first enforce the PT-only medium rule, then inspect the two
+	// caustic signals; everything else defaults to PT, the matrix's
+	// converged-bulk winner.  `scene` is the assembled
 	// scene because resolution runs at the first render-time entry (not at
 	// construction); Phase 4 replaces this body with the probe.
 	if( !scene ) {
 		// Defensive: the render path always passes a real scene, but a
 		// null here must not crash the dispatcher — fall back to PT.
 		mResolveReason = "no scene (defaulted)";
+		return AutoIntegratorChoice::PT;
+	}
+
+	// G10 is a hard capability route for automatic selection, so it must
+	// precede the optional Tier-2 probe: a probe result may refine supported
+	// surface scenes, but may not select an integrator that lacks the PT-only
+	// medium feature set.
+	if( SceneHasPTOnlyMedium( *scene ) ) {
+		mResolveReason = "heterogeneous or emissive medium";
 		return AutoIntegratorChoice::PT;
 	}
 

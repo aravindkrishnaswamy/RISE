@@ -217,11 +217,12 @@ namespace RISE
 			//! the gated/short-circuited render-time probe over the
 			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
 			//! (Phase 2, the fallback when the probe is inactive): a cheap,
-			//! conservative static analysis — route VCM where refractive
-			//! caustics are plausible (a transmissive/dielectric surface AND
-			//! a positional point/spot source), default everything else to
-			//! PT.  Sets `mResolveReason` to the one-line explanation logged
-			//! at resolution.
+			//! conservative static analysis — force PT when a heterogeneous
+			//! or emissive medium is present (fire/smoke G10); otherwise route
+			//! VCM where refractive caustics are plausible (a transmissive /
+			//! dielectric surface AND a positional point/spot source), and
+			//! default everything else to PT.  Sets `mResolveReason` to the
+			//! one-line explanation logged at resolution.
 			AutoIntegratorChoice SelectIntegrator( const IScene* scene ) const;
 
 			//! Read the probe tunables from GlobalOptions (Phase-3 defaults).

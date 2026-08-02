@@ -129,6 +129,7 @@ struct ImageStats
 	bool   wasAuto;                  // true if GetRasterizer() down-cast to AutoRasterizer
 	std::string resolvedName;        // ResolvedIntegratorName() — the cross-UI string API
 	bool   queryApiOK;               // IsAutoDispatcher() && ResolveReason() non-empty
+	unsigned int probeRenders;       // LastProbeRenders(); G10 must short-circuit Tier 2
 };
 
 static double Percentile( std::vector<double>& v, double p )
@@ -196,7 +197,9 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 // AutoRasterizer, also record which integrator it resolved to (valid
 // only after the render, since resolution is lazy).
 //////////////////////////////////////////////////////////////////////
-static ImageStats RenderAndComputeStats( const char* scenePath )
+static ImageStats RenderAndComputeStats(
+	const char* scenePath,
+	const bool addEmissiveHomogeneous = false )
 {
 	ImageStats result{};
 	result.resolved = AutoIntegratorChoice::Auto;
@@ -210,6 +213,17 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
+	}
+
+	if( addEmissiveHomogeneous ) {
+		const double zero[3] = { 0.0, 0.0, 0.0 };
+		const double emission[3] = { 1.0, 0.5, 0.25 };
+		if( !pJob->AddHomogeneousMediumSpectral(
+			"auto_test_emissive", zero, zero, emission, "", "", "isotropic", 0.0 ) ||
+			!pJob->SetGlobalMedium( "auto_test_emissive" ) ) {
+			safe_release( pJob );
+			return result;
+		}
 	}
 
 	pJob->RemoveRasterizerOutputs();
@@ -238,6 +252,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 		result.resolved = pAuto->ResolvedIntegrator();
 		result.resolvedName = pAuto->ResolvedIntegratorName();
 		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
+		result.probeRenders = pAuto->LastProbeRenders();
 	}
 
 	safe_release( pCap );
@@ -315,6 +330,8 @@ static const char* kAutoAuto =
 	"auto_rasterizer\n{\n\tintegrator auto\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoUnset =
 	"auto_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoProbe =
+	"auto_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
 // --- Phase-1b spectral fixtures.  Same shared body (kSceneCommon, RGB
 // painters JH-uplifted to spectra); only the rasterizer-chunk family changes
@@ -449,6 +466,59 @@ standard_object
 }
 )SCENE";
 
+// Non-emissive heterogeneous medium definition.  The tests attach it once as
+// the global medium and once to an object interior so both scan paths are
+// independently observable.
+static const char* kHeterogeneousMediumDefinition = R"SCENE(
+painter_heterogeneous_medium
+{
+	name auto_test_heterogeneous
+	absorption 0 0 0
+	scattering 0 0 0
+	emission 0 0 0
+	phase isotropic
+	density_painter pnt_albedo
+	resolution 2
+	color_to_scalar luminance
+	bbox_min -1 -1 -1
+	bbox_max 1 1 1
+}
+)SCENE";
+
+static const char* kGlobalHeterogeneousMedium = R"SCENE(
+global_medium
+{
+	medium auto_test_heterogeneous
+}
+)SCENE";
+
+static const char* kGlassSphereWithInteriorMedium = R"SCENE(
+uniformcolor_painter
+{
+	name pnt_interior_glasstau
+	color 1.0 1.0 1.0
+}
+dielectric_material
+{
+	name mat_interior_glass
+	tau 0.9999
+	ior 1.5
+}
+sphere_geometry
+{
+	name interior_glassball
+	radius 0.4
+}
+standard_object
+{
+	name obj_interior_glass
+	geometry interior_glassball
+	position 0.0 0.0 0.5
+	material mat_interior_glass
+	interior_medium auto_test_heterogeneous
+}
+)SCENE";
+
 static const double kMeanTol  = 0.08;
 static const double kP99Tol   = 0.30;
 static const double kMaxTol   = 1.50;
@@ -533,14 +603,18 @@ static void CheckDelegation(
 // static tier's job is the choice (PT/BDPT/VCM all converge to the same
 // image, so a radiance check could not tell a mis-route apart).
 //////////////////////////////////////////////////////////////////////
-static ImageStats RenderSceneBody( const char* rasterChunk, const std::string& body, const char* tag )
+static ImageStats RenderSceneBody(
+	const char* rasterChunk,
+	const std::string& body,
+	const char* tag,
+	const bool addEmissiveHomogeneous = false )
 {
 	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + body;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
 	}
-	const ImageStats s = RenderAndComputeStats( p.c_str() );
+	const ImageStats s = RenderAndComputeStats( p.c_str(), addEmissiveHomogeneous );
 	std::remove( p.c_str() );
 	return s;
 }
@@ -550,10 +624,13 @@ static void CheckStaticRoute(
 	const char* autoChunk,
 	const std::string& body,
 	const char* tag,
-	AutoIntegratorChoice expected )
+	AutoIntegratorChoice expected,
+	const bool addEmissiveHomogeneous = false,
+	const bool expectNoProbeRenders = false )
 {
 	std::cout << "Testing auto_rasterizer static routing: " << label << std::endl;
-	const ImageStats a = RenderSceneBody( autoChunk, body, tag );
+	const ImageStats a = RenderSceneBody(
+		autoChunk, body, tag, addEmissiveHomogeneous );
 	PrintStats( "auto", a );
 	Check( a.valid, std::string("render produced output: ") + label );
 	if( !a.valid ) return;
@@ -563,6 +640,10 @@ static void CheckStaticRoute(
 	const bool ok = ( a.resolved == expected );
 	Check( ok, std::string("resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+	if( expectNoProbeRenders ) {
+		Check( a.probeRenders == 0u,
+			std::string("G10 short-circuits Tier-2 probe renders: ") + label );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1127,10 +1208,11 @@ int main()
 	TestAutoParamPassThrough();
 
 	// --- Phase 2: Tier-1 static best-guess (integrator auto, no pin) ---
-	// The dispatcher introspects the assembled scene: a transmissive
-	// material + a positional point/spot light -> VCM (caustic-prone);
-	// everything else -> PT (the conservative default).  See
-	// docs/AUTO_RASTERIZER_DESIGN.md §5.
+	// The dispatcher introspects the assembled scene: any heterogeneous or
+	// emissive medium forces PT (fire/smoke G10); otherwise a transmissive
+	// material + a positional point/spot light -> VCM (caustic-prone), and
+	// everything else -> PT.  See docs/AUTO_RASTERIZER_DESIGN.md §5 and
+	// docs/FIRE_SMOKE_DESIGN.md §5.2 / §7.1 step 5.
 	std::cout << std::endl;
 	std::cout << "--- Phase 2: static best-guess routing ---" << std::endl;
 
@@ -1159,6 +1241,40 @@ int main()
 	//     covered by the delegation test above.)
 	CheckStaticRoute( "strong-indirect area-lit -> PT (probe picks BDPT)",
 		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
+
+	// (e) A non-emissive heterogeneous medium overrides the otherwise-valid
+	//     dielectric + point-light VCM signal and forces PT.
+	CheckStaticRoute( "heterogeneous medium + caustic signal -> PT",
+		kAutoAuto,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"p2_heterogeneous", AutoIntegratorChoice::PT );
+
+	// (f) The emissive half is independent: a homogeneous emitting medium
+	//     also overrides the competing VCM signal.  The scene language does
+	//     not author homogeneous emission, so this fixture uses the public
+	//     IJob medium API before the lazy render-time auto selection.
+	CheckStaticRoute( "emissive homogeneous medium + caustic signal -> PT",
+		kAutoAuto, std::string(kSceneCommon) + kGlassSphere,
+		"p2_emissive", AutoIntegratorChoice::PT, true );
+
+	// (g) Object-interior media use a separate scene scan from the global
+	//     slot.  Without that scan, this dielectric + point-light fixture
+	//     resolves VCM.
+	CheckStaticRoute( "object-interior heterogeneous medium + caustic signal -> PT",
+		kAutoAuto,
+		std::string(kSceneCommon) + kHeterogeneousMediumDefinition +
+			kGlassSphereWithInteriorMedium,
+		"p2_object_medium", AutoIntegratorChoice::PT );
+
+	// (h) Probe precedence: G10 is a capability gate, so it must return PT
+	//     before Tier 2 renders any unsupported candidate.  The test options
+	//     set activation_spp=1, making this probe live without the guard.
+	CheckStaticRoute( "probe-enabled heterogeneous medium short-circuits to PT",
+		kAutoProbe,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"p2_probe_medium", AutoIntegratorChoice::PT, false, true );
 
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
 	// The probe corrects the static tier on the cases it provably can't see.
@@ -1231,6 +1347,11 @@ int main()
 		kAutoSpecAuto, std::string(kSceneCommon) + kGlassSphere, "as_vcm_static", AutoIntegratorChoice::VCM );
 	CheckStaticRoute( "spectral dielectric, area-lit only -> PT",
 		kAutoSpecAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "as_diel_nopos", AutoIntegratorChoice::PT );
+	CheckStaticRoute( "spectral heterogeneous medium + caustic signal -> PT",
+		kAutoSpecAuto,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"as_heterogeneous", AutoIntegratorChoice::PT );
 
 	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
 	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
