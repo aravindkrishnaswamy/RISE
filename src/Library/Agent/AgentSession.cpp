@@ -3067,7 +3067,7 @@ namespace RISE
 			//! 3D-SOLID noise painters (perlin3d/worley3d/domainwarp3d/
 			//! reactiondiffusion3d/...) dual-register into the SAME
 			//! Function2D manager (Job::RegisterPainterDual), so
-			//! scalar_painter{function2d <a_3d_noise_painter>} PARSES and
+			//! scalar_painter{function2d `a_3d_noise_painter`} PARSES and
 			//! RENDERS non-black -- but their GetColor reads
 			//! ri.ptIntersection (world-space), which the base
 			//! Painter::Evaluate(x,y)'s synthetic RayIntersectionGeometric
