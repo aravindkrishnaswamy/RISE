@@ -1978,6 +1978,12 @@ namespace RISE
 					// testing the extracted `text` for blankness catches both.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"anthropic ended the turn with no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
@@ -2798,6 +2804,12 @@ namespace RISE
 					// since it is then the only text the model produced.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"gemini candidate carries no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
@@ -3502,6 +3514,12 @@ namespace RISE
 				else if( ChatContentIsBlank( text ) ) {
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"openai ended the response with no text or function calls" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				else {
@@ -3674,6 +3692,14 @@ namespace RISE
 					else {
 						out.step = MakeProviderError( ChatErrorKind::Provider,
 							"openai ended the turn with no content -- refusing the degenerate turn" );
+						// Observed on local qwen3-thinking backends: a premature
+						// end-of-turn mid-reasoning, not a considered refusal -- see
+						// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+						// assignment above (same hazard AttachReasoning documents:
+						// MakeProviderError REPLACES out.step wholesale).  NOT set on
+						// the sibling Refusal branch above (message.refusal is a
+						// considered decision, not a serving glitch).
+						out.step.retryDegenerateTurn = true;
 					}
 					return AttachReasoning();
 				}

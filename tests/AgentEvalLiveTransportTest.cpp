@@ -232,6 +232,24 @@ static const char* kBodyFinal =
 	"\"content\":[{\"type\":\"text\",\"text\":\"Done: pnt_albedo is now red.\"}],"
 	"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
 
+// Canned Anthropic DEGENERATE blank turn (content:[], stop_reason end_turn)
+// -- same shape as evals/fixtures/error_path.fixture.jsonl's two bodies.
+// Triggers ChatContentIsBlank in the Anthropic end_turn branch, which sets
+// ChatStepResult::retryDegenerateTurn (see AgentChatCodecs.cpp).  A second,
+// DISTINGUISHABLE body (different message id) lets a two-degenerate-round
+// test prove which canned body the transport actually consumed on each
+// attempt via the trajectory's response_body, not just that two POSTs
+// happened.
+static const char* kBodyDegenerate =
+	"{\"id\":\"msg_d1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\","
+	"\"content\":[],"
+	"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}";
+
+static const char* kBodyDegenerate2 =
+	"{\"id\":\"msg_d2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\","
+	"\"content\":[],"
+	"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}";
+
 //----------------------------------------------------------------------
 // T1: the platform transport factory.
 //----------------------------------------------------------------------
@@ -433,6 +451,273 @@ static void TestTransportRetryRespectsLlmBudget()
 	Check( h.result.llmCalls == 1, "P1-A: the single attempted POST is counted" );
 	Check( h.result.terminalStatus == "budget_llm_calls",
 	       "P1-A: the run stops on the llm-call budget, not transport_error (got '" + h.result.terminalStatus + "')" );
+}
+
+//----------------------------------------------------------------------
+// P1-A: the DEGENERATE-BLANK-TURN retry is budget-gated too, but its
+//      terminal status differs from the transport-retry case above by
+//      DESIGN, not by oversight.  The transport retry's own `continue` is
+//      unconditional and relies on the loop-top budget check catching the
+//      next attempt (landing on budget_llm_calls); the degenerate-turn
+//      retry checks the budget itself, BEFORE incrementing
+//      degenerateTurnRetries or issuing the retry, so an exhausted budget
+//      falls straight through to the SAME provider_error termination a
+//      degenerate turn produced before this retry feature existed --
+//      never reporting a retry that didn't happen, never diverting the
+//      terminal status.
+//----------------------------------------------------------------------
+static void TestDegenerateRetryRespectsLlmBudget()
+{
+	std::printf( "P1-A: degenerate-turn retry is budget-gated -- maxLlmCalls:1 sends exactly 1 POST...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxLlmCalls = 1;   // tighten the cap so the retry would exceed it
+
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyDegenerate, "", 3 } );
+	// A 2nd degenerate response is queued but MUST NEVER be consumed -- the
+	// budget has to block the retry before its POST leaves the client.
+	mock.responses.push_back( { 200, kBodyDegenerate2, "", 3 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "p1a_degenerate_retry_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( mock.seenRequests.size() == 1,
+	       "P1-A: maxLlmCalls:1 -> the degenerate-turn retry is budget-blocked; exactly 1 POST (not 2)" );
+	Check( h.result.llmCalls == 1, "P1-A: the single attempted POST is counted" );
+	Check( h.result.degenerateTurnRetries == 0,
+	       "P1-A: the counter equals POSTS ACTUALLY ISSUED for the retry -- a budget-blocked retry is not counted" );
+	Check( h.result.terminalStatus == "provider_error",
+	       "P1-A: budget exhaustion on a degenerate turn reports provider_error (the pre-retry-feature terminal "
+	       "status), not budget_llm_calls (got '" + h.result.terminalStatus + "')" );
+}
+
+//----------------------------------------------------------------------
+// T26: a degenerate blank turn then a real final turn -> one verbatim
+//      retry, round succeeds.  Unlike the transport-failure retry (T16),
+//      the degenerate response DID get a real HTTP reply, so
+//      RecordHttpRound fires for it too (it runs before HandleResponse's
+//      parse outcome is known) -- both attempts of this ONE round are
+//      recorded: attempt 1/retry_of -1 (the degenerate reply) and attempt
+//      2/retry_of 1 (the retry that actually succeeds).
+//----------------------------------------------------------------------
+static void TestLiveDegenerateRetrySucceeds()
+{
+	std::printf( "T26: degenerate blank turn then success -> one verbatim retry, round succeeds...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyDegenerate, "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal,      "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t26_live_degenerate_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T26: a degenerate-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "T26: both POSTs count -- the degenerate reply and its retry" );
+	Check( h.result.degenerateTurnRetries == 1, "T26: exactly 1 degenerate-turn retry was consumed" );
+	Check( mock.seenRequests.size() == 2, "T26: the transport saw exactly 2 POSTs" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "T26: the retried round's eventual final text is captured" );
+
+	// Both attempts got a real HTTP response, so BOTH are recorded (unlike
+	// the transport-failure case in T16, where the failed attempt leaves no
+	// trajectory record at all).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int llmRecords = 0, attempt1DegenerateBody = 0, attempt2RetryOf1FinalBody = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		++llmRecords;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		const int ro = static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) );
+		const std::string body = recs[i].get( "response_body" ).asString();
+		if( at == 1 && ro == -1 && body.find( "msg_d1" ) != std::string::npos ) ++attempt1DegenerateBody;
+		if( at == 2 && ro == 1 && body.find( "msg_2" ) != std::string::npos ) ++attempt2RetryOf1FinalBody;
+	}
+	Check( llmRecords == 2, "T26: exactly 2 llm trajectory records -- BOTH real HTTP responses are recorded" );
+	Check( attempt1DegenerateBody == 1, "T26: attempt 1/retry_of -1 carries the degenerate response body (msg_d1)" );
+	Check( attempt2RetryOf1FinalBody == 1, "T26: attempt 2/retry_of 1 carries the successful retry's response body (msg_2)" );
+}
+
+//----------------------------------------------------------------------
+// T27: two degenerate blank turns in a row exhaust the one-retry policy --
+//      the SECOND degenerate response falls through to the terminal
+//      ProviderError handling (attempt==1 gate fails on the 2nd try, see
+//      AgentEvalRunner.cpp's DEGENERATE-BLANK-TURN RETRY comment).  The two
+//      canned bodies are DISTINGUISHABLE (msg_d1 vs msg_d2) so the
+//      trajectory's response_body field proves which body was consumed on
+//      which attempt, not merely that 2 POSTs happened.
+//----------------------------------------------------------------------
+static void TestLiveDegenerateRetryExhausted()
+{
+	std::printf( "T27: degenerate blank turn then a SECOND degenerate blank turn -> provider_error, retry exhausted...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyDegenerate,  "", 3 } );
+	mock.responses.push_back( { 200, kBodyDegenerate2, "", 3 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t27_live_degenerate_retry_exhausted" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "T27: two degenerate turns in a row fall through to provider_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.errorMessage.find( "no readable text" ) != std::string::npos,
+	       "T27: errorMessage names the degenerate-turn refusal: '" + h.result.errorMessage + "'" );
+	Check( h.result.llmCalls == 2, "T27: both POSTs count -- the degenerate reply and its one retry" );
+	Check( h.result.degenerateTurnRetries == 1, "T27: exactly 1 degenerate-turn retry was consumed before exhaustion" );
+	Check( mock.seenRequests.size() == 2, "T27: the transport saw exactly 2 POSTs -- exhaustion is bounded, not a loop" );
+
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int llmRecords = 0, attempt1FirstBody = 0, attempt2RetryOf1SecondBody = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		++llmRecords;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		const int ro = static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) );
+		const std::string body = recs[i].get( "response_body" ).asString();
+		if( at == 1 && ro == -1 && body.find( "msg_d1" ) != std::string::npos ) ++attempt1FirstBody;
+		if( at == 2 && ro == 1 && body.find( "msg_d2" ) != std::string::npos ) ++attempt2RetryOf1SecondBody;
+	}
+	Check( llmRecords == 2, "T27: exactly 2 llm trajectory records -- both degenerate replies are recorded" );
+	Check( attempt1FirstBody == 1, "T27: attempt 1/retry_of -1 carries the FIRST degenerate body (msg_d1) -- provenance proof" );
+	Check( attempt2RetryOf1SecondBody == 1, "T27: attempt 2/retry_of 1 carries the SECOND degenerate body (msg_d2) -- proves the retry actually consumed the distinct 2nd canned response, not a repeat of the 1st" );
+}
+
+//----------------------------------------------------------------------
+// T28: REGRESSION GUARD -- degenerateTurnRetries is a PER-RUN counter that
+//      accumulates ACROSS rounds (declared once above the round loop in
+//      AgentEvalRunner.cpp, `++degenerateTurnRetries` inside the per-round
+//      attempt loop).  Every OTHER degenerate-turn test in this file
+//      (P1-A, T26, T27) drives at most ONE round, so a regression that
+//      scoped the counter PER ROUND instead (e.g. declaring/reseting it
+//      inside the round loop) would still pass every one of them -- the
+//      counter would read 1 either way.  This test drives TWO separately-
+//      rescued rounds in one run specifically so a per-round-scoped
+//      counter (reading 1, having been reset going into round 2) is
+//      DISTINGUISHABLE from the correct per-run counter (reading 2).
+//
+//      Sequence: round 1 gets a degenerate reply (msg_d1), retries, and
+//      the retry lands a tool_use turn (kBodyToolUse, propose_patch on
+//      pnt_albedo -- the same body T-series tool tests use against
+//      param_edit.json's scene) which the runner dispatches and feeds
+//      back automatically; round 2 gets ITS OWN degenerate reply
+//      (msg_d2), retries, and the retry lands the final text (kBodyFinal).
+//      4 POSTs total, 2 rounds, 1 retry per round.
+//----------------------------------------------------------------------
+static void TestLiveDegenerateRetryAccumulatesAcrossRounds()
+{
+	std::printf( "T28: two separately-rescued rounds in one run -> degenerateTurnRetries accumulates to 2 (regression guard)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyDegenerate,  "", 3 } );   // round 1, attempt 1: blank
+	mock.responses.push_back( { 200, kBodyToolUse,     "", 4 } );   // round 1, attempt 2 (retry): tool_use, rescues round 1
+	mock.responses.push_back( { 200, kBodyDegenerate2, "", 3 } );   // round 2, attempt 1: blank (own round, own retry budget)
+	mock.responses.push_back( { 200, kBodyFinal,       "", 4 } );   // round 2, attempt 2 (retry): final text, rescues round 2
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t28_live_degenerate_retry_accumulates" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T28: both rounds rescued -> final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 4, "T28: all 4 POSTs count -- 2 degenerate replies + their 2 retries" );
+	Check( h.result.degenerateTurnRetries == 2,
+	       "T28: the counter ACCUMULATES across rounds -- 1 retry per round, 2 rounds -> 2, not reset to 1 per round "
+	       "(got " + std::to_string( h.result.degenerateTurnRetries ) + ")" );
+	Check( mock.seenRequests.size() == 4, "T28: the transport saw exactly 4 POSTs" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "T28: the second round's eventual final text is captured" );
+
+	// Trajectory: 4 llm records, attempt/retry_of pattern is (1,-1)/(2,1)
+	// TWICE -- once per round -- proven via each round's distinguishable
+	// response body (msg_d1/msg_1 for round 1, msg_d2/msg_2 for round 2).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int llmRecords = 0;
+	int round1Attempt1 = 0, round1Attempt2RetryOf1 = 0;
+	int round2Attempt1 = 0, round2Attempt2RetryOf1 = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		++llmRecords;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		const int ro = static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) );
+		const std::string body = recs[i].get( "response_body" ).asString();
+		if( at == 1 && ro == -1 && body.find( "msg_d1" ) != std::string::npos ) ++round1Attempt1;
+		if( at == 2 && ro ==  1 && body.find( "\"msg_1\"" ) != std::string::npos ) ++round1Attempt2RetryOf1;
+		if( at == 1 && ro == -1 && body.find( "msg_d2" ) != std::string::npos ) ++round2Attempt1;
+		if( at == 2 && ro ==  1 && body.find( "\"msg_2\"" ) != std::string::npos ) ++round2Attempt2RetryOf1;
+	}
+	Check( llmRecords == 4, "T28: exactly 4 llm trajectory records -- every POST got a real HTTP response" );
+	Check( round1Attempt1 == 1, "T28: round 1's degenerate reply is attempt 1/retry_of -1 (msg_d1)" );
+	Check( round1Attempt2RetryOf1 == 1, "T28: round 1's retry (the tool_use body, msg_1) is attempt 2/retry_of 1" );
+	Check( round2Attempt1 == 1, "T28: round 2's OWN degenerate reply is attempt 1/retry_of -1 (msg_d2) -- a fresh attempt counter, not a continuation of round 1's" );
+	Check( round2Attempt2RetryOf1 == 1, "T28: round 2's retry (the final-text body, msg_2) is attempt 2/retry_of 1" );
+}
+
+//----------------------------------------------------------------------
+// T29: the degenerate-turn retry does NOT stack with the 5xx retry (P2-2 --
+//      companion to T18, which proves the same non-stacking property for
+//      transport-failure + 5xx).  A 500 on attempt 1 consumes the round's
+//      one allowed retry (the 5xx branch's `attempt == 1` gate); the
+//      degenerate reply that follows lands on attempt 2, whose degenerate-
+//      retry gate (`attempt == 1`) no longer holds, so it falls straight
+//      through to the terminal ProviderError handling -- exactly 2 POSTs,
+//      degenerateTurnRetries stays 0 (no degenerate-turn retry was ever
+//      issued, only consumed-as-terminal).
+//----------------------------------------------------------------------
+static void TestLive5xxDoesNotStackWithDegenerate()
+{
+	std::printf( "T29: HTTP 500 then a degenerate blank turn -> provider_error after 2 POSTs, retries do not stack...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 3 } );
+	mock.responses.push_back( { 200, kBodyDegenerate, "", 3 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t29_live_5xx_then_degenerate" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "T29: 500-then-degenerate falls through to provider_error, not a second retry (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.llmCalls == 2, "T29: both POSTs count -- the 500 attempt and the degenerate attempt" );
+	Check( h.result.degenerateTurnRetries == 0,
+	       "T29: no degenerate-turn retry was issued -- the degenerate reply arrived on attempt 2, past the "
+	       "attempt==1 gate the 500's retry already consumed (got " + std::to_string( h.result.degenerateTurnRetries ) + ")" );
+	Check( mock.seenRequests.size() == 2,
+	       "T29: the transport saw exactly 2 POSTs total -- the two independent retry causes did not stack" );
 }
 
 //----------------------------------------------------------------------
@@ -2785,6 +3070,11 @@ int main()
 	TestLiveBudget();
 	TestTransportError();
 	TestTransportRetryRespectsLlmBudget();
+	TestDegenerateRetryRespectsLlmBudget();
+	TestLiveDegenerateRetrySucceeds();
+	TestLiveDegenerateRetryExhausted();
+	TestLiveDegenerateRetryAccumulatesAcrossRounds();
+	TestLive5xxDoesNotStackWithDegenerate();
 	TestKeyHygieneRedProve();
 	TestLiveLocalProviderTimeoutBudget();
 	TestLiveHttp5xxRetrySucceeds();

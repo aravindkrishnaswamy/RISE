@@ -4023,6 +4023,7 @@ static void TestDegenerateEmptyTurns()
 		       "anthropic empty content + end_turn -> ProviderError" );
 		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
 		       "the refusal names the degenerate no-text turn" );
+		Check( st.retryDegenerateTurn, "the degenerate anthropic turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the degenerate anthropic turn records NOTHING" );
 	}
 
@@ -4036,6 +4037,7 @@ static void TestDegenerateEmptyTurns()
 			AnthropicFixture( "[{\"type\":\"text\",\"text\":\"  \\n\"}]", "end_turn" ) );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "anthropic whitespace-only text block + end_turn -> ProviderError" );
+		Check( st.retryDegenerateTurn, "the whitespace-only anthropic turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the whitespace-only anthropic turn records NOTHING" );
 	}
 
@@ -4062,6 +4064,7 @@ static void TestDegenerateEmptyTurns()
 		       "gemini STOP with missing content -> ProviderError" );
 		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
 		       "the refusal names the degenerate no-text turn" );
+		Check( st.retryDegenerateTurn, "the missing-content gemini turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the missing-content gemini turn records NOTHING" );
 	}
 
@@ -4074,6 +4077,7 @@ static void TestDegenerateEmptyTurns()
 			"{\"parts\":[],\"role\":\"model\"}", "STOP" ) );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini STOP with empty parts -> ProviderError" );
+		Check( st.retryDegenerateTurn, "the empty-parts gemini turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the empty-parts gemini turn records NOTHING" );
 	}
 
@@ -4087,6 +4091,7 @@ static void TestDegenerateEmptyTurns()
 			"{\"parts\":[{\"text\":\"   \"}],\"role\":\"model\"}", "STOP" ) );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini whitespace-only text part + STOP -> ProviderError" );
+		Check( st.retryDegenerateTurn, "the whitespace-only gemini turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the whitespace-only gemini turn records NOTHING" );
 	}
 
@@ -4696,6 +4701,7 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "content:null with no refusal field -> errorKind Provider" );
 		Check( st.errorMessage.find( "no content" ) != std::string::npos,
 		       "the refusal names the degenerate no-content turn" );
+		Check( st.retryDegenerateTurn, "the degenerate content:null turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the degenerate content:null turn records nothing" );
 	}
 
@@ -4713,6 +4719,7 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "content:\"\" with no refusal field -> errorKind Provider" );
 		Check( st.errorMessage.find( "no content" ) != std::string::npos,
 		       "the refusal names the degenerate no-content turn" );
+		Check( st.retryDegenerateTurn, "the degenerate content:\"\" turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the degenerate content:\"\" turn records nothing" );
 	}
 
@@ -4732,6 +4739,8 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "content:\"\" structured refusal -> errorKind Refusal" );
 		Check( st.errorMessage.find( "Blocked by policy." ) != std::string::npos,
 		       "the refusal TEXT is surfaced so the user sees why" );
+		Check( !st.retryDegenerateTurn,
+		       "a structured refusal is a considered decision, not a serving glitch -- NOT marked retriable" );
 		Check( loop.TranscriptSize() == 1, "the refused turn records nothing" );
 	}
 
@@ -4751,6 +4760,8 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "a structured refusal -> errorKind Refusal" );
 		Check( st.errorMessage.find( "I can't help with that." ) != std::string::npos,
 		       "the refusal TEXT is surfaced so the user sees why" );
+		Check( !st.retryDegenerateTurn,
+		       "a structured refusal is a considered decision, not a serving glitch -- NOT marked retriable" );
 		Check( loop.TranscriptSize() == 1, "the refused turn records nothing" );
 	}
 
@@ -4770,6 +4781,8 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "malformed arguments -> errorKind Provider" );
 		Check( st.errorMessage.find( "malformed arguments" ) != std::string::npos,
 		       "the refusal names the malformed arguments" );
+		Check( !st.retryDegenerateTurn,
+		       "a malformed-arguments STRUCTURAL refusal is not one of the four blank-turn sites -- NOT marked retriable" );
 		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
 		Check( loop.PendingToolCalls().empty(),
 		       "no call is pended -- it was never recorded as an executable tool_call" );
@@ -4790,6 +4803,7 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		       "content:[] with no refusal field -> errorKind Provider" );
 		Check( st.errorMessage.find( "no content" ) != std::string::npos,
 		       "the refusal names the degenerate no-content turn" );
+		Check( st.retryDegenerateTurn, "the degenerate content:[] turn is marked verbatim-retriable" );
 		Check( loop.TranscriptSize() == 1, "the degenerate content:[] turn records nothing" );
 	}
 
@@ -8109,6 +8123,14 @@ static void TestReasoningSurvivalMatrix()
 		std::string          body;
 		ChatStepResult::Kind kind;
 		ChatErrorKind        errorKind;   // only read when kind == ProviderError
+		// True at exactly the four ChatContentIsBlank-gated blank-turn sites
+		// (see ChatStepResult::retryDegenerateTurn's doc comment) -- false
+		// for every other row, INCLUDING every other ProviderError row
+		// (structured refusals / SAFETY / structural mid-scan refusals are
+		// considered decisions, not serving glitches) and every FinalText/
+		// ToolCalls row (the field is meaningless there and stays at its
+		// default).
+		bool                  retryDegenerateTurn;
 	};
 
 	// ---- per-codec body builders, each planting kMark in that provider's
@@ -8160,33 +8182,33 @@ static void TestReasoningSurvivalMatrix()
 	const Row rows[] = {
 		// ---- Anthropic: all seven disposition exits ---------------------
 		{ "anthropic/stop_reason tool_use with NO tool_use blocks",
-		  RC_Anthropic, Anth( "", "tool_use" ),   kErr, ChatErrorKind::Provider },
+		  RC_Anthropic, Anth( "", "tool_use" ),   kErr, ChatErrorKind::Provider, false },
 		{ "anthropic/max_tokens (extended thinking hit the cap)",
-		  RC_Anthropic, Anth( "", "max_tokens" ), kErr, ChatErrorKind::MaxTokens },
+		  RC_Anthropic, Anth( "", "max_tokens" ), kErr, ChatErrorKind::MaxTokens, false },
 		{ "anthropic/stop_reason refusal",
-		  RC_Anthropic, Anth( "", "refusal" ),    kErr, ChatErrorKind::Refusal },
+		  RC_Anthropic, Anth( "", "refusal" ),    kErr, ChatErrorKind::Refusal, false },
 		{ "anthropic/tool_use under a NON-tool_use stop_reason",
-		  RC_Anthropic, Anth( kAnthCall, "end_turn" ), kErr, ChatErrorKind::Provider },
+		  RC_Anthropic, Anth( kAnthCall, "end_turn" ), kErr, ChatErrorKind::Provider, false },
 		{ "anthropic/end_turn with no readable text (thinking only)",
-		  RC_Anthropic, Anth( "", "end_turn" ),   kErr, ChatErrorKind::Provider },
+		  RC_Anthropic, Anth( "", "end_turn" ),   kErr, ChatErrorKind::Provider, true },
 		{ "anthropic/unexpected stop_reason (pause_turn)",
-		  RC_Anthropic, Anth( "", "pause_turn" ), kErr, ChatErrorKind::Provider },
+		  RC_Anthropic, Anth( "", "pause_turn" ), kErr, ChatErrorKind::Provider, false },
 		{ "anthropic/SUCCESS FinalText",
-		  RC_Anthropic, Anth( kAnthText, "end_turn" ), kFinal, ChatErrorKind::None },
+		  RC_Anthropic, Anth( kAnthText, "end_turn" ), kFinal, ChatErrorKind::None, false },
 		{ "anthropic/SUCCESS ToolCalls",
-		  RC_Anthropic, Anth( kAnthCall, "tool_use" ), kCalls, ChatErrorKind::None },
+		  RC_Anthropic, Anth( kAnthCall, "tool_use" ), kCalls, ChatErrorKind::None, false },
 
 		// ---- Gemini: all four disposition exits -------------------------
 		{ "gemini/function calls under a non-STOP finishReason",
-		  RC_Gemini, Gem( kGemCall, "MAX_TOKENS" ), kErr, ChatErrorKind::MaxTokens },
+		  RC_Gemini, Gem( kGemCall, "MAX_TOKENS" ), kErr, ChatErrorKind::MaxTokens, false },
 		{ "gemini/STOP with no readable text (thought only)",
-		  RC_Gemini, Gem( "", "STOP" ),             kErr, ChatErrorKind::Provider },
+		  RC_Gemini, Gem( "", "STOP" ),             kErr, ChatErrorKind::Provider, true },
 		{ "gemini/non-STOP finishReason, no calls (SAFETY)",
-		  RC_Gemini, Gem( kGemText, "SAFETY" ),     kErr, ChatErrorKind::Refusal },
+		  RC_Gemini, Gem( kGemText, "SAFETY" ),     kErr, ChatErrorKind::Refusal, false },
 		{ "gemini/SUCCESS FinalText",
-		  RC_Gemini, Gem( kGemText, "STOP" ),       kFinal, ChatErrorKind::None },
+		  RC_Gemini, Gem( kGemText, "STOP" ),       kFinal, ChatErrorKind::None, false },
 		{ "gemini/SUCCESS ToolCalls",
-		  RC_Gemini, Gem( kGemCall, "STOP" ),       kCalls, ChatErrorKind::None },
+		  RC_Gemini, Gem( kGemCall, "STOP" ),       kCalls, ChatErrorKind::None, false },
 
 		// ---- OpenAI Responses: status exits + disposition exits ---------
 		// The three status rows are the P1-2 regression: they return BEFORE
@@ -8194,46 +8216,46 @@ static void TestReasoningSurvivalMatrix()
 		{ "responses/status incomplete, reason max_output_tokens",
 		  RC_Responses,
 		  Resp( "\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}", "" ),
-		  kErr, ChatErrorKind::MaxTokens },
+		  kErr, ChatErrorKind::MaxTokens, false },
 		{ "responses/status incomplete, some other reason",
 		  RC_Responses,
 		  Resp( "\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}", "" ),
-		  kErr, ChatErrorKind::Provider },
+		  kErr, ChatErrorKind::Provider, false },
 		{ "responses/status neither completed nor incomplete (failed)",
-		  RC_Responses, Resp( "\"status\":\"failed\"", "" ), kErr, ChatErrorKind::Provider },
+		  RC_Responses, Resp( "\"status\":\"failed\"", "" ), kErr, ChatErrorKind::Provider, false },
 		{ "responses/refusal content part",
 		  RC_Responses,
 		  Resp( "\"status\":\"completed\"",
 		        ",{\"type\":\"message\",\"role\":\"assistant\",\"content\":"
 		        "[{\"type\":\"refusal\",\"refusal\":\"I cannot help with that.\"}]}" ),
-		  kErr, ChatErrorKind::Refusal },
+		  kErr, ChatErrorKind::Refusal, false },
 		{ "responses/completed with only a reasoning item (blank)",
-		  RC_Responses, Resp( "\"status\":\"completed\"", "" ), kErr, ChatErrorKind::Provider },
+		  RC_Responses, Resp( "\"status\":\"completed\"", "" ), kErr, ChatErrorKind::Provider, true },
 		{ "responses/SUCCESS FinalText",
-		  RC_Responses, Resp( "\"status\":\"completed\"", kRespText ), kFinal, ChatErrorKind::None },
+		  RC_Responses, Resp( "\"status\":\"completed\"", kRespText ), kFinal, ChatErrorKind::None, false },
 		{ "responses/SUCCESS ToolCalls",
-		  RC_Responses, Resp( "\"status\":\"completed\"", kRespCall ), kCalls, ChatErrorKind::None },
+		  RC_Responses, Resp( "\"status\":\"completed\"", kRespCall ), kCalls, ChatErrorKind::None, false },
 
 		// ---- OpenAI Chat Completions: all seven disposition exits -------
 		{ "chatcompletions/finish_reason tool_calls with NO tool_calls",
-		  RC_ChatCompletions, Cc( ",\"content\":null", "tool_calls" ), kErr, ChatErrorKind::Provider },
+		  RC_ChatCompletions, Cc( ",\"content\":null", "tool_calls" ), kErr, ChatErrorKind::Provider, false },
 		{ "chatcompletions/tool_calls under finish_reason stop",
-		  RC_ChatCompletions, Cc( ",\"content\":null" + kCcCall, "stop" ), kErr, ChatErrorKind::Provider },
+		  RC_ChatCompletions, Cc( ",\"content\":null" + kCcCall, "stop" ), kErr, ChatErrorKind::Provider, false },
 		{ "chatcompletions/blank stop, no refusal field",
-		  RC_ChatCompletions, Cc( ",\"content\":\"\"", "stop" ), kErr, ChatErrorKind::Provider },
+		  RC_ChatCompletions, Cc( ",\"content\":\"\"", "stop" ), kErr, ChatErrorKind::Provider, true },
 		{ "chatcompletions/blank stop WITH a structured refusal",
 		  RC_ChatCompletions, Cc( ",\"content\":\"\",\"refusal\":\"I cannot help with that.\"", "stop" ),
-		  kErr, ChatErrorKind::Refusal },
+		  kErr, ChatErrorKind::Refusal, false },
 		{ "chatcompletions/finish_reason length",
-		  RC_ChatCompletions, Cc( ",\"content\":\"trunc\"", "length" ), kErr, ChatErrorKind::MaxTokens },
+		  RC_ChatCompletions, Cc( ",\"content\":\"trunc\"", "length" ), kErr, ChatErrorKind::MaxTokens, false },
 		{ "chatcompletions/finish_reason content_filter",
-		  RC_ChatCompletions, Cc( ",\"content\":\"\"", "content_filter" ), kErr, ChatErrorKind::Refusal },
+		  RC_ChatCompletions, Cc( ",\"content\":\"\"", "content_filter" ), kErr, ChatErrorKind::Refusal, false },
 		{ "chatcompletions/unexpected finish_reason",
-		  RC_ChatCompletions, Cc( ",\"content\":\"Done.\"", "function_call" ), kErr, ChatErrorKind::Provider },
+		  RC_ChatCompletions, Cc( ",\"content\":\"Done.\"", "function_call" ), kErr, ChatErrorKind::Provider, false },
 		{ "chatcompletions/SUCCESS FinalText",
-		  RC_ChatCompletions, Cc( ",\"content\":\"Done.\"", "stop" ), kFinal, ChatErrorKind::None },
+		  RC_ChatCompletions, Cc( ",\"content\":\"Done.\"", "stop" ), kFinal, ChatErrorKind::None, false },
 		{ "chatcompletions/SUCCESS ToolCalls",
-		  RC_ChatCompletions, Cc( ",\"content\":null" + kCcCall, "tool_calls" ), kCalls, ChatErrorKind::None }
+		  RC_ChatCompletions, Cc( ",\"content\":null" + kCcCall, "tool_calls" ), kCalls, ChatErrorKind::None, false }
 	};
 
 	AnthropicChatCodec anthropic;
@@ -8258,6 +8280,14 @@ static void TestReasoningSurvivalMatrix()
 			Check( pr.step.errorKind == row.errorKind,
 			       std::string( "T43[" ) + row.label + "]: ... with the intended error kind" );
 		}
+		// retryDegenerateTurn: true at exactly the four blank-turn sites,
+		// false everywhere else (every other ProviderError disposition AND
+		// every FinalText/ToolCalls row) -- see AgentChatCodecs.cpp:3514-3523
+		// (P1-B) and the Row struct's doc comment above.
+		Check( pr.step.retryDegenerateTurn == row.retryDegenerateTurn,
+		       std::string( "T43[" ) + row.label + "]: retryDegenerateTurn is " +
+		       ( row.retryDegenerateTurn ? "true (a blank-turn serving glitch)" : "false" ) +
+		       " (got " + ( pr.step.retryDegenerateTurn ? "true" : "false" ) + ")" );
 		// The point of the table.
 		Check( pr.reasoningText == kMark,
 		       std::string( "T43[" ) + row.label + "]: reasoning survives on ChatParsedResponse" );

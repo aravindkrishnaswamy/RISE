@@ -2559,6 +2559,7 @@ namespace RISE
 				int llmCalls = 0;
 				int toolCalls = 0;
 				int nextRpcId = 1;
+				int degenerateTurnRetries = 0;
 				bool budgetHit = false;
 				std::string terminalStatus;
 				std::string errorMessage;
@@ -2756,6 +2757,39 @@ namespace RISE
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryReasoningEffortNone && attempt == 1 )
 								continue;   // one reasoning_effort:none retry of this round
+							// DEGENERATE-BLANK-TURN RETRY (see ChatStepResult::
+							// retryDegenerateTurn): a local qwen3-thinking
+							// backend stochastically ends the turn mid-
+							// reasoning with no text and no tool calls.
+							// Unlike the recoveries above, nothing about the
+							// NEXT request changes -- BuildRequest at the top
+							// of the next iteration rebuilds from the SAME
+							// transcript (this round recorded nothing, so
+							// there is nothing to un-record), giving a
+							// verbatim resend.  One retry per round, same
+							// attempt==1 gate as its siblings; a second
+							// degenerate response on attempt 2 falls through
+							// to the terminal ProviderError handling below.
+							// CONSTRAINT: degenerateTurnRetries must equal the
+							// number of retry POSTs actually issued, so the
+							// budget predicate here MUST mirror the loop-top
+							// check above verbatim -- taking this arm when the
+							// budget is exhausted would increment the counter
+							// for a POST that never goes out AND divert the
+							// terminal status to budget_llm_calls, when
+							// pre-degenerate-retry behavior (and every other
+							// exhausted-budget path) reports provider_error.
+							// When the budget does not allow another POST,
+							// fall through to the unconditional `break` below
+							// so the ProviderError branch after the attempt
+							// loop sets terminalStatus/errorMessage exactly as
+							// it would have with no retry arm at all.
+							if( st.kind == ChatStepResult::Kind::ProviderError &&
+							    st.retryDegenerateTurn && attempt == 1 &&
+							    ( scenario.budgets.maxLlmCalls < 0 || llmCalls < scenario.budgets.maxLlmCalls ) ) {
+								++degenerateTurnRetries;
+								continue;   // one verbatim retry of this round
+							}
 							break;
 						}
 						if( roundStopped ) break;
@@ -2886,6 +2920,7 @@ namespace RISE
 				handle.result.terminalStatus = terminalStatus;
 				handle.result.llmCalls = llmCalls;
 				handle.result.toolCalls = toolCalls;
+				handle.result.degenerateTurnRetries = degenerateTurnRetries;
 				handle.result.budgetHit = budgetHit;
 				handle.result.wallMs = endMs - startMs;
 				handle.result.finalText = finalText;
@@ -2901,6 +2936,10 @@ namespace RISE
 				r.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
 				r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
 				r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
+				// Always emitted, even when 0: field presence marks the
+				// instrument version in archived result lines (see
+				// AgentEvalRunResult::degenerateTurnRetries).
+				r.set( "degenerateTurnRetries", JsonValue::MakeNumber( static_cast<double>( handle.result.degenerateTurnRetries ) ) );
 				r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
 				r.set( "wallMs", JsonValue::MakeNumber( static_cast<double>( handle.result.wallMs ) ) );
 				r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );

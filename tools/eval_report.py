@@ -12,10 +12,12 @@ subdirectory is written per (scenario, provider, model, repeat):
                                          see src/Library/Agent/ChatTrajectory.cpp)
         <scenarioId>.result.jsonl       one-line run result: scenarioId,
                                          terminalStatus, llmCalls, toolCalls,
-                                         budgetHit, wallMs, headVersionStart,
+                                         degenerateTurnRetries, budgetHit,
+                                         wallMs, headVersionStart,
                                          headVersionFinal, finalText,
                                          optional errorMessage
-                                         (AgentEvalRunner.cpp ~line 584-601)
+                                         (written by the result-line writer in
+                                         AgentEvalRunner.cpp)
         results.jsonl                   E3 checker output, appended: scenarioId,
                                          checkpointFraction, allPassed,
                                          checkpoints[] = {kind,passed,weight,detail,
@@ -860,6 +862,7 @@ def compute_group_stats(key, recs):
     # being dropped -- so old data still surfaces, just not attributable to
     # a specific measured aspect.
     metric_values_by_label = defaultdict(list)
+    total_degenerate_retries = 0
 
     for r in recs:
         all_passed = False
@@ -904,11 +907,26 @@ def compute_group_stats(key, recs):
             # terminalStatus: scenarios assert on terminalStatus == "final_text"
             # and inventing a value here would silently change their grading.
             # This is a REPORTING distinction only.
+            #
+            # degenerateTurnRetries CORRECTION: llmCalls counts every POST
+            # sent, including a degenerate-blank-turn retry that got rescued
+            # by its own verbatim resend (see AgentEvalRunner.cpp's
+            # ChatStepResult::retryDegenerateTurn handling) -- that retry is
+            # pure recovery overhead, not a second considered turn. Without
+            # subtracting it, a first-turn-rescued prose-only run reports
+            # llmCalls==2 and falls OUTSIDE this gate even though the model
+            # still never attempted the task with a tool call. Subtracting
+            # degenerateTurnRetries (default 0 for a result.jsonl predating
+            # the field) recovers the EFFECTIVE turn count the gate is
+            # actually trying to measure.
+            degenerate_retries = r.result.get("degenerateTurnRetries", 0)
+            if not isinstance(degenerate_retries, int):
+                degenerate_retries = 0
             if (
                 status == "final_text"
                 and isinstance(r.result.get("llmCalls"), int)
                 and isinstance(r.result.get("toolCalls"), int)
-                and r.result["llmCalls"] <= 1
+                and (r.result["llmCalls"] - degenerate_retries) <= 1
                 and r.result["toolCalls"] == 0
             ):
                 status_counter["final_text(no-op: 0 tool calls)"] += 1
@@ -916,6 +934,11 @@ def compute_group_stats(key, recs):
                 status_counter[status] += 1
         else:
             status_counter["<missing result>"] += 1
+
+        if r.result is not None:
+            dtr = r.result.get("degenerateTurnRetries", 0)
+            if isinstance(dtr, int):
+                total_degenerate_retries += dtr
 
         # Wall-clock completion time per run (ms) -- the provider "time to
         # completion" comparison. Skip -1 (load_error, never timed) and a
@@ -976,6 +999,12 @@ def compute_group_stats(key, recs):
         "terminal_status_counts": dict(status_counter),
         "has_unversioned": has_unversioned,
         "has_stale": has_stale,
+        # Summed degenerateTurnRetries across this group's N repeats -- see
+        # ChatStepResult::retryDegenerateTurn / AgentEvalRunner.h's field
+        # doc. Surfaces the rescue rate without hand-grepping result.jsonl;
+        # 0 for a group whose runs predate the field (treated as absent, not
+        # missing-data).
+        "total_degenerate_turn_retries": total_degenerate_retries,
     }
 
 
@@ -1073,7 +1102,7 @@ def render_text_report(stats_list, warnings):
 
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "degenRetries", "failureBreakdown",
     ]
     if show_metric:
         for i, label in enumerate(metric_labels):
@@ -1095,6 +1124,7 @@ def render_text_report(stats_list, warnings):
         row.extend([
             fmt_cost(s["cost_per_success"]),
             fmt_wall(s["mean_wall_ms"]),
+            str(s["total_degenerate_turn_retries"]),
             fmt_status_counts(s["terminal_status_counts"]),
         ])
         rows.append(row)
@@ -1135,6 +1165,9 @@ def render_text_report(stats_list, warnings):
         "the model has no specific pricing entry). wall(s) = mean wall-clock "
         "completion time per run in seconds (LLM round-trips + tool dispatch; "
         "the provider speed metric -- runs are serialized so it is comparable). "
+        "degenRetries = summed degenerateTurnRetries across the N repeats (a "
+        "local-model blank-turn serving glitch rescued by a verbatim resend; "
+        "see ChatStepResult::retryDegenerateTurn). "
         "failureBreakdown = terminal-status counts across the N repeats. "
         "† = contains unversioned (pre-content-hash) results -- not tied to "
         "the current scenario definitions; re-run the matrix to refresh. "
@@ -1165,7 +1198,7 @@ def render_markdown_report(stats_list, warnings):
 
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "degenRetries", "failureBreakdown",
     ]
     if show_metric:
         for i, label in enumerate(metric_labels):
@@ -1189,6 +1222,7 @@ def render_markdown_report(stats_list, warnings):
         row.extend([
             fmt_cost(s["cost_per_success"]),
             fmt_wall(s["mean_wall_ms"]),
+            str(s["total_degenerate_turn_retries"]),
             fmt_status_counts(s["terminal_status_counts"]).replace("|", "\\|"),
         ])
         lines.append("| " + " | ".join(row) + " |")
@@ -1211,7 +1245,10 @@ def render_markdown_report(stats_list, warnings):
         "`$/success` = total cost / successes (`n/a (no pricing)` when the model "
         "has no specific pricing entry). `wall(s)` = mean wall-clock completion "
         "time per run in seconds (the provider speed metric; runs are "
-        "serialized so it is comparable). `failureBreakdown` = terminal-status "
+        "serialized so it is comparable). `degenRetries` = summed "
+        "degenerateTurnRetries across the N repeats (a local-model blank-turn "
+        "serving glitch rescued by a verbatim resend; see "
+        "`ChatStepResult::retryDegenerateTurn`). `failureBreakdown` = terminal-status "
         "counts across the N repeats. "
         "† = contains unversioned (pre-content-hash) results -- not tied to "
         "the current scenario definitions; re-run the matrix to refresh. "
@@ -1792,11 +1829,12 @@ def selftest():
     # first LLM turn without ever calling a tool did not attempt the task).
     # RED-PROVE: without the split in compute_group_stats these three runs
     # all report as an indistinguishable "final_text:3". ---
-    def _mk_final_text(llm_calls, tool_calls):
+    def _mk_final_text(llm_calls, tool_calls, degenerate_retries=0):
         r = RunRecord()
         r.check = {"allPassed": False, "checkpointFraction": 0.0}
         r.result = {"terminalStatus": "final_text", "wallMs": 100,
-                    "llmCalls": llm_calls, "toolCalls": tool_calls}
+                    "llmCalls": llm_calls, "toolCalls": tool_calls,
+                    "degenerateTurnRetries": degenerate_retries}
         r.input_tokens = r.output_tokens = r.cached_tokens = 0
         return r
 
@@ -1821,6 +1859,74 @@ def selftest():
     if counts_legacy.get("final_text") != 1 or noop_key in counts_legacy:
         raise AssertionError(f"legacy result without toolCalls must stay final_text, got {counts_legacy}")
     print("PASS: a result.jsonl lacking llmCalls/toolCalls is not classified as no-op")
+
+    # degenerateTurnRetries CORRECTION: a run that was rescued once on its
+    # very first turn (llmCalls==2: the degenerate POST + its verbatim
+    # retry, degenerateTurnRetries==1) still never called a tool -- the
+    # EFFECTIVE turn count is 2-1==1, so it belongs in the no-op bucket
+    # exactly like the unrescued llmCalls==1 case above. Before the
+    # subtraction, llmCalls==2 fell outside the `<= 1` gate and this
+    # counted as an ordinary final_text.
+    stats_noop_rescued = compute_group_stats(("scenD2", "local", ""), [
+        _mk_final_text(2, 0, degenerate_retries=1),   # rescued THEN no-op
+        _mk_final_text(3, 1, degenerate_retries=1),   # rescued, but DID call a tool -- not no-op
+    ])
+    counts_rescued = stats_noop_rescued["terminal_status_counts"]
+    if counts_rescued.get(noop_key) != 1:
+        raise AssertionError(f"expected exactly 1 rescued-then-no-op run, got {counts_rescued}")
+    if counts_rescued.get("final_text") != 1:
+        raise AssertionError(f"expected 1 ordinary (rescued but tool-calling) final_text run, got {counts_rescued}")
+    print(f"PASS: a first-turn-rescued prose-only run (llmCalls==2, degenerateTurnRetries==1) "
+          f"still lands in the no-op bucket (got {dict(counts_rescued)})")
+
+    # A result.jsonl predating the degenerateTurnRetries field (missing key,
+    # not merely 0) must fall back to 0, not be treated as non-numeric/absent
+    # data that skips the gate.
+    r_predates_field = _mk_final_text(1, 0)
+    del r_predates_field.result["degenerateTurnRetries"]
+    counts_predates = compute_group_stats(("scenD3", "local", ""), [r_predates_field])["terminal_status_counts"]
+    if counts_predates.get(noop_key) != 1:
+        raise AssertionError(f"a result.jsonl predating degenerateTurnRetries must default to 0 "
+                              f"and still classify as no-op, got {counts_predates}")
+    print("PASS: a result.jsonl predating degenerateTurnRetries defaults to 0 in the no-op gate")
+
+    # --- degenRetries AGGREGATE: summed across a group's repeats, and
+    #     surfaced in every render_* output. ---
+    stats_degen_agg = compute_group_stats(("scenD4", "local", ""), [
+        _mk_final_text(2, 0, degenerate_retries=1),
+        _mk_final_text(3, 1, degenerate_retries=2),
+        _mk_final_text(5, 2, degenerate_retries=0),
+    ])
+    if stats_degen_agg["total_degenerate_turn_retries"] != 3:
+        raise AssertionError(
+            f"expected total_degenerate_turn_retries == 3 (1+2+0), got {stats_degen_agg['total_degenerate_turn_retries']}")
+    print("PASS: total_degenerate_turn_retries sums degenerateTurnRetries across a group's repeats")
+
+    _degen_text = render_text_report([stats_degen_agg], [])
+    _degen_lines = _degen_text.splitlines()
+    _degen_header = _degen_lines[0]
+    if "degenRetries" not in _degen_header:
+        raise AssertionError("render_text_report: missing the degenRetries column header")
+    _degen_text_row = next(l for l in _degen_lines if l.startswith("scenD4"))
+    # Own header/own row -- fixed-width columns, so slicing at THIS report's
+    # header offset (not a different report's, as _cell_at above closes over
+    # the two-label report's header_line) is required for a correct cell.
+    _degen_start = _degen_header.index("degenRetries")
+    _degen_cell = _degen_text_row[_degen_start:].split("  ", 1)[0].strip()
+    if _degen_cell != "3":
+        raise AssertionError(f"render_text_report: scenD4 degenRetries cell should be '3', got {_degen_cell!r}")
+
+    _degen_md = render_markdown_report([stats_degen_agg], [])
+    if "degenRetries" not in _degen_md:
+        raise AssertionError("render_markdown_report: missing the degenRetries column header")
+    _degen_md_row = [ln for ln in _degen_md.splitlines() if ln.startswith("| scenD4")][0]
+    if "| 3 |" not in _degen_md_row:
+        raise AssertionError(f"render_markdown_report: scenD4 row missing the degenRetries=3 cell: {_degen_md_row!r}")
+
+    _degen_json = json.loads(render_json_report([stats_degen_agg], []))
+    if _degen_json["groups"][0]["total_degenerate_turn_retries"] != 3:
+        raise AssertionError("render_json_report: total_degenerate_turn_retries not threaded through")
+    print("PASS: degenRetries aggregate is surfaced in text/markdown/json report outputs")
 
     # Group B: 2 repeats, 0 successes -> pass@1 = 0.0
     group_b = [_mk_rec(False)] * 2

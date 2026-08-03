@@ -372,6 +372,30 @@ namespace RISE
 			//! proceeds unchanged).  Always false for ToolCalls / FinalText
 			//! and for every other error kind.
 			bool                      retryReasoningEffortNone = false;
+
+			//! DEGENERATE-BLANK-TURN RETRY (set ONLY on a ProviderError whose
+			//! errorKind is Provider, at exactly the four ChatContentIsBlank-
+			//! gated refusals -- Anthropic end_turn, Gemini STOP/empty
+			//! finishReason, OpenAI Responses, OpenAI Chat Completions): true
+			//! when the provider returned HTTP 200 with an empty/whitespace
+			//! final answer and no tool calls.  Observed cause: local
+			//! qwen3-thinking models served by Ollama stochastically emit a
+			//! premature end-of-turn INSIDE their reasoning block (finish
+			//! reason "stop", content "", reasoning cut off mid-word) --
+			//! a serving artifact, not a considered refusal, so unlike
+			//! MaxTokens (see its doc above) a VERBATIM retry of the identical
+			//! request commonly succeeds.  Distinct from retryWithoutImages /
+			//! retryReasoningEffortNone: this recovery does not modify the
+			//! next request at all, it just resends the same one.  NOT set on
+			//! the sibling ChatErrorKind::Refusal branches at the same sites
+			//! (a structured refusal / content_filter is a considered
+			//! decision, not a serving glitch, and must stay terminal), and
+			//! not set on any other structural refusal (malformed tool args,
+			//! id-less tool_call, ...).  Only the eval runner's attempt loop
+			//! consumes this flag; AgentChatLoop's interactive driver does
+			//! not retry on it.  Always false for ToolCalls / FinalText and
+			//! for every other error kind.
+			bool                      retryDegenerateTurn = false;
 		};
 
 		//! ParseResponse's full product: the step outcome PLUS the raw

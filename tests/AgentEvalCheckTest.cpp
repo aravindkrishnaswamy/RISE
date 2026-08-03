@@ -190,9 +190,14 @@ static const char* const kReadThenDoneFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
 
 // A degenerate blank end_turn -- the loop's own documented ProviderError
-// (matches evals/fixtures/error_path.fixture.jsonl).
+// (matches evals/fixtures/error_path.fixture.jsonl).  TWO bodies (not one):
+// ChatStepResult::retryDegenerateTurn makes the runner retry a degenerate
+// turn once, so a single-body fixture would exhaust the replay source on
+// the retry's fetch and report terminalStatus "replay_exhausted" instead of
+// the "provider_error" every caller of this fixture expects.
 static const char* const kErrorFixture =
-	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
 
 //----------------------------------------------------------------------
 // Fixtures for TestTrajectoryNewAssertions (T7c): "toolOutcomes" and
@@ -2591,6 +2596,58 @@ static void TestTerminalSuccessGuard()
 		Check( r.allPassed, "opt-in: scenario asserting terminalStatus:\"budget_tool_calls\" -> gate does not fire, allPassed true" );
 		Check( r.terminalGateNote.empty(), "opt-in: terminalGateNote empty when the gate doesn't fire" );
 	}
+}
+
+//----------------------------------------------------------------------
+// P1/P2: end-to-end grading of a RESCUED degenerate-blank-turn run, through
+//      the FULL run+check pipeline (RunScenario -> CheckScenario).  A run
+//      whose first LLM turn came back degenerate but whose retry succeeds
+//      must grade EXACTLY like any other final_text run reaching the
+//      checker: the retry is recovery plumbing, invisible to the scenario
+//      author's checkpoints.  Loads the COMMITTED evals/scenarios/
+//      degenerate_rescue.json + evals/fixtures/degenerate_rescue.fixture.jsonl
+//      (degenerate body, then a real completion) -- same on-disk-scenario
+//      convention TestErrorPathScenario / AgentEvalReplayTest.cpp's T6 use
+//      for error_path.json, so this scenario is also covered by
+//      TestSeedScenariosCheckpointsAreTrue's evals/scenarios/*.json sweep,
+//      not just this dedicated test.
+//----------------------------------------------------------------------
+static void TestDegenerateRescueEndToEnd()
+{
+	std::printf( "P1/P2: end-to-end grading of a rescued degenerate-blank-turn run...\n" );
+	const std::string dir = ScratchRunDir( "degenerate_rescue_e2e" );
+
+	AgentEvalScenario s;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/degenerate_rescue.json", s, err ),
+	       "degenerate_rescue.json loads (" + err + ")" );
+
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+
+	// The run itself: rescued, not exhausted -- distinguishes this from
+	// TestErrorPathScenario-style coverage (T6 in AgentEvalReplayTest.cpp),
+	// which pins the EXHAUSTION case (both bodies degenerate).
+	Check( h.result.terminalStatus == "final_text",
+	       "degenerate_rescue_probe reaches final_text (got '" + h.result.terminalStatus + "': " +
+	       h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "degenerate_rescue_probe drove 2 llm rounds -- the degenerate reply and its retry" );
+	Check( h.result.degenerateTurnRetries == 1, "degenerate_rescue_probe consumed exactly 1 degenerate-turn retry" );
+	Check( h.result.toolCalls == 0, "degenerate_rescue_probe dispatched no tool calls" );
+	Check( h.result.finalText == "Rescued and done.", "degenerate_rescue_probe's rescued final text is captured" );
+
+	// The checker: both checkpoints grade normally, allPassed true -- proves
+	// the rescue is INVISIBLE to CheckScenario, not a special case it has to
+	// account for.
+	AgentEvalCheckResult r = CheckScenario( h, s );
+	Check( r.checkpoints.size() == 2, "degenerate_rescue_probe: exactly 2 checkpoint results" );
+	if( r.checkpoints.size() == 2 ) {
+		Check( r.checkpoints[0].passed, "degenerate_rescue_probe: the trajectory terminalStatus checkpoint passes" );
+		Check( r.checkpoints[1].passed, "degenerate_rescue_probe: the finalText checkpoint passes" );
+	}
+	Check( r.allPassed, "degenerate_rescue_probe: allPassed true -- the rescue graded like any ordinary run" );
+	Check( r.checkpointFraction == 1.0, "degenerate_rescue_probe: checkpointFraction is 1.0" );
+	Check( r.terminalGateNote.empty(), "degenerate_rescue_probe: terminalGateNote empty -- the terminal-success gate never fires on final_text" );
 }
 
 //----------------------------------------------------------------------
@@ -7139,6 +7196,7 @@ int main()
 	TestResultsLedgerRecordsTerminalStatus();
 	TestLoadEvalScenarioStrictCheckpointFieldTypes();
 	TestTerminalSuccessGuard();
+	TestDegenerateRescueEndToEnd();
 	TestAskUserScriptedResponderMatching();
 	TestAskUserLoaderValidation();
 	TestTrajectoryAskUserAssertions();
