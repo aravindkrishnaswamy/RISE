@@ -552,6 +552,55 @@ main checkout after any worktree agent.  Runs: gemini via
   spun off.  The crash file in this window was the KNOWN
   file_rasterizeroutput CLI segfault (tracked separately), not the
   eval.
+- **2026-08-02 — INSTRUMENT CHANGE (`bcadae0d`): degenerate-turn
+  retry-once — landed BEFORE any S3 batch, per the versioning rule.**
+  Root cause of the "reasoning-without-tool-call" run deaths is
+  SERVING-side, not harness-side: qwen3-thinking models on Ollama
+  stochastically emit a premature end-of-turn INSIDE the reasoning
+  block (HTTP 200, finish_reason "stop", content "", reasoning cut off
+  mid-word far below the token cap) — exact match for the still-open
+  upstream bug ollama/ollama#10976 ("thinking + tools + qwen3 = empty
+  output").  Archive forensics across all runDirs: 13 cases, ALL in
+  thinking-capable Qwen-family models (qwen3.6:27b 0.29%/call,
+  qwen3:32b 0.93%/call; 0 across ~1,430 calls for the four
+  non-thinking/non-Qwen local models; one 0.02%/call gemini-flash
+  analogue), which compounds to the observed 1/9 → 2/9 → 3/9 per-run
+  death rates in the S0→S1→S2 qwen legs.  Likely rate amplifier:
+  Ollama's qwen3.6:27b Modelfile bakes in presence_penalty=1.5 — a
+  value Qwen's own card assigns to the 35B-A3B MoE variant, not the
+  27B dense model (recommendation 0.0); not necessary for the bug
+  (qwen3:32b has none and still fails) but a plausible multiplier.
+  **Policy**: on the FIRST blank-turn Provider refusal per LLM round
+  (the four codec `ChatContentIsBlank` sites; structured refusals and
+  content_filter excluded), the runner resends the IDENTICAL context
+  once — no injected feedback, no history mutation (verified: a
+  ProviderError step records nothing to the transcript) — gated on the
+  llm-call budget still allowing the POST; a second consecutive blank,
+  or a budget-exhausted first blank, is terminal provider_error
+  exactly as before.  New ALWAYS-emitted result-line counter
+  `degenerateTurnRetries`; its presence marks the instrument version
+  in archived result lines, and eval_report surfaces it per group.
+  **Bias ruling**: this converts censoring into observation — the
+  pre-change alternative was run death at a random progress point
+  charged to the model's pass@1, so retry-once removes a
+  serving-reliability confound rather than inflating capability; the
+  per-run counter preserves post-hoc excludability.  Residual risk at
+  the measured rates: p² ≈ 1e-5 per round → <0.1% per 50-round
+  session.  **Comparability ruling (supersedes a bare footnote)**:
+  archived S0–S2 qwen pass@1/allPassed cells carry the RISING
+  censoring rate above baked in as failures — S3+ qwen pass@1 is NOT
+  comparable to S0–S2 raw numbers; treat S3+ as the new qwen baseline
+  and exclude provider_error-terminated cells from any historical
+  trend claim.  Treatment-engagement readings (scaffold calls,
+  reasoning mentions) are unaffected in kind, merely N-reduced, so
+  the S1/S2 verdicts stand.  The S3 qwen batch doubles as the
+  empirical fix verification (expect ~0 degenerate deaths; rescues
+  visible via the counter).  Reviewed to zero P1 over 3 rounds
+  (round 1: 3 P1s — budget-veto counter lie, an uncovered codec site,
+  and the comparability ruling itself; round 2: 1 P1 — nothing proved
+  the counter ACCUMULATES across rescued rounds, red-proofed by a
+  simulated per-round-reset regression; round 3 clean, with every
+  data claim above independently re-derived from the runDir archive).
 - **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
