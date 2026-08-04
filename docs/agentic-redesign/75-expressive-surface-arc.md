@@ -225,6 +225,18 @@ ordinary editable chunks, never an opaque asset):**
 enrichment (structure on the read_schema carrier, for the one verb
 models already use).  Revisit only if S3a+S3b leave sdf-specific
 authoring quality as the residual complaint.
+
+**S3a gemini leg (2026-08-04, retry-once instrument, batches run after
+the hold): 0/6 clean.**  displaced_geometry 0/6, sweep_geometry 0/6
+hand-authored; sdf (non-counting) 5/6 as ever, one insert voluntarily
+abandoned for primitives.  Both carrier skills read before authoring
+in most runs — exposed and inert, the S1 shape now confirmed on the
+chunk-addition class for this model.  Side-signals: material-scaffold
+persistence 5/6 (S2 banked behavior stable across batches); cozy r3
+called no scaffold and hand-authored pbr+painter materials instead —
+possible delayed hand-authoring emergence, watch not credit.  qwen leg
+completes the verdict; 0/6 there → S3a dead, S3b proceeds per the
+standing instruction.
 - **S3b** (structural; needs explicit user taste sign-off before detailed
   design): parametric scaffold expansion into editable sdf/sweep chunks.
   Same stop-rule shape as S2.
