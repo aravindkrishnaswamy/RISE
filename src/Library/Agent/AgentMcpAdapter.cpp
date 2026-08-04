@@ -210,12 +210,15 @@ namespace RISE
 
 			//! Secure-MCP slice 2: the refusal note prepended to the
 			//! mutating tools' (propose_patch/propose_patches/insert_chunk/
-			//! insert_chunks/insert_material_scaffold/remove_chunk)
+			//! insert_chunks/insert_material_scaffold/insert_geometry_scaffold/
+			//! remove_chunk)
 			//! descriptions under AgentAutonomy::Read (arc-75 S2.1 added
-			//! insert_material_scaffold to this note's set, but NOT to
-			//! IsProposeSafeVerb -- see kScaffoldProposeRefusedNote's doc
-			//! for why it needs its OWN, distinct note under Propose
-			//! instead of kAutonomyProposeNote).  DECIDED: annotate, don't hide --
+			//! insert_material_scaffold to this note's set, and arc-75 S3b
+			//! added its geometry sibling insert_geometry_scaffold, but
+			//! NEITHER is on IsProposeSafeVerb -- see
+			//! kScaffoldProposeRefusedNote's doc for why each needs its OWN,
+			//! distinct note under Propose instead of kAutonomyProposeNote).
+			//! DECIDED: annotate, don't hide --
 			//! the tool stays fully visible (real inputSchema, callable
 			//! shape) so a client can still explain to its user what the
 			//! tool would do and why it is currently refused, rather than
@@ -290,7 +293,19 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 20 existing AgentRpc verbs,
+			//! Arc-75 slice S3b: insert_geometry_scaffold's OWN annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- the geometry
+			//! sibling of kScaffoldProposeRefusedNote above, same
+			//! rationale (deliberately excluded from IsProposeSafeVerb;
+			//! refused under Propose exactly like Read; deliberately
+			//! contains neither magic substring the per-note counters key
+			//! on).
+			const std::string kGeometryScaffoldProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: insert_geometry_scaffold is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 21 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -589,6 +604,55 @@ namespace RISE
 						"before any chunk is generated (document unchanged) -- reported as a tool error, not a "
 						"partial result. Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "insert_material_scaffold", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// insert_geometry_scaffold (Arc-75 slice S3b)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "family", StringProp(
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column." ) );
+					props.set( "name", StringProp(
+						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
+						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
+					props.set( "size", NumberProp( "Overall scale, > 0." ) );
+					props.set( "detail", NumberProp(
+						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation, per family." ) );
+					props.set( "aspect", NumberProp( "Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form)." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "family" ); required.push_back( "name" ); required.push_back( "size" );
+					required.push_back( "detail" ); required.push_back( "aspect" );
+					// insert_geometry_scaffold is Commit-only, the SAME
+					// posture as insert_material_scaffold (see
+					// kGeometryScaffoldProposeRefusedNote's doc).
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kGeometryScaffoldProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"Expand ONE of four geometry-family templates into a small GEOMETRY-ONLY chunk graph "
+						"(1-3 chunks) added to the scene in one call. Families: \"displaced_slab\" (a box "
+						"tessellated + bumped by a perlin2d noise source via displaced_geometry), \"sweep_rail\" "
+						"(a compact closed polygon profile swept along a short bowed path with a taper, via "
+						"sweep_geometry), \"blended_vessel\" (a base/belly/rim roundcone chain smoothly blended "
+						"into a vessel or bowl silhouette, via sdf_geometry), \"sdf_column\" (a base/shaft/"
+						"capital roundcone chain into a turned-column silhouette, via sdf_geometry). Unlike "
+						"insert_material_scaffold, this tool NEVER emits a material or a standard_object -- YOU "
+						"wire the standard_object (and any material) yourself, referencing the returned "
+						"`geometry.name`. Families cover common forms; anything else is hand-authored alongside "
+						"using the ordinary geometry chunks -- this tool composes with hand authoring, it does "
+						"not replace it. ALL THREE params are REQUIRED, no defaults -- a missing one is a "
+						"blocking error naming it. Internal graph constants are jittered deterministically from "
+						"`name`: the SAME name reproduces byte-identical chunks, a DIFFERENT name visibly "
+						"differs. Every generated chunk is an ORDINARY, EDITABLE document chunk named "
+						"tmpl_<name>_<role> -- read_document shows them, and propose_patch/remove_chunk work on "
+						"them exactly like any hand-authored chunk. Applied IN ORDER through the SAME batch "
+						"machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT). Returns "
+						"{applied,total,results:[...]} -- the EXACT insert_chunk per-element shape -- plus "
+						"`geometry` ({name,kind} of the one geometry chunk to bind into a "
+						"standard_object.geometry slot). Check every element's own status. A missing/invalid "
+						"param, an unrecognized family, or a NAME COLLISION refuses the WHOLE call before any "
+						"chunk is generated (document unchanged) -- reported as a tool error, not a partial "
+						"result. Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "insert_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -977,14 +1041,14 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 20 tool names this adapter recognizes --
+			//! The list of the 21 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-					"insert_material_scaffold", "remove_chunk",
+					"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"compare_to_reference",

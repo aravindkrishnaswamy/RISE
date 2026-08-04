@@ -1877,6 +1877,118 @@ namespace RISE
 			                                            double scale,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! Arc-75 slice S3b (insert_geometry_scaffold): the one of FOUR
+			//! geometry-family templates this call expanded -- pin the
+			//! strings, they are the wire/tool-schema enum.  The geometry
+			//! sibling of MaterialScaffoldFamily above; same conventions.
+			enum class GeometryScaffoldFamily
+			{
+				DisplacedSlab,
+				SweepRail,
+				BlendedVessel,
+				SdfColumn,
+			};
+
+			//! The structured result of InsertGeometryScaffold.  Same
+			//! ok/message/family/chunkResults contract as AgentScaffoldResult
+			//! above -- `ok==false` means the call was refused BEFORE any
+			//! chunk was generated (a missing/invalid param, an unknown
+			//! family, or a NAME collision against an existing (kind,name)
+			//! in the document, checked up front against a document
+			//! snapshot for the SAME reason AgentScaffoldResult's doc gives:
+			//! a mid-batch collision would otherwise land a half-wired
+			//! graph).  `message` carries the actionable reason; the
+			//! document is BYTE-IDENTICAL to before the call on any
+			//! ok==false result.
+			//!
+			//! `ok==true` means generation succeeded and the batch was
+			//! submitted via InsertChunks -- `chunkResults` is one
+			//! AgentChunkResult per generated chunk, IN INSERTION ORDER; a
+			//! caller must still check each element's own `applied`/
+			//! `status` -- ok==true is NOT a promise every chunk landed,
+			//! only that the request itself was well-formed and
+			//! collision-free at submission time (see AgentScaffoldResult's
+			//! doc for the identical hedge).  `geometryName`/`geometryKind`
+			//! name the ONE geometry chunk the family produced that a
+			//! model should bind into a `standard_object.geometry` slot --
+			//! unlike insert_material_scaffold, this tool never emits a
+			//! material or a `standard_object` itself (S2's census proved
+			//! models handle that wiring on their own); every family also
+			//! never emits a colour-pipe painter -- displaced_slab's noise
+			//! source is bound directly to displaced_geometry's
+			//! `displacement` slot, which resolves through the Function2D
+			//! manager (Job::AddDisplacedGeometry), not the colour pipe --
+			//! so there is no `boundSlots`-equivalent field here.
+			struct AgentGeometryScaffoldResult
+			{
+				bool        ok = false;
+				std::string message;
+				std::string family;
+				std::string geometryName;
+				std::string geometryKind;
+				std::vector<AgentChunkResult> chunkResults;
+			};
+
+			//! Expand geometry `family` into a small GEOMETRY-ONLY chunk
+			//! graph (1-3 chunks: displaced_slab is base box + noise
+			//! Function2D source + displaced_geometry bolt-on; sweep_rail,
+			//! blended_vessel, and sdf_column are each a SINGLE geometry
+			//! chunk, every chunk named `tmpl_<name>_<role>`) and submit it
+			//! through InsertChunks -- so an advanced geometric form costs
+			//! ONE tool call instead of hand-composing a displaced_geometry/
+			//! sweep_geometry/sdf_geometry chunk from scratch.  See
+			//! docs/agentic-redesign/75-expressive-surface-arc.md S3b for
+			//! the design and AgentSession.cpp's BuildGeometryScaffoldGraph
+			//! for the per-family chunk design + the param-flow rationale.
+			//! Deliberately emits GEOMETRY chunks ONLY (plus, for
+			//! displaced_slab, the one Function2D noise source it bolts
+			//! on) -- the model wires the `standard_object` (and any
+			//! material) itself, the exact division S2's census proved
+			//! models handle.  ALL THREE params are REQUIRED -- `family`
+			//! (one of the GeometryScaffoldFamily strings), `name` (a
+			//! fresh, unique prefix), `size` (>0, overall scale), `detail`
+			//! (0..1: displacement amplitude / profile complexity / smin
+			//! tightness / tessellation, whichever is honest for that
+			//! family -- see each BuildXxx's own comment), `aspect` (>0:
+			//! elongation).  Internal graph constants (noise phase/
+			//! frequency, profile-point phase, path bow, smin blend radii,
+			//! segment counts) are jittered DETERMINISTICALLY from a hash
+			//! of `name` (the SAME ScaffoldFnv1a64/ScaffoldJitter* helpers
+			//! insert_material_scaffold uses -- see ScaffoldFnv1a64's doc
+			//! for the distinctive-salt-per-knob avalanche caveat, which
+			//! applies identically here) -- no RNG, no clock, so two calls
+			//! with the SAME name produce byte-identical chunk text and two
+			//! DIFFERENT names visibly differ beyond their explicit params.
+			//! Routes entirely through InsertChunks (see that method's
+			//! doc): AUTHORITY (Owner vs External) staging-vs-commit,
+			//! conflict detection, and per-chunk `issues` diagnostics are
+			//! ALL inherited unchanged for a caller at THIS C++ API --
+			//! including the Secure-MCP External-authority staging
+			//! behaviour.
+			//!
+			//! AUTONOMY CAVEAT (identical to InsertMaterialScaffold's --
+			//! see that method's doc for the full authority-vs-autonomy
+			//! distinction): this method itself has no autonomy gate at
+			//! all -- a caller reaching it directly has, by construction,
+			//! already cleared whatever autonomy gate its transport
+			//! enforces.  Deliberately NOT added to AgentRpc.cpp's
+			//! IsProposeSafeVerb, for the SAME reason
+			//! insert_material_scaffold was not (out of scope for a single
+			//! slice to ripple across every "N mutating verbs" prose
+			//! restatement and the two GUI client-side retry-verb sets) --
+			//! so a WIRE caller running under AgentAutonomy::Propose is
+			//! refused with kAutonomyRefused BEFORE ever reaching this
+			//! method, via the SAME MakeProposeAutonomyRefusedError path
+			//! (truthful `data.autonomy:"propose"`) AgentRpc.cpp's
+			//! `m == "insert_material_scaffold"` branch already uses,
+			//! mirrored for `m == "insert_geometry_scaffold"`.
+			AgentGeometryScaffoldResult InsertGeometryScaffold( const std::string& family,
+			                                                    const std::string& name,
+			                                                    double size,
+			                                                    double detail,
+			                                                    double aspect,
+			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
 			//! narrowing -- the SAME resolution rules as ProposePatch,

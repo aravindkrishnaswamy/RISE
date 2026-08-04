@@ -623,6 +623,56 @@ static void TestProposePosture()
 		       "insert_material_scaffold under Commit + Owner-authority session actually applies chunks" );
 	}
 
+	// --- Arc-75 S3b WIRE-LEVEL RED-PROOF: insert_geometry_scaffold is the
+	// geometry sibling of insert_material_scaffold above -- SAME exclusion
+	// from IsProposeSafeVerb, SAME requirement to route through
+	// MakeProposeAutonomyRefusedError (truthful autonomy="propose", not
+	// the generic Read-posture fallback's hardcoded "read").  Mirrors the
+	// material-scaffold block above line-for-line.
+	// ---
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "family", JsonValue::MakeString( "sdf_column" ) );
+		params.set( "name",   JsonValue::MakeString( "wireposture2" ) );
+		params.set( "size",   JsonValue::MakeNumber( 1.0 ) );
+		params.set( "detail", JsonValue::MakeNumber( 0.5 ) );
+		params.set( "aspect", JsonValue::MakeNumber( 1.0 ) );
+
+		JsonValue envRead = ParseResponse(
+			rpcRead.HandleLine( Req( 7, "insert_geometry_scaffold", params ) ), 7 );
+		Check( envRead.has( "error" ), "insert_geometry_scaffold under Read is refused at the dispatcher" );
+		Check( envRead.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "insert_geometry_scaffold under Read carries kAutonomyRefused (-32011)" );
+		Check( envRead.get( "error" ).get( "data" ).get( "autonomy" ).asString() == "read",
+		       "insert_geometry_scaffold's Read refusal truthfully names autonomy=\"read\"" );
+
+		JsonValue envPropose = ParseResponse(
+			rpcPropose.HandleLine( Req( 7, "insert_geometry_scaffold", params ) ), 7 );
+		Check( envPropose.has( "error" ),
+		       "RED-PROVE: insert_geometry_scaffold under Propose is ALSO refused at the dispatcher "
+		       "(deliberately excluded from Propose's mutating-verb extension, like insert_material_scaffold)" );
+		Check( envPropose.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "insert_geometry_scaffold under Propose carries kAutonomyRefused (-32011), the SAME code as Read" );
+		Check( envPropose.get( "error" ).get( "data" ).get( "autonomy" ).asString() == "propose",
+		       "insert_geometry_scaffold's Propose refusal TRUTHFULLY names autonomy=\"propose\" -- NOT "
+		       "\"read\" (a fall-through to the generic read-refusal envelope would hardcode autonomy=\"read\" "
+		       "even though this session is genuinely running Propose autonomy)" );
+		Check( envPropose.get( "error" ).get( "message" ).asString().find( "propose" ) != std::string::npos,
+		       "the Propose refusal's message NAMES propose autonomy (not the --agent-autonomy=read wording "
+		       "the generic refusal would have used)" );
+		Check( envPropose.get( "error" ).get( "message" ).asString().find( "--agent-autonomy=read" ) == std::string::npos,
+		       "the Propose refusal's message does NOT claim \"this session runs with --agent-autonomy=read\" "
+		       "-- the generic MakeAutonomyRefusedError's EXACT wording, which would be false under an "
+		       "actually-Propose session" );
+
+		JsonValue envCommit = ParseResponse(
+			rpcCommit.HandleLine( Req( 7, "insert_geometry_scaffold", params ) ), 7 );
+		Check( !envCommit.has( "error" ),
+		       "insert_geometry_scaffold under Commit REACHES the session (not refused at the dispatcher)" );
+		Check( envCommit.get( "result" ).get( "applied" ).asNumber( -1 ) > 0.0,
+		       "insert_geometry_scaffold under Commit + Owner-authority session actually applies chunks" );
+	}
+
 	std::remove( scenePathRead.c_str() );
 	std::remove( scenePathPropose.c_str() );
 	std::remove( scenePathCommit.c_str() );
@@ -741,11 +791,11 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 20,
-		       "tools/list under Read STILL lists all 20 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 21,
+		       "tools/list under Read STILL lists all 21 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
-		bool sawInsertMaterialScaffold = false;
+		bool sawInsertMaterialScaffold = false, sawInsertGeometryScaffold = false;
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -766,6 +816,9 @@ static void TestMcpLayer()
 			// IsProposeSafeVerb's set (that asymmetry only shows up under
 			// Propose, tested below).
 			if( name == "insert_material_scaffold" ) { sawInsertMaterialScaffold = true; Check( annotated, "insert_material_scaffold tool description is ANNOTATED under Read" ); }
+			// Arc-75 S3b: insert_geometry_scaffold is the geometry sibling,
+			// SAME kAutonomyReadNote reuse under Read.
+			if( name == "insert_geometry_scaffold" ) { sawInsertGeometryScaffold = true; Check( annotated, "insert_geometry_scaffold tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )    { sawRemoveChunk    = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "render" )          { sawRender         = true; Check( !annotated, "render tool description is NOT annotated under Read (it is allowed)" ); }
 			if( name == "list_proposals" ) {
@@ -778,9 +831,10 @@ static void TestMcpLayer()
 				Check( ownerOnlyAnnotated, "resolve_proposal tool description IS annotated with the OWNER-ONLY note under Read" );
 			}
 		}
-		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
+		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold &&
+		       sawInsertGeometryScaffold && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 6, "EXACTLY 6 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/insert_material_scaffold, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 7, "EXACTLY 7 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/insert_material_scaffold/insert_geometry_scaffold, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -790,7 +844,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 20, "tools/list under Commit lists all 20 tools" );
+		Check( tools.isArray() && tools.size() == 21, "tools/list under Commit lists all 21 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -828,10 +882,10 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 20, "tools/list under Propose lists all 20 tools" );
+		Check( tools.isArray() && tools.size() == 21, "tools/list under Propose lists all 21 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
-		bool sawInsertMaterialScaffold = false;
+		bool sawInsertMaterialScaffold = false, sawInsertGeometryScaffold = false;
 		int proposeNotedCount = 0, readNotedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& t = tools.at( i );
@@ -875,13 +929,24 @@ static void TestMcpLayer()
 				Check( desc.find( "[UNAVAILABLE at --agent-autonomy=propose" ) != std::string::npos,
 				       "insert_material_scaffold tool description carries its OWN dedicated Propose-refusal note" );
 			}
+			// Arc-75 S3b: insert_geometry_scaffold is the geometry sibling,
+			// SAME deliberate exclusion + SAME dedicated Propose-refusal note
+			// shape (kGeometryScaffoldProposeRefusedNote).
+			if( name == "insert_geometry_scaffold" ) {
+				sawInsertGeometryScaffold = true;
+				Check( !proposeNoted, "insert_geometry_scaffold tool description does NOT carry the propose-staging note under Propose (it never reaches AgentSession, so it can never stage)" );
+				Check( !readNoted, "insert_geometry_scaffold tool description does NOT carry the generic read-refusal note under Propose (that wording would be misleading -- the session is not read-only)" );
+				Check( desc.find( "[UNAVAILABLE at --agent-autonomy=propose" ) != std::string::npos,
+				       "insert_geometry_scaffold tool description carries its OWN dedicated Propose-refusal note" );
+			}
 			if( name == "remove_chunk" ) {
 				sawRemoveChunk = true;
 				Check( proposeNoted, "remove_chunk tool description carries the propose-staging note under Propose" );
 			}
 		}
-		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk && sawInsertMaterialScaffold,
-		       "all 5 IsProposeSafeVerb mutating tools + insert_material_scaffold were found in tools/list under Propose" );
+		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk &&
+		       sawInsertMaterialScaffold && sawInsertGeometryScaffold,
+		       "all 5 IsProposeSafeVerb mutating tools + insert_material_scaffold + insert_geometry_scaffold were found in tools/list under Propose" );
 		Check( proposeNotedCount == 5,
 		       "RED-PROVE: EXACTLY 5 tool descriptions carry the propose-staging note under Propose" );
 		Check( readNotedCount == 0,

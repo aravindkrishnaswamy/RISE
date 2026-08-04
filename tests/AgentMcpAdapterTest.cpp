@@ -216,7 +216,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 20, "id:null tools/list result carries all 20 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 21, "id:null tools/list result carries all 21 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -290,12 +290,12 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 20, "tools/list returns EXACTLY the 20 agent verbs" );
+		Check( toolsList.size() == 21, "tools/list returns EXACTLY the 21 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-			"insert_material_scaffold", "remove_chunk",
+			"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
 			"compare_to_reference",
@@ -630,7 +630,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 20, "no-head tools/list still lists all 20 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 21, "no-head tools/list still lists all 21 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

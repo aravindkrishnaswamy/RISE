@@ -885,6 +885,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
 							"STAGE proposals as usual" );
 					}
+					// Arc-75 S3b: insert_geometry_scaffold is the geometry
+					// sibling of insert_material_scaffold above -- SAME
+					// deliberate exclusion from IsProposeSafeVerb, SAME
+					// Propose-specific message shape (truthful
+					// data.autonomy="propose", not the generic Read-posture
+					// fallback's hardcoded "read").
+					if( m == "insert_geometry_scaffold" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; insert_geometry_scaffold "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
+							"STAGE proposals as usual" );
+					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 
@@ -1644,6 +1658,95 @@ namespace RISE
 					result.set( "name",       JsonValue::MakeString( nameVal->asString() ) );
 					result.set( "material",   material );
 					result.set( "boundSlots", boundSlots );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// insert_geometry_scaffold {family, name, size, detail, aspect, baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
+				//       family, name, geometry:{name,kind}}
+				//   Arc-75 slice S3b: expand one of FOUR geometry-family
+				//   templates ("displaced_slab", "sweep_rail",
+				//   "blended_vessel", "sdf_column") into a small
+				//   GEOMETRY-ONLY chunk graph (1-3 chunks, every chunk
+				//   named tmpl_<name>_<role>) -- one tool call instead of
+				//   hand-composing a displaced_geometry/sweep_geometry/
+				//   sdf_geometry chunk.  ALL THREE params are REQUIRED (no
+				//   defaults): a missing param is a BLOCKING error naming
+				//   it.  `size` is >0 (overall scale); `detail` is 0..1
+				//   (displacement amplitude / profile complexity / smin
+				//   tightness / tessellation, per family); `aspect` is >0
+				//   (elongation).  Chunk generation, param validation, and
+				//   the name-collision precheck (refuses the WHOLE
+				//   expansion, document unchanged, before any chunk is
+				//   generated) all happen in
+				//   AgentSession::InsertGeometryScaffold; this handler only
+				//   extracts params and serializes the result.  The actual
+				//   insert is submitted through the SAME InsertChunks path
+				//   insert_chunks/insert_material_scaffold use, so
+				//   authority/autonomy staging-vs-commit, conflict
+				//   detection, and per-chunk `issues` are all inherited
+				//   unchanged.  Unlike insert_material_scaffold, no
+				//   material/standard_object is ever generated -- the
+				//   model wires those itself; `geometry` names the ONE
+				//   geometry chunk to bind into a standard_object.geometry
+				//   slot.
+				//--------------------------------------------------------------
+				if( m == "insert_geometry_scaffold" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* familyVal = params.find( "family" );
+					if( !familyVal || !familyVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
+							"sweep_rail, blended_vessel, sdf_column" );
+					}
+					const JsonValue* nameVal = params.find( "name" );
+					if( !nameVal || !nameVal->isString() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
+					}
+					const JsonValue* sizeVal = params.find( "size" );
+					if( !sizeVal || !sizeVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
+					}
+					const JsonValue* detailVal = params.find( "detail" );
+					if( !detailVal || !detailVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+					}
+					const JsonValue* aspectVal = params.find( "aspect" );
+					if( !aspectVal || !aspectVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentGeometryScaffoldResult sr = s->InsertGeometryScaffold(
+						familyVal->asString(), nameVal->asString(),
+						sizeVal->asNumber(), detailVal->asNumber(), aspectVal->asNumber(),
+						( b == 1 ) ? &base : nullptr );
+
+					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
+
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_geometry_scaffold" );
+					}
+					std::size_t appliedCount = 0;
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.applied ) ++appliedCount;
+						resultsArr.push_back( ChunkResultJson( cr ) );
+					}
+					JsonValue geometry = JsonValue::MakeObject();
+					geometry.set( "name", JsonValue::MakeString( sr.geometryName ) );
+					geometry.set( "kind", JsonValue::MakeString( sr.geometryKind ) );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",  JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
+					result.set( "total",    JsonValue::MakeNumber( static_cast<double>( sr.chunkResults.size() ) ) );
+					result.set( "results",  resultsArr );
+					result.set( "family",   JsonValue::MakeString( sr.family ) );
+					result.set( "name",     JsonValue::MakeString( nameVal->asString() ) );
+					result.set( "geometry", geometry );
 					return MakeSuccess( idValue, result );
 				}
 

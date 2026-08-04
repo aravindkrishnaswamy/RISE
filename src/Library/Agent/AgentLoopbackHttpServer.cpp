@@ -279,7 +279,8 @@ namespace
 	//! True iff `body` is an MCP `tools/call` request naming one of the
 	//! mutating verbs this rate limiter counts against
 	//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-	//! insert_material_scaffold/remove_chunk/resolve_proposal). This
+	//! insert_material_scaffold/insert_geometry_scaffold/remove_chunk/
+	//! resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
 	//! verb name for a tool invocation always lives at params.name (see
@@ -326,6 +327,9 @@ namespace
 		    // insert_chunks uses -- same per-call leverage argument, same
 		    // rate-limit membership.
 		    name == "insert_material_scaffold" ||
+		    // Arc-75 slice S3b: insert_geometry_scaffold is the geometry
+		    // sibling, SAME InsertChunks path, SAME rate-limit membership.
+		    name == "insert_geometry_scaffold" ||
 		    name == "remove_chunk"   || name == "resolve_proposal" ) {
 			outToolName = name;
 			return true;

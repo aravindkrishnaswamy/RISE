@@ -158,6 +158,45 @@
 //                                            hardcoded "read") -- see AgentSession.h's
 //                                            InsertMaterialScaffold doc for the full
 //                                            autonomy-vs-authority caveat.)
+//      insert_geometry_scaffold {family,name,size,detail,aspect,baseHeadVersion?}
+//                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
+//                                            family,name,geometry:{name,kind}}
+//                                           (Arc-75 slice S3b: the geometry sibling of
+//                                            insert_material_scaffold -- expand ONE of
+//                                            FOUR geometry-family templates --
+//                                            displaced_slab/sweep_rail/blended_vessel/
+//                                            sdf_column -- into a small GEOMETRY-ONLY
+//                                            chunk graph (1-3 chunks, every chunk named
+//                                            tmpl_<name>_<role>; displaced_slab bolts a
+//                                            perlin2d_painter noise source onto a
+//                                            displaced_geometry, the other three families
+//                                            are each a single sdf_geometry/sweep_geometry
+//                                            chunk), submitted through the SAME batch
+//                                            machinery insert_chunks uses.  ALL THREE
+//                                            params are REQUIRED, no defaults -- a
+//                                            missing one, an unrecognized family, or a
+//                                            NAME COLLISION refuses the WHOLE call
+//                                            BEFORE any chunk is generated (document
+//                                            unchanged), reported as a tool ERROR, not a
+//                                            partial result.  `geometry` names the ONE
+//                                            geometry chunk a model should bind into a
+//                                            `standard_object.geometry` slot -- unlike
+//                                            insert_material_scaffold, this verb never
+//                                            emits a material or a standard_object
+//                                            itself (the model wires those, mirroring
+//                                            the material scaffold's own proven
+//                                            division).  Internal graph constants are
+//                                            jittered DETERMINISTICALLY from `name` (no
+//                                            RNG, no clock).  DELIBERATELY excluded from
+//                                            IsProposeSafeVerb, for the SAME reason
+//                                            insert_material_scaffold is -- refused
+//                                            under BOTH Read AND Propose autonomy, with
+//                                            the SAME dedicated Propose-specific message
+//                                            shape (MakeProposeAutonomyRefusedError) so
+//                                            the refusal's `data.autonomy` field stays
+//                                            truthful -- see AgentSession.h's
+//                                            InsertGeometryScaffold doc for the full
+//                                            autonomy-vs-authority caveat.)
 //      remove_chunk {target,kind?,baseHeadVersion?}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: REMOVE the chunk

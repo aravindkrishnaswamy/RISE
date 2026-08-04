@@ -3582,6 +3582,436 @@ namespace RISE
 			return out;
 		}
 
+		namespace
+		{
+			//----------------------------------------------------------------
+			// Arc-75 slice S3b (insert_geometry_scaffold): the geometry
+			// sibling of the material-scaffold block above.  Reuses
+			// ScaffoldFnv1a64/ScaffoldJitter01/ScaffoldJitterRange/
+			// ScaffoldJitterUInt/ScaffoldFmt/ScaffoldClamp01/ScaffoldVec3/
+			// ScaffoldChunkText/ScaffoldNameIsValid/kScaffoldMaxNameLength
+			// VERBATIM (defined above, same translation unit, same
+			// anonymous namespace linkage) -- do NOT duplicate them here,
+			// per the S2.1 avalanche-caveat lesson: a second copy is a
+			// second thing that can drift out of determinism-lockstep.
+			//
+			// DECOY-LANDMINE NOTE (S2.1's design landmine, checked and
+			// found NOT to apply here): S2.1's decoy was 3D-SOLID noise
+			// painters (perlin3d/worley3d/...) silently evaluating at a
+			// FIXED point when wrapped in scalar_painter{function2d},
+			// because their GetColor reads world-space ptIntersection,
+			// which the scalar-pipe's synthetic RayIntersectionGeometric
+			// never populates.  displaced_slab's noise source is
+			// perlin2d_painter bound DIRECTLY to displaced_geometry's
+			// `displacement` slot -- no scalar_painter/expression_function2d
+			// wrapper anywhere in this family.  Job::AddDisplacedGeometry
+			// (src/Library/Job.cpp ~5316-5352) resolves `displacement`
+			// through `pFunc2DManager->GetItem(...)` -- the SAME
+			// Function2D manager perlin2d_painter dual-registers into
+			// (Job::AddPerlin2DPainter) -- and DisplacedGeometry evaluates
+			// it as a genuine IFunction2D at each tessellated vertex's
+			// (u,v), exactly the domain perlin2d's own GetValue(u,v) is
+			// defined over.  There is no fixed-point-evaluation trap here
+			// because there is no colour-pipe GetColor(ri) call anywhere
+			// on this path -- unlike scalar_painter{function2d}, which
+			// wraps a painter's colour-pipe accessor and can therefore
+			// land on the WRONG accessor for a 3D-solid painter.  The
+			// spatial-effect test (see GS1b in AgentChunkCrudTest.cpp)
+			// still pins this DIRECTLY (bbox height-extent of the
+			// resolved DisplacedGeometry vs the flat base box), rather
+			// than trusting this argument alone.
+			//----------------------------------------------------------------
+
+			bool ScaffoldParseGeometryFamily( const std::string& family, AgentSession::GeometryScaffoldFamily& out )
+			{
+				if( family == "displaced_slab" )  { out = AgentSession::GeometryScaffoldFamily::DisplacedSlab;  return true; }
+				if( family == "sweep_rail" )      { out = AgentSession::GeometryScaffoldFamily::SweepRail;      return true; }
+				if( family == "blended_vessel" )  { out = AgentSession::GeometryScaffoldFamily::BlendedVessel;  return true; }
+				if( family == "sdf_column" )      { out = AgentSession::GeometryScaffoldFamily::SdfColumn;      return true; }
+				return false;
+			}
+
+			std::string ScaffoldBoxGeometryText( const std::string& name, double width, double height, double depth )
+			{
+				return ScaffoldChunkText( "box_geometry", {
+					{ "name",   name },
+					{ "width",  ScaffoldFmt( width ) },
+					{ "height", ScaffoldFmt( height ) },
+					{ "depth",  ScaffoldFmt( depth ) },
+				} );
+			}
+
+			//! perlin2d_painter with NO colora/colorb (both default "none")
+			//! -- the drop-in recipe's own choice (modeling-workflow-and-
+			//! geometry.md): a displacement source needs no colour, only
+			//! its raw [0,1] noise magnitude, which Job::AddDisplacedGeometry
+			//! reads straight off the Function2D accessor.
+			std::string ScaffoldPerlin2DText( const std::string& name, double persistence, unsigned int octaves,
+			                                  double scaleU, double scaleV, double shiftU, double shiftV )
+			{
+				return ScaffoldChunkText( "perlin2d_painter", {
+					{ "name",        name },
+					{ "persistence", ScaffoldFmt( persistence ) },
+					{ "octaves",     std::to_string( octaves ) },
+					{ "scale",       ScaffoldFmt( scaleU ) + " " + ScaffoldFmt( scaleV ) },
+					{ "shift",       ScaffoldFmt( shiftU ) + " " + ScaffoldFmt( shiftV ) },
+				} );
+			}
+
+			std::string ScaffoldDisplacedGeometryText( const std::string& name, const std::string& baseGeometry,
+			                                           unsigned int tessDetail, const std::string& displacement, double dispScale )
+			{
+				return ScaffoldChunkText( "displaced_geometry", {
+					{ "name",          name },
+					{ "base_geometry", baseGeometry },
+					{ "detail",        std::to_string( tessDetail ) },
+					{ "displacement",  displacement },
+					{ "disp_scale",    ScaffoldFmt( dispScale ) },
+				} );
+			}
+
+			//! One `sweep_geometry` `part`-style repeatable line's VALUE
+			//! (the "profile_point <x> <h>" grammar -- see
+			//! SweepGeometryAsciiChunkParser::Describe).
+			std::string ScaffoldProfilePointLine( double x, double h )
+			{
+				return ScaffoldFmt( x ) + " " + ScaffoldFmt( h );
+			}
+
+			std::string ScaffoldSweepGeometryText( const std::string& name,
+			                                       const std::vector<std::pair<double,double>>& profile,
+			                                       const std::vector<std::array<double,3>>& path,
+			                                       unsigned int nLen, double endScaleX, double endScaleY )
+			{
+				std::vector<std::pair<std::string,std::string>> params;
+				params.push_back( { "name", name } );
+				for( const auto& pp : profile ) params.push_back( { "profile_point", ScaffoldProfilePointLine( pp.first, pp.second ) } );
+				for( const auto& pt : path )     params.push_back( { "point", ScaffoldVec3( pt[0], pt[1], pt[2] ) } );
+				params.push_back( { "n_len",       std::to_string( nLen ) } );
+				params.push_back( { "end_scale_x", ScaffoldFmt( endScaleX ) } );
+				params.push_back( { "end_scale_y", ScaffoldFmt( endScaleY ) } );
+				return ScaffoldChunkText( "sweep_geometry", params );
+			}
+
+			//! One `sdf_geometry` `part` line's VALUE: `<prim> <op> <k>
+			//! <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>`
+			//! -- see SDFGeometryAsciiChunkParser::Describe's `part` doc.
+			//! Every part below uses identity rotation/scale (matching
+			//! both object-modeling-recipes.md worked examples), so this
+			//! helper hardcodes those two triples rather than taking six
+			//! more parameters nobody would ever vary.
+			std::string ScaffoldSdfPartLine( const char* prim, const char* op, double k,
+			                                 double px, double py, double pz,
+			                                 double a, double b, double c, double round )
+			{
+				return std::string( prim ) + " " + op + " " + ScaffoldFmt( k ) + "  " +
+				       ScaffoldVec3( px, py, pz ) + "  " + ScaffoldVec3( 0.0, 0.0, 0.0 ) + "  " +
+				       ScaffoldVec3( 1.0, 1.0, 1.0 ) + "  " + ScaffoldVec3( a, b, c ) + "  " + ScaffoldFmt( round );
+			}
+
+			std::string ScaffoldSDFGeometryText( const std::string& name, const std::vector<std::string>& partLines, unsigned int maxsteps )
+			{
+				std::vector<std::pair<std::string,std::string>> params;
+				params.push_back( { "name", name } );
+				for( const std::string& pl : partLines ) params.push_back( { "part", pl } );
+				params.push_back( { "maxsteps", std::to_string( maxsteps ) } );
+				return ScaffoldChunkText( "sdf_geometry", params );
+			}
+
+			//! One generated chunk: its kind (for the collision precheck),
+			//! its own chunk `name` (ditto), and its full chunk text --
+			//! deliberately the SAME shape as ScaffoldChunkEntry above
+			//! (not reused directly: that struct is anonymous-namespace-
+			//! local to the material-scaffold block and duplicating a
+			//! 3-field aggregate is cheaper and clearer than exporting it).
+			struct GeoScaffoldChunkEntry
+			{
+				std::string kind;
+				std::string name;
+				std::string text;
+			};
+
+			//! The whole expansion for one geometry family: every chunk in
+			//! insertion order, plus the ONE geometry chunk's name/kind a
+			//! model should bind into a `standard_object.geometry` slot.
+			struct GeoScaffoldGraph
+			{
+				std::vector<GeoScaffoldChunkEntry> chunks;
+				std::string geometryName;
+				std::string geometryKind;
+			};
+
+			//! displaced_slab: box_geometry base + perlin2d_painter noise
+			//! source + displaced_geometry bolt-on (the S3a skill fence's
+			//! proven drop-in pattern -- modeling-workflow-and-geometry.md
+			//! "Drop-in: a bumpy slab via displaced_geometry").  `size`
+			//! sets the footprint and thickness; `aspect` elongates the
+			//! footprint (width:depth ratio, footprint area held roughly
+			//! constant); `detail` is HONEST for BOTH displacement
+			//! amplitude (disp_scale) AND tessellation (displaced_geometry's
+			//! own `detail` field) -- the one family in this tool where
+			//! finer tessellation is warranted by genuinely finer surface
+			//! content, unlike the SMS "finer tessellation does not fix a
+			//! too-busy displacement" caution (that caution is about
+			//! FIXING a bad amplitude choice by adding more triangles;
+			//! this scaffold ties both to the SAME creative knob so they
+			//! move together, not the too-busy failure mode).
+			GeoScaffoldGraph BuildDisplacedSlab( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nBase = "tmpl_" + name + "_base";
+				const std::string nBump = "tmpl_" + name + "_bump";
+				const std::string nDisp = "tmpl_" + name + "_disp";
+
+				const double width  = size * std::sqrt( aspect );
+				const double depth  = size / std::sqrt( aspect );
+				const double thin   = ScaffoldJitterRange( name, "slab_thin", 0.12, 0.22 );
+				const double height = size * thin;
+				out.chunks.push_back( { "box_geometry", nBase, ScaffoldBoxGeometryText( nBase, width, height, depth ) } );
+
+				const double persistence   = ScaffoldJitterRange( name, "slab_persist", 0.35, 0.65 );
+				const unsigned int octaves = ScaffoldJitterUInt( name, "slab_octaves", 3, 5 );
+				const double freqJitter    = ScaffoldJitterRange( name, "slab_freq", 3.0, 7.0 );
+				const double freqU = freqJitter * ( 1.0 + 3.0 * detail );
+				const double freqV = ScaffoldJitterRange( name, "slab_freqv", 3.0, 7.0 ) * ( 1.0 + 3.0 * detail );
+				const double shiftU = ScaffoldJitterRange( name, "slab_shiftu", 0.0, 100.0 );
+				const double shiftV = ScaffoldJitterRange( name, "slab_shiftv", 0.0, 100.0 );
+				out.chunks.push_back( { "perlin2d_painter", nBump,
+					ScaffoldPerlin2DText( nBump, persistence, octaves, freqU, freqV, shiftU, shiftV ) } );
+
+				const double dispScale = size * ( 0.03 + 0.22 * detail ) * ScaffoldJitterRange( name, "slab_dispjit", 0.85, 1.15 );
+				const unsigned int tessBase = 16 + static_cast<unsigned int>( 40.0 * detail + 0.5 );
+				const unsigned int tessDetail = ScaffoldJitterUInt( name, "slab_tess",
+					tessBase > 4 ? tessBase - 4 : tessBase, tessBase + 4 );
+				out.chunks.push_back( { "displaced_geometry", nDisp,
+					ScaffoldDisplacedGeometryText( nDisp, nBase, tessDetail, nBump, dispScale ) } );
+
+				out.geometryName = nDisp;
+				out.geometryKind = "displaced_geometry";
+				return out;
+			}
+
+			//! sweep_rail: a single sweep_geometry chunk -- a compact
+			//! regular-polygon profile ("compact closed profile" per the
+			//! design brief) swept along a 3-point bowed path with a
+			//! linear end taper (the sweep_instances.RISEscene horn idiom
+			//! -- square profile, 3 path points, end_scale taper --
+			//! generalized to a jittered N-gon).  `size` sets the profile
+			//! radius and path bow; `aspect` elongates the path length
+			//! (a thin long rail vs a short stub); `detail` is the
+			//! profile's SIDE COUNT (4..8 -- "profile complexity"; `sides =
+			//! 4 + uint(detail*4.0 + 0.5)` maxes out at detail's own upper
+			//! bound of 1.0 -> 4+uint(4.5) = 8, so 8 is a REACHED ceiling,
+			//! not a clamp -- there is deliberately no `sides > 8` guard
+			//! below, only the `< 4` floor for detail's lower bound of 0.0).
+			GeoScaffoldGraph BuildSweepRail( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nRail = "tmpl_" + name + "_rail";
+
+				unsigned int sides = 4 + static_cast<unsigned int>( detail * 4.0 + 0.5 );
+				if( sides < 4 ) sides = 4;
+				const double profileRadius = size * ScaffoldJitterRange( name, "rail_profr", 0.06, 0.12 );
+				const double phase0 = ScaffoldJitterRange( name, "rail_profphase", 0.0, 6.283185 );
+				std::vector<std::pair<double,double>> profile;
+				profile.reserve( sides );
+				for( unsigned int i = 0; i < sides; ++i ) {
+					const double ang = phase0 + 2.0 * 3.14159265358979323846 * static_cast<double>( i ) / static_cast<double>( sides );
+					profile.push_back( { profileRadius * std::cos( ang ), profileRadius * std::sin( ang ) } );
+				}
+
+				const double halfLen = size * aspect * ScaffoldJitterRange( name, "rail_halflen", 0.6, 1.0 );
+				const double bowSignY = ( ScaffoldJitter01( name, "rail_bowsigny" ) < 0.5 ) ? -1.0 : 1.0;
+				const double bowSignZ = ( ScaffoldJitter01( name, "rail_bowsignz" ) < 0.5 ) ? -1.0 : 1.0;
+				const double bowY = bowSignY * size * ScaffoldJitterRange( name, "rail_bowy", 0.10, 0.35 );
+				const double bowZ = bowSignZ * size * ScaffoldJitterRange( name, "rail_bowz", 0.05, 0.20 );
+				std::vector<std::array<double,3>> path;
+				path.push_back( { -halfLen, 0.0, 0.0 } );
+				path.push_back( { 0.0, bowY, bowZ } );
+				path.push_back( { halfLen, 0.0, 0.0 } );
+
+				const unsigned int nLen = ScaffoldJitterUInt( name, "rail_nlen", 24, 64 );
+				const double endScaleX = ScaffoldJitterRange( name, "rail_endx", 0.20, 0.45 );
+				const double endScaleY = ScaffoldJitterRange( name, "rail_endy", 0.20, 0.45 );
+				out.chunks.push_back( { "sweep_geometry", nRail,
+					ScaffoldSweepGeometryText( nRail, profile, path, nLen, endScaleX, endScaleY ) } );
+
+				out.geometryName = nRail;
+				out.geometryKind = "sweep_geometry";
+				return out;
+			}
+
+			//! blended_vessel: a single sdf_geometry chunk -- a 3-segment
+			//! roundcone+smin profile (base -> belly -> rim, the
+			//! object-modeling-recipes.md turned-vessel idiom, simplified
+			//! to 3 spans with no separate swept neck) closed with a
+			//! flat-bottom `box subtract` (Recipe 4's flat-bottom-needs-a-
+			//! cut rule).  `size` sets the base/belly radii; `aspect`
+			//! elongates total height (a squat bowl at low aspect, a
+			//! tall vase at high aspect); `detail` is SMIN TIGHTNESS (the
+			//! two blend radii shrink toward a crisper joint as detail
+			//! rises toward 1, widen toward a softer shoulder as it falls
+			//! toward 0).
+			GeoScaffoldGraph BuildBlendedVessel( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nVessel = "tmpl_" + name + "_vessel";
+
+				const double totalH  = size * aspect * ScaffoldJitterRange( name, "vessel_h", 0.7, 1.1 );
+				const double baseR   = size * ScaffoldJitterRange( name, "vessel_baser", 0.10, 0.16 );
+				const double baseTopR = baseR * ScaffoldJitterRange( name, "vessel_basetopr", 1.05, 1.30 );
+				const double bellyR  = size * ScaffoldJitterRange( name, "vessel_bellyr", 0.34, 0.46 );
+				const double rimR    = bellyR * ScaffoldJitterRange( name, "vessel_rimr", 0.55, 0.78 );
+
+				double baseH  = totalH * ScaffoldJitterRange( name, "vessel_baseh", 0.12, 0.20 );
+				double bellyH = totalH * ScaffoldJitterRange( name, "vessel_bellyh", 0.42, 0.58 );
+				double rimH   = totalH - baseH - bellyH;
+				if( rimH < totalH * 0.08 ) rimH = totalH * 0.08;   // guard: keep every span honestly positive
+
+				const double tightness = 1.0 - 0.6 * detail;
+				const double k1 = size * ScaffoldJitterRange( name, "vessel_k1", 0.14, 0.24 ) * tightness;
+				const double k2 = size * ScaffoldJitterRange( name, "vessel_k2", 0.10, 0.18 ) * tightness;
+
+				std::vector<std::string> parts;
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "union", 0.0,   0.0, 0.0, 0.0,               baseR, baseTopR, baseH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k1,     0.0, baseH, 0.0,             baseTopR, bellyR, bellyH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k2,     0.0, baseH + bellyH, 0.0,    bellyR, rimR, rimH, 0.0 ) );
+				const double cutHalfY = baseR * 1.5;
+				parts.push_back( ScaffoldSdfPartLine( "box", "subtract", 0.0,      0.0, -cutHalfY, 0.0,         baseR * 2.0, cutHalfY, baseR * 2.0, 0.0 ) );
+
+				out.chunks.push_back( { "sdf_geometry", nVessel, ScaffoldSDFGeometryText( nVessel, parts, 256 ) } );
+				out.geometryName = nVessel;
+				out.geometryKind = "sdf_geometry";
+				return out;
+			}
+
+			//! sdf_column: a single sdf_geometry chunk -- a 3-segment
+			//! base/shaft/capital roundcone+smin chain (a turned-column
+			//! silhouette: a wide flat foot narrowing into a constant-
+			//! radius shaft, then flaring back out into a capital),
+			//! closed with the SAME flat-bottom `box subtract` as
+			//! blended_vessel.  `size` sets the base/shaft/capital radii;
+			//! `aspect` elongates the SHAFT (a squat pedestal at low
+			//! aspect, a tall slender column at high aspect); `detail` is
+			//! SMIN TIGHTNESS, identical semantics to blended_vessel's.
+			GeoScaffoldGraph BuildSdfColumn( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nCol = "tmpl_" + name + "_col";
+
+				const double baseR   = size * ScaffoldJitterRange( name, "col_baser", 0.28, 0.38 );
+				const double shaftR  = baseR * ScaffoldJitterRange( name, "col_shaftr", 0.45, 0.62 );
+				const double capTopR = shaftR * ScaffoldJitterRange( name, "col_captopr", 1.4, 1.9 );
+
+				const double baseH  = size * ScaffoldJitterRange( name, "col_baseh", 0.10, 0.18 );
+				const double shaftH = size * aspect * ScaffoldJitterRange( name, "col_shafth", 0.55, 0.85 );
+				const double capH   = size * ScaffoldJitterRange( name, "col_caph", 0.10, 0.16 );
+
+				const double tightness = 1.0 - 0.6 * detail;
+				const double k1 = size * ScaffoldJitterRange( name, "col_k1", 0.16, 0.26 ) * tightness;
+				const double k2 = size * ScaffoldJitterRange( name, "col_k2", 0.14, 0.22 ) * tightness;
+
+				std::vector<std::string> parts;
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "union", 0.0,   0.0, 0.0, 0.0,              baseR, shaftR, baseH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k1,     0.0, baseH, 0.0,            shaftR, shaftR, shaftH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k2,     0.0, baseH + shaftH, 0.0,   shaftR, capTopR, capH, 0.0 ) );
+				const double cutHalfY = baseR * 1.5;
+				parts.push_back( ScaffoldSdfPartLine( "box", "subtract", 0.0,      0.0, -cutHalfY, 0.0,        baseR * 2.0, cutHalfY, baseR * 2.0, 0.0 ) );
+
+				out.chunks.push_back( { "sdf_geometry", nCol, ScaffoldSDFGeometryText( nCol, parts, 256 ) } );
+				out.geometryName = nCol;
+				out.geometryKind = "sdf_geometry";
+				return out;
+			}
+
+			GeoScaffoldGraph BuildGeometryScaffoldGraph( AgentSession::GeometryScaffoldFamily family, const std::string& name,
+			                                             double size, double detail, double aspect )
+			{
+				switch( family )
+				{
+					case AgentSession::GeometryScaffoldFamily::DisplacedSlab: return BuildDisplacedSlab( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::SweepRail:     return BuildSweepRail( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::BlendedVessel: return BuildBlendedVessel( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::SdfColumn:     return BuildSdfColumn( name, size, detail, aspect );
+				}
+				return GeoScaffoldGraph();
+			}
+		}
+
+		AgentSession::AgentGeometryScaffoldResult AgentSession::InsertGeometryScaffold(
+			const std::string& family, const std::string& name, double size, double detail, double aspect,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentGeometryScaffoldResult out;
+			out.family = family;
+
+			GeometryScaffoldFamily fam;
+			if( !ScaffoldParseGeometryFamily( family, fam ) ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: unknown family `" + family +
+					"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column";
+				return out;
+			}
+			if( !ScaffoldNameIsValid( name ) ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `name` must be a non-empty token "
+					"(letters, digits, underscore, hyphen only, max " + std::to_string( kScaffoldMaxNameLength ) +
+					" chars) -- got `" + name + "`";
+				return out;
+			}
+			if( !std::isfinite( size ) || size <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `size` must be a finite number > 0";
+				return out;
+			}
+			if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `detail` must be a finite number in [0,1]";
+				return out;
+			}
+			if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
+				return out;
+			}
+
+			const GeoScaffoldGraph graph = BuildGeometryScaffoldGraph( fam, name, size, detail, aspect );
+
+			// Collision precheck: refuse the WHOLE expansion, document
+			// UNCHANGED, if ANY generated (kind,name) already exists AT
+			// SNAPSHOT TIME -- the IDENTICAL precheck (and the IDENTICAL
+			// TOCTOU/best-effort hedge) InsertMaterialScaffold's own
+			// precheck comment documents in full above; not restated
+			// verbatim here to avoid the two copies drifting -- read that
+			// comment for what this precheck DOES and does NOT guarantee.
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+					for( const GeoScaffoldChunkEntry& c : graph.chunks ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocFindByName( headDoc, c.kind + "/" + c.name );
+						if( id != 0 ) {
+							out.ok = false;
+							out.message = "insert_geometry_scaffold refused: a `" + c.kind + "` named `" + c.name +
+								"` already exists -- every generated chunk is named tmpl_<name>_<role>, "
+								"and this collides; pick a different `name` -- document unchanged";
+							return out;
+						}
+					}
+				}
+			}
+
+			std::vector<std::string> chunkTexts;
+			chunkTexts.reserve( graph.chunks.size() );
+			for( const GeoScaffoldChunkEntry& c : graph.chunks ) chunkTexts.push_back( c.text );
+
+			out.chunkResults = InsertChunks( chunkTexts, baseOrNull );
+			out.ok           = true;
+			out.geometryName = graph.geometryName;
+			out.geometryKind = graph.geometryKind;
+			return out;
+		}
+
 		AgentChunkResult AgentSession::RemoveChunk( const std::string& target,
 		                                            const std::string& kind,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )

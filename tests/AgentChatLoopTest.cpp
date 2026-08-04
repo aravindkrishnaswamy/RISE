@@ -465,13 +465,15 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 15, "body carries fifteen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 16, "body carries sixteen OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
 	// chat-loop-driven surface get -- AgentChatCodecs::kToolDefs is the
 	// single source both use, so this one check speaks for all of them.
 	bool sawMaterialScaffold = false;
+	// Arc-75 slice S3b: its geometry sibling, same rationale.
+	bool sawGeometryScaffold = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i );
 		if( fn.get( "name" ).asString() == "read_document" ) {
@@ -489,9 +491,18 @@ static void TestOpenAIRequestShape()
 			Check( required.isArray() && required.size() == 5,
 			       "insert_material_scaffold declares all 5 params required" );
 		}
+		if( fn.get( "name" ).asString() == "insert_geometry_scaffold" ) {
+			sawGeometryScaffold = true;
+			const JsonValue& params = fn.get( "parameters" );
+			Check( params.isObject(), "insert_geometry_scaffold OpenAI tool carries a parameters object" );
+			const JsonValue& required = params.get( "required" );
+			Check( required.isArray() && required.size() == 5,
+			       "insert_geometry_scaffold declares all 5 params required" );
+		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );
 	Check( sawMaterialScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_material_scaffold" );
+	Check( sawGeometryScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_geometry_scaffold" );
 }
 
 //----------------------------------------------------------------------
@@ -527,8 +538,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 15,
-		       "xAI body carries the same fifteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 16,
+		       "xAI body carries the same sixteen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -793,7 +804,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 15, "body carries fifteen tools" );
+	Check( tools.isArray() && tools.size() == 16, "body carries sixteen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
@@ -1732,7 +1743,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 15, "fifteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 16, "sixteen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {

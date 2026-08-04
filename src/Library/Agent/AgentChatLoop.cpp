@@ -1021,7 +1021,8 @@ namespace RISE
 			{
 				const std::string& v = call.name;
 				// The BATCH forms (insert_chunks / propose_patches /
-				// insert_material_scaffold) count as a mutation here too --
+				// insert_material_scaffold / insert_geometry_scaffold)
+				// count as a mutation here too --
 				// they still edit the document with no visual observation
 				// in between, same blind-edit risk, and if anything a
 				// LARGER one (N edits land per call, so a model that
@@ -1030,6 +1031,7 @@ namespace RISE
 				// making the biggest unobserved edits).
 				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
 				                          v == "insert_material_scaffold" ||
+				                          v == "insert_geometry_scaffold" ||
 				                          v == "propose_patch" || v == "propose_patches" ||
 				                          v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
@@ -1154,7 +1156,7 @@ namespace RISE
 			//!   1. A JSON-RPC `error` envelope           -> "error: <msg, <=80 chars>"
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
-			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold}  -> "<applied>/<total> applied"
+			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1223,7 +1225,10 @@ namespace RISE
 				    // Arc-75 S2.1: insert_material_scaffold returns the
 				    // EXACT same {applied,total,results} batch envelope
 				    // (it submits through InsertChunks) -- same rule.
-				    call.name == "insert_material_scaffold" ) {
+				    call.name == "insert_material_scaffold" ||
+				    // Arc-75 S3b: insert_geometry_scaffold is the geometry
+				    // sibling, SAME {applied,total,results} batch envelope.
+				    call.name == "insert_geometry_scaffold" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";

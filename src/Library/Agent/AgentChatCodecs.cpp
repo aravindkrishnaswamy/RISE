@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the FIFTEEN provider-neutral tool definitions -- fourteen are
+//    (1) the SIXTEEN provider-neutral tool definitions -- fifteen are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -372,6 +372,58 @@ namespace RISE
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"family\",\"name\",\"tone\",\"wear\",\"scale\"]}"
+				},
+				{
+					"insert_geometry_scaffold",
+					"Expand ONE of four geometry-family templates into a small GEOMETRY-ONLY chunk graph "
+					"(1-3 chunks) added to the scene in one call -- so an advanced geometric form costs one "
+					"tool call instead of hand-composing a displaced_geometry/sweep_geometry/sdf_geometry "
+					"chunk yourself. Families: \"displaced_slab\" (a box tessellated + bumped by a perlin2d "
+					"noise source via displaced_geometry), \"sweep_rail\" (a compact closed polygon profile "
+					"swept along a short bowed path with a taper, via sweep_geometry), \"blended_vessel\" "
+					"(a base/belly/rim roundcone chain smoothly blended into a vessel or bowl silhouette, via "
+					"sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain into a turned-column "
+					"silhouette, via sdf_geometry). Unlike insert_material_scaffold, this tool NEVER emits a "
+					"material or a standard_object -- YOU wire the standard_object (and any material) "
+					"yourself, referencing the returned `geometry.name`. Families cover common forms; "
+					"anything else (an unusual silhouette, a shape none of the four fit) is hand-authored "
+					"alongside using the ordinary geometry chunks -- this tool composes with hand authoring, "
+					"it does not replace it. ALL THREE params are REQUIRED, no defaults: `family` (exactly "
+					"one of the four names above), `name` (a fresh, unique prefix -- every generated chunk is "
+					"named tmpl_<name>_<role>, e.g. tmpl_rail1_rail; a name whose derived chunks collide with "
+					"existing ones is refused, document unchanged), `size` (>0 -- overall scale), `detail` "
+					"(0..1 -- displacement amplitude / profile complexity / smin blend tightness / "
+					"tessellation, whichever is honest for that family), `aspect` (>0 -- elongation; 1.0 is "
+					"roughly proportionate, higher values stretch the form). Internal graph constants (noise "
+					"phase/frequency, profile-point phase, path bow, smin blend radii, segment counts) are "
+					"jittered deterministically from `name` -- the SAME name reproduces byte-identical "
+					"chunks, a DIFFERENT name visibly differs. Every generated chunk is an ORDINARY, EDITABLE "
+					"document chunk -- read_document shows them at the exact site of any future edit, and "
+					"propose_patch/remove_chunk work on them exactly like any hand-authored chunk. Applied IN "
+					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; see "
+					"that tool's description) -- returns {applied,total,results:[...]} (the EXACT insert_chunk "
+					"per-element shape) plus `geometry` ({name,kind} of the one geometry chunk to bind into a "
+					"standard_object.geometry slot). Check every element's own status; do not assume the "
+					"whole expansion landed just because the call returned. A missing/invalid param, an "
+					"unrecognized family, or a name collision refuses the WHOLE call before any chunk is "
+					"generated (document unchanged) -- these come back as a tool error, not a partial "
+					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"size\":{\"type\":\"number\",\"description\":"
+						"\"Overall scale, > 0.\"},"
+						"\"detail\":{\"type\":\"number\",\"description\":"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation, per family.\"},"
+						"\"aspect\":{\"type\":\"number\",\"description\":"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form).\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"size\",\"detail\",\"aspect\"]}"
 				},
 				{
 					"remove_chunk",

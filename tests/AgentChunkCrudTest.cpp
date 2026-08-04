@@ -101,6 +101,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -124,9 +125,14 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/Interfaces/IGeometryManager.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -3634,6 +3640,656 @@ static void TestMaterialScaffoldProposalMode()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// GS1-GS6: Arc-75 slice S3b -- insert_geometry_scaffold.  The geometry
+// sibling of MS1-MS6 above; same fixture/helper conventions
+// (TempPath/LoadScene/TmplName reused verbatim).
+//----------------------------------------------------------------------
+
+//! Local-space bbox extents (width,height,depth) for a named geometry
+//! chunk, resolved through the LIVE geometry manager -- exactly what
+//! every spatial-effect assertion below needs: the scaffold's
+//! `size`/`aspect` params are baked into the chunk's own authored
+//! numbers, not into any `standard_object` binding transform, so no
+//! object needs to exist for this to be meaningful.
+static bool GeometryBBoxExtents( Job* pJob, const std::string& name, double& ex, double& ey, double& ez )
+{
+	IGeometry* g = ( pJob && pJob->GetGeometries() ) ? pJob->GetGeometries()->GetItem( name.c_str() ) : nullptr;
+	if( !g ) return false;
+	// displaced_geometry defers its tessellation bake to Realize() (normally
+	// called from RayCaster::AttachScene at render time) -- an un-rendered
+	// scene's DisplacedGeometry has a null internal mesh and reports a
+	// degenerate (0,0,0) bbox until baked.  Realize() is idempotent/no-op
+	// for every other geometry kind, so calling it unconditionally here is
+	// always safe.
+	g->Realize();
+	const BoundingBox bb = g->GenerateBoundingBox();
+	ex = bb.ur.x - bb.ll.x;
+	ey = bb.ur.y - bb.ll.y;
+	ez = bb.ur.z - bb.ll.z;
+	return std::isfinite( ex ) && std::isfinite( ey ) && std::isfinite( ez );
+}
+
+//! P2a fix-round: the Nth (0-indexed) repeatable `part` line belonging to
+//! `sdf_geometry` chunk `chunkName` -- text found after that chunk's own
+//! "name <chunkName>" line, one `part ` line per iteration, stopping at
+//! `maxsteps` or the closing brace.  Returns everything AFTER the "part "
+//! keyword (the `<prim> <op> <k> ...` fields); empty on any lookup miss.
+static std::string ExtractNthPartLine( const std::string& doc, const std::string& chunkName, std::size_t n )
+{
+	const std::string nameMarker = "name " + chunkName + "\n";
+	std::size_t pos = doc.find( nameMarker );
+	if( pos == std::string::npos ) return std::string();
+	pos += nameMarker.size();
+	std::size_t found = 0;
+	while( pos < doc.size() ) {
+		std::size_t lineEnd = doc.find( '\n', pos );
+		if( lineEnd == std::string::npos ) lineEnd = doc.size();
+		const std::string line = doc.substr( pos, lineEnd - pos );
+		if( line.rfind( "part ", 0 ) == 0 ) {
+			if( found == n ) return line.substr( 5 );
+			++found;
+		} else if( line == "}" || line.rfind( "maxsteps", 0 ) == 0 ) {
+			break;
+		}
+		pos = ( lineEnd >= doc.size() ) ? doc.size() : lineEnd + 1;
+	}
+	return std::string();
+}
+
+//! P2a fix-round: the `idx`-th (0-indexed) whitespace-separated token of
+//! `line` -- used to pull the `k` field (index 2: `<prim> <op> <k> ...`)
+//! out of one ExtractNthPartLine result without pulling in <sstream> for
+//! a single-purpose tokenizer.
+static std::string NthWhitespaceToken( const std::string& line, std::size_t idx )
+{
+	std::size_t pos = 0;
+	for( std::size_t i = 0; ; ++i ) {
+		while( pos < line.size() && std::isspace( static_cast<unsigned char>( line[pos] ) ) ) ++pos;
+		if( pos >= line.size() ) return std::string();
+		const std::size_t start = pos;
+		while( pos < line.size() && !std::isspace( static_cast<unsigned char>( line[pos] ) ) ) ++pos;
+		if( i == idx ) return line.substr( start, pos - start );
+	}
+}
+
+//! Per-pixel luma decode of a rendered PNG, through RISE's OWN PNGReader
+//! (the same decode idiom AgentObjectMapTest.cpp's DecodePng uses) --
+//! needed for GS1b's flat-vs-bumpy comparison, which needs the SPREAD of
+//! shading across the image, not just its mean (meanR/G/B alone cannot
+//! tell "uniformly lit flat face" apart from "genuinely varying bumpy
+//! face" when both variants sit in the same base scene under the same
+//! light).
+struct DecodedLuma
+{
+	unsigned int        w = 0, h = 0;
+	std::vector<double> luma;   // row-major, linear
+};
+
+static bool DecodeRenderLuma( const std::vector<unsigned char>& png, DecodedLuma& out )
+{
+	if( png.empty() ) return false;
+	Implementation::MemoryBuffer* buf = new Implementation::MemoryBuffer(
+		const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+		(unsigned int)png.size(), /*bTakeOwnership*/false );
+	IRasterImageReader* reader = nullptr;
+	if( !RISE_API_CreatePNGReader( &reader, *buf, eColorSpace_sRGB ) || !reader ) {
+		safe_release( buf );
+		return false;
+	}
+	unsigned int w = 0, h = 0;
+	if( !reader->BeginRead( w, h ) ) { safe_release( reader ); safe_release( buf ); return false; }
+	out.w = w; out.h = h;
+	out.luma.resize( (std::size_t)w * h );
+	for( unsigned int y = 0; y < h; ++y ) {
+		for( unsigned int x = 0; x < w; ++x ) {
+			RISEColor c;
+			reader->ReadColor( c, x, y );
+			out.luma[ (std::size_t)y * w + x ] = 0.2126 * c.base.r + 0.7152 * c.base.g + 0.0722 * c.base.b;
+		}
+	}
+	reader->EndRead();
+	safe_release( reader );
+	safe_release( buf );
+	return true;
+}
+
+static double LumaStdDev( const DecodedLuma& d )
+{
+	if( d.luma.empty() ) return 0.0;
+	double mean = 0.0;
+	for( double v : d.luma ) mean += v;
+	mean /= static_cast<double>( d.luma.size() );
+	double var = 0.0;
+	for( double v : d.luma ) var += ( v - mean ) * ( v - mean );
+	var /= static_cast<double>( d.luma.size() );
+	return std::sqrt( var );
+}
+
+//! A tiny dedicated scene (no pre-existing objects/lights beyond camera +
+//! one directional key) for GS1b's flat-vs-bumpy comparison.  Camera
+//! looks STRAIGHT DOWN (-Y) from close range at a NARROW fov chosen so
+//! the frame's covered footprint (2 * camHeight * tan(fov/2) ~= 1.07) is
+//! well INSIDE the box's 1.2x1.2 footprint (size=1.2, aspect=1.0 in the
+//! call below) -- every pixel is the object's top face, no background,
+//! no silhouette/side-face edges.  That matters because a 3/4 view's
+//! edge pixels (object-vs-background, top-vs-side-face) contribute
+//! stddev unrelated to bumpiness, common to BOTH variants and large
+//! enough to swamp the genuinely-bumpy signal at this render's modest
+//! sample count -- this framing removes that confound entirely rather
+//! than trying to out-margin it.
+static const char* const kGeoRenderScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 2.0 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tfov 30.0\n}\n\n"
+	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.3 0.6 0.7\n}\n";
+
+//! GS1: each of the 4 families, at a FIXED name -- the expansion
+//! applies, the document contains the expected chunk set, the ONE
+//! geometry chunk resolves through the live geometry manager, its bbox
+//! has genuinely nonzero extent on all three axes, and the scene
+//! derive+renders clean once an object (+ a plain material) is bound to
+//! the new geometry.
+static void TestGeometryScaffoldFamilies()
+{
+	std::printf( "GS1: insert_geometry_scaffold -- all 4 families, applies + realizes + renders...\n" );
+
+	struct FamilyCase
+	{
+		const char* family;
+		const char* geometryKind;
+		const char* roleSuffix;      // tmpl_<name>_<roleSuffix> is the hero geometry chunk
+		std::size_t expectedChunkCount;
+	};
+	const FamilyCase cases[] = {
+		{ "displaced_slab", "displaced_geometry", "disp",   3 },
+		{ "sweep_rail",     "sweep_geometry",      "rail",   1 },
+		{ "blended_vessel", "sdf_geometry",        "vessel", 1 },
+		{ "sdf_column",     "sdf_geometry",        "col",    1 },
+	};
+
+	for( const FamilyCase& fc : cases ) {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_gs1_" ) + fc.family + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( "GS1(" ) + fc.family + ") fixture loads" );
+		if( !pJob ) continue;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
+			fc.family, "geoA", 1.4, 0.6, 1.3, &v0 );
+
+		Check( sr.ok, std::string( "GS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
+		Check( sr.chunkResults.size() == fc.expectedChunkCount,
+		       std::string( "GS1(" ) + fc.family + ") generated the expected chunk count" );
+		Check( sr.geometryKind == fc.geometryKind,
+		       std::string( "GS1(" ) + fc.family + ") geometry chunk kind matches the family design" );
+		Check( sr.geometryName == TmplName( "geoA", fc.roleSuffix ),
+		       std::string( "GS1(" ) + fc.family + ") geometry chunk is named tmpl_geoA_" + fc.roleSuffix );
+
+		bool allApplied = true;
+		for( const Agent::AgentChunkResult& cr : sr.chunkResults ) if( !cr.applied ) allApplied = false;
+		Check( allApplied, std::string( "GS1(" ) + fc.family + ") every generated chunk applied" );
+
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) != nullptr,
+		       std::string( "GS1(" ) + fc.family + ") the live geometry manager resolved the graph" );
+
+		double ex = 0.0, ey = 0.0, ez = 0.0;
+		Check( GeometryBBoxExtents( pJob, sr.geometryName, ex, ey, ez ),
+		       std::string( "GS1(" ) + fc.family + ") geometry bbox is queryable" );
+		Check( ex > 0.0 && ey > 0.0 && ez > 0.0,
+		       std::string( "GS1(" ) + fc.family + ") geometry bbox has NONZERO extent on all three axes (" +
+		       std::to_string( ex ) + ", " + std::to_string( ey ) + ", " + std::to_string( ez ) + ")" );
+
+		// Bind an object (+ a plain hand-authored material -- this tool
+		// never emits one) to the new geometry and render a small
+		// non-black check: "derive+render clean" per the family's own
+		// binding, exactly MS1's rigor level for the material scaffold.
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "uniformcolor_painter\n{\nname pnt_" + std::string( fc.family ) + "\ncolor 0.6 0.5 0.4\n}" );
+		objChunks.push_back( "lambertian_material\n{\nname mat_" + std::string( fc.family ) +
+			"\nreflectance pnt_" + fc.family + "\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_" + std::string( fc.family ) +
+			"\ngeometry " + sr.geometryName + "\nmaterial mat_" + fc.family + "\nposition 0 0 0\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		bool objAllApplied = true;
+		for( const Agent::AgentChunkResult& r : objResults ) if( !r.applied ) objAllApplied = false;
+		Check( objAllApplied,
+		       std::string( "GS1(" ) + fc.family + ") the follow-up material+object binding the scaffold geometry applied" );
+
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, std::string( "GS1(" ) + fc.family + ") the scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       std::string( "GS1(" ) + fc.family + ") the render is non-black" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! GS1b: the SPATIAL-EFFECT assertion for displaced_slab -- render the
+//! flat base box and the displaced geometry (SAME expansion, SAME
+//! material, SAME camera/light, only the bound geometry chunk differs)
+//! and require the displaced render's per-pixel luma STDDEV to be
+//! markedly higher than the flat render's.  A flat box under a single
+//! directional light has a near-uniform top/side shading (its stddev is
+//! essentially Monte Carlo noise); a genuinely bumpy surface has real
+//! per-pixel shading variation from its varying normals.  This is a
+//! render-based check (unlike GS1's/GS1c's direct bbox queries)
+//! precisely because "genuinely bumpy" is a SHADING claim, not a bbox
+//! claim -- displacement barely moves the silhouette/bbox at these
+//! amplitudes, so a bbox check alone would not distinguish "real bump"
+//! from "decoy no-op displacement" (the S2.1 decoy-landmine lesson,
+//! applied here to geometry).
+static void TestGeometryScaffoldDisplacedBumpyVsFlat()
+{
+	std::printf( "GS1b: insert_geometry_scaffold -- displaced_slab render genuinely differs from its own flat base...\n" );
+
+	auto renderVariant = [&]( const char* roleSuffix, DecodedLuma& outLuma ) -> bool {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_gs1b_" ) + roleSuffix + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kGeoRenderScene, tmp );
+		if( !pJob ) return false;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->InsertGeometryScaffold( "displaced_slab", "bumpy", 1.2, 0.75, 1.0 );
+		bool ok = sr.ok;
+
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "uniformcolor_painter\n{\nname pnt_bv\ncolor 0.6 0.55 0.5\n}" );
+		objChunks.push_back( "lambertian_material\n{\nname mat_bv\nreflectance pnt_bv\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_bv\ngeometry " + TmplName( "bumpy", roleSuffix ) +
+			"\nmaterial mat_bv\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		for( const Agent::AgentChunkResult& r : objResults ) if( !r.applied ) ok = false;
+
+		Agent::AgentRenderParams rp;
+		rp.width = 48; rp.height = 48; rp.samples = 16;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		ok = ok && rr.ok;
+		if( ok ) ok = DecodeRenderLuma( rr.png, outLuma );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return ok;
+	};
+
+	DecodedLuma flatLuma, bumpyLuma;
+	Check( renderVariant( "base", flatLuma ),  "GS1b flat-base variant (tmpl_bumpy_base) renders and decodes" );
+	Check( renderVariant( "disp", bumpyLuma ), "GS1b displaced variant (tmpl_bumpy_disp) renders and decodes" );
+
+	const double flatStdDev  = LumaStdDev( flatLuma );
+	const double bumpyStdDev = LumaStdDev( bumpyLuma );
+	std::printf( "    GS1b flat luma stddev %.5f, bumpy luma stddev %.5f\n", flatStdDev, bumpyStdDev );
+	Check( bumpyStdDev > flatStdDev * 2.0,
+	       "GS1b the displaced render's per-pixel luma stddev is markedly HIGHER than the flat base's "
+	       "(genuinely varying shading, not just MC noise): flat=" + std::to_string( flatStdDev ) +
+	       " bumpy=" + std::to_string( bumpyStdDev ) );
+	Check( bumpyStdDev > 0.01,
+	       "GS1b the displaced render's stddev also clears an ABSOLUTE floor, not just a relative one "
+	       "(bumpy=" + std::to_string( bumpyStdDev ) + ")" );
+}
+
+//! GS1c: the SPATIAL-EFFECT assertion for the other three families (and,
+//! cheaply, displaced_slab too) -- `size`/`aspect` genuinely flow into
+//! the realized geometry's bbox, not just into the chunk text.  Two
+//! FRESH expansions under the SAME `name` (so every jittered internal
+//! constant is IDENTICAL between them -- only the explicit `aspect`
+//! differs) at a LOW and a HIGH aspect; asserts the elongation axis's
+//! bbox extent grows by more than an absolute floor derived from each
+//! family's own authored jitter ranges (a DIFFERENCE assertion, not a
+//! ratio one, so it is insensitive to the constant, aspect-independent
+//! term in blended_vessel's/sdf_column's bbox).  That constant term is
+//! NOT the flat-bottom `box subtract` part -- SDFGeometry::ComputeBounds
+//! (SDFGeometry.cpp ~385-387) SKIPS every subtract-op part entirely
+//! ("a carve never extends the solid" -> no-op on the bound), so the cut
+//! contributes NOTHING to the bbox union.  The real source is the FIRST
+//! `roundcone` part's own local AABB (primLocalAABB, SDFGeometry.cpp
+//! ~175-195): a roundcone's `ry0` (its bottom extent) is `-pt.a` --
+//! i.e. `-baseR`, from the rounded cap that bulges below the part's own
+//! y=0 -- and `baseR` depends only on `name`+`size` (never `aspect`) in
+//! both families, so it is IDENTICAL between the low- and high-aspect
+//! calls below and cancels out of the delta.
+static void TestGeometryScaffoldAspectFlow()
+{
+	std::printf( "GS1c: insert_geometry_scaffold -- size/aspect genuinely flow into every family's bbox...\n" );
+
+	struct FamilyAxis { const char* family; int axis; };   // axis: 0=X, 1=Y -- which bbox extent `aspect` elongates
+	const FamilyAxis cases[] = {
+		{ "displaced_slab", 0 },   // footprint width (X) grows with aspect
+		{ "sweep_rail",     0 },   // path length (X) grows with aspect
+		{ "blended_vessel", 1 },   // total height (Y) grows with aspect
+		{ "sdf_column",     1 },   // shaft height (Y) grows with aspect
+	};
+	const double kLowAspect  = 0.5;
+	const double kHighAspect = 3.0;
+	const double kSize       = 1.0;
+	// A floor well below the SMALLEST possible delta across every
+	// family's own authored jitter range at size=1.0 (see each BuildXxx
+	// in AgentSession.cpp -- the tightest is displaced_slab's
+	// width = size*sqrt(aspect), delta = sqrt(3.0)-sqrt(0.5) ~= 1.02).
+	const double kMinDelta = 0.5;
+
+	for( const FamilyAxis& fc : cases ) {
+		auto expandAndBBox = [&]( double aspect, double ext[3] ) -> bool {
+			const std::string tmp = TempPath( ( std::string( "agentcrud_gs1c_" ) + fc.family + "_" +
+				std::to_string( static_cast<int>( aspect * 100 ) ) + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kScene, tmp );
+			if( !pJob ) return false;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->InsertGeometryScaffold( fc.family, "aspA", kSize, 0.5, aspect );
+			bool ok = sr.ok;
+			if( ok ) ok = GeometryBBoxExtents( pJob, sr.geometryName, ext[0], ext[1], ext[2] );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+			return ok;
+		};
+
+		double lowExt[3] = { 0.0, 0.0, 0.0 }, highExt[3] = { 0.0, 0.0, 0.0 };
+		Check( expandAndBBox( kLowAspect, lowExt ),
+		       std::string( "GS1c(" ) + fc.family + ") low-aspect expansion resolves a bbox" );
+		Check( expandAndBBox( kHighAspect, highExt ),
+		       std::string( "GS1c(" ) + fc.family + ") high-aspect expansion resolves a bbox" );
+
+		const double delta = highExt[fc.axis] - lowExt[fc.axis];
+		Check( delta > kMinDelta,
+		       std::string( "GS1c(" ) + fc.family + ") the elongation axis's bbox extent grows with `aspect` "
+		       "well past the deterministic-jitter floor (low=" + std::to_string( lowExt[fc.axis] ) +
+		       " high=" + std::to_string( highExt[fc.axis] ) + " delta=" + std::to_string( delta ) +
+		       " > " + std::to_string( kMinDelta ) + ")" );
+	}
+}
+
+//! GS1d (P2a fix-round): `detail` genuinely flows into the emitted smin
+//! blend-radius (`k`) fields for BOTH sdf-based families.  GS1c only
+//! pins `aspect`'s flow into bbox extent -- a mutation that hardcodes
+//! blended_vessel's smin tightness (drops the `* tightness` factor from
+//! k1/k2) passes GS1 AND GS1c untouched (neither observes `k`, and
+//! bbox extent is insensitive to a smin blend radius at these part
+//! sizes), so this is a DEDICATED text-extraction pin on the `k` token
+//! itself, mirroring GS2's persistence-extraction pattern.  Two FRESH
+//! documents, SAME name, detail=0.1 vs detail=0.9 (size/aspect held
+//! fixed) -- every other jittered constant is IDENTICAL between them,
+//! so any difference in the extracted `k` token is attributable to
+//! `detail` alone.  sdf_column is structurally identical to
+//! blended_vessel here (same `tightness = 1.0 - 0.6*detail` factor on
+//! its own k1/k2), so both families get the SAME check, independently.
+static void TestGeometryScaffoldSdfDetailFlow()
+{
+	std::printf( "GS1d: insert_geometry_scaffold -- `detail` genuinely flows into smin blend-radius k (both sdf families)...\n" );
+
+	struct Case { const char* family; const char* roleSuffix; };
+	const Case cases[] = {
+		{ "blended_vessel", "vessel" },   // part[1] is the base->belly smin (k1)
+		{ "sdf_column",     "col" },      // part[1] is the base->shaft smin (k1)
+	};
+
+	for( const Case& c : cases ) {
+		auto expandK = [&]( double detail ) -> std::string {
+			const std::string tmp = TempPath( ( std::string( "agentcrud_gs1d_" ) + c.family + "_" +
+				std::to_string( static_cast<int>( detail * 100 ) ) + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kScene, tmp );
+			if( !pJob ) return std::string();
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->InsertGeometryScaffold( c.family, "detflow", 1.0, detail, 1.0 );
+			std::string k;
+			if( sr.ok ) {
+				const std::string doc = sess->ReadDocument();
+				const std::string partLine = ExtractNthPartLine( doc, TmplName( "detflow", c.roleSuffix ), 1 );
+				k = NthWhitespaceToken( partLine, 2 );
+			}
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+			return k;
+		};
+
+		const std::string kLow  = expandK( 0.1 );
+		const std::string kHigh = expandK( 0.9 );
+		Check( !kLow.empty() && !kHigh.empty(),
+		       std::string( "GS1d(" ) + c.family + ") extracted a smin `k` token at both detail=0.1 and detail=0.9" );
+		Check( kLow != kHigh,
+		       std::string( "GS1d(" ) + c.family + ") `detail` genuinely changes the emitted smin `k` (0.1 -> " +
+		       kLow + ", 0.9 -> " + kHigh + ") -- pins the mutation class that hardcoding smin tightness would hide" );
+	}
+}
+
+//! GS2: determinism -- the SAME name, in TWO FRESH documents, produces
+//! BYTE-IDENTICAL generated chunk text (no RNG, no clock); a DIFFERENT
+//! name visibly differs in its jittered constants (not just the renamed
+//! chunk tokens).
+static void TestGeometryScaffoldDeterminism()
+{
+	std::printf( "GS2: insert_geometry_scaffold -- determinism (same name twice byte-identical; different name differs)...\n" );
+
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_gs2_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->InsertGeometryScaffold( "displaced_slab", name, 1.1, 0.5, 1.0 );
+		Check( sr.ok, "GS2 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "gscafA" );
+	const std::string docA2 = expandFresh( "gscafA" );
+	Check( !docA1.empty() && !docA2.empty(), "GS2 both `gscafA` fixtures produced a document" );
+	Check( docA1 == docA2,
+	       "GS2 SAME name, two FRESH documents -> BYTE-IDENTICAL generated chunk text (deterministic, no RNG/clock)" );
+
+	const std::string docB = expandFresh( "gscafB" );
+	Check( !docB.empty(), "GS2 `gscafB` fixture produced a document" );
+	Check( docA1 != docB, "GS2 a DIFFERENT name produces a different document (trivially true from the renamed chunks alone)" );
+
+	// The STRONGER claim: the JITTERED NUMERIC CONSTANT differs, not just
+	// the renamed chunk tokens -- extract the noise painter's own
+	// `persistence` value for each name and require them to differ.
+	const std::string persA = ExtractParamAfter( docA1, TmplName( "gscafA", "bump" ), "persistence" );
+	const std::string persB = ExtractParamAfter( docB,  TmplName( "gscafB", "bump" ), "persistence" );
+	Check( !persA.empty() && !persB.empty(), "GS2 extracted a `persistence` value from both fixtures' noise painter" );
+	Check( persA != persB,
+	       "GS2 a DIFFERENT name jitters a DIFFERENT `persistence` value (the internal constants really do vary with `name`, not just the labels)" );
+}
+
+//! GS3: each of the 5 required params, omitted in turn, is a BLOCKING
+//! error naming the missing param -- driven through the REAL wire
+//! (AgentRpcDispatcher::HandleLine), mirroring MS3's style.
+static void TestGeometryScaffoldMissingParams()
+{
+	std::printf( "GS3: insert_geometry_scaffold -- each missing required param -> blocking -32602...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"name\":\"x1\",\"size\":1.0,\"detail\":0.5,\"aspect\":1.0}", "family" },
+		{ "2", "{\"family\":\"sdf_column\",\"size\":1.0,\"detail\":0.5,\"aspect\":1.0}", "name" },
+		{ "3", "{\"family\":\"sdf_column\",\"name\":\"x3\",\"detail\":0.5,\"aspect\":1.0}", "size" },
+		{ "4", "{\"family\":\"sdf_column\",\"name\":\"x4\",\"size\":1.0,\"aspect\":1.0}", "detail" },
+		{ "5", "{\"family\":\"sdf_column\",\"name\":\"x5\",\"size\":1.0,\"detail\":0.5}", "aspect" },
+	};
+	int id = 10;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_geometry_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "GS3(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "GS3(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "GS3 none of the 5 missing-param refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS4: an unrecognized `family` is refused with a message listing the
+//! valid families -- document unchanged.
+static void TestGeometryScaffoldBadFamily()
+{
+	std::printf( "GS4: insert_geometry_scaffold -- unknown family -> error listing valid families...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "twisted_lattice", "x", 1.0, 0.5, 1.0 );
+	Check( !sr.ok, "GS4 an unknown family refuses the call (ok==false)" );
+	Check( sr.chunkResults.empty(), "GS4 no chunks were generated for an unknown family" );
+	const char* families[] = { "displaced_slab", "sweep_rail", "blended_vessel", "sdf_column" };
+	for( const char* f : families ) {
+		Check( sr.message.find( f ) != std::string::npos,
+		       std::string( "GS4 the error message lists valid family `" ) + f + "`" );
+	}
+	Check( sess->ReadDocument() == headBefore, "GS4 the refusal mutated nothing" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS4b (fix-round-parity P3): `name` past the sane length cap
+//! (kScaffoldMaxNameLength == 64, the SAME shared constant
+//! insert_material_scaffold uses) is refused, same as any other invalid
+//! `name`.
+static void TestGeometryScaffoldNameLengthCap()
+{
+	std::printf( "GS4b: insert_geometry_scaffold -- `name` past the length cap is refused...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs4b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS4b fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string tooLongName( 65, 'a' );   // one past the 64-char cap
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "sdf_column", tooLongName, 1.0, 0.5, 1.0 );
+	Check( !sr.ok, "GS4b a 65-char `name` (one past the cap) is refused" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS5: a name collision -- a family/name expanded once, then the SAME
+//! family+name expanded again -- refuses the WHOLE second call cleanly
+//! (document unchanged), rather than landing a partial second graph;
+//! PLUS a collision against a HAND-AUTHORED chunk sharing the derived
+//! name (geometry families don't share role suffixes with each other
+//! the way the material families do, so a cross-family collision isn't
+//! reachable here -- a hand-authored collision covers the same
+//! "collides against anything already in the document" guarantee).
+static void TestGeometryScaffoldNameCollision()
+{
+	std::printf( "GS5: insert_geometry_scaffold -- name collision -> clean refusal, document unchanged...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS5 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr1 =
+		sess->InsertGeometryScaffold( "blended_vessel", "gdup1", 1.0, 0.5, 1.0 );
+	Check( sr1.ok && !sr1.chunkResults.empty() && sr1.chunkResults.back().applied,
+	       "GS5 the FIRST expansion under this name applies cleanly" );
+
+	const std::string headAfterFirst = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+	// A SECOND expansion, same family AND name -- the generated chunk
+	// name collides with the first expansion's.
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr2 =
+		sess->InsertGeometryScaffold( "blended_vessel", "gdup1", 2.0, 0.9, 1.5 );
+	Check( !sr2.ok, "GS5 the SECOND expansion (same family+name) is refused (ok==false)" );
+	Check( sr2.chunkResults.empty(), "GS5 the refused expansion generated NO chunk results (refused before InsertChunks ran)" );
+	Check( sr2.message.find( "gdup1" ) != std::string::npos, "GS5 the refusal message names the colliding `name`" );
+
+	Check( sess->ReadDocument() == headAfterFirst, "GS5 the document is BYTE-IDENTICAL to before the collision (no partial graph landed)" );
+	Check( sess->HeadVersion() == vAfterFirst, "GS5 the head revision did not move" );
+
+	// A collision against a HAND-AUTHORED chunk sharing the derived name.
+	const std::vector<Agent::AgentChunkResult> handResults = sess->InsertChunks( {
+		"sdf_geometry\n{\nname tmpl_gdup2_col\npart sphere union 0  0 0 0  0 0 0  1 1 1  0.2 0.2 0.2  0.0\n}"
+	} );
+	Check( handResults.size() == 1 && handResults[0].applied, "GS5 the hand-authored collision fixture itself applied" );
+	const std::string headAfterHand = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr3 =
+		sess->InsertGeometryScaffold( "sdf_column", "gdup2", 1.0, 0.5, 1.0 );
+	Check( !sr3.ok, "GS5 a collision against a HAND-AUTHORED chunk sharing the derived name is also refused" );
+	Check( sess->ReadDocument() == headAfterHand, "GS5 that hand-authored collision ALSO left the document byte-identical" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS6: under External authority with a live controller attached (the
+//! same Secure-MCP staging posture insert_chunk/insert_chunks/
+//! insert_material_scaffold use), the expansion STAGES proposals rather
+//! than committing -- every generated chunk comes back status=="staged",
+//! applied==false, and the document is untouched until an Owner resolves
+//! them.
+static void TestGeometryScaffoldProposalMode()
+{
+	std::printf( "GS6: insert_geometry_scaffold -- External authority STAGES, does not commit...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS6 fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+	sess->AttachController( &c );
+	Check( sess->Authority() == Agent::AgentAuthority::External, "GS6 session reports External authority" );
+
+	const std::string headBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "sweep_rail", "extG", 1.0, 0.4, 1.0 );
+
+	Check( sr.ok, "GS6 the call itself is well-formed under External authority (ok==true -- generation + collision-precheck succeeded)" );
+	Check( !sr.chunkResults.empty(), "GS6 the expansion produced per-chunk results" );
+	bool allStaged = true;
+	for( const Agent::AgentChunkResult& cr : sr.chunkResults ) {
+		if( cr.applied || cr.status != "staged" ) allStaged = false;
+	}
+	Check( allStaged, "GS6 EVERY generated chunk is staged (applied==false, status==\"staged\"), none committed directly" );
+	Check( sess->ReadDocument() == headBefore, "GS6 the document is UNCHANGED -- nothing committed, only proposals queued" );
+
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -3676,6 +4332,16 @@ int main()
 	TestMaterialScaffoldNameLengthCap();
 	TestMaterialScaffoldNameCollision();
 	TestMaterialScaffoldProposalMode();
+	TestGeometryScaffoldFamilies();
+	TestGeometryScaffoldDisplacedBumpyVsFlat();
+	TestGeometryScaffoldAspectFlow();
+	TestGeometryScaffoldSdfDetailFlow();
+	TestGeometryScaffoldDeterminism();
+	TestGeometryScaffoldMissingParams();
+	TestGeometryScaffoldBadFamily();
+	TestGeometryScaffoldNameLengthCap();
+	TestGeometryScaffoldNameCollision();
+	TestGeometryScaffoldProposalMode();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -4388,7 +4388,9 @@ namespace RISE
 				//! {op:"chunk_name_prefix_count",prefix,kindSuffix?|kinds?|category?,
 				//! min,max?} (Arc-75 S2.3, provenance metrics) counts chunks whose
 				//! bare `name` param starts with "prefix" -- the `tmpl_<name>_<role>`
-				//! naming convention insert_material_scaffold's expansions carry, so
+				//! naming convention BOTH scaffold tools' expansions carry
+				//! (insert_material_scaffold since S2.1, insert_geometry_scaffold
+				//! since S3b), so
 				//! this op is what tells expansion-driven richness (a scaffold call)
 				//! apart from hand-authored richness (a model typing out its own
 				//! painter graph) on the SAME param_binding count above: a
@@ -5318,8 +5320,10 @@ namespace RISE
 					// chunk_name_prefix_count: {prefix,kindSuffix?|kinds?|category?,
 					// min,max?} -- Arc-75 S2.3 provenance metric.  Counts chunks
 					// whose bare `name` starts with "prefix" -- the
-					// `tmpl_<name>_<role>` convention insert_material_scaffold's
-					// generated chunks carry -- optionally narrowed to at most one
+					// `tmpl_<name>_<role>` convention BOTH scaffold tools' generated
+					// chunks carry (insert_material_scaffold, and its geometry
+					// sibling insert_geometry_scaffold since S3b) -- optionally
+					// narrowed to at most one
 					// kind filter.  Populates CheckOutcome::metricValue with the
 					// count (the FOURTH metricValue emitter; see this op's doc
 					// comment above CheckDocumentKind).
@@ -6717,6 +6721,10 @@ namespace RISE
 										// insert_chunks uses) -- same "did the MODEL mutate,
 										// and when?" membership; see the comment above.
 										"insert_material_scaffold",
+										// Arc-75 slice S3b: insert_geometry_scaffold is the
+										// geometry sibling, SAME InsertChunks path, SAME
+										// membership rationale.
+										"insert_geometry_scaffold",
 										"propose_patch", "propose_patches", "remove_chunk"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {
