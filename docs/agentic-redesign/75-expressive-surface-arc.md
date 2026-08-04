@@ -238,6 +238,32 @@ possible delayed hand-authoring emergence, watch not credit.  qwen leg
 completes the verdict; 0/6 there → S3a dead, S3b proceeds per the
 standing instruction.
 
+**S3b gemini leg (2026-08-04): FLOOR MET — and the workstream's first
+PERFECT GROUP, causally attributed.**  Courtyard 3/3 allPassed=1.0,
+meanCkpt 1.000, pass^k=1: the census traced it checkpoint-by-checkpoint
+— the two S3a courtyard failures were exactly advanced_geometry (no
+sdf existed; columns/basins were plain cylinders), and sdf_column
+scaffold expansions landed WIRED sdf chunks in all 3 runs, directly
+closing them, with the material scaffold closing the residual orphan
+failure.  8 geometry-scaffold calls in 3/6 runs (all courtyard), family
+split 50/50 sdf_column/blended_vessel (kill-2 clear).  **The creativity
+signal arrived in force in r1**: scaffold called twice for columns,
+objects REBOUND to the preferred expansion, the orphan removed — and
+one blended_vessel called-then-DISCARDED for a hand-built CSG basin
+that kept the scaffold's material: scaffolds treated as drafts, the
+ordinary-editable-chunks design intent working exactly as argued to the
+user in the S2 redesign.  Discovery: scene-skeleton (read FIRST in 6/6
+runs) is the carrier; r1's first call reused the example's name
+verbatim with retuned params.  Cozy control: zero geometry-scaffold
+calls and flat vs S3a — honestly attributed to FAMILY COVERAGE (a lamp
+shade maps to none of the four families; its advanced_geometry is a
+hand-copied Recipe-3 roundcone predating the arc) — the same
+coverage boundary qwen articulated in S2, now measured on gemini.
+Also: LUMINAIRE_NULL_GEOMETRY fired in the wild (cozy r1 bound
+emissive to CSG again) — the crash-fix diagnostic failing the run
+truthfully instead of segfaulting the harness, working as designed.
+qwen leg completes the verdict.
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
