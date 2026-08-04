@@ -1,0 +1,13 @@
+{
+  "//": "Arc-75 S3a measurement, gemini instrument. Treatment vs bare_prompt_s2: two drop-in advanced-geometry fences (92cc0553 -- displaced_geometry's first example anywhere, in modeling-workflow-and-geometry; standalone sweep Recipe 5 in object-modeling-recipes). NO geometry scaffold exists in the tree (sequencing constraint: examples-only treatment). INSTRUMENT CHANGE since S2 batches: degenerate-turn retry-once (bcadae0d, recorded 2f28609d) -- degenerate-turn rates are not comparable to earlier batches; all other metrics unaffected. Stop rule, pre-committed (S3 design): census-verified HAND-AUTHORED displaced_geometry or sweep_geometry usage in >=2/6 build runs per model -> bank S3a, S3b optional; 0/6 both models -> S3a dead, S3b (insert_geometry_scaffold, fully specified in the design) proceeds; exactly 1/6 -> one N=3 re-run then decide. advanced_geometry is the metric; sdf-only usage does NOT count toward the stop rule (sdf was already the one verb models use -- the treatment targets displaced/sweep).",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_s3a"
+}
