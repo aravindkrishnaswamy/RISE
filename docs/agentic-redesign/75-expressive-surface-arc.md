@@ -601,7 +601,24 @@ main checkout after any worktree agent.  Runs: gemini via
   the counter ACCUMULATES across rescued rounds, red-proofed by a
   simulated per-round-reset regression; round 3 clean, with every
   data claim above independently re-derived from the runDir archive).
-- **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
+- **2026-08-03 — presence_penalty A/B probe: NULL on the amplifier
+  hypothesis (0 events both arms); the artifact does not reproduce in
+  synthetic contexts.**  496 interleaved calls on qwen3.6:27b (8
+  mid-conversation agentic contexts × 31 repeats × {Modelfile default
+  pp=1.5, explicit pp=0}): degenerate turns 0/247 vs 0/248 — per-arm
+  rate bounded < 1.48% (95% CP) in these contexts, no arm comparison
+  possible.  Combined with the earlier 7-call pilot, 0 events in ~500
+  synthetic replays vs 0.29–2%/call in real sessions: the trigger
+  depends on something real sessions have that a replayed battery
+  lacks (accumulated multi-round context/server state), so further
+  chasing means replaying REAL harness sessions or waiting on the
+  upstream fix (ollama/ollama#10976) — the S3 qwen batch is the live
+  post-fix verification either way.  Secondary finding (paired,
+  same-context): the misapplied pp=1.5 default costs real compute
+  even absent the bug — ~18% more completion tokens and ~34% more
+  wall-time than pp=0 (A longer in 6/8 contexts, up to 2.0×).
+  Probe: scratchpad ppab_probe.py; data ppab_full_run1.jsonl (session
+  scratch, regenerable).
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
   (`AgentSession::InsertChunk` → `Job::ApplyCstInsertChunk` →
