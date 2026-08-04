@@ -965,6 +965,20 @@ first `point` is outside the body's radius at that height -- move it
 inward until it is buried, and confirm with a render, not with
 arithmetic.
 
+**A one-call alternative to the body profile above.**
+`insert_geometry_scaffold {family:"blended_vessel", name:"vessel1",
+size:1.0, detail:0.5, aspect:1.0}` expands a base/belly/rim roundcone
+`smin` chain plus the same flat-bottom `box subtract` into ONE
+`sdf_geometry` chunk (`tmpl_vessel1_vessel`) in a single call --
+`size` sets the base/belly radii, `aspect` elongates total height (a
+squat bowl at low aspect, a tall vase at high), `detail` is smin blend
+tightness (crisper joints as it rises toward 1, softer shoulders as it
+falls toward 0).  Point a `standard_object.geometry` at
+`tmpl_vessel1_vessel` exactly like `flask_body` above; the scaffold is
+geometry-only, so a swept neck (or any other hand-authored addition)
+still composes alongside it the same way Recipe 4's `spout` does, and
+you still wire the material and `standard_object` yourself.
+
 ## Recipe 5: a compact standalone sweep (no vessel)
 
 Recipe 4's sweep is scenario-glued to the flask's neck; this is the

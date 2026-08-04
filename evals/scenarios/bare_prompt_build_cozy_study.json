@@ -82,6 +82,16 @@
     },
     {
       "kind": "document",
+      "op": "chunk_name_prefix_count",
+      "//": "Arc-75 S3b.2 provenance metric. PURE metric, never gates (weight 0, min 0 passes vacuously, including on a document with zero geometry-scaffold calls -- these fixtures predate insert_geometry_scaffold, so this checkpoint reads 0 on both today by construction). Same tmpl_ convention as scaffold_expanded above, narrowed to category:'geometry' so it counts ONLY insert_geometry_scaffold's generated GEOMETRY chunks (box_geometry/sdf_geometry/sweep_geometry/displaced_geometry), not the whole expansion -- the geometry graph is 1-2 chunks per call, NOT 1-3: displaced_slab emits 3 tmpl_ chunks total but only 2 classify as category:'geometry' (box_geometry + displaced_geometry; its perlin2d_painter noise source is category:'painter' and is deliberately excluded here), while sweep_rail/blended_vessel/sdf_column each emit exactly 1 (sweep_geometry / sdf_geometry / sdf_geometry). Read this label TOGETHER with TWO others, never summed into either: scaffold_expanded above (which counts ALL tmpl_ chunks including materials/painters -- this label is the geometry-only subset of it) and advanced_geometry below (a scaffold-expanded sdf_geometry/sweep_geometry/displaced_geometry chunk satisfies advanced_geometry mechanically, since all four scaffold families terminate in one of those three kinds -- so a nonzero count here predicts a passing advanced_geometry, but advanced_geometry can also pass from hand-authored geometry with zero scaffold calls).",
+      "prefix": "tmpl_",
+      "category": "geometry",
+      "min": 0,
+      "weight": 0,
+      "metricLabel": "scaffold_geo_expanded"
+    },
+    {
+      "kind": "document",
       "op": "objects_reaching_kinds",
       "category": "painter",
       "exclude": [

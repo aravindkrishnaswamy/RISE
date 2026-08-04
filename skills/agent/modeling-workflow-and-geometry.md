@@ -313,6 +313,17 @@ directional_light
 }
 ```
 
+**A one-call alternative to the recipe above.**
+`insert_geometry_scaffold {family:"displaced_slab", name:"slab2",
+size:3.0, detail:0.4, aspect:1.0}` expands the same box + noise +
+`displaced_geometry` graph shown above into a single call instead of
+hand-typing the three chunks yourself -- returns `geometry`
+(`{name,kind}`) naming the one `displaced_geometry` chunk
+(`tmpl_slab2_disp`) to bind into a `standard_object.geometry` slot.
+Unlike `insert_material_scaffold`, this tool NEVER emits a material or
+a `standard_object` -- wire those yourself exactly as `pnt_slab` /
+`mat_slab` / `slab1` do above.
+
 **One override to "reach for the analytic primitives first": turned
 forms.**  If an object's silhouette is a solid of revolution -- bottle,
 jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,

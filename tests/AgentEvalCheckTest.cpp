@@ -7160,6 +7160,91 @@ static void TestChunkNamePrefixCountCheckpoint()
 		false, "chunk_name_prefix_count: unknown category name FAILS at check time" );
 }
 
+//----------------------------------------------------------------------
+// T-cnp-geo: Arc-75 slice S3b.2's red-proof for the scaffold_geo_expanded
+// scenario checkpoint (evals/scenarios/bare_prompt_build_courtyard.json
+// and bare_prompt_build_cozy_study.json).  That checkpoint is
+// {op:"chunk_name_prefix_count", prefix:"tmpl_", category:"geometry",
+// min:0, weight:0} -- the geometry-only SUBSET of scaffold_expanded's
+// unfiltered tmpl_ count, since insert_geometry_scaffold's expansions
+// mix GEOMETRY chunks (box_geometry/sdf_geometry/sweep_geometry/
+// displaced_geometry, category "geometry") with, for exactly one family
+// (displaced_slab), a PAINTER chunk (its perlin2d_painter noise source,
+// category "painter") under the SAME tmpl_ prefix.
+//
+// kChunkNamePrefixGeometryScene carries exactly TWO tmpl_-prefixed
+// chunks of DIFFERENT categories: tmpl_col1_geo (sdf_geometry,
+// category geometry) and tmpl_col1_bump (uniformcolor_painter, category
+// painter) -- modeling the displaced_slab split directly (one geometry
+// chunk, one painter chunk, same prefix).  This proves the exact
+// distinction the scenario comment makes: unfiltered prefix count is 2,
+// category:"geometry"-filtered count is 1 -- the two are NOT the same
+// number, so a reviewer cannot assume "geometry family used" from the
+// unfiltered scaffold_expanded label alone.
+//----------------------------------------------------------------------
+
+static const char* const kChunkNamePrefixGeometryScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat2\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_col1_bump\n\tcolor 0.4 0.35 0.3\n}\n\n"
+	"sdf_geometry\n{\n\tname tmpl_col1_geo\n\tpart\troundcone union 0  0 0 0  0 0 0  1 1 1  0.3 0.2 0.5  0.0\n\tmaxsteps 64\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat2\n\treflectance pnt_flat2\n}\n\n"
+	"box_geometry\n{\n\tname geo_b\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_b\n\tgeometry geo_b\n\tmaterial mat_flat2\n}\n";
+
+static void TestChunkNamePrefixCountGeometryCategoryRedProof()
+{
+	std::printf( "T-cnp-geo: Arc-75 S3b.2 red-proof -- category:'geometry' subsets the unfiltered tmpl_ count...\n" );
+	const std::string dir = ScratchRunDir( "t_cnp_geo_red_proof" );
+
+	AgentEvalScenario sBase = MakeScenario( "cnp_geo_base", kChunkNamePrefixGeometryScene, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( sBase, opts );
+	Check( h.result.terminalStatus == "final_text", "cnp_geo_base: run reached final_text" );
+	Check( h.dispatcher != nullptr, "cnp_geo_base: run has a live dispatcher" );
+
+	auto metricValueOf = [&]( const std::string& cpJson, const std::string& label ) -> double {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+		return ( r.checkpoints.size() == 1 ) ? r.checkpoints[0].metricValue : -1.0;
+	};
+
+	// Unfiltered: BOTH tmpl_-prefixed chunks count, across the two
+	// different kinds/categories -- 2 (the "scaffold_expanded" shape).
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]",
+			"cnp_geo: unfiltered metricValue" );
+		Check( mv == 2.0, "cnp_geo: unfiltered prefix count == 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category:"geometry": narrows to the ONE sdf_geometry chunk, excluding
+	// the tmpl_-prefixed uniformcolor_painter -- exactly the
+	// "scaffold_geo_expanded" shape the two bare_prompt scenarios use.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"geometry\",\"min\":0}]",
+			"cnp_geo: category:'geometry' metricValue" );
+		Check( mv == 1.0, "cnp_geo: category:'geometry'-filtered prefix count == 1, "
+			"NOT the same as the unfiltered 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category:"painter" is the complementary narrowing -- the ONE
+	// tmpl_-prefixed uniformcolor_painter, excluding the sdf_geometry.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"painter\",\"min\":0}]",
+			"cnp_geo: category:'painter' metricValue" );
+		Check( mv == 1.0, "cnp_geo: category:'painter'-filtered prefix count == 1, "
+			"the complementary half of the unfiltered 2 (got " + std::to_string( mv ) + ")" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -7205,6 +7290,7 @@ int main()
 	TestMaterialRichnessCheckpoints();
 	TestParamBindingCheckpoint();
 	TestChunkNamePrefixCountCheckpoint();
+	TestChunkNamePrefixCountGeometryCategoryRedProof();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 

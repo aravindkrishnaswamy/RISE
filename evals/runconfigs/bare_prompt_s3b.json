@@ -1,0 +1,13 @@
+{
+  "//": "Arc-75 S3b measurement, gemini instrument -- the arc's FINAL rung. Treatment vs bare_prompt_s3a: insert_geometry_scaffold exists (192f7a5c -- 16th chat tool) + one-call examples in 3 read-set skills + the scaffold_geo_expanded pure metric. Instrument: retry-once (unchanged since S3a). KILL RULES, pre-committed (S3 design, S2's transposed): (1) tool called in 0/6 build runs per model AND 0/6 on the other model -> snippets removed, tool judged on product merit, rung dead; (2) called-but-never-edited AND one family >80% of expansions -> ONE iteration, ONE re-measure, accept-or-revert; (3) success floor: called >=1x in >=2/6 runs per model with the expansion surviving to the final document AND wired into a standard_object (an unwired orphan expansion is reach without adoption -- census-verified). scaffold_geo_expanded counts scaffold-produced GEOMETRY chunks (1-3 per call by family); advanced_geometry will move mechanically when geometry scaffolds land -- census splits hand-vs-expansion; never sum labels.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_s3b"
+}

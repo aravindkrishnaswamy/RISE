@@ -94,6 +94,22 @@ wired painters as ordinary, editable chunks; point a
 `standard_object.material` at `tmpl_bowl1_mat` exactly like `mat_white`
 above.
 
+## A one-call alternative for turned geometry
+
+Hand-authoring a turned profile -- a chain of `sdf_geometry`
+`roundcone` parts joined by `smin` (see object-modeling-recipes' turned-
+vessel recipe) -- is the right verb but several lines of `part` math.
+`insert_geometry_scaffold` expands one of four family templates
+(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`) into
+that graph in a single call, e.g. `insert_geometry_scaffold
+{family:"sdf_column", name:"column1", size:1.0, detail:0.5,
+aspect:1.5}` -- this lands `tmpl_column1_col` (a single `sdf_geometry`
+base/shaft/capital `smin` chain, closed with the same flat-bottom cut)
+as an ordinary, editable chunk.  Unlike `insert_material_scaffold`,
+this tool never emits a material or a `standard_object` -- point a
+`standard_object.geometry` at `tmpl_column1_col` yourself, exactly like
+`sph` in the minimal scene above.
+
 ## Convention traps (each has caused real bugs)
 
 1. **`directional_light.direction` is FROM-surface-TO-light**, not the
