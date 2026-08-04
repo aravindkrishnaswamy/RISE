@@ -237,6 +237,18 @@ called no scaffold and hand-authored pbr+painter materials instead —
 possible delayed hand-authoring emergence, watch not credit.  qwen leg
 completes the verdict; 0/6 there → S3a dead, S3b proceeds per the
 standing instruction.
+
+**S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
+qwen: advanced_geometry 0.00 in all six build runs (no census needed —
+the document metric is the census for absence; even sdf, qwen's
+occasional verb, was absent).  Retry-once instrument note: zero
+provider_errors this batch (was 3/9), counterweight 66.7% —
+instrument working as intended.  The chunk-addition-copying hypothesis
+is now refuted alongside slot-override copying: across every rung, the
+predictive distinction is not the KIND of edit an example shows but
+whether adoption requires the model to COMPOSE anything — one-call
+structure moved (S2); everything compositional measured zero.
+S3b (insert_geometry_scaffold) proceeds.
 - **S3b** (structural; needs explicit user taste sign-off before detailed
   design): parametric scaffold expansion into editable sdf/sweep chunks.
   Same stop-rule shape as S2.
