@@ -264,6 +264,35 @@ emissive to CSG again) — the crash-fix diagnostic failing the run
 truthfully instead of segfaulting the harness, working as designed.
 qwen leg completes the verdict.
 
+**S3b VERDICT and ARC CLOSE (2026-08-04): PARTIAL BANK — the S2 shape,
+now measured twice and therefore a stable cross-model finding.**
+gemini: floor MET (3/6 called+wired), kill rules clear, first perfect
+group causally attributed → geometry scaffold + snippets BANKED.
+qwen: 0/6 both scaffolds; the S2 articulated-decline did NOT recur —
+5/6 never-engaged, 1/6 fleeting, zero coverage reasoning anywhere:
+there is no stable objection to iterate against; qwen's engagement
+with ANY optional surface is run-to-run unstable (bimodal output:
+one 6-painter-kind hand-authored run beside flat lambertian runs).
+The retry-once instrument recovered its one degenerate turn cleanly.
+**The mechanism law, final form:** models act on facts that BLOCK;
+advice moves nothing at any exposure (0/24); examples move copying
+only WITHIN existing authoring shapes (painter families, floor 1→3)
+— not across slot-typing or material-choice priors (S1 0/12) and not
+for chunk-addition (S3a 0/12); ONE-CALL STRUCTURE moves behavior by
+restructuring the cost landscape (S2, S3b) — and its adopters then
+EDIT the expansions (rebind, retune, discard-and-replace), keeping
+the ceiling open exactly as the scaffold-not-preset design argued.
+The measured boundary of the scaffold mechanism, on both models, is
+FAMILY COVERAGE — the named, unscheduled next lever.
+**Open items:** family breadth; sweep_rail/displaced_slab families
+never adopted (gemini used only the sdf families — a family-level
+adoption question); S3c sdf descriptor enrichment (parked); both
+scaffolds excluded from the propose-autonomy allowlist (product
+follow-up before GUI propose-mode users get them); Qt textual mirrors
+never compiled here; re-run the standing runconfigs when the model
+roster changes (the 74-arc's advice — a stronger local model may
+adopt where qwen did not).
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
