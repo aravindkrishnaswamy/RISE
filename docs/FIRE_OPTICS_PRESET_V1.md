@@ -81,7 +81,11 @@ exactly by the E(m) formula. The C&C *table* gives E(632.8) = 0.228, **12 %
 below** the fixture: a dataset difference, flagged, not an implementation
 error and not tuned away.
 
-### 1.4 Magnitude conflict — the owner decision this record cannot make
+### 1.4 Magnitude conflict — RESOLVED by owner decision, 2026-08-05 (see §1.5)
+
+The analysis below is retained as the decision's evidence base. **Decision:
+modified option (b)** — C&C spectral shape, normalized to measured mass
+absorption; raw C&C not adopted unchanged; no visible/IR splice.
 
 Modern consensus E(m) in the visible is **0.32–0.40** (Liu, Yon, Fuentes,
 Lobo, Smallwood, Corbin 2020, *Aerosol Sci. Tech.* 54:33–51: measured
@@ -111,6 +115,77 @@ Adopting C&C as-is under-predicts visible soot absorption/emission by
 
 The E(m) choice is shared with the sim via C₀ = 6πE(m) (§3.5) and carried in
 §8 metadata — whichever option is taken applies to both sides.
+
+### 1.5 The frozen form (owner decision, 2026-08-05) — `mac_equivalent_E`
+
+> **E_eff(λ) = 0.42017 · E_CC(λ) / E_CC(550 nm)**, pinned density 1.8 g/cm³.
+
+The normalization corresponds to **MAC(550) = 8.0 m²/g** — Liu et al. 2020's
+central value (8.0 ± 0.7 from ten direct measurements; full text verified by
+the owner via the NRC-Canada repository), statistically compatible with
+B&B's 7.5 ± 1.2. All arithmetic re-verified this session:
+E_CC(550) = 0.2382, factor = 1.7638, E_eff(632.8) = 0.4017,
+**MAC(632.8) = 6.647 m²/g — within +2.0 % of the independently derived
+cool-carbon absorption 6.52** (treated as corroboration, not tuned against;
+it makes the φ(T) hot↔cool transition near-continuous in absorption).
+Machine-readable record with the full 81-row [λ, E_eff, MAC] table:
+[fire_optics_mac_equivalent_e.draft.json](data/fire_optics_mac_equivalent_e.draft.json).
+
+**Semantics**: the quantity is named `mac_equivalent_E` /
+`effective_absorption_function`, *not* an unqualified index-derived E(m) —
+RISE's Rayleigh expression applies no separate aggregate-interaction
+correction, so the effective value must absorb everything needed to
+reproduce measured absorption per transported soot mass. (Liu's E > 0.32
+lower bound is therefore not the runtime central value; it presumes
+optical-model corrections RISE does not apply.) **MAC(λ) is the normative
+quantity**; E_eff is derived via the pinned density, and density + table
+live in one hashed payload so a later density change cannot silently change
+radiance.
+
+**Corrections to §1.4's argument, adopted with the decision:**
+
+- *Simulator coupling was overstated* (verified against §3.5): in the
+  burning β-branch, q̇‴_rad = β·e with β = χ_r·Q̇_tot/Σe·V, so total
+  radiative loss is pinned at χ_r·Q̇ and a uniform opacity rescale cancels
+  through β. E still affects the spatial allocation of cooling, the
+  constituent shares, the β ≤ 1 admissibility/optical thickness, the
+  implicit local temperature update, and the post-fire γ branch — but not
+  the burning-branch global loss. "Low E → sim runs hotter" is not
+  generally true for this design.
+- *Forestieri scope*: the 9.1/7.1 m²/g plateau describes larger mature soot
+  (≳160 nm) — it anchors the mass-to-absorption normalization, not young
+  in-flame soot per se. Its nascent-soot AAE 1.38 ± 0.36 is compatible with
+  the C&C visible shape — newly computed corroboration: **the C&C shape's
+  own visible AAE (380–780 nm) is 1.377**.
+- *Constant-E error*: §1.4's "E = 0.39 gives MAC(633) ≈ 6.5" assumed
+  constant E; preserving the declining C&C shape at that normalization
+  gives 6.17 (verified). The 8.0 m²/g normalization gives 6.647 and is what
+  produces the near-continuous hot/cool transition.
+- *C&C primary now read* (owner full-text access): measurements cover
+  0.2–6.4 µm; the fitted expressions are intended for 0.4–30 µm; the fit
+  agrees with the KK-inferred indices on average ~5 % in n, ~6 % in k.
+  This closes the range/fit question; the > 6.4 µm portion remains a
+  KK-constrained fit, not an independently measured absolute spectrum.
+
+**Qualification**: one nominal record, no selectable "conservative" scene
+variants. Uncertainty components recorded separately: visible normalization
+±16 % (conservative, covers the B&B ensemble); C&C fit/shape ~5–6 %; a
+larger explicit model-form uncertainty on the unmeasured long-wave
+extension; applicability = population-averaged hot-carbon closure (not a
+material constant, not a maturity model).
+
+**Gates**: (1) MAC(550) = 8.0 and the derived 6.647 at 632.8 nm; (2) C&C
+visible shape anchors (E ratio 1.311 over 380/780; AAE 1.377); (3)
+independent numerical Planck means and derivatives over the full certified
+T range; (4) β ≤ 1 feasibility, spatial cooling redistribution, and
+post-fire sensitivity across the uncertainty envelope; (5) the eventual
+§12-item-4 absolute flame-radiance dataset as independent validation —
+never a hidden one-point refit.
+
+**Ablations**: raw C&C and Dalzell–Sarofim stay as named
+ablation/regression records; neither remains the Phase-C predictive
+default. (Phase-A's analytic E = 0.26 fixture stays a non-predictive
+fixture per §12.)
 
 ---
 
@@ -322,9 +397,9 @@ three ways), cool-carbon k_m/ω/n (anchor check passes to < 1 %), condensed
 organics k_m/ω/g/n (validated against Reid's independent targets), and the
 total-anchor consistency for wood-class flaming smoke.
 
-**Owner decisions required**: (1) E(m) magnitude vs shape (§1.4 — the
-single biggest physical choice; ~40 % of visible soot emission rides on
-it); (2) young-soot d_p acceptance from lead-only sources or a library pull
+**Owner decisions required**: (1) ~~E(m) magnitude vs shape~~ **DECIDED
+2026-08-05** (§1.5: `mac_equivalent_E`, C&C shape normalized to
+MAC(550) = 8.0 m²/g); (2) young-soot d_p acceptance from lead-only sources or a library pull
 (§2.3); (3) g_hot: accept the computed 0.2–0.3 for in-flame soot or keep
 0.5 knowing it describes mature aggregates (§2.4); (4) condensed-organics
 fresh-vs-aged applicability statement and IR closure (§4.4).

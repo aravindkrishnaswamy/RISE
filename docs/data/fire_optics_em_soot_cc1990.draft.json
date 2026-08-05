@@ -21,13 +21,13 @@
   "k": "0.5821 + 0.1213*ln(L) + 0.2309*ln(L)^2 - 0.0100*ln(L)^3, L in micrometres",
   "n": "1.811 + 0.1263*ln(L) + 0.0270*ln(L)^2 + 0.0417*ln(L)^3, L in micrometres"
  },
- "draft_record_id_sha256_of_payload": "8792af05f37335f11661e88bab57bf7b02c089b406277361a007b1e7d42d4fce",
+ "draft_record_id_sha256_of_payload": "14aee0ca0b9e01ccd3dbaf9e3c457168188c408222ef17c45470c2b7176cea97",
  "experimental_basis": {
   "caveats": "Spherical-particle assumption; C&C themselves label the result an 'effective' refractive index (Moteki 2023 p.3). Known fit-vs-tabulated discrepancy: widely quoted C&C point value 1.77-0.63i @540nm does not equal the fit's 1.73-0.59i @540nm; unresolved without primary.",
   "flame": "premixed propane-oxygen flat flame, equivalence ratio 1.8 (Bond & Bergstrom 2006 Table 4; ADS abstract)",
   "technique": "in-situ spectral extinction 0.2-6.4 um + dynamic light scattering at 0.488 um, inverted via Kramers-Kronig (Zhu 2002; Moteki 2023)"
  },
- "fit_validity_provenance": "SECONDARY ONLY (Thermopedia soot article et al.); the >6.4 um portion is a Kramers-Kronig extrapolation. Primary verification required before SS3.5 integrates it as the long-wave extension SS12 Q2 demands. 0.2-0.4 um is excluded from fit validity.",
+ "fit_validity_provenance": "PRIMARY-VERIFIED (owner full-text read, 2026-08-05, via ResearchGate copy): measurements cover 0.2-6.4um; fitted expressions intended for 0.4-30um; fit agrees with KK-inferred indices on average ~5% in n and ~6% in k. The >6.4um portion remains a KK-constrained fit, not an independently measured absolute spectrum.",
  "fit_validity_range_um": [
   0.4,
   30.0
@@ -39,13 +39,11 @@
  ],
  "openly_hosted": false,
  "owner_actions": [
-  "library pull of primary (uncertainty, fit-validity claim, tabulated values)",
-  "decide C&C-as-is vs shape-plus-rescale vs modern-consensus-constant",
-  "verify >6.4um KK extension against primary before SS3.5 use"
+  "RESOLVED 2026-08-05: primary read; predictive default decided as MAC-normalized shape (see fire_optics_mac_equivalent_e.draft.json)"
  ],
  "record_kind": "soot_Em_table",
  "record_name": "soot-em-chang-charalampopoulos-1990",
- "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "record_status": "NAMED_ABLATION_REGRESSION_RECORD__NOT_PREDICTIVE_DEFAULT (owner decision 2026-08-05; predictive default is fire_optics_mac_equivalent_e)",
  "schema_version": "draft-1",
  "table": {
   "columns": [
@@ -626,6 +624,6 @@
   ],
   "step_nm": 5
  },
- "uncertainty": "NOT RECOVERABLE without the primary paper. The paper contains a sensitivity discussion (per its abstract) but no accessible source reproduces numeric uncertainties on n,k. OWNER ACTION: library pull of the primary.",
+ "uncertainty": "Fit-vs-KK agreement ~5% (n), ~6% (k) - primary-verified 2026-08-05. Absolute measurement uncertainty on the underlying extinction data: see primary error discussion.",
  "version": "v1-draft"
 }

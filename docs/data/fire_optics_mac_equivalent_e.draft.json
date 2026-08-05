@@ -1,0 +1,469 @@
+{
+ "ablation_records": "Raw C&C 1990 (fire_optics_em_soot_cc1990.draft.json) and Dalzell-Sarofim E=0.2595 (m=1.57-0.56i) remain NAMED ablation/regression records; neither is the Phase-C predictive default. The Phase-A analytic fixture E=0.26 remains a non-predictive fixture per SS12.",
+ "anchors_verified": {
+  "AAE_corroboration": "Forestieri et al. 2018 nascent-soot AAE 1.38 +/- 0.36 (ACP 18:12141) - C&C shape is compatible with measured nascent-soot spectral slope",
+  "E_eff_550": 0.42017,
+  "E_eff_632.8": 0.4017,
+  "MAC_632.8_m2_per_g": 6.647,
+  "cool_carbon_MAC_633_corroboration": "6.647 vs independently derived 6.517 (B&B 7.5*(550/633)): +2.0%. Treated as CORROBORATION, not tuned against. Makes the phi(T) hot<->cool transition near-continuous in absorption.",
+  "visible_AAE_380_780": 1.377
+ },
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact bytes. Density and table are ONE payload by construction so a later density change cannot silently change radiance.",
+ "compiled": "2026-08-05",
+ "definition": {
+  "E_CC_550": 0.2382,
+  "E_CC_source": "Chang & Charalampopoulos 1990 dispersion (see fire_optics_em_soot_cc1990.draft.json for formulas/provenance)",
+  "density_source": "Bond & Bergstrom 2006 SS9.2 p.58 (measured 1.7-1.9)",
+  "form": "E_eff(lambda) = 0.42017 * E_CC(lambda)/E_CC(550nm)",
+  "normalization_factor": 1.7638,
+  "normalization_target": {
+   "MAC_550nm_m2_per_g": 8.0,
+   "compatible_with": "Bond & Bergstrom 2006: 7.5 +/- 1.2 (1-sigma, 17-study ensemble) - statistically compatible",
+   "primary": "Liu, Yon, Fuentes, Lobo, Smallwood, Corbin 2020, Aerosol Sci. Tech. 54:33-51: 8.0 +/- 0.7 from ten direct measurements (full text verified by owner via NRC-Canada repository)"
+  },
+  "pinned_density_g_cm3": 1.8
+ },
+ "derived_quantity": "E_eff(lambda) = MAC(lambda)*rho_soot*lambda/(6*pi), with the pinned density below",
+ "design_note_corrections": [
+  "Simulator coupling correction (owner, 2026-08-05, verified against SS3.5 text): in the burning beta-branch, q_rad = beta*e with beta = chi_r*Qdot_tot/Sum(e*V), so total radiative loss is pinned at chi_r*Qdot and a uniform opacity rescale cancels through beta. E affects spatial allocation of cooling, constituent shares, beta<=1 admissibility/optical thickness, the implicit local T update, and the post-fire gamma branch - NOT the global burning-branch loss.",
+  "Forestieri scope: the 9.1/7.1 m2/g plateau describes larger mature soot (>~160nm); maturity dependence is explicit in that paper. It anchors the mass-to-absorption normalization, not young-soot optics per se."
+ ],
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "3fe2c162a9c3164e44e9907e6260ef23b872583a9bddf25d8f83f4f3044dcc55",
+ "normative_quantity": "MAC_lambda_m2_per_g",
+ "quantity_name": "mac_equivalent_E (effective_absorption_function)",
+ "quantity_semantics": "NOT an unqualified refractive-index-derived E(m). Population-averaged hot-carbon effective absorption closure: incorporates everything needed to reproduce measured absorption per transported soot mass through the renderer's simple Rayleigh expression sigma_a = 6*pi*E_eff*f_v/lambda, which applies no separate aggregate-interaction correction. Not a universal soot material constant; not a soot-maturity model. Liu et al.'s E>0.32 lower bound is NOT the runtime central value for exactly this reason (it assumes optical-model corrections RISE does not apply).",
+ "record_kind": "soot_effective_absorption_function",
+ "record_name": "soot-mac-equivalent-e-v1",
+ "record_status": "OWNER_DECISION_TAKEN_2026-08-05__PENDING_DESIGN_LOOP_ADOPTION",
+ "schema_version": "draft-2",
+ "table": {
+  "columns": [
+   "lambda_nm",
+   "E_eff",
+   "MAC_m2_per_g"
+  ],
+  "rows": [
+   [
+    380,
+    0.507169,
+    13.9765
+   ],
+   [
+    385,
+    0.503051,
+    13.683
+   ],
+   [
+    390,
+    0.499067,
+    13.4006
+   ],
+   [
+    395,
+    0.495211,
+    13.1287
+   ],
+   [
+    400,
+    0.491479,
+    12.8669
+   ],
+   [
+    405,
+    0.487866,
+    12.6146
+   ],
+   [
+    410,
+    0.484367,
+    12.3714
+   ],
+   [
+    415,
+    0.480979,
+    12.1369
+   ],
+   [
+    420,
+    0.477697,
+    11.9105
+   ],
+   [
+    425,
+    0.474517,
+    11.6921
+   ],
+   [
+    430,
+    0.471437,
+    11.4811
+   ],
+   [
+    435,
+    0.468453,
+    11.2773
+   ],
+   [
+    440,
+    0.465561,
+    11.0803
+   ],
+   [
+    445,
+    0.462759,
+    10.8899
+   ],
+   [
+    450,
+    0.460043,
+    10.7057
+   ],
+   [
+    455,
+    0.45741,
+    10.5274
+   ],
+   [
+    460,
+    0.454858,
+    10.3549
+   ],
+   [
+    465,
+    0.452384,
+    10.1878
+   ],
+   [
+    470,
+    0.449985,
+    10.026
+   ],
+   [
+    475,
+    0.447659,
+    9.8692
+   ],
+   [
+    480,
+    0.445405,
+    9.7172
+   ],
+   [
+    485,
+    0.443219,
+    9.5698
+   ],
+   [
+    490,
+    0.441099,
+    9.4269
+   ],
+   [
+    495,
+    0.439044,
+    9.2882
+   ],
+   [
+    500,
+    0.437051,
+    9.1536
+   ],
+   [
+    505,
+    0.435118,
+    9.0229
+   ],
+   [
+    510,
+    0.433245,
+    8.8959
+   ],
+   [
+    515,
+    0.431428,
+    8.7726
+   ],
+   [
+    520,
+    0.429666,
+    8.6528
+   ],
+   [
+    525,
+    0.427958,
+    8.5363
+   ],
+   [
+    530,
+    0.426302,
+    8.4231
+   ],
+   [
+    535,
+    0.424697,
+    8.3129
+   ],
+   [
+    540,
+    0.42314,
+    8.2058
+   ],
+   [
+    545,
+    0.421631,
+    8.1015
+   ],
+   [
+    550,
+    0.420169,
+    8.0
+   ],
+   [
+    555,
+    0.418752,
+    7.9012
+   ],
+   [
+    560,
+    0.417378,
+    7.805
+   ],
+   [
+    565,
+    0.416047,
+    7.7112
+   ],
+   [
+    570,
+    0.414757,
+    7.6199
+   ],
+   [
+    575,
+    0.413508,
+    7.5309
+   ],
+   [
+    580,
+    0.412297,
+    7.4441
+   ],
+   [
+    585,
+    0.411125,
+    7.3595
+   ],
+   [
+    590,
+    0.40999,
+    7.277
+   ],
+   [
+    595,
+    0.408891,
+    7.1965
+   ],
+   [
+    600,
+    0.407827,
+    7.1179
+   ],
+   [
+    605,
+    0.406797,
+    7.0413
+   ],
+   [
+    610,
+    0.4058,
+    6.9664
+   ],
+   [
+    615,
+    0.404836,
+    6.8934
+   ],
+   [
+    620,
+    0.403904,
+    6.822
+   ],
+   [
+    625,
+    0.403002,
+    6.7524
+   ],
+   [
+    630,
+    0.40213,
+    6.6843
+   ],
+   [
+    635,
+    0.401288,
+    6.6178
+   ],
+   [
+    640,
+    0.400473,
+    6.5527
+   ],
+   [
+    645,
+    0.399687,
+    6.4892
+   ],
+   [
+    650,
+    0.398928,
+    6.427
+   ],
+   [
+    655,
+    0.398195,
+    6.3662
+   ],
+   [
+    660,
+    0.397488,
+    6.3068
+   ],
+   [
+    665,
+    0.396806,
+    6.2486
+   ],
+   [
+    670,
+    0.396149,
+    6.1917
+   ],
+   [
+    675,
+    0.395515,
+    6.136
+   ],
+   [
+    680,
+    0.394905,
+    6.0815
+   ],
+   [
+    685,
+    0.394317,
+    6.0281
+   ],
+   [
+    690,
+    0.393752,
+    5.9759
+   ],
+   [
+    695,
+    0.393208,
+    5.9247
+   ],
+   [
+    700,
+    0.392686,
+    5.8746
+   ],
+   [
+    705,
+    0.392184,
+    5.8254
+   ],
+   [
+    710,
+    0.391702,
+    5.7773
+   ],
+   [
+    715,
+    0.39124,
+    5.7302
+   ],
+   [
+    720,
+    0.390798,
+    5.6839
+   ],
+   [
+    725,
+    0.390374,
+    5.6386
+   ],
+   [
+    730,
+    0.389968,
+    5.5942
+   ],
+   [
+    735,
+    0.38958,
+    5.5506
+   ],
+   [
+    740,
+    0.38921,
+    5.5078
+   ],
+   [
+    745,
+    0.388857,
+    5.4659
+   ],
+   [
+    750,
+    0.38852,
+    5.4248
+   ],
+   [
+    755,
+    0.3882,
+    5.3844
+   ],
+   [
+    760,
+    0.387896,
+    5.3448
+   ],
+   [
+    765,
+    0.387607,
+    5.3059
+   ],
+   [
+    770,
+    0.387334,
+    5.2677
+   ],
+   [
+    775,
+    0.387075,
+    5.2302
+   ],
+   [
+    780,
+    0.386831,
+    5.1934
+   ]
+  ],
+  "step_nm": 5
+ },
+ "uncertainty_components": {
+  "applicability": "population-averaged hot-carbon closure (see quantity_semantics)",
+  "cc_spectral_shape_fit": "C&C primary (read 2026-08-05): fit agrees with KK-inferred indices on average ~5% in n, ~6% in k over 0.4-30um",
+  "long_wave_extension": "LARGER EXPLICIT MODEL-FORM UNCERTAINTY: >6.4um is C&C's KK-constrained fit intent, not an independently measured absolute spectrum; the normalization transfer to IR assumes lambda-independent magnitude correction (unverifiable)",
+  "visible_normalization": "+/-16% (conservative; covers the Bond-Bergstrom ensemble; Liu's own is +/-0.7/8.0 = 8.8%)"
+ },
+ "validation_gates": [
+  "G1: MAC(550) = 8.0 m2/g exact by construction; MAC(632.8) = 6.647 m2/g derived - both asserted numerically at record load",
+  "G2: C&C visible shape anchors: E_eff(380)/E_eff(780) = 1.311; visible AAE(380-780) = 1.377 (Forestieri-compatible)",
+  "G3: independent numerical Planck means kappa_P(T) and their derivatives over the complete certified temperature range (SS3.5), cross-implemented",
+  "G4: sim-side: beta<=1 feasibility, spatial cooling redistribution, and post-fire (gamma-branch) sensitivity across the uncertainty envelope - NOTE the burning-branch global loss is pinned to chi_r*Qdot by beta, so uniform magnitude error cancels there; the gates target what does NOT cancel",
+  "G5: the eventual SS12-item-4 absolute flame-radiance dataset is VALIDATION, selected independently - never a hidden one-point refit"
+ ],
+ "version": "v1-draft"
+}
