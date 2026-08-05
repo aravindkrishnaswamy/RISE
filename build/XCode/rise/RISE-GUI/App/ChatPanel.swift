@@ -1038,7 +1038,7 @@ struct ChatSettingsView: View {
                         // provider switch is exactly the shipped 404 bug (local
                         // "qwen3.6:27b" sent to the Google API).  Clear the field
                         // on switch so the provider's own default applies.
-                        .onChange(of: triageProviderRaw) { _ in
+                        .onChange(of: triageProviderRaw) { _, _ in
                             triageModel = ""
                         }
 

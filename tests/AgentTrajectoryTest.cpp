@@ -654,6 +654,116 @@ static void TestRotation()
 }
 
 //----------------------------------------------------------------------
+// E8: RecordAuxiliaryHttpRound -- Mac GUI prompt-triage HTTP round-trip
+// recorded into the MAIN session's trajectory as a purpose-tagged `llm`
+// record, closing runTriage's documented "KNOWN v1 GAP".
+//----------------------------------------------------------------------
+static void TestAuxiliaryHttpRound()
+{
+	std::printf( "E8: RecordAuxiliaryHttpRound (GUI prompt-triage aux record)...\n" );
+
+	std::shared_ptr<std::vector<std::string> > lines =
+		std::make_shared<std::vector<std::string> >();
+	std::function<void(const std::string&)> sink =
+		[lines]( const std::string& l ) { lines->push_back( l ); };
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.SetContextBudget( 150000, 75000 );   // exercise a non-trivial budget window
+	ChatTrajectoryConfig cfg;
+	cfg.traceId = "trace-aux";
+	cfg.clock = MakeCounterClock( 1000 );
+	loop.SetTrajectorySink( sink, cfg );
+
+	// A normal main-turn round first, so the summary has a genuine
+	// main-conversation baseline to compare the aux round against.
+	loop.AddUserMessage( "Make it red" );
+	const std::string mainBody =
+		"{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\","
+		"\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\","
+		"\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
+	loop.BuildRequest( kApiKey );
+	loop.RecordHttpRound( 200, mainBody, 111 );
+	loop.HandleResponse( 200, mainBody );
+
+	// --- state-isolation snapshot, BEFORE the aux call ---
+	const std::size_t transcriptBefore = loop.TranscriptSize();
+	const std::size_t compactedBefore  = loop.CompactedEntryCount();
+	const std::size_t noteCountBefore  = loop.DriverNoteCount();
+	const std::size_t budgetHighBefore = loop.ContextBudgetHigh();
+	const std::size_t budgetLowBefore  = loop.ContextBudgetLow();
+	const std::size_t estTokensBefore  = loop.EstimateContextTokens();
+	const std::size_t linesBefore      = lines->size();
+
+	// The aux request/response bodies MALICIOUSLY embed the same fake key
+	// the redaction red-prove in TestRedactionRedProve exercises via the
+	// header path -- here it rides in the BODY text, so this is a second,
+	// independent proof that the regex pass (not the header strip) is
+	// what protects an auxiliary round.
+	const std::string auxReqBody =
+		std::string( "{\"model\":\"qwen3.6:27b\",\"key_leak\":\"" ) + kApiKey + "\"}";
+	const std::string auxRespBody =
+		std::string( "{\"error\":{\"message\":\"model not found, key was " ) + kApiKey + "\"}}";
+
+	loop.RecordAuxiliaryHttpRound( "triage", "https://example.com/v1/models/qwen:generate",
+	                               auxReqBody, 404, auxRespBody, 77 );
+
+	// --- state-isolation snapshot, AFTER the aux call ---
+	Check( loop.TranscriptSize() == transcriptBefore, "aux round does not touch mTranscript" );
+	Check( loop.CompactedEntryCount() == compactedBefore, "aux round does not touch compaction count" );
+	Check( loop.DriverNoteCount() == noteCountBefore, "aux round does not touch driver-note count" );
+	Check( loop.ContextBudgetHigh() == budgetHighBefore, "aux round does not touch the budget high-water" );
+	Check( loop.ContextBudgetLow() == budgetLowBefore, "aux round does not touch the budget low-water" );
+	Check( loop.EstimateContextTokens() == estTokensBefore,
+	       "aux round does not move the context-token estimate (no transcript growth)" );
+
+	// --- exactly one new record, correctly shaped ---
+	Check( lines->size() == linesBefore + 1, "RecordAuxiliaryHttpRound emits exactly one record" );
+	JsonValue aux = Parse( lines->back() );
+	Check( aux.get( "run_type" ).asString() == "llm", "aux record run_type is llm" );
+	Check( aux.get( "purpose" ).asString() == "triage", "aux record carries purpose:triage" );
+	Check( aux.get( "trace_id" ).asString() == "trace-aux",
+	       "aux record shares the MAIN session's trace_id (same trajectory)" );
+	Check( aux.get( "http.status" ).asNumber() == 404.0, "aux record carries the mechanical-failure status" );
+	Check( aux.get( "latency_ms" ).asNumber() == 77.0, "aux record carries elapsed_ms" );
+	Check( aux.get( "request_params" ).get( "url" ).asString() ==
+	       "https://example.com/v1/models/qwen:generate", "aux record carries the URL" );
+	Check( aux.get( "gen_ai.request.model" ).asString() == "qwen3.6:27b",
+	       "aux record best-effort parses the request model" );
+
+	// --- redaction red-prove: the fake key is in NEITHER body, ANYWHERE ---
+	bool rawKeyAnywhere = false;
+	for( std::size_t i = linesBefore; i < lines->size(); ++i )
+		if( ( *lines )[i].find( kApiKey ) != std::string::npos ) rawKeyAnywhere = true;
+	Check( !rawKeyAnywhere, "the fake key embedded in the aux request/response body never reaches disk" );
+	Check( aux.get( "response_body" ).asString().find( "[REDACTED]" ) != std::string::npos,
+	       "the aux response_body's key occurrence is redacted in place" );
+
+	// --- summary-line honesty: the aux round is excluded from the rollup ---
+	loop.FinishTrajectory( "closed" );
+	JsonValue summary = Parse( lines->back() );
+	Check( summary.get( "run_type" ).asString() == "summary", "final record is the summary" );
+	Check( summary.get( "total_latency_ms" ).asNumber() == 111.0,
+	       "summary total_latency_ms is the MAIN round's 111ms only -- the aux round's 77ms is excluded" );
+	Check( summary.get( "gen_ai.usage.input_tokens" ).asNumber() == 50.0,
+	       "summary input-token total unaffected by the aux round (which carries no usage)" );
+	Check( summary.get( "gen_ai.usage.output_tokens" ).asNumber() == 10.0,
+	       "summary output-token total unaffected by the aux round" );
+	Check( summary.get( "n_turns" ).asNumber() == 1.0, "summary n_turns counts the one real user turn only" );
+
+	// --- no-op when no sink is attached ---
+	{
+		AgentChatLoop bare;
+		bare.SetProvider( ChatProvider::Anthropic );
+		// No SetTrajectorySink call: TrajectoryActive() is false.
+		Check( !bare.TrajectoryActive(), "precondition: a fresh loop has no active trajectory" );
+		bare.RecordAuxiliaryHttpRound( "triage", "https://x", "{}", 200, "{}", 5 );
+		// Nothing to assert on directly (no sink to inspect) beyond "did
+		// not crash" -- covered by simply reaching this line.
+	}
+}
+
+//----------------------------------------------------------------------
 // Review-round P2: "recording never disrupts the chat" must hold for ANY
 // sink -- a throwing sink is swallowed and recording is disabled for the
 // rest of the session (the sink is dropped after the first throw).
@@ -695,6 +805,7 @@ int main()
 	TestHistoryEditRecords();
 	TestRedactionRedProve();
 	TestRotation();
+	TestAuxiliaryHttpRound();
 	RunThrowingSinkTest();
 	std::printf( "=== AgentTrajectoryTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

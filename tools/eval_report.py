@@ -1373,9 +1373,19 @@ def cmd_diff(args):
         print()
 
     # Explicit high-signal comparisons.
-    a_llm_rounds = sum(1 for r in a_records if r.get("run_type") == "llm")
-    b_llm_rounds = sum(1 for r in b_records if r.get("run_type") == "llm")
-    print(f"llm rounds: A={a_llm_rounds} B={b_llm_rounds}"
+    # purpose-tagged records (e.g. the GUI's triage pre-pass) are auxiliary
+    # rounds, not main-turn LLM calls -- count them separately so the
+    # headline round count stays comparable across GUI and headless runs.
+    a_llm_rounds = sum(1 for r in a_records
+                       if r.get("run_type") == "llm" and not r.get("purpose"))
+    b_llm_rounds = sum(1 for r in b_records
+                       if r.get("run_type") == "llm" and not r.get("purpose"))
+    a_aux = sum(1 for r in a_records
+                if r.get("run_type") == "llm" and r.get("purpose"))
+    b_aux = sum(1 for r in b_records
+                if r.get("run_type") == "llm" and r.get("purpose"))
+    aux_note = f" (aux: A={a_aux} B={b_aux})" if (a_aux or b_aux) else ""
+    print(f"llm rounds: A={a_llm_rounds} B={b_llm_rounds}{aux_note}"
           + ("  <-- DIFFERS" if a_llm_rounds != b_llm_rounds else ""))
 
     a_summary = next((r for r in reversed(a_records) if r.get("run_type") == "summary"), None)

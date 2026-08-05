@@ -2112,6 +2112,51 @@ namespace RISE
 			RecordHttpRound( mLastRequest, httpStatus, rawBody, elapsedMs, attempt, retryOf );
 		}
 
+		void AgentChatLoop::RecordAuxiliaryHttpRound(
+			const std::string& purpose, const std::string& url,
+			const std::string& requestBodySansAuth,
+			long httpStatus, const std::string& responseBody, int64_t elapsedMs )
+		{
+			if( !mRecorder ) return;
+			EnsureSessionRecordEmitted();
+
+			TrajectoryLlmRecord rec;
+			rec.purpose = purpose;
+			// Provider-agnostic best-effort model sniff (a raw JSON parse
+			// checking "model"/"modelVersion" -- no mCodec involved, since
+			// the auxiliary round's provider need not be this loop's).
+			rec.requestModel = ExtractResponseModel( requestBodySansAuth );
+			rec.responseModel = ExtractResponseModel( responseBody );
+			// Reuse the same "strip the big arrays" helper the main path
+			// uses (also provider-agnostic), then fold in the URL -- the
+			// ONE piece of forensic context this call carries that the main
+			// `llm` record has no field for (e.g. it is what shows which
+			// model a Gemini-shaped path-embedded-model URL actually hit).
+			JsonValue params;
+			std::string perr;
+			std::string paramsJson = ExtractRequestParams( requestBodySansAuth );
+			if( !JsonParse( paramsJson, params, perr ) || !params.isObject() )
+				params = JsonValue::MakeObject();
+			params.set( "url", JsonValue::MakeString( url ) );
+			rec.requestParamsJson = JsonSerialize( params );
+			// No headers parameter exists on this call BY DESIGN -- the
+			// driver never hands this loop any header list to strip, so
+			// there is nothing to carry (and nothing that could leak).
+			rec.requestHeadersJson = "{}";
+			rec.httpStatus = httpStatus;
+			rec.latencyMs = elapsedMs;
+			// Usage/finish-reasons stay at their documented "absent"
+			// defaults (-1 / empty) -- this loop's mCodec parses ONE
+			// provider's wire shape, and an auxiliary round's provider need
+			// not match it; a wrong-codec guess would look authoritative
+			// and be silently misleading.  The verbatim response body below
+			// is the honest replacement: full forensic detail, no guess.
+			rec.attempt = 1;
+			rec.retryOf = -1;
+			rec.responseBody = responseBody;
+			mRecorder->EmitLlm( rec );
+		}
+
 		void AgentChatLoop::FinishTrajectory( const std::string& status )
 		{
 			CloseTrajectorySession( status );

@@ -2727,15 +2727,26 @@ final class ChatViewModel: ObservableObject {
     /// transcript and on the wire).  A `.notice` row ("Triage added
     /// context") follows.
     ///
-    /// KNOWN v1 GAP: the triage bridge has NO trajectory sink configured
-    /// (it is a throwaway instance, never `startTrajectory`'d), so this
-    /// one HTTP round-trip is NOT recorded to the eval-harness JSONL log
-    /// — only the MAIN turn is (automatic: whatever composed text this
-    /// function hands to `chatBridge.addUserMessage` is what the main
-    /// bridge's own `user` trajectory record captures, and
-    /// ComposeSystemPrompt on that side is unaffected by the triage
-    /// bridge's override — the two bridges are fully independent
-    /// objects).
+    /// TRAJECTORY RECORDING (v1 gap closed): the triage bridge itself has
+    /// NO trajectory sink configured (it stays a throwaway instance, never
+    /// `startTrajectory`'d) — but the triage HTTP round-trip is no longer
+    /// invisible to the eval harness. As soon as the round completes
+    /// (success OR a mechanical failure — network error, timeout, a
+    /// wrong-model 404, anything), this function calls
+    /// `chatBridge.recordAuxiliaryHttpRound(purpose: "triage", ...)` on the
+    /// MAIN bridge (the one with the active sink), which lands the round
+    /// in the MAIN SESSION'S trajectory — same trace_id, same JSONL file —
+    /// as a `purpose:"triage"` `llm` record. The request body passed is
+    /// SANS AUTH: this function never hands headers to that call, only
+    /// url + body + status + response body + elapsed. The record is
+    /// EXCLUDED from the trajectory summary's rollup totals (it is not
+    /// part of the main conversation's cost), so the eval harness keeps
+    /// reading a summary line that describes only the main turns. Whatever
+    /// composed text this function eventually hands to
+    /// `chatBridge.addUserMessage` is, separately and as before, what the
+    /// main bridge's own `user` trajectory record captures — the two
+    /// mechanisms are independent; this one just stops the triage HTTP
+    /// round itself from vanishing.
     private func runTriage(originalText: String) async -> Bool {
         // Local, non-escaping, called only synchronously within this
         // method -- an ordinary (strong) capture is fine, it never
@@ -2783,11 +2794,21 @@ final class ChatViewModel: ObservableObject {
 
         let data: Data
         let status: Int
+        let httpStarted = Date()
         do {
             let (body, response) = try await URLSession.shared.data(for: urlRequest)
             data = body
             status = (response as? HTTPURLResponse)?.statusCode ?? 0
         } catch {
+            // Record the round on the MAIN bridge (see below) even on a
+            // transport failure -- status 0 + the error description as
+            // the body is forensic gold for a persistently-misconfigured
+            // triage setup, not noise worth suppressing.
+            let elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
+            chatBridge.recordAuxiliaryHttpRound(
+                purpose: "triage", url: request.url, requestBody: request.body,
+                httpStatus: 0, responseBody: error.localizedDescription,
+                elapsedMs: elapsedMs)
             // Covers both a real transport error AND the 20s timeout
             // above (URLSession surfaces a timeout as NSURLErrorTimedOut
             // through this same catch). A Stop mid-request must abandon
@@ -2798,9 +2819,25 @@ final class ChatViewModel: ObservableObject {
                 text: "Triage skipped (network error or timeout) — message sent unmodified."))
             return sendUnmodified()
         }
+        let elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        // Record the round into the MAIN bridge's trajectory (NOT the
+        // throwaway triage bridge, which has no sink of its own -- see
+        // this method's doc) -- same trace_id / same JSONL file as the
+        // main turn, tagged purpose:"triage" so the summary rollup keeps
+        // reporting only the main conversation's LLM cost.  Recorded
+        // unconditionally, mechanical failures included: a wrong triage
+        // model id returning 404 is exactly the evidence a persistent
+        // misconfiguration needs, and this line lands BEFORE the
+        // cancellation check below on purpose -- the round completed
+        // either way, so its record precedes whatever this call decides
+        // to do next.
+        chatBridge.recordAuxiliaryHttpRound(
+            purpose: "triage", url: request.url, requestBody: request.body,
+            httpStatus: status, responseBody: bodyString, elapsedMs: elapsedMs)
+
         if Task.isCancelled || stopRequested { return false }
 
-        let bodyString = String(data: data, encoding: .utf8) ?? ""
         let step = triageBridge.handleResponse(status: status, body: bodyString)
         guard step.kind == .finalText, !step.finalText.isEmpty,
               let verdict = Self.parseTriageVerdict(step.finalText)

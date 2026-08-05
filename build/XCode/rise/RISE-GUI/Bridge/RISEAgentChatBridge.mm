@@ -417,6 +417,17 @@ static NSString *ToNS(const std::string& s) {
     _loop->FinishTrajectory(ToStd(status));
 }
 
+- (void)recordAuxiliaryHttpRoundWithPurpose:(NSString *)purpose
+                                         url:(NSString *)url
+                                 requestBody:(NSString *)requestBody
+                                  httpStatus:(NSInteger)httpStatus
+                                responseBody:(NSString *)responseBody
+                                   elapsedMs:(int64_t)elapsedMs {
+    _loop->RecordAuxiliaryHttpRound(ToStd(purpose), ToStd(url), ToStd(requestBody),
+                                     static_cast<long>(httpStatus), ToStd(responseBody),
+                                     elapsedMs);
+}
+
 - (NSUInteger)pendingToolCallsCount {
     return static_cast<NSUInteger>(_loop->PendingToolCalls().size());
 }
