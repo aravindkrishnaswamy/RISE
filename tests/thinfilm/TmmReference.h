@@ -391,6 +391,33 @@ namespace RISE
 
 				m00 = n00; m01 = n01;
 				m10 = n10; m11 = n11;
+
+				// Renormalize to O(1) by an exact power of two -- r is
+				// homogeneous of degree 0 in M, so this changes no result.
+				// Kept in step with production ThinFilm.h, whose comment
+				// carries the derivation and the measured overflow it closes.
+				{
+					double mag = std::abs( m00 );
+					if( std::abs( m01 ) > mag ) mag = std::abs( m01 );
+					if( std::abs( m10 ) > mag ) mag = std::abs( m10 );
+					if( std::abs( m11 ) > mag ) mag = std::abs( m11 );
+					if( mag > 0.0 && std::isfinite( mag ) ) {
+						int exponent = 0;
+						std::frexp( mag, &exponent );
+						// ldexp on each VALUE, not multiplication by a
+						// precomputed 2^-exponent: for a denormal mag that
+						// reciprocal overflows to inf.  See production
+						// ThinFilm.h.
+						m00 = Complex( std::ldexp( m00.real(), -exponent ),
+						               std::ldexp( m00.imag(), -exponent ) );
+						m01 = Complex( std::ldexp( m01.real(), -exponent ),
+						               std::ldexp( m01.imag(), -exponent ) );
+						m10 = Complex( std::ldexp( m10.real(), -exponent ),
+						               std::ldexp( m10.imag(), -exponent ) );
+						m11 = Complex( std::ldexp( m11.real(), -exponent ),
+						               std::ldexp( m11.imag(), -exponent ) );
+					}
+				}
 			}
 
 			// Substrate admittance.

@@ -880,7 +880,7 @@ all seven thin-film binaries):
   `[Invariant]`(c).
 - `MakeIndex`'s `|k|` fold — and this one was worse than untested: the **Complex
   overloads bypassed `MakeIndex` entirely**, so a negative extinction reached the
-  math unnormalized and produced per-polarization `R_s = 4.69`, `R_p = 17.69`,
+  math unnormalized and produced per-polarization `R_s = 4.61`, `R_p = 18.31`,
   laundered by the `[0,1]` clamp into a plausible saturated `1.0`. That is the
   same silent finite-but-wrong class this whole arc is about. Normalization moved
   into `detail::PhysicalIndex`, applied at every entry point.
@@ -901,22 +901,24 @@ neither benign: the RGB path yields a NaN pixel, the spectral path goes
 *tiny* index is still wrong, and it fails **differently under the two flag
 sets** — bisected in-repo, not quoted. Under the shipped `-ffast-math` (which
 implies `-fcx-limited-range`, so complex division is the naive
-`(ac+bd, bc−ad)/(c²+d²)`) it is NaN below `n1 = 1e-77.03`, by **overflow** —
+`(ac+bd, bc−ad)/(c²+d²)`) the Airy primary form is NaN below `n1 = 1e-77.02` — quoted as `.03` for
+three rounds — by **overflow**, though since 2026-08-01 the public result survives to `1e-154.06`
+via the TMM fallback —
 the p-polarization interface products grow like `1/n1` until `c²+d²` leaves the
-double range. Under strict IEEE it is **not** NaN: it returns the plausible
-bare-stack reflectance, the film silently vanishing, from `1e-78` down to about
-`1e-154`. Round 2 recorded this as "`≲1e-100`" and "underflows"; both were wrong. Round 3
-then replaced the strict-IEEE half with "it silently returns the bare-stack
-value, the film vanishing" and built a lesson on it — also wrong, and never
-checked against the actual bare-stack value, which differs by 0.43. Under strict
-IEEE that case is simply **correct** (matching a 120-dps evaluation to ~4e-16).
-The same overflow bites at the large end too, from about `1e160`. No threshold was introduced, because any threshold here is exactly the
+double range. Under strict IEEE it is **not** NaN and **not** wrong either: it
+returns the correct value, matching a 120-dps evaluation to ~4e-16, down to
+about `1e-154`. Two earlier descriptions of this were wrong and are recorded
+only so they are not reintroduced — round 2 said "`≲1e-100`" and "underflows",
+and round 3 said it "silently returns the bare-stack value, the film
+vanishing" and built a lesson on that, never having checked it against the
+actual bare-stack value, which differs by 0.43.
+The same overflow bites at the large end too, from `1e154.06` (bisected). No threshold was introduced, because any threshold here is exactly the
 magic epsilon this file refuses. The named refinement is to reformulate
 `CosThetaInMedium` around `η² = N² − s²` — finite and well conditioned for tiny
 `N`, and the same identity the branch-rule proof rests on — instead of dividing
 by `N`. Judged out of proportion: it touches every `cosθ` in the file, and
-~77 decades below any refractive index is not scene data, whereas
-exactly `0` — a black texel through an unvalidated `IScalarPainter` — is not,
+an index ~77 decades below anything physical is not scene data, whereas
+exactly `0` — a black texel through an unvalidated `IScalarPainter` — **is**,
 and that case *is* fixed.
 
 **The same `-fcx-limited-range` mechanism also bounds the thick-absorber
@@ -1021,3 +1023,111 @@ the sign of the difference is a coin-flip — i.e. within the
 renderer's own run-to-run nondeterminism). `AgentRenderAsyncTest` failed once
 during this work and is a **pre-existing flake**, not flag-related (passes 3/3
 both with and without the flag, and in the final full suite).
+
+---
+
+### Review rounds 3-7 (2026-07-30 .. 2026-08-01): the code held, the degenerate-index rule did not
+
+Five more adversarial rounds ran after round 2, the last three directly on
+merged master. **The three originally-assigned P1s (growing evanescent root, non-total
+N-layer path, oracle-only test pins) were attacked in every round and never
+moved.** Round 6's correctness reviewer: *"the core algebra survives; every
+branch-rule-free invariant I could construct sits at machine precision"* — TIR
+4.4e-16, Brewster 1.45e-32, d→0 ≡ bare Fresnel 3.3e-16, half-wave absentee
+exactly 0 for 1-8 layers, reciprocity 3.1e-15, all eight `[Truth]` pins
+re-derived against independently written 120-dps oracles to ≤2.6e-17.
+
+Everything that failed was scope added in response to earlier rounds, and it
+failed the same way five times: **a constant was invented where a limit should
+have been computed.** For a DEGENERATE index (magnitude exactly 0, or a
+non-finite component) the rule was, in order:
+
+| # | rule | worst error | how it was caught |
+|---|---|---|---|
+| 1 | substitute VACUUM (N = 1) | ~1.0 | a black `film_ior` texel became a MIRROR under a dense ambient |
+| 2 | make the layer ABSENT | 1.0 | the limit is an evanescent BARRIER (`N₁cos₁ → i·s`), not an absent layer |
+| 3 | return R = 1 ("cannot transmit") | 0.9987 | non-sequitur: **no transmission is not no absorption** |
+| 4 | tiny STAND-IN, un-renormalized | NaN | two zero layers overflowed the layer product |
+| 5 | stand-in + per-layer renormalization | ~1e-15 | **current** |
+
+**Each of the first four was hidden by a test that was blind in exactly the
+decisive dimension** — rule 1 by an air ambient (where vacuum and absent
+coincide), rule 3 by a lossless film (where R = 1 is right), rule 4 by zeroing
+one layer and never two. That pattern, not the physics, is the real lesson of
+this arc.
+
+**The current rule, in full** — this file is the canonical record and for five
+formulations it never stated the one in force:
+
+- A **zero** index in any role takes `detail::kZeroIndexStandIn = 1e-40` and the
+  ordinary math computes the limit (~1e-15 against a 120-dps oracle, all three
+  roles). The limit is *not* a constant — as `N → 0` the admittance tends to
+  `i·s`, so the medium becomes an evanescent barrier whose effect depends on the
+  rest of the stack.
+- A **non-finite** index returns `detail::kNonFiniteStackReflectance = 1`.
+  Correct for the film and ambient roles; **not** correct for an infinite
+  substrate under an absorbing film (0.5048 vs 1). Retained as an engineering
+  choice because the value must stay `> 0` for `GGXBRDF`'s lobe gate.
+- `n == 0` with `k > 0` is **not** degenerate — a pure-imaginary index is a real
+  medium, and silver is already `n = 0.144`.
+- The stand-in only works alongside **`detail::RenormalizeLayerProduct`**, which
+  rescales the accumulated layer product by an exact power of two, skipped while
+  it is inside a safe binade band. Two stand-in layers separated by an ordinary
+  one otherwise reach ~1e161 and overflow the naive `c²+d²` division. The
+  rescale must use `ldexp` on each *value* — a precomputed `2^-exponent`
+  multiplier overflows for a denormal magnitude — and it is exact only while
+  every component stays normal.
+
+The three superseded constants and the un-renormalized stand-in are recorded on
+`kZeroIndexStandIn` and `RenormalizeLayerProduct` so none is reinvented.
+
+**Per-layer projective renormalization** (round 6) is what makes the stand-in
+safe: `r` is homogeneous of degree 0 in `M`, so scaling the accumulated matrix
+by a power of two is free *and exact*. Without it, `m` interleaved stand-in
+layers overflow at `10^(-154/2m)` — 1e-38.5 at m = 2 — so with `kMaxFilms = 8`
+no constant could have worked. After: 300,000 stacks spanning every degenerate
+subset of 1-8 layers give 0 out-of-range and 0 exactly-zero, both flag sets.
+
+**The other recurring defect was numbers quoted rather than re-derived.** Round
+3 found seven, round 5 found the round-4 prune had left a whole design doc
+un-opened, round 6 found `1e160` (really 1e154.06), `1e-77.03` (really .02), a
+plateau stated as `1e-10..1e-76` whose top is really ~1e-16 — refuted by the
+file's own test — and an `R_p = 48.8` that was never reproducible at any commit.
+The standing rule now: a quantitative claim must be pinned by a committed test
+or carry a complete recipe, or it does not go in.
+
+**Disclosed residuals**, all far outside optical-constant range and none
+reachable from a correct scene:
+
+- a film index below ~`1e-154` overflows. The renormalization moved this cliff
+  down from `1e-77`; below ~`1e-77.5` the Airy primary form still overflows and
+  `SingleFilmReflectanceForPol`'s TMM fallback is what rescues it, so that
+  fallback is **live** there and its "measured dead" note holds only over the
+  shipped domain.
+- above ~`1e153.7` the shipped flags return the bare-stack value **silently**
+  (error 0.484) before going NaN at `1e154.06`; strict IEEE does not.
+- an absorbing ambient is outside the passive domain and unreachable — every
+  call site passes a literal `k0 = 0`.
+
+The named fix for both overflow ends is to reformulate `CosThetaInMedium` around
+`η² = N² − s²` instead of dividing by `N`.
+
+**Cost.** After round 7 cut the renormalization's magnitude computation from
+four `hypot`s to a component-wise proxy plus a binade-band skip, the per-shade
+GGX path (`ReflectanceConductor`) pays **nothing measurable** for it and
+`ReflectanceConductorStack` pays +8-12 %, i.e. the cost is confined to
+multi-layer `ar_layer` coatings. Figures and the recipe are in the `ThinFilm.h`
+file header; treat them as one machine, one run.
+
+**The durable lesson, worth more than any individual fix.** Almost every defect
+in this arc was caught by review rather than by a test, and in **five** cases
+the test that should have caught it was blind in exactly one dimension: an air
+ambient (where two candidate rules coincide), a lossless film (where `R = 1`
+happens to be right), one degenerate layer instead of two, one entry point
+instead of three, a structurally-vacuous assertion, and an index with
+`n == 0, k > 0` that nothing exercised. When a rule is chosen over alternatives,
+the test must vary the axis that *distinguishes* them — which is why `[Domain]`
+now carries an explicit non-vacuousness assertion. Related: dense measured
+claims written into comments became the next round's defects. Prefer properties
+gated by tests over measurement logs in prose.
+

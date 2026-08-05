@@ -18,6 +18,14 @@
 //        ReflectanceConductor            149.9 -> 154.2 ns/call   +2.9 %
 //        ReflectanceConductorStack n=1   202.7 -> 209.4 ns/call   +3.3 %
 //        ReflectanceConductorStack n=2   267.4 -> 280.2 ns/call   +4.8 %
+//    Re-measured 2026-08-01 after the per-layer renormalization, same
+//    recipe, min of 25 x 200,000: ReflectanceConductor is UNCHANGED by it
+//    (142.4 vs 143.0 ns, i.e. within noise -- the single-film GGX path pays
+//    nothing), while ReflectanceConductorStack pays +8.2 % at n=1 (205.5 ->
+//    222.4) and +11.5 % at n=2 (305.3 -> 340.5).  Those were +34.6 % and
+//    +44.5 % before the magnitude proxy and the binade-band skip; the
+//    remaining cost is confined to multi-layer ar_layer coatings.
+//
 //    ⚠ These are ONE MEASUREMENT ON ONE MACHINE, and there is no benchmark
 //    in the repo to reproduce them: 200,000 calls per rep sweeping cos over
 //    [0.05, 0.95], lambda over [380, 780], thickness over [40, 340] nm, air
@@ -179,27 +187,43 @@ namespace RISE
 			//!     zero SUBSTRATE index alike, with two different downstream
 			//!     consequences, neither benign: the RGB path yields a NaN
 			//!     pixel, while the spectral path goes silently BLACK, because
-			//!     GGXBRDF's `if( Rfilm > 0 )` is false for NaN.  Normalized
-			//!     to vacuum (N = 1) -- a normalization of invalid input, not
-			//!     a physical answer, exactly like the cosθ clamp in
-			//!     SnellInvariant.  A NaN index normalizes the same way.
+			//!     GGXBRDF's `if( Rfilm > 0 )` is false for NaN.  A zero index
+			//!     now takes kZeroIndexStandIn and a non-finite one returns
+			//!     kNonFiniteStackReflectance -- see those.  (This paragraph
+			//!     used to end "Normalized to vacuum (N = 1)"; that rule was
+			//!     the FIRST of four wrong ones and outlived its own
+			//!     replacement here by two rounds.)
 			//!
-			//! ⚠ RESIDUAL, measured, NOT closed: a merely TINY index is still
-			//! wrong, and it fails DIFFERENTLY under the two flag sets.
-			//! Bisected on air / (film n1) 120 nm / 2.5+3i at cosθ = 0.7:
+			//! ⚠ RESIDUAL -- and note it MOVED 77 decades when the per-layer
+			//! renormalization landed, which the note here did not notice for
+			//! a round.  Re-bisected on air / (film n1) 120 nm / 2.5+3i at
+			//! cosθ = 0.7, at HEAD: the PUBLIC result is finite and correct
+			//! down to 1e-154.06, not 1e-77.  What still goes NaN below
+			//! ~1e-77.5 is the Airy PRIMARY form; the public call survives
+			//! because SingleFilmReflectanceForPol's TMM fallback now
+			//! succeeds -- so that fallback is LIVE and load-bearing in this
+			//! regime, which falsifies the "measured dead" note on it.
+			//! Historical figures, from before the renormalization:
 			//!   * shipped flags (-ffast-math implies -fcx-limited-range, so
 			//!     std::complex division is the naive
-			//!     (ac+bd, bc-ad)/(c²+d²)): NaN below n1 = 1e-77.03.  The
+			//!     (ac+bd, bc-ad)/(c²+d²)): the AIRY form was NaN below
+			//!     n1 = 1e-77.02 (a figure quoted as .03 for three rounds).  The
 			//!     mechanism is OVERFLOW, not underflow -- the p-polarization
 			//!     interface products grow like 1/n1, so c²+d² exceeds the
 			//!     double range.  (An earlier version of this note said
 			//!     "1e-100" and "underflows"; both were wrong, and neither
 			//!     was measured here.)
 			//! The same overflow bites at the OTHER end: a LARGE finite index
-			//! is NaN from about n1 = 1e160 (measured on air / (n1, 120 nm) /
-			//! 2.5+3i at cosθ = 0.5; 1e151 still returns 1).  Same mechanism,
-			//! same non-fix, and worth stating because the note below used to
-			//! say only "a merely TINY index".
+			//! is NaN from n1 = 1e154.06 on air / (n1, 120 nm) / 2.5+3i at
+			//! cosθ = 0.5.  It goes SILENTLY WRONG BEFORE it goes NaN, and it
+			//! is NOT the same under both flag sets: from ~1e153.7 the shipped
+			//! flags return 0.51627988179890383 -- which is exactly the BARE
+			//! stack, i.e. the film has vanished -- where the 200-dps truth is
+			//! 1, an error of 0.484 that is finite, in range and invisible to
+			//! every guard.  Strict IEEE returns 0.99999999999999956 there.
+			//! (An earlier note said "about 1e160", quoted 0.516 as the
+			//! HEALTHY side of its own bisection, and called the two flag sets
+			//! identical.  All three were wrong.)
 			//!   * strict IEEE: NOT NaN, and NOT wrong either -- it returns
 			//!     the CORRECT value (matching a 120-dps evaluation to ~4e-16)
 			//!     down to about 1e-154, where it finally overflows.  An
@@ -217,93 +241,119 @@ namespace RISE
 			//! decades below any refractive index that is scene data is not
 			//! scene data, whereas exactly 0 -- a black texel -- is, and that
 			//! case IS closed.  Pinned by ThinFilmProductionTest [Domain].
-			//! True iff N cannot serve as a medium index at all: either
-			//! component non-finite, or the magnitude exactly 0.
+			//! A ZERO index is not a medium, but it IS the endpoint of a
+			//! perfectly well-behaved limit -- and the limit is what this
+			//! evaluator returns, by substituting a tiny stand-in and letting
+			//! the ordinary math compute it.
 			//!
-			//! n == 0 with k > 0 is NOT degenerate -- that is a legitimate
-			//! strongly-absorbing medium (silver is n = 0.144).  An earlier
-			//! version of this predicate, written `!(|n| > 0) && !(|k| > 0)`,
-			//! got the other half wrong: being a conjunction it passed every
-			//! MIXED case through untouched, so (NaN, 3), (1.5, NaN),
-			//! (+inf, 0) and (1.5, +inf) all reached the math and returned
-			//! NaN, in every role and through every entry point including the
-			//! RGB preview.  Testing finiteness FIRST is what covers them.
-			inline bool IsDegenerateIndex( const Complex& N )
+			//! WHY A STAND-IN RATHER THAN A CONSTANT.  THREE earlier attempts
+			//! invented a constant for this case and all three were wrong,
+			//! because the limit is not a constant -- it depends on the stack.
+			//! (A fourth attempt, the un-renormalized stand-in, invented no
+			//! constant but was non-total; see RenormalizeLayerProduct.  An
+			//! earlier version of this note said "four" and then listed
+			//! three.)
+			//!   1. VACUUM (N = 1).  For a film that inserts a real air layer
+			//!      of the authored thickness; under an ambient denser than
+			//!      air it total-internal-reflects, so a black `film_ior`
+			//!      texel rendered as a MIRROR.
+			//!   2. ABSENT (vacuum index AND zero thickness), justified as
+			//!      "the continuous limit".  It is not: as N1 -> 0 the film's
+			//!      admittance N1*cos1 tends to i*s, a fixed NONZERO constant,
+			//!      so the layer becomes an evanescent BARRIER.  Off by up to
+			//!      1.0 -- the whole dynamic range.
+			//!   3. OPAQUE (R = 1), justified as "a medium with no index
+			//!      cannot carry a wave, so the stack cannot transmit".  The
+			//!      premise is true; the conclusion does not follow, because
+			//!      NO TRANSMISSION IS NOT NO ABSORPTION.  With a degenerate
+			//!      SUBSTRATE the bottom interface does become a perfect
+			//!      evanescent terminator, but the wave still round-trips
+			//!      through the film, and an ABSORBING film dissipates it.
+			//!      Measured: air / (2.4 + 0.3i, 120 nm) / zero substrate at
+			//!      cosθ = 0.7 has limit 0.1010, not 1 -- error 0.899, up to
+			//!      0.9987 over a fuzz.  It survived a review round because
+			//!      the test guarding it used a LOSSLESS film, the one
+			//!      sub-case where R = 1 happens to be right.
+			//!
+			//! The stand-in reproduces the limit in ALL THREE roles instead.
+			//! Measured worst |R(stand-in) - R(limit probed at 1e-25)| over
+			//! 200,000 random stacks: 1.3e-15 (film), 1.2e-15 (substrate),
+			//! 1.8e-15 (ambient); 0 non-finite.
+			//!
+			//! NOT a knife-edge threshold -- but the usable window is narrower
+			//! than an earlier version of this note claimed, and it MOVES with
+			//! the stack, so both bounds are stated as measured:
+			//!   * TOP ~1e-16.  Above it the stand-in stops being negligible
+			//!     against the other indices, and for the AMBIENT role the
+			//!     error is LINEAR in it -- 1e-10 gives 3.2e-10, nowhere near
+			//!     machine precision.  (The earlier note said the plateau
+			//!     began at 1e-10.  Setting this constant to 1e-12, a value
+			//!     that note placed INSIDE the plateau, fails SIX [Domain]
+			//!     assertions -- a claim the file's own test refutes.  It was
+			//!     recorded as "three", counted before the same commit added
+			//!     three more [Domain] rows and never re-derived.)
+			//!   * BOTTOM ~1e-76 for a benign stack, from the overflow
+			//!     described two paragraphs below, and it rises roughly one
+			//!     decade per decade of ambient index, so an extreme
+			//!     (non-physical) stack can push it above 1e-40.
+			//! 1e-40 sits comfortably inside for any stack whose indices are
+			//! real optical constants.  A representability choice of the same
+			//! kind as kGrazingCosFloor -- but a CHOICE, over a finite
+			//! window.
+			static const Scalar kZeroIndexStandIn = Scalar(1e-40);
+
+			//! True iff N has a non-finite component.  Unlike a zero index
+			//! this is NOT the endpoint of any limit -- it is corrupt input,
+			//! so there is nothing to compute and the entry points return
+			//! kNonFiniteStackReflectance.
+			inline bool IsNonFiniteIndex( const Complex& N )
 			{
-				if( !std::isfinite( N.real() ) || !std::isfinite( N.imag() ) ) {
-					return true;
-				}
-				return ( N.real() == Scalar(0) && N.imag() == Scalar(0) );
+				return !std::isfinite( N.real() ) || !std::isfinite( N.imag() );
 			}
 
-			//! Folds an index onto the passive convention N = |n| + i|k|.
-			//! Degeneracy is NOT handled here -- see kOpaqueStackReflectance.
+			//! What the public entry points report for a NON-FINITE index.
+			//!
+			//! For a NaN there is no correct answer; this value is chosen only
+			//! so the result stays in range AND stays > 0 -- GGXBRDF gates its
+			//! lobe on `if( Rfilm > 0 )`, so 0 would render silently black.
+			//!
+			//! ⚠ For an INFINITE index it is NOT the limit, and an earlier
+			//! version of this comment claimed it was ("an infinite impedance
+			//! mismatch reflects everything").  That is the SAME non-sequitur
+			//! that made the round-4 rule wrong -- no transmission is not no
+			//! absorption -- and the THIRD time a rationale here was validated
+			//! only against a lossless film.  With an infinite SUBSTRATE the
+			//! bottom interface is a perfect terminator, but the wave still
+			//! round-trips through the film and an absorbing one dissipates
+			//! it: air / (2.4 + 0.3i, 120 nm) / n2 = 1e150 gives 0.5048
+			//! (matching a 120-dps evaluation), while n2 = +inf returns 1 --
+			//! error 0.495, and up to 0.989 over a fuzz.  The film and ambient
+			//! roles ARE 1 in the limit; only the substrate is wrong.
+			//! Retained as an engineering choice, not a physical answer.  The
+			//! refinement, symmetric with kZeroIndexStandIn, is to substitute
+			//! a LARGE finite stand-in and let the math compute that limit
+			//! too -- now feasible because the layer product is renormalized
+			//! per layer, but not done here and not validated.
+			static const Scalar kNonFiniteStackReflectance = Scalar(1);
+
+			//! Folds an index onto the passive convention N = |n| + i|k|, and
+			//! replaces a ZERO index with kZeroIndexStandIn so the ordinary
+			//! math computes the limit.  Non-finite input is NOT handled here
+			//! -- the entry points reject it first (IsNonFiniteIndex).
 			inline Complex PhysicalIndex( const Complex& N )
 			{
-				return Complex( std::fabs( N.real() ), std::fabs( N.imag() ) );
+				const Scalar n = std::fabs( N.real() );
+				const Scalar k = std::fabs( N.imag() );
+				if( n == Scalar(0) && k == Scalar(0) ) {
+					return Complex( kZeroIndexStandIn, Scalar(0) );
+				}
+				return Complex( n, k );
 			}
 
-			//! Reflectance reported for a stack that contains a degenerate
-			//! medium: a medium with no index cannot carry a wave, so the
-			//! stack cannot transmit and reflects everything.
-			//!
-			//! EXACT for a degenerate ENDPOINT -- measured worst |1 - limit|
-			//! = 4.3e-14 (substrate) and 9.3e-15 (ambient) over 200,000 random
-			//! stacks, probing the limit at n = 1e-20.  An APPROXIMATION for a
-			//! degenerate FILM, with a measured bound: worst |1 - limit| =
-			//! 0.49, at a thin film near normal incidence where the barrier is
-			//! weak.  It is also > 0, which matters: see below.
-			static const Scalar kOpaqueStackReflectance = Scalar(1);
-
-			//! ⚠ THIS AREA TOOK THREE ATTEMPTS.  Recorded so the next reader
-			//! repeats none of them.
-			//!
-			//! A degenerate index used to reach the math and return NaN, which
-			//! survives the [0,1] clamp and lands in the BRDF two ways,
-			//! neither benign: the RGB path yields a NaN pixel, the spectral
-			//! path goes silently BLACK (GGXBRDF's `if( Rfilm > 0 )` is false
-			//! for NaN).  Two substitutions were tried and BOTH were wrong,
-			//! because both guessed at a limit nobody had measured:
-			//!
-			//!   1. substitute VACUUM (N = 1).  For a FILM that inserts a real
-			//!      air layer of the authored thickness; under an ambient
-			//!      denser than air that layer is past the critical angle and
-			//!      total-internal-reflects, so a black `film_ior` texel
-			//!      rendered as a MIRROR.
-			//!   2. make the layer ABSENT (vacuum index AND zero thickness),
-			//!      justified as "the continuous limit".  IT IS NOT.  As
-			//!      N1 -> 0 the film's admittance N1*cos1 tends to i*s, a
-			//!      fixed NONZERO constant, so the layer becomes an evanescent
-			//!      BARRIER rather than an absent one.  Measured limit on
-			//!      glass / (n1, 400 nm) / (1.8 + 0.15i): 0.9354 at normal
-			//!      incidence, 0.99997 at cosθ = 0.6, stable across FORTY
-			//!      decades of n1 -- where "absent" gives 0.0103 and 0.0239.
-			//!      Worst |absent - limit| over 200,000 random stacks: 1.0000,
-			//!      the whole dynamic range.  And it did not even fix the
-			//!      symptom: with film AND substrate both degenerate it
-			//!      returned EXACTLY 0, so `if( Rfilm > 0 )` was still false
-			//!      and the lobe still vanished -- NaN-black became zero-black.
-			//!
-			//! The opaque-stack rule above replaces both: exact for endpoints,
-			//! bounded at 0.49 for films, and never 0.
-			//!
-			//! ⚠ RESIDUAL, measured, OPEN.  The film case is not exact and no
-			//! substitution of an INDEX can make it so: the limit is carried
-			//! by η1 = i*s, and η = sqrt(N² - s²) equals i*s only at N = 0
-			//! exactly.  Reproducing it needs CosThetaInMedium reformulated
-			//! around η² = N² - s² instead of cos = sqrt(1 - (s/N)²) -- the
-			//! same reformulation that would close the tiny-index cliff noted
-			//! on MakeIndex, and the identity PickForwardCos's proof already
-			//! rests on.  Not done here: the p-polarization branch needs
-			//! cos² = η²/N², which DIVERGES as N -> 0, so the scaled-admittance
-			//! choice would have to be reworked too.  That is a core change,
-			//! not a normalization, and it wants its own validation pass.
-			//! Pinned by ThinFilmProductionTest [Domain].
-
 			//! Builds a passive complex index from real n and extinction k.
-			//! See PhysicalIndex.  Degeneracy is NOT handled here -- the
-			//! public entry points test IsDegenerateIndex and return
-			//! kOpaqueStackReflectance before any index is built.
+			//! See PhysicalIndex, which also substitutes kZeroIndexStandIn for
+			//! a zero index.  A NON-finite one is rejected by the public entry
+			//! points before any index is built (IsNonFiniteIndex).
 			inline Complex MakeIndex( Scalar n, Scalar k )
 			{
 				return PhysicalIndex( Complex( n, k ) );
@@ -726,6 +776,118 @@ namespace RISE
 				return std::norm( num / den );		// |r|²
 			}
 
+			//! Binade band inside which RenormalizeLayerProduct does nothing.
+			//! 2^-64 .. 2^+64, i.e. ~1e-19 .. ~1e19 -- roughly 135 decades of
+			//! margin to the ~1e154 where the naive complex division
+			//! -ffast-math selects overflows.  Any band well inside that works;
+			//! this one is wide enough that ordinary stacks never leave it (so
+			//! the rescale costs two compares) and narrow enough that eight
+			//! stand-in layers cannot escape it.
+			static const Scalar kRenormLo = Scalar(5.4210108624275222e-20);	// 2^-64
+			static const Scalar kRenormHi = Scalar(1.8446744073709552e+19);	// 2^+64
+
+			//! Rescales an accumulated 2x2 layer product to O(1), IN PLACE,
+			//! by an exact power of two.
+			//!
+			//! ALGEBRAICALLY free, and exact up to the denormal caveat below.
+			//! ("Free" here means it changes no result -- it is NOT free in
+			//! time; see the cost note at the end of this comment.)
+			//! Algebraically free because the reflectance
+			//!   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
+			//! is homogeneous of degree 0 in M -- the same argument that lets
+			//! each layer drop its e^{-i delta}/2 -- so any nonzero scalar may
+			//! be divided out.  Exact because a power of two only shifts the
+			//! exponent: every mantissa is preserved, so no result moves.
+			//!
+			//! Needed because a layer whose cos is enormous -- which is what a
+			//! near-zero index produces, and what PhysicalIndex deliberately
+			//! substitutes -- contributes ~1/|N|^2 to the p-polarization
+			//! entries.  ONE such layer is harmless; TWO separated by an
+			//! ordinary layer reach ~1e161, and the naive c^2+d^2 complex
+			//! division that -ffast-math selects (-fcx-limited-range)
+			//! overflows above ~1e154.  Measured before this existed:
+			//! glass / [ zero-index 300 nm, MgF2 100 nm, zero-index 300 nm ] /
+			//! 1.46 returned NaN under the shipped flags while strict IEEE
+			//! gave the correct 0.99999989915.  The per-layer bound is
+			//! 10^(-154/2m) for m such layers, so no single stand-in constant
+			//! can close it for the kMaxFilms = 8 this path allows -- the
+			//! growth has to be REMOVED, not out-ranged.
+			//!
+			//! Note it scales each component with ldexp DIRECTLY rather than
+			//! multiplying by a precomputed 2^-exponent.  That reciprocal is
+			//! not always representable: for a DENORMAL magnitude the exponent
+			//! reaches -1073 and ldexp(1, +1073) overflows to inf -- which a
+			//! finiteness check on the magnitude cannot see, because the
+			//! magnitude is finite and it is the MULTIPLIER that overflows.
+			//! ⚠ NOT exact when a component is denormal, or becomes denormal
+			//! under the rescale.  A power-of-two shift preserves mantissas
+			//! only while every component stays normal; below that, bits are
+			//! lost and an entry can even flush to zero (measured: an m01 of
+			//! 7*denorm_min against an m00 of 1 shifts its ratio by 14.3 %,
+			//! and 1e-300 against 1e300 is annihilated).  Reachable in the
+			//! layer loop -- 3,514 flush-to-zero and 2,712 new-denormal events
+			//! over 400,000 degenerate stacks -- but immaterial: worst
+			//! |production - 150 dps| over the stacks that trigger it is
+			//! 5.6e-16.  The earlier claim "every mantissa is preserved, so no
+			//! result moves" was therefore too strong.
+			//!
+			//! COST.  Not free in time: the four std::abs(Complex) hypots this
+			//! originally used measured +34.6 % on ReflectanceConductorStack
+			//! n=1 and +44.5 % on n=2.  Replaced by a component-wise magnitude
+			//! proxy (see the body); re-measured figures are in the file
+			//! header's cost table.
+			//!
+			//! Pinned by ThinFilmProductionTest [Renormalize], whose
+			//! POSTCONDITION assertion (the rescaled magnitude lands in
+			//! [0.5, 1)) is what gives the block teeth -- the finiteness and
+			//! ratio rows alone are satisfied by a function that does nothing.
+			inline void RenormalizeLayerProduct(
+				Complex& m00, Complex& m01, Complex& m10, Complex& m11 )
+			{
+				// Magnitude PROXY: max over components of |re| and |im|, not
+				// std::abs(Complex).  std::abs on a complex is a hypot per
+				// entry -- four of them, per layer, PER POLARIZATION -- and it
+				// measured +34.6 % on the n=1 stack and +44.5 % on n=2, an
+				// order of magnitude more than the whole correctness arc had
+				// cost to that point.  Only the EXPONENT is wanted here, and
+				// the proxy is within a factor of sqrt(2) of the true modulus,
+				// i.e. at most one binade -- which changes nothing, because
+				// the postcondition is a binade-scale property and the margin
+				// to overflow is ~150 decades.
+				Scalar mag = std::fabs( m00.real() );
+				const Scalar c[7] = { std::fabs( m00.imag() ),
+				                      std::fabs( m01.real() ), std::fabs( m01.imag() ),
+				                      std::fabs( m10.real() ), std::fabs( m10.imag() ),
+				                      std::fabs( m11.real() ), std::fabs( m11.imag() ) };
+				for( int i = 0; i < 7; ++i ) { if( c[i] > mag ) mag = c[i]; }
+				if( !( mag > Scalar(0) ) || !std::isfinite( mag ) ) {
+					return;
+				}
+				// Do nothing while the product is already in a safe binade
+				// band.  This is the whole cost of the guard in the common
+				// case -- two compares instead of a frexp and eight ldexps --
+				// and it is not a weakening: the rescale exists only to keep
+				// the product away from the ~1e154 where the naive c^2+d^2
+				// complex division overflows, and 2^+-64 is ~1e19, some 135
+				// decades of margin.  The POSTCONDITION the tests pin is
+				// therefore "the magnitude's exponent lands in [-64, 64]",
+				// which a do-nothing implementation cannot satisfy (an
+				// un-rescaled product reaches ~1e161, exponent ~535).
+				if( mag > kRenormLo && mag < kRenormHi ) {
+					return;
+				}
+				int exponent = 0;
+				std::frexp( mag, &exponent );
+				m00 = Complex( std::ldexp( m00.real(), -exponent ),
+				               std::ldexp( m00.imag(), -exponent ) );
+				m01 = Complex( std::ldexp( m01.real(), -exponent ),
+				               std::ldexp( m01.imag(), -exponent ) );
+				m10 = Complex( std::ldexp( m10.real(), -exponent ),
+				               std::ldexp( m10.imag(), -exponent ) );
+				m11 = Complex( std::ldexp( m11.real(), -exponent ),
+				               std::ldexp( m11.imag(), -exponent ) );
+			}
+
 			//! N-layer characteristic-matrix reflectance for one
 			//! polarization.  Allocation-free: the film indices/thicknesses
 			//! are passed as fixed-capacity C arrays.  With nFilms == 1 this
@@ -750,7 +912,7 @@ namespace RISE
 					// PRECONDITION: filmIndex is already folded to the passive
 					// convention and known NON-degenerate -- the public entry
 					// points do both, once per call, before any polarization
-					// loop (see IsDegenerateIndex / kOpaqueStackReflectance).
+					// loop (see PhysicalIndex / IsNonFiniteIndex).
 					// Doing it here would repeat the work for every
 					// polarization.
 					const Complex Nj = filmIndex[j];
@@ -837,6 +999,33 @@ namespace RISE
 
 					m00 = n00; m01 = n01;
 					m10 = n10; m11 = n11;
+
+					// RENORMALIZE the accumulated product to O(1).
+					//
+					// Licensed by exactly the argument that already lets each
+					// layer drop its e^{-i delta}/2: the reflectance
+					//   r = (eta0 B - C)/(eta0 B + C),  [B;C] = M [1; eta_s]
+					// is homogeneous of degree 0 in M, so scaling M by ANY
+					// nonzero scalar is free.  Scaling by a power of two makes
+					// it not merely free but EXACT -- every mantissa is
+					// preserved, so this changes no result, only the exponent.
+					//
+					// Needed because a layer whose cos is enormous -- which is
+					// what a near-zero index produces, and what PhysicalIndex
+					// deliberately substitutes -- contributes ~1/|N|^2 to the
+					// p-polarization entries.  ONE such layer is harmless; TWO
+					// separated by an ordinary layer reach ~1e161, and the
+					// naive c^2+d^2 complex division that -ffast-math selects
+					// (-fcx-limited-range) overflows above ~1e154.  Measured
+					// before this: glass / [ zero-index 300 nm, MgF2 100 nm,
+					// zero-index 300 nm ] / 1.46 returned NaN under the shipped
+					// flags while strict IEEE gave the correct 0.99999989915.
+					// The per-layer bound is 10^(-154/2m) for m such layers, so
+					// no single stand-in constant can close it for the
+					// kMaxFilms = 8 that this path allows -- the growth has to
+					// be removed rather than out-ranged.
+					// Pinned by ThinFilmProductionTest [Domain].
+					RenormalizeLayerProduct( m00, m01, m10, m11 );
 				}
 
 				const Complex cosS = CosThetaInMedium( Ns, sinInvariant );
@@ -879,9 +1068,15 @@ namespace RISE
 			//!
 			//! The TMM fallback below is DEFENCE IN DEPTH for the case where
 			//! Airy does not produce a finite value at all.  It is MEASURED
-			//! DEAD: 0 firings over 7,000,000 adversarial stacks in two
-			//! distributions (3,000,000 in the shipped index range with
-			//! thickness to 1e5 nm, plus the 4,000,000 above).  It is kept
+			//! DEAD over the SHIPPED domain: 0 firings over 7,000,000
+			//! adversarial stacks in two distributions (3,000,000 in the
+			//! shipped index range with thickness to 1e5 nm, plus the
+			//! 4,000,000 above).  ⚠ It is NOT dead everywhere: since the
+			//! per-layer renormalization landed it FIRES and is load-bearing
+			//! for a film index below ~1e-77.5, where the Airy form still
+			//! overflows and the N-layer form no longer does.  That regime is
+			//! ~77 decades below any optical constant, but "measured dead"
+			//! without that qualifier was false.  It is kept
 			//! because it costs one predictable branch per polarization and
 			//! degrades a future regression to a second, independently
 			//! derived algebra instead of poisoning a whole spectral
@@ -963,10 +1158,10 @@ namespace RISE
 			Scalar thickness_nm,
 			Scalar n2, Scalar k2 )
 		{
-			if( detail::IsDegenerateIndex( Complex( n0, k0 ) )
-			 || detail::IsDegenerateIndex( Complex( n1, k1 ) )
-			 || detail::IsDegenerateIndex( Complex( n2, k2 ) ) ) {
-				return detail::kOpaqueStackReflectance;
+			if( detail::IsNonFiniteIndex( Complex( n0, k0 ) )
+			 || detail::IsNonFiniteIndex( Complex( n1, k1 ) )
+			 || detail::IsNonFiniteIndex( Complex( n2, k2 ) ) ) {
+				return detail::kNonFiniteStackReflectance;
 			}
 			const Complex N0 = detail::MakeIndex( n0, k0 );
 			const Complex N1 = detail::MakeIndex( n1, k1 );
@@ -1000,9 +1195,9 @@ namespace RISE
 			// This overload takes caller-built indices and so BYPASSES
 			// MakeIndex; normalize here or an amplifying / zero index reaches
 			// the math unchecked (see detail::PhysicalIndex).
-			if( detail::IsDegenerateIndex( n0 ) || detail::IsDegenerateIndex( n1 )
-			 || detail::IsDegenerateIndex( ns ) ) {
-				return detail::kOpaqueStackReflectance;
+			if( detail::IsNonFiniteIndex( n0 ) || detail::IsNonFiniteIndex( n1 )
+			 || detail::IsNonFiniteIndex( ns ) ) {
+				return detail::kNonFiniteStackReflectance;
 			}
 			const Complex N0 = detail::PhysicalIndex( n0 );
 			const Complex N1 = detail::PhysicalIndex( n1 );
@@ -1062,15 +1257,15 @@ namespace RISE
 			// every medium here, ONCE, rather than per polarization inside the
 			// layer loop.  The copy is a fixed-capacity stack array: still
 			// allocation-free.
-			if( detail::IsDegenerateIndex( n0 ) || detail::IsDegenerateIndex( ns ) ) {
-				return detail::kOpaqueStackReflectance;
+			if( detail::IsNonFiniteIndex( n0 ) || detail::IsNonFiniteIndex( ns ) ) {
+				return detail::kNonFiniteStackReflectance;
 			}
 			const Complex N0 = detail::PhysicalIndex( n0 );
 			const Complex Ns = detail::PhysicalIndex( ns );
 			Complex normFilm[kMaxFilms];
 			for( int j = 0; j < nFilms; ++j ) {
-				if( detail::IsDegenerateIndex( filmIndex[j] ) ) {
-					return detail::kOpaqueStackReflectance;
+				if( detail::IsNonFiniteIndex( filmIndex[j] ) ) {
+					return detail::kNonFiniteStackReflectance;
 				}
 				normFilm[j] = detail::PhysicalIndex( filmIndex[j] );
 			}
@@ -1219,10 +1414,10 @@ namespace RISE
 				Scalar n0, k0, n1, k1, n2, k2;
 				stackAt( nm, n0, k0, n1, k1, n2, k2 );
 
-				const bool degenerate =
-					detail::IsDegenerateIndex( Complex( n0, k0 ) ) ||
-					detail::IsDegenerateIndex( Complex( n1, k1 ) ) ||
-					detail::IsDegenerateIndex( Complex( n2, k2 ) );
+				const bool nonFinite =
+					detail::IsNonFiniteIndex( Complex( n0, k0 ) ) ||
+					detail::IsNonFiniteIndex( Complex( n1, k1 ) ) ||
+					detail::IsNonFiniteIndex( Complex( n2, k2 ) );
 				const Complex N0 = detail::MakeIndex( n0, k0 );
 				const Complex N1 = detail::MakeIndex( n1, k1 );
 				const Complex Ns = detail::MakeIndex( n2, k2 );
@@ -1239,14 +1434,16 @@ namespace RISE
 				// measured -- but the fallback does not prevent that, because
 				// where Airy was non-finite the TMM generally was too.  What
 				// actually removed the reachable case is input normalization at
-				// construction (detail::PhysicalIndex, detail::PhaseCoefficient).
+				// construction (the IsNonFiniteIndex early-out above, plus
+				// detail::PhysicalIndex and detail::PhaseCoefficient).
 				// The routing is consistency with the scalar path, not a guard.
 				Scalar R;
-				if( degenerate ) {
+				if( nonFinite ) {
 					// Per-wavelength: the stack opts out at THIS lambda only,
-					// since `stackAt` may return a degenerate index for some
-					// wavelengths and not others.
-					R = detail::kOpaqueStackReflectance;
+					// since `stackAt` may return a non-finite index at some
+					// wavelengths and not others.  (A ZERO index does not opt
+					// out -- it takes the stand-in and the limit is computed.)
+					R = detail::kNonFiniteStackReflectance;
 				} else {
 					const Scalar Rs = detail::SingleFilmReflectanceForPol(
 						N0, N1, Ns, thickness_nm, nm, sinInv, ePolS );

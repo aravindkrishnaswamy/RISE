@@ -735,8 +735,12 @@ int main()
 				  Complex(1.5,0.0), Complex(  0.8, 0.0 ), false },
 				{ "propagating, backward candidate",
 				  Complex(1.5,0.0), Complex( -0.8, 0.0 ), true  },
-				// Absorbing at normal incidence: cos must stay +1.  This is
-				// the classic bug a naive "Im >= 0 else negate" rule creates.
+				// Absorbing at normal incidence: cos must stay +1, because
+				// Im(eta) = k > 0.  (This file used to add "the classic bug a
+				// naive Im >= 0 else negate rule creates"; that claim is FALSE
+				// and was retracted in ThinFilm.h and twice in TmmReference.h
+				// -- for N = 2.5+3i that rule keeps +1 too.  This was the
+				// FOURTH copy.)
 				{ "absorbing, normal incidence",
 				  Complex(2.5,3.0), Complex( 1.0, 0.0 ), false },
 			};
@@ -998,7 +1002,7 @@ int main()
 	//     path goes silently BLACK (GGXBRDF's `if( Rfilm > 0 )` is false for
 	//     NaN).
 	// Measured pre-normalization values are in the ThinFilm.h comments on
-	// detail::PhaseCoefficient and detail::PhysicalIndex.
+	// detail::PhaseCoefficient and detail::kZeroIndexStandIn.
 	// ------------------------------------------------------------------
 	{
 		std::printf( "\n[Domain] out-of-domain inputs normalize instead of poisoning\n" );
@@ -1075,7 +1079,11 @@ int main()
 		}
 
 		// A NON-PASSIVE index (n < 0 or k < 0) must fold to its passive twin
-		// |n| + i|k|, not produce R_p up to 48.8 laundered into a saturated 1.
+		// |n| + i|k|, not produce R_p up to 18.31 laundered into a saturated 1.
+		// (An earlier comment said 48.8.  That figure was never reproducible
+		// on this stack at ANY commit -- including the one that introduced
+		// it -- and is the fifth stray copy of a cross-contaminated number in
+		// this arc.)
 		// Checked through BOTH public APIs: the scalar one routes through
 		// MakeIndex, the Complex one used to bypass it entirely.
 		{
@@ -1119,7 +1127,7 @@ int main()
 				const double R = double( RISE::ThinFilm::ReflectanceConductor(
 					0.7, 550.0, z[i].n0, z[i].k0, z[i].n1, z[i].k1, 120.0, z[i].n2, z[i].k2 ) );
 				Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
-				       "zero / NaN index normalizes to vacuum instead of NaN" );
+				       "zero / NaN index in any role stays finite and in range" );
 			}
 			// And through the RGB preview integral, where ONE bad wavelength
 			// used to poison the whole XYZ accumulation.
@@ -1130,115 +1138,254 @@ int main()
 			       "zero film index: RGB preview stays finite" );
 		}
 
-		// A degenerate medium in ANY role makes the stack OPAQUE: R == 1.
+		// A ZERO index in any role must produce the LIMIT, not an invented
+		// constant.  This block has been rewritten FOUR times because the rule
+		// was wrong four times (vacuum, absent, opaque-1, and now the
+		// stand-in); ThinFilm.h records all four and why.
 		//
-		// This block has been rewritten twice, because the rule was wrong
-		// twice (vacuum substitution, then "absent"); ThinFilm.h records both
-		// and why.  What matters for the test is that it must discriminate
-		// against BOTH superseded rules, and that it must use a DENSE ambient
-		// -- in air, vacuum-substitution and absent coincide, which is exactly
-		// how the first wrong rule survived a review round.
+		// Two properties are non-negotiable for the test itself, because each
+		// of the first three rules survived a review round only by being
+		// tested in a blind spot:
+		//   * a DENSE ambient, since in air vacuum-substitution and "absent"
+		//     coincide (that hid rule 1);
+		//   * an ABSORBING film, since with a lossless film R == 1 happens to
+		//     be the right answer for a degenerate substrate (that hid
+		//     rule 3).
+		// The reference is the limit itself, probed at n = 1e-25 -- deep in
+		// the ~66-decade plateau and far from the overflow cliff.
+		{
+			const struct { const char* tag; double n0, n1, k1, n2, k2, d, c; } stacks[] = {
+				// absorbing films -- the case rule 3 got wrong
+				{ "glass / absorbing oxide / X",  1.5,  2.40, 0.30, 2.5,   3.00, 120.0, 0.70 },
+				{ "enamel / titanium / X",        1.52, 2.74, 3.81, 1.8,   0.15, 200.0, 0.60 },
+				{ "glass / weak absorber / X",    1.5,  1.40, 0.50, 1.8,   0.15, 400.0, 0.50 },
+				// lossless films -- the case rules 1 and 2 got wrong
+				{ "glass / lossless oxide / X",   1.5,  2.40, 0.00, 1.8,   0.15, 400.0, 0.60 },
+				{ "sapphire / lossless / silver", 1.77, 2.10, 0.00, 0.144, 3.28, 250.0, 0.40 },
+				{ "air / lossless oxide / X",     1.0,  2.40, 0.00, 2.5,   3.00, 120.0, 0.70 },
+			};
+			const double probe = 1e-25;		// the limit
+			double worst = 0.0, spread = 0.0;
+			for( size_t i = 0; i < sizeof(stacks)/sizeof(stacks[0]); ++i ) {
+				const double n0 = stacks[i].n0, n1 = stacks[i].n1, k1 = stacks[i].k1;
+				const double n2 = stacks[i].n2, k2 = stacks[i].k2;
+				const double d  = stacks[i].d,  c  = stacks[i].c;
+				// zero FILM index
+				const double zF = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, n0, 0.0, 0.0, 0.0, d, n2, k2 ) );
+				const double lF = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, n0, 0.0, probe, 0.0, d, n2, k2 ) );
+				// zero SUBSTRATE index
+				const double zS = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, n0, 0.0, n1, k1, d, 0.0, 0.0 ) );
+				const double lS = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, n0, 0.0, n1, k1, d, probe, 0.0 ) );
+				// zero AMBIENT index
+				const double zA = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, 0.0, 0.0, n1, k1, d, n2, k2 ) );
+				const double lA = double( RISE::ThinFilm::ReflectanceConductor(
+					c, 550.0, probe, 0.0, n1, k1, d, n2, k2 ) );
+				worst = std::max( worst, std::fabs( zF - lF ) );
+				worst = std::max( worst, std::fabs( zS - lS ) );
+				worst = std::max( worst, std::fabs( zA - lA ) );
+				Check( std::fabs( zF - lF ) < 1e-12 && std::fabs( zS - lS ) < 1e-12
+				       && std::fabs( zA - lA ) < 1e-12,
+				       "a zero index in any role gives the LIMIT, not a constant" );
+				Check( zF > 0.0 && zS > 0.0 && zA > 0.0,
+				       "the result is > 0, so the GGX lobe survives" );
+				// How far the superseded opaque rule would have been.
+				spread = std::max( spread, std::fabs( lS - 1.0 ) );
+			}
+			// The test must EXERCISE the regime that distinguishes the rules,
+			// or it proves nothing -- this is the assertion the round-4 test
+			// was missing, and its absence is why rule 3 shipped.
+			Check( spread > 0.5,
+			       "the grid really does contain a stack where R == 1 is badly wrong "
+			       "(else this block cannot discriminate)" );
+			std::printf( "  zero index vs limit: worst %.3e ; the superseded R==1 rule "
+			             "would be off by up to %.4f here\n", worst, spread );
+		}
+
+		// ⚠ THE THREE BLIND SPOTS THIS BLOCK USED TO HAVE, closed 2026-07-31.
+		// Mutation testing (round 6) showed the grid above passes against
+		// several WRONG implementations, because it exercised only one of the
+		// three public entry points and only one of the two multi-medium
+		// shapes:
+		//   (i)  it called only the scalar ReflectanceConductor; the Complex
+		//        4-arg overload has its own degeneracy handling and had ZERO
+		//        coverage -- reverting JUST that overload to the vacuum rule
+		//        passed 3493/0;
+		//   (ii) the N-layer rows zeroed a LAYER but never n0/ns, so reverting
+		//        just the stack path's endpoint handling also passed;
+		//   (iii) the AMBIENT role is vacuous on this grid -- the limit is
+		//        EXACTLY 1 on every row, so |zA - lA| < tol is satisfied by
+		//        the very rules the block exists to kill.
+		// Each is now covered explicitly.  Do not delete these without
+		// re-running the mutants.
+		{
+			const RISE::ThinFilm::Complex N0c( 1.5, 0.0 ), Nsc( 1.8, 0.15 );
+			const RISE::ThinFilm::Complex zero( 0.0, 0.0 );
+			const RISE::ThinFilm::Complex tiny( 1e-25, 0.0 );
+			const RISE::ThinFilm::Complex film( 2.4, 0.3 );	// ABSORBING
+
+			// (i) the Complex 4-arg overload, all three roles
+			Check( std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, zero, 120.0, Nsc ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, tiny, 120.0, Nsc ) ) ) < 1e-12
+			    && std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, film, 120.0, zero ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0c, film, 120.0, tiny ) ) ) < 1e-12
+			    && std::fabs(
+			         double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, zero, film, 120.0, Nsc ) )
+			       - double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, tiny, film, 120.0, Nsc ) ) ) < 1e-12,
+			       "Complex overload: a zero index in any role gives the LIMIT" );
+
+			// (ii) zero ENDPOINTS through the N-layer path
+			{
+				const RISE::ThinFilm::Complex f[2] = { RISE::ThinFilm::Complex(1.38,0.0), film };
+				const RISE::Scalar t[2] = { 100.0, 120.0 };
+				Check( std::fabs(
+				         double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0c, f, t, 2, zero ) )
+				       - double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0c, f, t, 2, tiny ) ) ) < 1e-12
+				    && std::fabs(
+				         double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, zero, f, t, 2, Nsc ) )
+				       - double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, tiny, f, t, 2, Nsc ) ) ) < 1e-12,
+				       "N-layer: a zero AMBIENT or SUBSTRATE gives the LIMIT" );
+			}
+
+			// (iii) The ambient role CANNOT be made discriminating, and
+			// pretending otherwise would be worse than saying so.  As N0 -> 0
+			// the ambient admittance eta0 -> 0, so
+			//   r = (eta0*B - C)/(eta0*B + C) -> -1
+			// and |r| = 1 for ANY stack beneath.  Measured: worst |limit - 1|
+			// = 3.3e-15 over 200,000 random stacks.  So the ambient assertions
+			// in the grid above are TRUE but vacuous -- any rule that returns
+			// 1 satisfies them.  Discrimination comes from the film and
+			// substrate rows and from (i) and (ii) above; this row only pins
+			// that the ambient case stays finite and lands on that limit.
+			{
+				const double zA = double( RISE::ThinFilm::ReflectanceConductor(
+					0.7, 550.0, 0.0, 0.0, 2.4, 0.3, 120.0, 1.8, 0.15 ) );
+				Check( std::isfinite( zA ) && std::fabs( zA - 1.0 ) < 1e-12,
+				       "zero AMBIENT lands on its (structurally unit) limit" );
+			}
+
+			// TWO degenerate layers separated by an ordinary one.  This is the
+			// shape that made ReflectanceConductorStack NON-TOTAL under the
+			// shipped flags before the per-layer renormalization: the p-pol
+			// entries reach ~1e161 and the naive c^2+d^2 division overflows.
+			{
+				const RISE::ThinFilm::Complex f3[3] = { zero, RISE::ThinFilm::Complex(1.38,0.0), zero };
+				const RISE::ThinFilm::Complex p3[3] = { tiny, RISE::ThinFilm::Complex(1.38,0.0), tiny };
+				const RISE::Scalar t3[3] = { 300.0, 100.0, 300.0 };
+				const double Rz = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.6, 550.0, N0c, f3, t3, 3, RISE::ThinFilm::Complex(1.46,0.0) ) );
+				const double Rp3 = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.6, 550.0, N0c, p3, t3, 3, RISE::ThinFilm::Complex(1.46,0.0) ) );
+				Check( std::isfinite( Rz ) && std::fabs( Rz - Rp3 ) < 1e-12,
+				       "two zero layers around an ordinary one: finite, and the LIMIT" );
+			}
+		}
+
+		// ⚠ THE SIXTH BLIND DIMENSION (found round 7).  n == 0 with k > 0 is a
+		// LEGITIMATE medium -- a pure-imaginary index, i.e. an ideal plasma /
+		// epsilon-near-zero material, and silver is already n = 0.144.  It
+		// must NOT be treated as degenerate.  Nothing anywhere exercised it:
+		// mutating PhysicalIndex's `n == 0 && k == 0` to `n == 0` alone -- which
+		// silently replaces every such medium with the 1e-40 stand-in, a
+		// measured error up to 0.239 and constant in k -- passed the entire
+		// suite 3508/0.
+		{
+			const double ks[] = { 0.5, 1.0, 3.0, 10.0 };
+			double prev = -1.0;
+			bool varies = false;
+			for( size_t i = 0; i < sizeof(ks)/sizeof(ks[0]); ++i ) {
+				const double R = double( RISE::ThinFilm::ReflectanceConductor(
+					0.7, 550.0, 1.0, 0.0, 0.0, ks[i], 100.0, 1.5, 0.0 ) );
+				Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
+				       "pure-imaginary film index is a valid medium, not degenerate" );
+				// The giveaway of the mutant is that R stops depending on k.
+				if( prev >= 0.0 && std::fabs( R - prev ) > 1e-6 ) varies = true;
+				prev = R;
+			}
+			Check( varies,
+			       "a pure-imaginary index still varies with k (kills the "
+			       "`n == 0` degeneracy mutant)" );
+			// A strongly absorbing pure-imaginary film approaches total
+			// reflection; the stand-in substitution does not.
+			const double Rbig = double( RISE::ThinFilm::ReflectanceConductor(
+				0.7, 550.0, 1.0, 0.0, 0.0, 10.0, 100.0, 1.5, 0.0 ) );
+			Check( Rbig > 0.99, "pure-imaginary index with large k -> near-total reflection" );
+			// Same through the other two entry points.
+			const RISE::ThinFilm::Complex N0( 1.0, 0.0 ), Ns( 1.5, 0.0 );
+			const RISE::ThinFilm::Complex pi3( 0.0, 3.0 );
+			const RISE::ThinFilm::Complex f1[1] = { pi3 };
+			const RISE::Scalar t1[1] = { 100.0 };
+			const double Rc = double( RISE::ThinFilm::ReflectanceConductor( 0.7, 550.0, N0, pi3, 100.0, Ns ) );
+			const double Rk = double( RISE::ThinFilm::ReflectanceConductorStack( 0.7, 550.0, N0, f1, t1, 1, Ns ) );
+			const double Rs3 = double( RISE::ThinFilm::ReflectanceConductor(
+				0.7, 550.0, 1.0, 0.0, 0.0, 3.0, 100.0, 1.5, 0.0 ) );
+			Check( std::fabs( Rc - Rs3 ) < 1e-12 && std::fabs( Rk - Rs3 ) < 1e-11,
+			       "pure-imaginary index agrees across all three entry points" );
+		}
+
+		// A NON-FINITE index is not the endpoint of any limit -- it is corrupt
+		// input.  It must stay in range and stay > 0 (a 0 would render
+		// silently black through GGXBRDF's `if( Rfilm > 0 )`).
 		{
 			const double qnan = std::numeric_limits<double>::quiet_NaN();
 			const double inf  = std::numeric_limits<double>::infinity();
-			const struct { double n, k; } degenerate[] = {
-				{ 0.0, 0.0 }, { qnan, 0.0 }, { qnan, qnan }, { qnan, 3.0 },
-				{ 1.5, qnan }, { inf, 0.0 }, { 1.5, inf }, { -inf, 2.0 },
+			const struct { double n, k; } bad[] = {
+				{ qnan, 0.0 }, { qnan, qnan }, { qnan, 3.0 }, { 1.5, qnan },
+				{ inf, 0.0 }, { 1.5, inf }, { -inf, 2.0 },
 			};
-			const struct { double n0, n2, k2; } amb[] = {
-				{ 1.5,  1.8,   0.15 },	// glass over a dielectric-ish substrate
-				{ 1.52, 2.74,  3.81 },	// enamel over titanium
-				{ 1.77, 0.144, 3.28 },	// sapphire over silver
-				{ 1.0,  2.5,   3.0  },	// air: the case that hid the first bug
-			};
-			for( size_t a2 = 0; a2 < sizeof(amb)/sizeof(amb[0]); ++a2 ) {
-				for( size_t i = 0; i < sizeof(degenerate)/sizeof(degenerate[0]); ++i ) {
-					// degenerate FILM
-					const double Rf = double( RISE::ThinFilm::ReflectanceConductor(
-						0.60, 550.0, amb[a2].n0, 0.0,
-						degenerate[i].n, degenerate[i].k, 400.0, amb[a2].n2, amb[a2].k2 ) );
-					// degenerate SUBSTRATE
-					const double Rs2 = double( RISE::ThinFilm::ReflectanceConductor(
-						0.60, 550.0, amb[a2].n0, 0.0, 2.4, 0.0, 400.0,
-						degenerate[i].n, degenerate[i].k ) );
-					// degenerate AMBIENT
-					const double Ra = double( RISE::ThinFilm::ReflectanceConductor(
-						0.60, 550.0, degenerate[i].n, degenerate[i].k, 2.4, 0.0, 400.0,
-						amb[a2].n2, amb[a2].k2 ) );
-					Check( Rf == 1.0 && Rs2 == 1.0 && Ra == 1.0,
-					       "a degenerate medium in any role makes the stack opaque (R == 1)" );
-					// > 0 matters: GGXBRDF gates the lobe on `Rfilm > 0`, so a
-					// rule that returned 0 would still render silently black.
-					Check( Rf > 0.0, "the opaque value is > 0, so the GGX lobe survives" );
-				}
+			for( size_t i = 0; i < sizeof(bad)/sizeof(bad[0]); ++i ) {
+				const double Rf = double( RISE::ThinFilm::ReflectanceConductor(
+					0.60, 550.0, 1.5, 0.0, bad[i].n, bad[i].k, 400.0, 1.8, 0.15 ) );
+				const double Rs2 = double( RISE::ThinFilm::ReflectanceConductor(
+					0.60, 550.0, 1.5, 0.0, 2.4, 0.3, 400.0, bad[i].n, bad[i].k ) );
+				const double Ra = double( RISE::ThinFilm::ReflectanceConductor(
+					0.60, 550.0, bad[i].n, bad[i].k, 2.4, 0.3, 400.0, 1.8, 0.15 ) );
+				Check( std::isfinite(Rf) && Rf > 0.0 && Rf <= 1.0
+				       && std::isfinite(Rs2) && Rs2 > 0.0 && Rs2 <= 1.0
+				       && std::isfinite(Ra) && Ra > 0.0 && Ra <= 1.0,
+				       "a non-finite index gives a finite in-range result > 0" );
 			}
+		}
 
-			// The rule is EXACT for a degenerate endpoint.  Probe the true
-			// limit at n = 1e-20 and require R == 1 to match it.
-			{
-				double worstEndpoint = 0.0;
-				for( double c = 0.05; c <= 1.0; c += 0.05 ) {
-					const double limSub = double( RISE::ThinFilm::ReflectanceConductor(
-						c, 550.0, 1.0, 0.0, 2.4, 0.0, 120.0, 1e-20, 0.0 ) );
-					const double limAmb = double( RISE::ThinFilm::ReflectanceConductor(
-						c, 550.0, 1e-20, 0.0, 2.4, 0.0, 120.0, 2.5, 3.0 ) );
-					worstEndpoint = std::max( worstEndpoint, std::fabs( limSub - 1.0 ) );
-					worstEndpoint = std::max( worstEndpoint, std::fabs( limAmb - 1.0 ) );
-				}
-				Check( worstEndpoint < 1e-9,
-				       "degenerate-endpoint limit really is R == 1 (the rule is exact there)" );
-				std::printf( "  degenerate endpoint: worst |limit - 1| = %.3e\n", worstEndpoint );
+		// N-layer path: a zero layer index anywhere gives the limit too, at
+		// any position, without disturbing its neighbours.
+		{
+			const RISE::ThinFilm::Complex N0( 1.5, 0.0 ), Ns( 1.8, 0.15 );
+			const RISE::Scalar t[3] = { 100.0, 400.0, 90.0 };
+			for( int pos = 0; pos < 3; ++pos ) {
+				RISE::ThinFilm::Complex fz[3] = {
+					RISE::ThinFilm::Complex( 1.38, 0.0 ),
+					RISE::ThinFilm::Complex( 2.10, 0.20 ),
+					RISE::ThinFilm::Complex( 1.46, 0.0 ) };
+				RISE::ThinFilm::Complex fp[3] = {
+					RISE::ThinFilm::Complex( 1.38, 0.0 ),
+					RISE::ThinFilm::Complex( 2.10, 0.20 ),
+					RISE::ThinFilm::Complex( 1.46, 0.0 ) };
+				fz[pos] = RISE::ThinFilm::Complex( 0.0, 0.0 );
+				fp[pos] = RISE::ThinFilm::Complex( 1e-25, 0.0 );
+				const double Rz = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.60, 550.0, N0, fz, t, 3, Ns ) );
+				const double Rp2 = double( RISE::ThinFilm::ReflectanceConductorStack(
+					0.60, 550.0, N0, fp, t, 3, Ns ) );
+				Check( std::isfinite( Rz ) && std::fabs( Rz - Rp2 ) < 1e-12,
+				       "N-layer: a zero layer index gives the limit at any position" );
 			}
+		}
 
-			// And the rule must DISCRIMINATE against both superseded ones.  On
-			// this stack the true limit is ~0.99997; a vacuum FILM reads
-			// ~0.9931 and an ABSENT layer ~0.0239.
-			{
-				const double lim = double( RISE::ThinFilm::ReflectanceConductor(
-					0.60, 550.0, 1.5, 0.0, 1e-20, 0.0, 400.0, 1.8, 0.15 ) );
-				const double vacuumFilm = double( RISE::ThinFilm::ReflectanceConductor(
-					0.60, 550.0, 1.5, 0.0, 1.0, 0.0, 400.0, 1.8, 0.15 ) );
-				const double absent = double( RISE::ThinFilm::ReflectanceConductor(
-					0.60, 550.0, 1.5, 0.0, 2.0, 0.0, 0.0, 1.8, 0.15 ) );
-				Check( std::fabs( lim - 1.0 ) < 0.01,
-				       "on this stack the true degenerate-film limit is near 1" );
-				Check( std::fabs( absent - lim ) > 0.5,
-				       "ABSENT is far from the limit (kills the round-3 rule)" );
-				Check( std::fabs( vacuumFilm - lim ) > 0.005,
-				       "a VACUUM FILM is not the limit either (kills the round-2 rule)" );
-				std::printf( "  degenerate film on glass: limit %.6f ; vacuum-film %.6f ;"
-				             " absent %.6f ; shipped %.6f\n",
-				             lim, vacuumFilm, absent,
-				             double( RISE::ThinFilm::ReflectanceConductor(
-				                 0.60, 550.0, 1.5, 0.0, 0.0, 0.0, 400.0, 1.8, 0.15 ) ) );
-			}
-
-			// N-layer path: a degenerate layer anywhere makes the whole stack
-			// opaque, at any position and any layer count.
-			{
-				const RISE::ThinFilm::Complex N0( 1.5, 0.0 ), Ns( 1.8, 0.15 );
-				for( int pos = 0; pos < 3; ++pos ) {
-					RISE::ThinFilm::Complex f[3] = {
-						RISE::ThinFilm::Complex( 1.38, 0.0 ),
-						RISE::ThinFilm::Complex( 2.10, 0.0 ),
-						RISE::ThinFilm::Complex( 1.46, 0.0 ) };
-					f[pos] = RISE::ThinFilm::Complex( 0.0, 0.0 );
-					const RISE::Scalar t[3] = { 100.0, 400.0, 90.0 };
-					const double R = double( RISE::ThinFilm::ReflectanceConductorStack(
-						0.60, 550.0, N0, f, t, 3, Ns ) );
-					Check( R == 1.0, "N-layer: a degenerate layer makes the stack opaque" );
-				}
-			}
-
-			// RGB preview: one degenerate wavelength used to poison the whole
-			// XYZ accumulation.  It must now stay finite and in range.
-			{
-				const RISEPel rgb = RISE::ThinFilm::ReflectanceConductorRGB(
-					0.7, 1.0, 0.0, 0.0, 0.0, 120.0, 2.5, 3.0 );
-				Check( std::isfinite( double(rgb.r) ) && std::isfinite( double(rgb.g) )
-				       && std::isfinite( double(rgb.b) ) && double(rgb.r) > 0.0,
-				       "degenerate film index: RGB preview stays finite and non-black" );
-			}
+		// RGB preview: one bad wavelength used to poison the whole XYZ
+		// accumulation.
+		{
+			const RISEPel rgb = RISE::ThinFilm::ReflectanceConductorRGB(
+				0.7, 1.0, 0.0, 0.0, 0.0, 120.0, 2.5, 3.0 );
+			Check( std::isfinite( double(rgb.r) ) && std::isfinite( double(rgb.g) )
+			       && std::isfinite( double(rgb.b) ) && double(rgb.r) > 0.0,
+			       "zero film index: RGB preview stays finite and non-black" );
 		}
 
 		// A NaN incidence cosine must normalize like every other out-of-range
@@ -1267,11 +1414,13 @@ int main()
 
 		// ⚠ DISCLOSED RESIDUAL, deliberately NOT closed: an index far outside
 		// the range of real optical constants still overflows -- NaN below
-		// about 1e-77 and above about 1e160 under the shipped flags (under
-		// strict IEEE the small end stays CORRECT to ~4e-16 down to ~1e-154).
+		// 1e-77.02 and above 1e154.06 under the shipped flags, and the large
+		// end goes SILENTLY WRONG before it goes NaN (1e154 returns 0.516
+		// where the truth is 1).  Under strict IEEE the small end stays
+		// CORRECT to ~4e-16 down to ~1e-154.
 		// No threshold is asserted here, because any threshold would be the
 		// magic epsilon this file refuses; the named reformulation is on
-		// detail::IsDegenerateIndex.  What IS pinned is the boundary that is
+		// detail::kZeroIndexStandIn.  What IS pinned is the boundary that is
 		// real scene data -- exactly 0, a black texel -- and a value 50
 		// decades small, which is already far past anything physical.
 		{
@@ -1279,6 +1428,110 @@ int main()
 				0.7, 550.0, 1.0, 0.0, 1e-50, 0.0, 120.0, 2.5, 3.0 ) );
 			Check( std::isfinite( R ) && R >= 0.0 && R <= 1.0,
 			       "an index 50 decades small is still handled (the cliff is far below)" );
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// [Renormalize] detail::RenormalizeLayerProduct (2026-08-01).
+	//
+	// The layer-product rescale is what makes the N-layer path total when a
+	// stand-in index drives an entry to ~1e161.  Two properties matter and
+	// neither is observable from a reflectance alone, which is why the helper
+	// was extracted from the loop to be pinned directly:
+	//   * it is EXACT -- a power-of-two rescale preserves every mantissa, so
+	//     the ratios the reflectance depends on are bit-unchanged;
+	//   * it is TOTAL -- including for a DENORMAL magnitude, where the obvious
+	//     implementation (multiply by a precomputed 2^-exponent) overflows the
+	//     multiplier to inf while the magnitude itself is still finite.
+	// ------------------------------------------------------------------
+	{
+		std::printf( "\n[Renormalize] exactness and totality of the layer-product rescale\n" );
+		using RISE::ThinFilm::Complex;
+		const double den = 1e-310;					// denormal
+		const double tiny = std::numeric_limits<double>::denorm_min();
+		const struct { const char* tag; Complex a, b, c, d; } cases[] = {
+			{ "O(1)",            Complex(1,2), Complex(3,-4), Complex(-5,6), Complex(7,8) },
+			{ "huge (1e161)",    Complex(1e161,2e160), Complex(3,-4), Complex(-5,6), Complex(7,8) },
+			{ "near overflow",   Complex(1e300,0), Complex(1e299,0), Complex(0,0), Complex(1,0) },
+			{ "DENORMAL",        Complex(den,0), Complex(den/2,0), Complex(0,0), Complex(den/4,0) },
+			{ "denorm_min",      Complex(tiny,0), Complex(0,0), Complex(0,0), Complex(0,0) },
+			{ "all zero",        Complex(0,0), Complex(0,0), Complex(0,0), Complex(0,0) },
+			// m00 SMALL, an off-diagonal HUGE.  The magnitude must be the max
+			// over all four entries, not |m00|: using |m00| alone leaves the
+			// product un-rescaled here, and that mutant passes every other row
+			// in this block.  (It is exactly the shape a stand-in layer makes:
+			// the p-polarization off-diagonals blow up while m00 = 1 + phi
+			// stays O(1).)
+			{ "small m00, huge m01", Complex(1,0), Complex(1e160,0), Complex(0,0), Complex(1,0) },
+			{ "small m00, huge m10", Complex(1,0), Complex(0,0), Complex(1e160,0), Complex(1,0) },
+			{ "small m00, huge m11", Complex(1,0), Complex(0,0), Complex(0,0), Complex(1e160,0) },
+			{ "tiny m00, tiny rest",  Complex(1e-160,0), Complex(1e-161,0), Complex(0,0), Complex(1e-162,0) },
+		};
+		for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
+			Complex m00 = cases[i].a, m01 = cases[i].b, m10 = cases[i].c, m11 = cases[i].d;
+			RISE::ThinFilm::detail::RenormalizeLayerProduct( m00, m01, m10, m11 );
+			// TOTAL: nothing may become non-finite.
+			Check( std::isfinite(m00.real()) && std::isfinite(m00.imag())
+			    && std::isfinite(m01.real()) && std::isfinite(m01.imag())
+			    && std::isfinite(m10.real()) && std::isfinite(m10.imag())
+			    && std::isfinite(m11.real()) && std::isfinite(m11.imag()),
+			       "renormalize stays finite (incl. denormal magnitudes)" );
+			// POSTCONDITION -- the assertion that actually has teeth.  After
+			// the call the magnitude's binary exponent must be inside the
+			// band, so the product cannot drift toward the ~1e154 where the
+			// complex division overflows.  A do-nothing implementation fails
+			// this (an un-rescaled product reaches ~1e161, exponent ~535), as
+			// do "rescale only above 1e100", "only on the first layer", "only
+			// on the last layer" and "use |m00| instead of the max" -- every
+			// one of which passes the finiteness and ratio rows below.
+			{
+				double mg = std::fabs( m00.real() );
+				const double cs[7] = { std::fabs( m00.imag() ),
+				                       std::fabs( m01.real() ), std::fabs( m01.imag() ),
+				                       std::fabs( m10.real() ), std::fabs( m10.imag() ),
+				                       std::fabs( m11.real() ), std::fabs( m11.imag() ) };
+				for( int q = 0; q < 7; ++q ) { if( cs[q] > mg ) mg = cs[q]; }
+				if( mg > 0.0 && std::isfinite( mg ) ) {
+					int e2 = 0;
+					std::frexp( mg, &e2 );
+					Check( e2 >= -64 && e2 <= 65,
+					       "renormalize POSTCONDITION: magnitude lands inside the band" );
+				}
+			}
+
+			// The ratio rows below are weaker than they read: a power-of-two
+			// rescale and a correctly-rounded division differ by ~2 ulp, so a
+			// 1e-15 relative tolerance cannot distinguish "exact" from
+			// "correctly rounded".  They are kept as a coarse sanity check;
+			// the postcondition above is the discriminating assertion.
+			const double n0 = std::abs( cases[i].a ), r0 = std::abs( m00 );
+			const double n1 = std::abs( cases[i].b ), r1 = std::abs( m01 );
+			if( n0 > 0.0 && n1 > 0.0 && r0 > 0.0 && r1 > 0.0 ) {
+				Check( std::fabs( (r1/r0) - (n1/n0) ) <= 1e-15 * (n1/n0),
+				       "renormalize preserves the ratios exactly" );
+			}
+		}
+		// The reason it exists: the same stack, rescaled or not, must agree.
+		// (The un-rescaled form is NaN under the shipped flags, so this is a
+		// one-way check -- it pins that the rescaled answer is the right one.)
+		{
+			const RISE::ThinFilm::Complex N0( 1.5, 0.0 ), Ns( 1.46, 0.0 );
+			const RISE::ThinFilm::Complex f[3] = {
+				RISE::ThinFilm::Complex(0,0), RISE::ThinFilm::Complex(1.38,0),
+				RISE::ThinFilm::Complex(0,0) };
+			const RISE::Scalar t[3] = { 300.0, 100.0, 300.0 };
+			const double R = double( RISE::ThinFilm::ReflectanceConductorStack(
+				0.6, 550.0, N0, f, t, 3, Ns ) );
+			// 120-dps limit for this stack.
+			// 0.99999989915178819 is the mpmath limit at 120+ dps, cross-checked
+			// in two independent formulations.  An earlier version of this pin
+			// used ...811, which is not the limit at all -- it is what THIS
+			// evaluator prints under -O3 -fno-fast-math, i.e. the component
+			// under test recorded under a different flag set and mislabelled
+			// as an independent reference.
+			Check( std::isfinite( R ) && std::fabs( R - 0.99999989915178819 ) < 1e-12,
+			       "two stand-in layers around an ordinary one match the 120-dps limit" );
+			std::printf( "  two-stand-in-layer stack: R = %.17g (120-dps 0.99999989915178819)\n", R );
 		}
 	}
 
