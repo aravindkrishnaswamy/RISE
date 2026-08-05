@@ -824,7 +824,7 @@ struct ChatSettingsView: View {
     /// directly-storable type.
     @AppStorage("agentChatTriageEnabled") private var triageEnabled = false
     @AppStorage("agentChatTriageProvider") private var triageProviderRaw = "local"
-    @AppStorage("agentChatTriageModel") private var triageModel = "qwen3.6:27b"
+    @AppStorage("agentChatTriageModel") private var triageModel = ""
 
     @State private var draftProvider: AgentChatProviderChoice = .openai
     @State private var draftModelId: String = ""
@@ -1034,11 +1034,21 @@ struct ChatSettingsView: View {
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
+                        // A model id is provider-specific; carrying one across a
+                        // provider switch is exactly the shipped 404 bug (local
+                        // "qwen3.6:27b" sent to the Google API).  Clear the field
+                        // on switch so the provider's own default applies.
+                        .onChange(of: triageProviderRaw) { _ in
+                            triageModel = ""
+                        }
 
                         Text("Triage model")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        TextField("qwen3.6:27b", text: $triageModel)
+                        TextField(triageProviderRaw == "local"
+                                      ? "qwen3.6:27b (default)"
+                                      : "provider default",
+                                  text: $triageModel)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.caption, design: .monospaced))
                     }

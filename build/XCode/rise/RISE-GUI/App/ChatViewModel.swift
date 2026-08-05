@@ -897,13 +897,20 @@ final class ChatViewModel: ObservableObject {
 
     /// "" (provider default) is legal — `runTriage` passes it straight
     /// to `setProvider:modelId:`, same as the main provider picker's
-    /// blank-model convention.  The DEFAULT value here (before the user
-    /// ever opens settings) is "qwen3.6:27b" — a small, fast local model
-    /// appropriate for a one-shot triage question, not the main chat's
-    /// default per-provider model.
+    /// blank-model convention.  The unset-field fallback is
+    /// PROVIDER-AWARE: "qwen3.6:27b" (a small, fast local model) applies
+    /// ONLY when the triage provider is `.local` — for a hosted provider
+    /// an empty field means "" -> nil -> the bridge's own per-provider
+    /// default model.  (Bug fixed 2026-08-05: the local fallback used to
+    /// apply unconditionally, so "provider: gemini + untouched model
+    /// field" sent model id "qwen3.6:27b" to the Google API -> HTTP 404
+    /// -> ProviderError -> the fall-through contract silently skipped
+    /// triage on every send, indistinguishable from a clean
+    /// no-clarification verdict.)
     private var triageModelId: String {
         let raw = UserDefaults.standard.string(forKey: Self.triageModelKey) ?? ""
-        return raw.isEmpty ? "qwen3.6:27b" : raw
+        if !raw.isEmpty { return raw }
+        return triageProvider == .local ? "qwen3.6:27b" : ""
     }
 
     /// GUI stage 2: cap a tool-call detail payload (args JSON or a raw
@@ -2673,7 +2680,15 @@ final class ChatViewModel: ObservableObject {
     /// normal path): on every one of the following, `chatBridge
     /// .addUserMessage(originalText)` is called with the UNMODIFIED
     /// original text and this returns true, exactly as if triage were
-    /// disabled —
+    /// disabled — with one 2026-08-05 amendment: MECHANICAL failures
+    /// (missing key, transport error/timeout, non-FinalText step,
+    /// unparseable verdict) now append a one-line `.notice` naming the
+    /// skip, so a persistently-misconfigured triage setup (the shipped
+    /// bug: a hosted provider paired with the stale local model id ->
+    /// perpetual 404) is visible instead of masquerading as "brief
+    /// judged clear".  Only a genuine no-clarification/no-augmentation
+    /// verdict falls through with no notice.  The never-block property
+    /// is unchanged —
     ///   * the triage provider's raw UserDefaults value no longer names
     ///     a real provider (defensive; `triageProvider` already falls
     ///     back to `.local`, so this is effectively unreachable),
@@ -2740,6 +2755,8 @@ final class ChatViewModel: ObservableObject {
         let apiKey: String
         if triageProviderChoice.requiresApiKey {
             guard let resolved = resolveApiKey(for: triageProviderChoice) else {
+                transcript.append(Entry(kind: .notice,
+                    text: "Triage skipped (no API key for the triage provider) — message sent unmodified."))
                 return sendUnmodified()
             }
             apiKey = resolved
@@ -2777,6 +2794,8 @@ final class ChatViewModel: ObservableObject {
             // triage like any other cancellation, not fall through to
             // sending the original text out from under the user.
             if Task.isCancelled || stopRequested { return false }
+            transcript.append(Entry(kind: .notice,
+                text: "Triage skipped (network error or timeout) — message sent unmodified."))
             return sendUnmodified()
         }
         if Task.isCancelled || stopRequested { return false }
@@ -2786,6 +2805,13 @@ final class ChatViewModel: ObservableObject {
         guard step.kind == .finalText, !step.finalText.isEmpty,
               let verdict = Self.parseTriageVerdict(step.finalText)
         else {
+            // A mechanical failure (provider error -- e.g. a wrong model id
+            // returning 404 -- or an unparseable reply) is made VISIBLE so a
+            // persistent misconfiguration cannot masquerade as "the brief
+            // was judged clear" forever.  Only the genuine
+            // no-clarification/no-augmentation verdict below stays silent.
+            transcript.append(Entry(kind: .notice,
+                text: "Triage skipped (triage model unavailable or reply unusable) — message sent unmodified."))
             return sendUnmodified()
         }
 
