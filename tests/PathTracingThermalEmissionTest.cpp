@@ -168,9 +168,13 @@ namespace
 		std::filesystem::path scenePath;
 		Scalar slabLength;
 		Scalar temperatureK;
+		Scalar sceneUnitMeters;
+		Scalar sootAlbedoHot;
+		bool greyPel;
 
 		Fixture() : job( nullptr ), caster( nullptr ), integrator( nullptr ),
-			slabLength( 0 ), temperatureK( kTemperatureK ) {}
+			slabLength( 0 ), temperatureK( kTemperatureK ), sceneUnitMeters(1.0),
+			sootAlbedoHot(0.0), greyPel(false) {}
 
 		~Fixture()
 		{
@@ -193,6 +197,9 @@ namespace
 		{
 			slabLength = length;
 			temperatureK = greyPel ? 700.0 : kTemperatureK;
+			this->sceneUnitMeters = sceneUnitMeters;
+			this->sootAlbedoHot = sootAlbedoHot;
+			this->greyPel = greyPel;
 			char filename[176];
 			std::snprintf( filename, sizeof(filename),
 				"rise_pathtracing_thermal_%s_%d.RISEscene", tag, static_cast<int>( ::getpid() ) );
@@ -207,14 +214,7 @@ namespace
 
 			if( !RISE_CreateJobPriv( &job ) || !job ||
 				!job->LoadAsciiSceneViaCst( scenePath.string().c_str() ) ) return false;
-			const Scalar scale = 1.0/sceneUnitMeters;
-			const double bboxMin[3] = {-0.5*scale,-0.5*scale,-slabLength};
-			const double bboxMax[3] = {0.5*scale,0.5*scale,2.0*slabLength};
-			if( !job->AddMultichannelHeterogeneousMedium(
-				"fire","carbon","temperature",4,4,4,bboxMin,bboxMax,
-				sceneUnitMeters,0.26,1800.0,sootAlbedoHot,0.5,8.7,
-				greyPel ? 0.0 : 1.2,greyPel ? 0.0 : 0.6,0.6) ||
-				!job->SetGlobalMedium("fire") ) return false;
+			if( !InstallMedium(*job) ) return false;
 			IShader* shader = job->GetShaders()->GetItem( "global" );
 			if( !shader || !RISE_API_CreateRayCaster(
 				&caster, false, rayCasterMaxDepth, *shader, true ) || !caster ) return false;
@@ -224,6 +224,18 @@ namespace
 			stability.maxVolumeBounce = maxVolumeBounce;
 			integrator = new PathTracingIntegrator( ManifoldSolverConfig(), stability );
 			return true;
+		}
+
+		bool InstallMedium( IJobPriv& target ) const
+		{
+			const Scalar scale = 1.0/sceneUnitMeters;
+			const double bboxMin[3] = {-0.5*scale,-0.5*scale,-slabLength};
+			const double bboxMax[3] = {0.5*scale,0.5*scale,2.0*slabLength};
+			return target.AddMultichannelHeterogeneousMedium(
+				"fire","carbon","temperature",4,4,4,bboxMin,bboxMax,
+				sceneUnitMeters,0.26,1800.0,sootAlbedoHot,0.5,8.7,
+				greyPel ? 0.0 : 1.2,greyPel ? 0.0 : 0.6,0.6) &&
+				target.SetGlobalMedium("fire");
 		}
 
 		const IMedium* Medium() const
@@ -950,10 +962,12 @@ namespace
 		const std::filesystem::path& scenePath,
 		const unsigned int maxRecursion,
 		IJobPriv*& job,
-		IRayCaster*& caster )
+		IRayCaster*& caster,
+		const Fixture* explicitFixture = 0 )
 	{
 		return RISE_CreateJobPriv(&job) && job &&
 			job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
+			(!explicitFixture || explicitFixture->InstallMedium(*job)) &&
 			InstallMarchOnlyGlobalMedium(*job) &&
 			CreatePreparedCaster(*job,maxRecursion,caster);
 	}
@@ -2770,7 +2784,7 @@ namespace
 		IRayCaster* marchOnlyCaster = nullptr;
 		IJobPriv* marchJob = nullptr;
 		Check( LoadMarchOnlyFixture(
-			fixture.scenePath,8,marchJob,marchOnlyCaster),
+			fixture.scenePath,8,marchJob,marchOnlyCaster,&fixture),
 			"immersed-receiver march reference prepares without a thermal CDF" );
 		Check( CreatePreparedCaster(*fixture.job,8,neeCaster),
 			"immersed-receiver NEE route prepares the active fire CDF" );
@@ -3772,7 +3786,7 @@ namespace
 		IRayCaster* marchOnlyCaster = nullptr;
 		IJobPriv* marchJob = nullptr;
 		Check( LoadMarchOnlyFixture(
-				fixture.scenePath,0,marchJob,marchOnlyCaster),
+				fixture.scenePath,0,marchJob,marchOnlyCaster,&fixture),
 			"camera-primary march reference prepares without a thermal CDF" );
 
 		const LightSampler* neeLights =
