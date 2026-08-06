@@ -767,6 +767,10 @@
 		F24B743A2F52A632008304C4 /* Optics.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
 		FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
 		FA51000131AA000100000002 /* PlanckRadiance.h in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000002 /* RISECBOR64.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000003 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000004 /* FireOptics.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
 		FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
@@ -1418,6 +1422,10 @@
 		F27F0C88069C42910069C9E5 /* Optics.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
 		FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
 		FA51000131AA000100000004 /* PlanckRadiance.h in Headers */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000006 /* RISECBOR64.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000007 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000008 /* FireOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
 		FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
@@ -2620,6 +2628,10 @@
 		F27F0A2F069C42900069C9E5 /* Optics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Optics.h; sourceTree = "<group>"; };
 		FA51000131AA000100000005 /* PlanckRadiance.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PlanckRadiance.cpp; sourceTree = "<group>"; };
 		FA51000131AA000100000006 /* PlanckRadiance.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PlanckRadiance.h; sourceTree = "<group>"; };
+		FD86000131CC000100000009 /* RISECBOR64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RISECBOR64.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000A /* RISECBOR64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RISECBOR64.h; sourceTree = "<group>"; };
+		FD86000131CC00010000000B /* FireOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireOptics.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000C /* FireOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireOptics.h; sourceTree = "<group>"; };
 		FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GaussLegendreQuadrature.cpp; sourceTree = "<group>"; };
 		FB37000131BB000100000006 /* GaussLegendreQuadrature.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GaussLegendreQuadrature.h; sourceTree = "<group>"; };
 		F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OrthonormalBasis3D.cpp; sourceTree = "<group>"; };
@@ -4086,6 +4098,10 @@
 				F27F0A2F069C42900069C9E5 /* Optics.h */,
 				FA51000131AA000100000005 /* PlanckRadiance.cpp */,
 				FA51000131AA000100000006 /* PlanckRadiance.h */,
+				FD86000131CC000100000009 /* RISECBOR64.cpp */,
+				FD86000131CC00010000000A /* RISECBOR64.h */,
+				FD86000131CC00010000000B /* FireOptics.cpp */,
+				FD86000131CC00010000000C /* FireOptics.h */,
 				FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */,
 				FB37000131BB000100000006 /* GaussLegendreQuadrature.h */,
 				F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */,
@@ -4888,6 +4904,8 @@
 				F27F0C86069C42910069C9E5 /* MRUCache.h in Headers */,
 				F27F0C88069C42910069C9E5 /* Optics.h in Headers */,
 				FA51000131AA000100000004 /* PlanckRadiance.h in Headers */,
+				FD86000131CC000100000006 /* RISECBOR64.h in Headers */,
+				FD86000131CC000100000008 /* FireOptics.h in Headers */,
 				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
 				F27F0C8B069C42910069C9E5 /* PEL.h in Headers */,
@@ -5378,6 +5396,8 @@
 				F27F0C84069C42910069C9E5 /* MersenneTwister.cpp in Sources */,
 				F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */,
 				FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */,
+				FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000007 /* FireOptics.cpp in Sources */,
 				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
@@ -6287,6 +6307,10 @@
 				F24B743A2F52A632008304C4 /* Optics.h in Sources */,
 				FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */,
 				FA51000131AA000100000002 /* PlanckRadiance.h in Sources */,
+				FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000002 /* RISECBOR64.h in Sources */,
+				FD86000131CC000100000003 /* FireOptics.cpp in Sources */,
+				FD86000131CC000100000004 /* FireOptics.h in Sources */,
 				FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */,
 				FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */,
 				F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */,

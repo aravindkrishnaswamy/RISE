@@ -78,6 +78,8 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
+	$(PATHLIBRARY)Utilities/RISECBOR64.cpp				\
+	$(PATHLIBRARY)Utilities/FireOptics.cpp				\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\

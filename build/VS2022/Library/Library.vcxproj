@@ -478,6 +478,8 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\MemoryBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\MersenneTwister.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Optics.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\RISECBOR64.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.cpp" />
@@ -1019,6 +1021,8 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h" />
