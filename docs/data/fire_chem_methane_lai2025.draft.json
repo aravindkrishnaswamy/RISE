@@ -35,7 +35,18 @@
   "uncertainty": "radiometer circuit <2.5% (SS2.2.2); NO end-to-end radiometric budget"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "6778750ca4e8b69f41da179077dec1ac40c674a19bd160b661b054980e9821cb",
+ "draft_record_id_sha256_of_payload": "4be533e69672f8bb674be5ebe2b52a8804ae7836db4d72573148454ea02f2f46",
+ "owner_ruling_2026_08_05": {
+  "certified_domain": "intersection of every subrecord's domain; initial adoption restricted to lean/stoichiometric Phi<=1 (clean flow-derived HRR); rich cases preview",
+  "next_step": "send the drafted author request if predictive methane is wanted",
+  "policy": "Composite-source records ALLOWED: one versioned methane record may contain separately hashed subrecords with distinct provenance/uncertainties (SS4.4 already treats CH*, C2*, CO2* as independent source fields).",
+  "record_state": "still OPEN - the Lai + CO2*-model composite is incomplete",
+  "required_closures": [
+   "CH* B-X 390nm: inside 380-780nm and part of the CH record - second source or rigorous upper bound; silent omission unacceptable",
+   "CO2* overlap: decompose the continuum under Lai's nominal 431nm signal before adding modeled CO2* (else double count; cf. Nori & Seitzman ~70% continuum contribution at 431+/-5nm)",
+   "CO2* model qualification: absolute rate, normalized SPD, quenching/pressure dependence, certified state domain, uncertainty, validation - a published reaction formula does not qualify"
+  ]
+ },
  "record_kind": "chem_dataset_evaluation",
  "record_name": "chem-methane-lai2025-evaluation",
  "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",

@@ -1,9 +1,9 @@
 {
  "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
  "closure_paths": [
-  "owner library pulls (Samaniego 1995; Markstein 1985 series; Koseki & Yumoto 1988; SFPE Ch.36; Thomsen 2017)",
-  "OWNER RULING: does a computed, uncertainty-propagated bound over published inputs qualify as SS7.0's 'pinned measurement'?",
-  "else: a modest calibrated visible-band radiometry lab measurement (refutes the no-lab-work hypothesis)"
+  "owner library pulls (Samaniego 1995; Markstein 1985 series; Koseki & Yumoto 1988; SFPE Ch.36; Thomsen 2017) - may supply same-regime evidence",
+  "RESOLVED: computed bounds qualify in principle (see owner_ruling_2026_08_05); the construction must meet the revised derived-record uncertainty requirements",
+  "lab measurement required only where model discrepancy cannot be bounded from same-regime data"
  ],
  "compiled": "2026-07-31",
  "computed_ratio_matrix_percent": {
@@ -38,7 +38,7 @@
   }
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "ebf3660812b87084a0d15562ebbbb5fec0e9ec0676b647d8f24434a2f9d456a6",
+ "draft_record_id_sha256_of_payload": "96828b7cf309fc5ba0ef6fe2c5210cd068b2acde18fbadcc9d8b54290d0f0aa2",
  "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
  "notes": [
   "large sooty pools are dim in the visible per unit HRR; bound is FURTHER from closure than the candle's"
@@ -59,6 +59,7 @@
    "value": "0.4-2.5e-3 of HRR"
   }
  },
+ "owner_ruling_2026_08_05": "OWNER RULING 2026-08-05 - policy closed, record stays preview: computed bounds QUALIFY IN PRINCIPLE under revised SS7.0 language ('a pinned evidence record reports a one-sided 95%-confidence upper bound, obtained either directly or through a validated measurement model over traceable measured inputs; a derived record must include measurement, covariance, digitization, geometry, spectral-truncation, domain-transfer, and model-form uncertainties' - design-loop edit pending), but the present Slack-Grillo + Jin + Hamins construction FAILS it: kinetics model is not a same-case measurement; methane-field transfer to this fuel is an unbounded domain-transfer discrepancy; numerator channel completeness undemonstrated; chi_r x soot-T is not a measured visible denominator (~5x reconstruction spread); leg (ii) untestable until Q4 freezes. Lab work not required by definition; required for any fuel whose model discrepancy cannot be bounded from same-regime data.",
  "record_kind": "chem_negligibility_bound",
  "record_name": "chem-negligibility-heptane_pool-v1",
  "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",

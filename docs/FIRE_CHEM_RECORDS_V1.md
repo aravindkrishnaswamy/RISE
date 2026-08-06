@@ -143,6 +143,41 @@ measurement would likely raise D_vis. That is precisely the missing
 measurement.) Wood: χ_r ≈ 0.3 is only snippet-verified (SFPE handbook,
 paywalled); no visible-band data; same structure as heptane.
 
+### 1.5a Owner ruling (2026-08-05): computed bounds qualify in principle; this construction does not yet
+
+**Policy closed; sooty fuels remain preview.** A derived measurand is not
+invalid merely because it is computed — the gate cares about a defensible
+one-sided 95 % bound, not whether the number was read off an instrument.
+Ready-to-land replacement language for §7.0's "pinned measurement"
+(design-loop edit, owner's wording):
+
+> A pinned evidence record reports a one-sided 95 %-confidence upper bound,
+> obtained either directly or through a validated measurement model over
+> traceable measured inputs. A derived record must include measurement,
+> covariance, digitization, geometry, spectral-truncation, domain-transfer,
+> and model-form uncertainties.
+
+The §1.6 Slack–Grillo + Jin + Hamins construction **fails that stronger
+definition** as it stands:
+
+- Slack–Grillo is a kinetics/source model, not a same-case measurement of
+  wax/heptane/wood visible chemiluminescence;
+- Jin's calibrated fields are methane diffusion-flame measurements —
+  transferring them to other fuels introduces an unbounded
+  fuel/regime-transfer discrepancy;
+- the numerator is not demonstrably complete across all important visible
+  channels;
+- χ_r plus a soot temperature is not a *measured* 380–780 nm denominator
+  (the two reconstructions in §1.4 disagree by ~5×);
+- leg (ii) remains untestable until the absolute-radiance wavelengths and
+  uncertainties are frozen (§12 item 4).
+
+Consequently the "if yes, tier 1 is ~days of work" claim in §1.6 is
+**rejected**: library pulls may supply enough same-regime evidence, but
+until they do, the records remain preview. Lab work is not required *by
+definition* — it becomes required for any fuel whose model discrepancy
+cannot be bounded from existing same-regime data.
+
 ### 1.6 What would actually close tier 1 — the pinned-record path
 
 In order of increasing cost:
@@ -229,6 +264,33 @@ Secondary conflict flagged: if the owner accepts *digitized figures* as
 interim provenance (with digitization uncertainty recorded), a record could
 be drafted without author contact — but criterion (c) (band bounds) is still
 missing, so digitization alone cannot close Q1-methane.
+
+### 2.5 Owner ruling (2026-08-05): composite-source records allowed; this composite is not yet complete
+
+**Policy closed; the methane record remains open.** §4.4 already treats
+CH*, C₂*, and CO₂* as independent source fields, so requiring one
+experiment to measure all three is scientifically unnecessary: one
+versioned methane record may contain **separately hashed subrecords** with
+distinct provenance and uncertainties. Before Lai + a CO₂* model can close
+the record, three specific closures are required:
+
+1. **CH* B–X 390 nm** — inside the renderer's 380–780 nm band and
+   explicitly part of the CH record. Supply another source or a rigorous
+   upper bound; silent omission is not acceptable.
+2. **CO₂*-continuum overlap** — Lai's nominal 431 nm signal may contain
+   continuum underneath it (cf. Nori & Seitzman: CO₂* contributes ~70 % of
+   the nominal CH* 431±5 nm signal in atmospheric methane flames). The raw
+   spectrum must be decomposed before a separately modeled CO₂* term is
+   added, or the continuum is double-counted.
+3. **CO₂* model qualification** — an absolute rate, normalized SPD,
+   quenching/pressure dependence, certified state domain, uncertainty, and
+   validation; a published reaction formula alone does not qualify.
+
+The certified domain of the composite is the **intersection** of every
+subrecord's domain; initial adoption is restricted to Lai's
+lean/stoichiometric cases (Φ ≤ 1), where HRR from the stated flows is
+clean. Rich cases remain preview. Send the §2.4 author request if
+predictive methane is wanted.
 
 ### 2.4 Draft author-contact email (for the owner to send)
 
@@ -321,19 +383,30 @@ visible.
 case becomes a product requirement.** The §4.4 machinery still renders
 methanol as *preview* with synthetic S_b fixtures.
 
+**Owner ruling (2026-08-05): accepted — Option A, closed for v1, no
+commissioning now.** Methanol's visible appearance is predominantly
+chemiluminescent, so `chem_model=none` cannot plausibly pass the
+negligibility route; the honest state is preview. Trigger defined: if
+predictive methanol becomes a named v1 acceptance case or a product
+requirement, contact the Jin/Lai groups first (Option C); commission a new
+measurement (Option B) only if that parlay fails. NIST's methanol
+radiometry remains a valuable *future validation* case but supplies no
+spectral channels.
+
 ---
 
-## 4. Summary of owner actions
+## 4. Summary of owner actions (updated after the 2026-08-05 rulings)
 
-1. **Library pulls** (tier 1, cheap): Samaniego 1995; Markstein 1985 series;
-   Koseki & Yumoto 1988; SFPE Ch. 36 wood tables; Thomsen 2017.
-2. **Design ruling**: does a computed, uncertainty-propagated bound over
-   published inputs qualify as §7.0's "pinned measurement"? (§1.6.2.)
-3. **Record in §12**: leg (ii) of the §7.0 negligibility criterion is
-   un-evaluable until §12 item 4 (radiance-gate dataset) closes — the tier-1
-   records are blocked on Q4 regardless of leg (i).
-4. **Send the Lai author email** (§2.4) if a methane record is wanted; decide
-   whether a two-channel (CH*, C₂*) record + separately sourced CO₂* model
-   satisfies Q1-methane.
-5. **Methanol**: accept the preview recommendation or open a commissioning
-   thread.
+Rulings taken: computed bounds qualify in principle but this construction
+does not (§1.5a — policy closed, sooty fuels stay preview); composite-source
+methane records allowed with three named closures outstanding (§2.5);
+methanol closed for v1 as preview with a defined re-open trigger (§3.2).
+
+Remaining:
+
+1. **Design-loop edits**: land the revised §7.0 "pinned evidence record"
+   language (§1.5a) and record the leg-(ii)/Q4 structural dependency in §12.
+2. **Library pulls** (tier-1 evidence, cheap): Samaniego 1995; Markstein
+   1985 series; Koseki & Yumoto 1988; SFPE Ch. 36 wood tables; Thomsen 2017.
+3. **Send the Lai author email** (§2.4) if predictive methane is wanted;
+   the CH* 390 nm and CO₂*-decomposition closures (§2.5) stand regardless.

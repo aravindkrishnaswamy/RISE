@@ -1,5 +1,5 @@
 {
- "applies_to": "condensed organic aerosol constituent, c_condensed inventory (SS3.4/SS4.3); FRESH flaming-phase wood smoke",
+ "applies_to": "condensed organic aerosol constituent, c_condensed inventory (SS3.4/SS4.3). Domain (owner wording, 2026-08-05): 'fresh, dry, near-source condensed organic aerosol produced by flaming combustion' - NOT 'in-flame' (material hot enough for the reaction zone may not yet be condensed); n~0-1 language belongs to aged/coagulated aerosol.",
  "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as a RISE-CBOR64-v1 byte string; the adopted record ID is SHA-256 of those exact CBOR bytes. The draft_record_id here covers only this JSON payload.",
  "compiled": "2026-07-31",
  "computed_outputs_full_mie": {
@@ -65,13 +65,28 @@
   "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "9f676b48a2f21f2ee37d3f743170b5f9bca70316bb15f9feebe9847b487b2958",
+ "draft_record_id_sha256_of_payload": "795cc448fee43701687c8e8df54e772ddd7a19678da7fc590352f873fde16ea1",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
   "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
   "SVOC-corrected alpha/rho(lambda): Chen & Bond Fig.11 is figure-only; digitization required if adopted",
   "derivative enclosures: generate at freeze time"
  ],
+ "ir_closure": {
+  "basis": "Sumlin measured 375-1047nm only, on smoldering peat BrC - not a mid-IR fresh-flaming surrogate; at condensed-organic temperatures much of the Planck power lies several um into the IR where molecular vibrational absorption can dominate",
+  "behavior": "predictive runs with nonzero condensed-organic yield FAIL with the reason code; preview continues",
+  "closure_paths": [
+   "composition-appropriate MEASURED mid-IR optical-constant or mass-absorption record",
+   "conservative bound proving condensed-organic thermal cooling negligible over the certified state domain"
+  ],
+  "predictive_reason_code": "condensed_organics_ir_unclosed",
+  "prohibited_shortcuts": [
+   "flat extension of the 1047nm value",
+   "zero IR absorption",
+   "silent reuse of the visible power law"
+  ],
+  "status": "BLOCKED"
+ },
  "mie_inputs": {
   "brown_carbon_AAE": {
    "range": [
@@ -130,7 +145,7 @@
  },
  "record_kind": "constituent_optics",
  "record_name": "condensed-organics-smoke-v1",
- "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "record_status": "VISIBLE_PRESET_FROZEN_2026-08-05__IR_CLOSURE_BLOCKED",
  "schema_version": "draft-1",
  "validation_against_independent_targets": {
   "alpha_s_550": {

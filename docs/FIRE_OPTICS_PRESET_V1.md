@@ -263,6 +263,30 @@ closure target); validation of computed g against exact methods (Romshoo et
 al. 2021 ACP supplement is **open** and tabulates MSTM-fit g coefficients —
 recommended cross-check before freeze).
 
+### 2.5 Owner rulings (2026-08-05)
+
+**g_hot: ADOPTED — 0.22 at 550 nm, with 0.09–0.37 recorded as the supported
+provenance range.** The computed value is correct for the constituent
+actually named "hot soot" (young, comparatively small in-flame aggregates);
+0.5 describes mature aggregates, which the φ(T) split already assigns to
+cool carbon — keeping it would double-count maturation in the wrong
+constituent. Because ω_hot ≈ 0.10, the hot constituent scatters weakly, so
+this uncertainty has limited total radiometric leverage. The 0.5 value may
+persist **only** in the explicitly synthetic regression fixture, and the
+fixture and predictive preset must carry **distinct record IDs** so their
+provenance cannot be confused.
+
+**Young-soot d_p: small provenance gate before freeze.** Pull Yazicioglu et
+al., Combust. Sci. Technol. 171:71–87 (2001), DOI
+10.1080/00102200108907859 (TEM primary-particle and aggregate morphology in
+laminar coflow diffusion flames) before declaring the predictive hot-soot
+record frozen; the 20–35 nm range is provisional meanwhile and does not
+block architecture. If the paper lacks directly adoptable tabulated values,
+retain 20–35 nm with a **formal digitization record**: exact page and
+figure; extraction method and digitization uncertainty; flame conditions
+and sampling location; and how those conditions map to the hot-soot
+certified domain. That replaces the vague "values live in figures" label.
+
 ---
 
 ## 3. Cool-carbon smoke triple (k_m, n, ω, g) + the §4.3 total anchor
@@ -387,6 +411,29 @@ spans 3.95–4.44 over the size corners, 3.27–4.97 over n ∈ [1.42, 1.55]; ω
   owner decision (candidates exist in the atmospheric literature but were
   not verified this session).
 
+### 4.5 Owner ruling (2026-08-05): visible preset frozen; IR closure blocked
+
+**n_ext ≈ 1.78 accepted**, with the domain stated precisely as: **"fresh,
+dry, near-source condensed organic aerosol produced by flaming
+combustion."** (Not "in-flame condensed organics" — material hot enough to
+remain in the reaction zone may not yet be condensed. The n ≈ 0–1 language
+belongs to aged/coagulated aerosol.)
+
+**IR closure: it is prohibited to extend the 1047 nm value flatly, set IR
+absorption to zero, or silently reuse the visible power law.** Sumlin
+measured only 375–1047 nm on smoldering peat BrC — not a mid-IR
+fresh-flaming surrogate — and at condensed-organic temperatures much of the
+Planck power lies several microns into the IR where molecular vibrational
+absorption can dominate. Before predictive §3.5 use, one of:
+
+1. a composition-appropriate, **measured** mid-IR optical-constant or
+   mass-absorption record; or
+2. a conservative bound proving condensed-organic thermal cooling
+   negligible over the certified state domain.
+
+Until then, predictive runs with nonzero condensed-organic yield **fail
+with reason `condensed_organics_ir_unclosed`**; preview continues.
+
 ---
 
 ## 5. Summary — what closes Q2, what needs the owner
@@ -397,12 +444,16 @@ three ways), cool-carbon k_m/ω/n (anchor check passes to < 1 %), condensed
 organics k_m/ω/g/n (validated against Reid's independent targets), and the
 total-anchor consistency for wood-class flaming smoke.
 
-**Owner decisions required**: (1) ~~E(m) magnitude vs shape~~ **DECIDED
-2026-08-05** (§1.5: `mac_equivalent_E`, C&C shape normalized to
-MAC(550) = 8.0 m²/g); (2) young-soot d_p acceptance from lead-only sources or a library pull
-(§2.3); (3) g_hot: accept the computed 0.2–0.3 for in-flame soot or keep
-0.5 knowing it describes mature aggregates (§2.4); (4) condensed-organics
-fresh-vs-aged applicability statement and IR closure (§4.4).
+**Owner decisions — all four now taken** (2026-08-05): (1) E(m) →
+`mac_equivalent_E`, C&C shape normalized to MAC(550) = 8.0 m²/g (§1.5);
+(2) young-soot d_p → provisional 20–35 nm behind a Yazicioglu pull /
+formal-digitization provenance gate (§2.5); (3) g_hot → **0.22 at 550 nm
+adopted**, 0.09–0.37 provenance range; the 0.5 fixture survives only as an
+explicitly synthetic record with a distinct ID (§2.5); (4) condensed
+organics → visible preset frozen with the "fresh, dry, near-source,
+flaming" domain statement; IR remains blocked with reason
+`condensed_organics_ir_unclosed` until a measured mid-IR record or a
+negligibility bound exists (§4.5).
 
 **Library pulls** (all cheap): C&C 1990 primary; Mulholland & Croarkin 2000
 body; Köylü & Faeth 1994a; Yazicioglu 2001; Sumlin SI tables; Turpin & Lim
