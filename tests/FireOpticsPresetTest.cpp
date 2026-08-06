@@ -36,6 +36,22 @@ namespace
 		return std::find(evaluation.reasonCodes.begin(), evaluation.reasonCodes.end(),
 			std::string(reason)) != evaluation.reasonCodes.end();
 	}
+
+	RISECBOR64::Value ReplaceMember(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value& replacement
+		)
+	{
+		RISECBOR64::Value::Members members = map.GetMap();
+		for( RISECBOR64::Value::Members::iterator member=members.begin();
+			member != members.end(); ++member ) {
+			if( member->first == key ) {
+				member->second = replacement;
+			}
+		}
+		return RISECBOR64::Value::MapValue(members);
+	}
 }
 
 int main()
@@ -51,6 +67,11 @@ int main()
 	Check( predictive.RecordId().size() == 64 && synthetic.RecordId().size() == 64 &&
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
+	Check( predictive.RecordId() ==
+		"c66304c80d438c2653cffcda1a11d7e53b309e8d85a5d97ee22b1b74be931f70" &&
+		synthetic.RecordId() ==
+		"b1f177756bbe960fd2a618ac50ff6a35519f288b50c9c1f712482b2e36b204ae",
+		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
 
@@ -62,6 +83,15 @@ int main()
 		predictive.HotFraction(800.0) == 0.5 &&
 		predictive.HotFraction(900.0) == 1.0,
 		"the versioned optical record owns the hot/cool temperature band" );
+	Check( Near(predictive.HotFraction(750.0),0.15625,1.0e-15) &&
+		Near(predictive.HotFraction(850.0),0.84375,1.0e-15),
+		"the temperature partition is cubic-Hermite smoothstep" );
+	const double phiStep = 1.0e-4;
+	Check( Near((predictive.HotFraction(700.0+phiStep)-
+		predictive.HotFraction(700.0))/phiStep,0.0,1.0e-6) &&
+		Near((predictive.HotFraction(900.0)-
+		predictive.HotFraction(900.0-phiStep))/phiStep,0.0,1.0e-6),
+		"the cubic-Hermite temperature partition is C1 at both clamps" );
 	Check( Near(predictive.MAC(550.0),8.0,1.0e-12) &&
 		Near(predictive.MAC(632.8),6.647,5.0e-4),
 		"MAC magnitude anchors pass" );
@@ -72,7 +102,7 @@ int main()
 		std::log(380.0/780.0);
 	Check( Near(aae,1.377,5.0e-4),
 		"MAC visible Angstrom exponent anchor passes" );
-	Check( Near(predictive.HotAlbedo(550.0),0.10,2.0e-3) &&
+	Check( Near(predictive.HotAlbedo(550.0),0.10,1.0e-12) &&
 		Near(predictive.HotG(550.0),0.22,1.0e-12),
 		"predictive hot-soot 550 nm values are frozen" );
 	Check( Near(predictive.CoolExtinctionMass(633.0),8.7,1.0e-12) &&
@@ -167,17 +197,55 @@ int main()
 		3.298,0.50,0.90,0.70).IsValid(),
 		"synthetic records outside physical optical ranges are rejected" );
 
+	RISECBOR64::Value decodedSynthetic;
+	std::string mutationError;
+	Check( RISECBOR64::DecodeCanonical(synthetic.RecordBytes(),decodedSynthetic,
+		&mutationError), "the synthetic record decodes for semantic mutation tests" );
+	const RISECBOR64::Value* hot = decodedSynthetic.Find("hot_soot");
+	const RISECBOR64::Value* hotPhi = hot ? hot->Find("phi_T_partition") : 0;
+	if( hot && hotPhi ) {
+		const RISECBOR64::Value changedBand = RISECBOR64::Value::ArrayValue({
+			RISECBOR64::Value::Float(701.0), RISECBOR64::Value::Float(900.0) });
+		const RISECBOR64::Value changedPhi = ReplaceMember(
+			*hotPhi, "hot_fraction_temperature_band_K", changedBand );
+		const RISECBOR64::Value changedHot = ReplaceMember(
+			*hot, "phi_T_partition", changedPhi );
+		const RISECBOR64::Value divergentRecord = ReplaceMember(
+			decodedSynthetic, "hot_soot", changedHot );
+		RISECBOR64::Bytes divergentBytes;
+		FireOpticsPreset rejected;
+		Check( RISECBOR64::Encode(divergentRecord,divergentBytes,&mutationError) &&
+			!rejected.LoadCanonicalRecord(divergentBytes,&mutationError),
+			"load rejects divergent hot/cool phi_T_partition records" );
+	} else {
+		Check(false,"synthetic record contains both hot-soot phi fields");
+	}
+	const RISECBOR64::Value* condensed = decodedSynthetic.Find("condensed_organics");
+	if( condensed ) {
+		const RISECBOR64::Value changedCondensed = ReplaceMember(*condensed,
+			"predictive_reason_code", RISECBOR64::Value::String("arbitrary_text") );
+		const RISECBOR64::Value changedRecord = ReplaceMember(decodedSynthetic,
+			"condensed_organics", changedCondensed );
+		RISECBOR64::Bytes changedBytes;
+		FireOpticsPreset rejected;
+		Check( RISECBOR64::Encode(changedRecord,changedBytes,&mutationError) &&
+			!rejected.LoadCanonicalRecord(changedBytes,&mutationError),
+			"load rejects a free-form condensed-organics predictive reason" );
+	}
+
 	const FireFidelityEvaluation preview = predictive.EvaluateFidelity(false,true,false);
 	Check( !preview.predictiveAllowed && preview.renderFidelityStatus == "preview" &&
 		HasReason(preview,"requested_preview") && HasReason(preview,"producer_unqualified") &&
 		HasReason(preview,"chem_none_unqualified") &&
 		HasReason(preview,"condensed_organics_ir_unclosed") &&
+		HasReason(preview,"table_domain_exceeded") &&
 		std::is_sorted(preview.reasonCodes.begin(),preview.reasonCodes.end()),
 		"preview fidelity reasons are specific, unique, and sorted" );
 	const FireFidelityEvaluation predictiveAttempt = predictive.EvaluateFidelity(true,true,true);
 	Check( !predictiveAttempt.predictiveAllowed &&
 		HasReason(predictiveAttempt,"missing_chem_record") &&
 		HasReason(predictiveAttempt,"condensed_organics_ir_unclosed") &&
+		HasReason(predictiveAttempt,"table_domain_exceeded") &&
 		!HasReason(predictiveAttempt,"requested_preview"),
 		"predictive preflight fails for chem and nonzero condensed inventory" );
 

@@ -23,6 +23,12 @@ namespace RISE
 #include "FireOpticsRecordData.inc"
 
 		const double kPi = 3.141592653589793238462643383279502884;
+		const char kPhiConsistency[] =
+			"the hot-soot and cool-carbon records must carry bit-identical phi_T fields at record freeze (one optical record in the final SS8 CBOR encoding)";
+		const char kPhiForm[] =
+			"phi(T) = smoothstep over T in [700, 900] K: 0 below, 1 above. FIRE_SMOKE_DESIGN.md SS3.4 says 'smoothstep' unqualified; the cubic Hermite 3t^2-2t^3 (C1) is the assumed canonical form - if the SS3.5 backward-Euler solver requires C2 (smootherstep), that is a design-loop question, not an implementation choice";
+		const char kPhiProvenance[] =
+			"FIRE_SMOKE_DESIGN.md SS3.4 (r45+; lines ~807-808): design-owned closure parameter of the derived hot/cool carbon partition c_hot = phi(T)*c_carbon. NOT a literature constant - its authority is the design decision itself. SS8 requires the phi(T) band in the versioned optical record; this field closes that gap in the draft layer (added 2026-08-06 at the implementation agent's provenance stop).";
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -145,6 +151,45 @@ namespace RISE
 			minimum = values[0];
 			maximum = values[1];
 			return minimum < maximum || Fail(error, "fire-optics domain is not increasing");
+		}
+
+		bool ReadPhiPartition(
+			const RISECBOR64::Value& hot,
+			const RISECBOR64::Value& cool,
+			double& minimumTemperature,
+			double& maximumTemperature,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* hotPhi = Required(
+				hot, "phi_T_partition", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* coolPhi = Required(
+				cool, "phi_T_partition", RISECBOR64::Value::Map, error );
+			if( !hotPhi || !coolPhi ) {
+				return false;
+			}
+			RISECBOR64::Bytes hotBytes, coolBytes;
+			if( !RISECBOR64::Encode(*hotPhi, hotBytes, error) ||
+				!RISECBOR64::Encode(*coolPhi, coolBytes, error) ||
+				hotBytes != coolBytes ) {
+				return Fail(error,
+					"hot-soot and cool-carbon phi_T_partition fields differ");
+			}
+			std::string form, consistencyRequirement, provenance;
+			std::vector<double> band;
+			if( !ReadText(*hotPhi, "form", form, error) ||
+				!ReadText(*hotPhi, "consistency_requirement", consistencyRequirement, error) ||
+				!ReadText(*hotPhi, "provenance", provenance, error) ||
+				consistencyRequirement != kPhiConsistency ||
+				form != kPhiForm || provenance != kPhiProvenance ||
+				!ReadFloatArray(*hotPhi, "hot_fraction_temperature_band_K", band, error) ||
+				band.size() != 2 || band[0] != 700.0 || band[1] != 900.0 ) {
+				return Fail(error,
+					"fire-optics phi_T_partition is not cubic-Hermite C1 smoothstep");
+			}
+			minimumTemperature = band[0];
+			maximumTemperature = band[1];
+			return true;
 		}
 
 		bool ReadRows(
@@ -329,6 +374,17 @@ namespace RISE
 			return RISECBOR64::Value::MapValue(members);
 		}
 
+		RISECBOR64::Value FrozenPhiPartition()
+		{
+			using RISECBOR64::Value;
+			return Map({
+				{ "consistency_requirement", Value::String(kPhiConsistency) },
+				{ "form", Value::String(kPhiForm) },
+				{ "hot_fraction_temperature_band_K", FloatArray({700.0, 900.0}) },
+				{ "provenance", Value::String(kPhiProvenance) }
+			});
+		}
+
 		FireOpticsPreset LoadEmbedded(
 			const unsigned char* bytes,
 			const std::size_t byteCount,
@@ -433,6 +489,7 @@ namespace RISE
 		m_domainMaxNM(0.0), m_hotFractionMinK(0.0), m_hotFractionMaxK(0.0),
 		m_densityGCM3(0.0), m_constantEffectiveAbsorption(0.0),
 		m_coolKm633(0.0), m_coolExponent(0.0), m_coolOmega(0.0), m_coolG(0.0),
+		m_coolDomainMinNM(0.0), m_coolDomainMaxNM(0.0),
 		m_condensedFixtureKm633(0.0), m_condensedFixtureExponent(0.0),
 		m_condensedFixtureOmega(0.0), m_condensedFixtureG(0.0),
 		m_condensedPreviewExponent(0.0)
@@ -482,19 +539,14 @@ namespace RISE
 			record, "cool_carbon", RISECBOR64::Value::Map, error );
 		const RISECBOR64::Value* condensed = Required(
 			record, "condensed_organics", RISECBOR64::Value::Map, error );
-		std::vector<double> hotFractionBand;
 		if( !effective || !hot || !cool || !condensed ||
-			!ReadFloatArray(record, "hot_fraction_temperature_band_K",
-				hotFractionBand, error) || hotFractionBand.size() != 2 ||
-			hotFractionBand[0] >= hotFractionBand[1] ||
+			!ReadPhiPartition(*hot, *cool, m_hotFractionMinK,
+				m_hotFractionMaxK, error) ||
 			!ReadDomain(*effective, m_domainMinNM, m_domainMaxNM, error) ||
 			!ReadFloat(*effective, "pinned_density_g_cm3", m_densityGCM3, error) ||
 			m_densityGCM3 <= 0.0 ) {
 			return false;
 		}
-		m_hotFractionMinK = hotFractionBand[0];
-		m_hotFractionMaxK = hotFractionBand[1];
-
 		if( recordClass == "predictive_optical_preset" &&
 			interpolation == "pchip_monotone_c1_v1" ) {
 			m_recordClass = PredictiveOpticalPreset;
@@ -557,14 +609,20 @@ namespace RISE
 				return false;
 			}
 			std::vector<double> supportedRange;
+			std::vector<double> certifiedDomain;
 			if( !ReadFloatArray(*cool, "n_supported_range", supportedRange, error) ||
+				!ReadFloatArray(*cool, "certified_domain_nm", certifiedDomain, error) ||
 				supportedRange.size() != 2 || supportedRange[0] != 1.0 ||
-				supportedRange[1] != 1.2 || m_coolKm633 <= 0.0 ||
+				supportedRange[1] != 1.2 || certifiedDomain.size() != 2 ||
+				certifiedDomain[0] != 400.0 || certifiedDomain[1] != 700.0 ||
+				m_coolKm633 <= 0.0 ||
 				m_coolExponent < supportedRange[0] ||
 				m_coolExponent > supportedRange[1] || m_coolOmega < 0.0 ||
 				m_coolOmega >= 1.0 || m_coolG <= -1.0 || m_coolG >= 1.0 ) {
 				return Fail(error, "fire-optics cool-carbon exponent range is not frozen v1");
 			}
+			m_coolDomainMinNM = certifiedDomain[0];
+			m_coolDomainMaxNM = certifiedDomain[1];
 			std::vector<std::vector<double> > condensedRows;
 			if( !ReadRows(*condensed, 4, condensedRows, error) || condensedRows.size() != 5 ) {
 				return Fail(error, "fire-optics condensed-organics table must contain five rows");
@@ -667,6 +725,10 @@ namespace RISE
 				m_condensedFixtureExponent >= 0.0 && m_condensedFixtureOmega >= 0.0 &&
 				m_condensedFixtureOmega <= 1.0 && m_condensedFixtureG > -1.0 &&
 				m_condensedFixtureG < 1.0;
+			if( m_condensedPredictiveReason != "condensed_organics_ir_unclosed" ) {
+				return Fail(error,
+					"fire-optics synthetic fixture has an unknown predictive reason code");
+			}
 			return validFixture || Fail(error,
 				"fire-optics synthetic fixture is outside its physical range");
 		}
@@ -725,6 +787,7 @@ namespace RISE
 		)
 	{
 		using RISECBOR64::Value;
+		const Value phiPartition = FrozenPhiPartition();
 		const Value effective = Map({
 			{ "E_eff", Value::Float(sootEffectiveAbsorption) },
 			{ "domain_nm", FloatArray({380.0, 780.0}) },
@@ -733,13 +796,15 @@ namespace RISE
 		});
 		const Value hot = Map({
 			{ "g", Value::Float(hotG) },
-			{ "omega", Value::Float(hotAlbedo) }
+			{ "omega", Value::Float(hotAlbedo) },
+			{ "phi_T_partition", phiPartition }
 		});
 		const Value cool = Map({
 			{ "g", Value::Float(coolG) },
 			{ "k_m_extinction_633nm_m2_per_g", Value::Float(coolKm633) },
 			{ "n_spectral_exponent", Value::Float(coolExponent) },
-			{ "omega", Value::Float(coolAlbedo) }
+			{ "omega", Value::Float(coolAlbedo) },
+			{ "phi_T_partition", phiPartition }
 		});
 		const Value condensed = Map({
 			{ "g", Value::Float(condensedG) },
@@ -752,8 +817,6 @@ namespace RISE
 			{ "condensed_organics", condensed },
 			{ "cool_carbon", cool },
 			{ "effective_absorption", effective },
-			{ "hot_fraction_temperature_band_K", Value::ArrayValue({
-				Value::Float(700.0), Value::Float(900.0) }) },
 			{ "hot_soot", hot },
 			{ "interpolation", Value::String("analytic_fixture_v1") },
 			{ "record_class", Value::String("synthetic_regression_fixture") },
@@ -938,6 +1001,11 @@ namespace RISE
 		}
 		if( hasNonzeroCondensedInventory ) {
 			result.reasonCodes.push_back(m_condensedPredictiveReason);
+		}
+		if( m_recordClass == PredictiveOpticalPreset &&
+			(m_domainMinNM < m_coolDomainMinNM ||
+			 m_domainMaxNM > m_coolDomainMaxNM) ) {
+			result.reasonCodes.push_back("table_domain_exceeded");
 		}
 		result.reasonCodes.push_back("producer_unqualified");
 		if( !predictiveRequested ) {

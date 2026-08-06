@@ -97,6 +97,8 @@ namespace RISE
 		double m_coolExponent;
 		double m_coolOmega;
 		double m_coolG;
+		double m_coolDomainMinNM;
+		double m_coolDomainMaxNM;
 		DifferentiableSpectrum m_condensedKm;
 		DifferentiableSpectrum m_condensedOmega;
 		DifferentiableSpectrum m_condensedG;

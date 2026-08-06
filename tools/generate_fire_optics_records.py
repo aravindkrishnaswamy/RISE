@@ -150,9 +150,26 @@ def predictive_payload(data_dir: Path) -> dict:
         [float(value) for value in row]
         for row in hot["computed_outputs"]["spectral_young_dp30_N50"]["rows"]
     ]
+    adopted_hot = hot["computed_outputs"]["young_in_flame_550nm"]
+    for row in hot_rows:
+        if row[0] == 550.0:
+            row[1] = float(adopted_hot["omega_central"])
+            row[2] = float(adopted_hot["g_central"])
     hot_x = [row[0] for row in hot_rows]
     hot_omega = [row[1] for row in hot_rows]
     hot_g = [row[2] for row in hot_rows]
+
+    hot_phi_source = hot["phi_T_partition"]
+    cool_phi_source = cool["phi_T_partition"]
+    if encode(hot_phi_source) != encode(cool_phi_source):
+        raise ValueError(
+            "hot-soot and cool-carbon phi_T_partition fields must be bit-identical"
+        )
+    hot_phi = dict(hot_phi_source)
+    hot_phi["hot_fraction_temperature_band_K"] = [
+        float(value) for value in hot_phi_source["hot_fraction_temperature_band_K"]
+    ]
+    cool_phi = dict(hot_phi)
 
     condensed_rows = [
         [float(value) for value in row]
@@ -170,7 +187,6 @@ def predictive_payload(data_dir: Path) -> dict:
         "record_name": "fire-optics-predictive-v1",
         "record_class": "predictive_optical_preset",
         "interpolation": "pchip_monotone_c1_v1",
-        "hot_fraction_temperature_band_K": [700.0, 900.0],
         "effective_absorption": {
             "record_name": effective["record_name"],
             "quantity_name": effective["quantity_name"],
@@ -183,6 +199,7 @@ def predictive_payload(data_dir: Path) -> dict:
         },
         "hot_soot": {
             "record_name": hot["record_name"],
+            "phi_T_partition": hot_phi,
             "domain_nm": [380.0, 780.0],
             "columns": ["lambda_nm", "omega", "g"],
             "rows": hot_rows,
@@ -191,6 +208,7 @@ def predictive_payload(data_dir: Path) -> dict:
         },
         "cool_carbon": {
             "record_name": cool["record_name"],
+            "phi_T_partition": cool_phi,
             "k_m_extinction_633nm_m2_per_g": float(
                 cool_values["k_m_extinction_633nm_m2_per_g"]["value"]
             ),
@@ -203,7 +221,6 @@ def predictive_payload(data_dir: Path) -> dict:
             "certified_domain_nm": [
                 float(value) for value in cool_values["n_spectral_exponent"]["validity_nm"]
             ],
-            "preview_extrapolation_rule": "same_power_law_v1",
         },
         "condensed_organics": {
             "record_name": condensed["record_name"],
@@ -228,23 +245,38 @@ def synthetic_payload(data_dir: Path) -> dict:
         (data_dir / "fire_optics_mac_equivalent_e.draft.json").read_text()
     )
     cool = json.loads((data_dir / "fire_optics_cool_carbon.draft.json").read_text())
+    hot = json.loads((data_dir / "fire_optics_hot_soot.draft.json").read_text())
     condensed = json.loads(
         (data_dir / "fire_optics_condensed_organics.draft.json").read_text()
     )
+    hot_phi_source = hot["phi_T_partition"]
+    cool_phi_source = cool["phi_T_partition"]
+    if encode(hot_phi_source) != encode(cool_phi_source):
+        raise ValueError(
+            "hot-soot and cool-carbon phi_T_partition fields must be bit-identical"
+        )
+    hot_phi = dict(hot_phi_source)
+    hot_phi["hot_fraction_temperature_band_K"] = [
+        float(value) for value in hot_phi_source["hot_fraction_temperature_band_K"]
+    ]
+    cool_phi = dict(hot_phi)
     return {
         "schema_version": 1,
         "record_kind": "fire_optics_preset",
         "record_name": "fire-optics-synthetic-regression-v1",
         "record_class": "synthetic_regression_fixture",
         "interpolation": "analytic_fixture_v1",
-        "hot_fraction_temperature_band_K": [700.0, 900.0],
         "effective_absorption": {
             "model": "constant_E_eff",
             "E_eff": 0.26,
             "pinned_density_g_cm3": float(effective["definition"]["pinned_density_g_cm3"]),
             "domain_nm": [380.0, 780.0],
         },
-        "hot_soot": {"omega": 0.10, "g": 0.50},
+        "hot_soot": {
+            "omega": 0.10,
+            "g": 0.50,
+            "phi_T_partition": hot_phi,
+        },
         "cool_carbon": {
             "k_m_extinction_633nm_m2_per_g": float(
                 cool["values"]["k_m_extinction_633nm_m2_per_g"]["value"]
@@ -252,6 +284,7 @@ def synthetic_payload(data_dir: Path) -> dict:
             "n_spectral_exponent": 1.20,
             "omega": 0.60,
             "g": 0.60,
+            "phi_T_partition": cool_phi,
         },
         "condensed_organics": {
             "k_m_extinction_633nm_m2_per_g": float(
@@ -273,7 +306,7 @@ def emit_array(target, name: str, payload: bytes) -> None:
     target.write("};\n")
     target.write(f"static const std::size_t {name}Size = sizeof({name});\n")
     target.write(
-        f'static const char {name}SHA256[] = "{hashlib.sha256(payload).hexdigest()}";\n\n'
+        f'static const char {name}SHA256[] = "{hashlib.sha256(payload).hexdigest()}";\n'
     )
 
 
