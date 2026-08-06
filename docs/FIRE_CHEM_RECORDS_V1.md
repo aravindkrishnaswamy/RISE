@@ -178,6 +178,37 @@ until they do, the records remain preview. Lab work is not required *by
 definition* — it becomes required for any fuel whose model discrepancy
 cannot be bounded from existing same-regime data.
 
+**Source-alternatives audit (owner, 2026-08-06,
+[full audit](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md)) — three
+findings that sharpen this section:**
+
+- **The "~10⁻⁴" numerator anchor is model evidence, not measurement.**
+  Samaniego 1995 is explicitly a *numerical investigation*; no measured
+  absolute CO₂* W/HRR record exists in that line (the Stanford brief and
+  DLR spectroscopy also fail the absolute-power-ratio requirement). §1.3's
+  table entry is reclassified accordingly. The only no-lab tier-1 route is
+  the Slack–Grillo/Jin derived record carrying the full §1.5a uncertainty
+  budget.
+- **The visible-band denominator measurement is absent from the audited
+  classic series, not merely unpulled.** Markstein is total-radiation
+  only; Klassen–Gore has 632.8 nm *absorption* but emission spectra start
+  at 850 nm (toluene) and 1200 nm (heptane) — nothing integrable over
+  380–780 nm. A qualifying denominator requires a new measurement or an
+  accepted derived value.
+- **Wood χ_r now has a measured, domain-limited record**: NIST TN 2327r1,
+  3–6 m dry Douglas-fir trees — per-tree χ_r 0.22–0.31, reported mean
+  0.30 ± 0.03, 17 % average measurement uncertainty (k=2), with per-test
+  soot/CO/CO₂ yields
+  ([p6 CSV](data/source_pulls/p6_nist_tn2327r1_douglas_fir.csv)). Adopted
+  as a separate large-tree/vegetation record; it does not replace
+  small-sample FPA wood values (SFPE Ch. 36 pull stands), and convection is
+  obtainable only by residual closure. Also: the candle soot-temperature
+  claim stays preview-only (Thomsen full text still unexposed; DOI
+  corrected to 10.1016/j.expthermflusci.2016.10.033), and an open
+  predecessor supplies a geometry-specific candle validation point —
+  84.04 W, χ_r ≈ 6.6 %, peak soot ≈ 8 ppm, no temperature — note the
+  configuration dependence against Hamins' 17 % for the 21 mm taper.
+
 ### 1.6 What would actually close tier 1 — the pinned-record path
 
 In order of increasing cost:

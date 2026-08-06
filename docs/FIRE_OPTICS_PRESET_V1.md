@@ -287,6 +287,32 @@ figure; extraction method and digitization uncertainty; flame conditions
 and sampling location; and how those conditions map to the hot-soot
 certified domain. That replaces the vague "values live in figures" label.
 
+### 2.6 Source-alternatives audit updates (owner, 2026-08-06)
+
+Per the owner's audit
+([FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md)):
+
+- **P1 partial — separate low-pressure axis adopted.** The open Sunderland
+  dissertation tables give low-pressure acetylene d_p = 9.26–24.43 nm,
+  sparse N = 44–384, with flame conditions and <10 %/<20 % (95 %)
+  uncertainties
+  ([p1 CSV](data/source_pulls/p1_sunderland_1995_acetylene_structure.csv)).
+  Adopted as a **domain-limited low-pressure acetylene axis only** — it
+  does *not* freeze a universal 20–35 nm range (accessible evidence in that
+  domain supports 9–25 nm), lacks the D_f/k_f fit, and does not cover
+  atmospheric CH₄/C₂H₄. The Yazicioglu pull stands.
+- **P4 closed by digitization record.** NISTGCR 00-796 Fig. 3 digitized
+  ρ_sa(514.5 nm): acetylene 0.47, ethylene 0.33, propylene 0.38, benzene
+  0.50, toluene 0.71, n-heptane 0.33 (±0.03 digitization, <20 % source u95;
+  **propane absent** — the original four-gas table is not fully reproduced;
+  [p4 CSV](data/source_pulls/p4_nistgcr_00_796_overfire_soot.csv)).
+  Converted to ω = ρ/(1+ρ): 0.320/0.248/0.275/0.333/0.415/0.248. **The
+  §2.3 RDG-FA validation is upgraded from abstract-level to quantitative:
+  computed ω = 0.79–0.95 of the digitized measurements** (acetylene 0.95;
+  larger/aromatic aggregates ~15–20 % low, inside the recorded
+  G(kR_g)/F-over-E caveats). Adopted for mature overfire/long-residence
+  validation.
+
 ---
 
 ## 3. Cool-carbon smoke triple (k_m, n, ω, g) + the §4.3 total anchor
@@ -404,8 +430,15 @@ spans 3.95–4.44 over the size corners, 3.27–4.97 over n ∈ [1.42, 1.55]; ω
   preset must state fresh-flaming applicability; an aged variant needs its
   own size distribution. Flagged, not tuned.
 - Chen & Bond's measured band is ~300–550 nm; red-visible k rests on
-  Sumlin's (peat-BrC) flatness. Sumlin's per-λ SI tables ship with the
-  **paywalled** Elsevier version — library pull would firm the red end.
+  Sumlin's (peat-BrC) flatness. ~~Sumlin's per-λ SI tables ship with the
+  paywalled Elsevier version~~ **P8 CLOSED (owner audit, 2026-08-06)**: the
+  SI Tables S1–S9 are inside the arXiv PDF itself (PyMieScatt carries no
+  copy); 55 rows of n, κ, SSA with 1σ uncertainties at 375/405/532/1047 nm
+  extracted to
+  [p8 CSV](data/source_pulls/p8_sumlin_2018_complex_refractive_index.csv).
+  The red end is table-verified through 1047 nm; the measured plateau must
+  not be extrapolated further into the IR without explicit model
+  uncertainty (§4.5 stands).
 - No verified IR (> 1047 nm) absorption dataset for condensed organics is
   in hand — the §3.5 Kirchhoff closure for this constituent is an open
   owner decision (candidates exist in the atmospheric literature but were

@@ -65,7 +65,7 @@
   "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "795cc448fee43701687c8e8df54e772ddd7a19678da7fc590352f873fde16ea1",
+ "draft_record_id_sha256_of_payload": "97a666d972f29ac34e5b90027ae828378e7fd7ecdeac385b9f823d53ec092b77",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
   "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
@@ -116,7 +116,7 @@
     0.002,
     0.006
    ],
-   "source": "Sumlin et al. 2018 JQSRT 206:392 (arXiv:1712.05028) Fig.3 (kappa ~0.002 flat >=532nm, peat BrC); Chakrabarty et al. 2010 ACP 10:6363 Table 1 (tar balls 0.006 @532)",
+   "source": "Sumlin et al. 2018 JQSRT 206:392 (arXiv:1712.05028) Fig.3 (kappa ~0.002 flat >=532nm, peat BrC); Chakrabarty et al. 2010 ACP 10:6363 Table 1 (tar balls 0.006 @532); P8 CLOSED 2026-08-06: Sumlin SI Tables S1-S9 recovered from the arXiv PDF itself (PyMieScatt contains no copy) - 55 rows of n, kappa, SSA with 1-sigma uncertainties at 375/405/532/1047nm extracted to docs/data/source_pulls/p8_sumlin_2018_complex_refractive_index.csv. Red end now TABLE-VERIFIED through 1047nm; the measured plateau must NOT be extrapolated further into the IR without explicit model uncertainty (ir_closure block stands)",
    "value": 0.004
   },
   "k_lambda_model": "power law between anchors below 532nm (AAE-consistent, exponent ~5.05); flat 0.004 above 532nm per Sumlin",

@@ -21,10 +21,18 @@
    "uncertainty": 9,
    "value": 77
   },
+  "audit_p3": "P3 AUDIT RESULT (owner, 2026-08-06): Markstein series is total-radiation only; Klassen-Gore has 632.8nm absorption but emission spectra start at 850nm (toluene) / 1200nm (heptane). The 380-780nm denominator gap is upgraded from 'unpulled' to 'MEASUREMENT ABSENT IN THE AUDITED CLASSIC SERIES': a qualifying tier-1 denominator requires a new measurement or acceptance of a derived value.",
   "chi_r": {
    "source": "ibid. p.280",
    "uncertainty": 0.01,
    "value": 0.17
+  },
+  "geometry_specific_validation_point": {
+   "candle_HRR_W": 84.04,
+   "chi_r": 0.066,
+   "note": "geometry-specific: chi_r 6.6% here vs Hamins 17% for the 21mm taper - radiative fraction is configuration-dependent; record both, per-case per SS7.0",
+   "peak_soot_ppm": 8,
+   "source": "open predecessor, Combustion Institute MCS-7 proceedings (Fuentes group); no temperature data"
   },
   "no_direct_measurement": "no published 380-780nm band radiometry of a candle found",
   "route1_luminous": {
@@ -46,11 +54,11 @@
     2000,
     2200
    ],
-   "source": "Thomsen et al. 2017 ETFS 82:116 (PAYWALLED, abstract-verified)"
+   "source": "Thomsen et al. 2017 ETFS 82:116, DOI 10.1016/j.expthermflusci.2016.10.033 (corrected from .11.006). PREVIEW-ONLY: accessible record confirms 2000-2200K but exposes neither the field table nor uncertainty."
   }
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "3464d22482c7aa61d6626d794d363fb7597cbc2de10d14d774d9291d97087c7f",
+ "draft_record_id_sha256_of_payload": "a54aa72d42d5520e82b5d9db22bc1aaeb161edc0f3b75e1c42aa30901172299d",
  "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
  "notes": [
   "blue base visibly distinct in dim light - consistent with percent-level, not proof of sub-percent",
@@ -58,8 +66,9 @@
  ],
  "numerator_inputs": {
   "classic_1e-4": {
+   "audit": "P2 AUDIT RESULT (owner, 2026-08-06): Samaniego 1995 is explicitly a NUMERICAL INVESTIGATION - not a measured absolute CO2* W/HRR record; Stanford brief and DLR spectroscopy also fail the absolute-power-ratio requirement. RECLASSIFIED as model evidence. The only no-lab route is Slack-Grillo/Jin as a derived record with the full SS7.0 derived-record uncertainty budget.",
    "source": "Samaniego, Egolfopoulos & Bowman 1995, Combust. Sci. Technol. 109:183-203 (owner library pull)",
-   "status": "PAYWALLED-UNVERIFIED",
+   "status": "RECLASSIFIED_AS_MODEL_EVIDENCE (was PAYWALLED-UNVERIFIED)",
    "value": "~1e-4 of HRR"
   },
   "diffusion_flame_specific": {

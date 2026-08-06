@@ -11,23 +11,38 @@
  },
  "criterion": "SS7.0: 95%-confidence upper bound on chemiluminescent power below BOTH (i) 1% of the fuel/case's measured 380-780nm radiant power AND (ii) the absolute radiance gate's uncertainty at every gated wavelength",
  "denominator_inputs": {
+  "audit_p3": "P3 AUDIT RESULT (owner, 2026-08-06): Markstein series is total-radiation only; Klassen-Gore has 632.8nm absorption but emission spectra start at 850nm (toluene) / 1200nm (heptane). The 380-780nm denominator gap is upgraded from 'unpulled' to 'MEASUREMENT ABSENT IN THE AUDITED CLASSIC SERIES': a qualifying tier-1 denominator requires a new measurement or acceptance of a derived value.",
   "chi_r": {
    "source": "Khan & Tewarson, SFPE Handbook 5th ed. Ch.36 (PAYWALLED/print - confirm against printed table)",
-   "status": "SNIPPET-VERIFIED ONLY",
+   "status": "SNIPPET-VERIFIED ONLY (FPA small-sample domain still unpulled - SFPE Ch.36); large-tree domain now measured, see chi_r_large_tree_record",
    "value": 0.3
+  },
+  "chi_r_large_tree_record": {
+   "avg_measurement_uncertainty": 0.17,
+   "coverage_factor": 2,
+   "domain": "3m-6m dry Douglas-fir trees - SEPARATE large-tree/vegetation record; does not replace small-sample FPA wood values; convection only by residual closure",
+   "per_tree_range": [
+    0.22,
+    0.31
+   ],
+   "source": "NIST TN 2327r1 via owner audit; per-test soot/CO/CO2 yields at docs/data/source_pulls/p6_nist_tn2327r1_douglas_fir.csv",
+   "status": "P6 CLOSED for the large-tree domain (owner audit 2026-08-06); chi_r no longer snippet-level for this domain",
+   "value_mean": 0.3,
+   "value_mean_u": 0.03
   },
   "no_visible_band_data": "no published visible-band radiometry of wood flames found"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "59be6fdbd59eb86d3fbf715bffc67766da8eae8fc2064753a2e6a17dca94f263",
+ "draft_record_id_sha256_of_payload": "fc10a2c19320c5877396db9940d12670585824afad629355702f2e18e8cb8f59",
  "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
  "notes": [
   "same structure as heptane; per-case record required (SS7.0 is per fuel/case)"
  ],
  "numerator_inputs": {
   "classic_1e-4": {
+   "audit": "P2 AUDIT RESULT (owner, 2026-08-06): Samaniego 1995 is explicitly a NUMERICAL INVESTIGATION - not a measured absolute CO2* W/HRR record; Stanford brief and DLR spectroscopy also fail the absolute-power-ratio requirement. RECLASSIFIED as model evidence. The only no-lab route is Slack-Grillo/Jin as a derived record with the full SS7.0 derived-record uncertainty budget.",
    "source": "Samaniego, Egolfopoulos & Bowman 1995, Combust. Sci. Technol. 109:183-203 (owner library pull)",
-   "status": "PAYWALLED-UNVERIFIED",
+   "status": "RECLASSIFIED_AS_MODEL_EVIDENCE",
    "value": "~1e-4 of HRR"
   },
   "diffusion_flame_specific": {

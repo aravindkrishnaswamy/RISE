@@ -5,8 +5,25 @@ Companion to [FIRE_OPTICS_PRESET_V1.md](FIRE_OPTICS_PRESET_V1.md) and
 pull: the *exact quantities* the records need, so an alternate source
 carrying the same data closes the gate equally well. The paper is the
 means; the data specification is the requirement. Compiled 2026-08-06.
+Access results and extracted alternate-source data are recorded in
+[FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md).
 
 Ordering is by value. "Gate" names what the pull unblocks.
+
+**Status after the 2026-08-06 audit** (details in the audit doc; extracted
+data under [data/source_pulls/](data/source_pulls/)):
+
+| pull | status |
+|---|---|
+| P1 Yazicioglu | **partial** — low-pressure acetylene axis adopted (Sunderland tables, 9.26–24.43 nm); pull stands for atmospheric CH₄/C₂H₄ + D_f/k_f |
+| P2 Samaniego | **negative** — reclassified as model evidence (numerical investigation); no measured CO₂* W/HRR exists in this line |
+| P3 Markstein/Klassen–Gore | **negative** — measurement absent in the audited classic series (emission starts 850/1200 nm); denominator needs new measurement or accepted derived value |
+| P4 Köylü–Faeth | **closed** — NISTGCR 00-796 Fig. 3 digitization record (propane absent) |
+| P5 Mulholland–Croarkin | **open** — needed detail inaccessible; do not encode k=2 on plausibility |
+| P6 SFPE wood | **closed for large-tree domain** — NIST TN 2327r1 Douglas-fir record; FPA small-sample values still wanted |
+| P7 Thomsen | **partial** — 2000–2200 K stays preview-only; DOI corrected (…2016.10.033); open predecessor adds an 84 W / χ_r≈6.6 % geometry-specific validation point |
+| P8 Sumlin SI | **closed** — SI tables recovered from the arXiv PDF itself (PyMieScatt has no copy); 55 rows extracted |
+| P9, P10 | skipped per ruling |
 
 ---
 
@@ -192,7 +209,7 @@ Tewarson, Ch. 3-4, 3rd ed. (2002). **Print/paywalled.**
 
 Thomsen, Fuentes, Demarco, Volkwein, Consalvi, Reszka, "Soot measurements
 in candle flames", *Exp. Therm. Fluid Sci.* 82:116–123 (2017), DOI
-10.1016/j.expthermflusci.2016.11.006. **Paywalled (Elsevier).**
+10.1016/j.expthermflusci.2016.10.033. **Paywalled (Elsevier).**
 **Gate: the wax/candle negligibility record's denominator** (soot T
 2000–2200 K currently abstract-verified only).
 
@@ -219,7 +236,7 @@ in candle flames", *Exp. Therm. Fluid Sci.* 82:116–123 (2017), DOI
 
 Sumlin et al., *JQSRT* 206:392–398 (2018) supplementary tables (the
 per-wavelength n, κ at 375/405/532/1047 nm with uncertainties). Main text
-open at arXiv:1712.05028; **SI ships with the paywalled Elsevier version.**
+open at arXiv:1712.05028; **the arXiv PDF includes SI Tables S1–S9.**
 **Gate: firms the condensed-organics visible preset's red end** (currently
 figure-level κ ≈ 0.002 plateau claim).
 
@@ -228,9 +245,9 @@ figure-level κ ≈ 0.002 plateau claim).
   uncertainties, per fuel/packing-density condition.
 
 **Acceptable alternates:**
-- **PyMieScatt's GitHub repository** (Sumlin is the author of PyMieScatt;
-  the package's documentation/examples use this dataset — likely carries
-  the tables openly). Check first; probably the fastest route.
+- The arXiv SI is now the primary open route; Tables S1, S2, and S7 are
+  transcribed in `docs/data/source_pulls/p8_sumlin_2018_complex_refractive_index.csv`.
+- **PyMieScatt's GitHub repository** was checked and does not ship the dataset.
 - Direct author request (Chakrabarty group, WUSTL — routinely shares).
 - Any other multi-λ BrC complex-index retrieval on fresh biomass smoke
   covering ≥ 600 nm with stated uncertainties.
