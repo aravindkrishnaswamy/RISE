@@ -92,6 +92,28 @@
 //        DYNAMIC reference (a timeline `element`, outside any declared
 //        Reference param) still targets the chunk emits NO invented
 //        issue, since the static reference graph cannot see it.
+//    E1  Post-arc enforcement: the LUMINAIRE_NULL_GEOMETRY Warning gets a
+//        CREATION-TIME BLOCK.  insert_chunk of an emissive-bound
+//        csg_object without `allow_non_sampling_emitter TRUE` is REFUSED
+//        (consequence + both escapes named, head unchanged); the SAME
+//        insert WITH the flag applies and Validate goes silent;
+//        propose_patch re-pointing an existing csg_object's `material` to
+//        an emitter is refused the same way; an insert_chunks batch with
+//        one offending + one clean element splits per-item (BEST-EFFORT);
+//        a scene FILE carrying the unacknowledged construct still only
+//        WARNS (R1/T6d's pre-existing contract, unchanged), and the
+//        acknowledged file-loaded construct is silent.  Fix rounds:
+//        editing a referenced MATERIAL's own emissive-capable param in
+//        place (never touching the csg_object) is refused too, naming
+//        the referencing csg; removing an acknowledgment RE-creates the
+//        construct and is refused; a proposal staged while innocent that
+//        becomes dangerous before it is approved is refused at RESOLVE
+//        time.  Round-2 fix: the material-side check is DELTA-based, not
+//        state-based -- a pre-existing unacknowledged construct a scene
+//        FILE already carries is Validate's job to keep Warning about, so
+//        an edit to that material UNRELATED to emission (e.g. alphax)
+//        still APPLIES; only an edit that CREATES or WORSENS the
+//        unacknowledged state is refused.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -2593,6 +2615,506 @@ static void TestActionablePatchDiagnostics()
 }
 
 //----------------------------------------------------------------------
+// E1: post-arc enforcement (docs/agentic-redesign/75-expressive-surface-
+// arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking facts
+// act, a Warning gets skimmed): the LUMINAIRE_NULL_GEOMETRY Warning
+// (R1(a)-adjacent, T6d in AgentEvalCheckTest.cpp) is now paired with a
+// CREATION-TIME BLOCK.  A csg_object has no directly-owned geometry, so
+// an emissive material bound to it is never NEE-light-sampled -- glow-
+// only-on-direct-view.  insert_chunk / propose_patch REFUSE the edit that
+// would CREATE that binding unless the csg_object chunk carries
+// `allow_non_sampling_emitter TRUE`; a scene FILE loaded with the
+// unacknowledged construct still only WARNS (R1/T6d's PRE-EXISTING
+// contract, unchanged); the same flag silences that Warning too.
+//
+// Fix round (fresh review): THREE more ways to land the SAME construct --
+// (P1-1) editing the MATERIAL's own emissive-capable param in place while
+// a csg_object already references it (never touching the csg_object
+// chunk at all); (P1-2) removing `allow_non_sampling_emitter` from an
+// already-acknowledged emissive csg (a two-call bypass: insert
+// acknowledged, then patch the flag away); (P1-3) a proposal staged while
+// INNOCENT that becomes dangerous by the time it is APPROVED, because the
+// world moved underneath it while it sat in the queue.  (g)-(j) cover the
+// first two; (k) covers the third via SceneEditController's stage/
+// resolve seam.  The refusal wording (P2a fix) is the PRECISE, VERIFIED
+// claim ValidateText's Warning uses -- NEE light-sampling is where the
+// gap is; direct-view AND a BSDF-sampled hit both still contribute.
+//
+// Round-2 fix round: (g)'s material-side check was STATE-based (does the
+// candidate come back unacknowledged?), which refused ANY edit -- even
+// alphax/roughness, nothing to do with emission -- on a material a
+// PRE-EXISTING unacknowledged construct already references, forever,
+// once that construct existed.  (l) red-proves the DELTA-based
+// replacement: only an edit that CREATES or WORSENS the unacknowledged
+// state is refused; a pre-existing one (Validate's job) does not freeze
+// unrelated edits.
+//----------------------------------------------------------------------
+static const char* const kCsgReadyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+	// P1-1/P1-3 vehicle: a MATERIAL-category chunk with its OWN inline
+	// `emissive` param (default "none" -- non-emissive as authored here),
+	// distinct from mat_glow's separate-wrapper-chunk idiom above.  Not
+	// referenced by anything in the base fixture; each sub-test below
+	// binds it (or not) as its scenario needs.
+	"ggx_material\n{\n\tname mat_ggx\n\trd albedo\n\trs albedo\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+	"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n";
+
+static void TestNonSamplingEmitterGate()
+{
+	std::printf( "E1: non-sampling-emitter creation gate (insert/patch refuse; ack flag escapes)...\n" );
+
+	// (a) insert_chunk: a csg_object bound to the emissive material, no
+	// acknowledgement flag -> REFUSED, message names the PRECISE
+	// consequence (NEE light-sampling specifically -- P2a fix: NOT the
+	// overclaiming "will never illuminate" / "only... direct camera view"
+	// text an earlier round shipped) and BOTH escapes (real geometry, or
+	// the acknowledgement flag).  Head byte-identical, revision unmoved.
+	//
+	// (b) the SAME insert, WITH the flag -> applies; a subsequent Validate
+	// is SILENT (no LUMINAIRE_NULL_GEOMETRY at all -- an acknowledged
+	// choice must not nag).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1a.RISEscene" );
+		Job* pJob = LoadScene( kCsgReadyScene, tmp );
+		Check( pJob != nullptr, "E1(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentChunkResult r = sess->InsertChunk(
+			"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}" );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(a) inserting an emissive-bound csg_object WITHOUT the flag is REFUSED" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(a) message states the PRECISE consequence (NEE light-sampling specifically)" );
+		Check( r.message.find( "BSDF-sampled hit" ) != std::string::npos,
+		       "E1(a) message honestly names the paths that STILL contribute (P2a: not overclaiming total invisibility)" );
+		Check( r.message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+		       "E1(a) message states the ESCAPE (acknowledgement flag)" );
+		Check( r.message.find( "standard_object" ) != std::string::npos,
+		       "E1(a) message ALSO states the other fix (real-geometry object)" );
+		Check( sess->ReadDocument() == headBefore, "E1(a) the refusal leaves the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore, "E1(a) the refusal leaves the revision unmoved" );
+		std::printf( "  E1(a) message: %s\n", r.message.c_str() );
+
+		Agent::AgentChunkResult r2 = sess->InsertChunk(
+			"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+			"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}" );
+		Check( r2.applied && r2.status == "applied",
+		       "E1(b) the SAME insert WITH `allow_non_sampling_emitter TRUE` APPLIES" );
+		if( r2.applied ) {
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(b) validate is SILENT on the acknowledged construct -- no nag" );
+		}
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) propose_patch: an EXISTING csg_object (bound to a non-emissive
+	// material) has its `material` re-pointed to the emissive one WITHOUT
+	// the flag -> REFUSED.  P2b fix: pin the revision (not just the byte-
+	// identical document) before/after, matching E1(a)'s asymmetry.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1c.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_plain\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_plain";
+		p.kind   = "csg_object";
+		p.param  = "material";
+		p.value  = "mat_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(c) patching a csg_object's material to an emitter WITHOUT the flag is REFUSED" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(c) message states the precise consequence" );
+		Check( r.message.find( "BSDF-sampled hit" ) != std::string::npos,
+		       "E1(c) message honestly names the paths that still contribute" );
+		Check( r.message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+		       "E1(c) message states the escape" );
+		Check( sess->ReadDocument() == headBefore, "E1(c) the refusal leaves the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore, "E1(c) [P2b] the refusal leaves the revision unmoved" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) insert_chunks BATCH: one offending element (emissive csg_object,
+	// no flag) alongside one clean, unrelated element -> PER-ITEM split;
+	// the clean element still applies (BEST-EFFORT, same contract as IC2).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1d.RISEscene" );
+		Job* pJob = LoadScene( kCsgReadyScene, tmp );
+		Check( pJob != nullptr, "E1(d) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		std::vector<std::string> chunks;
+		chunks.push_back(
+			"csg_object\n{\n\tname csg_glow_batch\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}" );
+		chunks.push_back(
+			"sphere_geometry\n{\n\tname sph_clean\n\tradius 0.2\n}" );
+
+		const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+		Check( results.size() == 2, "E1(d) one result per input chunk" );
+		if( results.size() == 2 ) {
+			Check( !results[0].applied && results[0].status == "rejected",
+			       "E1(d) the offending element is REFUSED" );
+			Check( results[0].message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+			       "E1(d) the refusal names the escape" );
+			Check( results[1].applied && results[1].status == "applied",
+			       "E1(d) BEST-EFFORT: the unrelated clean element still applies" );
+		}
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "csg_glow_batch" ) == nullptr,
+		       "E1(d) the refused csg_object never reached the live managers" );
+		Check( pJob->GetGeometry( "sph_clean" ) != nullptr,
+		       "E1(d) the clean element DID reach the live managers" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) scene-FILE load of the UNACKNOWLEDGED construct -- unchanged
+	// behaviour: loads fine (the derive-side gate is agent-edit-only, the
+	// construct DERIVES legally), and Validate still WARNS (R1/T6d's
+	// pre-existing contract, untouched).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1e.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_glow\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(e) a scene FILE carrying the unacknowledged construct loads cleanly" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawWarning = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == Agent::AgentDiagnostic::Severity::Warning )
+					sawWarning = true;
+			Check( sawWarning, "E1(e) an unacknowledged file-loaded construct still WARNS (unchanged)" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (f) scene-FILE load of the ACKNOWLEDGED construct -- loads AND
+	// validate is silent (the flag suppresses the Warning too, not just
+	// the agent-edit gate).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1f.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(f) a scene FILE carrying the ACKNOWLEDGED construct loads cleanly" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(f) an acknowledged file-loaded construct is SILENT" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (g) [P1-1] MATERIAL-side creation: mat_ggx starts non-emissive and a
+	// csg_object (csg_ggx) already references it; patching mat_ggx's OWN
+	// `emissive` param (never touching csg_ggx at all) is REFUSED, and the
+	// message NAMES the referencing csg_object -- actionable from the
+	// material side, where the fix ("csg_ggx has no directly-owned
+	// geometry...") is not obvious from the material chunk alone.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1g.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ggx\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_ggx\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(g) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx";
+		p.kind   = "ggx_material";
+		p.param  = "emissive";
+		p.value  = "pnt_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(g) [P1-1] editing a MATERIAL's own emissive param while a csg references it is REFUSED" );
+		Check( r.message.find( "csg_ggx" ) != std::string::npos,
+		       "E1(g) message NAMES the referencing csg_object (actionable from the material side)" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(g) message states the precise consequence" );
+		Check( sess->ReadDocument() == headBefore, "E1(g) the refusal leaves the head byte-identical" );
+		std::printf( "  E1(g) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (h) [P1-1] the SAME material-side edit, but the referencing csg is
+	// ALREADY acknowledged -> APPLIES (the material-side gate is scoped to
+	// UNACKNOWLEDGED referencing csg_objects only).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1h.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ggx_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_ggx\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(h) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx";
+		p.kind   = "ggx_material";
+		p.param  = "emissive";
+		p.value  = "pnt_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(h) [P1-1] the SAME material-side edit APPLIES when the referencing csg is already acknowledged" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (i) [P1-2] removing the acknowledgment from an ALREADY-emissive,
+	// already-acknowledged csg_object -> REFUSED (would RECREATE the
+	// construct -- the two-call bypass the fresh review found).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1i.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(i) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// RED-PROVE the fixture: silent BEFORE the removal attempt (the
+		// acknowledgment is doing real work) -- else the refusal below
+		// would be trivially unfalsifiable.
+		{
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags ) if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(i) RED-PROVE: the fixture starts silent (genuinely acknowledged)" );
+		}
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_ack";
+		p.kind   = "csg_object";
+		p.param  = "allow_non_sampling_emitter";
+		p.value  = "FALSE";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(i) [P1-2] removing the acknowledgment from an emissive-bound csg is REFUSED" );
+		Check( r.message.find( "RECREATE" ) != std::string::npos,
+		       "E1(i) message frames this as RECREATING the already-refused construct" );
+		Check( r.message.find( "keep the" ) != std::string::npos,
+		       "E1(i) message's escape is 'keep the flag' (distinct framing from the 'add the flag' creation-arm message)" );
+		std::printf( "  E1(i) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (j) [P1-2 negation] removing the flag from a csg bound to a NON-
+	// emissive material APPLIES -- the flag alone is not load-bearing;
+	// only removing it FROM AN EMISSIVE BINDING is refused.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1j.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_vacuous_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial matte\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(j) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_vacuous_ack";
+		p.kind   = "csg_object";
+		p.param  = "allow_non_sampling_emitter";
+		p.value  = "FALSE";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(j) [P1-2 negation] removing the flag from a csg bound to a NON-emissive material APPLIES" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (k) [P1-3] a proposal staged while INNOCENT becomes dangerous by the
+	// time it is APPROVED: External stages a csg_object material re-point
+	// while the target material is still non-emissive (stages cleanly);
+	// an Owner direct edit then makes that material emissive (applies
+	// cleanly -- nothing references it live yet, only the PENDING
+	// proposal would); approving the now-stale proposal must be REFUSED,
+	// not silently land the construct.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1k.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_stale\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(k) fixture loads" );
+		if( !pJob ) return;
+
+		TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+		c.Start();
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		Agent::AgentSetPatch stagePatch;
+		stagePatch.target = "csg_stale";
+		stagePatch.kind   = "csg_object";
+		stagePatch.param  = "material";
+		stagePatch.value  = "mat_ggx";
+		Agent::AgentPatchResult staged = ext->ProposePatch( stagePatch );
+		Check( staged.status == "staged",
+		       "E1(k) the re-point stages CLEANLY -- innocent at stage time (mat_ggx is not yet emissive)" );
+		std::uint64_t id = 0;
+		for( const auto& p : owner->ListProposals() ) if( p.status == "pending" ) id = p.id;
+		Check( id != 0, "E1(k) the proposal is pending" );
+
+		// The world moves: an OWNER direct edit makes mat_ggx emissive.
+		// No csg currently references mat_ggx yet -- csg_stale still
+		// points at `matte` LIVE; the re-point is only PENDING -- so this
+		// edit is not itself refused by the material-side gate.
+		Agent::AgentSetPatch makeEmissive;
+		makeEmissive.target = "mat_ggx";
+		makeEmissive.kind   = "ggx_material";
+		makeEmissive.param  = "emissive";
+		makeEmissive.value  = "pnt_glow";
+		Agent::AgentPatchResult em = owner->ProposePatch( makeEmissive );
+		Check( em.applied, "E1(k) the intervening edit (nobody references mat_ggx yet) applies cleanly" );
+
+		// Approve the now-dangerous stale proposal.
+		Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok, "E1(k) resolve runs (the id is found)" );
+		Check( rr.status == "rejected",
+		       "E1(k) RED-PROVE: the stale-but-now-dangerous approve is REFUSED at resolve time" );
+		Check( rr.message.find( "resolve refused" ) != std::string::npos,
+		       "E1(k) message carries the resolve-refusal marker" );
+		Check( rr.message.find( "csg_stale" ) != std::string::npos,
+		       "E1(k) message names the affected csg_object" );
+		std::printf( "  E1(k) message: %s\n", rr.message.c_str() );
+
+		// The live document is unchanged -- the stale re-point never
+		// landed (nothing else in this fixture ever writes this token).
+		const std::string liveDoc = owner->ReadDocument();
+		Check( liveDoc.find( "material mat_ggx" ) == std::string::npos,
+		       "E1(k) the live document NEVER received the stale re-point" );
+
+		c.Stop();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (l) [round-2 fix] DELTA, not state, in Arm C: a scene FILE (loaded,
+	// not agent-edited) already carries an UNACKNOWLEDGED emissive csg --
+	// `mat_ggx_glow` is emissive from the moment it's authored, so
+	// `csg_ggx_preexisting` is ALREADY the refused construct before any
+	// agent edit runs (Validate is already Warning about it, exactly like
+	// E1(e)).  Patching an UNRELATED param on that SAME material
+	// (`alphax` -- nothing to do with emission) must APPLY: the edit did
+	// not create or worsen the construct, so Arm C's state-based
+	// predecessor (which the round-2 review found: ANY edit to a
+	// referenced material was refused, forever, once a csg went
+	// unacknowledged) would wrongly freeze it.  The Warning is Validate's
+	// job to keep nagging about, not this gate's job to block on.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1l.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "ggx_material\n{\n\tname mat_ggx_glow\n\trd albedo\n\trs albedo\n\talphax 0.2\n\talphay 0.2\n"
+		         "\tior 1.5\n\textinction 0.0\n\temissive pnt_glow\n}\n";
+		scene += "csg_object\n{\n\tname csg_ggx_preexisting\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_ggx_glow\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(l) fixture (pre-existing unacknowledged emissive csg) loads cleanly" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// RED-PROVE the fixture: the construct is ALREADY there, unrelated
+		// to anything this test will do -- Validate Warns before any edit.
+		auto sawLuminaireWarning = [&]() {
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == Agent::AgentDiagnostic::Severity::Warning )
+					return true;
+			return false;
+		};
+		Check( sawLuminaireWarning(), "E1(l) RED-PROVE: the fixture is ALREADY unacknowledged+emissive before any edit" );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx_glow";
+		p.kind   = "ggx_material";
+		p.param  = "alphax";
+		p.value  = "0.4";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(l) [round-2 fix] an UNRELATED param edit on the referenced material APPLIES -- "
+		       "it neither created nor worsened the pre-existing construct" );
+		Check( sawLuminaireWarning(),
+		       "E1(l) the Warning is STILL present after the edit -- unchanged posture, "
+		       "Validate keeps nagging, the gate did not silently \"fix\" anything" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
 // R3: actionable REJECTED remove_chunk diagnostics -- the remove_chunk
 // sibling of R1/R2. The reference graph's reverse adjacency NAMES the
 // blocking referrer(s) instead of the engine's own hedged "likely still
@@ -4316,6 +4838,7 @@ int main()
 	TestUnresolvedReferenceWarning();
 	TestRejectedInsertDiagnostics();
 	TestActionablePatchDiagnostics();
+	TestNonSamplingEmitterGate();
 	TestActionableRemoveDiagnostics();
 	TestInsertChunksBatchAllApply();
 	TestInsertChunksBestEffort();

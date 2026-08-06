@@ -6790,6 +6790,17 @@ namespace RISE
 						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
 						{ auto& p = P(); p.name = "radiance_scale";  p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "radiance_orient"; p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-arc.md
+						// sec 7, the LUMINAIRE_NULL_GEOMETRY entry): a csg_object has no directly-
+						// owned geometry, so an emissive material bound to it is never selected by
+						// NEE light-sampling -- it only glows on direct view.  This flag has a
+						// single purpose: let an author ACKNOWLEDGE that gap is intentional.  It is
+						// parsed and validated like any other declared parameter but is otherwise
+						// semantically inert here -- it does not change CSG construction, rendering,
+						// or light-list membership; AgentSession reads it (via the CST, not this
+						// Finalize) to silence the LUMINAIRE_NULL_GEOMETRY Warning and the agent-
+						// edit creation gate for an object that carries it TRUE.
+						{ auto& p = P(); p.name = "allow_non_sampling_emitter"; p.kind = ValueKind::Bool; p.description = "Acknowledges that this object's emissive material intentionally will not light-sample (a csg_object has no directly-owned geometry, so it is never selected for next-event estimation) -- it only glows on direct view."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;

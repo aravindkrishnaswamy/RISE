@@ -105,6 +105,29 @@ namespace RISE
 			//! Severity::Warning -- a real functional gap, not a style
 			//! suggestion, but the scene still renders (the render-side
 			//! null-geometry candidate is refused, not dereferenced).
+			//!
+			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-
+			//! surface-arc.md sec 7 / 76-...-log.md sec 3's mechanism law --
+			//! blocking facts act, a Warning gets skimmed) made this TWO-TIER:
+			//! the csg_object chunk descriptor gained an optional
+			//! `allow_non_sampling_emitter` Bool param an author sets TRUE to
+			//! acknowledge the gap is intentional (glow-only-on-direct-view).
+			//!   * UNACKNOWLEDGED (the flag absent/FALSE -- every scene-file
+			//!     load of a pre-existing document, and any construct this
+			//!     diagnostic's Warning still applies to unchanged): this
+			//!     Warning fires exactly as before.
+			//!   * ACKNOWLEDGED (the flag TRUE): this Warning is SUPPRESSED
+			//!     entirely for that object -- a permanent Warning on a
+			//!     deliberate, disclosed choice is the nag-loop anti-pattern,
+			//!     and it would fail eval's `diagnostics: clean` on a scene
+			//!     that honestly acknowledged the gap.
+			//! AgentSession::ValidateText's (b2) audit and
+			//! AgentSession::InsertChunk / AgentSession::ProposePatch's
+			//! CREATION GATE (which REFUSES an insert/patch that would CREATE an
+			//! unacknowledged binding, rather than only warning about one that
+			//! already landed) share ONE classification helper
+			//! (CollectNullGeometryEmitters_ in AgentSession.cpp) so the
+			//! Warning and the gate can never drift apart on what counts.
 			static const char* const LUMINAIRE_NULL_GEOMETRY = "LUMINAIRE_NULL_GEOMETRY";
 		}
 	}

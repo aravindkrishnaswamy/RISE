@@ -984,6 +984,358 @@ namespace RISE
 			//! declaration further down for the identical pattern), so this and
 			//! the later definition refer to the same symbol.
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out );
+
+			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
+			//! arc.md sec 7's LUMINAIRE_NULL_GEOMETRY entry; 76-...-log.md sec 3's
+			//! mechanism law -- blocking facts act, a Warning gets skimmed): the
+			//! SHARED classification predicate both the LUMINAIRE_NULL_GEOMETRY
+			//! Warning (ValidateText's (b2) audit, just below) and the
+			//! InsertChunk/ProposePatch creation gate key off -- an object binds
+			//! an emissive material but owns no directly-owned geometry of its
+			//! own (the csg_object class; see LuminaryManager::AddToLuminaryList,
+			//! src/Library/Rendering/LuminaryManager.cpp).  ONE predicate, two
+			//! consumers -- do not duplicate this test at either call site.
+			bool IsNullGeometryEmitter_( const IObject& obj )
+			{
+				const IMaterial* pMat = obj.GetMaterial();
+				return pMat && pMat->GetEmitter() && !obj.GetGeometry();
+			}
+
+			//! One post-derive finding: a named csg_object IsNullGeometryEmitter_
+			//! flags, plus whether ITS OWN chunk in the source Document
+			//! acknowledges the gap via `allow_non_sampling_emitter TRUE`.
+			struct NullGeometryEmitterFinding
+			{
+				std::string name;
+				bool        acknowledged = false;
+			};
+
+			//! Reads a Bool-kind param's raw value off a chunk NodeRef the same
+			//! way ParseStateBag::GetBool does (RISE::String::toBoolean) -- `def`
+			//! when the param is absent or value-less.  Same (pname,pvalue)
+			//! token walk AnalyzeRejectedInsert / AnalyzeRejectedParamEdit use
+			//! elsewhere in this file, just reading instead of collecting.
+			bool ChunkParamBool_( const NodeRef& chunkItem, const std::string& pname, bool def )
+			{
+				if( !chunkItem ) return def;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string thisName, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) thisName = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( thisName == pname ) return val.empty() ? def : RISE::String( val.c_str() ).toBoolean();
+				}
+				return def;
+			}
+
+			//! Reads a String-kind param's raw value off a chunk NodeRef -- same
+			//! walk as ChunkParamBool_, joined-token form.  "" when absent.
+			std::string ChunkParamString_( const NodeRef& chunkItem, const std::string& pname )
+			{
+				if( !chunkItem ) return std::string();
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string thisName, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) thisName = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( thisName == pname ) return val;
+				}
+				return std::string();
+			}
+
+			//! Every csg_object in `doc` that IsNullGeometryEmitter_ flags in
+			//! `job`, each paired with whether its own chunk acknowledges the
+			//! gap.  csg_object is the sole null-geometry Object class (see
+			//! LuminaryManager::AddToLuminaryList), so restricting the walk to
+			//! that keyword is exhaustive, not a heuristic.  `job` must already
+			//! be a completed DeriveToJob of `doc` (or of a document that
+			//! extends it while preserving every existing csg_object's
+			//! registered name) -- this function does not derive anything
+			//! itself.  Shared by ValidateText's post-derive Warning audit and
+			//! the agent-edit creation gate (InsertChunk/ProposePatch) -- ONE
+			//! emitter/geometry walk, not duplicated at either call site.
+			std::vector<NullGeometryEmitterFinding> CollectNullGeometryEmitters_( IJobPriv& job, const Document& doc )
+			{
+				std::vector<NullGeometryEmitterFinding> out;
+				IObjectManager* pObjMan = job.GetObjects();
+				if( !pObjMan ) return out;
+
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk || it->role != "csg_object" ) continue;
+					const std::string name = ChunkParamString_( it, "name" );
+					if( name.empty() ) continue;
+					const IObjectPriv* pObj = pObjMan->GetItem( name.c_str() );
+					if( !pObj || !IsNullGeometryEmitter_( *pObj ) ) continue;
+					NullGeometryEmitterFinding f;
+					f.name         = name;
+					f.acknowledged = ChunkParamBool_( it, "allow_non_sampling_emitter", false );
+					out.push_back( f );
+				}
+				return out;
+			}
+
+			//! Post-arc enforcement E1's creation gate, core derive step: given
+			//! `candidateDoc` (the CANDIDATE state -- the current head with the
+			//! touched edit already applied, NOT yet committed) and a list of
+			//! csg_object names the CALLER has determined are worth checking
+			//! (the touched csg_object itself, or every csg_object that
+			//! references a touched MATERIAL), derives a throwaway Job
+			//! (mirroring ValidateText's (b2) derive above) and reuses
+			//! CollectNullGeometryEmitters_ -- the SAME classification/ack-
+			//! lookup the Warning audit uses -- to return the SUBSET of
+			//! `candidateNames` that come back as UNACKNOWLEDGED null-geometry
+			//! emitters.  Empty when there is nothing to refuse: none of the
+			//! candidates resolve to an emitter, all are acknowledged, or the
+			//! candidate doesn't derive far enough to tell.  HONESTY: ambiguity
+			//! is not proof, so an inconclusive derive fails OPEN -- the normal
+			//! insert/patch machinery downstream still gets the last word (its
+			//! own dangling-reference / derive-failure diagnostics fire as
+			//! usual).
+			std::vector<std::string> FindUnacknowledgedNullGeometryEmitters_( const Document& candidateDoc,
+			                                                                  const std::vector<std::string>& candidateNames )
+			{
+				std::vector<std::string> out;
+				if( candidateNames.empty() ) return out;
+
+				IJobPriv* throwaway = nullptr;
+				if( !RISE_CreateJobPriv( &throwaway ) || !throwaway ) return out;
+
+				std::vector<std::string> diags;
+				RISE::Cst::DeriveToJob( candidateDoc, *throwaway, &diags );
+
+				for( const NullGeometryEmitterFinding& f : CollectNullGeometryEmitters_( *throwaway, candidateDoc ) ) {
+					if( f.acknowledged ) continue;
+					for( const std::string& n : candidateNames ) {
+						if( n == f.name ) { out.push_back( f.name ); break; }
+					}
+				}
+
+				throwaway->release();
+				return out;
+			}
+
+			//! P1-1 fix round: the cheap, CST-ONLY (no derive) pre-filter for
+			//! the creation gate's MATERIAL-side arm -- every csg_object chunk
+			//! in `doc` whose `material` param equals `materialName`.  A
+			//! material-chunk edit (e.g. `emissive` on ggx_material /
+			//! pbr_metallic_roughness_material, `exitance` on
+			//! lambertian_luminaire_material -- deliberately NOT enumerated by
+			//! param name here; see the header doc's "whatever its name" note)
+			//! can create the SAME refused construct the csg-side `material`
+			//! re-point does, without ever touching the csg_object chunk.
+			//! Empty here means "pay nothing further" -- the candidate-derive
+			//! below is skipped entirely for the overwhelming majority of
+			//! material edits, which are never bound to a csg_object at all.
+			std::vector<std::string> CollectCsgObjectsReferencingMaterial_( const Document& doc,
+			                                                                const std::string& materialName )
+			{
+				std::vector<std::string> out;
+				if( materialName.empty() ) return out;
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk || it->role != "csg_object" ) continue;
+					if( ChunkParamString_( it, "material" ) != materialName ) continue;
+					const std::string name = ChunkParamString_( it, "name" );
+					if( !name.empty() ) out.push_back( name );
+				}
+				return out;
+			}
+
+			//! The actionable refusal clause for CREATING the construct --
+			//! shared by every creation-gate arm (csg-side `material`
+			//! re-point, material-side edit, insert), in the SAME VERIFIED
+			//! phrasing ValidateText's (b2) Warning uses just below (P2a fix
+			//! round: the prior gate text overclaimed "will never illuminate"
+			//! / "only... direct camera view" -- LuminaryManager::
+			//! AddToLuminaryList's verified contract, reproduced in that
+			//! Warning's comment, is narrower: the gap is NEE light-sampling
+			//! specifically, and BOTH direct-view AND a BSDF-sampled hit still
+			//! contribute).  `csgNames` is the ACTUAL affected csg_object(s) --
+			//! a single name for the csg-side/insert arms, POSSIBLY several for
+			//! the material-side arm, so the fix reads actionably from either
+			//! direction ("csg_object 'obj_x' ... has no directly-owned
+			//! geometry" even when the edit under refusal is on the MATERIAL
+			//! chunk, not `obj_x` itself).  Always called with a non-empty list.
+			std::string DescribeUnacknowledgedNullGeometryEmitters_( const std::vector<std::string>& csgNames )
+			{
+				std::string named;
+				for( std::size_t i = 0; i < csgNames.size(); ++i ) {
+					if( i ) named += ( i + 1 == csgNames.size() ? " and " : ", " );
+					named += "'" + csgNames[i] + "'";
+				}
+				const bool plural = csgNames.size() > 1;
+				return "csg_object" + std::string( plural ? "s " : " " ) + named +
+					std::string( plural ? " bind" : " binds" ) + " an emissive material but " +
+					std::string( plural ? "have" : "has" ) + " no directly-owned geometry -- "
+					"it will NOT act as an area light for next-event estimation (no NEE "
+					"importance sampling, never selected by light-sampling); it still contributes "
+					"emission on direct camera view (PT/BDPT/VCM pel + the legacy EmissionShaderOp "
+					"chain) or a BSDF-sampled hit. Fix: back the emitter with a real-geometry object "
+					"(a standard_object) instead, or add `allow_non_sampling_emitter TRUE` to the "
+					"referencing csg_object" + std::string( plural ? "s" : "" ) +
+					" to acknowledge the glow-only intent.";
+			}
+
+			//! P1-2 fix round: the refusal clause for REMOVING an
+			//! acknowledgment (`allow_non_sampling_emitter TRUE` -> FALSE/
+			//! absent) that would RECREATE the construct a prior insert/patch
+			//! was already refused for (or that a scene-file load carried in
+			//! already-acknowledged, silencing the Warning) -- a distinct
+			//! message from DescribeUnacknowledgedNullGeometryEmitters_'s
+			//! "creates" framing because the causal story is "you already
+			//! disclosed this and are now un-disclosing it", not "you are
+			//! introducing it for the first time".  Same verified NEE-vs-
+			//! direct-view/BSDF-hit phrasing.
+			std::string DescribeAcknowledgmentRemoval_( const std::string& csgName )
+			{
+				return "removing `allow_non_sampling_emitter` from csg_object '" + csgName + "' would "
+					"RECREATE the construct insert_chunk/propose_patch already refuse elsewhere: an "
+					"emissive material with no directly-owned geometry will NOT act as an area light "
+					"for next-event estimation (no NEE importance sampling, never selected by "
+					"light-sampling); it still contributes emission on direct camera view (PT/BDPT/VCM "
+					"pel + the legacy EmissionShaderOp chain) or a BSDF-sampled hit. Fix: back the "
+					"emitter with a real-geometry object (a standard_object) instead, or keep the "
+					"acknowledgment flag TRUE.";
+			}
+		}
+
+		//! Post-arc enforcement E1's creation gate, patch arm -- see the
+		//! declaration in AgentSession.h for the full contract (three
+		//! triggers: csg-side `material` re-point, `allow_non_sampling_emitter`
+		//! removal, material-side edit).  A FREE function (external linkage,
+		//! declared in the header, OUTSIDE the anonymous namespace above) so
+		//! SceneEditController::ResolveProposal's stale-staged-proposal
+		//! re-check can call the identical logic AgentSession::ProposePatch
+		//! uses below, from a different translation unit, with zero
+		//! duplication of the resolve/derive/classify walk.
+		std::string CheckNonSamplingEmitterGateForPatch( const std::string& headText,
+		                                                 const std::string& target,
+		                                                 const std::string& kind,
+		                                                 const std::string& param,
+		                                                 const std::string& value )
+		{
+			if( target.empty() ) return std::string();
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( headText );
+			const bool uniqueFallback = ( kind == "camera" );
+			const RISE::Cst::NodeId id =
+				RISE::Cst::DocFindByNameAnyRole( headDoc, target, nullptr, kind, uniqueFallback );
+			if( !id ) return std::string();
+			const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( headDoc, id );
+			if( !chunkItem ) return std::string();
+
+			// Arm A/B: the touched chunk IS the csg_object -- re-pointing
+			// `material` (the original vehicle) or clearing
+			// `allow_non_sampling_emitter` (P1-2's ack-removal bypass).  Both
+			// reduce to the identical mechanical check (build the candidate
+			// with the edit applied, ask whether the csg's OWN name comes
+			// back unacknowledged); only the REFUSAL MESSAGE differs.
+			if( chunkItem->role == "csg_object" &&
+			    ( param == "material" || param == "allow_non_sampling_emitter" ) ) {
+				const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+				if( touchedName.empty() ) return std::string();
+				const RISE::Cst::Document candidate =
+					RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+				const std::vector<std::string> hits =
+					FindUnacknowledgedNullGeometryEmitters_( candidate, std::vector<std::string>( 1, touchedName ) );
+				if( hits.empty() ) return std::string();
+				return param == "allow_non_sampling_emitter"
+					? DescribeAcknowledgmentRemoval_( touchedName )
+					: DescribeUnacknowledgedNullGeometryEmitters_( hits );
+			}
+
+			// Arm C (P1-1): the touched chunk is a MATERIAL, not the
+			// csg_object.  Cheap CST-only pre-filter FIRST -- pay for the
+			// candidate-derive only when at least one csg_object in the
+			// CURRENT head actually references this material by name; the
+			// vast majority of material edits (nothing bound to a csg) skip
+			// the derive entirely.
+			const ChunkDescriptor* desc = DescriptorForKeyword( String( chunkItem->role.c_str() ) );
+			if( !desc || desc->category != ChunkCategory::Material ) return std::string();
+			const std::string materialName = ChunkParamString_( chunkItem, "name" );
+			if( materialName.empty() ) return std::string();
+			const std::vector<std::string> referencing =
+				CollectCsgObjectsReferencingMaterial_( headDoc, materialName );
+			if( referencing.empty() ) return std::string();
+
+			// DELTA, not state (round-2 fix): unlike Arm A/B -- which edit
+			// the EXACT field that determines a csg's emissive/acknowledged
+			// status, so "does the candidate come back unacknowledged" IS
+			// the right question -- Arm C's target is a MATERIAL, and
+			// `param` need not have anything to do with emission at all
+			// (alphax, roughness, ...).  A referencing csg can ALREADY be
+			// an unacknowledged null-geometry emitter on the CURRENT head
+			// (a pre-existing, scene-file-loaded construct Validate is
+			// already Warning about) -- that is NOT this edit's doing, and
+			// refusing an unrelated param edit on that basis would freeze
+			// every future edit to the material, contradicting the CREATE-
+			// or-RECREATE contract this whole gate exists to enforce (and
+			// the scene's correct posture: Warning nags, edits proceed).
+			// Compute the SAME finder on the CURRENT head (restricted to
+			// the same `referencing` set) and refuse ONLY names that are
+			// NEW in the candidate -- i.e. THIS edit created or worsened
+			// their unacknowledged status.  One extra head-derive, paid
+			// only inside this already-narrow (referencing non-empty) arm.
+			const RISE::Cst::Document candidate = RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+			const std::vector<std::string> candidateHits = FindUnacknowledgedNullGeometryEmitters_( candidate, referencing );
+			if( candidateHits.empty() ) return std::string();
+			const std::vector<std::string> headHits = FindUnacknowledgedNullGeometryEmitters_( headDoc, referencing );
+			std::vector<std::string> createdHits;
+			for( const std::string& n : candidateHits ) {
+				bool preExisting = false;
+				for( const std::string& h : headHits ) if( h == n ) { preExisting = true; break; }
+				if( !preExisting ) createdHits.push_back( n );
+			}
+			if( createdHits.empty() ) return std::string();
+			return DescribeUnacknowledgedNullGeometryEmitters_( createdHits );
+		}
+
+		//! Post-arc enforcement E1's creation gate, insert arm -- see the
+		//! declaration in AgentSession.h.  Free function for the same
+		//! cross-TU reason as the patch arm above.
+		std::string CheckNonSamplingEmitterGateForInsert( const std::string& headText, const std::string& chunkText )
+		{
+			RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+			RISE::Cst::NodeRef chunkItem;
+			{
+				const int n = RISE::Cst::DocItemCount( chunkDoc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+				}
+			}
+			if( !chunkItem || chunkItem->role != "csg_object" ) return std::string();
+
+			// P3: skip the candidate-derive entirely when the inserted chunk
+			// ALREADY carries the acknowledgment -- cheap (a single param
+			// read on the not-yet-merged candidate chunk), and no false
+			// negative is possible: an already-acknowledged insert can never
+			// be refused regardless of what the rest of the document says.
+			if( ChunkParamBool_( chunkItem, "allow_non_sampling_emitter", false ) ) return std::string();
+
+			const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+			if( touchedName.empty() ) return std::string();
+
+			RISE::Cst::Document candidate = RISE::Cst::ParseToCst( headText );
+			const int endAt = RISE::Cst::DocItemCount( candidate );
+			candidate = RISE::Cst::DocInsertItem( candidate, endAt, chunkItem );
+
+			const std::vector<std::string> hits =
+				FindUnacknowledgedNullGeometryEmitters_( candidate, std::vector<std::string>( 1, touchedName ) );
+			if( hits.empty() ) return std::string();
+			return DescribeUnacknowledgedNullGeometryEmitters_( hits );
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -1057,54 +1409,53 @@ namespace RISE
 			// geometry/material bindings are fully resolved) BEFORE releasing
 			// it and surface one Warning diagnostic summarizing every match.
 			{
-				struct NullGeometryLuminaireCollector : IEnumCallback<IObject>
-				{
-					unsigned int count = 0;
-					bool operator()( const IObject& obj ) override
-					{
-						const IMaterial* pMat = obj.GetMaterial();
-						if( pMat && pMat->GetEmitter() && !obj.GetGeometry() ) {
-							++count;
-						}
-						return true;
-					}
-				};
-
-				if( IObjectManager* pObjMan = throwaway->GetObjects() ) {
-					NullGeometryLuminaireCollector collector;
-					pObjMan->EnumerateObjects( collector );
-					if( collector.count > 0 ) {
-						AgentDiagnostic d;
-						d.severity = AgentDiagnostic::Severity::Warning;
-						d.code     = AgentDiagnosticCode::LUMINAIRE_NULL_GEOMETRY;
-						// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix
-						// round 3 / P2b -- see LuminaryManager.cpp's AddToLuminaryList for
-						// the full "exactly what is verified" breakdown, reproduced in
-						// scope here): "contributes emission" is VERIFIED (not merely
-						// asserted) for DIRECT camera view under pathtracing_pel_rasterizer,
-						// bdpt_pel_rasterizer, vcm_pel_rasterizer, AND the legacy
-						// EmissionShaderOp (DefaultEmission) shaderop chain under
-						// pixelpel_rasterizer -- all four in
-						// tests/CSGNullGeometryLuminaireCrashTest.cpp.  For an INDIRECT
-						// (BSDF-sampled) hit, only PathTracingIntegrator.cpp's bsdfPdf>0
-						// block is independently tested; EmissionShaderOp.cpp's identically-
-						// gated bsdfPdf>0 block is code-verified but untested.  Spectral/HWSS
-						// twins of every path above are code-identical fixes, untested.  BDPT
-						// additionally carries a PRE-EXISTING, unrelated MIS energy deficit
-						// on this class of emitter (see BDPTIntegrator.cpp's eye-walk
-						// comment) -- "contributes emission" holds for BDPT, "full weight"
-						// does not.
-						d.message  = std::to_string( collector.count ) +
-							" object(s) bind an emissive material but have no directly-owned "
-							"geometry (e.g. a csg_object, whose geometry comes from its two "
-							"operand objects rather than a single geometry chunk) -- they will "
-							"NOT act as an area light for next-event estimation (no NEE "
-							"importance sampling, never selected by light-sampling); each still "
-							"contributes emission on direct camera view (PT/BDPT/VCM pel + the "
-							"legacy EmissionShaderOp chain) or a BSDF-sampled hit. Bind the "
-							"emissive material to a standard_object with real geometry instead.";
-						out.push_back( d );
-					}
+				// Post-arc enforcement E1: the walk itself is shared
+				// (CollectNullGeometryEmitters_, defined above) with the
+				// InsertChunk/ProposePatch creation gate -- this audit now
+				// only WARNS on UNACKNOWLEDGED bindings.  An object whose
+				// csg_object chunk carries `allow_non_sampling_emitter TRUE`
+				// has already told the reader its glow-only intent is
+				// deliberate; repeating the same Warning on every subsequent
+				// Validate call is the nag-loop anti-pattern the two-tier
+				// design (75-arc sec 7 / 76-log sec 3) exists to avoid, and
+				// it would fail eval's `diagnostics: clean` on a scene that
+				// deliberately, honestly acknowledged the gap.
+				unsigned int unacknowledgedCount = 0;
+				for( const NullGeometryEmitterFinding& f : CollectNullGeometryEmitters_( *throwaway, candidateDoc ) )
+					if( !f.acknowledged ) ++unacknowledgedCount;
+				if( unacknowledgedCount > 0 ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Warning;
+					d.code     = AgentDiagnosticCode::LUMINAIRE_NULL_GEOMETRY;
+					// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix
+					// round 3 / P2b -- see LuminaryManager.cpp's AddToLuminaryList for
+					// the full "exactly what is verified" breakdown, reproduced in
+					// scope here): "contributes emission" is VERIFIED (not merely
+					// asserted) for DIRECT camera view under pathtracing_pel_rasterizer,
+					// bdpt_pel_rasterizer, vcm_pel_rasterizer, AND the legacy
+					// EmissionShaderOp (DefaultEmission) shaderop chain under
+					// pixelpel_rasterizer -- all four in
+					// tests/CSGNullGeometryLuminaireCrashTest.cpp.  For an INDIRECT
+					// (BSDF-sampled) hit, only PathTracingIntegrator.cpp's bsdfPdf>0
+					// block is independently tested; EmissionShaderOp.cpp's identically-
+					// gated bsdfPdf>0 block is code-verified but untested.  Spectral/HWSS
+					// twins of every path above are code-identical fixes, untested.  BDPT
+					// additionally carries a PRE-EXISTING, unrelated MIS energy deficit
+					// on this class of emitter (see BDPTIntegrator.cpp's eye-walk
+					// comment) -- "contributes emission" holds for BDPT, "full weight"
+					// does not.
+					d.message  = std::to_string( unacknowledgedCount ) +
+						" object(s) bind an emissive material but have no directly-owned "
+						"geometry (e.g. a csg_object, whose geometry comes from its two "
+						"operand objects rather than a single geometry chunk) -- they will "
+						"NOT act as an area light for next-event estimation (no NEE "
+						"importance sampling, never selected by light-sampling); each still "
+						"contributes emission on direct camera view (PT/BDPT/VCM pel + the "
+						"legacy EmissionShaderOp chain) or a BSDF-sampled hit. Bind the "
+						"emissive material to a standard_object with real geometry instead, "
+						"or add `allow_non_sampling_emitter TRUE` to acknowledge the glow-only "
+						"intent and silence this warning.";
+					out.push_back( d );
 				}
 			}
 
@@ -1481,6 +1832,37 @@ namespace RISE
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
+
+			// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
+			// arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking
+			// facts act, a Warning gets skimmed): does this patch CREATE (or
+			// RECREATE, via an acknowledgment removal) an unacknowledged
+			// emissive-CSG null-geometry binding?  Engine-side, ahead of the
+			// authority/mode branching below, so every surface (CLI, GUI,
+			// External-authority staging) inherits it identically.  The three
+			// triggers (csg-side `material` re-point / `allow_non_sampling_
+			// emitter` removal / a material-side edit reaching a referencing
+			// csg_object) and the cheap pre-filters that bound the cost of
+			// each live in CheckNonSamplingEmitterGateForPatch (AgentSession.h)
+			// -- SHARED with SceneEditController::ResolveProposal's stale-
+			// staged-proposal re-check, so this is a two-line call-through,
+			// not a duplicate of that logic.
+			if( !patch.target.empty() )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const std::string clause = CheckNonSamplingEmitterGateForPatch(
+						snap.document, patch.target, patch.kind, patch.param, patch.value );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = snap.headVersion;
+						r.message     = "propose_patch refused: " + clause;
+						return r;
+					}
+				}
+			}
 
 			// Secure-MCP slice 5a: the authority gate, enforced HERE -- not
 			// trusted to any caller-side flag -- BEFORE the existing LIVE-mode
@@ -2787,6 +3169,46 @@ namespace RISE
 		{
 			AgentChunkResult r;
 
+			// Post-arc enforcement E1: the InsertChunk sibling of ProposePatch's
+			// identical gate -- does inserting this chunk CREATE an
+			// unacknowledged emissive-CSG null-geometry binding?  SHARED with
+			// SceneEditController::ResolveProposal's stale-staged-proposal
+			// re-check via CheckNonSamplingEmitterGateForInsert
+			// (AgentSession.h); this parse-for-echo is ONLY so a refusal can
+			// still stamp r.kind/r.name (the same identity-echo-even-on-
+			// refusal contract every other InsertChunk guard honours) --
+			// the gate function does its OWN parse + the derive-bearing work.
+			{
+				const RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( chunkItem && chunkItem->role == "csg_object" ) {
+					const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+					if( !touchedName.empty() ) {
+						const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+						if( snap.hasDocument ) {
+							const std::string clause = CheckNonSamplingEmitterGateForInsert( snap.document, chunkText );
+							if( !clause.empty() ) {
+								r.applied     = false;
+								r.rawCode     = 0;
+								r.status      = "rejected";
+								r.headVersion = snap.headVersion;
+								r.kind        = chunkItem->role;
+								r.name        = touchedName;
+								r.message     = "insert_chunk refused: " + clause;
+								return r;
+							}
+						}
+					}
+				}
+			}
+
 			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch
 			// (see that method's doc for the full rationale) -- enforced
 			// before the existing LIVE-mode commit branch.
@@ -3694,8 +4116,16 @@ namespace RISE
 			}
 
 			//! One `sdf_geometry` `part` line's VALUE: `<prim> <op> <k>
-			//! <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>`
-			//! -- see SDFGeometryAsciiChunkParser::Describe's `part` doc.
+			//! <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <c1 c2 c3>  <round>`
+			//! (the shape-specific third triple is spelled `c1 c2 c3` here,
+			//! not the single-letter form SDFGeometryAsciiChunkParser::
+			//! Describe's `part` doc uses, ONLY because clang's
+			//! `-Wdocumentation-html` misreads a single-letter placeholder
+			//! immediately after an opening angle bracket as an HTML tag
+			//! name needing a matching close tag; no OTHER placeholder
+			//! above collides with a real HTML tag name, so none of the
+			//! others needed renaming) -- see that `part` doc for the
+			//! authoritative field meanings.
 			//! Every part below uses identity rotation/scale (matching
 			//! both object-modeling-recipes.md worked examples), so this
 			//! helper hardcodes those two triples rather than taking six

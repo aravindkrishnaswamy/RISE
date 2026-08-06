@@ -1304,6 +1304,79 @@ namespace RISE
 		//!     teardown, including calls still queued for mAsyncCacheMutex,
 		//!     plus every registered sink lease. Callers must not initiate a
 		//!     new member call after destruction begins.
+		//! Post-arc enforcement E1's creation gate -- FREE functions (not
+		//! AgentSession methods) so SceneEditController::ResolveProposal can
+		//! call the SAME logic AgentSession::ProposePatch/InsertChunk use,
+		//! without a circular header dependency (SceneEditController.cpp
+		//! includes this header; this header does not include
+		//! SceneEditController.h, only forward-declares the class above).
+		//! The motivating case: a propose_patch/insert_chunk staged while
+		//! innocent (the referenced material was non-emissive, or the
+		//! csg_object was acknowledged) can still land the refused
+		//! construct at RESOLVE time if the world moved underneath the
+		//! pending proposal -- see ResolveProposal's approve branch for the
+		//! stale-staged-proposal re-check that calls these.
+		//!
+		//! Both operate on `headText` (the CANDIDATE base -- the CURRENT
+		//! head at the moment of the check, NOT necessarily what the
+		//! caller originally staged against) and return "" when nothing
+		//! should be refused (HONESTY: an inconclusive candidate-derive
+		//! fails OPEN, same as everywhere else in this design), or the
+		//! actionable refusal clause otherwise.  Implemented in
+		//! AgentSession.cpp beside the shared classification/derive
+		//! machinery (CollectNullGeometryEmitters_ et al.) they're built
+		//! from -- see that file for the full design comment.
+		//!
+		//! CheckNonSamplingEmitterGateForPatch covers THREE triggers:
+		//!   * `target` resolves to a csg_object and `param` is `material`
+		//!     (re-pointing the csg's own material reference);
+		//!   * `target` resolves to a csg_object and `param` is
+		//!     `allow_non_sampling_emitter` (REMOVING the acknowledgment --
+		//!     the two-call bypass);
+		//!   * `target` resolves to a MATERIAL-category chunk that at
+		//!     least one EXISTING csg_object in `headText` references (a
+		//!     cheap CST-only scan gates this BEFORE the candidate-derive)
+		//!     -- covers editing the material's OWN emissive-capable
+		//!     param (`emissive`, `exitance`, ...) in place, whatever its
+		//!     name, without hard-coding a per-material-kind param list.
+		//! Every other target/param combination returns "" immediately
+		//! (cheap: a CST parse + one name resolution, no derive).
+		//!
+		//! The first two triggers (the touched chunk IS the csg_object)
+		//! are STATE-based: `param` is exactly the field that determines
+		//! the csg's emissive/acknowledged status, so "does the
+		//! candidate come back unacknowledged" is the right question,
+		//! and it correctly ALLOWS a fixing edit (re-pointing `material`
+		//! to a non-emissive one clears the refusal).  The third trigger
+		//! (round-2 fix: a MATERIAL edit is unrelated to emission far
+		//! more often than not -- alphax, roughness, base_color, ...)
+		//! is DELTA-based instead: it refuses ONLY a referencing csg
+		//! that is unacknowledged in the CANDIDATE but was NOT already
+		//! unacknowledged on the CURRENT head.  A csg that was ALREADY
+		//! an unacknowledged null-geometry emitter before this edit (a
+		//! pre-existing, e.g. scene-file-loaded, construct Validate is
+		//! already Warning about) is untouched by an unrelated param
+		//! edit and must not freeze every future edit to that material
+		//! -- Warning nags, edits proceed, exactly as an already-broken
+		//! scene's correct posture requires.  Do NOT generalize this
+		//! delta comparison to the first two triggers: they already
+		//! test the transition-capable field directly, so state-based
+		//! is the correct (and cheaper) answer there.
+		std::string CheckNonSamplingEmitterGateForPatch( const std::string& headText,
+		                                                  const std::string& target,
+		                                                  const std::string& kind,
+		                                                  const std::string& param,
+		                                                  const std::string& value );
+
+		//! CheckNonSamplingEmitterGateForInsert: does inserting `chunkText`
+		//! into `headText` create the construct?  "" immediately unless
+		//! the candidate chunk parses as a single csg_object chunk that
+		//! does NOT already carry `allow_non_sampling_emitter TRUE` (an
+		//! already-acknowledged insert can never be refused, so that check
+		//! skips the candidate-derive too).
+		std::string CheckNonSamplingEmitterGateForInsert( const std::string& headText,
+		                                                   const std::string& chunkText );
+
 		class AgentSession
 		{
 		public:
