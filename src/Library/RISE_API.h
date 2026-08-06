@@ -3493,6 +3493,35 @@ bool RISE_API_CreateFinalGatherShaderOp(
 									Scalar smokeGCond
 									);
 
+	//! Creates a fire medium from one named, versioned optical record.  The
+	//! condensed channel and chem bundle are independently optional; chem is
+	//! admitted only as an all-or-none synthetic-fixture path.
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter* condensedPainter,
+									const IScalarPainter* chemCHPainter,
+									const IScalarPainter* chemC2Painter,
+									const IScalarPainter* chemCO2Painter,
+									const IFunction1D* chemCHSPD,
+									const IFunction1D* chemC2SPD,
+									const IFunction1D* chemCO2SPD,
+									Scalar chemCHIntervalMin,
+									Scalar chemCHIntervalMax,
+									Scalar chemC2IntervalMin,
+									Scalar chemC2IntervalMax,
+									Scalar chemCO2IntervalMin,
+									Scalar chemCO2IntervalMax,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									const char* opticalRecord
+									);
+
 
 	//////////////////////////////////////////////////////////
 	// Virtual measurement devices

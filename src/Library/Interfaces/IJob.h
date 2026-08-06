@@ -3848,6 +3848,33 @@ namespace RISE
 			const double /*smoke_g_cond*/
 			) { return false; }
 
+		//! Adds a fire medium whose constituent optics come from one versioned
+		//! record.  Optional chem arguments are accepted only as one complete
+		//! channel/SPD/interval bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithPreset(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const char* /*optical_record*/
+			) { return false; }
+
 	};
 
 

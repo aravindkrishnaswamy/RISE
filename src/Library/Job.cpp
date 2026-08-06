@@ -6251,6 +6251,103 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 	return true;
 }
 
+bool Job::AddMultichannelHeterogeneousMediumWithPreset(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const char* optical_record
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !bboxMin ||
+		!bboxMax || !optical_record ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	const auto hasName = []( const char* value ) {
+		return value && value[0];
+	};
+	const bool chemFields[9] = {
+		hasName(chem_ch_painter), hasName(chem_c2_painter), hasName(chem_co2_painter),
+		hasName(chem_spd_ch), hasName(chem_spd_c2), hasName(chem_spd_co2),
+		chem_interval_ch != 0, chem_interval_c2 != 0, chem_interval_co2 != 0 };
+	bool hasAnyChem = false;
+	bool hasAllChem = true;
+	for( unsigned int i=0; i<9u; ++i ) {
+		hasAnyChem = hasAnyChem || chemFields[i];
+		hasAllChem = hasAllChem && chemFields[i];
+	}
+	if( hasAnyChem && !hasAllChem ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: chem bundle is incomplete" );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem(carbon_painter);
+	IScalarPainter* temperature = pScalarPntManager->GetItem(temperature_painter);
+	IScalarPainter* condensed = hasName(condensed_painter) ?
+		pScalarPntManager->GetItem(condensed_painter) : 0;
+	IScalarPainter* chemPainters[3] = { 0, 0, 0 };
+	IFunction1D* chemSPDs[3] = { 0, 0, 0 };
+	if( hasAllChem ) {
+		chemPainters[0] = pScalarPntManager->GetItem(chem_ch_painter);
+		chemPainters[1] = pScalarPntManager->GetItem(chem_c2_painter);
+		chemPainters[2] = pScalarPntManager->GetItem(chem_co2_painter);
+		chemSPDs[0] = pFunc1DManager->GetItem(chem_spd_ch);
+		chemSPDs[1] = pFunc1DManager->GetItem(chem_spd_c2);
+		chemSPDs[2] = pFunc1DManager->GetItem(chem_spd_co2);
+	}
+	if( !carbon || !temperature || (hasName(condensed_painter) && !condensed) ||
+		(hasAllChem && (!chemPainters[0] || !chemPainters[1] || !chemPainters[2] ||
+			!chemSPDs[0] || !chemSPDs[1] || !chemSPDs[2])) ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		(condensed && condensed->HasPerChannelVariation()) ) return false;
+	for( unsigned int i=0; i<3u; ++i ) {
+		if( chemPainters[i] && chemPainters[i]->HasPerChannelVariation() ) return false;
+	}
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		&medium, *carbon, *temperature, condensed,
+		chemPainters[0], chemPainters[1], chemPainters[2],
+		chemSPDs[0], chemSPDs[1], chemSPDs[2],
+		hasAllChem ? Scalar(chem_interval_ch[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_ch[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[1]) : 0.0,
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), optical_record ) || !medium ) return false;
+	mediaMap[name] = medium;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

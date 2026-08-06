@@ -7515,6 +7515,66 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter* condensedPainter,
+		const IScalarPainter* chemCHPainter,
+		const IScalarPainter* chemC2Painter,
+		const IScalarPainter* chemCO2Painter,
+		const IFunction1D* chemCHSPD,
+		const IFunction1D* chemC2SPD,
+		const IFunction1D* chemCO2SPD,
+		Scalar chemCHIntervalMin,
+		Scalar chemCHIntervalMax,
+		Scalar chemC2IntervalMin,
+		Scalar chemC2IntervalMax,
+		Scalar chemCO2IntervalMin,
+		Scalar chemCO2IntervalMax,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		const char* opticalRecord
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+		const FireOpticsPreset* optics = FireOpticsPreset::Named(opticalRecord);
+		if( !optics ) return false;
+		const bool hasAnyChem = chemCHPainter || chemC2Painter || chemCO2Painter ||
+			chemCHSPD || chemC2SPD || chemCO2SPD;
+		const bool hasAllChem = chemCHPainter && chemC2Painter && chemCO2Painter &&
+			chemCHSPD && chemC2SPD && chemCO2SPD;
+		if( hasAnyChem != hasAllChem ) return false;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction(
+			&phase, optics->HotG(550.0)) || !phase ) return false;
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, condensedPainter,
+				chemCHPainter, chemC2Painter, chemCO2Painter,
+				chemCHSPD, chemC2SPD, chemCO2SPD,
+				chemCHIntervalMin, chemCHIntervalMax,
+				chemC2IntervalMin, chemC2IntervalMax,
+				chemCO2IntervalMin, chemCO2IntervalMax,
+				volWidth, volHeight, volDepth, bboxMin, bboxMax,
+				sceneUnitMeters, *optics, *phase );
+		safe_release(phase);
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with optical preset" );
+		return true;
+	}
+
 	//////////////////////////////////////////////////////////
 	// Interactive scene editor — C-API entry points
 	//////////////////////////////////////////////////////////

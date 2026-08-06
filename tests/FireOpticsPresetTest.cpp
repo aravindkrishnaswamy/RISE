@@ -56,6 +56,12 @@ int main()
 
 	Check( predictive.SootDensityGCM3() == 1.8,
 		"the pinned density is part of the loaded predictive payload" );
+	Check( predictive.HotFractionMinK() == 700.0 &&
+		predictive.HotFractionMaxK() == 900.0 &&
+		predictive.HotFraction(700.0) == 0.0 &&
+		predictive.HotFraction(800.0) == 0.5 &&
+		predictive.HotFraction(900.0) == 1.0,
+		"the versioned optical record owns the hot/cool temperature band" );
 	Check( Near(predictive.MAC(550.0),8.0,1.0e-12) &&
 		Near(predictive.MAC(632.8),6.647,5.0e-4),
 		"MAC magnitude anchors pass" );
@@ -113,6 +119,37 @@ int main()
 	}
 	Check( derivativeContinuous,
 		"PCHIP interpolation is derivative-continuous at every interior knot" );
+	bool derivedEffectiveAbsorptionContinuous = true;
+	for( std::size_t knot=1; knot+1<mac.Wavelengths().size(); knot++ ) {
+		const double wavelength = mac.Wavelengths()[knot];
+		const double epsilon = 1.0e-6;
+		derivedEffectiveAbsorptionContinuous = derivedEffectiveAbsorptionContinuous &&
+			Near(predictive.EffectiveAbsorptionDerivative(wavelength-epsilon),
+				predictive.EffectiveAbsorptionDerivative(wavelength+epsilon),1.0e-8);
+	}
+	Check( derivedEffectiveAbsorptionContinuous,
+		"derived E_eff interpolation is derivative-continuous at every MAC knot" );
+	bool conservativeBounds = true;
+	for( unsigned int sample=0; sample<=4096; sample++ ) {
+		const double wavelength = 380.0+400.0*static_cast<double>(sample)/4096.0;
+		conservativeBounds = conservativeBounds &&
+			predictive.MaximumExtinctionMassVisible() >=
+				predictive.HotExtinctionMass(wavelength) &&
+			predictive.MaximumExtinctionMassVisible() >=
+				predictive.CoolExtinctionMass(wavelength) &&
+			predictive.MaximumExtinctionMassVisible() >=
+				predictive.CondensedExtinctionMass(wavelength) &&
+			predictive.MaximumHotAbsorptionMassVisible() >=
+				predictive.HotAbsorptionMass(wavelength) &&
+			predictive.MaximumCoolAbsorptionMassVisible() >=
+				predictive.CoolExtinctionMass(wavelength)*
+					(1.0-predictive.CoolAlbedo(wavelength)) &&
+			predictive.MaximumCondensedAbsorptionMassVisible() >=
+				predictive.CondensedExtinctionMass(wavelength)*
+					(1.0-predictive.CondensedAlbedo(wavelength));
+	}
+	Check( conservativeBounds,
+		"visible extinction and absorption bounds enclose interpolated spectra" );
 
 	FireOpticsPreset changedDensity = FireOpticsPreset::CreateExplicitSyntheticFixture(
 		0.26, 1801.0, 0.10, 0.50, 8.7, 1.2, 0.60, 0.60,
@@ -125,6 +162,10 @@ int main()
 		"changing pinned density changes the canonical record identity" );
 	Check( originalDensity.RecordId() != synthetic.RecordId(),
 		"legacy loose-value fixtures remain distinct from the frozen fixture record" );
+	Check( !FireOpticsPreset::CreateExplicitSyntheticFixture(
+		0.26,1800.0,1.0,0.50,8.7,1.2,0.60,0.60,
+		3.298,0.50,0.90,0.70).IsValid(),
+		"synthetic records outside physical optical ranges are rejected" );
 
 	const FireFidelityEvaluation preview = predictive.EvaluateFidelity(false,true,false);
 	Check( !preview.predictiveAllowed && preview.renderFidelityStatus == "preview" &&

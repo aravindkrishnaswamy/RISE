@@ -112,14 +112,7 @@ namespace
 			"bake_resolution 4 4 4\n"
 			"bbox_min " << -0.5 * scale << " " << -0.5 * scale << " " << -slabLength << "\n"
 			"bbox_max " << 0.5 * scale << " " << 0.5 * scale << " " << 2.0 * slabLength << "\n"
-			"soot_em 0.26\n"
-			"soot_density 1800\n"
-			"soot_albedo_hot 0\n"
-			"soot_g_hot 0.5\n"
-			"smoke_km_carbon 8.7\n"
-			"smoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0.6\n"
-			"smoke_g_carbon 0.6\n"
+			"optical_record synthetic_regression_v1\n"
 			"}\n"
 			"global_medium\n{\nmedium fire\n}\n"
 			"box_geometry\n{\nname wall_geometry\nwidth " << 10.0 * scale <<
@@ -313,19 +306,26 @@ namespace
 			"fire medium installs a valid delta-tracking majorant" );
 		const Scalar planck = PlanckSpectralRadianceNM( kWavelengthNM, kTemperatureK );
 		Check( NearRelative(
-			mediumM->GetThermalEmissionNM( midpointM, kWavelengthNM ) / coeffM.sigma_t,
+			mediumM->GetThermalEmissionNM( midpointM, kWavelengthNM ) /
+				(coeffM.sigma_t-coeffM.sigma_s),
 			planck, 1e-13 ), "thermal source is sigma_a times the pinned Planck kernel" );
 		Check( NearRelative( coeffCM.sigma_t * centimetres.slabLength,
 			coeffM.sigma_t * metres.slabLength, 1e-13 ),
 			"metre and centimetre slabs have equal optical depth" );
-		Check( NearRelative( coeffM.sigma_t / coeffMRed.sigma_t, 1.4, 1e-13 ),
-			"hot-soot slab extinction has the required tau(500)/tau(700)=1.4" );
+		Check( NearRelative( coeffM.sigma_t / coeffMRed.sigma_t,
+			FireOpticsPreset::SyntheticRegressionV1().HotExtinctionMass(500.0)/
+			FireOpticsPreset::SyntheticRegressionV1().HotExtinctionMass(700.0), 1e-13 ),
+			"hot-soot slab extinction follows the selected synthetic record" );
 
 		const Scalar tau = coeffM.sigma_t * metres.slabLength;
-		const Scalar expected = planck * ( -std::expm1( -tau ) );
+		const Scalar expected = planck *
+			(coeffM.sigma_t-coeffM.sigma_s)/coeffM.sigma_t *
+			( -std::expm1( -tau ) );
 		const Scalar tauRed = coeffMRed.sigma_t * metres.slabLength;
 		const Scalar expectedRed = PlanckSpectralRadianceNM(
-			kRedWavelengthNM, kTemperatureK ) * ( -std::expm1( -tauRed ) );
+			kRedWavelengthNM, kTemperatureK ) *
+			(coeffMRed.sigma_t-coeffMRed.sigma_s)/coeffMRed.sigma_t *
+			( -std::expm1( -tauRed ) );
 		const Scalar measuredM = metres.MeanNM( 0x5a174u, kWavelengthNM );
 		const Scalar measuredCM = centimetres.MeanNM( 0x5a174u, kWavelengthNM );
 		const Scalar measuredMRed = metres.MeanNM( 0x7ed174u, kRedWavelengthNM );

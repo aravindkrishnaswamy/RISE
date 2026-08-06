@@ -387,6 +387,19 @@ namespace RISE
 			const Scalar dist
 			) const { return EvalTransmittance( ray, dist ); }
 
+		/// Versioned fire-optics identity and preflight result.  Ordinary media
+		/// have no optical record; fire implementations keep returned strings
+		/// alive for the lifetime of the medium.
+		virtual const char* GetFireOpticsRecordId() const { return 0; }
+		virtual bool FirePredictiveAllowed() const { return false; }
+		virtual const char* GetFireRenderFidelityStatus(
+			const bool /*predictiveRequested*/ ) const { return 0; }
+		virtual unsigned int GetFireRenderReasonCodeCount(
+			const bool /*predictiveRequested*/ ) const { return 0; }
+		virtual const char* GetFireRenderReasonCode(
+			const bool /*predictiveRequested*/,
+			const unsigned int /*index*/ ) const { return 0; }
+
 	};
 }
 

@@ -6461,9 +6461,7 @@ namespace RISE
 				{
 					static const char* required[] = {
 						"name", "channel_carbon", "channel_temperature", "bake_resolution",
-						"bbox_min", "bbox_max", "soot_em", "soot_density",
-						"soot_albedo_hot", "soot_g_hot", "smoke_km_carbon",
-						"smoke_n_carbon", "smoke_albedo_carbon", "smoke_g_carbon"
+						"bbox_min", "bbox_max", "optical_record"
 					};
 					for( size_t i = 0; i < sizeof(required)/sizeof(required[0]); ++i ) {
 						if( !bag.Has( required[i] ) ) {
@@ -6473,21 +6471,7 @@ namespace RISE
 							return false;
 						}
 					}
-					static const char* condensedRequired[] = {
-						"smoke_km_cond", "smoke_n_cond",
-						"smoke_albedo_cond", "smoke_g_cond"
-					};
 					const bool hasCondensed = bag.Has( "channel_condensed" );
-					for( size_t i = 0;
-						i < sizeof(condensedRequired)/sizeof(condensedRequired[0]); ++i ) {
-						const bool hasParameter = bag.Has( condensedRequired[i] );
-						if( hasCondensed != hasParameter ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"MultichannelHeterogeneousMedium:: `%s` is required exactly when `channel_condensed` is present",
-								condensedRequired[i] );
-							return false;
-						}
-					}
 					static const char* chemChannels[] = {
 						"channel_chem_ch", "channel_chem_c2", "channel_chem_co2" };
 					static const char* chemSPDs[] = {
@@ -6562,52 +6546,24 @@ namespace RISE
 						return false;
 					}
 
-					const bool ok = hasAnyChemParameter ?
-						pJob.AddMultichannelHeterogeneousMediumWithChem(
-							bag.GetString("name").c_str(), carbonPainter.c_str(),
-							temperaturePainter.c_str(),
-							hasCondensed ? condensedPainter.c_str() : 0,
-							chemPainters[0].c_str(), chemPainters[1].c_str(),
-							chemPainters[2].c_str(), bag.GetString(chemSPDs[0]).c_str(),
-							bag.GetString(chemSPDs[1]).c_str(), bag.GetString(chemSPDs[2]).c_str(),
-							chemInterval[0], chemInterval[1], chemInterval[2],
-							static_cast<unsigned int>(resolution[0]),
-							static_cast<unsigned int>(resolution[1]),
-							static_cast<unsigned int>(resolution[2]),
-							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
-							bag.GetDouble("soot_em"), bag.GetDouble("soot_density"),
-							bag.GetDouble("soot_albedo_hot"), bag.GetDouble("soot_g_hot"),
-							bag.GetDouble("smoke_km_carbon"), bag.GetDouble("smoke_n_carbon"),
-							bag.GetDouble("smoke_albedo_carbon"), bag.GetDouble("smoke_g_carbon"),
-							hasCondensed ? bag.GetDouble("smoke_km_cond") : 0.0,
-							hasCondensed ? bag.GetDouble("smoke_n_cond") : 0.0,
-							hasCondensed ? bag.GetDouble("smoke_albedo_cond") : 0.0,
-							hasCondensed ? bag.GetDouble("smoke_g_cond") : 0.0 ) : hasCondensed ?
-						pJob.AddMultichannelHeterogeneousMediumWithCondensed(
-							bag.GetString( "name" ).c_str(),
-							carbonPainter.c_str(), temperaturePainter.c_str(),
-							condensedPainter.c_str(),
-							static_cast<unsigned int>( resolution[0] ),
-							static_cast<unsigned int>( resolution[1] ),
-							static_cast<unsigned int>( resolution[2] ),
-							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
-							bag.GetDouble( "soot_em" ), bag.GetDouble( "soot_density" ),
-							bag.GetDouble( "soot_albedo_hot" ), bag.GetDouble( "soot_g_hot" ),
-							bag.GetDouble( "smoke_km_carbon" ), bag.GetDouble( "smoke_n_carbon" ),
-							bag.GetDouble( "smoke_albedo_carbon" ), bag.GetDouble( "smoke_g_carbon" ),
-							bag.GetDouble( "smoke_km_cond" ), bag.GetDouble( "smoke_n_cond" ),
-							bag.GetDouble( "smoke_albedo_cond" ), bag.GetDouble( "smoke_g_cond" ) ) :
-						pJob.AddMultichannelHeterogeneousMedium(
-							bag.GetString( "name" ).c_str(),
-							carbonPainter.c_str(), temperaturePainter.c_str(),
-							static_cast<unsigned int>( resolution[0] ),
-							static_cast<unsigned int>( resolution[1] ),
-							static_cast<unsigned int>( resolution[2] ),
-							bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
-							bag.GetDouble( "soot_em" ), bag.GetDouble( "soot_density" ),
-							bag.GetDouble( "soot_albedo_hot" ), bag.GetDouble( "soot_g_hot" ),
-							bag.GetDouble( "smoke_km_carbon" ), bag.GetDouble( "smoke_n_carbon" ),
-							bag.GetDouble( "smoke_albedo_carbon" ), bag.GetDouble( "smoke_g_carbon" ) );
+					const bool ok = pJob.AddMultichannelHeterogeneousMediumWithPreset(
+						bag.GetString("name").c_str(), carbonPainter.c_str(),
+						temperaturePainter.c_str(),
+						hasCondensed ? condensedPainter.c_str() : 0,
+						hasAnyChemParameter ? chemPainters[0].c_str() : 0,
+						hasAnyChemParameter ? chemPainters[1].c_str() : 0,
+						hasAnyChemParameter ? chemPainters[2].c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[0]).c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[1]).c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[2]).c_str() : 0,
+						hasAnyChemParameter ? chemInterval[0] : 0,
+						hasAnyChemParameter ? chemInterval[1] : 0,
+						hasAnyChemParameter ? chemInterval[2] : 0,
+						static_cast<unsigned int>(resolution[0]),
+						static_cast<unsigned int>(resolution[1]),
+						static_cast<unsigned int>(resolution[2]),
+						bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+						bag.GetString("optical_record").c_str() );
 					if( ok ) s_sceneOptions.metric_medium_committed = true;
 					return ok;
 				}
@@ -6637,18 +6593,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature/condensed lattice resolution (integer X Y Z, each >= 2)"; }
 						{ auto& p = P(); p.name = "bbox_min"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox minimum"; }
 						{ auto& p = P(); p.name = "bbox_max"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox maximum"; }
-						{ auto& p = P(); p.name = "soot_em"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon E(m) absorption function"; }
-						{ auto& p = P(); p.name = "soot_density"; p.kind = ValueKind::Double; p.required = true; p.description = "Soot material density [kg/m^3]"; }
-						{ auto& p = P(); p.name = "soot_albedo_hot"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon single-scattering albedo"; }
-						{ auto& p = P(); p.name = "soot_g_hot"; p.kind = ValueKind::Double; p.required = true; p.description = "Hot-carbon HG asymmetry"; }
-						{ auto& p = P(); p.name = "smoke_km_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon mass extinction at 633 nm [m^2/g]"; }
-						{ auto& p = P(); p.name = "smoke_n_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon Angstrom exponent"; }
-						{ auto& p = P(); p.name = "smoke_albedo_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon single-scattering albedo"; }
-						{ auto& p = P(); p.name = "smoke_g_carbon"; p.kind = ValueKind::Double; p.required = true; p.description = "Cool-carbon HG asymmetry"; }
-						{ auto& p = P(); p.name = "smoke_km_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic mass extinction at 633 nm [m^2/g]; required with channel_condensed"; }
-						{ auto& p = P(); p.name = "smoke_n_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic Angstrom exponent; required with channel_condensed"; }
-						{ auto& p = P(); p.name = "smoke_albedo_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic single-scattering albedo; required with channel_condensed"; }
-						{ auto& p = P(); p.name = "smoke_g_cond"; p.kind = ValueKind::Double; p.required = false; p.description = "Condensed-organic HG asymmetry; required with channel_condensed"; }
+						{ auto& p = P(); p.name = "optical_record"; p.kind = ValueKind::Enum; p.required = true; p.enumValues = {"fire_optics_v1","synthetic_regression_v1"}; p.description = "One versioned constituent-optics record"; }
 						return cd;
 					}();
 					return d;

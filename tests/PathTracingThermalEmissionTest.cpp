@@ -133,7 +133,7 @@ namespace
 		const Scalar sceneUnitMeters,
 		const Scalar slabLength,
 		const bool positionalLight,
-		const Scalar sootAlbedoHot = 0.0,
+		const Scalar /*sootAlbedoHot*/ = 0.0,
 		const Scalar positionalLightPower = 1.0,
 		const bool greyPel = false )
 	{
@@ -148,24 +148,6 @@ namespace
 			"standard_shader\n{\nname global\n}\n"
 			"scalar_painter\n{\nname carbon\nvalue " << carbon << "\n}\n"
 			"scalar_painter\n{\nname temperature\nvalue " << temperatureK << "\n}\n"
-			"multichannel_heterogeneous_medium\n{\n"
-			"name fire\n"
-			"channel_carbon painter carbon\n"
-			"channel_temperature painter temperature\n"
-			"chem_model none\n"
-			"bake_resolution 4 4 4\n"
-			"bbox_min " << -0.5 * scale << " " << -0.5 * scale << " " << -slabLength << "\n"
-			"bbox_max " << 0.5 * scale << " " << 0.5 * scale << " " << 2.0 * slabLength << "\n"
-			"soot_em 0.26\n"
-			"soot_density 1800\n"
-			"soot_albedo_hot " << sootAlbedoHot << "\n"
-			"soot_g_hot 0.5\n"
-			"smoke_km_carbon 8.7\n"
-			"smoke_n_carbon " << (greyPel ? 0.0 : 1.2) << "\n"
-			"smoke_albedo_carbon " << (greyPel ? 0.0 : 0.6) << "\n"
-			"smoke_g_carbon 0.6\n"
-			"}\n"
-			"global_medium\n{\nmedium fire\n}\n"
 			"box_geometry\n{\nname wall_geometry\nwidth " << 10.0 * scale <<
 			"\nheight " << 10.0 * scale << "\ndepth " << 0.2 * scale << "\n}\n"
 			"standard_object\n{\nname black_wall\ngeometry wall_geometry\nmaterial none\nposition 0 0 " <<
@@ -225,6 +207,14 @@ namespace
 
 			if( !RISE_CreateJobPriv( &job ) || !job ||
 				!job->LoadAsciiSceneViaCst( scenePath.string().c_str() ) ) return false;
+			const Scalar scale = 1.0/sceneUnitMeters;
+			const double bboxMin[3] = {-0.5*scale,-0.5*scale,-slabLength};
+			const double bboxMax[3] = {0.5*scale,0.5*scale,2.0*slabLength};
+			if( !job->AddMultichannelHeterogeneousMedium(
+				"fire","carbon","temperature",4,4,4,bboxMin,bboxMax,
+				sceneUnitMeters,0.26,1800.0,sootAlbedoHot,0.5,8.7,
+				greyPel ? 0.0 : 1.2,greyPel ? 0.0 : 0.6,0.6) ||
+				!job->SetGlobalMedium("fire") ) return false;
 			IShader* shader = job->GetShaders()->GetItem( "global" );
 			if( !shader || !RISE_API_CreateRayCaster(
 				&caster, false, rayCasterMaxDepth, *shader, true ) || !caster ) return false;
@@ -358,7 +348,11 @@ namespace
 		const MediumCoefficientsNM coeff = medium->GetCoefficientsNM(
 			Point3( 0, 0, 0.5 * fixture.slabLength ), nm );
 		const Scalar tau = coeff.sigma_t * fixture.slabLength;
+		if( coeff.sigma_t <= 0.0 ) {
+			return 0.0;
+		}
 		return PlanckSpectralRadianceNM( nm, fixture.temperatureK ) *
+			((coeff.sigma_t-coeff.sigma_s)/coeff.sigma_t) *
 			( -std::expm1( -tau ) );
 	}
 
@@ -1223,9 +1217,8 @@ namespace
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 			"bake_resolution 4 4 4\nbbox_min 0.25 -0.5 -0.5\n"
-			"bbox_max 1.25 0.5 0.5\nsoot_em 0.26\nsoot_density 1800\n"
-			"soot_albedo_hot 0\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
-			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"bbox_max 1.25 0.5 0.5\noptical_record synthetic_regression_v1\n"
+			"}\n"
 			"global_medium\n{\nmedium receiver_smoke\n}\n"
 			"sphere_geometry\n{\nname fire_box_geometry\nradius 1\n}\n"
 			"standard_object\n{\nname fire_box\ngeometry fire_box_geometry\n"
@@ -1391,10 +1384,9 @@ namespace
 			"bake_resolution 4 4 4\nbbox_min " << fireMin.x << " " <<
 			fireMin.y << " " << fireMin.z << "\nbbox_max " << fireMax.x << " " <<
 			fireMax.y << " " << fireMax.z <<
-			"\nsoot_em 0.26\nsoot_density 1800\n"
-			"soot_albedo_hot 0" <<
-			"\nsoot_g_hot 0.5\nsmoke_km_carbon 8.7\n"
-			"smoke_n_carbon 1.2\nsmoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"\noptical_record synthetic_regression_v1\n"
+			"\n"
+			"}\n"
 			"global_medium\n{\nmedium fire\n}\n";
 		if( mechanism==PhaseBMatrixMechanism::HollowCavity ) {
 			scene <<
@@ -1406,9 +1398,8 @@ namespace
 				"channel_temperature painter mechanism_cavity_temperature\n"
 				"chem_model none\n"
 				"bake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\n"
-				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"optical_record synthetic_regression_v1\n"
+				"}\n"
 				"sphere_geometry\n{\nname mechanism_cavity_geometry\nradius 0.75\n}\n"
 				"standard_object\n{\nname mechanism_cavity\n"
 				"geometry mechanism_cavity_geometry\nmaterial mechanism_cavity_boundary\n"
@@ -1473,9 +1464,8 @@ namespace
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 			"bake_resolution 4 4 4\nbbox_min -3 -3 -3\nbbox_max 3 3 3\n"
-			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
-			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"optical_record synthetic_regression_v1\n"
+			"}\n"
 			"global_medium\n{\nmedium fire\n}\n"
 			"sphere_geometry\n{\nname receiver_geometry\nradius 1\n}\n"
 			"standard_object\n{\nname receiver_sphere\ngeometry receiver_geometry\n"
@@ -1503,9 +1493,8 @@ namespace
 			"multichannel_heterogeneous_medium\n{\nname fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 			"bake_resolution 4 4 4\nbbox_min -2 -2 -2\nbbox_max 2 2 2\n"
-			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.6\n"
-			"soot_g_hot 0.5\nsmoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+			"optical_record synthetic_regression_v1\n"
+			"}\n"
 			"global_medium\n{\nmedium fire\n}\n"
 			"box_geometry\n{\nname wall_geometry\nwidth 4\nheight 4\ndepth 0.2\n}\n"
 			"standard_object\n{\nname wall\ngeometry wall_geometry\n"
@@ -1533,9 +1522,8 @@ namespace
 			"multichannel_heterogeneous_medium\n{\nname shell_fire\n"
 			"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 			"bake_resolution 4 4 4\nbbox_min -2 -2 -2\nbbox_max 2 2 2\n"
-			"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
-			"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+			"optical_record synthetic_regression_v1\n"
+			"}\n"
 			"global_medium\n{\nmedium shell_fire\n}\n"
 			"sphere_geometry\n{\nname cavity_geometry\nradius 0.75\n}\n"
 			"standard_object\n{\nname cavity\ngeometry cavity_geometry\n"
@@ -3896,10 +3884,8 @@ namespace
 				"bake_resolution 4 4 4\n"
 				"bbox_min 1.1 -0.25 -1.4\n"
 				"bbox_max 1.5 0.25 -1.1\n"
-				"soot_em 0.26\nsoot_density 1800\n"
-				"soot_albedo_hot 0\nsoot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"optical_record synthetic_regression_v1\n"
+				"}\n"
 				"global_medium\n{\nmedium fire\n}\n";
 			if( includeGlass ) {
 				scene <<
@@ -6560,9 +6546,8 @@ namespace
 				"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
 				"chem_model none\nbake_resolution 4 4 4\n"
 				"bbox_min -1 -1 1\nbbox_max 1 1 3\n"
-				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0\nsoot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0\nsmoke_g_carbon 0.6\n}\n"
+				"optical_record synthetic_regression_v1\n"
+				"}\n"
 				"box_geometry\n{\nname enclosure_geometry\nwidth 2\nheight 2\ndepth 2\n}\n"
 				"standard_object\n{\nname enclosure\ngeometry enclosure_geometry\n"
 				"material boundary\ninterior_medium fire\nposition 0 0 2\n}\n";
@@ -6622,9 +6607,8 @@ namespace
 				"multichannel_heterogeneous_medium\n{\nname fire\n"
 				"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 				"bake_resolution 4 4 4\nbbox_min -1 -1 0\nbbox_max 1 1 4\n"
-				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+				"optical_record synthetic_regression_v1\n"
+				"}\n"
 				"box_geometry\n{\nname container_geometry\nwidth 2\nheight 2\ndepth 2\n}\n"
 				"standard_object\n{\nname container\ngeometry container_geometry\n"
 				"material emitter\ninterior_medium fire\nposition 0 0 2\n}\n";
@@ -7159,9 +7143,8 @@ namespace
 				"multichannel_heterogeneous_medium\n{\nname fire\n"
 				"channel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\n"
 				"bake_resolution 4 4 4\nbbox_min -1 -1 -1\nbbox_max 1 1 1\n"
-				"soot_em 0.26\nsoot_density 1800\nsoot_albedo_hot 0.1\nsoot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\nsmoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0.6\nsmoke_g_carbon 0.6\n}\n"
+				"optical_record synthetic_regression_v1\n"
+				"}\n"
 				"box_geometry\n{\nname container_geometry\nwidth 2\nheight 2\ndepth 2\n}\n"
 				"standard_object\n{\nname container\ngeometry container_geometry\nmaterial none\n}\n";
 		}

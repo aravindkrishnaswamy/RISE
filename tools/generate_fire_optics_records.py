@@ -170,6 +170,7 @@ def predictive_payload(data_dir: Path) -> dict:
         "record_name": "fire-optics-predictive-v1",
         "record_class": "predictive_optical_preset",
         "interpolation": "pchip_monotone_c1_v1",
+        "hot_fraction_temperature_band_K": [700.0, 900.0],
         "effective_absorption": {
             "record_name": effective["record_name"],
             "quantity_name": effective["quantity_name"],
@@ -236,6 +237,7 @@ def synthetic_payload(data_dir: Path) -> dict:
         "record_name": "fire-optics-synthetic-regression-v1",
         "record_class": "synthetic_regression_fixture",
         "interpolation": "analytic_fixture_v1",
+        "hot_fraction_temperature_band_K": [700.0, 900.0],
         "effective_absorption": {
             "model": "constant_E_eff",
             "E_eff": 0.26,

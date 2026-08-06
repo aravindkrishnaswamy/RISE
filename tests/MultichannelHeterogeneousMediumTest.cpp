@@ -73,6 +73,21 @@ namespace
 		return std::fabs( actual - expected ) <= tolerance * scale;
 	}
 
+	bool HasFireReason(
+		const IMedium& medium,
+		const bool predictiveRequested,
+		const char* reason
+		)
+	{
+		for( unsigned int i=0;
+			i<medium.GetFireRenderReasonCodeCount(predictiveRequested); ++i ) {
+			const char* candidate = medium.GetFireRenderReasonCode(
+				predictiveRequested,i);
+			if( candidate && std::strcmp(candidate,reason) == 0 ) return true;
+		}
+		return false;
+	}
+
 	RISEPel PelResponse( const Scalar nm )
 	{
 		XYZPel xyz;
@@ -643,6 +658,65 @@ namespace
 			NearRelative(greyMean.g,1.0,1e-14) &&
 			NearRelative(greyMean.b,1.0,1e-14),
 			"response-weighted means divide by each positive K_c" );
+	}
+
+	void TestPredictivePresetSpectralConsumptionAndFidelity()
+	{
+		std::cout << "TestPredictivePresetSpectralConsumptionAndFidelity" << std::endl;
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter(
+			1.0,0.0,0.0,0.0);
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter(
+			1000.0,0.0,0.0,0.0);
+		AffineWorldScalarPainter* condensed = new AffineWorldScalarPainter(
+			1.0,0.0,0.0,0.0);
+		IMedium* medium = 0;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+			&medium, *carbon, *temperature, condensed,
+			0,0,0,0,0,0, 0.0,0.0,0.0,0.0,0.0,0.0,
+			4,4,4, Point3(0,0,0), Point3(1,1,1), 1.0,
+			"fire_optics_v1" );
+		Check( created && medium, "the named predictive optical record constructs a medium" );
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		if( fire ) {
+			const FireOpticsPreset& optics = FireOpticsPreset::PredictiveV1();
+			const MediumCoefficientsNM coefficients = fire->GetCoefficientsNM(
+				Point3(0.5,0.5,0.5),550.0);
+			const Scalar expectedHotAbsorption = optics.HotAbsorptionMass(550.0);
+			const Scalar expectedHotExtinction = optics.HotExtinctionMass(550.0);
+			const Scalar expectedCondExtinction = optics.CondensedExtinctionMass(550.0);
+			const Scalar expectedScattering =
+				(expectedHotExtinction-expectedHotAbsorption)+
+				expectedCondExtinction*optics.CondensedAlbedo(550.0);
+			Check( NearRelative(coefficients.sigma_t,
+				expectedHotExtinction+expectedCondExtinction,1e-13) &&
+				NearRelative(coefficients.sigma_s,expectedScattering,1e-13),
+				"NM coefficients consume wavelength-dependent record MAC, omega, and condensed optics" );
+			Check( NearRelative(fire->HotSootVolumeFraction(Point3(0.5,0.5,0.5)),
+				5.555555555555556e-7,1e-13),
+				"the medium applies the pinned 1 g/m3 soot volume-fraction unit gate" );
+			const IPhaseFunction* phase = fire->MakePhaseClosure(
+				Point3(0.5,0.5,0.5),550.0);
+			const Scalar expectedG =
+				((expectedHotExtinction-expectedHotAbsorption)*optics.HotG(550.0)+
+				 expectedCondExtinction*optics.CondensedAlbedo(550.0)*
+				 optics.CondensedG(550.0))/expectedScattering;
+			Check( phase && Near(phase->GetMeanCosine(),expectedG,1e-12),
+				"NM phase closure is sigma_s-weighted from record g spectra" );
+			if( phase ) phase->release();
+			Check( std::string(fire->GetFireOpticsRecordId()) == optics.RecordId(),
+				"the consumed record identity is exposed through the medium" );
+			Check( !fire->FirePredictiveAllowed() &&
+				std::string(fire->GetFireRenderFidelityStatus(true)) == "preview" &&
+				HasFireReason(*fire,true,"producer_unqualified") &&
+				HasFireReason(*fire,true,"chem_none_unqualified") &&
+				HasFireReason(*fire,true,"condensed_organics_ir_unclosed"),
+				"predictive evaluation fails closed with specific producer, chem, and IR reasons" );
+		}
+		safe_release(medium);
+		safe_release(carbon);
+		safe_release(temperature);
+		safe_release(condensed);
 	}
 
 	void TestBakedTrilinearChannelsAndOptics()
@@ -1814,31 +1888,7 @@ namespace
 			{ "bake_resolution", "4 4 4" },
 			{ "bbox_min", "0 0 0" },
 			{ "bbox_max", "1 1 1" },
-			{ "soot_em", "0.26" },
-			{ "soot_density", "1800" },
-			{ "soot_albedo_hot", "0.10" },
-			{ "soot_g_hot", "0.5" },
-			{ "smoke_km_carbon", "8.7" },
-			{ "smoke_n_carbon", "1.2" },
-			{ "smoke_albedo_carbon", "0.6" },
-			{ "smoke_g_carbon", "0.6" }
-		};
-		for( const Pair& value : values ) {
-			if( !omit || std::string( value.key ) != omit ) {
-				bag.SetSingle( value.key, value.value );
-			}
-		}
-	}
-
-	void AddCondensedFields( ParseStateBag& bag, const char* omit )
-	{
-		struct Pair { const char* key; const char* value; };
-		static const Pair values[] = {
-			{ "channel_condensed", "painter condensed" },
-			{ "smoke_km_cond", "4.0" },
-			{ "smoke_n_cond", "0.5" },
-			{ "smoke_albedo_cond", "0.9" },
-			{ "smoke_g_cond", "0.7" }
+			{ "optical_record", "synthetic_regression_v1" }
 		};
 		for( const Pair& value : values ) {
 			if( !omit || std::string( value.key ) != omit ) {
@@ -1881,11 +1931,8 @@ namespace
 		for( const ParameterDescriptor& parameter : descriptor.parameters ) {
 			if( parameter.required ) required.push_back( parameter.name );
 		}
-		Check( required.size() == 14, "all 14 Phase-A fields are descriptor-required" );
-		const char* condensedFields[] = {
-			"channel_condensed", "smoke_km_cond", "smoke_n_cond",
-			"smoke_albedo_cond", "smoke_g_cond"
-		};
+		Check( required.size() == 7, "the seven structural and record fields are required" );
+		const char* condensedFields[] = { "channel_condensed" };
 		for( const char* field : condensedFields ) {
 			bool foundOptional = false;
 			for( const ParameterDescriptor& parameter : descriptor.parameters ) {
@@ -1919,23 +1966,6 @@ namespace
 			FillValidBag( bag, omitted.c_str() );
 			Check( !parser->Finalize( bag, *job ),
 				("omitting required parameter " + omitted + " fails").c_str() );
-		}
-		const char* condensedTuple[] = {
-			"smoke_km_cond", "smoke_n_cond", "smoke_albedo_cond", "smoke_g_cond"
-		};
-		for( const char* omitted : condensedTuple ) {
-			ParseStateBag bag( &descriptor );
-			FillValidBag( bag, nullptr );
-			AddCondensedFields( bag, omitted );
-			Check( !parser->Finalize( bag, *job ),
-				(std::string( "channel_condensed without " ) + omitted + " fails").c_str() );
-		}
-		for( const char* orphaned : condensedTuple ) {
-			ParseStateBag bag( &descriptor );
-			FillValidBag( bag, nullptr );
-			bag.SetSingle( orphaned, "0.5" );
-			Check( !parser->Finalize( bag, *job ),
-				(std::string( orphaned ) + " without channel_condensed fails").c_str() );
 		}
 		{
 			ParseStateBag bag( &descriptor );
@@ -1996,18 +2026,7 @@ namespace
 			"bake_resolution 4 4 4\n"
 			"bbox_min 0 0 0\n"
 			"bbox_max 100 100 100\n"
-			"soot_em 0.26\n"
-			"soot_density 1800\n"
-			"soot_albedo_hot 0.10\n"
-			"soot_g_hot 0.8\n"
-			"smoke_km_carbon 8.7\n"
-			"smoke_n_carbon 1.2\n"
-			"smoke_albedo_carbon 0.6\n"
-			"smoke_g_carbon -0.4\n"
-			"smoke_km_cond 4.0\n"
-			"smoke_n_cond 0.5\n"
-			"smoke_albedo_cond 0.9\n"
-			"smoke_g_cond 0.7\n"
+			"optical_record synthetic_regression_v1\n"
 			"}\n";
 	}
 
@@ -2039,7 +2058,7 @@ namespace
 				const RISEPel expectedSigmaT = 0.01 *
 					(ResponsePowerMean(1.0)*(0.5*hotAbsorptionMass/0.90) +
 					 ResponsePowerMean(1.2)*(0.5*8.7) +
-					 ResponsePowerMean(0.5)*(2.0*4.0));
+					 ResponsePowerMean(0.5)*(2.0*3.298));
 				const RISEPel actualSigmaT =
 					fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t;
 				Check( NearRelative(actualSigmaT.r,expectedSigmaT.r,1e-13) &&
@@ -2069,16 +2088,16 @@ namespace
 						0.10 / 0.90;
 					const Scalar coolScattering = 0.5 * 8.7 *
 						pow( wavelengthScale, 1.2 ) * 0.60;
-					const Scalar condScattering = 2.0 * 4.0 *
+					const Scalar condScattering = 2.0 * 3.298 *
 						pow( wavelengthScale, 0.5 ) * 0.90;
 					const Scalar expectedMean =
-						(hotScattering * 0.8 + coolScattering * -0.4 +
+						(hotScattering * 0.5 + coolScattering * 0.6 +
 						 condScattering * 0.7) /
 						(hotScattering + coolScattering + condScattering);
 					const IPhaseFunction* closure = fire->MakePhaseClosure(
 						Point3( 50, 50, 50 ), nm );
 					Check( closure && Near( closure->GetMeanCosine(), expectedMean, 1e-12 ),
-						"CST wiring preserves all authored g values in wavelength-bound mixtures" );
+						"CST wiring consumes the single synthetic optical record" );
 					if( closure ) closure->release();
 				}
 			}
@@ -2092,6 +2111,7 @@ namespace
 int main()
 {
 	TestMatrixOnlyFilmResponse();
+	TestPredictivePresetSpectralConsumptionAndFidelity();
 	TestBakedTrilinearChannelsAndOptics();
 	TestChromaticNMTrackingAndTransmittance();
 	TestCondensedConstituentOpticsAndClosure();

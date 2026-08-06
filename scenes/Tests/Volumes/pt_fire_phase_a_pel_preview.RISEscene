@@ -111,14 +111,7 @@ multichannel_heterogeneous_medium
 	bbox_min			-0.035 0.0 -0.018
 	bbox_max			 0.035 0.12 0.018
 
-	soot_em				0.26
-	soot_density			1800
-	soot_albedo_hot			0.10
-	soot_g_hot			0.5
-	smoke_km_carbon			8.7
-	smoke_n_carbon			1.2
-	smoke_albedo_carbon		0.6
-	smoke_g_carbon			0.6
+	optical_record			fire_optics_v1
 }
 
 global_medium

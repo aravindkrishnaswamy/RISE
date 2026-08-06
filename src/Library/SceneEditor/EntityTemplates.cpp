@@ -704,18 +704,7 @@ namespace
 				"bake_resolution 32 32 64\n"
 				"bbox_min -0.02 0 -0.02\n"
 				"bbox_max 0.02 0.08 0.02\n"
-				"soot_em 0.26\n"
-				"soot_density 1800\n"
-				"soot_albedo_hot 0.10\n"
-				"soot_g_hot 0.5\n"
-				"smoke_km_carbon 8.7\n"
-				"smoke_n_carbon 1.2\n"
-				"smoke_albedo_carbon 0.6\n"
-				"smoke_g_carbon 0.6\n"
-				"smoke_km_cond 4.0\n"
-				"smoke_n_cond 0.5\n"
-				"smoke_albedo_cond 0.9\n"
-				"smoke_g_cond 0.7\n"
+				"optical_record fire_optics_v1\n"
 				"}\n" );
 			return t;
 		}();

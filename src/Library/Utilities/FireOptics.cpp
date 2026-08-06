@@ -42,6 +42,16 @@ namespace RISE
 			return std::fabs(a-b) <= tolerance;
 		}
 
+		double MaximumValue( const std::vector<double>& values )
+		{
+			return *std::max_element(values.begin(), values.end());
+		}
+
+		double MinimumValue( const std::vector<double>& values )
+		{
+			return *std::min_element(values.begin(), values.end());
+		}
+
 		const RISECBOR64::Value* Required(
 			const RISECBOR64::Value& map,
 			const char* key,
@@ -420,7 +430,8 @@ namespace RISE
 
 	FireOpticsPreset::FireOpticsPreset() :
 		m_valid(false), m_recordClass(InvalidRecord), m_domainMinNM(0.0),
-		m_domainMaxNM(0.0), m_densityGCM3(0.0), m_constantEffectiveAbsorption(0.0),
+		m_domainMaxNM(0.0), m_hotFractionMinK(0.0), m_hotFractionMaxK(0.0),
+		m_densityGCM3(0.0), m_constantEffectiveAbsorption(0.0),
 		m_coolKm633(0.0), m_coolExponent(0.0), m_coolOmega(0.0), m_coolG(0.0),
 		m_condensedFixtureKm633(0.0), m_condensedFixtureExponent(0.0),
 		m_condensedFixtureOmega(0.0), m_condensedFixtureG(0.0),
@@ -471,12 +482,18 @@ namespace RISE
 			record, "cool_carbon", RISECBOR64::Value::Map, error );
 		const RISECBOR64::Value* condensed = Required(
 			record, "condensed_organics", RISECBOR64::Value::Map, error );
+		std::vector<double> hotFractionBand;
 		if( !effective || !hot || !cool || !condensed ||
+			!ReadFloatArray(record, "hot_fraction_temperature_band_K",
+				hotFractionBand, error) || hotFractionBand.size() != 2 ||
+			hotFractionBand[0] >= hotFractionBand[1] ||
 			!ReadDomain(*effective, m_domainMinNM, m_domainMaxNM, error) ||
 			!ReadFloat(*effective, "pinned_density_g_cm3", m_densityGCM3, error) ||
 			m_densityGCM3 <= 0.0 ) {
 			return false;
 		}
+		m_hotFractionMinK = hotFractionBand[0];
+		m_hotFractionMaxK = hotFractionBand[1];
 
 		if( recordClass == "predictive_optical_preset" &&
 			interpolation == "pchip_monotone_c1_v1" ) {
@@ -495,8 +512,9 @@ namespace RISE
 				wavelengths.push_back(effectiveRows[i][0]);
 				effectiveValues.push_back(effectiveRows[i][1]);
 				macValues.push_back(effectiveRows[i][2]);
-				if( effectiveRows[i][0] != 380.0+5.0*static_cast<double>(i) ) {
-					return Fail(error, "fire-optics E/MAC wavelengths are not the frozen grid");
+				if( effectiveRows[i][0] != 380.0+5.0*static_cast<double>(i) ||
+					effectiveRows[i][1] <= 0.0 || effectiveRows[i][2] <= 0.0 ) {
+					return Fail(error, "fire-optics E/MAC row is not the frozen positive grid");
 				}
 				const double derived = effectiveRows[i][2]*(m_densityGCM3*1000000.0)*
 					effectiveRows[i][0]*1.0e-9/(6.0*kPi);
@@ -517,6 +535,14 @@ namespace RISE
 				hotWavelengths.push_back(hotRows[i][0]);
 				hotOmega.push_back(hotRows[i][1]);
 				hotG.push_back(hotRows[i][2]);
+				if( hotRows[i][1] < 0.0 || hotRows[i][1] >= 1.0 ||
+					hotRows[i][2] <= -1.0 || hotRows[i][2] >= 1.0 ) {
+					return Fail(error, "fire-optics hot-soot row is outside its physical range");
+				}
+			}
+			if( hotWavelengths.front() != m_domainMinNM ||
+				hotWavelengths.back() != m_domainMaxNM ) {
+				return Fail(error, "fire-optics hot-soot table does not cover the record domain");
 			}
 			if( !ReadInterpolation(*hot, "omega_interpolation", hotWavelengths,
 				hotOmega, m_hotOmega, error) ||
@@ -533,7 +559,10 @@ namespace RISE
 			std::vector<double> supportedRange;
 			if( !ReadFloatArray(*cool, "n_supported_range", supportedRange, error) ||
 				supportedRange.size() != 2 || supportedRange[0] != 1.0 ||
-				supportedRange[1] != 1.2 ) {
+				supportedRange[1] != 1.2 || m_coolKm633 <= 0.0 ||
+				m_coolExponent < supportedRange[0] ||
+				m_coolExponent > supportedRange[1] || m_coolOmega < 0.0 ||
+				m_coolOmega >= 1.0 || m_coolG <= -1.0 || m_coolG >= 1.0 ) {
 				return Fail(error, "fire-optics cool-carbon exponent range is not frozen v1");
 			}
 			std::vector<std::vector<double> > condensedRows;
@@ -546,6 +575,17 @@ namespace RISE
 				condensedKm.push_back(condensedRows[i][1]);
 				condensedOmega.push_back(condensedRows[i][2]);
 				condensedG.push_back(condensedRows[i][3]);
+				if( condensedRows[i][1] <= 0.0 || condensedRows[i][2] < 0.0 ||
+					condensedRows[i][2] >= 1.0 || condensedRows[i][3] <= -1.0 ||
+					condensedRows[i][3] >= 1.0 ) {
+					return Fail(error,
+						"fire-optics condensed-organic row is outside its physical range");
+				}
+			}
+			if( condensedWavelengths.front() != m_domainMinNM ||
+				condensedWavelengths.back() != m_domainMaxNM ) {
+				return Fail(error,
+					"fire-optics condensed-organic table does not cover the record domain");
 			}
 			if( !ReadInterpolation(*condensed, "k_ext_interpolation", condensedWavelengths,
 				condensedKm, m_condensedKm, error) ||
@@ -561,7 +601,8 @@ namespace RISE
 				return false;
 			}
 
-			if( m_densityGCM3 != 1.8 || !NearlyEqual(MAC(550.0), 8.0, 1.0e-12) ||
+			if( m_hotFractionMinK != 700.0 || m_hotFractionMaxK != 900.0 ||
+				m_densityGCM3 != 1.8 || !NearlyEqual(MAC(550.0), 8.0, 1.0e-12) ||
 				!NearlyEqual(MAC(632.8), 6.647, 5.0e-4) ||
 				!NearlyEqual(EffectiveAbsorption(380.0)/EffectiveAbsorption(780.0),
 					1.311, 5.0e-4) ||
@@ -582,11 +623,11 @@ namespace RISE
 		if( recordClass == "synthetic_regression_fixture" &&
 			interpolation == "analytic_fixture_v1" ) {
 			m_recordClass = SyntheticRegressionFixture;
+			double hotOmega;
 			if( !ReadFloat(*effective, "E_eff", m_constantEffectiveAbsorption, error) ||
-				!ReadFloat(*hot, "omega", m_coolOmega, error) ) {
+				!ReadFloat(*hot, "omega", hotOmega, error) ) {
 				return false;
 			}
-			const double hotOmega = m_coolOmega;
 			double hotGValue;
 			if( !ReadFloat(*hot, "g", hotGValue, error) ||
 				!ReadFloat(*cool, "k_m_extinction_633nm_m2_per_g", m_coolKm633, error) ||
@@ -616,8 +657,18 @@ namespace RISE
 			m_condensedPreviewExponent = m_condensedFixtureExponent;
 			m_condensedIRClosureStatus = "blocked";
 			m_condensedApplicability = "explicitly synthetic regression fixture";
-			return m_constantEffectiveAbsorption > 0.0 && m_densityGCM3 > 0.0 &&
-				m_coolKm633 >= 0.0 && m_condensedFixtureKm633 >= 0.0;
+			const bool validFixture =
+				m_hotFractionMinK == 700.0 && m_hotFractionMaxK == 900.0 &&
+				m_constantEffectiveAbsorption >= 0.0 && m_densityGCM3 > 0.0 &&
+				hotOmega >= 0.0 && hotOmega < 1.0 && hotGValue > -1.0 &&
+				hotGValue < 1.0 && m_coolKm633 >= 0.0 && m_coolExponent >= 0.0 &&
+				m_coolOmega >= 0.0 && m_coolOmega <= 1.0 && m_coolG > -1.0 &&
+				m_coolG < 1.0 && m_condensedFixtureKm633 >= 0.0 &&
+				m_condensedFixtureExponent >= 0.0 && m_condensedFixtureOmega >= 0.0 &&
+				m_condensedFixtureOmega <= 1.0 && m_condensedFixtureG > -1.0 &&
+				m_condensedFixtureG < 1.0;
+			return validFixture || Fail(error,
+				"fire-optics synthetic fixture is outside its physical range");
 		}
 
 		return Fail(error, "unsupported fire-optics record class or interpolation");
@@ -701,6 +752,8 @@ namespace RISE
 			{ "condensed_organics", condensed },
 			{ "cool_carbon", cool },
 			{ "effective_absorption", effective },
+			{ "hot_fraction_temperature_band_K", Value::ArrayValue({
+				Value::Float(700.0), Value::Float(900.0) }) },
 			{ "hot_soot", hot },
 			{ "interpolation", Value::String("analytic_fixture_v1") },
 			{ "record_class", Value::String("synthetic_regression_fixture") },
@@ -715,6 +768,15 @@ namespace RISE
 			return FireOpticsPreset();
 		}
 		return result;
+	}
+
+	double FireOpticsPreset::HotFraction( const double temperatureK ) const
+	{
+		if( temperatureK <= m_hotFractionMinK ) return 0.0;
+		if( temperatureK >= m_hotFractionMaxK ) return 1.0;
+		const double u = (temperatureK-m_hotFractionMinK)/
+			(m_hotFractionMaxK-m_hotFractionMinK);
+		return u*u*(3.0-2.0*u);
 	}
 
 	double FireOpticsPreset::MAC( const double wavelengthNM ) const
@@ -804,43 +866,39 @@ namespace RISE
 
 	double FireOpticsPreset::MaximumExtinctionMassVisible() const
 	{
-		double maximum = 0.0;
-		for( unsigned int i=0; i<=4096; i++ ) {
-			const double wavelength = m_domainMinNM+
-				(m_domainMaxNM-m_domainMinNM)*static_cast<double>(i)/4096.0;
-			maximum = std::max(maximum, HotExtinctionMass(wavelength));
-			maximum = std::max(maximum, CoolExtinctionMass(wavelength));
-			maximum = std::max(maximum, CondensedExtinctionMass(wavelength));
-		}
-		return maximum;
+		const double maximumHot = MaximumHotAbsorptionMassVisible()/
+			(1.0-MaximumValue(m_hotOmega.Values()));
+		const double maximumCool = std::max(
+			CoolExtinctionMass(m_domainMinNM), CoolExtinctionMass(m_domainMaxNM) );
+		const double maximumCondensed = m_recordClass == PredictiveOpticalPreset ?
+			MaximumValue(m_condensedKm.Values()) : std::max(
+				CondensedExtinctionMass(m_domainMinNM),
+				CondensedExtinctionMass(m_domainMaxNM) );
+		return std::max(maximumHot, std::max(maximumCool, maximumCondensed));
 	}
 
 	double FireOpticsPreset::MaximumHotAbsorptionMassVisible() const
 	{
-		double maximum = 0.0;
-		for( unsigned int i=0; i<=4096; i++ ) {
-			const double wavelength = m_domainMinNM+
-				(m_domainMaxNM-m_domainMinNM)*static_cast<double>(i)/4096.0;
-			maximum = std::max(maximum, HotAbsorptionMass(wavelength));
-		}
-		return maximum;
+		return m_recordClass == PredictiveOpticalPreset ? MaximumValue(m_mac.Values()) :
+			std::max(HotAbsorptionMass(m_domainMinNM),
+				HotAbsorptionMass(m_domainMaxNM));
 	}
 
 	double FireOpticsPreset::MaximumCoolAbsorptionMassVisible() const
 	{
-		return CoolExtinctionMass(m_domainMinNM)*(1.0-m_coolOmega);
+		return std::max(CoolExtinctionMass(m_domainMinNM),
+			CoolExtinctionMass(m_domainMaxNM))*(1.0-m_coolOmega);
 	}
 
 	double FireOpticsPreset::MaximumCondensedAbsorptionMassVisible() const
 	{
-		double maximum = 0.0;
-		for( unsigned int i=0; i<=4096; i++ ) {
-			const double wavelength = m_domainMinNM+
-				(m_domainMaxNM-m_domainMinNM)*static_cast<double>(i)/4096.0;
-			maximum = std::max(maximum, CondensedExtinctionMass(wavelength)*
-				(1.0-CondensedAlbedo(wavelength)));
-		}
-		return maximum;
+		const double maximumExtinction = m_recordClass == PredictiveOpticalPreset ?
+			MaximumValue(m_condensedKm.Values()) : std::max(
+				CondensedExtinctionMass(m_domainMinNM),
+				CondensedExtinctionMass(m_domainMaxNM) );
+		const double minimumAlbedo = m_recordClass == PredictiveOpticalPreset ?
+			MinimumValue(m_condensedOmega.Values()) : m_condensedFixtureOmega;
+		return maximumExtinction*(1.0-minimumAlbedo);
 	}
 
 	double FireOpticsPreset::PelApproximateCondensedKm633() const

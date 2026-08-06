@@ -59,6 +59,7 @@
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/MajorantGrid.h"
 #include "../Utilities/AliasTable.h"
+#include "../Utilities/FireOptics.h"
 #include <vector>
 
 namespace RISE
@@ -359,6 +360,10 @@ namespace RISE
 		Scalar m_chemIntervalMin[3];
 		Scalar m_chemIntervalMax[3];
 		Scalar m_chemSPDArea[3];
+		FireOpticsPreset m_optics;
+		FireFidelityEvaluation m_previewFidelity;
+		FireFidelityEvaluation m_predictiveFidelity;
+		bool m_hasNonzeroCondensedInventory;
 		Scalar m_sceneUnitMeters;
 		Scalar m_sootEm;
 		Scalar m_sootDensity;
@@ -506,6 +511,32 @@ namespace RISE
 			const Point3& bboxMin,
 			const Point3& bboxMax,
 			const Scalar sceneUnitMeters,
+			const FireOpticsPreset& optics,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const IScalarPainter* chemCHPainter,
+			const IScalarPainter* chemC2Painter,
+			const IScalarPainter* chemCO2Painter,
+			const IFunction1D* chemCHSPD,
+			const IFunction1D* chemC2SPD,
+			const IFunction1D* chemCO2SPD,
+			const Scalar chemCHIntervalMin,
+			const Scalar chemCHIntervalMax,
+			const Scalar chemC2IntervalMin,
+			const Scalar chemC2IntervalMax,
+			const Scalar chemCO2IntervalMin,
+			const Scalar chemCO2IntervalMax,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
 			const Scalar sootEm,
 			const Scalar sootDensity,
 			const Scalar sootAlbedoHot,
@@ -547,6 +578,22 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
+		const FireOpticsPreset& GetFireOpticsPreset() const { return m_optics; }
+		bool FirePredictiveAllowed() const override
+		{
+			return m_predictiveFidelity.predictiveAllowed;
+		}
+		const char* GetFireOpticsRecordId() const override
+		{
+			return m_optics.RecordId().c_str();
+		}
+		const char* GetFireRenderFidelityStatus(
+			const bool predictiveRequested ) const override;
+		unsigned int GetFireRenderReasonCodeCount(
+			const bool predictiveRequested ) const override;
+		const char* GetFireRenderReasonCode(
+			const bool predictiveRequested,
+			const unsigned int index ) const override;
 
 		Scalar LookupCarbon( const Point3& worldPt ) const;
 		Scalar LookupTemperature( const Point3& worldPt ) const;

@@ -86,6 +86,8 @@ namespace RISE
 		RISECBOR64::Bytes m_recordBytes;
 		double m_domainMinNM;
 		double m_domainMaxNM;
+		double m_hotFractionMinK;
+		double m_hotFractionMaxK;
 		double m_densityGCM3;
 		double m_constantEffectiveAbsorption;
 		DifferentiableSpectrum m_mac;
@@ -159,6 +161,9 @@ namespace RISE
 		}
 		double DomainMinNM() const { return m_domainMinNM; }
 		double DomainMaxNM() const { return m_domainMaxNM; }
+		double HotFractionMinK() const { return m_hotFractionMinK; }
+		double HotFractionMaxK() const { return m_hotFractionMaxK; }
+		double HotFraction( double temperatureK ) const;
 		double SootDensityGCM3() const { return m_densityGCM3; }
 		double SootDensityKgM3() const { return m_densityGCM3*1000.0; }
 
