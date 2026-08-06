@@ -9,7 +9,7 @@
   "verdict": "PASS for wood-class flaming smoke"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "e2ae54e9963b3d142abc66df873b38ea780afda88cafa81472ea0b6cc0bc8c50",
+ "draft_record_id_sha256_of_payload": "f610af446984b8623acf24cac7976604b3346e0e2ceca3e2949c930e14ba2e07",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: B&B explicitly makes no statement outside 400-700nm; the record needs the C&C dispersion (or another source) for thermal wavelengths - couples to the E(m) record's >6.4um verification",
   "omega/g wavelength dependence beyond 633nm: assemble from RDG-FA once morphology record adopted",
@@ -63,14 +63,16 @@
    "value": 8.7
   },
   "n_spectral_exponent": {
+   "certified_domain_provenance": "Certified domain EXTENDED from [400,700] to [380,780] on 2026-08-06 (implementation provenance stop): the [400,700] label was Bond & Bergstrom's self-imposed statement scope (SS7.6 p.53, visible only), but the lambda^-1 law over the full renderer band is covered by direct measurement in this record's own source list: (a) Heuser et al. 2025 ACP 25:6407 - AAE fitted over 375-870nm = 1.05 for pure EC (abstract; spans the entire band); (b) Ouf et al. 2008 FSS 9:231 p.238 - sigma_e measured at BOTH 632.8 and 1064nm, EAE 1.03 (makes 700-780 an INTERPOLATION between measured points, not an extrapolation); (c) Forestieri et al. 2018 - MAC measured 405/532/630nm, AAE ~1. The n=1.0-1.2 range is retained over the extended domain (Heuser's 1.05 sits inside it); no widening needed at the edges given (a) covers them directly.",
+   "out_of_domain_policy": "NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.",
    "range": [
     1.0,
     1.2
    ],
    "source": "B&B 2006 SS7.6 p.53/SS9.1 p.58 (lambda^-1, visible only, +/-~0.15); Ouf et al. 2008 FSS 9:231 p.238 (632->1064nm EAE 1.03); Heuser et al. 2025 ACP 25:6407 Table 2 (EC-rich EAE 1.12-1.23); Chen et al. 2007 flaming pine ~1.18 derived",
    "validity_nm": [
-    400,
-    700
+    380,
+    780
    ],
    "value": 1.0
   },
