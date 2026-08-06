@@ -89,6 +89,36 @@
     0.16
    ],
    "over": "N in [30,80] x d_p in [20,35]nm"
+  },
+  "young_refined_domain_550nm": {
+   "corners": {
+    "dp17.5_N17": [
+     0.011,
+     0.023
+    ],
+    "dp26_N35_central": [
+     0.058,
+     0.114
+    ],
+    "dp26_N80": [
+     0.096,
+     0.265
+    ],
+    "dp30_N80": [
+     0.126,
+     0.318
+    ],
+    "dp31.5_N48": [
+     0.109,
+     0.23
+    ],
+    "dp34_N48_santoro_peak": [
+     0.127,
+     0.259
+    ]
+   },
+   "emission_weighting_note": "sigma_a is proportional to f_v, and dp peaks WITH f_s (Sunderland C2H4: dp peak 31.49 nm at near-peak f_s 0.845 ppm) - so the radiometrically weighted morphology is the peak-soot-region one: dp~31.5/N~48 gives omega=0.109, g=0.230, essentially the adopted 0.10/0.22. The unweighted domain central (dp26/N35) is lower: omega 0.058, g 0.114. CORROBORATION of the adopted values under emission weighting; flagged, not tuned.",
+   "format": "[omega, g]"
   }
  },
  "design_fixture_comparison": {
@@ -96,7 +126,7 @@
   "omega_hot_fixture_0.10": "CONFIRMED (central computed 0.10 for verified N=30-80 young soot)"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "b3de0aa4328cb5c6308fc678cdc14890d4cc470084ab0220df62f26db8d7333d",
+ "draft_record_id_sha256_of_payload": "912c94c986eede951fe39072d43319248530cab9135b8ac0fe2f2d69446c639e",
  "g_hot_adopted": {
   "ruling": "Owner 2026-08-05: computed value adopted for the young in-flame constituent; 0.5 describes mature aggregates already assigned to cool carbon by the phi(T) split (keeping it would double-count maturation in the wrong constituent). omega_hot~0.10 means weak scattering, so limited total radiometric leverage. The 0.5 value may persist ONLY in the explicitly synthetic regression fixture, and fixture vs predictive preset must carry DISTINCT record IDs.",
   "supported_range": [
@@ -107,8 +137,8 @@
  },
  "gaps": [
   "per-fuel rho_sa table: Koylu & Faeth 1994a (J.Heat Transfer 116:152, ASME) PAYWALLED - owner library pull",
-  "in-flame d_p/N tables: Yazicioglu et al. CST 171:71 (2001) PAYWALLED - best closure target",
-  "validation of computed g against exact methods: Romshoo et al. 2021 ACP 21:12989 supplement (OPEN - ln g cubic fit coefficients, 192 MSTM cases) and Liu et al. 2013 AST 47:1393 (PAYWALLED, RDG-vs-GMM asymmetry comparison)"
+  "validation of computed g against exact methods: Romshoo et al. 2021 ACP 21:12989 supplement (OPEN - ln g cubic fit coefficients, 192 MSTM cases) and Liu et al. 2013 AST 47:1393 (PAYWALLED, RDG-vs-GMM asymmetry comparison)",
+  "Yazicioglu CST 171:71 (2001): NO LONGER REQUIRED (gate closed by open alternatives 2026-08-06); optional future ablation for its Df/kf fit and CH4 coverage"
  ],
  "method": "RDG-FA per Sorensen 2001 (Aerosol Sci. Tech. 35:648-687): sigma_abs^agg = N*sigma_abs^m (Eq.29); rho_sa = N*G(kRg)*(2/3)*x_p^3*(F/E) (equiv. Sorensen Eq.115 / Krishnan-Faeth Eq.17 - verified identical); G = Dobbins-Megaridis total-scattering factor (Eq.35); differential structure factor Dobbins-Megaridis (Guinier + power-law, value+slope-matched crossover at (qRg)^2=3Df/2, C~1) - Fisher-Burford and exponential forms explicitly REJECTED per Sorensen p.660 (C=2.44/2.73 at Df~1.8 over-predict large-angle scattering); g = <cos theta> over (1+cos^2)*S(q)",
  "morphology_inputs": {
@@ -116,6 +146,12 @@
    "source": "Krishnan et al. 1999 via NISTGCR 00-796 Table 2 footnote",
    "uncertainty": 0.05,
    "value": 1.79
+  },
+  "D_f_in_flame_lead": {
+   "Df": 1.7,
+   "caveat": "CONVENTION UNVERIFIED (not stated on page or details PDF; only in the underlying paper). Note kf=2.4 numerically matches the K&F radius-convention k0=2.44, suggesting radius-based - suggestive only, not adopted; overfire Df=1.79/kf=8.5 remains the record's fit",
+   "kf": 2.4,
+   "source": "ISF De Iuliis et al. entry (Combust. Flame 115:253, 1998; atmospheric ethylene coflow), stated on the archived ISF page"
   },
   "F_over_E_measured": {
    "anchors_nm": {
@@ -134,6 +170,7 @@
     30,
     80
    ],
+   "santoro_refinement": "ISF/Megaridis-Dobbins 1989 pathline: N per aggregate 16.6 (z=2cm) -> 47.6 (z=5cm) - overlaps and extends the verified 30-80 downward; combined supported domain N ~ 17-80",
    "source": "Krishnan & Faeth NISTGCR 00-796 p.84 (open, OCR-read; same-author restatement of Koylu & Faeth 1994a,b underfire data)",
    "status": "VERIFIED"
   },
@@ -152,13 +189,16 @@
    "uncertainty": "d_p <10%, N <20% (95% confidence)"
   },
   "d_p_young_nm": {
-   "central": 30,
-   "range": [
-    20,
-    35
+   "atmospheric_range_nm": [
+    17.5,
+    31.5
    ],
-   "source": "lead-only (Megaridis & Dobbins CST 71:95 ~10-40nm; Sunderland/Koylu/Faeth CF 100:310 Fig.3 plots)",
-   "status": "PROVISIONAL pending Yazicioglu et al. CST 171:71-87 (2001), DOI 10.1080/00102200108907859 (owner library pull; TEM primaries + aggregate morphology, laminar coflow diffusion flames). If no adoptable tables: retain 20-35nm with a FORMAL DIGITIZATION RECORD (exact page/figure; extraction method + digitization uncertainty; flame conditions + sampling location; mapping to the hot-soot certified domain). Does not block architecture; blocks predictive freeze only."
+   "santoro_pathline_peak_nm": 34.0,
+   "sources": [
+    "Sunderland PhD dissertation (Univ. Michigan 1995), Appendix C Table C.1 - atmospheric (98.8 kPa) coflow laminar jet diffusion flames, ethane/propane/n-butane/ethylene, dp tabulated vs z/t/T, u95 < 10%, >60 particles/location; open at terpconnect.umd.edu/~pbs/Sunderland-dissertation-1995.pdf; peer-reviewed companion Sunderland & Faeth, Combust. Flame 105:132-146 (1996), open at same host. Extracted (parser with temperature-gated dp rule; agent-quoted anchors 26.16@22 / 28.72@26 / 31.49@34 / 26.83@38 all reproduced): docs/data/source_pulls/p1b_sunderland_1995_atmospheric_dp.csv (41 rows: ethane 18.25-28.15, propane 17.49-30.28, n-butane 19.15-31.37, ethylene 20.08-31.49 nm)",
+    "ISF workshop 'constantine' Santoro-burner file (Wayback-archived Adelaide ISF-4 dataset), citing Megaridis & Dobbins 1989, Combust. Sci. Technol. 66:1-16 - Santoro atmospheric non-smoking C2H4/air flame, max-soot pathline: dp 13.8->34.0(peak, z=4cm)->27.3 nm; digitized-from-figure precision; docs/data/source_pulls/p1c_isf_santoro_megaridis_dobbins_1989.csv"
+   ],
+   "status": "TABLE-VERIFIED (gate closed 2026-08-06)"
   },
   "k_f_prefactor": {
    "convention": "N = k_f*(R_g/d_p)^D_f (DIAMETER)",
@@ -176,7 +216,7 @@
  },
  "record_kind": "constituent_optics",
  "record_name": "hot-soot-v1",
- "record_status": "OWNER_DECISIONS_TAKEN_2026-08-05__PROVENANCE_GATE_PENDING (g_hot adopted; d_p provisional pending Yazicioglu pull)",
+ "record_status": "OWNER_DECISIONS_TAKEN__DP_PROVENANCE_GATE_CLOSED_2026-08-06 (open-source alternative replaced the Yazicioglu pull)",
  "schema_version": "draft-1",
  "validation": {
   "independent": "Heuser 2025 ACP Table 2 SSA(550) 0.10-0.29; Forestieri 2018 SSA(532)~0.20 - three routes agree",

@@ -1,0 +1,23 @@
+"# ISF workshop file 'constantine-experimental-data-santoro-burner.xlsx', sheet Non-smoking_maxsootline"
+"# source cited in-file: Megaridis & Dobbins 1989, Combust. Sci. Technol. 66:1-16 (Santoro non-smoking atmospheric C2H4/air flame); digitized-from-figure precision"
+"Reference:Constantine, M. Megaridis and Richard, A. Dobbins(1989) 'Comparison of Soot Growth and Oxidation in Smoking and Non-Smoking Ethylene Diffusion Flames', Combustion Science and Technology, 66: 1, 1 — 16 "
+Experimental data,
+,
+Figure 5: Primary particle size as a function of height for soot aggregates transported along the annular region of the two ethylene diffusion flames examined,
+z (cm),dp (nm),
+1.0090699999999999,13.815799999999999
+1.5086599999999999,22.203900000000001
+1.9934000000000001,27.220400000000001
+3.0024700000000002,32.154600000000002
+4.0065999999999997,34.046100000000003
+5.00082,32.072400000000002
+5.9901099999999996,27.302600000000002
+
+z (cm),Np (cm-3),,z (cm),np,,z (cm),fv (ppm)
+1.5,390000000000,,1.9884299999999999,16.574999999999999,,1.5,2.2000000000000002
+2,350000000000,,3,34.702500000000001,,2,3.6
+3,320000000000,,4.0115699999999999,39.3889,,3,5.5
+4,410000000000,,5.0033099999999999,47.631399999999999,,4,8.4
+,,,,,,,
+,,,,,,,
+,,,,,,,

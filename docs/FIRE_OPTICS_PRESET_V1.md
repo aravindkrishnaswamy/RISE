@@ -300,7 +300,39 @@ Per the owner's audit
   Adopted as a **domain-limited low-pressure acetylene axis only** — it
   does *not* freeze a universal 20–35 nm range (accessible evidence in that
   domain supports 9–25 nm), lacks the D_f/k_f fit, and does not cover
-  atmospheric CH₄/C₂H₄. The Yazicioglu pull stands.
+  atmospheric CH₄/C₂H₄. ~~The Yazicioglu pull stands.~~ **Superseded — see
+  §2.7: the gate closed 2026-08-06 via open alternatives.**
+
+### 2.7 d_p provenance gate CLOSED (2026-08-06) — open alternative to Yazicioglu
+
+The same Sunderland dissertation already in hand carries the needed
+**atmospheric** tables: Appendix C Table C.1 tabulates in-flame d_p vs
+z/t/T for **atmospheric (98.8 kPa)** ethane/propane/n-butane/ethylene
+coflow flames, u95 < 10 %, >60 particles per location, citable through the
+open peer-reviewed companion (Sunderland & Faeth, *Combust. Flame*
+105:132–146 (1996), both open at the UMD host). Extracted with a
+temperature-gated parser — all previously quoted anchors reproduce exactly
+(26.16@22 mm, 28.72@26, 31.49@34, 26.83@38) —
+[p1b CSV](data/source_pulls/p1b_sunderland_1995_atmospheric_dp.csv), 41
+rows: **atmospheric in-flame d_p = 17.5–31.5 nm across four fuels**. The
+ISF workshop archive (Wayback-preserved Adelaide ISF-4 files) supplies the
+Santoro atmospheric ethylene flame's pathline d_p (13.8→34.0 peak→27.3 nm)
+**and the previously missing in-flame N per aggregate: 16.6→47.6**
+(Megaridis & Dobbins 1989 digitization,
+[p1c CSV](data/source_pulls/p1c_isf_santoro_megaridis_dobbins_1989.csv)),
+extending the verified N domain to ~17–80. A D_f = 1.7 / k_f = 2.4 pair
+(De Iuliis, ISF page) is recorded as a **convention-unverified lead** only.
+
+RDG-FA over the refined table-backed domain at 550 nm: ω spans 0.011–0.127,
+g spans 0.023–0.318. **Emission-weighting corroborates the adopted
+centrals**: σ_a ∝ f_v and d_p peaks *with* f_s (Sunderland ethylene: d_p
+peak 31.49 nm at near-peak f_s), so the radiometrically weighted morphology
+is the peak-soot-region one — d_p≈31.5/N≈48 → **ω = 0.109, g = 0.230**,
+essentially the adopted 0.10/0.22. The unweighted domain central (d_p 26,
+N 35) is lower (ω 0.058, g 0.114) — recorded as a flag, not tuned.
+**Yazicioglu is no longer required** (optional future ablation for its
+D_f/k_f fit and methane coverage). The predictive hot-soot record has no
+remaining provenance gate.
 - **P4 closed by digitization record.** NISTGCR 00-796 Fig. 3 digitized
   ρ_sa(514.5 nm): acetylene 0.47, ethylene 0.33, propylene 0.38, benzene
   0.50, toluene 0.71, n-heptane 0.33 (±0.03 digitization, <20 % source u95;

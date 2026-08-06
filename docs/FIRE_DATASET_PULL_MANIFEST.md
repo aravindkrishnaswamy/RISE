@@ -15,7 +15,7 @@ data under [data/source_pulls/](data/source_pulls/)):
 
 | pull | status |
 |---|---|
-| P1 Yazicioglu | **partial** — low-pressure acetylene axis adopted (Sunderland tables, 9.26–24.43 nm); pull stands for atmospheric CH₄/C₂H₄ + D_f/k_f |
+| P1 Yazicioglu | **CLOSED 2026-08-06** — atmospheric tables found in the Sunderland dissertation Appendix C (17.5–31.5 nm, four fuels, u95<10%) + ISF/Megaridis–Dobbins Santoro data (in-flame N 16.6–47.6); Yazicioglu downgraded to optional ablation (D_f/k_f fit, CH₄ coverage). See FIRE_OPTICS_PRESET_V1.md §2.7 |
 | P2 Samaniego | **negative** — reclassified as model evidence (numerical investigation); no measured CO₂* W/HRR exists in this line |
 | P3 Markstein/Klassen–Gore | **negative** — measurement absent in the audited classic series (emission starts 850/1200 nm); denominator needs new measurement or accepted derived value |
 | P4 Köylü–Faeth | **closed** — NISTGCR 00-796 Fig. 3 digitization record (propane absent) |
