@@ -221,6 +221,9 @@ def predictive_payload(data_dir: Path) -> dict:
             "certified_domain_nm": [
                 float(value) for value in cool_values["n_spectral_exponent"]["validity_nm"]
             ],
+            "out_of_domain_policy": cool_values["n_spectral_exponent"][
+                "out_of_domain_policy"
+            ],
         },
         "condensed_organics": {
             "record_name": condensed["record_name"],

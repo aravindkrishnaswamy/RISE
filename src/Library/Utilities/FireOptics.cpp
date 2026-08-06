@@ -29,6 +29,8 @@ namespace RISE
 			"phi(T) = smoothstep over T in [700, 900] K: 0 below, 1 above. FIRE_SMOKE_DESIGN.md SS3.4 says 'smoothstep' unqualified; the cubic Hermite 3t^2-2t^3 (C1) is the assumed canonical form - if the SS3.5 backward-Euler solver requires C2 (smootherstep), that is a design-loop question, not an implementation choice";
 		const char kPhiProvenance[] =
 			"FIRE_SMOKE_DESIGN.md SS3.4 (r45+; lines ~807-808): design-owned closure parameter of the derived hot/cool carbon partition c_hot = phi(T)*c_carbon. NOT a literature constant - its authority is the design decision itself. SS8 requires the phi(T) band in the versioned optical record; this field closes that gap in the draft layer (added 2026-08-06 at the implementation agent's provenance stop).";
+		const char kCoolOutOfDomainPolicy[] =
+			"NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.";
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -612,9 +614,12 @@ namespace RISE
 			std::vector<double> certifiedDomain;
 			if( !ReadFloatArray(*cool, "n_supported_range", supportedRange, error) ||
 				!ReadFloatArray(*cool, "certified_domain_nm", certifiedDomain, error) ||
+				!ReadText(*cool, "out_of_domain_policy",
+					m_coolOutOfDomainPolicy, error) ||
 				supportedRange.size() != 2 || supportedRange[0] != 1.0 ||
 				supportedRange[1] != 1.2 || certifiedDomain.size() != 2 ||
-				certifiedDomain[0] != 400.0 || certifiedDomain[1] != 700.0 ||
+				certifiedDomain[0] != 380.0 || certifiedDomain[1] != 780.0 ||
+				m_coolOutOfDomainPolicy != kCoolOutOfDomainPolicy ||
 				m_coolKm633 <= 0.0 ||
 				m_coolExponent < supportedRange[0] ||
 				m_coolExponent > supportedRange[1] || m_coolOmega < 0.0 ||
@@ -715,6 +720,8 @@ namespace RISE
 			m_condensedPreviewExponent = m_condensedFixtureExponent;
 			m_condensedIRClosureStatus = "blocked";
 			m_condensedApplicability = "explicitly synthetic regression fixture";
+			m_coolDomainMinNM = m_domainMinNM;
+			m_coolDomainMaxNM = m_domainMaxNM;
 			const bool validFixture =
 				m_hotFractionMinK == 700.0 && m_hotFractionMaxK == 900.0 &&
 				m_constantEffectiveAbsorption >= 0.0 && m_densityGCM3 > 0.0 &&
@@ -1002,11 +1009,6 @@ namespace RISE
 		if( hasNonzeroCondensedInventory ) {
 			result.reasonCodes.push_back(m_condensedPredictiveReason);
 		}
-		if( m_recordClass == PredictiveOpticalPreset &&
-			(m_domainMinNM < m_coolDomainMinNM ||
-			 m_domainMaxNM > m_coolDomainMaxNM) ) {
-			result.reasonCodes.push_back("table_domain_exceeded");
-		}
 		result.reasonCodes.push_back("producer_unqualified");
 		if( !predictiveRequested ) {
 			result.reasonCodes.push_back("requested_preview");
@@ -1019,5 +1021,16 @@ namespace RISE
 			std::unique(result.reasonCodes.begin(), result.reasonCodes.end()),
 			result.reasonCodes.end() );
 		return result;
+	}
+
+	bool FireOpticsPreset::SupportsWavelengthRange(
+		const double minimumNM,
+		const double maximumNM
+		) const
+	{
+		return m_valid && IsFinite(minimumNM) && IsFinite(maximumNM) &&
+			minimumNM <= maximumNM && minimumNM >= m_domainMinNM &&
+			maximumNM <= m_domainMaxNM && minimumNM >= m_coolDomainMinNM &&
+			maximumNM <= m_coolDomainMaxNM;
 	}
 }

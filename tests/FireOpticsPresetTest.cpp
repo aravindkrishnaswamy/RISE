@@ -68,7 +68,7 @@ int main()
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
-		"c66304c80d438c2653cffcda1a11d7e53b309e8d85a5d97ee22b1b74be931f70" &&
+		"0b57c2edfb73e06b5d2ceac10f778d1386554be8818434dfc4c71dd9a11d2502" &&
 		synthetic.RecordId() ==
 		"b1f177756bbe960fd2a618ac50ff6a35519f288b50c9c1f712482b2e36b204ae",
 		"the frozen v1 record IDs are pinned" );
@@ -109,6 +109,12 @@ int main()
 		Near(predictive.CoolAlbedo(633.0),0.25,1.0e-12) &&
 		Near(predictive.CoolG(633.0),0.58,1.0e-12),
 		"predictive cool-carbon anchor values are frozen" );
+	Check( predictive.CoolCarbonDomainMinNM() == 380.0 &&
+		predictive.CoolCarbonDomainMaxNM() == 780.0 &&
+		predictive.SupportsWavelengthRange(380.0,780.0) &&
+		!predictive.SupportsWavelengthRange(379.999,780.0) &&
+		!predictive.SupportsWavelengthRange(380.0,780.001),
+		"cool carbon certifies the exact renderer band and rejects either overrun" );
 	Check( Near(predictive.CondensedExtinctionMass(380.0),7.63,1.0e-12) &&
 		Near(predictive.CondensedExtinctionMass(780.0),2.097,1.0e-12) &&
 		predictive.CondensedIRClosureStatus() == "blocked" &&
@@ -232,20 +238,35 @@ int main()
 			!rejected.LoadCanonicalRecord(changedBytes,&mutationError),
 			"load rejects a free-form condensed-organics predictive reason" );
 	}
+	RISECBOR64::Value decodedPredictive;
+	Check( RISECBOR64::DecodeCanonical(predictive.RecordBytes(),decodedPredictive,
+		&mutationError), "the predictive record decodes for policy mutation tests" );
+	const RISECBOR64::Value* cool = decodedPredictive.Find("cool_carbon");
+	if( cool ) {
+		const RISECBOR64::Value changedCool = ReplaceMember(*cool,
+			"out_of_domain_policy", RISECBOR64::Value::String("extrapolate") );
+		const RISECBOR64::Value changedRecord = ReplaceMember(decodedPredictive,
+			"cool_carbon", changedCool );
+		RISECBOR64::Bytes changedBytes;
+		FireOpticsPreset rejected;
+		Check( RISECBOR64::Encode(changedRecord,changedBytes,&mutationError) &&
+			!rejected.LoadCanonicalRecord(changedBytes,&mutationError),
+			"load rejects a cool-carbon policy that permits extrapolation" );
+	}
 
 	const FireFidelityEvaluation preview = predictive.EvaluateFidelity(false,true,false);
 	Check( !preview.predictiveAllowed && preview.renderFidelityStatus == "preview" &&
 		HasReason(preview,"requested_preview") && HasReason(preview,"producer_unqualified") &&
 		HasReason(preview,"chem_none_unqualified") &&
 		HasReason(preview,"condensed_organics_ir_unclosed") &&
-		HasReason(preview,"table_domain_exceeded") &&
+		!HasReason(preview,"table_domain_exceeded") &&
 		std::is_sorted(preview.reasonCodes.begin(),preview.reasonCodes.end()),
 		"preview fidelity reasons are specific, unique, and sorted" );
 	const FireFidelityEvaluation predictiveAttempt = predictive.EvaluateFidelity(true,true,true);
 	Check( !predictiveAttempt.predictiveAllowed &&
 		HasReason(predictiveAttempt,"missing_chem_record") &&
 		HasReason(predictiveAttempt,"condensed_organics_ir_unclosed") &&
-		HasReason(predictiveAttempt,"table_domain_exceeded") &&
+		!HasReason(predictiveAttempt,"table_domain_exceeded") &&
 		!HasReason(predictiveAttempt,"requested_preview"),
 		"predictive preflight fails for chem and nonzero condensed inventory" );
 

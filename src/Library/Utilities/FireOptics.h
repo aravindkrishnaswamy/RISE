@@ -99,6 +99,7 @@ namespace RISE
 		double m_coolG;
 		double m_coolDomainMinNM;
 		double m_coolDomainMaxNM;
+		std::string m_coolOutOfDomainPolicy;
 		DifferentiableSpectrum m_condensedKm;
 		DifferentiableSpectrum m_condensedOmega;
 		DifferentiableSpectrum m_condensedG;
@@ -163,6 +164,9 @@ namespace RISE
 		}
 		double DomainMinNM() const { return m_domainMinNM; }
 		double DomainMaxNM() const { return m_domainMaxNM; }
+		double CoolCarbonDomainMinNM() const { return m_coolDomainMinNM; }
+		double CoolCarbonDomainMaxNM() const { return m_coolDomainMaxNM; }
+		bool SupportsWavelengthRange( double minimumNM, double maximumNM ) const;
 		double HotFractionMinK() const { return m_hotFractionMinK; }
 		double HotFractionMaxK() const { return m_hotFractionMaxK; }
 		double HotFraction( double temperatureK ) const;
