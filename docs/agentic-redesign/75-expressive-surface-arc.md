@@ -293,6 +293,24 @@ never compiled here; re-run the standing runconfigs when the model
 roster changes (the 74-arc's advice — a stronger local model may
 adopt where qwen did not).
 
+**POST-ARC E1 (2026-08-06, `dc256c73`): the law's enforcement half,
+applied to its cleanest case.**  LUMINAIRE_NULL_GEOMETRY — correct,
+actionable, and ignored 2/2 as a Warning in the live dreamscape run —
+is now a BLOCKING refusal at every creation path (insert, both patch
+arms, material-side with delta semantics, resolve-time re-gate under
+verified lock discipline), with an honest escape
+(`allow_non_sampling_emitter TRUE`: the rare glow-only intent becomes
+a deliberate, trajectory-visible act).  Two review rounds fixed four
+P1s — three bypass paths and one over-refusal (state-vs-delta on
+pre-existing warned constructs: Warning nags, edits proceed, only
+creation blocks).  Enforcement scope deliberately ends here: content
+richness (scalar pipe, painter families) stays UN-gated per the
+settled score verdict — flat is sometimes right, and the decoy record
+shows what dishonest gates teach.  **Pre-committed stop rule**: if
+future trajectories show reflexive escape-param spam (habituation
+transplanted), the gate reverts to Warning; watched passively via the
+standing trajectory record (grep allow_non_sampling_emitter).
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
