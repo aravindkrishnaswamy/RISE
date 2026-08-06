@@ -35,10 +35,10 @@
   "uncertainty": "radiometer circuit <2.5% (SS2.2.2); NO end-to-end radiometric budget"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "4be533e69672f8bb674be5ebe2b52a8804ae7836db4d72573148454ea02f2f46",
+ "draft_record_id_sha256_of_payload": "27d3fb49afcf13c473365c80a76fc36a34830815bf5a47d4eec84ffb03d539f6",
  "owner_ruling_2026_08_05": {
   "certified_domain": "intersection of every subrecord's domain; initial adoption restricted to lean/stoichiometric Phi<=1 (clean flow-derived HRR); rich cases preview",
-  "next_step": "send the drafted author request if predictive methane is wanted",
+  "next_step": "DEFERRED (2026-08-06): author email NOT sent; predictive methane postponed. On reopen: send the drafted request, then close CH* 390, continuum decomposition, and CO2* model qualification per this ruling.",
   "policy": "Composite-source records ALLOWED: one versioned methane record may contain separately hashed subrecords with distinct provenance/uncertainties (SS4.4 already treats CH*, C2*, CO2* as independent source fields).",
   "record_state": "still OPEN - the Lai + CO2*-model composite is incomplete",
   "required_closures": [
@@ -49,7 +49,7 @@
  },
  "record_kind": "chem_dataset_evaluation",
  "record_name": "chem-methane-lai2025-evaluation",
- "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "record_status": "DEFERRED_2026-08-06 (owner: predictive methane dropped for now, marked for later; composite-source policy and required closures in owner_ruling_2026_08_05 remain valid whenever it reopens)",
  "schema_version": "draft-1",
  "verdict": "ADOPTABLE WITH AUTHOR CONTACT for CH*(431) and C2* Swan channels ONLY. Author contact cannot supply CH* B-X 390nm or the CO2* continuum - a second UV-extended source is required regardless. Whether a two-channel record + separately sourced CO2* model satisfies SS12 Q1 for methane is an owner design decision.",
  "version": "v1-draft"

@@ -78,7 +78,7 @@ assembled evidence, on three independent grounds:
 | Wood flame χ_r | ≈ 0.3 (Douglas fir) | Khan & Tewarson, SFPE Handbook 5th ed. Ch. 36 | **paywalled/print** — snippet only; must be confirmed against the printed table |
 | Premixed reaction-zone radiative loss / HRR | 0.4–2.5 × 10⁻³ | Samaniego, CTR Annual Research Briefs 1994, Table 2, p. 31 | open, read |
 | CO₂* absolute photon-rate model | i = 3.3(±0.3)×10³·exp(−2300/T)·[CO][O] mol-photon cm⁻³ s⁻¹, 200–700 nm, 1300–2700 K | Slack & Grillo, *Combust. Flame* 59:189–196 (1985), as codified in Nori & Seitzman AIAA 2008-953 Eq. (3) p. 4 (open, read) | usable for a *computed* bound |
-| Absolute OH*/CH* rates, methane **diffusion** flames | 2D fields, mol·m⁻³·s⁻¹, integrating-sphere calibrated | Jin et al., *ACS Omega* 5:15922 (2020), Figs. 4–5, Table 1 | open access; **figures only, no data files** |
+| Absolute OH*/CH* rates, methane **diffusion** flames | 2D fields, mol·m⁻³·s⁻¹, integrating-sphere calibrated | Liu, Tan, Wan, Zhang & Yao, *ACS Omega* 5:15922 (2020), DOI 10.1021/acsomega.0c01093, Figs. 4–5, Table 1 (attribution corrected 2026-08-06; earlier drafts said "Jin et al.") | open access; **figures only, no data files** |
 | Planck visible fractions | computed this session (table below) | `fire_optics_calc.py`; kernel validated against σT⁴ | computed |
 
 Computed visible-band fractions (380–780 nm) of total emission — blackbody
@@ -157,12 +157,12 @@ Ready-to-land replacement language for §7.0's "pinned measurement"
 > covariance, digitization, geometry, spectral-truncation, domain-transfer,
 > and model-form uncertainties.
 
-The §1.6 Slack–Grillo + Jin + Hamins construction **fails that stronger
+The §1.6 Slack–Grillo + Liu + Hamins construction **fails that stronger
 definition** as it stands:
 
 - Slack–Grillo is a kinetics/source model, not a same-case measurement of
   wax/heptane/wood visible chemiluminescence;
-- Jin's calibrated fields are methane diffusion-flame measurements —
+- Liu et al.'s calibrated fields are methane diffusion-flame measurements —
   transferring them to other fuels introduces an unbounded
   fuel/regime-transfer discrepancy;
 - the numerator is not demonstrably complete across all important visible
@@ -187,7 +187,7 @@ findings that sharpen this section:**
   absolute CO₂* W/HRR record exists in that line (the Stanford brief and
   DLR spectroscopy also fail the absolute-power-ratio requirement). §1.3's
   table entry is reclassified accordingly. The only no-lab tier-1 route is
-  the Slack–Grillo/Jin derived record carrying the full §1.5a uncertainty
+  the Slack–Grillo/Liu derived record carrying the full §1.5a uncertainty
   budget.
 - **The visible-band denominator measurement is absent from the audited
   classic series, not merely unpulled.** Markstein is total-radiation
@@ -223,7 +223,7 @@ In order of increasing cost:
 2. **A computed-bound record** (needs an owner design decision): §7.0 says "a
    pinned measurement reports a 95 % upper bound". A record built as
    *computation over published measured inputs* — Slack–Grillo CO₂* kinetics
-   + Jin et al. 2020's calibrated CH*/OH* diffusion-flame fields (digitized)
+   + Liu et al. 2020's calibrated CH*/OH* diffusion-flame fields (digitized)
    for the numerator; Hamins 2005 χ_r + measured soot temperatures for the
    denominator, all uncertainties propagated — is arguably within the spirit
    but not the letter. **The owner must rule whether a computed bound
@@ -238,6 +238,60 @@ In order of increasing cost:
 Draft records `fire_chem_negligibility_{wax,heptane,wood}.draft.json` carry
 the assembled inputs, the computed ratio matrices, and `status:
 "not_closeable_from_open_literature"` with the specific missing items.
+
+### 1.7 The derived record, built (owner-directed, 2026-08-06) — criterion NOT met
+
+Per the owner's route decision, the derived bound was constructed for
+wax/candle under the §1.5a budget (full construction:
+[fire_chem_derived_bound_wax_candle.draft.json](data/fire_chem_derived_bound_wax_candle.draft.json)).
+
+**Numerator** (methane anchor → wax): Liu, Tan, Wan, Zhang & Yao 2020 (*ACS
+Omega* 5:15922, DOI 10.1021/acsomega.0c01093 — open; **attribution
+corrected**, earlier drafts said "Jin et al.") provides integrating-sphere
+calibrated, Abel-inverted volumetric photon-emission rates in a ~107 W
+methane jet diffusion flame: CH* peak 1.1×10⁻³ mol·m⁻³·s⁻¹ (Fig. 4
+colorbar). Flame-sheet integration gives CH* ≈ 1.9×10⁻⁶ W/W (hard ceiling,
+peak-everywhere: 4.9×10⁻⁵). OH* (309 nm) is excluded from the band exactly.
+CO₂* uses the Slack–Grillo **full-band** rate 6.8×10⁵·exp(−1960/T)·[CO][O]
+(the widely quoted 3.3×10³ form is the 375-nm-region rate, ~250× smaller —
+a materially important distinction the extraction surfaced), with Liu's
+simulated X_O = 2.4×10⁻³ and X_CO = 0.05 central ([CO] peak is **not
+pinned** in open literature — Mitchell 1980/Smyth 1985 are paywalled):
+≈3.6×10⁻⁶ W/W including a ×2 post-flame recombination allowance. C₂* is set
+equal to CH* (unmeasured; Swan bands present in alkane blue bases).
+Methane total ≈ 7.4×10⁻⁶ W/W; ×2 alkane fuel-transfer (Orain & Hardalupas
+2010 §3.1.3) → **wax central 1.5×10⁻⁵ W/W**.
+
+**Denominator**: the luminous route only (χ_r routes cannot bound D_vis
+from below): 12.6 lm / LER_vis(2000 K) / 77 W = **1.45×10⁻³ W/W**, carrying
+the 1-cd-untraceable assumption as its largest term.
+
+**Budget** (σ_ln): numerator — calibration 0.30, digitization 0.10, sheet
+geometry 0.70, HRR reference 0.08, CO₂* model-form 1.10, C₂* completeness
+0.70, fuel transfer 0.67 (combined 1.66); denominator — 1 cd 0.42, LER/T
+0.13, photopic 0.05, HRR 0.07 (combined 0.45). Ratio σ = 1.72.
+
+**Result: central ratio 1.02 %; one-sided 95 % upper bound 17.1 % — the
+≤ 1 % criterion is NOT met.** Sanity: the 95 % numerator (2.2×10⁻⁴ W/W)
+sits below the stacked hard ceilings (6.5×10⁻⁴) and the CTR-1994 premixed
+over-ceiling (2.5×10⁻³). Sensitivity: halving the CO₂* model-form term →
+10.6 %; a measured denominator → 15.6 %; **resolving every major
+uncertainty → ~1.4 % with the central unchanged at ~1 %**. This is not
+conservatism-stacking: the candle's blue base genuinely sits at the percent
+level of its visible output, and negligibility at 1 % is plausibly false
+for wax, not merely unproven.
+
+**Consequences** (reported, criterion unrelaxed): the negligibility route
+is effectively closed for the sooty fuels — wax by this result; heptane and
+wood *a fortiori* (no lower-boundable visible denominator exists at all,
+and their derived bounds would be strictly worse). **Predictive
+wax/heptane/wood therefore most likely requires actual chem records** (the
+§4.4 machinery, as for methane) rather than `chem_model=none`. Recorded
+tightening paths (should the owner want the bound sharpened anyway): a
+direct blue-continuum + C₂* radiant-power measurement in an alkane
+diffusion flame; measured candle visible-band radiometry; the Liu et al.
+data cubes by author request; the paywalled [CO]-profile pulls. Leg (ii)
+remains blocked on §12 item 4 regardless.
 
 ---
 
@@ -372,7 +426,7 @@ predictive methane is wanted.
 | work | measured | absolute? | adoptable per-band? | data released? |
 |---|---|---|---|---|
 | Kim, Lee & Hamins, *Fire Safety J.* 107 (2019) + NIST TN 1928 (open, read) | methanol pool energy balance; **χ_r = 0.19 ± 26 %** (0.30 m, Table 8), 0.22 ± 45 % (1 m); fire "entirely blue" | yes (radiometry) | no — total radiometry, no spectral resolution | report-level |
-| Jin et al., *ACS Omega* 5:15922 (2020) (open) | laminar **methane** jet diffusion flames; absolute local OH*/CH* emitting rates (mol·m⁻³·s⁻¹), integrating-sphere calibrated, 2D fields | **yes** | **closest existing template** — absolute + spatial + geometry; but methane, and OH* (309 nm) is outside 380–780 | figures only |
+| Liu et al., *ACS Omega* 5:15922 (2020) (open) | laminar **methane** jet diffusion flames; absolute local OH*/CH* emitting rates (mol·m⁻³·s⁻¹), integrating-sphere calibrated, 2D fields | **yes** | **closest existing template** — absolute + spatial + geometry; but methane, and OH* (309 nm) is outside 380–780 | figures only |
 | Fiala & Sattelmayer, *Exp. Fluids* 56:144 (2015) (**paywalled**; Fiala's TUM dissertation is open at mediaTUM) | spectrally+spatially resolved calibrated emission, H₂/O₂ jet flames, 1–40 bar | yes | wrong fuel; methodology + calibration chain fully documented in the open dissertation | dissertation open |
 | Lauer & Sattelmayer (ASME 2010/2011) (**paywalled**; thesis open) | OH* vs HRR, turbulent premixed | no (relative) | no | — |
 | Nori & Seitzman AIAA 2008-953 (open, read) | OH*/CH*/CO₂* chemiluminescence modeling vs φ, p, T | no (arb. units) | model framework only; useful fact: CO₂* contributes ~70 % of the nominal CH* 431±5 nm signal in atmospheric methane flames (Fig. 13, p. 11) | — |
@@ -399,13 +453,13 @@ visible.
   extension to ~300 nm for OH*, on a small laminar methanol burner or
   30 cm pool per the NIST TN 1928 configuration, with Abel inversion and
   paired HRR from fuel mass-loss (methanol's combustion efficiency ≈ 1
-  makes HRR pairing clean — Kim/Lee/Hamins Fig. 5). The Jin et al. 2020 and
+  makes HRR pairing clean — Kim/Lee/Hamins Fig. 5). The Liu et al. 2020 and
   Fiala-dissertation calibration chains are directly reusable templates.
   Rough scale: a university combustion-diagnostics lab could execute in
   **~3–6 months, order $30–80k** (equipment access dependent) — this is an
   informed engineering estimate, not a quote; treat as ±2× until a lab is
   actually approached.
-- **Option C — author-contact parlay**: the Jin et al. group (methane) and
+- **Option C — author-contact parlay**: the Liu et al. group (NUDT, methane) and
   the Lai et al. group (Sheffield) both have working calibrated rigs; asking
   either to run a methanol case may be far cheaper than a from-scratch
   commission. Worth one email if Option B is ever seriously considered.
@@ -419,7 +473,7 @@ commissioning now.** Methanol's visible appearance is predominantly
 chemiluminescent, so `chem_model=none` cannot plausibly pass the
 negligibility route; the honest state is preview. Trigger defined: if
 predictive methanol becomes a named v1 acceptance case or a product
-requirement, contact the Jin/Lai groups first (Option C); commission a new
+requirement, contact the Liu/Lai groups first (Option C); commission a new
 measurement (Option B) only if that parlay fails. NIST's methanol
 radiometry remains a valuable *future validation* case but supplies no
 spectral channels.

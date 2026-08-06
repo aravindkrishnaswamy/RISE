@@ -1,0 +1,92 @@
+{
+ "carrier_note": "Draft JSON carrier; final adoption would require RISE-CBOR64-v1 per SS8 - but see verdict: this record does NOT establish negligibility and cannot enable chem_model=none predictive for wax.",
+ "compiled": "2026-08-06",
+ "denominator_construction": {
+  "central": "12.6 lm (1 cd convention) / LER_vis(2000K)=113 lm/W_vis / 77W HRR = 1.45e-3 W/W",
+  "inputs": "Hamins 2005 HRR 77+-9W; Thomsen 2017 soot T 1900-2200K (PREVIEW-ONLY, abstract-verified); LER_vis computed 103-131 lm/W_vis over that T range",
+  "route": "luminous (the only lower-boundable route; chi_r routes cannot bound D_vis from below - soot-continuum share of chi_r unmeasured)"
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "0dd5aa8fdee848640275b75be557baae27f7061e3f994d2a0696860a3f8c3c6c",
+ "estimator": "one-sided 95% upper bound on R = N_vis/D_vis; lognormal combination: R95 = R_central * exp(1.645*sqrt(sum sigma_ln^2)); numerator components additive at central values, sigma applied to total (conservative simplification, recorded)",
+ "extends_to": {
+  "heptane": "numerator machinery transfers (alkane); no lower-boundable denominator exists (dimmer visible output, no luminous convention) - bound would be WORSE than wax",
+  "wood_volatiles": "same; oxygenated volatiles add transfer uncertainty; TN 2327r1 gives chi_r but not a visible-band lower bound"
+ },
+ "interpretation": "The visible blue base of a candle is real and sits at the percent level of the flame's visible output. chem_model=none is NOT certifiable for wax at the 1% threshold via any currently constructible bound - and plausibly not true at that threshold at all. Predictive wax likely requires an actual chem record (methane-record machinery, SS4.4) rather than a negligibility route. This does NOT relax SS7.0; it reports the measured/derived state of the world.",
+ "leg_ii_status": "still blocked on SS12 item 4 regardless of leg (i)",
+ "numerator_construction": {
+  "C2_star_swan": {
+   "central": "= CH* central (Swan bands present in alkane blue bases at comparable strength; no measurement in Liu; qualitative candle spectroscopy only)",
+   "central_W_per_W": 1.88e-06
+  },
+  "CH_star_431nm": {
+   "basis": "Fig.4 colorbar (digitized from figure JPEG)",
+   "ceiling_basis": "peak rate over entire imaged half-space (pi*(10mm)^2*55mm)",
+   "central_W_per_W": 1.88e-06,
+   "hard_ceiling_W_per_W": 4.9e-05,
+   "peak_rate_mol_m3_s": 0.0011,
+   "sheet_integration": "annulus r=3mm, 1mm thick, 35mm tall = 6.6e-7 m3 at peak rate -> 2.0e-4 W"
+  },
+  "CO2_star_continuum": {
+   "central_W_per_W": 3.59e-06,
+   "inputs": "T=1950K; X_O=2.4e-3 (Liu Fig.8d simulated peak, 1.48e-8 mol/cm3); X_CO=0.05 central with 0.10 ceiling ([CO] peak NOT pinned in open literature - Mitchell 1980 and Smyth 1985 paywalled)",
+   "model": "Slack & Grillo 1985 FULL-BAND rate I0 = 6.8e5*exp(-1960/T)*[CO][O] cm3/mol/s over 260-700nm (publisher abstract; NOTE the widely quoted 3.3e3*exp(-2300/T) form in Nori & Seitzman Eq.3 is the 375-nm-region rate, ~250x smaller - a materially important distinction)",
+   "volume": "flame sheet x2 for post-flame CO+O recombination (Nori 2008: >= half of total signal possible)"
+  },
+  "OH_star_309nm": {
+   "excluded": "outside 380-780nm band (spectral truncation, exclusion is exact not approximate)"
+  },
+  "anchor": "Liu, Tan, Wan, Zhang & Yao 2020, ACS Omega 5:15922, DOI 10.1021/acsomega.0c01093 (open; ATTRIBUTION CORRECTED from 'Jin et al.'): integrating-sphere-calibrated, three-point-Abel-inverted volumetric photon emission rates for a laminar CH4 jet diffusion flame, case 2 (V_CH4 0.1885 L/min, 2mm nozzle, k_u=0.4); HRR = 103-112 W computed from stated flows (LHV 50 MJ/kg)",
+  "fuel_transfer_to_wax": {
+   "basis": "Orain & Hardalupas 2010 CRM 338:241 SS3.1.3: propane/isooctane chemiluminescence ~2x natural gas per unit fuel mass; heptane alkane-like (Marchese via O&H); NO absolute methane-to-liquid-fuel per-HRR factor exists in open literature (checked Nori 2007/2008)",
+   "central_factor": 2.0
+  },
+  "methane_anchor_total_W_per_W": 7.35e-06,
+  "wax_central_W_per_W": 1.47e-05
+ },
+ "record_kind": "chem_negligibility_derived_bound",
+ "record_name": "chem-derived-bound-wax-candle-v1",
+ "record_status": "DERIVED_RECORD_CONSTRUCTED_2026-08-06__CRITERION_NOT_MET",
+ "results": {
+  "criterion": "<= 1% of 380-780nm radiant power (SS7.0 leg i)",
+  "ratio_95_upper_percent": 17.1,
+  "ratio_central_percent": 1.02,
+  "sanity": "95% numerator (2.2e-4 W/W) < stacked hard ceilings (6.5e-4 W/W) < CTR-1994 premixed over-ceiling (2.5e-3): internally consistent",
+  "sensitivity": {
+   "all_major_uncertainties_resolved": "bound -> ~1.4% (central unchanged ~1%): the physics is genuinely marginal, not conservatism-stacking",
+   "co2_model_form_halved": "bound -> 10.6%",
+   "measured_denominator_sigma_0.1": "bound -> 15.6%"
+  },
+  "verdict": "CRITERION NOT MET. Even the central estimate sits at ~1%; the 95% bound is ~17x over."
+ },
+ "schema_version": "draft-1",
+ "tightening_paths_recorded": [
+  "direct blue-continuum + C2* radiant-power measurement in an alkane diffusion flame (kills co2_model_form + completeness - the two largest terms)",
+  "measured candle visible-band radiometry (kills the 1-cd assumption)",
+  "author request to Liu et al. (NUDT) for the calibrated field data cubes (kills sheet_integration + digitization)",
+  "[CO] peak from Mitchell 1980 / Smyth 1985 (paywalled pulls)"
+ ],
+ "uncertainty_budget_sigma_ln": {
+  "budget_classes_per_SS1.5a": "measurement (liu_calibration, HRR), digitization (colorbar), geometry (sheet_integration, LER), spectral-truncation (OH* excluded exactly; CO2* counted fully - conservative), domain-transfer (fuel_transfer), model-form (co2_model_form, completeness, 1cd convention); covariance treated as zero (components independent by construction; recorded as a simplification)",
+  "denominator": {
+   "HRR": 0.07,
+   "LER_T_range": 0.13,
+   "combined": 0.448,
+   "luminous_intensity_1cd_untraceable": 0.42,
+   "photopic_approximation": 0.05
+  },
+  "numerator": {
+   "HRR_reference_conditions": 0.08,
+   "co2_model_form_CO_unpinned_band_coeff_recombination": 1.1,
+   "colorbar_digitization": 0.1,
+   "combined": 1.657,
+   "completeness_C2_unmeasured": 0.7,
+   "fuel_domain_transfer": 0.67,
+   "liu_calibration_no_end_to_end_budget": 0.3,
+   "sheet_integration_geometry": 0.7
+  },
+  "ratio_combined": 1.716
+ },
+ "version": "v1-draft"
+}
