@@ -289,3 +289,4 @@ AddNullBoundaryMaterial
 AddMultichannelHeterogeneousMediumWithCondensed
 AddMultichannelHeterogeneousMediumWithChem
 AddMultichannelHeterogeneousMediumWithPreset
+SetFireFidelityMode

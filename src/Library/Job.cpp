@@ -446,6 +446,7 @@ void Job::InitializeContainers()
 	pRasterizer = 0;
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
+	m_firePredictiveRequested = false;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
@@ -6363,6 +6364,24 @@ bool Job::SetGlobalMedium(
 	return true;
 }
 
+bool Job::SetFireFidelityMode( const char* mode )
+{
+	if( !mode ) {
+		return false;
+	}
+	if( std::strcmp(mode, "preview") == 0 ) {
+		m_firePredictiveRequested = false;
+		return true;
+	}
+	if( std::strcmp(mode, "predictive") == 0 ) {
+		m_firePredictiveRequested = true;
+		return true;
+	}
+	GlobalLog()->PrintEx( eLog_Error,
+		"Job::SetFireFidelityMode:: unknown fidelity mode `%s`", mode );
+	return false;
+}
+
 bool Job::SetObjectInteriorMedium(
 	const char* object_name,								///< [in] Name of the object
 	const char* medium_name									///< [in] Name of the medium
@@ -9583,12 +9602,108 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 	return pSeq;
 }
 
+bool Job::PrepareFireRenderFidelityMetadata()
+{
+	if( !pScene || !pRasterizer ) {
+		return false;
+	}
+
+	Scalar wavelengthMin = 380.0;
+	Scalar wavelengthMax = 780.0;
+	const RasterizerRegistry::const_iterator active =
+		rasterizerRegistry.find(activeRasterizerName);
+	if( active != rasterizerRegistry.end() ) {
+		wavelengthMin = active->second.params.spectral.nmBegin;
+		wavelengthMax = active->second.params.spectral.nmEnd;
+	}
+
+	std::set<const IMedium*> activeMedia;
+	if( const IMedium* global = pScene->GetGlobalMedium() ) {
+		activeMedia.insert(global);
+	}
+	struct InteriorMediumCollector : public IEnumCallback<IObject>
+	{
+		std::set<const IMedium*>& media;
+		explicit InteriorMediumCollector( std::set<const IMedium*>& target )
+			: media(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( const IMedium* interior = object.GetInteriorMedium() ) {
+				media.insert(interior);
+			}
+			return true;
+		}
+	};
+	if( const IObjectManager* objects = pScene->GetObjects() ) {
+		InteriorMediumCollector collector(activeMedia);
+		objects->EnumerateObjects(collector);
+	}
+
+	std::set<std::string> recordIds;
+	std::set<std::string> reasons;
+	std::string status;
+	bool predictiveAllowed = true;
+	bool domainExceeded = false;
+	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
+		medium != activeMedia.end(); ++medium ) {
+		const char* recordId = (*medium)->GetFireOpticsRecordId();
+		if( !recordId || !recordId[0] ) {
+			continue;
+		}
+		recordIds.insert(recordId);
+		const char* mediumStatus = (*medium)->GetFireRenderFidelityStatus(
+			m_firePredictiveRequested );
+		if( mediumStatus && mediumStatus[0] &&
+			(status.empty() || std::strcmp(mediumStatus,"preview") == 0) ) {
+			status = mediumStatus;
+		}
+		predictiveAllowed = predictiveAllowed && (*medium)->FirePredictiveAllowed();
+		if( !(*medium)->FireOpticsSupportsWavelengthRange(
+			wavelengthMin,wavelengthMax) ) {
+			domainExceeded = true;
+			reasons.insert("table_domain_exceeded");
+		}
+		const unsigned int count = (*medium)->GetFireRenderReasonCodeCount(
+			m_firePredictiveRequested );
+		for( unsigned int i=0; i<count; ++i ) {
+			const char* reason = (*medium)->GetFireRenderReasonCode(
+				m_firePredictiveRequested, i );
+			if( reason && reason[0] ) {
+				reasons.insert(reason);
+			}
+		}
+	}
+
+	if( FrameStore* store = pRasterizer->GetFrameStore() ) {
+		FrameStore::Metadata& metadata = store->MutableMeta();
+		metadata.renderFidelityStatus = status;
+		metadata.renderReasonCodes.assign(reasons.begin(),reasons.end());
+		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
+	}
+	const bool predictiveRejected = m_firePredictiveRequested &&
+		!recordIds.empty() && !predictiveAllowed;
+	if( domainExceeded || predictiveRejected ) {
+		std::ostringstream joined;
+		for( std::set<std::string>::const_iterator reason = reasons.begin();
+			reason != reasons.end(); ++reason ) {
+			if( reason != reasons.begin() ) joined << ", ";
+			joined << *reason;
+		}
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job:: fire render rejected before workers launch (lookup support "
+			"[%g,%g] nm): %s", static_cast<double>(wavelengthMin),
+			static_cast<double>(wavelengthMax), joined.str().c_str() );
+		return false;
+	}
+	return true;
+}
+
 //! Rasterizes the entire scene
 /// \return TRUE if successful, FALSE otherwise
 bool Job::Rasterize(
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
 
@@ -9643,7 +9758,7 @@ bool Job::RasterizeAnimation(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
 
@@ -9693,6 +9808,9 @@ bool Job::RasterizeRegion(
 	}
 	const unsigned int clippedRight = r_min( right, width-1 );
 	const unsigned int clippedBottom = r_min( bottom, height-1 );
+	if( !PrepareFireRenderFidelityMetadata() ) {
+		return false;
+	}
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -12186,7 +12304,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
 
@@ -12222,7 +12340,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
 

@@ -186,6 +186,7 @@ namespace RISE
 		// the FrameStore it could not get at construction time
 		// (typical scene files declare rasterizer BEFORE camera).
 		void PushJobFrameStoreToRasterizers();
+		bool PrepareFireRenderFidelityMetadata();
 
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
@@ -294,6 +295,7 @@ namespace RISE
 
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
+		bool										m_firePredictiveRequested = false;
 
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
@@ -1818,6 +1820,7 @@ namespace RISE
 			const double scene_unit_meters,
 			const char* optical_record
 			);
+		bool SetFireFidelityMode( const char* mode );
 
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.

@@ -594,6 +594,12 @@ namespace RISE
 		const char* GetFireRenderReasonCode(
 			const bool predictiveRequested,
 			const unsigned int index ) const override;
+		bool FireOpticsSupportsWavelengthRange(
+			const Scalar minimumNM,
+			const Scalar maximumNM ) const override
+		{
+			return m_optics.SupportsWavelengthRange(minimumNM,maximumNM);
+		}
 
 		Scalar LookupCarbon( const Point3& worldPt ) const;
 		Scalar LookupTemperature( const Point3& worldPt ) const;

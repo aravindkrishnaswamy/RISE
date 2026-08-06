@@ -3875,6 +3875,13 @@ namespace RISE
 			const char* /*optical_record*/
 			) { return false; }
 
+		//! Requests fire-render fidelity at scene/job scope. Static Phase-A
+		//! fire media remain preview-only; predictive requests fail preflight.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetFireFidelityMode(
+			const char* /*mode*/
+			) { return false; }
+
 	};
 
 

@@ -399,6 +399,9 @@ namespace RISE
 		virtual const char* GetFireRenderReasonCode(
 			const bool /*predictiveRequested*/,
 			const unsigned int /*index*/ ) const { return 0; }
+		virtual bool FireOpticsSupportsWavelengthRange(
+			const Scalar /*minimumNM*/,
+			const Scalar /*maximumNM*/ ) const { return false; }
 
 	};
 }

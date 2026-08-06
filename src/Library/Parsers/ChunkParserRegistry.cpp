@@ -4179,7 +4179,7 @@ namespace RISE
 			// SI-to-scene-unit conversion for multichannel physical media.
 			struct SceneOptionsAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					if( bag.Has( "scene_unit" ) ) {
 						const double v = bag.GetDouble( "scene_unit" );
@@ -4207,6 +4207,10 @@ namespace RISE
 						}
 						s_sceneOptions.scene_unit_meters = v;
 					}
+					if( bag.Has("fidelity_mode") &&
+						!pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) {
+						return false;
+					}
 					return true;
 				}
 
@@ -4229,6 +4233,13 @@ namespace RISE
 								{ "Inches",           "0.0254" },
 								{ "Feet",             "0.3048" },
 							};
+						}
+						{
+							auto& p = P();
+							p.name = "fidelity_mode"; p.kind = ValueKind::Enum;
+							p.enumValues = {"preview", "predictive"};
+							p.description = "Requested fire-render fidelity. Predictive is fail-closed before workers start; preview remains specifically reason-coded.";
+							p.defaultValueHint = "preview";
 						}
 						return cd;
 					}();
