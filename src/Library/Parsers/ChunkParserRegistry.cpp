@@ -4168,12 +4168,12 @@ namespace RISE
 			// Scene-level options (top-of-file scope)
 			//////////////////////////////////////////
 
-			// `scene_options` declares the world-unit scale.  Stored
-			// in thread_local parser state and consumed by camera
-			// chunks at parse time.  Place AT OR NEAR THE TOP of the
-			// .RISEscene file (before any camera) — values declared
-			// after a camera don't reach back.  Same declaration-order
-			// rule as `standard_shader`, `camera_defaults`, etc.
+			// `scene_options` declares the world-unit scale and requested
+			// fire-fidelity mode.  The scale is stored in thread_local parser
+			// state and consumed by camera chunks at parse time.  Place AT OR
+			// NEAR THE TOP of the .RISEscene file (before any camera) — scale
+			// values declared after a camera don't reach back.  Same
+			// declaration-order rule as `standard_shader`, `camera_defaults`, etc.
 			//
 			// This governs camera lens-mm-to-scene-unit conversion and
 			// SI-to-scene-unit conversion for multichannel physical media.
@@ -4218,7 +4218,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scene_options"; cd.category = ChunkCategory::Camera;
-						cd.description = "Scene-level options. Sets the world-unit scale used by camera mm input and SI-valued multichannel media. Place before cameras and multichannel media.";
+						cd.description = "Scene-level options. Sets fire fidelity and the world-unit scale used by camera mm input and SI-valued multichannel media. Place before cameras and multichannel media.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{
 							auto& p = P();
