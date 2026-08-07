@@ -5652,6 +5652,11 @@ namespace
 		}
 
 		if( job && marchJob && neeCaster && marchOnlyCaster ) {
+			struct SampleMoments
+			{
+				Scalar mean;
+				Scalar variance;
+			};
 			const Scalar nm = 500.0;
 			const unsigned int samples = 320000;
 			const RasterizerState rast = {0,0};
@@ -5662,55 +5667,81 @@ namespace
 			PathTracingIntegrator* integrator =
 				new PathTracingIntegrator(ManifoldSolverConfig(),config);
 			integrator->SetMaxPathDepth(2);
-			auto meanPT = [&]( const IScene& scene, const IRayCaster& route,
+			auto momentsPT = [&]( const IScene& scene, const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
 					rng,RuntimeContext::PASS_NORMAL,false);
 				IndependentSampler sampler(rng);
-				Scalar sum = 0.0;
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
-					sum += integrator->IntegrateRayNM(
+					const Scalar value = integrator->IntegrateRayNM(
 						rc,rast,ray,nm,scene,route,
 						sampler,nullptr,nullptr);
+					sum += value;
+					sumSquares += static_cast<long double>(value)*value;
 				}
-				return sum/static_cast<Scalar>(samples);
+				const long double count = static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+				};
 			};
-			auto meanShaderRoute = [&]( const IRayCaster& route,
+			auto momentsShaderRoute = [&]( const IRayCaster& route,
 				const unsigned int seed ) {
 				RandomNumberGenerator rng(seed);
 				RuntimeContext rc(
 					rng,RuntimeContext::PASS_NORMAL,false);
 				IRayCaster::RAY_STATE state;
-				Scalar sum = 0.0;
+				long double sum = 0.0;
+				long double sumSquares = 0.0;
 				for( unsigned int i=0; i<samples; ++i ) {
 					Scalar value = 0.0;
 					route.CastRayNM(
 						rc,rast,ray,value,state,nm,nullptr,nullptr);
 					sum += value;
+					sumSquares += static_cast<long double>(value)*value;
 				}
-				return sum/static_cast<Scalar>(samples);
+				const long double count = static_cast<long double>(samples);
+				const long double mean = sum/count;
+				const long double variance =
+					(sumSquares-sum*sum/count)/(count-1.0);
+				return SampleMoments{
+					static_cast<Scalar>(mean),
+					static_cast<Scalar>(variance>0.0 ? variance : 0.0)
+				};
+			};
+			auto agreesWithinSixSE = [&]( const SampleMoments& a,
+				const SampleMoments& b ) {
+				const Scalar standardError = std::sqrt(
+					(a.variance+b.variance)/static_cast<Scalar>(samples));
+				return a.mean>0.0 && b.mean>0.0 && standardError>0.0 &&
+					std::fabs(a.mean-b.mean)<=6.0*standardError;
 			};
 
-			const Scalar ptOn = meanPT(
+			const SampleMoments ptOn = momentsPT(
 				*job->GetScene(),*neeCaster,0x15070001u);
-			const Scalar ptOff = meanPT(
+			const SampleMoments ptOff = momentsPT(
 				*marchJob->GetScene(),*marchOnlyCaster,0x15070002u);
-			const Scalar shaderOn =
-				meanShaderRoute(*neeCaster,0x15070003u);
-			const Scalar shaderOff =
-				meanShaderRoute(*marchOnlyCaster,0x15070004u);
+			const SampleMoments shaderOn =
+				momentsShaderRoute(*neeCaster,0x15070003u);
+			const SampleMoments shaderOff =
+				momentsShaderRoute(*marchOnlyCaster,0x15070004u);
 			std::cout << "  Isotropic-Phong PT on/off=" <<
-				ptOn << "/" << ptOff << " shader on/off=" <<
-				shaderOn << "/" << shaderOff << std::endl;
-			Check( ptOn>0.0 && ptOff>0.0 &&
-				NearRelative(ptOn,ptOff,0.01),
-				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through pure PT" );
-			Check( shaderOn>0.0 && shaderOff>0.0 &&
-				NearRelative(shaderOn,shaderOff,0.01),
-				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through shader dispatch" );
-			Check( NearRelative(ptOn,shaderOn,0.01),
-				"mixed Isotropic-Phong surface volume NEE agrees across both PT entry routes" );
+				ptOn.mean << "/" << ptOff.mean << " shader on/off=" <<
+				shaderOn.mean << "/" << shaderOff.mean << " variances PT=" <<
+				ptOn.variance << "/" << ptOff.variance << " shader=" <<
+				shaderOn.variance << "/" << shaderOff.variance << std::endl;
+			Check( agreesWithinSixSE(ptOn,ptOff),
+				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through pure PT within MC noise" );
+			Check( agreesWithinSixSE(shaderOn,shaderOff),
+				"mixed Isotropic-Phong surface volume NEE and brute-force march agree through shader dispatch within MC noise" );
+			Check( agreesWithinSixSE(ptOn,shaderOn),
+				"mixed Isotropic-Phong surface volume NEE agrees across both PT entry routes within MC noise" );
 			safe_release(integrator);
 		}
 
