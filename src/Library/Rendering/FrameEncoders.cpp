@@ -423,9 +423,15 @@ namespace RISE
 		void FrameEncoderRegistry::RegisterBuiltins()
 		{
 			// Register order is iteration order returned by All().
+#ifndef NO_PNG_SUPPORT
 			Register( new PNGFrameEncoder() );
+#endif
+#ifndef NO_EXR_SUPPORT
 			Register( new EXRFrameEncoder() );
+#endif
+#ifndef NO_TIFF_SUPPORT
 			Register( new TIFFFrameEncoder() );
+#endif
 			Register( new HDRFrameEncoder() );
 			Register( new RGBEAFrameEncoder() );
 			Register( new TGAFrameEncoder() );
@@ -434,7 +440,9 @@ namespace RISE
 			// users select via FormatName "HDR10_PNG" rather than
 			// extension lookup (ByExtension("png") still returns the
 			// SDR PNG encoder, which is the safer default).
+#ifndef NO_PNG_SUPPORT
 			Register( new HDR10PNGFrameEncoder() );
+#endif
 		}
 
 		void FrameEncoderRegistry::Register( IFrameEncoder* encoder )

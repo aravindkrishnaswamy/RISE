@@ -38,6 +38,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <vector>
 
 using namespace RISE;
@@ -127,7 +128,7 @@ namespace
 			if( !medium ) {
 				return false;
 			}
-			if( !medium->IsHomogeneous() ) {
+			if( medium->IsFireMedium() || !medium->IsHomogeneous() ) {
 				return true;
 			}
 			const MediumCoefficients coeff = medium->GetCoefficients( Point3(0,0,0) );
@@ -415,7 +416,7 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	// surface scenes, but may not select an integrator that lacks the PT-only
 	// medium feature set.
 	if( SceneHasPTOnlyMedium( *scene ) ) {
-		mResolveReason = "heterogeneous or emissive medium";
+		mResolveReason = "fire, heterogeneous, or emissive medium";
 		return AutoIntegratorChoice::PT;
 	}
 
@@ -901,17 +902,6 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			~CandidateUnwindGuard() { safe_release( p ); }
 		} candidateGuard{ candidate };
 
-		// Replay the buffered render state onto the freshly-built
-		// delegate.  The base Rasterizer stored these (the file output /
-		// viewport sink via AddRasterizerOutput, the progress callback)
-		// BEFORE the delegate existed; the delegate is the object that
-		// actually renders into them.
-		{
-			std::lock_guard<std::mutex> lock( outsMutex );
-			for( IRasterizerOutput* ro : outs ) {
-				candidate->AddRasterizerOutput( ro );
-			}
-		}
 		candidate->SetProgressCallback( pProgressFunc );
 
 		// Progressive config can't ride RISE_API_SetRasterizerProgressiveRendering
@@ -919,17 +909,45 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		// wrapper is not) — apply it to the delegate, which IS one.
 		RISE_API_SetRasterizerProgressiveRendering(
 			candidate, mProgressive.enabled, mProgressive.samplesPerPass );
-
 		GlobalLog()->PrintEx( eLog_Event,
 			"AutoRasterizer:: [%s] integrator '%s' -> delegating to '%s' (%s)",
 			mSpectral ? "spectral" : "pel", IntegratorName( mPinned ), IntegratorName( choice ),
 			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
 
-		// Publish last. Nothing below these assignments can throw, so a
-		// call_once retry can never observe or overwrite a partial delegate.
-		mDelegate = candidate;
-		candidate = nullptr;
-		mResolved = choice;
+		// Replay outside the wrapper lock because AddRasterizerOutput notifies
+		// arbitrary sinks.  A callback may add another wrapper output; repeat the
+		// snapshot until every current output is present, then publish while
+		// holding the same lock used by the forwarding path.
+		std::set<IRasterizerOutput*> replayed;
+		for( ;; ) {
+			std::vector<IRasterizerOutput*> pending;
+			{
+				std::lock_guard<std::mutex> lock( outsMutex );
+				for( IRasterizerOutput* output : outs ) {
+					if( replayed.insert(output).second ) {
+						output->addref();
+						pending.push_back(output);
+					}
+				}
+				if( pending.empty() ) {
+					mDelegate = candidate;
+					candidate = nullptr;
+					mResolved = choice;
+					break;
+				}
+			}
+			try {
+				for( IRasterizerOutput* output : pending ) {
+					candidate->AddRasterizerOutput(output);
+				}
+			}
+			catch( ... ) {
+				for( IRasterizerOutput* output : pending ) output->release();
+				throw;
+			}
+			for( IRasterizerOutput* output : pending ) output->release();
+		}
+
 	} );
 }
 
@@ -1014,12 +1032,19 @@ void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
 	const bool wrapperAdded = RegisterRasterizerOutput( ro );
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
+	}
 	try {
-		if( mDelegate ) {
-			mDelegate->AddRasterizerOutput( ro );
+		if( delegate ) {
+			delegate->AddRasterizerOutput( ro );
 		}
 	}
 	catch( ... ) {
+		safe_release(delegate);
 		// Preserve the wrapper's pre-call state. The delegate's base
 		// registration is itself strongly exception-safe; remove only an entry
 		// inserted by this call, never a pre-existing deduplicated entry.
@@ -1028,6 +1053,7 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 		}
 		throw;
 	}
+	safe_release(delegate);
 }
 
 void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )

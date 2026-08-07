@@ -82,6 +82,21 @@ namespace
 	constexpr unsigned int kImgW = 16;
 	constexpr unsigned int kImgH = 16;
 
+	class NoWriteFrameEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		std::string FormatName() const override { return "NO_WRITE_TEST"; }
+		std::vector<std::string> Extensions() const override { return { "empty" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override {}
+
+	protected:
+		~NoWriteFrameEncoder() override {}
+	};
+
 	RISEColor PatternPixel( unsigned int x, unsigned int y )
 	{
 		const double r = static_cast<double>( x ) / static_cast<double>( kImgW - 1 );
@@ -563,6 +578,15 @@ namespace
 		}
 		Check( attributesMatch,
 			"GUI EXR embeds the same fire fidelity metadata as its sidecar" );
+		std::vector<unsigned char> exrBytes, exrSidecarBytes;
+		RISECBOR64::Value exrProvenance;
+		const bool exrSidecarDecoded = ReadFileAllBytes(exrPath,exrBytes) &&
+			ReadFileAllBytes(exrPath + ".provenance.cbor",exrSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(exrSidecarBytes,exrProvenance,&decodeError);
+		const RISECBOR64::Value* exrDigest = exrSidecarDecoded ?
+			exrProvenance.Find("artifact_sha256") : nullptr;
+		Check( exrDigest && exrDigest->GetText() == RISECBOR64::SHA256Hex(exrBytes),
+			"GUI EXR sidecar decodes and hashes the committed EXR artifact" );
 		std::remove( exrPath.c_str() );
 		std::remove( (exrPath + ".provenance.cbor").c_str() );
 #endif
@@ -588,6 +612,20 @@ namespace
 			"failed provenance transaction leaves no unlabeled artifact or temp files" );
 		std::filesystem::remove( marker );
 		std::filesystem::remove( blockedSidecar );
+
+		MemoryBuffer* memory = new MemoryBuffer();
+		Check( !vfs->SaveTo(*memory,png,opts) && memory->getCurPos() == 0,
+			"GUI SaveTo fails closed when fire provenance has no sidecar sink" );
+		safe_release( memory );
+
+		NoWriteFrameEncoder* noWrite = new NoWriteFrameEncoder();
+		const std::string emptyPath = MakeTempPath() + "_empty_fire.empty";
+		Check( !vfs->SaveAs(emptyPath,noWrite,opts),
+			"GUI SaveAs rejects an encoder that emitted no artifact bytes" );
+		Check( !std::filesystem::exists(emptyPath) &&
+			!std::filesystem::exists(emptyPath + ".provenance.cbor"),
+			"no-op encoding publishes neither an empty artifact nor a sidecar" );
+		safe_release( noWrite );
 
 		safe_release( img );
 		vfs->release();

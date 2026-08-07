@@ -9697,9 +9697,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 			missingOpticalRecord = true;
 			predictiveAllowed = false;
 			reasons.insert("missing_optical_record");
-			continue;
+		} else {
+			recordIds.insert(recordId);
 		}
-		recordIds.insert(recordId);
 		const char* mediumStatus = (*medium)->GetFireRenderFidelityStatus(
 			m_firePredictiveRequested );
 		if( !mediumStatus || std::strcmp(mediumStatus,"preview") != 0 ) {

@@ -498,7 +498,8 @@ namespace
 	{
 	public:
 		explicit MissingRecordIdFireMedium( const IPhaseFunction& phase ) :
-		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase ),
+		  reasonQueries(0u)
 		{
 		}
 
@@ -510,16 +511,19 @@ namespace
 		}
 		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
 		{
-			return 1u;
+			return 2u;
 		}
-		const char* GetFireRenderReasonCode( const bool, const unsigned int ) const override
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
 		{
-			return "requested_preview";
+			++reasonQueries;
+			return index == 0u ? "requested_preview" : "invalid_reason_with_missing_id";
 		}
 		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
 		{
 			return true;
 		}
+		mutable unsigned int reasonQueries;
 
 	protected:
 		~MissingRecordIdFireMedium() override = default;
@@ -2339,6 +2343,11 @@ namespace
 				store->Meta().renderReasonCodes.end(),"table_domain_exceeded") !=
 				store->Meta().renderReasonCodes.end(),
 				"out-of-domain preview rejection records table_domain_exceeded" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
+				std::find(store->Meta().renderReasonCodes.begin(),
+					store->Meta().renderReasonCodes.end(),"table_domain_exceeded") !=
+					store->Meta().renderReasonCodes.end(),
+				"out-of-domain predictive preflight rejects with the same fixed reason" );
 		}
 		safe_release(job);
 
@@ -2451,12 +2460,14 @@ namespace
 			const uint64_t generationBefore = store ? store->Generation() : 0u;
 			Check( !job->Rasterize() && store &&
 				store->Generation() == generationBefore &&
+				missing->reasonQueries == 2u &&
 				std::find(store->Meta().renderReasonCodes.begin(),
 					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
 					store->Meta().renderReasonCodes.end(),
 				"preview fire medium with no record ID fails before workers" );
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
 				store->Generation() == generationBefore &&
+				missing->reasonQueries == 4u &&
 				std::find(store->Meta().renderReasonCodes.begin(),
 					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
 					store->Meta().renderReasonCodes.end(),

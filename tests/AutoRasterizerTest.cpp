@@ -60,6 +60,8 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
+#include "../src/Library/Materials/IsotropicPhaseFunction.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -121,6 +123,68 @@ public:
 			}
 		}
 	}
+};
+
+class FrameStoreNotificationOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	unsigned int notifications = 0;
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+	void OnRasterizerFrameStoreChanged( FrameStore* ) override { ++notifications; }
+
+protected:
+	~FrameStoreNotificationOutput() override {}
+};
+
+class ReentrantFrameStoreOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantFrameStoreOutput( IRasterizer& rasterizer,
+		FrameStoreNotificationOutput& lateOutput ) :
+		reentered(false), rasterizer_(rasterizer), lateOutput_(lateOutput)
+	{
+		lateOutput_.addref();
+	}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == 2 ) {
+			reentered = true;
+			rasterizer_.AddRasterizerOutput(&lateOutput_);
+		}
+	}
+
+	bool reentered;
+
+protected:
+	~ReentrantFrameStoreOutput() override { lateOutput_.release(); }
+
+private:
+	IRasterizer& rasterizer_;
+	FrameStoreNotificationOutput& lateOutput_;
+};
+
+class HomogeneousFireTestMedium : public HomogeneousMedium
+{
+public:
+	explicit HomogeneousFireTestMedium( const IPhaseFunction& phase ) :
+		HomogeneousMedium(RISEPel(0.0,0.0,0.0),RISEPel(0.0,0.0,0.0),phase) {}
+	bool IsFireMedium() const override { return true; }
+	const char* GetFireOpticsRecordId() const override { return "auto-homogeneous-fire-test"; }
+	bool FirePredictiveAllowed() const override { return true; }
+	const char* GetFireRenderFidelityStatus( const bool ) const override { return "preview"; }
+	unsigned int GetFireRenderReasonCodeCount( const bool ) const override { return 1; }
+	const char* GetFireRenderReasonCode( const bool, const unsigned int index ) const override
+		{ return index == 0 ? "requested_preview" : 0; }
+	bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{ return true; }
+
+protected:
+	~HomogeneousFireTestMedium() override {}
 };
 
 struct ImageStats
@@ -203,7 +267,8 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 //////////////////////////////////////////////////////////////////////
 static ImageStats RenderAndComputeStats(
 	const char* scenePath,
-	const bool addEmissiveHomogeneous = false )
+	const bool addEmissiveHomogeneous = false,
+	const bool addHomogeneousFire = false )
 {
 	ImageStats result{};
 	result.resolved = AutoIntegratorChoice::Auto;
@@ -228,6 +293,13 @@ static ImageStats RenderAndComputeStats(
 			safe_release( pJob );
 			return result;
 		}
+	}
+	if( addHomogeneousFire ) {
+		IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+		HomogeneousFireTestMedium* medium = new HomogeneousFireTestMedium(*phase);
+		pJob->GetScene()->SetGlobalMedium( medium );
+		safe_release( medium );
+		safe_release( phase );
 	}
 
 	pJob->RemoveRasterizerOutputs();
@@ -804,14 +876,16 @@ static ImageStats RenderSceneBody(
 	const char* rasterChunk,
 	const std::string& body,
 	const char* tag,
-	const bool addEmissiveHomogeneous = false )
+	const bool addEmissiveHomogeneous = false,
+	const bool addHomogeneousFire = false )
 {
 	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + body;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
 	}
-	const ImageStats s = RenderAndComputeStats( p.c_str(), addEmissiveHomogeneous );
+	const ImageStats s = RenderAndComputeStats(
+		p.c_str(), addEmissiveHomogeneous, addHomogeneousFire );
 	std::remove( p.c_str() );
 	return s;
 }
@@ -823,11 +897,12 @@ static void CheckStaticRoute(
 	const char* tag,
 	AutoIntegratorChoice expected,
 	const bool addEmissiveHomogeneous = false,
-	const bool expectNoProbeRenders = false )
+	const bool expectNoProbeRenders = false,
+	const bool addHomogeneousFire = false )
 {
 	std::cout << "Testing auto_rasterizer static routing: " << label << std::endl;
 	const ImageStats a = RenderSceneBody(
-		autoChunk, body, tag, addEmissiveHomogeneous );
+		autoChunk, body, tag, addEmissiveHomogeneous, addHomogeneousFire );
 	PrintStats( "auto", a );
 	Check( a.valid, std::string("render produced output: ") + label );
 	if( !a.valid ) return;
@@ -1194,6 +1269,43 @@ public:
 	virtual void SetTitle( const char* ) override { titleCalls++; }
 };
 
+static void TestDelegateOutputReplayReentrancy()
+{
+	const std::string label = "delegate output replay permits FrameStore callback reentrancy";
+	std::cout << "Testing " << label << std::endl;
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+	const std::string path = WriteSceneToTempFile(scene.c_str(),"reentrant_output");
+	IJobPriv* job = nullptr;
+	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
+		!job->LoadAsciiSceneViaCst(path.c_str()) ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	FrameStoreNotificationOutput* late = new FrameStoreNotificationOutput();
+	late->addref();
+	ReentrantFrameStoreOutput* reentrant =
+		new ReentrantFrameStoreOutput(*rasterizer,*late);
+	reentrant->addref();
+	rasterizer->AddRasterizerOutput(reentrant);
+
+	const bool rendered = job->Rasterize();
+	Check(rendered,"render completes without replay-lock deadlock: " + label);
+	Check(reentrant->reentered,
+		"candidate replay callback re-entered AddRasterizerOutput: " + label);
+	Check(late->notifications >= 2,
+		"reentrantly added output reached both wrapper and delegate: " + label);
+
+	safe_release(reentrant);
+	safe_release(late);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 //////////////////////////////////////////////////////////////////////
 // TestDelegateStateForwarding -- the AutoRasterizer is a delegating
 // wrapper; the host (Job::Rasterize + the GUI bridge) re-sets the
@@ -1401,6 +1513,7 @@ int main()
 	//     frozen (soon-dangling) progress callback / output set -> PC=0.
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
+	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();
 
 	std::cout << std::endl;
@@ -1457,6 +1570,13 @@ int main()
 	CheckStaticRoute( "emissive homogeneous medium + caustic signal -> PT",
 		kAutoAuto, std::string(kSceneCommon) + kGlassSphere,
 		"p2_emissive", AutoIntegratorChoice::PT, true );
+
+	// (f2) Fire identity is itself a PT-only capability, independent of
+	//     homogeneity and emission.  This plugin-shaped fixture is homogeneous
+	//     and non-emissive, so only IsFireMedium() distinguishes it from vacuum.
+	CheckStaticRoute( "homogeneous non-emissive fire medium + caustic signal -> PT",
+		kAutoAuto, std::string(kSceneCommon) + kGlassSphere,
+		"p2_homogeneous_fire", AutoIntegratorChoice::PT, false, false, true );
 
 	// (g) Object-interior media use a separate scene scan from the global
 	//     slot.  Without that scan, this dielectric + point-light fixture

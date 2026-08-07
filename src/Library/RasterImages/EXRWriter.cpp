@@ -71,6 +71,7 @@ EXRWriter::EXRWriter(
   horzpixels( 0 ),
   scanlines( 0 )
 {
+	buffer.addref();
 }
 #endif
 

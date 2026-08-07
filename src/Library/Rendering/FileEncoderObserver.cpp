@@ -49,6 +49,14 @@ namespace
 		return input.good() || input.eof();
 	}
 
+	bool ArtifactHasBytes( const char* filename )
+	{
+		std::ifstream input(filename,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		return input.tellg() > 0;
+	}
+
 	bool BuildFireProvenanceSidecar(
 		const FrameStore& store,
 		const char* artifactFilename,
@@ -129,9 +137,9 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	}
 	const bool artifactClosed = artifact->Close();
 	safe_release(artifact);
-	if( !encoded || !artifactClosed ) {
+	if( !encoded || !artifactClosed || !ArtifactHasBytes(artifactTemporary.c_str()) ) {
 		std::remove(artifactTemporary.c_str());
-		error = "artifact encoding or final write failed";
+		error = "artifact encoding produced no finalized bytes";
 		return false;
 	}
 
