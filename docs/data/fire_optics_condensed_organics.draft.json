@@ -75,7 +75,7 @@
   "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "64ce0f5eb598ed4667571d360e21f4942df4be96e22af6541cdda391af25cffb",
+ "draft_record_id_sha256_of_payload": "e1041739ecfb69bb2f71a43225f7d25874da69904519e847d6db3c1a4b1dfbee",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
   "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
@@ -99,11 +99,21 @@
  },
  "mie_inputs": {
   "brown_carbon_AAE": {
-   "range": [
-    6.9,
-    11.4
-   ],
-   "source": "Chen & Bond 2010 SS3.5 p.1782 (methanol extracts, R2 0.989-1.000)"
+   "applicability": "wood-combustion organic carbon absorption Angstrom exponent; informs the k(lambda) model below 532nm; NOT the extinction exponent of the computed table",
+   "provenance": {
+    "access": "open access",
+    "citation": "Chen & Bond 2010, ACP 10:1773-1787",
+    "locator": "SS3.5 p.1782, Table 1 p.1776 (methanol extracts, R2 0.989-1.000; decreases with generation T: 11.4@210C -> 6.9@360C)",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     6.9,
+     11.4
+    ]
+   },
+   "value": 9.0
   },
   "density_g_cm3": {
    "range": [

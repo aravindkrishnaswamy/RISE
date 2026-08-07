@@ -9,7 +9,7 @@
   "verdict": "PASS for wood-class flaming smoke"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "f610af446984b8623acf24cac7976604b3346e0e2ceca3e2949c930e14ba2e07",
+ "draft_record_id_sha256_of_payload": "854496c9a108e21005bdefc646e84237f0cf18249d81e15be15c57e7d1ec8e7b",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: B&B explicitly makes no statement outside 400-700nm; the record needs the C&C dispersion (or another source) for thermal wavelengths - couples to the E(m) record's >6.4um verification",
   "omega/g wavelength dependence beyond 633nm: assemble from RDG-FA once morphology record adopted",
@@ -35,53 +35,108 @@
  ],
  "values": {
   "MAC_absorption_550nm_m2_per_g": {
-   "source": "Bond & Bergstrom 2006, Aerosol Sci. Tech. 40:27-67, SS7.3 p.48, SS9.1 p.58",
-   "uncertainty": 1.2,
-   "uncertainty_kind": "1 sigma of 17-study ensemble (DIFFERENT statistic from the M&C 95% bound - do not mix)",
+   "applicability": "fresh light-absorbing carbon; visible band per the record's certified domain",
+   "provenance": {
+    "access": "open (CfA Harvard HITRAN mirror)",
+    "citation": "Bond & Bergstrom 2006, Aerosol Sci. Tech. 40:27-67",
+    "locator": "SS7.3 p.48 (derivation), SS9.1 p.58 (recommendation)",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "measured_1sigma",
+    "magnitude": 1.2,
+    "note": "1-sigma of a 17-study ensemble - a DIFFERENT statistic from the M&C expanded_95; do not mix"
+   },
    "value": 7.5
   },
   "density_g_cm3": {
-   "range": [
-    1.7,
-    1.9
-   ],
-   "source": "B&B 2006 SS9.2 p.58",
+   "applicability": "soot/LAC material density",
+   "provenance": {
+    "access": "open",
+    "citation": "Bond & Bergstrom 2006",
+    "locator": "SS9.2 p.58 ('measured as 1.7-1.9 g/cm3; use of 1.0 should be abandoned')",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     1.7,
+     1.9
+    ]
+   },
    "value": 1.8
   },
   "g_asymmetry": {
-   "range": [
-    0.51,
-    0.64
-   ],
-   "source": "RDG-FA over VERIFIED overfire morphology (Koylu-Faeth per-fuel d_p 32-51nm, N 260-552, Df 1.79, k_f 8.5 via NISTGCR 00-796 Table 2), Dobbins-Megaridis structure factor, computed at 633nm; per-fuel g(633) ethylene 0.559, heptane 0.512, acetylene 0.610, toluene 0.638. See hot-soot record for method, validation, and the fixed-g/HG caveats (g is size-dependent; HG error bound 35%)",
+   "applicability": "mature overfire aggregates (the cool-carbon phase of the phi(T) partition); g is size-dependent - fixed-g HG carries up to 35% form error (Pandey & Chakrabarty 2016)",
+   "provenance": {
+    "access": "open (NISTGCR)",
+    "citation": "RDG-FA computation (Sorensen 2001 formulas, Dobbins-Megaridis structure factor) over Koylu-Faeth morphology via Krishnan & Faeth NISTGCR 00-796 Table 2 p.56",
+    "locator": "method and validation in fire_optics_hot_soot.draft.json; doc SS2-SS3 of FIRE_OPTICS_PRESET_V1.md",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "basis": "per-fuel RDG-FA over verified overfire morphology (ethylene 0.559, heptane 0.512, acetylene 0.610, toluene 0.638 at 633nm)",
+    "kind": "computed_range_from_input_sensitivity",
+    "magnitude": [
+     0.51,
+     0.64
+    ]
+   },
    "value": 0.58
   },
   "k_m_extinction_633nm_m2_per_g": {
-   "source": "Mulholland & Croarkin 2000, Fire Mater. 24:227-230 (abstract verified via OpenAlex; 7 studies, 29 fuels, post-flame overventilated flaming smoke; between-lab ANOVA dominant)",
-   "uncertainty": 1.1,
-   "uncertainty_kind": "95% expanded (coverage factor k unverified - paywalled body)",
+   "applicability": "total post-flame flaming-smoke extinction anchor; assigned to the cool-carbon constituent per the SS4.3 consistency check (FIRE_OPTICS_PRESET_V1.md SS3.2)",
+   "provenance": {
+    "access": "paywalled body; abstract verified",
+    "citation": "Mulholland & Croarkin 2000, 'Specific extinction coefficient of flame generated smoke', Fire Mater. 24:227-230",
+    "locator": "abstract (verbatim via OpenAlex deposited abstract); 7 studies, 29 fuels, post-flame overventilated flaming; between-lab ANOVA dominant",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "coverage_factor": "UNVERIFIED (paywalled body; per owner ruling 2026-08-05 do NOT assume k=2)",
+    "kind": "expanded_95",
+    "magnitude": 1.1
+   },
    "value": 8.7
   },
   "n_spectral_exponent": {
-   "certified_domain_provenance": "Certified domain EXTENDED from [400,700] to [380,780] on 2026-08-06 (implementation provenance stop): the [400,700] label was Bond & Bergstrom's self-imposed statement scope (SS7.6 p.53, visible only), but the lambda^-1 law over the full renderer band is covered by direct measurement in this record's own source list: (a) Heuser et al. 2025 ACP 25:6407 - AAE fitted over 375-870nm = 1.05 for pure EC (abstract; spans the entire band); (b) Ouf et al. 2008 FSS 9:231 p.238 - sigma_e measured at BOTH 632.8 and 1064nm, EAE 1.03 (makes 700-780 an INTERPOLATION between measured points, not an extrapolation); (c) Forestieri et al. 2018 - MAC measured 405/532/630nm, AAE ~1. The n=1.0-1.2 range is retained over the extended domain (Heuser's 1.05 sits inside it); no widening needed at the edges given (a) covers them directly.",
-   "out_of_domain_policy": "NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.",
-   "range": [
-    1.0,
-    1.2
-   ],
-   "source": "B&B 2006 SS7.6 p.53/SS9.1 p.58 (lambda^-1, visible only, +/-~0.15); Ouf et al. 2008 FSS 9:231 p.238 (632->1064nm EAE 1.03); Heuser et al. 2025 ACP 25:6407 Table 2 (EC-rich EAE 1.12-1.23); Chen et al. 2007 flaming pine ~1.18 derived",
+   "applicability": "soot-dominated flaming smoke over the certified 380-780nm domain",
+   "certified_domain_provenance": "see git history b943ee4b/5cad879a: extended [400,700]->[380,780] on Heuser 375-870 AAE fit, Ouf 632.8+1064 measurements, Forestieri 405-630",
+   "out_of_domain_policy": "no preview extrapolation rule named; out-of-domain rejects in both modes",
+   "provenance": {
+    "access": "all open",
+    "citation": "B&B 2006 SS7.6 p.53/SS9.1 p.58; Ouf et al. 2008 FSS 9:231 p.238; Heuser et al. 2025 ACP 25:6407 Table 2 + abstract (AAE(375-870)=1.05 pure EC); Chen et al. 2007 ES&T 41:4317 (derived ~1.18)",
+    "locator": "as cited per source; certified-domain extension provenance in certified_domain_provenance",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     1.0,
+     1.2
+    ]
+   },
    "validity_nm": [
     380,
     780
    ],
-   "value": 1.0
+   "value": 1.1
   },
   "omega_633nm": {
-   "range": [
-    0.2,
-    0.3
-   ],
-   "source": "Bond & Bergstrom 2006 SS9.1 p.58, Table 7 p.51 (six measured studies 0.15-0.29)",
+   "applicability": "fresh combustion aerosol single-scattering albedo; implied 0.251 by the MAC/M&C anchor consistency (corroboration)",
+   "provenance": {
+    "access": "open",
+    "citation": "Bond & Bergstrom 2006",
+    "locator": "SS9.1 p.58; Table 7 p.51 (six measured studies, 0.15-0.29)",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     0.2,
+     0.3
+    ]
+   },
    "value": 0.25
   }
  },

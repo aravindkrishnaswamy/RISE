@@ -13,7 +13,6 @@
  "definition": {
   "E_CC_550": 0.2382,
   "E_CC_source": "Chang & Charalampopoulos 1990 dispersion (see fire_optics_em_soot_cc1990.draft.json for formulas/provenance)",
-  "density_source": "Bond & Bergstrom 2006 SS9.2 p.58 (measured 1.7-1.9)",
   "form": "E_eff(lambda) = 0.42017 * E_CC(lambda)/E_CC(550nm)",
   "normalization_factor": 1.7638,
   "normalization_target": {
@@ -21,7 +20,24 @@
    "compatible_with": "Bond & Bergstrom 2006: 7.5 +/- 1.2 (1-sigma, 17-study ensemble) - statistically compatible",
    "primary": "Liu, Yon, Fuentes, Lobo, Smallwood, Corbin 2020, Aerosol Sci. Tech. 54:33-51: 8.0 +/- 0.7 from ten direct measurements (full text verified by owner via NRC-Canada repository)"
   },
-  "pinned_density_g_cm3": 1.8
+  "pinned_density_g_cm3": {
+   "applicability": "conversion density for E_eff = MAC*rho*lambda/(6*pi); hashed with the table so a density change changes the record ID",
+   "provenance": {
+    "access": "open",
+    "citation": "Bond & Bergstrom 2006",
+    "locator": "SS9.2 p.58",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     1.7,
+     1.9
+    ],
+    "note": "the RECORD pins 1.8 exactly for the MAC<->E_eff conversion (identity-bearing); the range is the measurement spread behind the pin"
+   },
+   "value": 1.8
+  }
  },
  "derived_quantity": "E_eff(lambda) = MAC(lambda)*rho_soot*lambda/(6*pi), with the pinned density below",
  "design_note_corrections": [
@@ -29,7 +45,7 @@
   "Forestieri scope: the 9.1/7.1 m2/g plateau describes larger mature soot (>~160nm); maturity dependence is explicit in that paper. It anchors the mass-to-absorption normalization, not young-soot optics per se."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "f5fd3755548402c4305890c538aee8d35c92c4de3df7e9c9ea4a2dbd13df23ad",
+ "draft_record_id_sha256_of_payload": "ed160a6469c740d81e9816c07be79497477878e4bd68ebc48e73152f9e169dac",
  "normative_quantity": "MAC_lambda_m2_per_g",
  "quantity_name": "mac_equivalent_E (effective_absorption_function)",
  "quantity_semantics": "NOT an unqualified refractive-index-derived E(m). Population-averaged hot-carbon effective absorption closure: incorporates everything needed to reproduce measured absorption per transported soot mass through the renderer's simple Rayleigh expression sigma_a = 6*pi*E_eff*f_v/lambda, which applies no separate aggregate-interaction correction. Not a universal soot material constant; not a soot-maturity model. Liu et al.'s E>0.32 lower bound is NOT the runtime central value for exactly this reason (it assumes optical-model corrections RISE does not apply).",
