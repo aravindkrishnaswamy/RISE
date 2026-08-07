@@ -115,6 +115,190 @@ namespace RISE
 			return true;
 		}
 
+		bool IsExactZero( const RISECBOR64::Value& value )
+		{
+			return (value.GetType() == RISECBOR64::Value::UnsignedInteger &&
+				value.GetIntegerArgument() == 0) ||
+				(value.GetType() == RISECBOR64::Value::Float64 &&
+				value.GetFloat() == 0.0);
+		}
+
+		bool ValidateUncertainty(
+			const RISECBOR64::Value& uncertainty,
+			const char* requiredKind,
+			std::string* error
+			)
+		{
+			std::string kind;
+			if( !ReadText(uncertainty, "kind", kind, error) ) {
+				return false;
+			}
+			const char* allowedKinds[] = {
+				"assumption_bound", "computed_range_from_input_sensitivity",
+				"design_pinned_exact", "expanded_95", "measured_1sigma",
+				"range", "synthetic_exact"
+			};
+			bool allowed = false;
+			for( std::size_t i=0; i<sizeof(allowedKinds)/sizeof(allowedKinds[0]); ++i ) {
+				allowed = allowed || kind == allowedKinds[i];
+			}
+			if( !allowed || (requiredKind && kind != requiredKind) ) {
+				return Fail(error, "fire-optics uncertainty kind is not schema draft-2");
+			}
+			const RISECBOR64::Value* magnitude = uncertainty.Find("magnitude");
+			if( !magnitude || magnitude->GetType() == RISECBOR64::Value::Null ||
+				magnitude->GetType() == RISECBOR64::Value::Map ||
+				magnitude->GetType() == RISECBOR64::Value::Boolean ||
+				magnitude->GetType() == RISECBOR64::Value::ByteString ) {
+				return Fail(error, "fire-optics uncertainty magnitude is missing");
+			}
+			if( (kind == "design_pinned_exact" || kind == "synthetic_exact") &&
+				!IsExactZero(*magnitude) ) {
+				return Fail(error, "fire-optics exact uncertainty magnitude is not zero");
+			}
+			if( kind == "assumption_bound" &&
+				!Required(uncertainty, "basis", RISECBOR64::Value::Text, error) ) {
+				return Fail(error, "fire-optics assumption bound is missing its basis");
+			}
+			return true;
+		}
+
+		bool ValidateFixtureEnvelope(
+			const RISECBOR64::Value& envelope,
+			double& value,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* uncertainty = Required(
+				envelope, "uncertainty", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* provenance = Required(
+				envelope, "provenance", RISECBOR64::Value::Map, error );
+			if( !uncertainty || !provenance ||
+				!ReadFloat(envelope, "value", value, error) ||
+				!Required(envelope, "applicability", RISECBOR64::Value::Text, error) ||
+				!Required(*provenance, "citation", RISECBOR64::Value::Text, error) ||
+				!Required(*provenance, "locator", RISECBOR64::Value::Text, error) ||
+				!Required(*provenance, "access", RISECBOR64::Value::Text, error) ||
+				!Required(*provenance, "secondary_source",
+					RISECBOR64::Value::Boolean, error) ||
+				!ValidateUncertainty(*uncertainty, "synthetic_exact", error) ) {
+				return Fail(error, "fire-optics synthetic fixture metadata envelope is incomplete");
+			}
+			return true;
+		}
+
+		bool ReadEnvelopedFixtureFloat(
+			const RISECBOR64::Value& map,
+			const char* key,
+			double& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* envelope = Required(
+				map, key, RISECBOR64::Value::Map, error );
+			return envelope && ValidateFixtureEnvelope(*envelope, result, error);
+		}
+
+		bool ValidateTableMetadata(
+			const RISECBOR64::Value& metadata,
+			std::string* error
+			)
+		{
+			std::string granularity;
+			const RISECBOR64::Value* uncertainty = Required(
+				metadata, "uncertainty", RISECBOR64::Value::Map, error );
+			if( !ReadText(metadata, "granularity", granularity, error) ||
+				granularity != "per_table" ||
+				!Required(metadata, "applicability", RISECBOR64::Value::Text, error) ||
+				!Required(metadata, "provenance", RISECBOR64::Value::Text, error) ||
+				!uncertainty || !ValidateUncertainty(*uncertainty, 0, error) ) {
+				return Fail(error, "fire-optics table metadata is incomplete");
+			}
+			return true;
+		}
+
+		bool CanonicallyEqual(
+			const RISECBOR64::Value& a,
+			const RISECBOR64::Value& b,
+			std::string* error
+			)
+		{
+			RISECBOR64::Bytes encodedA, encodedB;
+			return RISECBOR64::Encode(a, encodedA, error) &&
+				RISECBOR64::Encode(b, encodedB, error) && encodedA == encodedB;
+		}
+
+		bool MembersCanonicallyEqual(
+			const RISECBOR64::Value& a,
+			const char* aKey,
+			const RISECBOR64::Value& b,
+			const char* bKey,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* aValue = Required(
+				a, aKey, RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* bValue = Required(
+				b, bKey, RISECBOR64::Value::Map, error );
+			return aValue && bValue && CanonicallyEqual(*aValue, *bValue, error);
+		}
+
+		bool ValidateSourceRecordHeader(
+			const RISECBOR64::Value& source,
+			std::string* error
+			)
+		{
+			return Required(source, "schema_version", RISECBOR64::Value::Text, error) &&
+				Required(source, "record_kind", RISECBOR64::Value::Text, error) &&
+				Required(source, "record_name", RISECBOR64::Value::Text, error) &&
+				Required(source, "version", RISECBOR64::Value::Text, error) &&
+				Required(source, "record_status", RISECBOR64::Value::Text, error);
+		}
+
+		bool ValidateProvenanceSchema(
+			const RISECBOR64::Value& schema,
+			std::string* error
+			)
+		{
+			std::string name, version, granularity;
+			const RISECBOR64::Value* kinds = Required(
+				schema, "uncertainty_kind_enum", RISECBOR64::Value::Map, error );
+			if( !ReadText(schema, "record_name", name, error) ||
+				name != "fire-optics-canonical-provenance-schema-v1" ||
+				!ReadText(schema, "schema_version", version, error) ||
+				version != "draft-2" ||
+				!ReadText(schema, "table_metadata_granularity", granularity, error) ||
+				!Required(schema, "aggregate_required", RISECBOR64::Value::Text, error) ||
+				!kinds ) {
+				return Fail(error, "fire-optics canonical provenance schema is not draft-2");
+			}
+			const char* requiredKinds[] = {
+				"assumption_bound", "computed_range_from_input_sensitivity",
+				"design_pinned_exact", "expanded_95", "measured_1sigma",
+				"range", "synthetic_exact"
+			};
+			for( std::size_t i=0; i<sizeof(requiredKinds)/sizeof(requiredKinds[0]); ++i ) {
+				if( !Required(*kinds, requiredKinds[i], RISECBOR64::Value::Text, error) ) {
+					return Fail(error, "fire-optics canonical uncertainty enum is incomplete");
+				}
+			}
+			return true;
+		}
+
+		bool SourceStatusMatches(
+			const RISECBOR64::Value& componentStatuses,
+			const char* component,
+			const RISECBOR64::Value& source,
+			std::string* error
+			)
+		{
+			std::string declared, actual;
+			return ReadText(componentStatuses, component, declared, error) &&
+				ReadText(source, "record_status", actual, error) &&
+				(declared == actual ||
+					Fail(error, "fire-optics component record status does not match its source"));
+		}
+
 		bool ReadFloatArray(
 			const RISECBOR64::Value& map,
 			const char* key,
@@ -177,15 +361,19 @@ namespace RISE
 				return Fail(error,
 					"hot-soot and cool-carbon phi_T_partition fields differ");
 			}
+			const RISECBOR64::Value* uncertainty = Required(
+				*hotPhi, "uncertainty", RISECBOR64::Value::Map, error );
 			std::string form, consistencyRequirement, provenance;
 			std::vector<double> band;
-			if( !ReadText(*hotPhi, "form", form, error) ||
+			if( !uncertainty ||
+				!ValidateUncertainty(*uncertainty, "design_pinned_exact", error) ||
+				!ReadText(*hotPhi, "form", form, error) ||
 				!ReadText(*hotPhi, "consistency_requirement", consistencyRequirement, error) ||
 				!ReadText(*hotPhi, "provenance", provenance, error) ||
 				consistencyRequirement != kPhiConsistency ||
 				form != kPhiForm || provenance != kPhiProvenance ||
 				!ReadFloatArray(*hotPhi, "hot_fraction_temperature_band_K", band, error) ||
-				band.size() != 2 || band[0] != 700.0 || band[1] != 900.0 ) {
+				band.size() != 2 || band[0] >= band[1] ) {
 				return Fail(error,
 					"fire-optics phi_T_partition is not cubic-Hermite C1 smoothstep");
 			}
@@ -383,7 +571,11 @@ namespace RISE
 				{ "consistency_requirement", Value::String(kPhiConsistency) },
 				{ "form", Value::String(kPhiForm) },
 				{ "hot_fraction_temperature_band_K", FloatArray({700.0, 900.0}) },
-				{ "provenance", Value::String(kPhiProvenance) }
+				{ "provenance", Value::String(kPhiProvenance) },
+				{ "uncertainty", Map({
+					{ "kind", Value::String("design_pinned_exact") },
+					{ "magnitude", Value::Unsigned(0) }
+				}) }
 			});
 		}
 
@@ -525,47 +717,115 @@ namespace RISE
 	{
 		const RISECBOR64::Value* schema = Required(
 			record, "schema_version", RISECBOR64::Value::UnsignedInteger, error );
-		std::string kind, recordClass, interpolation;
+		std::string kind, recordClass, interpolation, aggregateVersion, aggregateStatus;
 		if( !schema || schema->GetIntegerArgument() != 1 ||
 			!ReadText(record, "record_kind", kind, error) || kind != "fire_optics_preset" ||
 			!ReadText(record, "record_name", m_recordName, error) ||
+			!ReadText(record, "version", aggregateVersion, error) ||
+			!ReadText(record, "record_status", aggregateStatus, error) ||
 			!ReadText(record, "record_class", recordClass, error) ||
 			!ReadText(record, "interpolation", interpolation, error) ) {
 			return Fail(error, "unsupported fire-optics record header");
 		}
+		const RISECBOR64::Value* sourceRecords = 0;
+		const RISECBOR64::Value* sourceEffective = 0;
+		const RISECBOR64::Value* sourceHot = 0;
+		const RISECBOR64::Value* sourceCool = 0;
+		const RISECBOR64::Value* sourceCondensed = 0;
+		const RISECBOR64::Value* sourceFixtures = 0;
 		if( m_recordName == "fire-optics-predictive-v1" ||
 			m_recordName == "fire-optics-synthetic-regression-v1" ) {
 			const RISECBOR64::Value* provenanceSchema = Required(
 				record, "provenance_schema", RISECBOR64::Value::Map, error );
-			const RISECBOR64::Value* sourceRecords = Required(
+			sourceRecords = Required(
 				record, "source_records", RISECBOR64::Value::Map, error );
-			std::string provenanceSchemaName;
-			if( !provenanceSchema || !sourceRecords ||
-				!ReadText(*provenanceSchema, "record_name", provenanceSchemaName, error) ||
-				provenanceSchemaName != "fire-optics-canonical-provenance-schema-v1" ) {
+			const RISECBOR64::Value* componentStatuses = Required(
+				record, "component_record_statuses", RISECBOR64::Value::Map, error );
+			if( !provenanceSchema || !sourceRecords || !componentStatuses ||
+				!ValidateProvenanceSchema(*provenanceSchema, error) ) {
 				return Fail(error, "fire-optics canonical provenance schema is missing");
 			}
-			const char* requiredSources[] = {
-				"effective_absorption", "hot_soot", "cool_carbon",
-				"condensed_organics"
-			};
-			for( std::size_t i=0; i<sizeof(requiredSources)/sizeof(requiredSources[0]); ++i ) {
-				if( !Required(*sourceRecords, requiredSources[i],
-					RISECBOR64::Value::Map, error) ) {
-					return Fail(error, "fire-optics canonical source record is missing");
-				}
+			sourceEffective = Required(*sourceRecords, "effective_absorption",
+				RISECBOR64::Value::Map, error);
+			sourceHot = Required(*sourceRecords, "hot_soot",
+				RISECBOR64::Value::Map, error);
+			sourceCool = Required(*sourceRecords, "cool_carbon",
+				RISECBOR64::Value::Map, error);
+			sourceCondensed = Required(*sourceRecords, "condensed_organics",
+				RISECBOR64::Value::Map, error);
+			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
+				!ValidateSourceRecordHeader(*sourceEffective, error) ||
+				!ValidateSourceRecordHeader(*sourceHot, error) ||
+				!ValidateSourceRecordHeader(*sourceCool, error) ||
+				!ValidateSourceRecordHeader(*sourceCondensed, error) ||
+				!SourceStatusMatches(*componentStatuses, "effective_absorption",
+					*sourceEffective, error) ||
+				!SourceStatusMatches(*componentStatuses, "hot_soot", *sourceHot, error) ||
+				!SourceStatusMatches(*componentStatuses, "cool_carbon", *sourceCool, error) ||
+				!SourceStatusMatches(*componentStatuses, "condensed_organics",
+					*sourceCondensed, error) ) {
+				return Fail(error, "fire-optics canonical source record metadata is incomplete");
+			}
+			std::string effectiveVersion, hotVersion, coolVersion, condensedVersion;
+			std::string effectiveStatus;
+			if( !ReadText(*sourceEffective, "version", effectiveVersion, error) ||
+				!ReadText(*sourceHot, "version", hotVersion, error) ||
+				!ReadText(*sourceCool, "version", coolVersion, error) ||
+				!ReadText(*sourceCondensed, "version", condensedVersion, error) ||
+				!ReadText(*sourceEffective, "record_status", effectiveStatus, error) ||
+				hotVersion != effectiveVersion || coolVersion != effectiveVersion ||
+				condensedVersion != effectiveVersion ||
+				(m_recordName == "fire-optics-predictive-v1" &&
+					aggregateVersion != effectiveVersion) ) {
+				return Fail(error, "fire-optics aggregate version does not match its sources");
+			}
+			const RISECBOR64::Value* sourceHotPhi = Required(
+				*sourceHot, "phi_T_partition", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* sourceCoolPhi = Required(
+				*sourceCool, "phi_T_partition", RISECBOR64::Value::Map, error );
+			if( !sourceHotPhi || !sourceCoolPhi ||
+				!CanonicallyEqual(*sourceHotPhi, *sourceCoolPhi, error) ) {
+				return Fail(error,
+					"hot-soot and cool-carbon source phi_T_partition fields differ");
+			}
+			const RISECBOR64::Value* effectiveTable = Required(
+				*sourceEffective, "table", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* hotComputed = Required(
+				*sourceHot, "computed_outputs", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* condensedComputed = Required(
+				*sourceCondensed, "computed_outputs_full_mie",
+				RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* effectiveMetadata = effectiveTable ? Required(
+				*effectiveTable, "table_metadata", RISECBOR64::Value::Map, error ) : 0;
+			const RISECBOR64::Value* hotMetadata = hotComputed ? Required(
+				*hotComputed, "spectral_young_dp30_N50_metadata",
+				RISECBOR64::Value::Map, error ) : 0;
+			const RISECBOR64::Value* condensedMetadata = condensedComputed ? Required(
+				*condensedComputed, "table_metadata", RISECBOR64::Value::Map, error ) : 0;
+			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ||
+				!ValidateTableMetadata(*effectiveMetadata, error) ||
+				!ValidateTableMetadata(*hotMetadata, error) ||
+				!ValidateTableMetadata(*condensedMetadata, error) ) {
+				return Fail(error, "fire-optics source table metadata is incomplete");
 			}
 			if( m_recordName == "fire-optics-synthetic-regression-v1" ) {
-				const RISECBOR64::Value* fixtures = Required(
+				sourceFixtures = Required(
 					*sourceRecords, "synthetic_fixtures", RISECBOR64::Value::Map, error );
-				std::string fixtureName, fixtureStatus;
-				if( !fixtures || !ReadText(*fixtures, "record_name", fixtureName, error) ||
-					!ReadText(*fixtures, "record_status", fixtureStatus, error) ||
+				std::string fixtureName, fixtureStatus, fixtureVersion;
+				if( !sourceFixtures || !ValidateSourceRecordHeader(*sourceFixtures, error) ||
+					!ReadText(*sourceFixtures, "record_name", fixtureName, error) ||
+					!ReadText(*sourceFixtures, "record_status", fixtureStatus, error) ||
+					!ReadText(*sourceFixtures, "version", fixtureVersion, error) ||
 					fixtureName != "fire-optics-synthetic-fixtures-v1" ||
 					fixtureStatus !=
-						"SYNTHETIC_NON_PREDICTIVE__REGRESSION_FIXTURES_ONLY" ) {
+						"SYNTHETIC_NON_PREDICTIVE__REGRESSION_FIXTURES_ONLY" ||
+					aggregateVersion != fixtureVersion || aggregateStatus != fixtureStatus ||
+					!SourceStatusMatches(*componentStatuses, "synthetic_fixtures",
+						*sourceFixtures, error) ) {
 					return Fail(error, "fire-optics synthetic fixture provenance is missing");
 				}
+			} else if( aggregateStatus != effectiveStatus ) {
+				return Fail(error, "fire-optics predictive aggregate status is not source-backed");
 			}
 		}
 		const RISECBOR64::Value* effective = Required(
@@ -591,6 +851,20 @@ namespace RISE
 			if( !ReadText(*effective, "normative_quantity", normative, error) ||
 				normative != "MAC_lambda_m2_per_g" ) {
 				return Fail(error, "fire-optics normative quantity is not MAC");
+			}
+			const RISECBOR64::Value* effectiveMetadata = Required(
+				*effective, "table_metadata", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* hotMetadata = Required(
+				*hot, "table_metadata", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* condensedMetadata = Required(
+				*condensed, "table_metadata", RISECBOR64::Value::Map, error );
+			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ||
+				!ValidateTableMetadata(*effectiveMetadata, error) ||
+				!ValidateTableMetadata(*hotMetadata, error) ||
+				!ValidateTableMetadata(*condensedMetadata, error) ||
+				!Required(*hotMetadata, "adopted_550nm", RISECBOR64::Value::Map, error) ||
+				!Required(*hotMetadata, "adoption_ruling", RISECBOR64::Value::Map, error) ) {
+				return Fail(error, "fire-optics operational table metadata is incomplete");
 			}
 			std::vector<std::vector<double> > effectiveRows;
 			if( !ReadRows(*effective, 3, effectiveRows, error) || effectiveRows.size() != 81 ) {
@@ -740,22 +1014,84 @@ namespace RISE
 		if( recordClass == "synthetic_regression_fixture" &&
 			interpolation == "analytic_fixture_v1" ) {
 			m_recordClass = SyntheticRegressionFixture;
-			double hotOmega;
-			if( !ReadFloat(*effective, "E_eff", m_constantEffectiveAbsorption, error) ||
-				!ReadFloat(*hot, "omega", hotOmega, error) ) {
-				return false;
-			}
-			double hotGValue;
-			if( !ReadFloat(*hot, "g", hotGValue, error) ||
+			double hotOmega, hotGValue;
+			if( sourceFixtures ) {
+				const RISECBOR64::Value* fixtureValues = Required(
+					*sourceFixtures, "values", RISECBOR64::Value::Map, error );
+				const RISECBOR64::Value* sourceEffectiveEnvelope = fixtureValues ? Required(
+					*fixtureValues, "E_eff_fixture", RISECBOR64::Value::Map, error ) : 0;
+				const RISECBOR64::Value* sourceHotValues = fixtureValues ? Required(
+					*fixtureValues, "hot_soot", RISECBOR64::Value::Map, error ) : 0;
+				const RISECBOR64::Value* sourceCoolValues = fixtureValues ? Required(
+					*fixtureValues, "fresh_smoke_cool_carbon",
+					RISECBOR64::Value::Map, error ) : 0;
+				const RISECBOR64::Value* sourceCondensedValues = fixtureValues ? Required(
+					*fixtureValues, "organic_droplets_condensed",
+					RISECBOR64::Value::Map, error ) : 0;
+				const RISECBOR64::Value* effectiveEnvelope = Required(
+					*effective, "E_eff", RISECBOR64::Value::Map, error );
+				if( !sourceEffectiveEnvelope || !sourceHotValues || !sourceCoolValues ||
+					!sourceCondensedValues || !effectiveEnvelope ||
+					!CanonicallyEqual(*sourceEffectiveEnvelope, *effectiveEnvelope, error) ||
+					!MembersCanonicallyEqual(*hot, "omega", *sourceHotValues,
+						"omega", error) ||
+					!MembersCanonicallyEqual(*hot, "g", *sourceHotValues, "g", error) ||
+					!MembersCanonicallyEqual(*cool, "n_spectral_exponent",
+						*sourceCoolValues, "n_exponent", error) ||
+					!MembersCanonicallyEqual(*cool, "omega", *sourceCoolValues,
+						"omega", error) ||
+					!MembersCanonicallyEqual(*cool, "g", *sourceCoolValues, "g", error) ||
+					!MembersCanonicallyEqual(*condensed, "n_spectral_exponent",
+						*sourceCondensedValues, "n_exponent", error) ||
+					!MembersCanonicallyEqual(*condensed, "omega", *sourceCondensedValues,
+						"omega", error) ||
+					!MembersCanonicallyEqual(*condensed, "g", *sourceCondensedValues,
+						"g", error) ||
+					!Required(*effective, "pinned_density_metadata",
+						RISECBOR64::Value::Map, error) ||
+					!Required(*cool, "k_m_extinction_metadata",
+						RISECBOR64::Value::Map, error) ||
+					!Required(*condensed, "k_m_extinction_metadata",
+						RISECBOR64::Value::Map, error) ) {
+					return Fail(error,
+						"fire-optics synthetic operational provenance is incomplete");
+				}
+				if( !ReadEnvelopedFixtureFloat(*effective, "E_eff",
+						m_constantEffectiveAbsorption, error) ||
+					!ReadEnvelopedFixtureFloat(*hot, "omega", hotOmega, error) ||
+					!ReadEnvelopedFixtureFloat(*hot, "g", hotGValue, error) ||
+					!ReadFloat(*cool, "k_m_extinction_633nm_m2_per_g", m_coolKm633, error) ||
+					!ReadEnvelopedFixtureFloat(*cool, "n_spectral_exponent",
+						m_coolExponent, error) ||
+					!ReadEnvelopedFixtureFloat(*cool, "omega", m_coolOmega, error) ||
+					!ReadEnvelopedFixtureFloat(*cool, "g", m_coolG, error) ||
+					!ReadFloat(*condensed, "k_m_extinction_633nm_m2_per_g",
+						m_condensedFixtureKm633, error) ||
+					!ReadEnvelopedFixtureFloat(*condensed, "n_spectral_exponent",
+						m_condensedFixtureExponent, error) ||
+					!ReadEnvelopedFixtureFloat(*condensed, "omega",
+						m_condensedFixtureOmega, error) ||
+					!ReadEnvelopedFixtureFloat(*condensed, "g",
+						m_condensedFixtureG, error) ) {
+					return false;
+				}
+			} else if( !ReadFloat(*effective, "E_eff", m_constantEffectiveAbsorption, error) ||
+				!ReadFloat(*hot, "omega", hotOmega, error) ||
+				!ReadFloat(*hot, "g", hotGValue, error) ||
 				!ReadFloat(*cool, "k_m_extinction_633nm_m2_per_g", m_coolKm633, error) ||
 				!ReadFloat(*cool, "n_spectral_exponent", m_coolExponent, error) ||
 				!ReadFloat(*cool, "omega", m_coolOmega, error) ||
 				!ReadFloat(*cool, "g", m_coolG, error) ||
-				!ReadFloat(*condensed, "k_m_extinction_633nm_m2_per_g", m_condensedFixtureKm633, error) ||
-				!ReadFloat(*condensed, "n_spectral_exponent", m_condensedFixtureExponent, error) ||
+				!ReadFloat(*condensed, "k_m_extinction_633nm_m2_per_g",
+					m_condensedFixtureKm633, error) ||
+				!ReadFloat(*condensed, "n_spectral_exponent",
+					m_condensedFixtureExponent, error) ||
 				!ReadFloat(*condensed, "omega", m_condensedFixtureOmega, error) ||
-				!ReadFloat(*condensed, "g", m_condensedFixtureG, error) ||
-				!ReadText(*condensed, "predictive_reason_code", m_condensedPredictiveReason, error) ) {
+				!ReadFloat(*condensed, "g", m_condensedFixtureG, error) ) {
+				return false;
+			}
+			if( !ReadText(*condensed, "predictive_reason_code",
+				m_condensedPredictiveReason, error) ) {
 				return false;
 			}
 			std::vector<double> fixtureWavelengths;
@@ -883,7 +1219,9 @@ namespace RISE
 			{ "record_class", Value::String("synthetic_regression_fixture") },
 			{ "record_kind", Value::String("fire_optics_preset") },
 			{ "record_name", Value::String("fire-optics-explicit-synthetic-fixture") },
-			{ "schema_version", Value::Unsigned(1) }
+			{ "record_status", Value::String("explicit_synthetic_test_fixture") },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "version", Value::String("1.0.0-explicit-test") }
 		});
 		RISECBOR64::Bytes encoded;
 		FireOpticsPreset result;

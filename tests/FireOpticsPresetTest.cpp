@@ -167,6 +167,49 @@ namespace
 		return ReplaceMember(record,sectionKey,changedSection);
 	}
 
+	RISECBOR64::Value ReplaceOperationalPhiBand(
+		const RISECBOR64::Value& record,
+		const double minimumK,
+		const double maximumK
+		)
+	{
+		using RISECBOR64::Value;
+		Value changedRecord = record;
+		const char* sectionKeys[] = { "hot_soot", "cool_carbon" };
+		const Value band = Value::ArrayValue({
+			Value::Float(minimumK), Value::Float(maximumK) });
+		for( std::size_t i=0; i<sizeof(sectionKeys)/sizeof(sectionKeys[0]); ++i ) {
+			const Value* section = changedRecord.Find(sectionKeys[i]);
+			const Value* phi = section ? section->Find("phi_T_partition") : 0;
+			if( !section || !phi ) {
+				return Value();
+			}
+			const Value changedPhi = ReplaceMember(
+				*phi, "hot_fraction_temperature_band_K", band );
+			changedRecord = ReplaceMember(changedRecord, sectionKeys[i],
+				ReplaceMember(*section, "phi_T_partition", changedPhi));
+		}
+		return changedRecord;
+	}
+
+	RISECBOR64::Value ReplaceFloatArrayElement(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::size_t index,
+		const double replacement
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* array = map.Find(key);
+		if( !array || array->GetType() != Value::Array ||
+			index >= array->GetArray().size() ) {
+			return Value();
+		}
+		Value::Values changed = array->GetArray();
+		changed[index] = Value::Float(replacement);
+		return ReplaceMember(map,key,Value::ArrayValue(changed));
+	}
+
 	bool RejectsWith(
 		const RISECBOR64::Value& record,
 		const char* expectedError
@@ -195,9 +238,9 @@ int main()
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
-		"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610" &&
+		"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87" &&
 		synthetic.RecordId() ==
-		"75e3075123b2b83cdc7401307692723cefb17b4532bf431f786259833624a315",
+		"e4d939b940468df2b29b80cb4de26e51a4d47ce776cb7f67dfce33023bdcbf80",
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
@@ -334,6 +377,18 @@ int main()
 	std::string mutationError;
 	Check( RISECBOR64::DecodeCanonical(synthetic.RecordBytes(),decodedSynthetic,
 		&mutationError), "the synthetic record decodes for semantic mutation tests" );
+	const RISECBOR64::Value* syntheticSources = decodedSynthetic.Find("source_records");
+	const RISECBOR64::Value* fixtureSource = syntheticSources ?
+		syntheticSources->Find("synthetic_fixtures") : 0;
+	const RISECBOR64::Value* fixtureValues = fixtureSource ?
+		fixtureSource->Find("values") : 0;
+	const RISECBOR64::Value* fixtureEffective = fixtureValues ?
+		fixtureValues->Find("E_eff_fixture") : 0;
+	Check( decodedSynthetic.Find("version") && decodedSynthetic.Find("record_status") &&
+		fixtureEffective && fixtureEffective->Find("value") &&
+		fixtureEffective->Find("uncertainty") && fixtureEffective->Find("provenance") &&
+		fixtureEffective->Find("applicability"),
+		"the synthetic source carries aggregate and per-value metadata envelopes" );
 	const RISECBOR64::Value* hot = decodedSynthetic.Find("hot_soot");
 	const RISECBOR64::Value* hotPhi = hot ? hot->Find("phi_T_partition") : 0;
 	if( hot && hotPhi ) {
@@ -345,10 +400,8 @@ int main()
 			*hot, "phi_T_partition", changedPhi );
 		const RISECBOR64::Value divergentRecord = ReplaceMember(
 			decodedSynthetic, "hot_soot", changedHot );
-		RISECBOR64::Bytes divergentBytes;
-		FireOpticsPreset rejected;
-		Check( RISECBOR64::Encode(divergentRecord,divergentBytes,&mutationError) &&
-			!rejected.LoadCanonicalRecord(divergentBytes,&mutationError),
+		Check( RejectsWith(divergentRecord,
+			"hot-soot and cool-carbon phi_T_partition fields differ"),
 			"load rejects divergent hot/cool phi_T_partition records" );
 	} else {
 		Check(false,"synthetic record contains both hot-soot phi fields");
@@ -370,12 +423,61 @@ int main()
 		&mutationError), "the predictive record decodes for policy mutation tests" );
 	const RISECBOR64::Value* provenanceSchema = decodedPredictive.Find("provenance_schema");
 	const RISECBOR64::Value* sourceRecords = decodedPredictive.Find("source_records");
-	Check( provenanceSchema && sourceRecords &&
+	const RISECBOR64::Value* aggregateVersion = decodedPredictive.Find("version");
+	const RISECBOR64::Value* aggregateStatus = decodedPredictive.Find("record_status");
+	const RISECBOR64::Value* componentStatuses =
+		decodedPredictive.Find("component_record_statuses");
+	Check( provenanceSchema && sourceRecords && aggregateVersion && aggregateStatus &&
+		componentStatuses && provenanceSchema->Find("uncertainty_kind_enum") &&
+		provenanceSchema->Find("table_metadata_granularity") &&
 		provenanceSchema->Find("hashed_payload_required_fields") &&
 		sourceRecords->Find("effective_absorption") && sourceRecords->Find("hot_soot") &&
 		sourceRecords->Find("cool_carbon") && sourceRecords->Find("condensed_organics"),
-		"the canonical payload hashes its provenance schema and every source record" );
+		"the canonical payload hashes aggregate metadata, schema draft-2, and every source" );
+	if( provenanceSchema ) {
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
+			ReplaceMember(*provenanceSchema,"schema_version",
+				RISECBOR64::Value::String("draft-1"))),
+			"canonical provenance schema is missing"),
+			"load rejects a pre-envelope provenance schema" );
+	}
 	if( sourceRecords ) {
+		const RISECBOR64::Value* sourceEffective =
+			sourceRecords->Find("effective_absorption");
+		const RISECBOR64::Value* sourceEffectiveTable = sourceEffective ?
+			sourceEffective->Find("table") : 0;
+		if( sourceEffective && sourceEffectiveTable ) {
+			const RISECBOR64::Value changedTable = ReplaceMember(*sourceEffectiveTable,
+				"table_metadata",RISECBOR64::Value::MapValue({}));
+			const RISECBOR64::Value changedEffective = ReplaceMember(*sourceEffective,
+				"table",changedTable);
+			const RISECBOR64::Value changedSources = ReplaceMember(*sourceRecords,
+				"effective_absorption",changedEffective);
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				changedSources),"source table metadata is incomplete"),
+				"load rejects a source table with an empty metadata envelope" );
+		} else {
+			Check(false,"effective-absorption source table metadata is present");
+		}
+		const RISECBOR64::Value* sourceHot = sourceRecords->Find("hot_soot");
+		const RISECBOR64::Value* sourceHotPhi = sourceHot ?
+			sourceHot->Find("phi_T_partition") : 0;
+		if( sourceHot && sourceHotPhi ) {
+			const RISECBOR64::Value changedSourcePhi = ReplaceMember(*sourceHotPhi,
+				"hot_fraction_temperature_band_K",
+				RISECBOR64::Value::ArrayValue({
+					RISECBOR64::Value::Unsigned(701),
+					RISECBOR64::Value::Unsigned(900) }));
+			const RISECBOR64::Value changedSourceHot = ReplaceMember(*sourceHot,
+				"phi_T_partition",changedSourcePhi);
+			const RISECBOR64::Value changedSources = ReplaceMember(*sourceRecords,
+				"hot_soot",changedSourceHot);
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				changedSources),"source phi_T_partition fields differ"),
+				"load rejects source-record-only phi_T divergence" );
+		} else {
+			Check(false,"hot-soot source phi_T metadata is present");
+		}
 		const RISECBOR64::Value* sourceCool = sourceRecords->Find("cool_carbon");
 		const RISECBOR64::Value* sourceValues = sourceCool ? sourceCool->Find("values") : 0;
 		const RISECBOR64::Value* sourceOmega = sourceValues ?
@@ -420,6 +522,12 @@ int main()
 	const RISECBOR64::Value* predictiveCondensed =
 		decodedPredictive.Find("condensed_organics");
 	if( predictiveEffective && predictiveHot && cool && predictiveCondensed ) {
+		Check( RejectsWith(ReplaceOperationalPhiBand(decodedPredictive,701.0,900.0),
+			"predictive v1 phi(T) band gate failed"),
+			"a lower phi(T) edge mutation reaches the pinned-band gate" );
+		Check( RejectsWith(ReplaceOperationalPhiBand(decodedPredictive,700.0,899.0),
+			"predictive v1 phi(T) band gate failed"),
+			"an upper phi(T) edge mutation reaches the pinned-band gate" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
 			ReplaceMember(*predictiveEffective,"pinned_density_g_cm3",
 				RISECBOR64::Value::Float(1.81))),"density gate failed"),
@@ -442,6 +550,12 @@ int main()
 				"effective_absorption",0,1,effective380*1.01,0),
 				"E_eff shape gate failed"),
 				"an E_eff endpoint mutation reaches the specific shape gate" );
+			const double interiorEffective =
+				effectiveRows->GetArray()[20].GetArray()[1].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"effective_absorption",20,1,interiorEffective+0.001,0),
+				"E_eff row disagrees with normative MAC"),
+				"an interior E_eff mutation reaches the normative-MAC consistency gate" );
 			const double mac380 =
 				effectiveRows->GetArray().front().GetArray()[2].GetFloat();
 			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
@@ -484,15 +598,43 @@ int main()
 		}
 		const RISECBOR64::Value* hotRows = predictiveHot->Find("rows");
 		if( hotRows ) {
+			const double hotOmega550 = hotRows->GetArray()[2].GetArray()[1].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,"hot_soot",2,1,
+				hotOmega550+0.01,"omega_interpolation"),"hot-soot gate failed"),
+				"a hot-soot omega mutation reaches its specific load-time gate" );
 			const double hotG550 = hotRows->GetArray()[2].GetArray()[2].GetFloat();
 			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,"hot_soot",2,2,
 				hotG550+0.01,"g_interpolation"),"hot-soot gate failed"),
 				"a hot-soot anchor mutation reaches its specific load-time gate" );
 		}
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceMember(*cool,"k_m_extinction_633nm_m2_per_g",
+				RISECBOR64::Value::Float(8.8))),"cool-carbon gate failed"),
+			"a cool-carbon extinction mutation reaches its specific load-time gate" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceMember(*cool,"omega_633nm",RISECBOR64::Value::Float(0.26))),
+			"cool-carbon gate failed"),
+			"a cool-carbon omega mutation reaches its specific load-time gate" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
 			ReplaceMember(*cool,"g_633nm",RISECBOR64::Value::Float(0.59))),
 			"cool-carbon gate failed"),
 			"a cool-carbon anchor mutation reaches its specific load-time gate" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceFloatArrayElement(*cool,"n_supported_range",0,0.9)),
+			"cool-carbon exponent range is not frozen v1"),
+			"a cool-carbon exponent-range lower bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceFloatArrayElement(*cool,"n_supported_range",1,1.3)),
+			"cool-carbon exponent range is not frozen v1"),
+			"a cool-carbon exponent-range upper bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceFloatArrayElement(*cool,"certified_domain_nm",0,381.0)),
+			"cool-carbon exponent range is not frozen v1"),
+			"a cool-carbon certified-domain lower bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceFloatArrayElement(*cool,"certified_domain_nm",1,779.0)),
+			"cool-carbon exponent range is not frozen v1"),
+			"a cool-carbon certified-domain upper bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
 			ReplaceMember(*predictiveCondensed,"ir_closure_status",
 				RISECBOR64::Value::String("open"))),"condensed-organics gate failed"),

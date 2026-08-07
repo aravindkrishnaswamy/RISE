@@ -453,7 +453,7 @@ namespace
 		bool IsFireMedium() const override { return true; }
 		const char* GetFireOpticsRecordId() const override
 		{
-			return "e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610";
+			return "ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87";
 		}
 		const char* GetFireRenderFidelityStatus( const bool ) const override
 		{
@@ -2208,7 +2208,7 @@ namespace
 					store->Meta().renderReasonCodes.end() &&
 				store->Meta().activeFireOpticsRecordIds.size() == 1u &&
 				store->Meta().activeFireOpticsRecordIds[0] ==
-					"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610",
+					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87",
 				"production FrameStore carries sorted preview reasons and record identity" );
 
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),

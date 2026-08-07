@@ -133,6 +133,16 @@ def encode(value) -> bytes:
     raise TypeError(type(value))
 
 
+def canonical_value_envelope(envelope: dict) -> dict:
+    result = dict(envelope)
+    result["value"] = float(envelope["value"])
+    return result
+
+
+def component_statuses(*records: tuple[str, dict]) -> dict:
+    return {name: record["record_status"] for name, record in records}
+
+
 def predictive_payload(data_dir: Path) -> dict:
     schema = json.loads(
         (data_dir / "fire_optics_record_schema.draft.json").read_text()
@@ -173,6 +183,10 @@ def predictive_payload(data_dir: Path) -> dict:
     hot_phi["hot_fraction_temperature_band_K"] = [
         float(value) for value in hot_phi_source["hot_fraction_temperature_band_K"]
     ]
+    hot_phi["uncertainty"] = {
+        "kind": "design_pinned_exact",
+        "magnitude": 0,
+    }
     cool_phi = dict(hot_phi)
 
     condensed_rows = [
@@ -185,10 +199,23 @@ def predictive_payload(data_dir: Path) -> dict:
     condensed_g = [row[3] for row in condensed_rows]
 
     cool_values = cool["values"]
+    hot_table_metadata = dict(
+        hot["computed_outputs"]["spectral_young_dp30_N50_metadata"]
+    )
+    hot_table_metadata["adopted_550nm"] = adopted_hot
+    hot_table_metadata["adoption_ruling"] = hot["g_hot_adopted"]
     return {
         "schema_version": 1,
         "record_kind": "fire_optics_preset",
         "record_name": "fire-optics-predictive-v1",
+        "version": effective["version"],
+        "record_status": effective["record_status"],
+        "component_record_statuses": component_statuses(
+            ("effective_absorption", effective),
+            ("hot_soot", hot),
+            ("cool_carbon", cool),
+            ("condensed_organics", condensed),
+        ),
         "record_class": "predictive_optical_preset",
         "interpolation": "pchip_monotone_c1_v1",
         "provenance_schema": schema,
@@ -206,6 +233,7 @@ def predictive_payload(data_dir: Path) -> dict:
             "domain_nm": [380.0, 780.0],
             "columns": ["lambda_nm", "E_eff", "MAC_m2_per_g"],
             "rows": effective_rows,
+            "table_metadata": effective["table"]["table_metadata"],
             "mac_interpolation": tabulated_spectrum(effective_x, effective_mac),
         },
         "hot_soot": {
@@ -214,6 +242,7 @@ def predictive_payload(data_dir: Path) -> dict:
             "domain_nm": [380.0, 780.0],
             "columns": ["lambda_nm", "omega", "g"],
             "rows": hot_rows,
+            "table_metadata": hot_table_metadata,
             "omega_interpolation": tabulated_spectrum(hot_x, hot_omega),
             "g_interpolation": tabulated_spectrum(hot_x, hot_g),
         },
@@ -245,6 +274,9 @@ def predictive_payload(data_dir: Path) -> dict:
             "domain_nm": [380.0, 780.0],
             "columns": ["lambda_nm", "k_ext_m2_per_g", "omega", "g"],
             "rows": condensed_rows,
+            "table_metadata": condensed["computed_outputs_full_mie"][
+                "table_metadata"
+            ],
             "k_ext_interpolation": tabulated_spectrum(condensed_x, condensed_k),
             "omega_interpolation": tabulated_spectrum(condensed_x, condensed_omega),
             "g_interpolation": tabulated_spectrum(condensed_x, condensed_g),
@@ -279,6 +311,10 @@ def synthetic_payload(data_dir: Path) -> dict:
     hot_phi["hot_fraction_temperature_band_K"] = [
         float(value) for value in hot_phi_source["hot_fraction_temperature_band_K"]
     ]
+    hot_phi["uncertainty"] = {
+        "kind": "design_pinned_exact",
+        "magnitude": 0,
+    }
     cool_phi = dict(hot_phi)
     fixture_values = fixtures["values"]
     fixture_hot = fixture_values["hot_soot"]
@@ -288,6 +324,15 @@ def synthetic_payload(data_dir: Path) -> dict:
         "schema_version": 1,
         "record_kind": "fire_optics_preset",
         "record_name": "fire-optics-synthetic-regression-v1",
+        "version": fixtures["version"],
+        "record_status": fixtures["record_status"],
+        "component_record_statuses": component_statuses(
+            ("effective_absorption", effective),
+            ("hot_soot", hot),
+            ("cool_carbon", cool),
+            ("condensed_organics", condensed),
+            ("synthetic_fixtures", fixtures),
+        ),
         "record_class": "synthetic_regression_fixture",
         "interpolation": "analytic_fixture_v1",
         "provenance_schema": schema,
@@ -300,31 +345,42 @@ def synthetic_payload(data_dir: Path) -> dict:
         },
         "effective_absorption": {
             "model": "constant_E_eff",
-            "E_eff": float(fixture_values["E_eff_fixture"]),
+            "E_eff": canonical_value_envelope(fixture_values["E_eff_fixture"]),
             "pinned_density_g_cm3": float(effective["definition"]["pinned_density_g_cm3"]),
+            "pinned_density_metadata": effective["definition"],
             "domain_nm": [380.0, 780.0],
         },
         "hot_soot": {
-            "omega": float(fixture_hot["omega"]),
-            "g": float(fixture_hot["g"]),
+            "omega": canonical_value_envelope(fixture_hot["omega"]),
+            "g": canonical_value_envelope(fixture_hot["g"]),
             "phi_T_partition": hot_phi,
         },
         "cool_carbon": {
             "k_m_extinction_633nm_m2_per_g": float(
                 cool["values"]["k_m_extinction_633nm_m2_per_g"]["value"]
             ),
-            "n_spectral_exponent": float(fixture_cool["n_exponent"]),
-            "omega": float(fixture_cool["omega"]),
-            "g": float(fixture_cool["g"]),
+            "k_m_extinction_metadata": cool["values"][
+                "k_m_extinction_633nm_m2_per_g"
+            ],
+            "n_spectral_exponent": canonical_value_envelope(
+                fixture_cool["n_exponent"]
+            ),
+            "omega": canonical_value_envelope(fixture_cool["omega"]),
+            "g": canonical_value_envelope(fixture_cool["g"]),
             "phi_T_partition": cool_phi,
         },
         "condensed_organics": {
             "k_m_extinction_633nm_m2_per_g": float(
                 condensed["computed_outputs_full_mie"]["table"]["rows"][3][1]
             ),
-            "n_spectral_exponent": float(fixture_condensed["n_exponent"]),
-            "omega": float(fixture_condensed["omega"]),
-            "g": float(fixture_condensed["g"]),
+            "k_m_extinction_metadata": condensed["computed_outputs_full_mie"][
+                "table_metadata"
+            ],
+            "n_spectral_exponent": canonical_value_envelope(
+                fixture_condensed["n_exponent"]
+            ),
+            "omega": canonical_value_envelope(fixture_condensed["omega"]),
+            "g": canonical_value_envelope(fixture_condensed["g"]),
             "predictive_reason_code": condensed["ir_closure"]["predictive_reason_code"],
         },
     }

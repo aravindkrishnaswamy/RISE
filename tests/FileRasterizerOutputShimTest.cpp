@@ -685,7 +685,7 @@ namespace
 			"pel_transport", "producer_unqualified", "requested_preview"
 		};
 		store->MutableMeta().activeFireOpticsRecordIds = {
-			"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610"
+			"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87"
 		};
 		return store;
 	}

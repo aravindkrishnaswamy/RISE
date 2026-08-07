@@ -439,7 +439,7 @@ static void TestFirePelPreviewDivergence()
 		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
 
 	// Measured single-thread against preset-v1 record
-	// e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610
+	// ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87
 	// (canonicalized by f33ce8c9; tripwire recorded by cdb1aad4) over the paired
 	// seeds above: red 0.56-1.26%, green
 	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The
