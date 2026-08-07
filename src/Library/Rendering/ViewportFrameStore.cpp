@@ -517,12 +517,6 @@ namespace RISE
 			if ( !encoder ) return false;
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
-			if( !snap->Meta().renderFidelityStatus.empty() ) {
-				snap->release();
-				GlobalLog()->PrintEasyError(
-					"ViewportFrameStore::SaveTo: fire output requires a provenance-capable sink" );
-				return false;
-			}
 
 			std::string error;
 			const bool success = EncodeFrameStoreFileTransaction(
@@ -547,6 +541,12 @@ namespace RISE
 			if ( !encoder ) return false;
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
+			if( !snap->Meta().renderFidelityStatus.empty() ) {
+				snap->release();
+				GlobalLog()->PrintEasyError(
+					"ViewportFrameStore::SaveTo: fire output requires a provenance-capable sink" );
+				return false;
+			}
 			encoder->Encode( *snap, dst, opts );
 			snap->release();
 			return true;
