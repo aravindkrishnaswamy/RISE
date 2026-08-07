@@ -9,7 +9,7 @@
   "verdict": "PASS for wood-class flaming smoke"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "854496c9a108e21005bdefc646e84237f0cf18249d81e15be15c57e7d1ec8e7b",
+ "draft_record_id_sha256_of_payload": "08f0063bcbcbfe14712ba20ec4cb83265a19a90074f719ee2228cb3f5b043447",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: B&B explicitly makes no statement outside 400-700nm; the record needs the C&C dispersion (or another source) for thermal wavelengths - couples to the E(m) record's >6.4um verification",
   "omega/g wavelength dependence beyond 633nm: assemble from RDG-FA once morphology record adopted",
@@ -114,13 +114,14 @@
     "magnitude": [
      1.0,
      1.2
-    ]
+    ],
+    "note": "central 1.0 = B&B's lambda^-1 recommendation (Heuser pure-EC 1.05 consistent); range upper 1.2 from the EC-rich EAE measurements"
    },
    "validity_nm": [
     380,
     780
    ],
-   "value": 1.1
+   "value": 1.0
   },
   "omega_633nm": {
    "applicability": "fresh combustion aerosol single-scattering albedo; implied 0.251 by the MAC/M&C anchor consistency (corroboration)",
