@@ -31,6 +31,8 @@ namespace RISE
 			"FIRE_SMOKE_DESIGN.md SS3.4 (r45+; lines ~807-808): design-owned closure parameter of the derived hot/cool carbon partition c_hot = phi(T)*c_carbon. NOT a literature constant - its authority is the design decision itself. SS8 requires the phi(T) band in the versioned optical record; this field closes that gap in the draft layer (added 2026-08-06 at the implementation agent's provenance stop).";
 		const char kCoolOutOfDomainPolicy[] =
 			"NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.";
+		const char kProvenanceSchemaSHA256[] =
+			"6ec2e55262c519904625764c65f5d6934d942276301c15cde30eaafe376db159";
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -97,6 +99,48 @@ namespace RISE
 			}
 			result = value->GetFloat();
 			return IsFinite(result) || Fail(error, std::string("non-finite '")+key+"'");
+		}
+
+		bool ReadNumberValue(
+			const RISECBOR64::Value& value,
+			double& result,
+			std::string* error
+			)
+		{
+			if( value.GetType() == RISECBOR64::Value::Float64 ) {
+				result = value.GetFloat();
+			} else if( value.GetType() == RISECBOR64::Value::UnsignedInteger ) {
+				result = static_cast<double>(value.GetIntegerArgument());
+			} else if( value.GetType() == RISECBOR64::Value::NegativeInteger ) {
+				result = -1.0-static_cast<double>(value.GetIntegerArgument());
+			} else {
+				return Fail(error,"fire-optics source value is not numeric");
+			}
+			return IsFinite(result) || Fail(error,"fire-optics source value is non-finite");
+		}
+
+		bool ReadSourceNumber(
+			const RISECBOR64::Value& map,
+			const char* key,
+			double& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* value = map.Find(key);
+			return value ? ReadNumberValue(*value,result,error) :
+				Fail(error,std::string("fire-optics source is missing '")+key+"'");
+		}
+
+		bool ReadSourceEnvelopeNumber(
+			const RISECBOR64::Value& map,
+			const char* key,
+			double& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* envelope = Required(
+				map,key,RISECBOR64::Value::Map,error );
+			return envelope && ReadSourceNumber(*envelope,"value",result,error);
 		}
 
 		bool ReadText(
@@ -282,6 +326,12 @@ namespace RISE
 					return Fail(error, "fire-optics canonical uncertainty enum is incomplete");
 				}
 			}
+			RISECBOR64::Bytes encoded;
+			if( !RISECBOR64::Encode(schema,encoded,error) ||
+				RISECBOR64::SHA256Hex(encoded) != kProvenanceSchemaSHA256 ) {
+				return Fail(error,
+					"fire-optics canonical provenance schema does not match pinned draft-2");
+			}
 			return true;
 		}
 
@@ -411,6 +461,175 @@ namespace RISE
 					row.push_back(value.GetFloat());
 				}
 				rows.push_back(row);
+			}
+			return true;
+		}
+
+		bool ReadSourceRows(
+			const RISECBOR64::Value& map,
+			const std::size_t columnCount,
+			std::vector<std::vector<double> >& rows,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* encodedRows = Required(
+				map,"rows",RISECBOR64::Value::Array,error );
+			if( !encodedRows ) return false;
+			rows.clear();
+			for( const RISECBOR64::Value& encodedRow : encodedRows->GetArray() ) {
+				if( encodedRow.GetType() != RISECBOR64::Value::Array ||
+					encodedRow.GetArray().size() != columnCount ) {
+					return Fail(error,"fire-optics source table row has the wrong width");
+				}
+				std::vector<double> row;
+				for( const RISECBOR64::Value& encodedValue : encodedRow.GetArray() ) {
+					double value = 0.0;
+					if( !ReadNumberValue(encodedValue,value,error) ) return false;
+					row.push_back(value);
+				}
+				rows.push_back(row);
+			}
+			return true;
+		}
+
+		bool RowsExactlyEqual(
+			const std::vector<std::vector<double> >& operational,
+			const std::vector<std::vector<double> >& source
+			)
+		{
+			return operational == source;
+		}
+
+		bool ReadSourceNumberArray(
+			const RISECBOR64::Value& map,
+			const char* key,
+			std::vector<double>& values,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* array = Required(
+				map,key,RISECBOR64::Value::Array,error );
+			if( !array ) return false;
+			values.clear();
+			for( const RISECBOR64::Value& encoded : array->GetArray() ) {
+				double value = 0.0;
+				if( !ReadNumberValue(encoded,value,error) ) return false;
+				values.push_back(value);
+			}
+			return true;
+		}
+
+		bool ValidatePredictiveSourceBindings(
+			const RISECBOR64::Value& sourceEffective,
+			const RISECBOR64::Value& sourceHot,
+			const RISECBOR64::Value& sourceCool,
+			const RISECBOR64::Value& sourceCondensed,
+			const std::vector<std::vector<double> >& effectiveRows,
+			const double density,
+			const std::vector<std::vector<double> >& hotRows,
+			const double coolKm,
+			const double coolExponent,
+			const double coolOmega,
+			const double coolG,
+			const std::vector<double>& supportedRange,
+			const std::vector<double>& certifiedDomain,
+			const std::string& outOfDomainPolicy,
+			const std::vector<std::vector<double> >& condensedRows,
+			const double condensedExponent,
+			const std::string& condensedApplicability,
+			const std::string& condensedIRStatus,
+			const std::string& condensedReason,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* effectiveTable = Required(
+				sourceEffective,"table",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* effectiveDefinition = Required(
+				sourceEffective,"definition",RISECBOR64::Value::Map,error );
+			std::vector<std::vector<double> > sourceEffectiveRows;
+			double sourceDensity = 0.0;
+			if( !effectiveTable || !effectiveDefinition ||
+				!ReadSourceRows(*effectiveTable,3,sourceEffectiveRows,error) ||
+				!ReadSourceNumber(*effectiveDefinition,"pinned_density_g_cm3",
+					sourceDensity,error) || sourceDensity != density ||
+				!RowsExactlyEqual(effectiveRows,sourceEffectiveRows) ) {
+				return Fail(error,
+					"fire-optics operational effective absorption differs from its source record");
+			}
+
+			const RISECBOR64::Value* computed = Required(
+				sourceHot,"computed_outputs",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* sourceSpectrum = computed ? Required(
+				*computed,"spectral_young_dp30_N50",RISECBOR64::Value::Map,error ) : 0;
+			const RISECBOR64::Value* adopted = computed ? Required(
+				*computed,"young_in_flame_550nm",RISECBOR64::Value::Map,error ) : 0;
+			std::vector<std::vector<double> > sourceHotRows;
+			double adoptedOmega = 0.0, adoptedG = 0.0;
+			if( !sourceSpectrum || !adopted ||
+				!ReadSourceRows(*sourceSpectrum,3,sourceHotRows,error) ||
+				!ReadSourceNumber(*adopted,"omega_central",adoptedOmega,error) ||
+				!ReadSourceNumber(*adopted,"g_central",adoptedG,error) ) {
+				return Fail(error,"fire-optics hot-soot source mapping is incomplete");
+			}
+			for( std::vector<double>& row : sourceHotRows ) {
+				if( row[0] == 550.0 ) {
+					row[1] = adoptedOmega;
+					row[2] = adoptedG;
+				}
+			}
+			if( !RowsExactlyEqual(hotRows,sourceHotRows) ) {
+				return Fail(error,
+					"fire-optics operational hot-soot table differs from its source record");
+			}
+
+			const RISECBOR64::Value* coolValues = Required(
+				sourceCool,"values",RISECBOR64::Value::Map,error );
+			double sourceCoolKm = 0.0, sourceCoolExponent = 0.0;
+			double sourceCoolOmega = 0.0, sourceCoolG = 0.0;
+			const RISECBOR64::Value* sourceExponent = coolValues ? Required(
+				*coolValues,"n_spectral_exponent",RISECBOR64::Value::Map,error ) : 0;
+			std::vector<double> sourceRange, sourceDomain;
+			std::string sourcePolicy;
+			if( !coolValues || !sourceExponent ||
+				!ReadSourceEnvelopeNumber(*coolValues,"k_m_extinction_633nm_m2_per_g",
+					sourceCoolKm,error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"omega_633nm",sourceCoolOmega,error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"g_asymmetry",sourceCoolG,error) ||
+				!ReadSourceNumber(*sourceExponent,"value",sourceCoolExponent,error) ||
+				!ReadSourceNumberArray(*sourceExponent,"range",sourceRange,error) ||
+				!ReadSourceNumberArray(*sourceExponent,"validity_nm",sourceDomain,error) ||
+				!ReadText(*sourceExponent,"out_of_domain_policy",sourcePolicy,error) ||
+				sourceCoolKm != coolKm || sourceCoolExponent != coolExponent ||
+				sourceCoolOmega != coolOmega || sourceCoolG != coolG ||
+				sourceRange != supportedRange || sourceDomain != certifiedDomain ||
+				sourcePolicy != outOfDomainPolicy ) {
+				return Fail(error,
+					"fire-optics operational cool-carbon values differ from their source record");
+			}
+
+			const RISECBOR64::Value* condensedComputed = Required(
+				sourceCondensed,"computed_outputs_full_mie",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* condensedTable = condensedComputed ? Required(
+				*condensedComputed,"table",RISECBOR64::Value::Map,error ) : 0;
+			const RISECBOR64::Value* irClosure = Required(
+				sourceCondensed,"ir_closure",RISECBOR64::Value::Map,error );
+			std::vector<std::vector<double> > sourceCondensedRows;
+			double sourceCondensedExponent = 0.0;
+			std::string sourceApplicability, sourceIRStatus, sourceReason;
+			if( !condensedComputed || !condensedTable || !irClosure ||
+				!ReadSourceRows(*condensedTable,4,sourceCondensedRows,error) ||
+				!ReadSourceNumber(*condensedComputed,
+					"extinction_angstrom_exponent_450_633",sourceCondensedExponent,error) ||
+				!ReadText(sourceCondensed,"applies_to",sourceApplicability,error) ||
+				!ReadText(*irClosure,"status",sourceIRStatus,error) ||
+				!ReadText(*irClosure,"predictive_reason_code",sourceReason,error) ||
+				!RowsExactlyEqual(condensedRows,sourceCondensedRows) ||
+				sourceCondensedExponent != condensedExponent ||
+				sourceApplicability != condensedApplicability ||
+				sourceIRStatus != "BLOCKED" || condensedIRStatus != "blocked" ||
+				sourceReason != condensedReason ) {
+				return Fail(error,
+					"fire-optics operational condensed-organics values differ from their source record");
 			}
 			return true;
 		}
@@ -727,24 +946,56 @@ namespace RISE
 			!ReadText(record, "interpolation", interpolation, error) ) {
 			return Fail(error, "unsupported fire-optics record header");
 		}
+		const bool predictiveHeader =
+			m_recordName == "fire-optics-predictive-v1" &&
+			recordClass == "predictive_optical_preset" &&
+			interpolation == "pchip_monotone_c1_v1";
+		const bool syntheticHeader =
+			m_recordName == "fire-optics-synthetic-regression-v1" &&
+			recordClass == "synthetic_regression_fixture" &&
+			interpolation == "analytic_fixture_v1";
+		const bool explicitSyntheticHeader =
+			m_recordName == "fire-optics-explicit-synthetic-fixture" &&
+			recordClass == "synthetic_regression_fixture" &&
+			interpolation == "analytic_fixture_v1";
+		if( !predictiveHeader && !syntheticHeader && !explicitSyntheticHeader ) {
+			return Fail(error,"unsupported fire-optics record name/class combination");
+		}
 		const RISECBOR64::Value* sourceRecords = 0;
 		const RISECBOR64::Value* sourceEffective = 0;
 		const RISECBOR64::Value* sourceHot = 0;
 		const RISECBOR64::Value* sourceCool = 0;
 		const RISECBOR64::Value* sourceCondensed = 0;
 		const RISECBOR64::Value* sourceFixtures = 0;
-		if( m_recordName == "fire-optics-predictive-v1" ||
-			m_recordName == "fire-optics-synthetic-regression-v1" ) {
+		const RISECBOR64::Value* sourceExplicitFixtures = 0;
+		{
 			const RISECBOR64::Value* provenanceSchema = Required(
 				record, "provenance_schema", RISECBOR64::Value::Map, error );
 			sourceRecords = Required(
 				record, "source_records", RISECBOR64::Value::Map, error );
 			const RISECBOR64::Value* componentStatuses = Required(
 				record, "component_record_statuses", RISECBOR64::Value::Map, error );
-			if( !provenanceSchema || !sourceRecords || !componentStatuses ||
-				!ValidateProvenanceSchema(*provenanceSchema, error) ) {
+			if( !provenanceSchema || !sourceRecords || !componentStatuses ) {
 				return Fail(error, "fire-optics canonical provenance schema is missing");
 			}
+			if( !ValidateProvenanceSchema(*provenanceSchema,error) ) return false;
+			if( explicitSyntheticHeader ) {
+				sourceExplicitFixtures = Required(*sourceRecords,
+					"explicit_synthetic_fixtures",RISECBOR64::Value::Map,error );
+				std::string sourceVersion, sourceStatus, sourceName;
+				if( !sourceExplicitFixtures ||
+					!ValidateSourceRecordHeader(*sourceExplicitFixtures,error) ||
+					!ReadText(*sourceExplicitFixtures,"record_name",sourceName,error) ||
+					!ReadText(*sourceExplicitFixtures,"version",sourceVersion,error) ||
+					!ReadText(*sourceExplicitFixtures,"record_status",sourceStatus,error) ||
+					sourceName != "fire-optics-explicit-synthetic-fixtures-v1" ||
+					sourceVersion != aggregateVersion || sourceStatus != aggregateStatus ||
+					!SourceStatusMatches(*componentStatuses,"explicit_synthetic_fixtures",
+						*sourceExplicitFixtures,error) ) {
+					return Fail(error,
+						"fire-optics explicit synthetic fixture provenance is missing");
+				}
+			} else {
 			sourceEffective = Required(*sourceRecords, "effective_absorption",
 				RISECBOR64::Value::Map, error);
 			sourceHot = Required(*sourceRecords, "hot_soot",
@@ -826,6 +1077,7 @@ namespace RISE
 				}
 			} else if( aggregateStatus != effectiveStatus ) {
 				return Fail(error, "fire-optics predictive aggregate status is not source-backed");
+			}
 			}
 		}
 		const RISECBOR64::Value* effective = Required(
@@ -919,16 +1171,25 @@ namespace RISE
 			if( !ReadFloatArray(*cool, "n_supported_range", supportedRange, error) ||
 				!ReadFloatArray(*cool, "certified_domain_nm", certifiedDomain, error) ||
 				!ReadText(*cool, "out_of_domain_policy",
-					m_coolOutOfDomainPolicy, error) ||
-				supportedRange.size() != 2 || supportedRange[0] != 1.0 ||
-				supportedRange[1] != 1.2 || certifiedDomain.size() != 2 ||
-				certifiedDomain[0] != 380.0 || certifiedDomain[1] != 780.0 ||
-				m_coolOutOfDomainPolicy != kCoolOutOfDomainPolicy ||
-				m_coolKm633 <= 0.0 ||
+					m_coolOutOfDomainPolicy, error) ) {
+				return false;
+			}
+			if( supportedRange.size() != 2 || supportedRange[0] != 1.0 ||
+				supportedRange[1] != 1.2 ) {
+				return Fail(error,"fire-optics cool-carbon exponent range is not frozen v1");
+			}
+			if( certifiedDomain.size() != 2 || certifiedDomain[0] != 380.0 ||
+				certifiedDomain[1] != 780.0 ) {
+				return Fail(error,"fire-optics cool-carbon certified domain is not frozen v1");
+			}
+			if( m_coolOutOfDomainPolicy != kCoolOutOfDomainPolicy ) {
+				return Fail(error,"fire-optics cool-carbon out-of-domain policy is not frozen v1");
+			}
+			if( m_coolKm633 <= 0.0 ||
 				m_coolExponent < supportedRange[0] ||
 				m_coolExponent > supportedRange[1] || m_coolOmega < 0.0 ||
 				m_coolOmega >= 1.0 || m_coolG <= -1.0 || m_coolG >= 1.0 ) {
-				return Fail(error, "fire-optics cool-carbon exponent range is not frozen v1");
+				return Fail(error,"fire-optics cool-carbon optical values are outside v1 ranges");
 			}
 			m_coolDomainMinNM = certifiedDomain[0];
 			m_coolDomainMaxNM = certifiedDomain[1];
@@ -967,7 +1228,6 @@ namespace RISE
 				!ReadText(*condensed, "predictive_reason_code", m_condensedPredictiveReason, error) ) {
 				return false;
 			}
-
 			if( m_hotFractionMinK != 700.0 || m_hotFractionMaxK != 900.0 ) {
 				return Fail(error, "fire-optics predictive v1 phi(T) band gate failed");
 			}
@@ -1008,6 +1268,16 @@ namespace RISE
 				m_condensedIRClosureStatus != "blocked" ) {
 				return Fail(error, "fire-optics predictive v1 condensed-organics gate failed");
 			}
+			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
+				!ValidatePredictiveSourceBindings(
+					*sourceEffective,*sourceHot,*sourceCool,*sourceCondensed,
+					effectiveRows,m_densityGCM3,hotRows,m_coolKm633,m_coolExponent,
+					m_coolOmega,m_coolG,supportedRange,certifiedDomain,
+					m_coolOutOfDomainPolicy,condensedRows,m_condensedPreviewExponent,
+					m_condensedApplicability,m_condensedIRClosureStatus,
+					m_condensedPredictiveReason,error) ) {
+				return false;
+			}
 			return true;
 		}
 
@@ -1015,7 +1285,74 @@ namespace RISE
 			interpolation == "analytic_fixture_v1" ) {
 			m_recordClass = SyntheticRegressionFixture;
 			double hotOmega, hotGValue;
-			if( sourceFixtures ) {
+			if( sourceExplicitFixtures ) {
+				const RISECBOR64::Value* fixtureValues = Required(
+					*sourceExplicitFixtures,"values",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* effectiveEnvelope = Required(
+					*effective,"E_eff",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* densityMetadata = Required(
+					*effective,"pinned_density_metadata",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* coolKmMetadata = Required(
+					*cool,"k_m_extinction_metadata",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* condensedKmMetadata = Required(
+					*condensed,"k_m_extinction_metadata",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* sourceHotPhi = Required(
+					*sourceExplicitFixtures,"hot_phi_T_partition",
+					RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* sourceCoolPhi = Required(
+					*sourceExplicitFixtures,"cool_phi_T_partition",
+					RISECBOR64::Value::Map,error );
+				if( !fixtureValues || !effectiveEnvelope || !densityMetadata ||
+					!coolKmMetadata || !condensedKmMetadata || !sourceHotPhi ||
+					!sourceCoolPhi ||
+					!MembersCanonicallyEqual(*fixtureValues,"E_eff",*effective,"E_eff",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"density_g_cm3",*effective,
+						"pinned_density_metadata",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"hot_omega",*hot,"omega",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"hot_g",*hot,"g",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"cool_k_m_633",*cool,
+						"k_m_extinction_metadata",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"cool_n",*cool,
+						"n_spectral_exponent",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"cool_omega",*cool,"omega",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"cool_g",*cool,"g",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"condensed_k_m_633",*condensed,
+						"k_m_extinction_metadata",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"condensed_n",*condensed,
+						"n_spectral_exponent",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"condensed_omega",*condensed,
+						"omega",error) ||
+					!MembersCanonicallyEqual(*fixtureValues,"condensed_g",*condensed,"g",error) ||
+					!CanonicallyEqual(*sourceHotPhi,*sourceCoolPhi,error) ||
+					!CanonicallyEqual(*sourceHotPhi,*hot->Find("phi_T_partition"),error) ||
+					!ReadEnvelopedFixtureFloat(*effective,"E_eff",
+						m_constantEffectiveAbsorption,error) ||
+					!ReadEnvelopedFixtureFloat(*hot,"omega",hotOmega,error) ||
+					!ReadEnvelopedFixtureFloat(*hot,"g",hotGValue,error) ||
+					!ReadFloat(*cool,"k_m_extinction_633nm_m2_per_g",m_coolKm633,error) ||
+					!ReadEnvelopedFixtureFloat(*cool,"n_spectral_exponent",m_coolExponent,error) ||
+					!ReadEnvelopedFixtureFloat(*cool,"omega",m_coolOmega,error) ||
+					!ReadEnvelopedFixtureFloat(*cool,"g",m_coolG,error) ||
+					!ReadFloat(*condensed,"k_m_extinction_633nm_m2_per_g",
+						m_condensedFixtureKm633,error) ||
+					!ReadEnvelopedFixtureFloat(*condensed,"n_spectral_exponent",
+						m_condensedFixtureExponent,error) ||
+					!ReadEnvelopedFixtureFloat(*condensed,"omega",
+						m_condensedFixtureOmega,error) ||
+					!ReadEnvelopedFixtureFloat(*condensed,"g",m_condensedFixtureG,error) ) {
+					return Fail(error,
+						"fire-optics explicit synthetic operational provenance is incomplete");
+				}
+				double sourceDensity = 0.0, sourceCoolKm = 0.0, sourceCondensedKm = 0.0;
+				if( !ValidateFixtureEnvelope(*densityMetadata,sourceDensity,error) ||
+					!ValidateFixtureEnvelope(*coolKmMetadata,sourceCoolKm,error) ||
+					!ValidateFixtureEnvelope(*condensedKmMetadata,sourceCondensedKm,error) ||
+					sourceDensity != m_densityGCM3 || sourceCoolKm != m_coolKm633 ||
+					sourceCondensedKm != m_condensedFixtureKm633 ) {
+					return Fail(error,
+						"fire-optics explicit synthetic scalar differs from its source envelope");
+				}
+			} else if( sourceFixtures ) {
 				const RISECBOR64::Value* fixtureValues = Required(
 					*sourceFixtures, "values", RISECBOR64::Value::Map, error );
 				const RISECBOR64::Value* sourceEffectiveEnvelope = fixtureValues ? Required(
@@ -1184,43 +1521,134 @@ namespace RISE
 		)
 	{
 		using RISECBOR64::Value;
+		RISECBOR64::Value frozen;
+		std::string decodeError;
+		const FireOpticsPreset& frozenFixture = SyntheticRegressionV1();
+		if( !frozenFixture.IsValid() ||
+			!RISECBOR64::DecodeCanonical(frozenFixture.RecordBytes(),frozen,&decodeError) ) {
+			Fail(error,"could not load the canonical synthetic metadata template");
+			return FireOpticsPreset();
+		}
+		const Value* provenanceSchema = frozen.Find("provenance_schema");
+		if( !provenanceSchema ) {
+			Fail(error,"canonical synthetic metadata template has no provenance schema");
+			return FireOpticsPreset();
+		}
+		auto envelope = []( const double value, const char* locator ) {
+			return Map({
+				{ "applicability", Value::String(
+					"explicitly synthetic non-predictive regression fixture only") },
+				{ "provenance", Map({
+					{ "access", Value::String("runtime caller-supplied") },
+					{ "citation", Value::String(
+						"RISE explicit synthetic fire-optics construction API") },
+					{ "locator", Value::String(locator) },
+					{ "secondary_source", Value::Bool(false) }
+				}) },
+				{ "uncertainty", Map({
+					{ "kind", Value::String("synthetic_exact") },
+					{ "magnitude", Value::Unsigned(0) }
+				}) },
+				{ "value", Value::Float(value) }
+			});
+		};
 		const Value phiPartition = FrozenPhiPartition();
+		const Value effectiveEnvelope = envelope(
+			sootEffectiveAbsorption,"CreateExplicitSyntheticFixture::sootEffectiveAbsorption");
+		const Value densityEnvelope = envelope(
+			sootDensityKgM3/1000.0,"CreateExplicitSyntheticFixture::sootDensityKgM3");
+		const Value hotOmegaEnvelope = envelope(
+			hotAlbedo,"CreateExplicitSyntheticFixture::hotAlbedo");
+		const Value hotGEnvelope = envelope(
+			hotG,"CreateExplicitSyntheticFixture::hotG");
+		const Value coolKmEnvelope = envelope(
+			coolKm633,"CreateExplicitSyntheticFixture::coolKm633");
+		const Value coolExponentEnvelope = envelope(
+			coolExponent,"CreateExplicitSyntheticFixture::coolExponent");
+		const Value coolOmegaEnvelope = envelope(
+			coolAlbedo,"CreateExplicitSyntheticFixture::coolAlbedo");
+		const Value coolGEnvelope = envelope(
+			coolG,"CreateExplicitSyntheticFixture::coolG");
+		const Value condensedKmEnvelope = envelope(
+			condensedKm633,"CreateExplicitSyntheticFixture::condensedKm633");
+		const Value condensedExponentEnvelope = envelope(
+			condensedExponent,"CreateExplicitSyntheticFixture::condensedExponent");
+		const Value condensedOmegaEnvelope = envelope(
+			condensedAlbedo,"CreateExplicitSyntheticFixture::condensedAlbedo");
+		const Value condensedGEnvelope = envelope(
+			condensedG,"CreateExplicitSyntheticFixture::condensedG");
 		const Value effective = Map({
-			{ "E_eff", Value::Float(sootEffectiveAbsorption) },
+			{ "E_eff", effectiveEnvelope },
 			{ "domain_nm", FloatArray({380.0, 780.0}) },
 			{ "model", Value::String("constant_E_eff") },
-			{ "pinned_density_g_cm3", Value::Float(sootDensityKgM3/1000.0) }
+			{ "pinned_density_g_cm3", Value::Float(sootDensityKgM3/1000.0) },
+			{ "pinned_density_metadata", densityEnvelope }
 		});
 		const Value hot = Map({
-			{ "g", Value::Float(hotG) },
-			{ "omega", Value::Float(hotAlbedo) },
+			{ "g", hotGEnvelope },
+			{ "omega", hotOmegaEnvelope },
 			{ "phi_T_partition", phiPartition }
 		});
 		const Value cool = Map({
-			{ "g", Value::Float(coolG) },
+			{ "g", coolGEnvelope },
 			{ "k_m_extinction_633nm_m2_per_g", Value::Float(coolKm633) },
-			{ "n_spectral_exponent", Value::Float(coolExponent) },
-			{ "omega", Value::Float(coolAlbedo) },
+			{ "k_m_extinction_metadata", coolKmEnvelope },
+			{ "n_spectral_exponent", coolExponentEnvelope },
+			{ "omega", coolOmegaEnvelope },
 			{ "phi_T_partition", phiPartition }
 		});
 		const Value condensed = Map({
-			{ "g", Value::Float(condensedG) },
+			{ "g", condensedGEnvelope },
 			{ "k_m_extinction_633nm_m2_per_g", Value::Float(condensedKm633) },
-			{ "n_spectral_exponent", Value::Float(condensedExponent) },
-			{ "omega", Value::Float(condensedAlbedo) },
+			{ "k_m_extinction_metadata", condensedKmEnvelope },
+			{ "n_spectral_exponent", condensedExponentEnvelope },
+			{ "omega", condensedOmegaEnvelope },
 			{ "predictive_reason_code", Value::String("condensed_organics_ir_unclosed") }
 		});
+		const char explicitStatus[] =
+			"SYNTHETIC_NON_PREDICTIVE__EXPLICIT_FIXTURE_ONLY";
+		const Value explicitSource = Map({
+			{ "cool_phi_T_partition", phiPartition },
+			{ "hot_phi_T_partition", phiPartition },
+			{ "record_kind", Value::String("fire_optics_synthetic_fixture") },
+			{ "record_name", Value::String(
+				"fire-optics-explicit-synthetic-fixtures-v1") },
+			{ "record_status", Value::String(explicitStatus) },
+			{ "schema_version", Value::String("draft-2") },
+			{ "values", Map({
+				{ "E_eff", effectiveEnvelope },
+				{ "condensed_g", condensedGEnvelope },
+				{ "condensed_k_m_633", condensedKmEnvelope },
+				{ "condensed_n", condensedExponentEnvelope },
+				{ "condensed_omega", condensedOmegaEnvelope },
+				{ "cool_g", coolGEnvelope },
+				{ "cool_k_m_633", coolKmEnvelope },
+				{ "cool_n", coolExponentEnvelope },
+				{ "cool_omega", coolOmegaEnvelope },
+				{ "density_g_cm3", densityEnvelope },
+				{ "hot_g", hotGEnvelope },
+				{ "hot_omega", hotOmegaEnvelope }
+			}) },
+			{ "version", Value::String("1.0.0-explicit-test") }
+		});
 		const Value record = Map({
+			{ "component_record_statuses", Map({
+				{ "explicit_synthetic_fixtures", Value::String(explicitStatus) }
+			}) },
 			{ "condensed_organics", condensed },
 			{ "cool_carbon", cool },
 			{ "effective_absorption", effective },
 			{ "hot_soot", hot },
 			{ "interpolation", Value::String("analytic_fixture_v1") },
+			{ "provenance_schema", *provenanceSchema },
 			{ "record_class", Value::String("synthetic_regression_fixture") },
 			{ "record_kind", Value::String("fire_optics_preset") },
 			{ "record_name", Value::String("fire-optics-explicit-synthetic-fixture") },
-			{ "record_status", Value::String("explicit_synthetic_test_fixture") },
+			{ "record_status", Value::String(explicitStatus) },
 			{ "schema_version", Value::Unsigned(1) },
+			{ "source_records", Map({
+				{ "explicit_synthetic_fixtures", explicitSource }
+			}) },
 			{ "version", Value::String("1.0.0-explicit-test") }
 		});
 		RISECBOR64::Bytes encoded;

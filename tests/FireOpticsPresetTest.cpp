@@ -55,6 +55,18 @@ namespace
 		return RISECBOR64::Value::MapValue(members);
 	}
 
+	RISECBOR64::Value RemoveMember(
+		const RISECBOR64::Value& map,
+		const char* key
+		)
+	{
+		RISECBOR64::Value::Members members;
+		for( const auto& member : map.GetMap() ) {
+			if( member.first != key ) members.push_back(member);
+		}
+		return RISECBOR64::Value::MapValue(members);
+	}
+
 	std::vector<double> PCHIPSlopes(
 		const std::vector<double>& wavelengths,
 		const std::vector<double>& values
@@ -368,6 +380,23 @@ int main()
 		"changing pinned density changes the canonical record identity" );
 	Check( originalDensity.RecordId() != synthetic.RecordId(),
 		"legacy loose-value fixtures remain distinct from the frozen fixture record" );
+	RISECBOR64::Value decodedExplicit;
+	std::string explicitDecodeError;
+	const bool explicitDecoded = RISECBOR64::DecodeCanonical(
+		originalDensity.RecordBytes(),decodedExplicit,&explicitDecodeError );
+	const RISECBOR64::Value* explicitSources = explicitDecoded ?
+		decodedExplicit.Find("source_records") : 0;
+	const RISECBOR64::Value* explicitSource = explicitSources ?
+		explicitSources->Find("explicit_synthetic_fixtures") : 0;
+	const RISECBOR64::Value* explicitValues = explicitSource ?
+		explicitSource->Find("values") : 0;
+	const RISECBOR64::Value* explicitDensity = explicitValues ?
+		explicitValues->Find("density_g_cm3") : 0;
+	Check( explicitDecoded && decodedExplicit.Find("provenance_schema") &&
+		explicitDensity && explicitDensity->Find("value") &&
+		explicitDensity->Find("uncertainty") && explicitDensity->Find("provenance") &&
+		explicitDensity->Find("applicability"),
+		"explicit synthetic records carry the complete hashed metadata contract" );
 	Check( !FireOpticsPreset::CreateExplicitSyntheticFixture(
 		0.26,1800.0,1.0,0.50,8.7,1.2,0.60,0.60,
 		3.298,0.50,0.90,0.70).IsValid(),
@@ -438,9 +467,33 @@ int main()
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
 			ReplaceMember(*provenanceSchema,"schema_version",
 				RISECBOR64::Value::String("draft-1"))),
-			"canonical provenance schema is missing"),
+			"canonical provenance schema is not draft-2"),
 			"load rejects a pre-envelope provenance schema" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
+			RemoveMember(*provenanceSchema,"hashed_payload_required_fields")),
+			"does not match pinned draft-2"),
+			"load rejects a schema missing its hashed-payload field contract" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
+			ReplaceMember(*provenanceSchema,"table_metadata_granularity",
+				RISECBOR64::Value::String("per-cell"))),
+			"does not match pinned draft-2"),
+			"load rejects a schema that claims per-cell metadata" );
+		const RISECBOR64::Value* uncertaintyKinds =
+			provenanceSchema->Find("uncertainty_kind_enum");
+		if( uncertaintyKinds ) {
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
+				ReplaceMember(*provenanceSchema,"uncertainty_kind_enum",
+					ReplaceMember(*uncertaintyKinds,"synthetic_exact",
+						RISECBOR64::Value::String("changed definition")))),
+				"does not match pinned draft-2"),
+				"load rejects a changed pinned uncertainty-kind definition" );
+		}
 	}
+	Check( RejectsWith(RemoveMember(
+		ReplaceMember(decodedPredictive,"record_name",
+			RISECBOR64::Value::String("renamed-predictive-record")),
+		"source_records"),"unsupported fire-optics record name/class combination"),
+		"renaming a predictive record cannot bypass its provenance contract" );
 	if( sourceRecords ) {
 		const RISECBOR64::Value* sourceEffective =
 			sourceRecords->Find("effective_absorption");
@@ -556,6 +609,17 @@ int main()
 				"effective_absorption",20,1,interiorEffective+0.001,0),
 				"E_eff row disagrees with normative MAC"),
 				"an interior E_eff mutation reaches the normative-MAC consistency gate" );
+			const double sourceBoundE =
+				effectiveRows->GetArray()[20].GetArray()[1].GetFloat();
+			const double sourceBoundMAC =
+				effectiveRows->GetArray()[20].GetArray()[2].GetFloat();
+			RISECBOR64::Value changedEffectiveRecord = ReplaceSpectrumCell(
+				decodedPredictive,"effective_absorption",20,1,sourceBoundE*1.001,0);
+			changedEffectiveRecord = ReplaceSpectrumCell(changedEffectiveRecord,
+				"effective_absorption",20,2,sourceBoundMAC*1.001,"mac_interpolation");
+			Check( RejectsWith(changedEffectiveRecord,
+				"operational effective absorption differs from its source record"),
+				"coherent non-anchor E/MAC drift cannot detach operations from provenance" );
 			const double mac380 =
 				effectiveRows->GetArray().front().GetArray()[2].GetFloat();
 			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
@@ -606,7 +670,16 @@ int main()
 			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,"hot_soot",2,2,
 				hotG550+0.01,"g_interpolation"),"hot-soot gate failed"),
 				"a hot-soot anchor mutation reaches its specific load-time gate" );
+			const double hotNonAnchor = hotRows->GetArray()[1].GetArray()[1].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,"hot_soot",1,1,
+				hotNonAnchor+0.001,"omega_interpolation"),
+				"operational hot-soot table differs from its source record"),
+				"a non-anchor hot-soot mutation cannot detach operations from provenance" );
 		}
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceMember(*cool,"n_spectral_exponent",RISECBOR64::Value::Float(1.1))),
+			"operational cool-carbon values differ from their source record"),
+			"an in-range cool exponent mutation cannot detach operations from provenance" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
 			ReplaceMember(*cool,"k_m_extinction_633nm_m2_per_g",
 				RISECBOR64::Value::Float(8.8))),"cool-carbon gate failed"),
@@ -629,16 +702,26 @@ int main()
 			"a cool-carbon exponent-range upper bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
 			ReplaceFloatArrayElement(*cool,"certified_domain_nm",0,381.0)),
-			"cool-carbon exponent range is not frozen v1"),
+			"cool-carbon certified domain is not frozen v1"),
 			"a cool-carbon certified-domain lower bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
 			ReplaceFloatArrayElement(*cool,"certified_domain_nm",1,779.0)),
-			"cool-carbon exponent range is not frozen v1"),
+			"cool-carbon certified domain is not frozen v1"),
 			"a cool-carbon certified-domain upper bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
 			ReplaceMember(*predictiveCondensed,"ir_closure_status",
 				RISECBOR64::Value::String("open"))),"condensed-organics gate failed"),
 			"a condensed-organics status mutation reaches its specific load-time gate" );
+		const RISECBOR64::Value* condensedRows = predictiveCondensed->Find("rows");
+		if( condensedRows ) {
+			const double condensedNonAnchor =
+				condensedRows->GetArray()[1].GetArray()[1].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"condensed_organics",1,1,condensedNonAnchor+0.001,
+				"k_ext_interpolation"),
+				"operational condensed-organics values differ from their source record"),
+				"a non-anchor condensed mutation cannot detach operations from provenance" );
+		}
 	} else {
 		Check(false,"predictive record sections exist for numeric mutation tests");
 	}
