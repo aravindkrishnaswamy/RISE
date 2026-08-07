@@ -415,14 +415,16 @@ static void TestFirePelPreviewDivergence()
 	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
 	// constituent, baked field, proposal, and seed is held fixed.  Measured on
-	// record e9a676... at this test's five seeds, the blue image-mean increase is
+	// the operational values now hashed by record ad002cef... at this test's five
+	// seeds, the blue image-mean increase is
 	// +59.05%: +38.46 points (65.1%) from magnitude, +10.78 (18.3%) from tilt,
 	// and +9.81 (16.6%) from nonlinear coupling.  Per-seed blue ranges are
 	// 31.34-43.45%, 9.56-15.13%, and 52.44-65.47% for magnitude, tilt, and full;
 	// red/green full ranges are 41.84-45.48% / 46.62-50.21%.  The envelopes
 	// below add margin to those measured ranges while still detecting a lost or
-	// double-applied factor.  This establishes that the larger preset-v1 blue
-	// Pel/spectral tripwire is coefficient-driven, not a projection-routing bug.
+	// double-applied factor.  This establishes the preset table's spectral-image
+	// magnitude and tilt contributions; it does not independently validate the
+	// Pel projection, which remains guarded by the direct divergence bound below.
 	Check( magnitudeDeltaMin[0] > 0.40 && magnitudeDeltaMax[0] < 0.61 &&
 		magnitudeDeltaMin[1] > 0.41 && magnitudeDeltaMax[1] < 0.54 &&
 		magnitudeDeltaMin[2] > 0.27 && magnitudeDeltaMax[2] < 0.48 &&
@@ -440,7 +442,8 @@ static void TestFirePelPreviewDivergence()
 
 	// Measured single-thread against preset-v1 record
 	// ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87
-	// (canonicalized by f33ce8c9; tripwire recorded by cdb1aad4) over the paired
+	// (metadata-complete canonicalization 6d7f67b8; tripwire recorded by cdb1aad4)
+	// over the paired
 	// seeds above: red 0.56-1.26%, green
 	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The
 	// coefficient change explains the blue shift: E_eff rises from the

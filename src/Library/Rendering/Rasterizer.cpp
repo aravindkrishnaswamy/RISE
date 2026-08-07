@@ -85,22 +85,31 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 	// `attachViewportFrameStoreToOpaqueRasterizer` calls (each was
 	// pushing a duplicate VFS into `outs` before this fix; logs
 	// showed 30+ duplicates accumulated per render).
-	std::lock_guard<std::mutex> lock( outsMutex );
-	for( IRasterizerOutput* existing : outs ) {
-		if( existing == ro ) {
-			return false;  // already registered, no-op
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		for( IRasterizerOutput* existing : outs ) {
+			if( existing == ro ) {
+				return false;  // already registered, no-op
+			}
+		}
+		// Take the list's reference first, but roll it back if vector growth
+		// throws.  IReference::addref is a virtual legacy API without a noexcept
+		// declaration, so neither ordering is independently safe; this explicit
+		// transaction leaves no published entry and no extra ref on either throw.
+		ro->addref();
+		try {
+			outs.push_back( ro );
+		}
+		catch( ... ) {
+			ro->release();
+			throw;
 		}
 	}
-	// Take the list's reference first, but roll it back if vector growth
-	// throws.  IReference::addref is a virtual legacy API without a noexcept
-	// declaration, so neither ordering is independently safe; this explicit
-	// transaction leaves no published entry and no extra ref on either throw.
-	ro->addref();
 	try {
-		outs.push_back( ro );
+		ro->OnRasterizerFrameStoreChanged( mFrameStore );
 	}
 	catch( ... ) {
-		ro->release();
+		RemoveRasterizerOutput( ro );
 		throw;
 	}
 	return true;
@@ -165,14 +174,9 @@ void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 // legacy callback sinks are unaffected.
 void Rasterizer::SetFrameStore( FrameStore* frameStore )
 {
-	// Same-pointer early-return: the caller wants no-op semantics
-	// (typical: Job's `PushJobFrameStoreToRasterizers` re-runs after
-	// a non-camera-related event and the FrameStore hasn't actually
-	// changed).  Outputs that were already bound to this pointer
-	// don't need a redundant notification — they're already in the
-	// right state.  Outputs that attached AFTER the original swap
-	// catch up via `Attach`'s `GetFrameStore()` pull, NOT via a
-	// SetFrameStore re-dispatch.  See L6e-2b adversarial review P2.
+	// Same-pointer early-return: existing outputs are already bound, while
+	// outputs attached after the original swap receive the current store from
+	// RegisterRasterizerOutput at insertion time.
 	if( frameStore == mFrameStore ) {
 		return;  // no-op when caller passes the same pointer
 	}

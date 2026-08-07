@@ -2,8 +2,8 @@
 //
 //  FileEncoderObserver.h - IRenderObserver that, on each
 //  OnFrameComplete / OnPreDenoiseComplete / OnDenoiseComplete
-//  callback, opens a DiskFileWriteBuffer and runs an
-//  IFrameEncoder against the FrameStore.
+//  callback, transactionally writes an IFrameEncoder artifact and
+//  its required provenance sidecar from the FrameStore.
 //
 //  This is the L3 counterpart to L2's IFrameEncoder: L2 produced
 //  bytes from a FrameStore + EncodeOpts, while this class wires
@@ -39,6 +39,17 @@ namespace RISE
 	namespace Implementation
 	{
 		class FrameStore;
+
+		//! Encode to temporary files and publish the artifact only after its
+		//! required fire-provenance sidecar has been finalized.  On failure no
+		//! artifact remains without its matching sidecar.
+		bool EncodeFrameStoreFileTransaction(
+			const FrameStore& store,
+			IFrameEncoder& encoder,
+			const EncodeOpts& opts,
+			const std::string& artifactFilename,
+			std::string& error
+			);
 
 		class FileEncoderObserver : public virtual IRenderObserver,
 		                            public virtual Reference

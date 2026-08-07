@@ -26,6 +26,8 @@ namespace RISE
 	{
 		class DiskFileWriteBuffer : public virtual IWriteBuffer, public virtual DiskBuffer
 		{
+			bool writeFailed_;
+
 		public:
 			//
 			// Constructors
@@ -58,6 +60,8 @@ namespace RISE
 			bool ResizeForMore( unsigned int more_bytes );
 
 			bool ReadyToWrite() const;
+			//! Flush and close explicitly so callers can reject partial writes.
+			bool Close();
 
 
 		protected:
@@ -68,4 +72,3 @@ namespace RISE
 }
 
 #endif
-

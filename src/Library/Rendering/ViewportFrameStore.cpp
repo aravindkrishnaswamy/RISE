@@ -14,12 +14,12 @@
 #include "ViewportFrameStore.h"
 #include "FrameStore.h"
 #include "FrameSink.h"
+#include "FileEncoderObserver.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IRenderObserver.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IFrameEncoder.h"
 #include "../Interfaces/ILog.h"
-#include "../Utilities/DiskFileWriteBuffer.h"
 
 #include <algorithm>
 #include <cassert>
@@ -518,21 +518,16 @@ namespace RISE
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
 
-			DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( path.c_str() );
-			if ( !buf->ReadyToWrite() ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"ViewportFrameStore::SaveAs: failed to open '%s' for writing",
-					path.c_str() );
-				safe_release( buf );
-				snap->release();
+			std::string error;
+			const bool success = EncodeFrameStoreFileTransaction(
+				*snap,*encoder,opts,path,error );
+			snap->release();
+			if( !success ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"ViewportFrameStore::SaveAs: artifact transaction failed for '%s': %s",
+					path.c_str(),error.c_str() );
 				return false;
 			}
-
-			GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-			encoder->Encode( *snap, *buf, opts );
-			safe_release( buf );
-			snap->release();
-
 			GlobalLog()->PrintEx( eLog_Event,
 				"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
 			return true;

@@ -37,7 +37,8 @@ namespace RISE
 			//! Registers one output under outsMutex and reports whether this call
 			//! inserted it (false means the dedup path).  AutoRasterizer uses the
 			//! result to roll back only its own wrapper insertion if delegate
-			//! registration throws.
+			//! registration throws.  A newly inserted output immediately receives
+			//! the current FrameStore before this returns.
 			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
 
 			//! L8 review round 5 — protects `outs` against concurrent
@@ -202,11 +203,8 @@ namespace RISE
 
 			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 			// on every attached `IRasterizerOutput` WITHOUT swapping
-			// `mFrameStore`.  Use case: callers that have cleared the
-			// rasterizer's outs list (e.g. `FreeRasterizerOutputs` then
-			// `AddRasterizerOutput(newSink)`) and need the freshly-
-			// attached output to receive the current FrameStore
-			// binding without going through the
+			// `mFrameStore`.  Use case: callers that explicitly need to
+			// rebroadcast the current binding without going through the
 			// `SetFrameStore(nullptr) → SetFrameStore(fs)` toggle
 			// (which would tear down + rebuild observer state on
 			// already-bound consumers — see L6e-3 review P0).

@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -51,7 +52,13 @@
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/Utilities/RISECBOR64.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
+
+#ifndef NO_EXR_SUPPORT
+	#include <ImfInputFile.h>
+	#include <ImfStringAttribute.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -467,6 +474,122 @@ namespace
 		std::remove( l2Path.c_str() );
 		safe_release( img );
 		l2Store->release();
+		vfs->release();
+	}
+
+	void SetFireFidelityMetadata( FrameStore& store )
+	{
+		store.MutableMeta().renderFidelityStatus = "preview";
+		store.MutableMeta().renderReasonCodes = {
+			"pel_transport", "producer_unqualified", "requested_preview"
+		};
+		store.MutableMeta().activeFireOpticsRecordIds = {
+			"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87"
+		};
+	}
+
+	void TestSaveAsFireProvenanceAndTransaction()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage( *img, nullptr, 0 );
+		SetFireFidelityMetadata( *vfs->GetFrameStore() );
+
+		EncodeOpts opts;
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		const std::string pngPath = MakeTempPath() + "_gui_fire.png";
+		const std::string sidecarPath = pngPath + ".provenance.cbor";
+		Check( vfs->SaveAs( pngPath, png, opts ),
+			"GUI SaveAs writes a fire artifact and provenance transaction" );
+
+		std::vector<unsigned char> artifactBytes, sidecarBytes;
+		RISECBOR64::Value provenance;
+		std::string decodeError;
+		const bool artifactRead = ReadFileAllBytes( pngPath, artifactBytes );
+		const bool sidecarRead = ReadFileAllBytes( sidecarPath, sidecarBytes );
+		const bool decoded = sidecarRead && RISECBOR64::DecodeCanonical(
+			sidecarBytes, provenance, &decodeError );
+		Check( artifactRead && !artifactBytes.empty() && decoded,
+			"GUI SaveAs emits canonical sidecar bytes beside the artifact" );
+		if( decoded ) {
+			const RISECBOR64::Value* status = provenance.Find(
+				"render_fidelity_status" );
+			const RISECBOR64::Value* reasons = provenance.Find(
+				"render_reason_codes" );
+			const RISECBOR64::Value* ids = provenance.Find(
+				"active_fire_optics_record_ids" );
+			const RISECBOR64::Value* digest = provenance.Find("artifact_sha256");
+			Check( status && status->GetText() == "preview" && reasons &&
+				reasons->GetArray().size() == 3u &&
+				reasons->GetArray()[0].GetText() == "pel_transport" &&
+				reasons->GetArray()[1].GetText() == "producer_unqualified" &&
+				reasons->GetArray()[2].GetText() == "requested_preview" && ids &&
+				ids->GetArray().size() == 1u &&
+				ids->GetArray()[0].GetText() ==
+					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87" && digest &&
+				digest->GetText() == RISECBOR64::SHA256Hex(artifactBytes),
+				"GUI sidecar carries exact fidelity metadata and artifact digest" );
+		}
+
+#ifndef NO_EXR_SUPPORT
+		const std::string exrPath = MakeTempPath() + "_gui_fire.exr";
+		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		opts.bpp = 32;
+		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
+		Check( vfs->SaveAs( exrPath, exr, opts ),
+			"GUI SaveAs writes transactional EXR fire provenance" );
+		bool attributesMatch = false;
+		try {
+			Imf::InputFile input( exrPath.c_str() );
+			const Imf::StringAttribute* statusAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.render_fidelity_status" );
+			const Imf::StringAttribute* reasonAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.render_reason_codes" );
+			const Imf::StringAttribute* idAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.active_fire_optics_record_ids" );
+			attributesMatch = statusAttribute &&
+				statusAttribute->value() == "preview" && reasonAttribute &&
+				reasonAttribute->value() ==
+					"pel_transport,producer_unqualified,requested_preview" &&
+				idAttribute && idAttribute->value() ==
+					vfs->GetFrameStore()->Meta().activeFireOpticsRecordIds.front();
+		} catch( ... ) {
+			attributesMatch = false;
+		}
+		Check( attributesMatch,
+			"GUI EXR embeds the same fire fidelity metadata as its sidecar" );
+		std::remove( exrPath.c_str() );
+		std::remove( (exrPath + ".provenance.cbor").c_str() );
+#endif
+
+		std::remove( pngPath.c_str() );
+		std::remove( sidecarPath.c_str() );
+
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		const std::string blockedPath = MakeTempPath() + "_blocked_fire.png";
+		const std::string blockedSidecar = blockedPath + ".provenance.cbor";
+		const std::string marker = blockedSidecar + "/keep";
+		std::filesystem::create_directory( blockedSidecar );
+		{
+			std::ofstream markerFile( marker );
+			markerFile << "block replacement";
+		}
+		Check( !vfs->SaveAs( blockedPath, png, opts ),
+			"GUI SaveAs fails when the required provenance sidecar cannot commit" );
+		Check( !std::filesystem::exists(blockedPath) &&
+			!std::filesystem::exists(blockedPath + ".rise-tmp") &&
+			!std::filesystem::exists(blockedSidecar + ".rise-tmp"),
+			"failed provenance transaction leaves no unlabeled artifact or temp files" );
+		std::filesystem::remove( marker );
+		std::filesystem::remove( blockedSidecar );
+
+		safe_release( img );
 		vfs->release();
 	}
 
@@ -980,6 +1103,7 @@ int main()
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();
+	TestSaveAsFireProvenanceAndTransaction();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestMultiFrameReuse();

@@ -21,9 +21,11 @@
 
 using namespace RISE::Implementation;
 
-DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name ) 
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name ) :
+	writeFailed_( false )
 {
 	strncpy( szFileName, file_name, 1024 );
+	szFileName[1023] = '\0';
 	hFile = fopen( szFileName, "wb" );
 
 	if( hFile == 0 ) {
@@ -33,22 +35,17 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name )
 
 DiskFileWriteBuffer::~DiskFileWriteBuffer( )
 {
-	if( hFile ) {
-		fclose( hFile );
-		hFile = 0;
-	}
+	Close();
 }
 
 bool DiskFileWriteBuffer::setChar( const char ch )
 {
-	fwrite( &ch, 1, 1, hFile );
-	return true;
+	return setBytes(&ch,1);
 }
 
 bool DiskFileWriteBuffer::setUChar( const unsigned char ch )
 {
-	fwrite( &ch, 1, 1, hFile );
-	return true;
+	return setBytes(&ch,1);
 }
 
 bool DiskFileWriteBuffer::setWord( const short sh )
@@ -56,12 +53,10 @@ bool DiskFileWriteBuffer::setWord( const short sh )
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
 	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
+	return setUChar( low ) && setUChar( high );
 #else
-	fwrite( &sh, sizeof( short ), 1, hFile );
+	return setBytes(&sh,sizeof(sh));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setUWord( const unsigned short sh )
@@ -69,12 +64,10 @@ bool DiskFileWriteBuffer::setUWord( const unsigned short sh )
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
 	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
+	return setUChar( low ) && setUChar( high );
 #else
-	fwrite( &sh, sizeof( unsigned short ), 1, hFile );
+	return setBytes(&sh,sizeof(sh));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setInt( const int n )
@@ -82,12 +75,10 @@ bool DiskFileWriteBuffer::setInt( const int n )
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
 	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
+	return setUWord( low ) && setUWord( high );
 #else
-	fwrite( &n, sizeof( int ), 1, hFile );
+	return setBytes(&n,sizeof(n));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setUInt( const unsigned int n )
@@ -95,12 +86,10 @@ bool DiskFileWriteBuffer::setUInt( const unsigned int n )
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
 	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
+	return setUWord( low ) && setUWord( high );
 #else
-	fwrite( &n, sizeof( unsigned int ), 1, hFile );
+	return setBytes(&n,sizeof(n));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setFloat( const float f )
@@ -108,11 +97,10 @@ bool DiskFileWriteBuffer::setFloat( const float f )
 #ifdef RISE_BIG_ENDIAN
 	unsigned int n;
 	memcpy( &n, &f, sizeof( float ) );
-	setUInt( n );
+	return setUInt( n );
 #else
-	fwrite( &f, sizeof( float ), 1, hFile );
+	return setBytes(&f,sizeof(f));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setDouble( const double d )
@@ -124,22 +112,23 @@ bool DiskFileWriteBuffer::setDouble( const double d )
 	char* ptrd = (char*)&d;
 	memcpy( &first, ptrd, 4 );
 	memcpy( &last, &ptrd[4], 4 );
-	setUInt( last );
-	setUInt( first );
+	return setUInt( last ) && setUInt( first );
 #else
-	fwrite( &d, sizeof( double ), 1, hFile );
+	return setBytes(&d,sizeof(d));
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
-	if( !pSource || !hFile ) {
+	if( !hFile || writeFailed_ || (!pSource && amount) ) {
 //		GlobalLog()->PrintSourceError( "DiskFileWriteBuffer::setBytes:: source is NULL", __FILE__, __LINE__ );
 		return false;
 	}
-
-	fwrite( pSource, amount, 1, hFile );
+	if( !amount ) return true;
+	if( fwrite(pSource,1,amount,hFile) != amount ) {
+		writeFailed_ = true;
+		return false;
+	}
 	return true;
 }
 
@@ -163,5 +152,17 @@ bool DiskFileWriteBuffer::ResizeForMore( unsigned int )
 
 bool DiskFileWriteBuffer::ReadyToWrite() const
 {
-	return (hFile!=0);
+	return hFile != 0 && !writeFailed_;
+}
+
+bool DiskFileWriteBuffer::Close()
+{
+	bool success = !writeFailed_;
+	if( hFile ) {
+		if( fflush(hFile) != 0 ) success = false;
+		if( fclose(hFile) != 0 ) success = false;
+		hFile = 0;
+	}
+	writeFailed_ = !success;
+	return success;
 }

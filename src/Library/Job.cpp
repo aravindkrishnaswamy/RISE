@@ -9684,10 +9684,19 @@ bool Job::PrepareFireRenderFidelityMetadata()
 	bool predictiveAllowed = true;
 	bool domainExceeded = false;
 	bool invalidFidelityMetadata = false;
+	bool missingOpticalRecord = false;
+	bool hasFireMedia = false;
 	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
 		medium != activeMedia.end(); ++medium ) {
+		if( !(*medium)->IsFireMedium() ) {
+			continue;
+		}
+		hasFireMedia = true;
 		const char* recordId = (*medium)->GetFireOpticsRecordId();
 		if( !recordId || !recordId[0] ) {
+			missingOpticalRecord = true;
+			predictiveAllowed = false;
+			reasons.insert("missing_optical_record");
 			continue;
 		}
 		recordIds.insert(recordId);
@@ -9721,7 +9730,7 @@ bool Job::PrepareFireRenderFidelityMetadata()
 	}
 	bool unsupportedIntegrator = false;
 	bool transportPreview = false;
-	if( !recordIds.empty() ) {
+	if( hasFireMedia ) {
 		const std::string& kind = activeRasterizerName;
 		unsupportedIntegrator =
 			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||
@@ -9764,9 +9773,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
 	}
 	const bool predictiveRejected = m_firePredictiveRequested &&
-		!recordIds.empty() && (!predictiveAllowed || transportPreview);
+		hasFireMedia && (!predictiveAllowed || transportPreview);
 	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
-		invalidFidelityMetadata ) {
+		invalidFidelityMetadata || missingOpticalRecord ) {
 		std::ostringstream joined;
 		for( std::set<std::string>::const_iterator reason = reasons.begin();
 			reason != reasons.end(); ++reason ) {

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -42,6 +43,7 @@
 #include "../src/Library/Utilities/PlanckRadiance.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/RISECBOR64.h"
 
 using namespace RISE;
 
@@ -63,6 +65,20 @@ namespace
 			++failed;
 			std::cout << "FAIL: " << label << std::endl;
 		}
+	}
+
+	bool ReadFileBytes( const std::filesystem::path& path,
+		RISECBOR64::Bytes& bytes )
+	{
+		std::ifstream input(path,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		return input.good() || input.eof();
 	}
 
 	bool Near( const Scalar actual, const Scalar expected, const Scalar tolerance )
@@ -476,6 +492,37 @@ namespace
 
 	protected:
 		~InvalidReasonFireMedium() override = default;
+	};
+
+	class MissingRecordIdFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit MissingRecordIdFireMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override { return ""; }
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return 1u;
+		}
+		const char* GetFireRenderReasonCode( const bool, const unsigned int ) const override
+		{
+			return "requested_preview";
+		}
+		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{
+			return true;
+		}
+
+	protected:
+		~MissingRecordIdFireMedium() override = default;
 	};
 
 	class PluginMedium final :
@@ -2156,11 +2203,12 @@ namespace
 			std::filesystem::temp_directory_path() / filename;
 		const auto writeScene = [&path](
 			const std::string& rasterizer, const unsigned int nmBegin,
-			const bool useHWSS = false ) {
+			const bool useHWSS = false,
+			const char* fidelityMode = "preview" ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
-				"scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
+				"scene_options\n{\nscene_unit 1\nfidelity_mode " << fidelityMode << "\n}\n\n"
 				"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
 				<< rasterizer << "\n{\n";
 			if( rasterizer.find("mlt_") == 0u ) {
@@ -2210,6 +2258,54 @@ namespace
 				store->Meta().activeFireOpticsRecordIds[0] ==
 					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87",
 				"production FrameStore carries sorted preview reasons and record identity" );
+
+			const std::filesystem::path outputBase =
+				std::filesystem::temp_directory_path() /
+				("rise_fire_late_output_" + std::to_string(::getpid()));
+			const char* savedMediaPath = std::getenv("RISE_MEDIA_PATH");
+			const bool hadMediaPath = savedMediaPath != nullptr;
+			const std::string savedMediaPathValue = hadMediaPath ?
+				savedMediaPath : std::string();
+#ifdef _WIN32
+			_putenv_s("RISE_MEDIA_PATH","");
+#else
+			setenv("RISE_MEDIA_PATH","",1);
+#endif
+			const bool outputAdded = job->AddFileRasterizerOutput(
+				outputBase.string().c_str(),false,2,8,1,0.0,0,2,true);
+			if( hadMediaPath ) {
+#ifdef _WIN32
+				_putenv_s("RISE_MEDIA_PATH",savedMediaPathValue.c_str());
+#else
+				setenv("RISE_MEDIA_PATH",savedMediaPathValue.c_str(),1);
+#endif
+			} else {
+#ifdef _WIN32
+				_putenv_s("RISE_MEDIA_PATH","");
+#else
+				unsetenv("RISE_MEDIA_PATH");
+#endif
+			}
+			Check( outputAdded && job->Rasterize(),
+				"file output added after canonical FrameStore installation renders" );
+			const std::filesystem::path outputFile = outputBase.string()+".png";
+			const std::filesystem::path sidecarFile =
+				outputFile.string()+".provenance.cbor";
+			RISECBOR64::Bytes artifactBytes, sidecarBytes;
+			RISECBOR64::Value sidecar;
+			std::string sidecarError;
+			const bool lateOutputProvenance =
+				ReadFileBytes(outputFile,artifactBytes) && !artifactBytes.empty() &&
+				ReadFileBytes(sidecarFile,sidecarBytes) &&
+				RISECBOR64::DecodeCanonical(sidecarBytes,sidecar,&sidecarError);
+			const RISECBOR64::Value* lateIds = lateOutputProvenance ?
+				sidecar.Find("active_fire_optics_record_ids") : nullptr;
+			Check( lateIds && lateIds->GetArray().size() == 1u &&
+				lateIds->GetArray()[0].GetText() ==
+					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87",
+				"late-added file output inherits canonical fire provenance" );
+			std::filesystem::remove(outputFile);
+			std::filesystem::remove(sidecarFile);
 
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
 				"predictive static-fire request fails closed on its fidelity reasons" );
@@ -2278,28 +2374,49 @@ namespace
 		}
 		safe_release(job);
 
-		const char* const unsupported[] = {
-			"bdpt_spectral_rasterizer", "vcm_spectral_rasterizer",
-			"mlt_spectral_rasterizer"
+		struct UnsupportedRoute
+		{
+			const char* rasterizer;
+			bool hwss;
 		};
-		for( std::size_t i=0; i<sizeof(unsupported)/sizeof(unsupported[0]); ++i ) {
-			writeScene(unsupported[i],380u);
-			RISE_CreateJobPriv(&job);
-			const bool loadedUnsupported = job &&
-				job->LoadAsciiSceneViaCst(path.string().c_str());
-			Check( loadedUnsupported && !job->Rasterize(),
-				"bidirectional and MLT spectral fire routes fail before workers" );
-			if( loadedUnsupported ) {
-				Implementation::Rasterizer* rasterizer =
-					dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
-				Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
-				Check( store && std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),
-					"unsupported_integrator_for_fire_media") !=
-					store->Meta().renderReasonCodes.end(),
-					"unsupported spectral fire route records its specific reason" );
+		const UnsupportedRoute unsupported[] = {
+			{ "bdpt_pel_rasterizer", false },
+			{ "vcm_pel_rasterizer", false },
+			{ "mlt_rasterizer", false },
+			{ "bdpt_spectral_rasterizer", false },
+			{ "vcm_spectral_rasterizer", false },
+			{ "mlt_spectral_rasterizer", false },
+			{ "bdpt_spectral_rasterizer", true },
+			{ "vcm_spectral_rasterizer", true },
+			{ "mlt_spectral_rasterizer", true }
+		};
+		const char* const fidelityModes[] = { "preview", "predictive" };
+		for( const char* fidelityMode : fidelityModes ) {
+			for( const UnsupportedRoute& route : unsupported ) {
+				writeScene(route.rasterizer,380u,route.hwss,fidelityMode);
+				RISE_CreateJobPriv(&job);
+				const bool loadedUnsupported = job &&
+					job->LoadAsciiSceneViaCst(path.string().c_str());
+				Implementation::Rasterizer* rasterizer = loadedUnsupported ?
+					dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer()) : nullptr;
+				Implementation::FrameStore* store = rasterizer ?
+					rasterizer->GetFrameStore() : nullptr;
+				const uint64_t generationBefore = store ? store->Generation() : 0u;
+				const bool rejected = loadedUnsupported && !job->Rasterize();
+				const std::string routeLabel = std::string(route.rasterizer) +
+					(route.hwss ? " HWSS " : " ") + fidelityMode;
+				Check( rejected,
+					("unsupported fire route fails before workers: "+routeLabel).c_str() );
+				store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+				Check( store && store->Generation() == generationBefore &&
+					std::find(store->Meta().renderReasonCodes.begin(),
+						store->Meta().renderReasonCodes.end(),
+						"unsupported_integrator_for_fire_media") !=
+						store->Meta().renderReasonCodes.end(),
+					("unsupported route records reason without producing a frame: "+
+						routeLabel).c_str() );
+				safe_release(job);
 			}
-			safe_release(job);
 		}
 
 		writeScene("pathtracing_spectral_rasterizer",380u);
@@ -2316,6 +2433,38 @@ namespace
 			safe_release(phase);
 		} else {
 			Check( false,"invalid-reason preflight fixture loads" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool missingRecordLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( missingRecordLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			MissingRecordIdFireMedium* missing = new MissingRecordIdFireMedium(*phase);
+			job->GetScene()->SetGlobalMedium(missing);
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ?
+				rasterizer->GetFrameStore() : nullptr;
+			const uint64_t generationBefore = store ? store->Generation() : 0u;
+			Check( !job->Rasterize() && store &&
+				store->Generation() == generationBefore &&
+				std::find(store->Meta().renderReasonCodes.begin(),
+					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
+					store->Meta().renderReasonCodes.end(),
+				"preview fire medium with no record ID fails before workers" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
+				store->Generation() == generationBefore &&
+				std::find(store->Meta().renderReasonCodes.begin(),
+					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
+					store->Meta().renderReasonCodes.end(),
+				"predictive fire medium with no record ID fails before workers" );
+			safe_release(missing);
+			safe_release(phase);
+		} else {
+			Check( false,"missing-record preflight fixture loads" );
 		}
 		safe_release(job);
 		std::filesystem::remove(path);

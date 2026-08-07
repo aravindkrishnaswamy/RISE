@@ -282,9 +282,9 @@ namespace RISE
 			// ── Save As ───────────────────────────────────────
 			//! Encode the current FrameStore via `encoder` (typically
 			//! from FrameEncoderRegistry::Get().ByFormatName(...))
-			//! and write to `path` via DiskFileWriteBuffer.  Returns
-			//! true on success.  No-op if the FrameStore hasn't been
-			//! allocated yet (returns false).
+			//! and transactionally write it with any required fire
+			//! provenance sidecar.  Returns true on success.  No-op if
+			//! the FrameStore hasn't been allocated yet (returns false).
 			bool SaveAs(
 				const std::string&  path,
 				IFrameEncoder*      encoder,

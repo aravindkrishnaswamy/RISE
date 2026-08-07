@@ -1,9 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  FileEncoderObserver.cpp - Implementation.  Each callback opens
-//  a fresh DiskFileWriteBuffer (matching the legacy per-frame open
-//  pattern from FileRasterizerOutput::WriteImageToFile), runs the
-//  encoder, releases the buffer.
+//  FileEncoderObserver.cpp - Implementation.  Each callback writes
+//  a fresh artifact/sidecar transaction while preserving the legacy
+//  per-frame filename pattern from FileRasterizerOutput.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -15,6 +14,7 @@
 #include "../Utilities/RISECBOR64.h"
 #include "../Interfaces/ILog.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -49,14 +49,14 @@ namespace
 		return input.good() || input.eof();
 	}
 
-	bool WriteFireProvenanceSidecar(
+	bool BuildFireProvenanceSidecar(
 		const FrameStore& store,
 		const char* artifactFilename,
+		RISECBOR64::Bytes& encoded,
 		std::string& error
 		)
 	{
 		const FrameStore::Metadata& metadata = store.Meta();
-		if( metadata.renderFidelityStatus.empty() ) return true;
 		RISECBOR64::Bytes artifactBytes;
 		if( !ReadArtifact(artifactFilename,artifactBytes) ) {
 			error = "could not read the finalized artifact for hashing";
@@ -72,21 +72,96 @@ namespace
 			{ "render_reason_codes", TextArray(metadata.renderReasonCodes) },
 			{ "schema_version", Value::Unsigned(1) }
 		});
-		RISECBOR64::Bytes encoded;
-		if( !RISECBOR64::Encode(provenance,encoded,&error) ) return false;
-		const std::string sidecarFilename =
-			std::string(artifactFilename)+".provenance.cbor";
-		DiskFileWriteBuffer* sidecar = new DiskFileWriteBuffer(sidecarFilename.c_str());
-		if( !sidecar->ReadyToWrite() ||
-			!sidecar->setBytes(encoded.empty() ? 0 : &encoded[0],
-				static_cast<unsigned int>(encoded.size())) ) {
-			error = "could not write the sibling provenance sidecar";
-			safe_release(sidecar);
+		return RISECBOR64::Encode(provenance,encoded,&error);
+	}
+
+	bool RemoveIfPresent( const std::string& filename, std::string& error )
+	{
+		errno = 0;
+		if( std::remove(filename.c_str()) == 0 || errno == ENOENT ) return true;
+		error = "could not replace '"+filename+"'";
+		return false;
+	}
+
+	bool WriteClosedFile(
+		const std::string& filename,
+		const RISECBOR64::Bytes& bytes,
+		std::string& error
+		)
+	{
+		DiskFileWriteBuffer* output = new DiskFileWriteBuffer(filename.c_str());
+		const bool success = output->ReadyToWrite() &&
+			output->setBytes(bytes.empty() ? 0 : &bytes[0],
+				static_cast<unsigned int>(bytes.size())) && output->Close();
+		safe_release(output);
+		if( !success ) error = "could not write and close '"+filename+"'";
+		return success;
+	}
+}
+
+bool RISE::Implementation::EncodeFrameStoreFileTransaction(
+	const FrameStore& store,
+	IFrameEncoder& encoder,
+	const EncodeOpts& opts,
+	const std::string& artifactFilename,
+	std::string& error
+	)
+{
+	error.clear();
+	const std::string artifactTemporary = artifactFilename+".rise-tmp";
+	const std::string sidecarFilename = artifactFilename+".provenance.cbor";
+	const std::string sidecarTemporary = sidecarFilename+".rise-tmp";
+	std::remove(artifactTemporary.c_str());
+	std::remove(sidecarTemporary.c_str());
+
+	DiskFileWriteBuffer* artifact = new DiskFileWriteBuffer(artifactTemporary.c_str());
+	if( !artifact->ReadyToWrite() ) {
+		error = "could not open the temporary artifact";
+		safe_release(artifact);
+		return false;
+	}
+	bool encoded = true;
+	try {
+		encoder.Encode(store,*artifact,opts);
+	}
+	catch( ... ) {
+		encoded = false;
+	}
+	const bool artifactClosed = artifact->Close();
+	safe_release(artifact);
+	if( !encoded || !artifactClosed ) {
+		std::remove(artifactTemporary.c_str());
+		error = "artifact encoding or final write failed";
+		return false;
+	}
+
+	const bool needsProvenance = !store.Meta().renderFidelityStatus.empty();
+	if( needsProvenance ) {
+		RISECBOR64::Bytes sidecarBytes;
+		if( !BuildFireProvenanceSidecar(store,artifactTemporary.c_str(),
+			sidecarBytes,error) ||
+			!WriteClosedFile(sidecarTemporary,sidecarBytes,error) ||
+			!RemoveIfPresent(artifactFilename,error) ||
+			!RemoveIfPresent(sidecarFilename,error) ||
+			std::rename(sidecarTemporary.c_str(),sidecarFilename.c_str()) != 0 ) {
+			std::remove(artifactTemporary.c_str());
+			std::remove(sidecarTemporary.c_str());
+			if( error.empty() ) error = "could not commit the provenance sidecar";
 			return false;
 		}
-		safe_release(sidecar);
-		return true;
+	} else if( !RemoveIfPresent(artifactFilename,error) ||
+		!RemoveIfPresent(sidecarFilename,error) ) {
+		std::remove(artifactTemporary.c_str());
+		return false;
 	}
+
+	if( std::rename(artifactTemporary.c_str(),artifactFilename.c_str()) != 0 ) {
+		std::remove(artifactTemporary.c_str());
+		if( needsProvenance ) std::remove(sidecarFilename.c_str());
+		if( error.empty() ) error = "could not commit the encoded artifact";
+		return false;
+	}
+	return true;
 }
 
 FileEncoderObserver::FileEncoderObserver(
@@ -156,15 +231,9 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 			pattern_.c_str(), suffix, ext.c_str() );
 	}
 
-	// Open the disk file.  If the open fails, mirror the legacy
-	// "fall back to fro_temp_…" emergency-file behaviour from
-	// FileRasterizerOutput.cpp:167-186 — we don't want to lose
-	// the rendered data when a path is unwritable.
-	DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( filename );
-
-	if ( !buf->ReadyToWrite() ) {
-		safe_release( buf );
-
+	std::string writeError;
+	if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,opts_,filename,
+		writeError) ) {
 		const FileEncoderObserver* pMe = this;
 		char emergency[MAX_BUFFER_SIZE];
 		if ( bMultiple_ ) {
@@ -179,33 +248,23 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 				suffix, ext.c_str() );
 		}
 
-		buf = new DiskFileWriteBuffer( emergency );
-		if ( !buf->ReadyToWrite() ) {
-			GlobalLog()->PrintEasyError(
-				"FileEncoderObserver:: Fatal error trying to write image, "
-				"couldn't even write the emergency file!" );
-			safe_release( buf );
+		std::string emergencyError;
+		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,opts_,emergency,
+			emergencyError) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"FileEncoderObserver:: artifact transaction failed for '%s' (%s); "
+				"emergency transaction also failed for '%s' (%s)",
+				filename,writeError.c_str(),emergency,emergencyError.c_str() );
 			return;
 		}
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Failed to open specified file '%s', rendered scene written "
-			"to emergency file '%s' instead!", filename, emergency );
+			"Artifact transaction failed for '%s' (%s); rendered scene written "
+			"transactionally to emergency file '%s' instead!",
+			filename,writeError.c_str(),emergency );
 		// Use the emergency filename as the effective filename for
 		// the success log message below.
 		std::strncpy( filename, emergency, MAX_BUFFER_SIZE );
 		filename[ MAX_BUFFER_SIZE - 1 ] = '\0';
-	}
-
-	GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-
-	encoder_->Encode( *store_, *buf, opts_ );
-
-	safe_release( buf );
-	std::string provenanceError;
-	if( !WriteFireProvenanceSidecar(*store_,filename,provenanceError) ) {
-		GlobalLog()->PrintEx( eLog_Error,
-			"FileEncoderObserver:: fire output provenance failed for '%s': %s",
-			filename, provenanceError.c_str() );
 	}
 
 	GlobalLog()->PrintEx( eLog_Event,

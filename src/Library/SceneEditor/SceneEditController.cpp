@@ -13622,25 +13622,10 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	{
 		Implementation::Rasterizer* r =
 			dynamic_cast<Implementation::Rasterizer*>( activeRast );
-		if( r ) {
-			if( r->GetFrameStore() != mInteractiveFrameStore ) {
-				// Pointer changed (rare; suggests something else
-				// swapped mFrameStore between passes — Job push?).
-				// Restore via the standard SetFrameStore path.
-				r->SetFrameStore( mInteractiveFrameStore );
-			} else {
-				// Same pointer.  `FreeRasterizerOutputs` (just
-				// above in DoOneRenderPass) cleared the rasterizer's
-				// outs list, so the freshly-attached preview sink
-				// hasn't received the `OnRasterizerFrameStoreChanged`
-				// for THIS pointer.  `ReannounceFrameStore` re-fires
-				// the dispatch on the current outs list without the
-				// SetFrameStore(nullptr)→SetFrameStore(fs) toggle —
-				// avoids a tear-down/rebuild cycle of bound observers
-				// (BridgeObserver lifecycle on the VFS side).  See
-				// L6e-3 adversarial review P0.
-				r->ReannounceFrameStore();
-			}
+		if( r && r->GetFrameStore() != mInteractiveFrameStore ) {
+			// Pointer changed (rare; suggests something else swapped
+			// mFrameStore between passes).  Restore through the standard path.
+			r->SetFrameStore( mInteractiveFrameStore );
 		}
 		return;
 	}
