@@ -58,6 +58,7 @@
 #include "Interfaces/IScalarPainter.h"
 #include "Interfaces/IPainterManager.h"
 #include "Painters/PainterToScalarAdapter.h"
+#include "Materials/HeterogeneousMedium.h"
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
@@ -6437,6 +6438,19 @@ const IMedium* Job::GetMedium( const char* name ) const
 	if( !name ) return 0;
 	MediumMap::const_iterator it = mediaMap.find( String( name ) );
 	return it == mediaMap.end() ? 0 : it->second;
+}
+
+bool Job::ForTest_SetFireEffectiveAbsorptionAblation(
+	const char* name,
+	const unsigned int ablation
+	)
+{
+	if( !name ) return false;
+	MediumMap::iterator it = mediaMap.find( String( name ) );
+	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
+		dynamic_cast<MultichannelHeterogeneousMedium*>(it->second);
+	return medium && medium->ForTest_SetEffectiveAbsorptionAblation(
+		static_cast<MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation>(ablation));
 }
 
 void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const

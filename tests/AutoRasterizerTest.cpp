@@ -58,6 +58,8 @@
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -265,7 +267,9 @@ static ImageStats RenderAndComputeStats(
 static ImageStats RenderFireReferencePreview(
 	const char* scenePath,
 	const char* rasterizerKeyword,
-	const unsigned int seed )
+	const unsigned int seed,
+	const MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation ablation =
+		MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation )
 {
 	ImageStats result{};
 	GlobalRNG() = RandomNumberGenerator(seed);
@@ -277,6 +281,14 @@ static ImageStats RenderFireReferencePreview(
 		!pJob->SetRasterizerParameter(rasterizerKeyword,"oidn_denoise","false") ) {
 		safe_release(pJob);
 		return result;
+	}
+	if( ablation != MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation ) {
+		Job* concreteJob = dynamic_cast<Job*>(pJob);
+		if( !concreteJob || !concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
+			"phase_a_fire",static_cast<unsigned int>(ablation)) ) {
+			safe_release(pJob);
+			return result;
+		}
 	}
 	Rasterizer* pConcrete = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() );
 	if( !pConcrete ) {
@@ -299,6 +311,16 @@ static void TestFirePelPreviewDivergence()
 {
 	const unsigned int seeds[] = { 1u, 7u, 42u, 314159u, 0xdeadbeefu };
 	double maximumDivergence[3] = {0.0,0.0,0.0};
+	double magnitudeDeltaSum[3] = {0.0,0.0,0.0};
+	double tiltDeltaSum[3] = {0.0,0.0,0.0};
+	double fullDeltaSum[3] = {0.0,0.0,0.0};
+	double interactionDeltaSum[3] = {0.0,0.0,0.0};
+	double magnitudeDeltaMin[3] = {1e30,1e30,1e30};
+	double magnitudeDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double tiltDeltaMin[3] = {1e30,1e30,1e30};
+	double tiltDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double fullDeltaMin[3] = {1e30,1e30,1e30};
+	double fullDeltaMax[3] = {-1e30,-1e30,-1e30};
 	bool allValid = true;
 	for( const unsigned int seed : seeds ) {
 		const ImageStats pel = RenderFireReferencePreview(
@@ -307,14 +329,48 @@ static void TestFirePelPreviewDivergence()
 		const ImageStats spectral = RenderFireReferencePreview(
 			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
 			"pathtracing_spectral_rasterizer", seed );
-		allValid = allValid && pel.valid && spectral.valid;
-		if( !pel.valid || !spectral.valid ) continue;
+		const ImageStats fixture = RenderFireReferencePreview(
+			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+			"pathtracing_spectral_rasterizer", seed,
+			MultichannelHeterogeneousMedium::FixtureMagnitudeBaseline );
+		const ImageStats magnitude = RenderFireReferencePreview(
+			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+			"pathtracing_spectral_rasterizer", seed,
+			MultichannelHeterogeneousMedium::PresetMagnitudeOnly );
+		const ImageStats tilt = RenderFireReferencePreview(
+			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+			"pathtracing_spectral_rasterizer", seed,
+			MultichannelHeterogeneousMedium::PresetTiltOnly );
+		allValid = allValid && pel.valid && spectral.valid && fixture.valid &&
+			magnitude.valid && tilt.valid;
+		if( !pel.valid || !spectral.valid || !fixture.valid ||
+			!magnitude.valid || !tilt.valid ) continue;
 		double divergence[3] = {0.0,0.0,0.0};
 		for( unsigned int channel = 0; channel < 3u; ++channel ) {
 			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
 			divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
 			maximumDivergence[channel] = std::max(
 				maximumDivergence[channel], divergence[channel] );
+			const double fixtureScale = std::max(
+				std::fabs(fixture.mean[channel]),1e-12);
+			const double magnitudeDelta =
+				(magnitude.mean[channel]-fixture.mean[channel])/fixtureScale;
+			const double tiltDelta =
+				(tilt.mean[channel]-fixture.mean[channel])/fixtureScale;
+			const double fullDelta =
+				(spectral.mean[channel]-fixture.mean[channel])/fixtureScale;
+			magnitudeDeltaSum[channel] += magnitudeDelta;
+			tiltDeltaSum[channel] += tiltDelta;
+			fullDeltaSum[channel] += fullDelta;
+			interactionDeltaSum[channel] += fullDelta-magnitudeDelta-tiltDelta;
+			magnitudeDeltaMin[channel] = std::min(
+				magnitudeDeltaMin[channel],magnitudeDelta);
+			magnitudeDeltaMax[channel] = std::max(
+				magnitudeDeltaMax[channel],magnitudeDelta);
+			tiltDeltaMin[channel] = std::min(tiltDeltaMin[channel],tiltDelta);
+			tiltDeltaMax[channel] = std::max(tiltDeltaMax[channel],tiltDelta);
+			fullDeltaMin[channel] = std::min(fullDeltaMin[channel],fullDelta);
+			fullDeltaMax[channel] = std::max(fullDeltaMax[channel],fullDelta);
 		}
 		std::cout << "  seed " << seed << " Pel=(" << pel.mean[0] << ","
 			<< pel.mean[1] << "," << pel.mean[2] << ") spectral=("
@@ -325,10 +381,67 @@ static void TestFirePelPreviewDivergence()
 	Check( allValid,
 		"Phase-A Pel and spectral reference scenes render for every recorded seed" );
 	if( !allValid ) return;
+	const double seedCount = static_cast<double>(sizeof(seeds)/sizeof(seeds[0]));
+	std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
+	for( unsigned int channel=0; channel<3u; ++channel ) {
+		std::cout << " c" << channel << " magnitude="
+			<< magnitudeDeltaSum[channel]/seedCount << "["
+			<< magnitudeDeltaMin[channel] << "," << magnitudeDeltaMax[channel]
+			<< "] tilt=" << tiltDeltaSum[channel]/seedCount << "["
+			<< tiltDeltaMin[channel] << "," << tiltDeltaMax[channel]
+			<< "] interaction="
+			<< interactionDeltaSum[channel]/seedCount << " full="
+			<< fullDeltaSum[channel]/seedCount << "[" << fullDeltaMin[channel]
+			<< "," << fullDeltaMax[channel] << "]";
+	}
+	std::cout << std::endl;
+	const double magnitudeMean[3] = {
+		magnitudeDeltaSum[0]/seedCount, magnitudeDeltaSum[1]/seedCount,
+		magnitudeDeltaSum[2]/seedCount
+	};
+	const double tiltMean[3] = {
+		tiltDeltaSum[0]/seedCount, tiltDeltaSum[1]/seedCount,
+		tiltDeltaSum[2]/seedCount
+	};
+	const double interactionMean[3] = {
+		interactionDeltaSum[0]/seedCount, interactionDeltaSum[1]/seedCount,
+		interactionDeltaSum[2]/seedCount
+	};
+	const double fullMean[3] = {
+		fullDeltaSum[0]/seedCount, fullDeltaSum[1]/seedCount,
+		fullDeltaSum[2]/seedCount
+	};
+	// Controlled paired-seed factorial against the synthetic record's E=0.26:
+	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
+	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
+	// constituent, baked field, proposal, and seed is held fixed.  Measured on
+	// record e9a676... at this test's five seeds, the blue image-mean increase is
+	// +59.05%: +38.46 points (65.1%) from magnitude, +10.78 (18.3%) from tilt,
+	// and +9.81 (16.6%) from nonlinear coupling.  Per-seed blue ranges are
+	// 31.34-43.45%, 9.56-15.13%, and 52.44-65.47% for magnitude, tilt, and full;
+	// red/green full ranges are 41.84-45.48% / 46.62-50.21%.  The envelopes
+	// below add margin to those measured ranges while still detecting a lost or
+	// double-applied factor.  This establishes that the larger preset-v1 blue
+	// Pel/spectral tripwire is coefficient-driven, not a projection-routing bug.
+	Check( magnitudeDeltaMin[0] > 0.40 && magnitudeDeltaMax[0] < 0.61 &&
+		magnitudeDeltaMin[1] > 0.41 && magnitudeDeltaMax[1] < 0.54 &&
+		magnitudeDeltaMin[2] > 0.27 && magnitudeDeltaMax[2] < 0.48 &&
+		tiltDeltaMin[0] > -0.05 && tiltDeltaMax[0] < 0.04 &&
+		tiltDeltaMin[1] > -0.03 && tiltDeltaMax[1] < 0.07 &&
+		tiltDeltaMin[2] > 0.07 && tiltDeltaMax[2] < 0.18 &&
+		fullDeltaMin[0] > 0.39 && fullDeltaMax[0] < 0.49 &&
+		fullDeltaMin[1] > 0.43 && fullDeltaMax[1] < 0.54 &&
+		fullDeltaMin[2] > 0.48 && fullDeltaMax[2] < 0.70 &&
+		magnitudeMean[2] > 0.35 && magnitudeMean[2] < 0.42 &&
+		tiltMean[2] > 0.09 && tiltMean[2] < 0.13 &&
+		interactionMean[2] > 0.07 && interactionMean[2] < 0.13 &&
+		fullMean[2] > 0.55 && fullMean[2] < 0.63,
+		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
 
 	// Measured single-thread against preset-v1 record
-	// 0b57c2edfb73e06b5d2ceac10f778d1386554be8818434dfc4c71dd9a11d2502
-	// at commit 15aa5447 over the paired seeds above: red 0.56-1.26%, green
+	// e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610
+	// (canonicalized by f33ce8c9; tripwire recorded by cdb1aad4) over the paired
+	// seeds above: red 0.56-1.26%, green
 	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The
 	// coefficient change explains the blue shift: E_eff rises from the
 	// fixture's constant 0.26 to 0.420169 at 550 nm (+61.6%; +76.9% at

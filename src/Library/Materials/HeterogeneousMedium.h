@@ -351,6 +351,15 @@ namespace RISE
 	class MultichannelHeterogeneousMedium :
 		public HeterogeneousMedium
 	{
+	public:
+		enum EffectiveAbsorptionAblation
+		{
+			NoEffectiveAbsorptionAblation = 0,
+			FixtureMagnitudeBaseline,
+			PresetMagnitudeOnly,
+			PresetTiltOnly
+		};
+
 	protected:
 		IVolumeAccessor* m_pCarbonAccessor;
 		IVolumeAccessor* m_pTemperatureAccessor;
@@ -388,6 +397,7 @@ namespace RISE
 		Scalar m_samplingHotMass;
 		Scalar m_samplingCoolMass;
 		Scalar m_samplingCondMass;
+		EffectiveAbsorptionAblation m_effectiveAbsorptionAblation;
 
 		struct EmissionCell
 		{
@@ -425,6 +435,7 @@ namespace RISE
 			Scalar sootEm,
 			Scalar sootDensity
 			);
+		Scalar AblatedHotAbsorptionMass( const Scalar nm ) const;
 
 		bool BuildThermalEmissionImportance();
 		unsigned int EmissionBinIndex(
@@ -578,6 +589,9 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
+		// Test-only controlled ablation; set before Rasterize launches workers.
+		bool ForTest_SetEffectiveAbsorptionAblation(
+			const EffectiveAbsorptionAblation ablation );
 		const FireOpticsPreset& GetFireOpticsPreset() const { return m_optics; }
 		bool FirePredictiveAllowed() const override
 		{

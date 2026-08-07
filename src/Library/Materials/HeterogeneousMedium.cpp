@@ -2045,6 +2045,7 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	  m_samplingHotMass( 0.0 ),
 	  m_samplingCoolMass( 0.0 ),
 	  m_samplingCondMass( 0.0 ),
+	  m_effectiveAbsorptionAblation( NoEffectiveAbsorptionAblation ),
 	  m_emissionBinSize( 0, 0, 0 ),
 	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
@@ -2227,6 +2228,38 @@ MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 		safe_release( m_pChemAccessor[band] );
 		safe_release( m_pChemSPD[band] );
 	}
+}
+
+bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(
+	const EffectiveAbsorptionAblation ablation
+	)
+{
+	if( ablation < NoEffectiveAbsorptionAblation || ablation > PresetTiltOnly ) {
+		return false;
+	}
+	m_effectiveAbsorptionAblation = ablation;
+	return true;
+}
+
+Scalar MultichannelHeterogeneousMedium::AblatedHotAbsorptionMass(
+	const Scalar nm
+	) const
+{
+	if( m_effectiveAbsorptionAblation == NoEffectiveAbsorptionAblation ) {
+		return m_optics.HotAbsorptionMass(nm);
+	}
+	const FireOpticsPreset& predictive = FireOpticsPreset::PredictiveV1();
+	const FireOpticsPreset& fixture = FireOpticsPreset::SyntheticRegressionV1();
+	Scalar effectiveAbsorption = fixture.EffectiveAbsorption(nm);
+	if( m_effectiveAbsorptionAblation == PresetMagnitudeOnly ) {
+		effectiveAbsorption = predictive.EffectiveAbsorption(550.0);
+	} else if( m_effectiveAbsorptionAblation == PresetTiltOnly ) {
+		effectiveAbsorption = fixture.EffectiveAbsorption(550.0) *
+			predictive.EffectiveAbsorption(nm) /
+			predictive.EffectiveAbsorption(550.0);
+	}
+	const Scalar volumeFractionPerGM3 = 1.0e-3/m_optics.SootDensityKgM3();
+	return 6.0*PI*effectiveAbsorption*volumeFractionPerGM3/(nm*1.0e-9);
 }
 
 Scalar MultichannelHeterogeneousMedium::NormalizeChemSPD(
@@ -2770,8 +2803,8 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 
 	const Scalar carbon = LookupCarbon( pt );
 	const Scalar phi = HotOpticsFraction( pt );
-	const Scalar hotAbsorption = carbon * phi * m_optics.HotAbsorptionMass(nm);
-	const Scalar hotExtinction = carbon * phi * m_optics.HotExtinctionMass(nm);
+	const Scalar hotAbsorption = carbon * phi * AblatedHotAbsorptionMass(nm);
+	const Scalar hotExtinction = hotAbsorption/(1.0-m_optics.HotAlbedo(nm));
 	const Scalar hotScattering = hotExtinction-hotAbsorption;
 	const Scalar coolExtinction = carbon * (1.0 - phi) *
 		m_optics.CoolExtinctionMass(nm);
@@ -2799,7 +2832,8 @@ const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
 
 	const Scalar carbon = LookupCarbon( pt );
 	const Scalar phi = HotOpticsFraction( pt );
-	const Scalar hotExtinction = carbon * phi * m_optics.HotExtinctionMass(nm);
+	const Scalar hotExtinction = carbon * phi * AblatedHotAbsorptionMass(nm)/
+		(1.0-m_optics.HotAlbedo(nm));
 	const Scalar hotScattering = m_sceneUnitMeters * hotExtinction *
 		m_optics.HotAlbedo(nm);
 	const Scalar coolExtinction = carbon * (1.0 - phi) *

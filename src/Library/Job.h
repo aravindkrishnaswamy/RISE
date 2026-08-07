@@ -1847,6 +1847,10 @@ namespace RISE
 			const char* name
 			) const;
 
+		bool ForTest_SetFireEffectiveAbsorptionAblation(
+			const char* name,
+			const unsigned int ablation );
+
 		//! Enumerate registered medium names; see IJob.h.
 		void EnumerateMediumNames(
 			IEnumCallback<const char*>& cb
