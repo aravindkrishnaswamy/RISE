@@ -2,6 +2,7 @@
 # Regenerate:  export RISE_MEDIA_PATH="$(pwd)/" && ./bin/tests/CstDeriveGoldenTest --generate
 # Then REVIEW git diff before commit -- an unexpected digest change is a CST-derive regression.
 # Columns:  <repo-relative-path>  <sha256(DumpJob)>  <dump-bytes>  <dump-lines>
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene  20244eb7b667316190d23aeab12de277eeb69739000bff59ddce3f339b85f00d  8616  102
 scenes/FeatureBased/Animation/caustic_animation.RISEscene  5337b114e7df18e0989a840b271e8f8815b323a200adc22ad5fae3069e5dc65d  1038  25
 scenes/FeatureBased/Animation/translucent_bunny.RISEscene  3a691d4a6c5ca8717f18ea2022cc9c2c5475fb185c28df1faf6d00ab5476d79c  838  25
 scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene  b6c90c354563165095e8186bc0328d694f4911870bbfef87aa05d0cd39963d36  16959  151
