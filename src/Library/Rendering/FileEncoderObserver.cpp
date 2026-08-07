@@ -12,13 +12,82 @@
 #include "FrameStore.h"
 
 #include "../Utilities/DiskFileWriteBuffer.h"
+#include "../Utilities/RISECBOR64.h"
 #include "../Interfaces/ILog.h"
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <vector>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	RISECBOR64::Value TextArray( const std::vector<std::string>& values )
+	{
+		RISECBOR64::Value::Values encoded;
+		for( std::size_t i=0; i<values.size(); ++i ) {
+			encoded.push_back(RISECBOR64::Value::String(values[i]));
+		}
+		return RISECBOR64::Value::ArrayValue(encoded);
+	}
+
+	bool ReadArtifact( const char* filename, RISECBOR64::Bytes& bytes )
+	{
+		std::ifstream input(filename,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) {
+			input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		}
+		return input.good() || input.eof();
+	}
+
+	bool WriteFireProvenanceSidecar(
+		const FrameStore& store,
+		const char* artifactFilename,
+		std::string& error
+		)
+	{
+		const FrameStore::Metadata& metadata = store.Meta();
+		if( metadata.renderFidelityStatus.empty() ) return true;
+		RISECBOR64::Bytes artifactBytes;
+		if( !ReadArtifact(artifactFilename,artifactBytes) ) {
+			error = "could not read the finalized artifact for hashing";
+			return false;
+		}
+		using RISECBOR64::Value;
+		const Value provenance = Value::MapValue({
+			{ "active_fire_optics_record_ids",
+				TextArray(metadata.activeFireOpticsRecordIds) },
+			{ "artifact_sha256", Value::String(RISECBOR64::SHA256Hex(artifactBytes)) },
+			{ "record_kind", Value::String("fire_output_provenance") },
+			{ "render_fidelity_status", Value::String(metadata.renderFidelityStatus) },
+			{ "render_reason_codes", TextArray(metadata.renderReasonCodes) },
+			{ "schema_version", Value::Unsigned(1) }
+		});
+		RISECBOR64::Bytes encoded;
+		if( !RISECBOR64::Encode(provenance,encoded,&error) ) return false;
+		const std::string sidecarFilename =
+			std::string(artifactFilename)+".provenance.cbor";
+		DiskFileWriteBuffer* sidecar = new DiskFileWriteBuffer(sidecarFilename.c_str());
+		if( !sidecar->ReadyToWrite() ||
+			!sidecar->setBytes(encoded.empty() ? 0 : &encoded[0],
+				static_cast<unsigned int>(encoded.size())) ) {
+			error = "could not write the sibling provenance sidecar";
+			safe_release(sidecar);
+			return false;
+		}
+		safe_release(sidecar);
+		return true;
+	}
+}
 
 FileEncoderObserver::FileEncoderObserver(
 	FrameStore*         store,
@@ -132,6 +201,12 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 	encoder_->Encode( *store_, *buf, opts_ );
 
 	safe_release( buf );
+	std::string provenanceError;
+	if( !WriteFireProvenanceSidecar(*store_,filename,provenanceError) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"FileEncoderObserver:: fire output provenance failed for '%s': %s",
+			filename, provenanceError.c_str() );
+	}
 
 	GlobalLog()->PrintEx( eLog_Event,
 		"FileEncoderObserver:: Written to '%s'", filename );

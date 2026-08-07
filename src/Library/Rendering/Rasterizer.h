@@ -224,17 +224,12 @@ namespace RISE
 			// the canonical Job-allocated FrameStore push, or does it
 			// run on its own internal RISERasterImage path?
 			//
-			// Default true (every PT/BDPT/VCM/interactive subclass
-			// writes through the FrameStore beauty view).  MLT and
-			// MLTSpectral override to false because their PSSMLT
-			// per-round Resolve allocates a fresh local
-			// `RISERasterImage` and never touches the FrameStore
-			// (until L6d-2 migrates them to multi-round-aware
-			// FrameStore writes).  Without this opt-out, the Job's
-			// post-scene-load `PushJobFrameStoreToRasterizers` would
-			// hand MLT a FrameStore that `GetFrameStore()` then
-			// surfaces to direct readers as perpetually stale (the
-			// rasterizer never writes into it).
+			// Default true: PT/BDPT/VCM/interactive rasterizers write
+			// through the FrameStore beauty view, and MLT copies each
+			// resolved round into the canonical store before flushing.
+			// A future rasterizer that retains an internal-only image
+			// path must override this to false until it provides the
+			// same completed-frame synchronization.
 			//
 			// Pre-fix this was a string-match on registry name in
 			// `Job::PushJobFrameStoreToRasterizers`; brittle to

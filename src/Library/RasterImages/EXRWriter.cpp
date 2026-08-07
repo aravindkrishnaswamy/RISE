@@ -144,6 +144,10 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 			RISE_VER_REVISION_VERSION, RISE_VER_BUILD_VERSION );
 		header.insert( "software", Imf::StringAttribute( szSoftware ) );
 	}
+	for( std::vector<std::pair<std::string, std::string> >::const_iterator
+		attribute=string_attributes.begin(); attribute!=string_attributes.end(); ++attribute ) {
+		header.insert(attribute->first, Imf::StringAttribute(attribute->second));
+	}
 
 	// Chromaticity tag — declares the colour primaries the pixel
 	// values are encoded in.  Colour-managed viewers (tev, mrViewer,

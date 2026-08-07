@@ -43,10 +43,16 @@
 #endif
 
 #include "../src/Library/Rendering/FileRasterizerOutput.h"
+#include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/RISECBOR64.h"
+#ifndef NO_EXR_SUPPORT
+#include <ImfInputFile.h>
+#include <ImfStringAttribute.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -655,6 +661,115 @@ namespace
 		std::remove( fullPath.c_str() );
 		safe_release( img );
 	}
+
+	FrameStore* MakeFireFidelityStore()
+	{
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 32;
+		FrameStore* store = new FrameStore(spec);
+		auto* beauty = store->GetChannel<ChannelId::Beauty>();
+		auto* alpha = store->GetChannel<ChannelId::Alpha>();
+		store->BeginTile(0,0);
+		for( unsigned int y=0; y<kImgH; ++y ) {
+			for( unsigned int x=0; x<kImgW; ++x ) {
+				const RISEColor c = PatternPixel(x,y);
+				beauty->At(x,y) = c.base;
+				alpha->At(x,y) = c.a;
+			}
+		}
+		store->EndTile(0,0);
+		store->MutableMeta().renderFidelityStatus = "preview";
+		store->MutableMeta().renderReasonCodes = {
+			"pel_transport", "producer_unqualified", "requested_preview"
+		};
+		store->MutableMeta().activeFireOpticsRecordIds = {
+			"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610"
+		};
+		return store;
+	}
+
+	void TestFireFidelityProvenanceOutput()
+	{
+		FrameStore* store = MakeFireFidelityStore();
+		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_provenance";
+		const std::string pngFile = pngBase+".png";
+		const std::string sidecarFile = pngFile+".provenance.cbor";
+		EncodeOpts opts;
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName("PNG");
+		FileEncoderObserver* observer = new FileEncoderObserver(
+			store,png,opts,pngBase,false);
+		store->AddObserver(observer);
+		store->MarkFrameComplete(0);
+		store->RemoveObserver(observer);
+		safe_release(observer);
+
+		std::vector<unsigned char> artifactBytes, sidecarBytes;
+		Check( ReadFileAllBytes(pngFile,artifactBytes) && !artifactBytes.empty(),
+			"[fire provenance] preview artifact is written" );
+		Check( ReadFileAllBytes(sidecarFile,sidecarBytes) && !sidecarBytes.empty(),
+			"[fire provenance] sibling canonical sidecar is written" );
+		RISECBOR64::Value provenance;
+		std::string decodeError;
+		const bool decoded = RISECBOR64::DecodeCanonical(
+			sidecarBytes,provenance,&decodeError);
+		Check( decoded,"[fire provenance] sidecar is canonical RISE-CBOR64-v1" );
+		if( decoded ) {
+			const RISECBOR64::Value* status = provenance.Find("render_fidelity_status");
+			const RISECBOR64::Value* reasons = provenance.Find("render_reason_codes");
+			const RISECBOR64::Value* ids =
+				provenance.Find("active_fire_optics_record_ids");
+			const RISECBOR64::Value* digest = provenance.Find("artifact_sha256");
+			Check( status && status->GetText() == "preview" && reasons &&
+				reasons->GetArray().size() == 3u && ids && ids->GetArray().size() == 1u,
+				"[fire provenance] sidecar carries status, reasons, and record identity" );
+			Check( digest && digest->GetText() == RISECBOR64::SHA256Hex(artifactBytes),
+				"[fire provenance] sidecar hashes the exact artifact bytes" );
+		}
+
+#ifndef NO_EXR_SUPPORT
+		const std::string exrBase = MakeTempPathWithoutExt()+"_fire_provenance";
+		const std::string exrFile = exrBase+".exr";
+		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		opts.bpp = 32;
+		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName("EXR");
+		observer = new FileEncoderObserver(store,exr,opts,exrBase,false);
+		store->AddObserver(observer);
+		store->MarkFrameComplete(0);
+		store->RemoveObserver(observer);
+		safe_release(observer);
+		bool attributesMatch = false;
+		try {
+			Imf::InputFile input(exrFile.c_str());
+			const Imf::StringAttribute* statusAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.render_fidelity_status");
+			const Imf::StringAttribute* reasonAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.render_reason_codes");
+			const Imf::StringAttribute* idAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"rise.active_fire_optics_record_ids");
+			attributesMatch = statusAttribute && statusAttribute->value() == "preview" &&
+				reasonAttribute && reasonAttribute->value().find("pel_transport") !=
+					std::string::npos && idAttribute && idAttribute->value() ==
+					store->Meta().activeFireOpticsRecordIds.front();
+		} catch( ... ) {
+			attributesMatch = false;
+		}
+		Check( attributesMatch,
+			"[fire provenance] EXR repeats fidelity status, reasons, and record ID" );
+		std::remove(exrFile.c_str());
+		std::remove((exrFile+".provenance.cbor").c_str());
+#endif
+
+		std::remove(pngFile.c_str());
+		std::remove(sidecarFile.c_str());
+		safe_release(store);
+	}
 }
 
 int main()
@@ -693,6 +808,7 @@ int main()
 	TestDenoiseDualWrite();
 	TestAnimationFrameNumbering();
 	TestMultiFrameReuse();
+	TestFireFidelityProvenanceOutput();
 
 	std::cout << "----------------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

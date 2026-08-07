@@ -75,6 +75,31 @@ static void BumpSceneLightGen( RISE::IScenePriv* pScene )
 		sc->BumpLightTopologyGeneration();
 }
 
+static bool IsAllowedFireRenderReasonCode( const char* reason )
+{
+	static const char* const allowed[] = {
+		"requested_preview", "producer_unqualified", "heuristic_source",
+		"qualified_record_override", "missing_optical_record", "missing_chem_record",
+		"chem_none_unqualified", "missing_condensable_record", "missing_gas_opacity_record",
+		"missing_thermochemistry_record", "missing_aerosol_thermochemistry_record",
+		"missing_transport_record", "table_domain_exceeded", "missing_channel",
+		"loading_exceeded", "wet_aerosol_unsupported", "pel_transport",
+		"hwss_transport", "pel_blur_ignored", "blur_halo_insufficient",
+		"blur_time_support_out_of_range", "nonadvected_source_blur_unsupported",
+		"keyframed_temporal_sampling_unsupported", "programmatic_scene_unqualified",
+		"unrepresented_scene_mutation", "untracked_scene_mutability", "oidn_unqualified",
+		"radiance_clamp_enabled", "path_regularization_enabled", "sms_unqualified",
+		"continuation_closure_unsupported", "sss_volume_nee_unsupported", "gate_failure",
+		"output_provenance_unavailable", "condensed_organics_ir_unclosed",
+		"unsupported_integrator_for_fire_media"
+	};
+	if( !reason || !reason[0] ) return false;
+	for( std::size_t i=0; i<sizeof(allowed)/sizeof(allowed[0]); ++i ) {
+		if( std::strcmp(reason,allowed[i]) == 0 ) return true;
+	}
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // Duplicate-name registration helpers (honor IManager::AddItem's bool).
 //
@@ -9644,6 +9669,7 @@ bool Job::PrepareFireRenderFidelityMetadata()
 	std::string status;
 	bool predictiveAllowed = true;
 	bool domainExceeded = false;
+	bool invalidFidelityMetadata = false;
 	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
 		medium != activeMedia.end(); ++medium ) {
 		const char* recordId = (*medium)->GetFireOpticsRecordId();
@@ -9653,8 +9679,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		recordIds.insert(recordId);
 		const char* mediumStatus = (*medium)->GetFireRenderFidelityStatus(
 			m_firePredictiveRequested );
-		if( mediumStatus && mediumStatus[0] &&
-			(status.empty() || std::strcmp(mediumStatus,"preview") == 0) ) {
+		if( !mediumStatus || std::strcmp(mediumStatus,"preview") != 0 ) {
+			invalidFidelityMetadata = true;
+		} else {
 			status = mediumStatus;
 		}
 		predictiveAllowed = predictiveAllowed && (*medium)->FirePredictiveAllowed();
@@ -9668,9 +9695,51 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		for( unsigned int i=0; i<count; ++i ) {
 			const char* reason = (*medium)->GetFireRenderReasonCode(
 				m_firePredictiveRequested, i );
-			if( reason && reason[0] ) {
-				reasons.insert(reason);
+			if( !IsAllowedFireRenderReasonCode(reason) ) {
+				invalidFidelityMetadata = true;
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job:: fire medium emitted unknown render reason code '%s'",
+					reason ? reason : "(null)" );
+				continue;
 			}
+			reasons.insert(reason);
+		}
+	}
+	bool unsupportedIntegrator = false;
+	bool transportPreview = false;
+	if( !recordIds.empty() ) {
+		const std::string& kind = activeRasterizerName;
+		unsupportedIntegrator =
+			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "vcm_spectral_rasterizer" ||
+			kind == "mlt_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( active != rasterizerRegistry.end() &&
+			(kind == "auto_rasterizer" || kind == "auto_spectral_rasterizer") &&
+			(active->second.params.autoIntegrator == AutoIntegratorChoice::BDPT ||
+			 active->second.params.autoIntegrator == AutoIntegratorChoice::VCM) ) {
+			unsupportedIntegrator = true;
+		}
+		if( unsupportedIntegrator ) {
+			reasons.insert("unsupported_integrator_for_fire_media");
+		}
+		const bool pelTransport =
+			kind == "pixelpel_rasterizer" || kind == "pathtracing_pel_rasterizer" ||
+			kind == "auto_rasterizer" || kind == "bdpt_pel_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "mlt_rasterizer";
+		if( pelTransport ) {
+			reasons.insert("pel_transport");
+			transportPreview = true;
+		}
+		const bool spectralTransport =
+			kind == "pixelintegratingspectral_rasterizer" ||
+			kind == "pathtracing_spectral_rasterizer" ||
+			kind == "auto_spectral_rasterizer" ||
+			kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_spectral_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( spectralTransport && active != rasterizerRegistry.end() &&
+			active->second.params.spectral.useHWSS ) {
+			reasons.insert("hwss_transport");
+			transportPreview = true;
 		}
 	}
 
@@ -9681,8 +9750,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
 	}
 	const bool predictiveRejected = m_firePredictiveRequested &&
-		!recordIds.empty() && !predictiveAllowed;
-	if( domainExceeded || predictiveRejected ) {
+		!recordIds.empty() && (!predictiveAllowed || transportPreview);
+	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
+		invalidFidelityMetadata ) {
 		std::ostringstream joined;
 		for( std::set<std::string>::const_iterator reason = reasons.begin();
 			reason != reasons.end(); ++reason ) {
@@ -11997,15 +12067,10 @@ void Job::PushJobFrameStoreToRasterizers()
 		if( !r ) continue;
 
 		// L6e-1.1 — capability gate via virtual on `Rasterizer`
-		// (replaces a brittle string-match on registry name).  MLT
-		// (and MLTSpectral via inheritance) opts out — its PSSMLT
-		// per-round Resolve allocates a fresh local
-		// `RISERasterImage` and never writes into the canonical
-		// FrameStore, so a push would leave `GetFrameStore()`
-		// returning a perpetually-stale store.  L6d-2 will revisit
-		// by either threading per-round Clear+Resolve into the
-		// FrameStore beauty, or keeping MLT on the legacy path
-		// indefinitely.  See `Rasterizer::AcceptsFrameStorePush`.
+		// (replaces a brittle string-match on registry name).  Every
+		// current in-tree rasterizer accepts the push; the hook remains
+		// for future internal-only image paths that cannot keep the
+		// canonical FrameStore synchronized.
 		if( !r->AcceptsFrameStorePush() ) continue;
 
 		r->SetFrameStore( fs );

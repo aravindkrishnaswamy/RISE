@@ -20,6 +20,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../RISE_API.h"
+#include "../RasterImages/EXRWriter.h"
 
 #include <algorithm>
 #include <cassert>
@@ -41,6 +42,18 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		namespace
+		{
+			std::string JoinMetadataValues( const std::vector<std::string>& values )
+			{
+				std::string joined;
+				for( std::size_t i=0; i<values.size(); ++i ) {
+					if( i ) joined += ",";
+					joined += values[i];
+				}
+				return joined;
+			}
+		}
 
 		// ─────────────────────────────────────────────────────────────
 		// FrameEncoderBase::Encode — shared "construct, wrap, dump"
@@ -56,6 +69,20 @@ namespace RISE
 					"FrameEncoder[%s]: writer factory returned null",
 					FormatName().c_str() );
 				return;
+			}
+			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter) ) {
+				const FrameStore::Metadata& metadata = store.Meta();
+				std::vector<std::pair<std::string, std::string> > attributes;
+				if( !metadata.renderFidelityStatus.empty() ) {
+					attributes.push_back(std::make_pair(
+						"rise.render_fidelity_status",metadata.renderFidelityStatus));
+					attributes.push_back(std::make_pair(
+						"rise.render_reason_codes",JoinMetadataValues(metadata.renderReasonCodes)));
+					attributes.push_back(std::make_pair(
+						"rise.active_fire_optics_record_ids",
+						JoinMetadataValues(metadata.activeFireOpticsRecordIds)));
+				}
+				exr->SetStringAttributes(attributes);
 			}
 
 			// Decide whether to wrap in DisplayTransformWriter.

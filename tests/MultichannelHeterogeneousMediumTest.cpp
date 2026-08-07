@@ -442,6 +442,42 @@ namespace
 		~DerivedHomogeneousMedium() override = default;
 	};
 
+	class InvalidReasonFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit InvalidReasonFireMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override
+		{
+			return "e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610";
+		}
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return 2u;
+		}
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
+		{
+			return index == 0u ? "requested_preview" : "not_a_fire_reason";
+		}
+		bool FireOpticsSupportsWavelengthRange(
+			const Scalar minimumNM, const Scalar maximumNM ) const override
+		{
+			return minimumNM >= 380.0 && maximumNM <= 780.0;
+		}
+
+	protected:
+		~InvalidReasonFireMedium() override = default;
+	};
+
 	class PluginMedium final :
 		public virtual IMedium,
 		public virtual Implementation::Reference
@@ -2118,14 +2154,30 @@ namespace
 			"rise_fire_fidelity_%d.RISEscene", static_cast<int>( ::getpid() ) );
 		const std::filesystem::path path =
 			std::filesystem::temp_directory_path() / filename;
-		const auto writeScene = [&path]( const unsigned int nmBegin ) {
+		const auto writeScene = [&path](
+			const std::string& rasterizer, const unsigned int nmBegin,
+			const bool useHWSS = false ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
 				"scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
 				"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
-				"pathtracing_spectral_rasterizer\n{\nsamples 1\nnmbegin " << nmBegin <<
-				"\nnmend 780\nnum_wavelengths 4\nspectral_samples 1\nhwss false\nmax_volume_bounce 1\noidn_denoise false\nprogressive_rendering false\n}\n\n"
+				<< rasterizer << "\n{\n";
+			if( rasterizer.find("mlt_") == 0u ) {
+				output << "bootstrap_samples 8\nchains 1\nmutations_per_pixel 1\n";
+			} else {
+				output << "samples 1\n";
+			}
+			if( rasterizer.find("spectral") != std::string::npos ) {
+				output << "nmbegin " << nmBegin <<
+					"\nnmend 780\nnum_wavelengths 4\nspectral_samples 1\n"
+					"hwss " << (useHWSS ? "true" : "false") << "\n";
+			}
+			if( rasterizer.find("pathtracing_") == 0u ) {
+				output << "max_volume_bounce 1\nprogressive_rendering false\n";
+			}
+			output <<
+				"oidn_denoise false\n}\n\n"
 				"film\n{\nwidth 1\nheight 1\n}\n\n"
 				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n"
 				"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
@@ -2133,7 +2185,7 @@ namespace
 				"multichannel_heterogeneous_medium\n{\nname fire\nchannel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\noptical_record fire_optics_v1\n}\n\n"
 				"global_medium\n{\nmedium fire\n}\n";
 		};
-		writeScene(380u);
+		writeScene("pathtracing_spectral_rasterizer",380u);
 
 		IJobPriv* job = nullptr;
 		RISE_CreateJobPriv(&job);
@@ -2156,7 +2208,7 @@ namespace
 					store->Meta().renderReasonCodes.end() &&
 				store->Meta().activeFireOpticsRecordIds.size() == 1u &&
 				store->Meta().activeFireOpticsRecordIds[0] ==
-					"0b57c2edfb73e06b5d2ceac10f778d1386554be8818434dfc4c71dd9a11d2502",
+					"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610",
 				"production FrameStore carries sorted preview reasons and record identity" );
 
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
@@ -2175,7 +2227,7 @@ namespace
 		}
 		safe_release(job);
 
-		writeScene(379u);
+		writeScene("pathtracing_spectral_rasterizer",379u);
 		RISE_CreateJobPriv(&job);
 		const bool outOfDomainLoaded = job &&
 			job->LoadAsciiSceneViaCst(path.string().c_str());
@@ -2191,6 +2243,79 @@ namespace
 				store->Meta().renderReasonCodes.end(),"table_domain_exceeded") !=
 				store->Meta().renderReasonCodes.end(),
 				"out-of-domain preview rejection records table_domain_exceeded" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_pel_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool pelLoaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( pelLoaded && job->Rasterize(),
+			"Pel fire transport remains an explicitly labeled preview path" );
+		if( pelLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
+				store->Meta().renderReasonCodes.end(),"pel_transport") !=
+				store->Meta().renderReasonCodes.end(),
+				"Pel preflight emits pel_transport from the fixed reason enum" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,true);
+		RISE_CreateJobPriv(&job);
+		const bool hwssLoaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( hwssLoaded && job->Rasterize(),
+			"HWSS fire transport uses the preview NM fallback" );
+		if( hwssLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
+				store->Meta().renderReasonCodes.end(),"hwss_transport") !=
+				store->Meta().renderReasonCodes.end(),
+				"HWSS preflight emits hwss_transport from the fixed reason enum" );
+		}
+		safe_release(job);
+
+		const char* const unsupported[] = {
+			"bdpt_spectral_rasterizer", "vcm_spectral_rasterizer",
+			"mlt_spectral_rasterizer"
+		};
+		for( std::size_t i=0; i<sizeof(unsupported)/sizeof(unsupported[0]); ++i ) {
+			writeScene(unsupported[i],380u);
+			RISE_CreateJobPriv(&job);
+			const bool loadedUnsupported = job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str());
+			Check( loadedUnsupported && !job->Rasterize(),
+				"bidirectional and MLT spectral fire routes fail before workers" );
+			if( loadedUnsupported ) {
+				Implementation::Rasterizer* rasterizer =
+					dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+				Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+				Check( store && std::find(store->Meta().renderReasonCodes.begin(),
+					store->Meta().renderReasonCodes.end(),
+					"unsupported_integrator_for_fire_media") !=
+					store->Meta().renderReasonCodes.end(),
+					"unsupported spectral fire route records its specific reason" );
+			}
+			safe_release(job);
+		}
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool invalidReasonLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( invalidReasonLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InvalidReasonFireMedium* invalid = new InvalidReasonFireMedium(*phase);
+			job->GetScene()->SetGlobalMedium(invalid);
+			Check( !job->Rasterize(),
+				"preflight rejects a fire reason outside the fixed enum" );
+			safe_release(invalid);
+			safe_release(phase);
+		} else {
+			Check( false,"invalid-reason preflight fixture loads" );
 		}
 		safe_release(job);
 		std::filesystem::remove(path);
