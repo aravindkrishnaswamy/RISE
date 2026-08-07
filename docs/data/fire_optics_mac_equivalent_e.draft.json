@@ -29,7 +29,7 @@
   "Forestieri scope: the 9.1/7.1 m2/g plateau describes larger mature soot (>~160nm); maturity dependence is explicit in that paper. It anchors the mass-to-absorption normalization, not young-soot optics per se."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "3fe2c162a9c3164e44e9907e6260ef23b872583a9bddf25d8f83f4f3044dcc55",
+ "draft_record_id_sha256_of_payload": "f5fd3755548402c4305890c538aee8d35c92c4de3df7e9c9ea4a2dbd13df23ad",
  "normative_quantity": "MAC_lambda_m2_per_g",
  "quantity_name": "mac_equivalent_E (effective_absorption_function)",
  "quantity_semantics": "NOT an unqualified refractive-index-derived E(m). Population-averaged hot-carbon effective absorption closure: incorporates everything needed to reproduce measured absorption per transported soot mass through the renderer's simple Rayleigh expression sigma_a = 6*pi*E_eff*f_v/lambda, which applies no separate aggregate-interaction correction. Not a universal soot material constant; not a soot-maturity model. Liu et al.'s E>0.32 lower bound is NOT the runtime central value for exactly this reason (it assumes optical-model corrections RISE does not apply).",
@@ -450,7 +450,17 @@
     5.1934
    ]
   ],
-  "step_nm": 5
+  "step_nm": 5,
+  "table_metadata": {
+   "applicability": "population-averaged hot-carbon effective absorption closure; see quantity_semantics",
+   "granularity": "per_table",
+   "provenance": "definition block of this record (C&C dispersion x MAC(550)=8.0 normalization)",
+   "uncertainty": {
+    "components": "see record-level uncertainty_components: visible normalization +/-16% (assumption_bound over the B&B ensemble), C&C shape ~5-6% (measured fit-vs-KK), long-wave model-form (assumption_bound, unquantified magnitude carried as the explicit statement)",
+    "kind": "range",
+    "magnitude": "+/-16% (dominant component, visible normalization)"
+   }
+  }
  },
  "uncertainty_components": {
   "applicability": "population-averaged hot-carbon closure (see quantity_semantics)",

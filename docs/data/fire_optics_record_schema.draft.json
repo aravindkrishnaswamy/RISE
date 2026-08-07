@@ -1,6 +1,7 @@
 {
+ "aggregate_required": "every record carries aggregate 'version' (semver-like string) and 'record_status'",
  "compiled": "2026-08-06",
- "draft_record_id_sha256_of_payload": "fb9bd8c445beacdcfa53e550f91dc446465d7d7387ea4e9a5821355cc50938db",
+ "draft_record_id_sha256_of_payload": "35e4d1145d2ffece3989cc50178813d2cb3ea3c24aef269ba9bd03d9f47306d4",
  "encoding": "final form RISE-CBOR64-v1 per SS8; record ID = SHA-256 of exact bytes; draft JSONs carry the same fields with draft IDs",
  "hashed_payload_required_fields": {
   "explicitly_excluded_from_hash": [
@@ -30,5 +31,15 @@
  "record_kind": "record_schema_pin",
  "record_name": "fire-optics-canonical-provenance-schema-v1",
  "record_status": "DRAFT_SCHEMA_PIN__RATIFY_AT_DESIGN_LOOP_FREEZE",
- "schema_version": "draft-1"
+ "schema_version": "draft-2",
+ "table_metadata_granularity": "Table metadata (provenance, applicability, uncertainty) applies PER TABLE by default; a table MAY carry per-column overrides in a 'column_metadata' map; per-row and per-cell metadata are NOT supported in v1 (a value needing row-level provenance belongs in its own record or a split table).",
+ "uncertainty_kind_enum": {
+  "assumption_bound": "a bound ASSUMED, not measured: magnitude = the bounding factor or interval actually used, one_sided flag set as applicable, with a 'basis' string naming the assumption (e.g. the 1-cd convention). This is how design assumptions with no measured uncertainty satisfy the required magnitude field: the magnitude is the assumed bound itself, never omitted.",
+  "computed_range_from_input_sensitivity": "derived table: magnitude = output spread over the recorded input sensitivity corners",
+  "design_pinned_exact": "design-owned closure value (e.g. phi_T band): exact by definition, magnitude 0, provenance = the design section",
+  "expanded_95": "95% expanded uncertainty; magnitude = half-interval; coverage_factor field optional",
+  "measured_1sigma": "1 standard deviation of a measurement or ensemble; magnitude = sigma",
+  "range": "bracketing interval [lo, hi] from sources or sensitivity corners; magnitude = the interval",
+  "synthetic_exact": "synthetic regression fixture: exact by definition, magnitude 0; NEVER a physical claim"
+ }
 }

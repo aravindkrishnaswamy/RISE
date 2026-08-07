@@ -43,6 +43,16 @@
     ]
    ]
   },
+  "spectral_overfire_dp40_N400_metadata": {
+   "applicability": "young in-flame soot (spectral_young) / mature overfire validation (spectral_overfire)",
+   "granularity": "per_table",
+   "provenance": "RDG-FA computation per the method block over morphology_inputs",
+   "uncertainty": {
+    "basis": "morphology_inputs envelopes + validation block",
+    "kind": "computed_range_from_input_sensitivity",
+    "magnitude": "omega/g vary over the table-backed morphology domain per young_refined_domain_550nm corners (omega 0.011-0.127, g 0.023-0.318 at 550); RDG-FA method error <=10% for phase-shift parameter <1 (Sorensen p.668); F/E measured anchors carry the K&F Table 4 provenance"
+   }
+  },
   "spectral_young_dp30_N50": {
    "columns": [
     "lambda_nm",
@@ -76,6 +86,16 @@
      0.113
     ]
    ]
+  },
+  "spectral_young_dp30_N50_metadata": {
+   "applicability": "young in-flame soot (spectral_young) / mature overfire validation (spectral_overfire)",
+   "granularity": "per_table",
+   "provenance": "RDG-FA computation per the method block over morphology_inputs",
+   "uncertainty": {
+    "basis": "morphology_inputs envelopes + validation block",
+    "kind": "computed_range_from_input_sensitivity",
+    "magnitude": "omega/g vary over the table-backed morphology domain per young_refined_domain_550nm corners (omega 0.011-0.127, g 0.023-0.318 at 550); RDG-FA method error <=10% for phase-shift parameter <1 (Sorensen p.668); F/E measured anchors carry the K&F Table 4 provenance"
+   }
   },
   "young_in_flame_550nm": {
    "g_central": 0.22,
@@ -126,7 +146,7 @@
   "omega_hot_fixture_0.10": "CONFIRMED (central computed 0.10 for verified N=30-80 young soot)"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "60f0da056568fee4efc024b5262a3542a4bbedbb24cdd7d299fa0ffd37fb52a0",
+ "draft_record_id_sha256_of_payload": "1c4640f119f93b7b4eda393831de18908971ee70cf48d6699f5887361f565acb",
  "g_hot_adopted": {
   "ruling": "Owner 2026-08-05: computed value adopted for the young in-flame constituent; 0.5 describes mature aggregates already assigned to cool carbon by the phi(T) split (keeping it would double-count maturation in the wrong constituent). omega_hot~0.10 means weak scattering, so limited total radiometric leverage. The 0.5 value may persist ONLY in the explicitly synthetic regression fixture, and fixture vs predictive preset must carry DISTINCT record IDs.",
   "supported_range": [

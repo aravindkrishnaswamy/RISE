@@ -58,6 +58,16 @@
      0.547
     ]
    ]
+  },
+  "table_metadata": {
+   "applicability": "fresh, dry, near-source condensed organic aerosol produced by flaming combustion (owner domain wording, 2026-08-05)",
+   "granularity": "per_table",
+   "provenance": "computed via validated Bohren-Huffman Mie over the mie_inputs (each input carries its own citation envelope)",
+   "uncertainty": {
+    "basis": "sensitivity block of this record; inputs' own uncertainties in mie_inputs",
+    "kind": "computed_range_from_input_sensitivity",
+    "magnitude": "k_ext(550) spread 3.27-4.97 m2/g over the recorded size/index corners (~+/-20%); omega(550) 0.964-0.988 over k550 in [0.002,0.006]; g tracks size corners 0.58-0.65"
+   }
   }
  },
  "conflicts_flagged": [
@@ -65,7 +75,7 @@
   "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "97a666d972f29ac34e5b90027ae828378e7fd7ecdeac385b9f823d53ec092b77",
+ "draft_record_id_sha256_of_payload": "64ce0f5eb598ed4667571d360e21f4942df4be96e22af6541cdda391af25cffb",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
   "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
