@@ -40,6 +40,8 @@ namespace RISE
 			//! registration throws.  A newly inserted output immediately receives
 			//! the current FrameStore before this returns.
 			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
+			bool UnregisterRasterizerOutput( IRasterizerOutput* ro );
+			bool ReleaseRasterizerOutputs();
 
 			//! L8 review round 5 — protects `outs` against concurrent
 			//! mutation from non-render threads.

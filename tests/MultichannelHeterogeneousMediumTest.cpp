@@ -35,6 +35,7 @@
 #include "../src/Library/Materials/HomogeneousMedium.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
@@ -65,6 +66,19 @@ namespace
 			++failed;
 			std::cout << "FAIL: " << label << std::endl;
 		}
+	}
+
+	bool SameFrameMetadata(
+		const FrameStoreOutput::Metadata& a,
+		const FrameStoreOutput::Metadata& b
+		)
+	{
+		return a.sceneName == b.sceneName && a.cameraName == b.cameraName &&
+			a.activeRasterizer == b.activeRasterizer && a.sampleCount == b.sampleCount &&
+			a.cameraExposureEV == b.cameraExposureEV && a.frame == b.frame &&
+			a.renderFidelityStatus == b.renderFidelityStatus &&
+			a.renderReasonCodes == b.renderReasonCodes &&
+			a.activeFireOpticsRecordIds == b.activeFireOpticsRecordIds;
 	}
 
 	bool ReadFileBytes( const std::filesystem::path& path,
@@ -2311,17 +2325,15 @@ namespace
 			std::filesystem::remove(outputFile);
 			std::filesystem::remove(sidecarFile);
 
+			const FrameStoreOutput::Metadata acceptedMetadata = store->Meta();
+			const uint64_t acceptedGeneration = store->Generation();
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
 				"predictive static-fire request fails closed on its fidelity reasons" );
 			rasterizer = dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
 			store = rasterizer ? rasterizer->GetFrameStore() : 0;
-			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
-				store->Meta().renderReasonCodes.end(),"producer_unqualified") !=
-				store->Meta().renderReasonCodes.end() &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"requested_preview") ==
-					store->Meta().renderReasonCodes.end(),
-				"predictive rejection metadata is freshly derived from the request" );
+			Check( store && store->Generation() == acceptedGeneration &&
+				SameFrameMetadata(store->Meta(),acceptedMetadata),
+				"a rejected preflight preserves the last completed frame metadata" );
 			Check( !job->SetFireFidelityMode("invented"),
 				"the job rejects an unknown fire fidelity mode" );
 		}
@@ -2334,20 +2346,21 @@ namespace
 		Check( outOfDomainLoaded,
 			"out-of-domain wavelength support remains structurally loadable" );
 		if( outOfDomainLoaded ) {
-			Check( !job->Rasterize(),
-				"preview preflight rejects a wavelength below the certified domain" );
 			Implementation::Rasterizer* rasterizer =
 				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
 			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
-			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
-				store->Meta().renderReasonCodes.end(),"table_domain_exceeded") !=
-				store->Meta().renderReasonCodes.end(),
-				"out-of-domain preview rejection records table_domain_exceeded" );
+			const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			const uint64_t generationBefore = store ? store->Generation() : 0u;
+			Check( !job->Rasterize(),
+				"preview preflight rejects a wavelength below the certified domain" );
+			Check( store && store->Generation() == generationBefore &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"out-of-domain preview rejection leaves frame metadata untouched" );
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"table_domain_exceeded") !=
-					store->Meta().renderReasonCodes.end(),
-				"out-of-domain predictive preflight rejects with the same fixed reason" );
+				store->Generation() == generationBefore &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"out-of-domain predictive rejection also preserves frame metadata" );
 		}
 		safe_release(job);
 
@@ -2411,6 +2424,8 @@ namespace
 				Implementation::FrameStore* store = rasterizer ?
 					rasterizer->GetFrameStore() : nullptr;
 				const uint64_t generationBefore = store ? store->Generation() : 0u;
+				const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+					FrameStoreOutput::Metadata();
 				const bool rejected = loadedUnsupported && !job->Rasterize();
 				const std::string routeLabel = std::string(route.rasterizer) +
 					(route.hwss ? " HWSS " : " ") + fidelityMode;
@@ -2418,11 +2433,8 @@ namespace
 					("unsupported fire route fails before workers: "+routeLabel).c_str() );
 				store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
 				Check( store && store->Generation() == generationBefore &&
-					std::find(store->Meta().renderReasonCodes.begin(),
-						store->Meta().renderReasonCodes.end(),
-						"unsupported_integrator_for_fire_media") !=
-						store->Meta().renderReasonCodes.end(),
-					("unsupported route records reason without producing a frame: "+
+					SameFrameMetadata(store->Meta(),metadataBefore),
+					("unsupported route preserves the prior frame snapshot: "+
 						routeLabel).c_str() );
 				safe_release(job);
 			}
@@ -2458,24 +2470,53 @@ namespace
 			Implementation::FrameStore* store = rasterizer ?
 				rasterizer->GetFrameStore() : nullptr;
 			const uint64_t generationBefore = store ? store->Generation() : 0u;
+			const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
 			Check( !job->Rasterize() && store &&
 				store->Generation() == generationBefore &&
 				missing->reasonQueries == 2u &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
-					store->Meta().renderReasonCodes.end(),
+				SameFrameMetadata(store->Meta(),metadataBefore),
 				"preview fire medium with no record ID fails before workers" );
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
 				store->Generation() == generationBefore &&
 				missing->reasonQueries == 4u &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"missing_optical_record") !=
-					store->Meta().renderReasonCodes.end(),
+				SameFrameMetadata(store->Meta(),metadataBefore),
 				"predictive fire medium with no record ID fails before workers" );
 			safe_release(missing);
 			safe_release(phase);
 		} else {
 			Check( false,"missing-record preflight fixture loads" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool unavailableEncoderLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( unavailableEncoderLoaded ) {
+			FrameEncoderRegistry& encoders = FrameEncoderRegistry::Get();
+			IFrameEncoder* png = encoders.ByFormatName("PNG");
+			bool removedPNG = false;
+			if( png ) {
+				png->addref();
+				removedPNG = encoders.Unregister("PNG");
+			}
+			const std::filesystem::path unavailableOutput =
+				std::filesystem::temp_directory_path() /
+				("rise_unavailable_encoder_" + std::to_string(::getpid()));
+			const bool rejectedUnavailable = !job->AddFileRasterizerOutput(
+				unavailableOutput.string().c_str(),false,2,8,1,0.0,0,2,true);
+			if( removedPNG ) {
+				encoders.Register(png);
+				png = nullptr;
+			}
+			safe_release(png);
+			const bool encoderRestored = !removedPNG ||
+				encoders.ByFormatName("PNG") != nullptr;
+			Check( rejectedUnavailable && encoderRestored,
+				"file output API rejects an unavailable encoder before attachment" );
+		} else {
+			Check(false,"unavailable-encoder production fixture loads");
 		}
 		safe_release(job);
 		std::filesystem::remove(path);

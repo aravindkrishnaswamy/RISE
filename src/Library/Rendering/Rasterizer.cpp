@@ -22,6 +22,56 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	class RetainedRasterizerOutputSnapshot
+	{
+	public:
+		RetainedRasterizerOutputSnapshot(
+			const std::vector<IRasterizerOutput*>& source,
+			std::mutex& sourceMutex
+			)
+		{
+			std::lock_guard<std::mutex> lock( sourceMutex );
+			try {
+				for( IRasterizerOutput* output : source ) {
+					output->addref();
+					try {
+						mOutputs.push_back(output);
+					}
+					catch( ... ) {
+						output->release();
+						throw;
+					}
+				}
+			}
+			catch( ... ) {
+				Release();
+				throw;
+			}
+		}
+
+		~RetainedRasterizerOutputSnapshot()
+		{
+			Release();
+		}
+
+		const std::vector<IRasterizerOutput*>& Outputs() const
+		{
+			return mOutputs;
+		}
+
+	private:
+		void Release()
+		{
+			for( IRasterizerOutput* output : mOutputs ) output->release();
+			mOutputs.clear();
+		}
+
+		std::vector<IRasterizerOutput*> mOutputs;
+	};
+}
+
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
   ,mFrameStore( frameStore )
@@ -117,7 +167,12 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 
 void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
 {
-	if( !ro ) return;
+	UnregisterRasterizerOutput( ro );
+}
+
+bool Rasterizer::UnregisterRasterizerOutput( IRasterizerOutput* ro )
+{
+	if( !ro ) return false;
 
 	std::lock_guard<std::mutex> lock( outsMutex );
 	for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
@@ -125,19 +180,27 @@ void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
 			IRasterizerOutput* removed = *i;
 			outs.erase( i );
 			safe_release( removed );
-			return;
+			return true;
 		}
 	}
+	return false;
 }
 
 void Rasterizer::FreeRasterizerOutputs( )
 {
+	ReleaseRasterizerOutputs();
+}
+
+bool Rasterizer::ReleaseRasterizerOutputs()
+{
 	std::lock_guard<std::mutex> lock( outsMutex );
+	const bool released = !outs.empty();
 	RasterizerOutputListType::iterator	i, e;
 	for( i=outs.begin(), e=outs.end(); i!=e; i++ ) {
 		safe_release( (*i) );
 	}
 	outs.clear();
+	return released;
 }
 
 void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const
@@ -146,12 +209,8 @@ void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& p
 	// `pFunc` could re-enter `AddRasterizerOutput` / `FreeRasterizerOutputs`
 	// (recursive lock would deadlock) and shouldn't hold the lock for
 	// the duration of arbitrary callback work.
-	RasterizerOutputListType snapshot;
-	{
-		std::lock_guard<std::mutex> lock( outsMutex );
-		snapshot = outs;
-	}
-	for( IRasterizerOutput* ro : snapshot ) {
+	RetainedRasterizerOutputSnapshot snapshot( outs, outsMutex );
+	for( IRasterizerOutput* ro : snapshot.Outputs() ) {
 		pFunc( *ro );
 	}
 }
@@ -209,13 +268,9 @@ void Rasterizer::ReannounceFrameStore()
 	// L8 round 5 — snapshot now happens under `outsMutex` to guard
 	// against concurrent mutators from non-render threads (Swift
 	// UI display-refresh path).
-	RasterizerOutputListType snapshot;
-	{
-		std::lock_guard<std::mutex> lock( outsMutex );
-		snapshot = outs;
-	}
-	for( RasterizerOutputListType::const_iterator it = snapshot.begin(),
-	     e = snapshot.end(); it != e; ++it )
+	RetainedRasterizerOutputSnapshot snapshot( outs, outsMutex );
+	for( RasterizerOutputListType::const_iterator it = snapshot.Outputs().begin(),
+	     e = snapshot.Outputs().end(); it != e; ++it )
 	{
 		(*it)->OnRasterizerFrameStoreChanged( mFrameStore );
 	}

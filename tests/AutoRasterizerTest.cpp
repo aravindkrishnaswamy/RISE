@@ -56,6 +56,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Job.h"
@@ -166,6 +167,110 @@ protected:
 private:
 	IRasterizer& rasterizer_;
 	FrameStoreNotificationOutput& lateOutput_;
+};
+
+class LifetimeFrameStoreOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	LifetimeFrameStoreOutput(
+		IRasterizer& rasterizer,
+		const bool clearOnEnumeration,
+		const bool clearOnReannounce,
+		int& frameStoreNotifications,
+		bool& destroyed
+		) :
+		rasterizer_(rasterizer),
+		clearOnEnumeration_(clearOnEnumeration),
+		clearOnReannounce_(clearOnReannounce),
+		frameStoreNotifications_(frameStoreNotifications),
+		destroyed_(destroyed)
+	{}
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+	void OnRasterizerFrameStoreChanged( FrameStore* ) override
+	{
+		++frameStoreNotifications_;
+		if( clearOnReannounce_ && frameStoreNotifications_ == 2 ) {
+			rasterizer_.FreeRasterizerOutputs();
+		}
+	}
+	bool ClearOnEnumeration() const { return clearOnEnumeration_; }
+
+protected:
+	~LifetimeFrameStoreOutput() override { destroyed_ = true; }
+
+private:
+	IRasterizer& rasterizer_;
+	bool clearOnEnumeration_;
+	bool clearOnReannounce_;
+	int& frameStoreNotifications_;
+	bool& destroyed_;
+};
+
+class ClearingOutputEnumerator : public IEnumCallback<IRasterizerOutput>
+{
+public:
+	explicit ClearingOutputEnumerator( IRasterizer& rasterizer ) :
+		callbacks(0), rasterizer_(rasterizer) {}
+
+	bool operator()( const IRasterizerOutput& output ) override
+	{
+		++callbacks;
+		const LifetimeFrameStoreOutput* lifetime =
+			dynamic_cast<const LifetimeFrameStoreOutput*>(&output);
+		if( lifetime && lifetime->ClearOnEnumeration() ) {
+			rasterizer_.FreeRasterizerOutputs();
+		}
+		return true;
+	}
+
+	int callbacks;
+
+private:
+	IRasterizer& rasterizer_;
+};
+
+class TransactionalReplayOutput : public FrameStoreNotificationOutput
+{
+public:
+	TransactionalReplayOutput(
+		Rasterizer& rasterizer,
+		IProgressCallback& replacementProgress,
+		IRasterizerOutput& removedOutput,
+		IRasterizerOutput& survivingOutput
+		) :
+		mutated(false),
+		rasterizer_(rasterizer),
+		replacementProgress_(replacementProgress),
+		removedOutput_(removedOutput),
+		survivingOutput_(survivingOutput)
+	{}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == 2 ) {
+			mutated = true;
+			rasterizer_.SetProgressCallback(&replacementProgress_);
+			rasterizer_.RemoveRasterizerOutput(&removedOutput_);
+			rasterizer_.FreeRasterizerOutputs();
+			rasterizer_.AddRasterizerOutput(&survivingOutput_);
+		}
+	}
+
+	bool mutated;
+
+protected:
+	~TransactionalReplayOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	IProgressCallback& replacementProgress_;
+	IRasterizerOutput& removedOutput_;
+	IRasterizerOutput& survivingOutput_;
 };
 
 class HomogeneousFireTestMedium : public HomogeneousMedium
@@ -487,7 +592,7 @@ static void TestFirePelPreviewDivergence()
 	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
 	// constituent, baked field, proposal, and seed is held fixed.  Measured on
-	// the operational values now hashed by record ad002cef... at this test's five
+	// the operational values now hashed by record c3999bcb... at this test's five
 	// seeds, the blue image-mean increase is
 	// +59.05%: +38.46 points (65.1%) from magnitude, +10.78 (18.3%) from tilt,
 	// and +9.81 (16.6%) from nonlinear coupling.  Per-seed blue ranges are
@@ -1269,6 +1374,120 @@ public:
 	virtual void SetTitle( const char* ) override { titleCalls++; }
 };
 
+static bool LoadAutoLifecycleJob(
+	IJobPriv*& job,
+	std::string& path,
+	const char* suffix
+	)
+{
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+	path = WriteSceneToTempFile(scene.c_str(),suffix);
+	return !path.empty() && RISE_CreateJobPriv(&job) && job &&
+		job->LoadAsciiSceneViaCst(path.c_str());
+}
+
+static void TestRetainedOutputSnapshots()
+{
+	const std::string label = "rasterizer callback snapshots retain every output";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"retained_output_snapshots") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	job->RemoveRasterizerOutputs();
+	int firstNotifications = 0, secondNotifications = 0;
+	bool firstDestroyed = false, secondDestroyed = false;
+	IRasterizerOutput* first = new LifetimeFrameStoreOutput(*rasterizer,
+		true,false,firstNotifications,firstDestroyed);
+	IRasterizerOutput* second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,secondNotifications,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	safe_release(first);
+	safe_release(second);
+	ClearingOutputEnumerator enumerator(*rasterizer);
+	rasterizer->EnumerateRasterizerOutputs(enumerator);
+	Check(enumerator.callbacks == 2 && firstDestroyed && secondDestroyed,
+		"enumeration completes after a callback frees the live output list: " + label);
+
+	firstNotifications = secondNotifications = 0;
+	firstDestroyed = secondDestroyed = false;
+	first = new LifetimeFrameStoreOutput(*rasterizer,
+		false,true,firstNotifications,firstDestroyed);
+	second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,secondNotifications,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	safe_release(first);
+	safe_release(second);
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	if( concrete ) concrete->ReannounceFrameStore();
+	Check(concrete && firstNotifications == 2 && secondNotifications == 2 &&
+		firstDestroyed && secondDestroyed,
+		"FrameStore reannouncement completes after a callback frees the live list: " + label);
+
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestTransactionalDelegateReplay()
+{
+	const std::string label = "delegate replay publishes one reentrant state snapshot";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"transactional_replay") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	CountingProgressCallback initialProgress, replacementProgress;
+	CapturingRasterizerOutput* removed = new CapturingRasterizerOutput();
+	CapturingRasterizerOutput* survivor = new CapturingRasterizerOutput();
+	removed->addref();
+	survivor->addref();
+	TransactionalReplayOutput* mutator = concrete ? new TransactionalReplayOutput(
+		*concrete,replacementProgress,*removed,*survivor) : nullptr;
+	if( !mutator ) {
+		Check(false,"concrete rasterizer available: " + label);
+		safe_release(removed);
+		safe_release(survivor);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	mutator->addref();
+	rasterizer->AddRasterizerOutput(mutator);
+	rasterizer->AddRasterizerOutput(removed);
+	job->SetProgress(&initialProgress);
+
+	const bool rendered = job->Rasterize();
+	Check(rendered && mutator->mutated,
+		"replay callback performed SetProgress/Remove/Free/Add mutations: " + label);
+	Check(survivor->width > 0 && removed->width == 0,
+		"only the reentrantly committed output receives the render: " + label);
+	Check(replacementProgress.titleCalls > 0 && initialProgress.titleCalls == 0,
+		"only the reentrantly committed progress callback is published: " + label);
+
+	safe_release(mutator);
+	safe_release(removed);
+	safe_release(survivor);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestDelegateOutputReplayReentrancy()
 {
 	const std::string label = "delegate output replay permits FrameStore callback reentrancy";
@@ -1513,6 +1732,8 @@ int main()
 	//     frozen (soon-dangling) progress callback / output set -> PC=0.
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
+	TestRetainedOutputSnapshots();
+	TestTransactionalDelegateReplay();
 	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();
 

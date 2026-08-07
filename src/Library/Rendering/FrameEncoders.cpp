@@ -462,6 +462,20 @@ namespace RISE
 			encoders_.push_back( encoder );
 		}
 
+		bool FrameEncoderRegistry::Unregister( const std::string& formatName )
+		{
+			std::lock_guard<std::mutex> lock( mutex_ );
+			for( auto it = encoders_.begin(); it != encoders_.end(); ++it ) {
+				if( IEqualsASCII( (*it)->FormatName(), formatName ) ) {
+					IFrameEncoder* removed = *it;
+					encoders_.erase(it);
+					safe_release(removed);
+					return true;
+				}
+			}
+			return false;
+		}
+
 		IFrameEncoder* FrameEncoderRegistry::ByFormatName( const std::string& name ) const
 		{
 			std::lock_guard<std::mutex> lock( mutex_ );

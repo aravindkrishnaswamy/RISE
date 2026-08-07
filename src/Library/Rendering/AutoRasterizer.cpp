@@ -38,7 +38,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <set>
 #include <vector>
 
 using namespace RISE;
@@ -357,6 +356,7 @@ AutoRasterizer::AutoRasterizer(
 	,mSpectral( spectral )
 	,mSpectralConfig( spectralConfig )
 	,mDelegate( 0 )
+	,mReplayRevision( 0 )
 	,mResolved( AutoIntegratorChoice::Auto )
 	,mLastProbeSeconds( 0.0 )
 	,mLastProbeRenders( 0 )
@@ -902,8 +902,6 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			~CandidateUnwindGuard() { safe_release( p ); }
 		} candidateGuard{ candidate };
 
-		candidate->SetProgressCallback( pProgressFunc );
-
 		// Progressive config can't ride RISE_API_SetRasterizerProgressiveRendering
 		// on the wrapper (that down-casts to PixelBasedRasterizerHelper, which the
 		// wrapper is not) — apply it to the delegate, which IS one.
@@ -915,37 +913,49 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
 
 		// Replay outside the wrapper lock because AddRasterizerOutput notifies
-		// arbitrary sinks.  A callback may add another wrapper output; repeat the
-		// snapshot until every current output is present, then publish while
-		// holding the same lock used by the forwarding path.
-		std::set<IRasterizerOutput*> replayed;
+		// arbitrary sinks. Every wrapper mutation advances mReplayRevision. If a
+		// callback changes progress or output state, discard the candidate's staged
+		// state and replay a fresh authoritative snapshot before publication.
 		for( ;; ) {
-			std::vector<IRasterizerOutput*> pending;
+			std::vector<IRasterizerOutput*> snapshot;
+			IProgressCallback* progress = nullptr;
+			unsigned long long revision = 0;
 			{
 				std::lock_guard<std::mutex> lock( outsMutex );
+				revision = mReplayRevision;
+				progress = pProgressFunc;
 				for( IRasterizerOutput* output : outs ) {
-					if( replayed.insert(output).second ) {
-						output->addref();
-						pending.push_back(output);
+					output->addref();
+					try {
+						snapshot.push_back(output);
+					}
+					catch( ... ) {
+						output->release();
+						for( IRasterizerOutput* retained : snapshot ) retained->release();
+						throw;
 					}
 				}
-				if( pending.empty() ) {
-					mDelegate = candidate;
-					candidate = nullptr;
-					mResolved = choice;
-					break;
-				}
 			}
+			candidate->FreeRasterizerOutputs();
+			candidate->SetProgressCallback( progress );
 			try {
-				for( IRasterizerOutput* output : pending ) {
+				for( IRasterizerOutput* output : snapshot ) {
 					candidate->AddRasterizerOutput(output);
 				}
 			}
 			catch( ... ) {
-				for( IRasterizerOutput* output : pending ) output->release();
+				for( IRasterizerOutput* output : snapshot ) output->release();
 				throw;
 			}
-			for( IRasterizerOutput* output : pending ) output->release();
+			for( IRasterizerOutput* output : snapshot ) output->release();
+			{
+				std::lock_guard<std::mutex> lock( outsMutex );
+				if( revision != mReplayRevision ) continue;
+				mDelegate = candidate;
+				candidate = nullptr;
+				mResolved = choice;
+				break;
+			}
 		}
 
 	} );
@@ -1023,10 +1033,18 @@ void AutoRasterizer::DetachFromScene( const IScene* pScene )
 //
 void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 {
-	Rasterizer::SetProgressCallback( pFunc );
-	if( mDelegate ) {
-		mDelegate->SetProgressCallback( pFunc );
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		if( pProgressFunc != pFunc ) {
+			pProgressFunc = pFunc;
+			++mReplayRevision;
+		}
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
 	}
+	if( delegate ) delegate->SetProgressCallback( pFunc );
+	safe_release(delegate);
 }
 
 void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
@@ -1035,6 +1053,7 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 	IRasterizer* delegate = nullptr;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
+		if( wrapperAdded ) ++mReplayRevision;
 		delegate = mDelegate;
 		if( delegate ) delegate->addref();
 	}
@@ -1058,18 +1077,32 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 
 void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
 {
-	Rasterizer::RemoveRasterizerOutput( ro );
-	if( Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate ) ) {
-		delegate->RemoveRasterizerOutput( ro );
+	const bool wrapperRemoved = UnregisterRasterizerOutput( ro );
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		if( wrapperRemoved ) ++mReplayRevision;
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
 	}
+	if( Rasterizer* concrete = dynamic_cast<Rasterizer*>(delegate) ) {
+		concrete->RemoveRasterizerOutput( ro );
+	}
+	safe_release(delegate);
 }
 
 void AutoRasterizer::FreeRasterizerOutputs()
 {
-	Rasterizer::FreeRasterizerOutputs();
-	if( mDelegate ) {
-		mDelegate->FreeRasterizerOutputs();
+	const bool wrapperReleased = ReleaseRasterizerOutputs();
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		if( wrapperReleased ) ++mReplayRevision;
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
 	}
+	if( delegate ) delegate->FreeRasterizerOutputs();
+	safe_release(delegate);
 }
 
 unsigned int AutoRasterizer::PredictTimeToRasterizeScene(

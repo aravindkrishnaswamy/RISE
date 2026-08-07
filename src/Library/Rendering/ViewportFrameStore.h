@@ -291,8 +291,9 @@ namespace RISE
 				const EncodeOpts&   opts ) const;
 
 			//! Variant: encode into an arbitrary IWriteBuffer (for
-			//! tests, network mirrors, in-memory previews).  Same
-			//! return semantics as the path-taking overload.
+			//! tests, network mirrors, in-memory previews). Fire frames
+			//! return false because this sink cannot transactionally carry
+			//! the required provenance sidecar; use SaveAs for artifacts.
 			bool SaveTo(
 				IWriteBuffer&       dst,
 				IFrameEncoder*      encoder,

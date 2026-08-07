@@ -244,6 +244,7 @@ namespace RISE
 			//! If an encoder with the same FormatName is already
 			//! registered, the old one is released and replaced.
 			void Register( IFrameEncoder* encoder );
+			bool Unregister( const std::string& formatName );
 
 			//! Lookup by format name.  Returns nullptr if not found.
 			//! The returned pointer's lifetime is bounded by the

@@ -43,6 +43,8 @@
 #include "Shaders/DistributionTracingShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Rendering/FrameStore.h"
+#include "Rendering/FileRasterizerOutput.h"
+#include "Rendering/FrameEncoders.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
@@ -8684,6 +8686,15 @@ bool Job::AddFileRasterizerOutput(
 			szPattern ? szPattern : "(null)" );
 		return true;
 	}
+	const FileRasterizerOutput::FRO_TYPE outputType =
+		static_cast<FileRasterizerOutput::FRO_TYPE>(type);
+	const char* formatName = FileRasterizerOutput::FormatNameForType(outputType);
+	if( !FrameEncoderRegistry::Get().ByFormatName(formatName) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddFileRasterizerOutput:: encoder '%s' is unavailable in this build",
+			formatName );
+		return false;
+	}
 
 	COLOR_SPACE gc = eColorSpace_sRGB;
 	switch( color_space )
@@ -8738,9 +8749,11 @@ bool Job::AddFileRasterizerOutput(
 	}
 
 	IRasterizerOutput* ro = 0;
-	RISE_API_CreateFileRasterizerOutput(
+	if( !RISE_API_CreateFileRasterizerOutput(
 		&ro, szPattern, bMultiple, type, bpp, gc,
-		(Scalar)exposureEV, dt, exrc, exr_with_alpha );
+		(Scalar)exposureEV, dt, exrc, exr_with_alpha ) || !ro ) {
+		return false;
+	}
 
 	pRasterizer->AddRasterizerOutput( ro );
 	safe_release( ro );
@@ -9766,12 +9779,6 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		}
 	}
 
-	if( FrameStore* store = pRasterizer->GetFrameStore() ) {
-		FrameStore::Metadata& metadata = store->MutableMeta();
-		metadata.renderFidelityStatus = status;
-		metadata.renderReasonCodes.assign(reasons.begin(),reasons.end());
-		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
-	}
 	const bool predictiveRejected = m_firePredictiveRequested &&
 		hasFireMedia && (!predictiveAllowed || transportPreview);
 	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
@@ -9787,6 +9794,12 @@ bool Job::PrepareFireRenderFidelityMetadata()
 			"[%g,%g] nm): %s", static_cast<double>(wavelengthMin),
 			static_cast<double>(wavelengthMax), joined.str().c_str() );
 		return false;
+	}
+	if( FrameStore* store = pRasterizer->GetFrameStore() ) {
+		FrameStore::Metadata& metadata = store->MutableMeta();
+		metadata.renderFidelityStatus = status;
+		metadata.renderReasonCodes.assign(reasons.begin(),reasons.end());
+		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
 	}
 	return true;
 }

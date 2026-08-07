@@ -323,6 +323,7 @@ namespace RISE
 			// happen (the base class already uses `mutable` for state
 			// reached from those const methods).
 			mutable IRasterizer*			mDelegate;
+			mutable unsigned long long	mReplayRevision;
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
 

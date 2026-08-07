@@ -234,32 +234,6 @@ void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 	}
 }
 
-namespace
-{
-	// Map the legacy FRO_TYPE enum to the FrameEncoderRegistry's
-	// FormatName string.  Order matches FRO_TYPE values:
-	//   TGA=0, PPM=1, PNG=2, HDR=3, TIFF=4, RGBEA=5, EXR=6.
-	const char* FormatNameForType( FileRasterizerOutput::FRO_TYPE t )
-	{
-		switch ( t ) {
-			case FileRasterizerOutput::TGA:   return "TGA";
-			case FileRasterizerOutput::PPM:   return "PPM";
-			case FileRasterizerOutput::PNG:   return "PNG";
-			case FileRasterizerOutput::HDR:   return "HDR";
-			case FileRasterizerOutput::TIFF:  return "TIFF";
-			case FileRasterizerOutput::RGBEA: return "RGBEA";
-			case FileRasterizerOutput::EXR:   return "EXR";
-		}
-		// Match the legacy WriteImageToFile switch's `default: PPM`
-		// fallback (FileRasterizerOutput.cpp pre-L3, lines 311-316):
-		// out-of-range FRO_TYPE values produced a PPM file rather
-		// than dropping the render.  Preserve that for byte-identity
-		// of any (real or future) scene that hits an unknown enum.
-		// See L3 adversarial review HIGH-1.
-		return "PPM";
-	}
-}
-
 // L8 — Build a FileEncoderObserver bound to `store` and register it.
 // Caller has either just allocated `store` (legacy mode) or just
 // received it from the rasterizer (bound mode).  Returns false on

@@ -54,6 +54,20 @@ namespace RISE
 				return t == HDR || t == RGBEA || t == EXR;
 			}
 
+			static const char* FormatNameForType( const FRO_TYPE t )
+			{
+				switch( t ) {
+				case TGA: return "TGA";
+				case PPM: return "PPM";
+				case PNG: return "PNG";
+				case HDR: return "HDR";
+				case TIFF: return "TIFF";
+				case RGBEA: return "RGBEA";
+				case EXR: return "EXR";
+				}
+				return "PPM";
+			}
+
 		protected:
 			char				szPattern[1024];
 			bool				bMultiple;
