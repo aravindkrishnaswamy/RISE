@@ -311,6 +311,22 @@ future trajectories show reflexive escape-param spam (habituation
 transplanted), the gate reverts to Warning; watched passively via the
 standing trajectory record (grep allow_non_sampling_emitter).
 
+**POST-ARC E2 (2026-08-06, `0a8d14bb`): the triage intake stops
+pre-abstracting subjects.**  The dreamscape census traced the build
+model's "headless tube named dragon" partly to OUR intake restatement
+("a stylized, abstract figure...") — and baseline testing showed the
+bug is the prompt's, not the provider's (qwen reproduced "abstract"
+1/3).  New triage prompt: subjects restated by physical parts, five
+abstraction words banned, a "Must read clearly in frame" manifest for
+multi-subject briefs, empty augmentation for trivial edits.  Protocol:
+iterated locally against qwen at $0 (v1 0/3 on the dragons case → v4
+24/24, ask-side guard 6/6, JSON 100% — the 2-question bracket
+flakiness fixed by WORKED EXAMPLES where prose reminders failed, the
+law at micro scale), then verified 10/10 on gemini, then shipped.
+Verdict schema and Swift parser untouched.  Next live dragons-prompt
+GUI run is the E2 measurement; E3 (figure scaffolds) remains the
+heavier lever for the decomposition gap itself.
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
