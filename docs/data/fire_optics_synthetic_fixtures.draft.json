@@ -1,0 +1,31 @@
+{
+ "compiled": "2026-08-06",
+ "draft_record_id_sha256_of_payload": "078da4e00bc13b179e6cb9579fd6f25ffd3a2f9c4bd4af5f0a61c2c8441d4d62",
+ "notes": [
+  "g=0.50 for hot soot is the fixture value only; the predictive preset adopted g_hot=0.22 (owner, 2026-08-05)",
+  "the condensed n=0.5 fixture describes the aged/droplet regime; the predictive fresh-flaming preset computes n~1.78 - the divergence is intentional and documented in FIRE_OPTICS_PRESET_V1.md SS4.4"
+ ],
+ "provenance": "FIRE_SMOKE_DESIGN.md SS12 'Phase-function form / provisional optics fixtures' (lines ~4287-4294 at r45+): values quoted verbatim from the design's closed decision; design-owned, not literature-derived. E=0.26 is the SS12 Phase-A analytic default/regression fixture (Dalzell-Sarofim m=1.57-0.56i -> E=0.2595, quoted as 0.26).",
+ "record_kind": "synthetic_regression_fixtures",
+ "record_name": "fire-optics-synthetic-fixtures-v1",
+ "record_status": "SYNTHETIC_NON_PREDICTIVE__REGRESSION_FIXTURES_ONLY",
+ "schema_version": "draft-1",
+ "semantics": "These values exist to exercise chromatic transport and constituent mixing in regression tests. They are NOT physical presets, satisfy no SS1 requirement, and must NEVER be consumed by a predictive path. Distinct record ID from the predictive presets is REQUIRED (owner ruling 2026-08-05) so fixture and preset provenance cannot be confused.",
+ "values": {
+  "E_eff_fixture": 0.26,
+  "fresh_smoke_cool_carbon": {
+   "g": 0.6,
+   "n_exponent": 1.2,
+   "omega": 0.6
+  },
+  "hot_soot": {
+   "g": 0.5,
+   "omega": 0.1
+  },
+  "organic_droplets_condensed": {
+   "g": 0.7,
+   "n_exponent": 0.5,
+   "omega": 0.9
+  }
+ }
+}

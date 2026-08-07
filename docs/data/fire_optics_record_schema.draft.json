@@ -1,0 +1,34 @@
+{
+ "compiled": "2026-08-06",
+ "draft_record_id_sha256_of_payload": "fb9bd8c445beacdcfa53e550f91dc446465d7d7387ea4e9a5821355cc50938db",
+ "encoding": "final form RISE-CBOR64-v1 per SS8; record ID = SHA-256 of exact bytes; draft JSONs carry the same fields with draft IDs",
+ "hashed_payload_required_fields": {
+  "explicitly_excluded_from_hash": [
+   "nothing - the entire canonical record byte string is hashed per SS8; there is no unhashed sidecar within a record"
+  ],
+  "per_value": [
+   "value (or table with columns+units)",
+   "uncertainty {magnitude, kind (1-sigma | 95%-expanded | range | assumption), one_sided flag where applicable}",
+   "provenance {source citation, locator (table/eq/page/figure), access status, secondary-source flags}",
+   "applicability (domain/regime statement where narrower than the record's)"
+  ],
+  "record_level": [
+   "schema_version",
+   "record_kind",
+   "record_name",
+   "version",
+   "record_status",
+   "quantity_semantics (for derived/effective quantities)",
+   "certified_domains (every tabulated/interpolated axis)",
+   "interpolation_rule (scheme + continuity class)",
+   "out_of_domain_policy",
+   "phi_T_partition (hot-soot and cool-carbon records; bit-identical)"
+  ]
+ },
+ "purpose": "Pins WHICH fields belong inside the hashed canonical payload of every fire-optics record: per-value provenance, uncertainty, and applicability ARE part of the record identity - two records differing only in provenance or uncertainty must have different IDs (SS8 metadata-completeness rule: physically different records must never carry indistinguishable metadata; a changed uncertainty IS a different record).",
+ "ratification": "This pin unblocks implementation now; formal ratification happens in the design loop at record freeze. If the owner's freeze changes the field set, record IDs change with it - which is the correct behavior.",
+ "record_kind": "record_schema_pin",
+ "record_name": "fire-optics-canonical-provenance-schema-v1",
+ "record_status": "DRAFT_SCHEMA_PIN__RATIFY_AT_DESIGN_LOOP_FREEZE",
+ "schema_version": "draft-1"
+}
