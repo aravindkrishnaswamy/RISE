@@ -9,7 +9,7 @@
   "verdict": "PASS for wood-class flaming smoke"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "08f0063bcbcbfe14712ba20ec4cb83265a19a90074f719ee2228cb3f5b043447",
+ "draft_record_id_sha256_of_payload": "917bed9be04c37f08312ef7090668566edae27e16e7c5c30697a12d860b2685b",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: B&B explicitly makes no statement outside 400-700nm; the record needs the C&C dispersion (or another source) for thermal wavelengths - couples to the E(m) record's >6.4um verification",
   "omega/g wavelength dependence beyond 633nm: assemble from RDG-FA once morphology record adopted",
@@ -102,7 +102,7 @@
   "n_spectral_exponent": {
    "applicability": "soot-dominated flaming smoke over the certified 380-780nm domain",
    "certified_domain_provenance": "see git history b943ee4b/5cad879a: extended [400,700]->[380,780] on Heuser 375-870 AAE fit, Ouf 632.8+1064 measurements, Forestieri 405-630",
-   "out_of_domain_policy": "no preview extrapolation rule named; out-of-domain rejects in both modes",
+   "out_of_domain_policy": "NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.",
    "provenance": {
     "access": "all open",
     "citation": "B&B 2006 SS7.6 p.53/SS9.1 p.58; Ouf et al. 2008 FSS 9:231 p.238; Heuser et al. 2025 ACP 25:6407 Table 2 + abstract (AAE(375-870)=1.05 pure EC); Chen et al. 2007 ES&T 41:4317 (derived ~1.18)",
