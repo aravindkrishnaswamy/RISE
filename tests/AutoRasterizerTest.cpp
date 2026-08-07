@@ -60,8 +60,10 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice
 #include "../src/Library/Rendering/AutoRasterizer.h"        // ResolvedIntegrator()
+#include "../src/Library/Rendering/Rasterizer.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -262,9 +264,11 @@ static ImageStats RenderAndComputeStats(
 
 static ImageStats RenderFireReferencePreview(
 	const char* scenePath,
-	const char* rasterizerKeyword )
+	const char* rasterizerKeyword,
+	const unsigned int seed )
 {
 	ImageStats result{};
+	GlobalRNG() = RandomNumberGenerator(seed);
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv(&pJob) || !pJob ) return result;
 	if( !pJob->LoadAsciiSceneViaCst(scenePath) ||
@@ -274,6 +278,12 @@ static ImageStats RenderFireReferencePreview(
 		safe_release(pJob);
 		return result;
 	}
+	Rasterizer* pConcrete = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() );
+	if( !pConcrete ) {
+		safe_release(pJob);
+		return result;
+	}
+	pConcrete->ForTest_SetThreadCountOverride( 1 );
 
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
@@ -287,34 +297,47 @@ static ImageStats RenderFireReferencePreview(
 
 static void TestFirePelPreviewDivergence()
 {
-	const ImageStats pel = RenderFireReferencePreview(
-		"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene",
-		"pathtracing_pel_rasterizer" );
-	const ImageStats spectral = RenderFireReferencePreview(
-		"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
-		"pathtracing_spectral_rasterizer" );
-	Check( pel.valid && spectral.valid,
-		"Phase-A Pel and spectral reference scenes both render in-process" );
-	if( !pel.valid || !spectral.valid ) return;
-
-	double divergence[3] = {0.0,0.0,0.0};
-	for( unsigned int channel = 0; channel < 3u; ++channel ) {
-		const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
-		divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
+	const unsigned int seeds[] = { 1u, 7u, 42u, 314159u, 0xdeadbeefu };
+	double maximumDivergence[3] = {0.0,0.0,0.0};
+	bool allValid = true;
+	for( const unsigned int seed : seeds ) {
+		const ImageStats pel = RenderFireReferencePreview(
+			"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene",
+			"pathtracing_pel_rasterizer", seed );
+		const ImageStats spectral = RenderFireReferencePreview(
+			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+			"pathtracing_spectral_rasterizer", seed );
+		allValid = allValid && pel.valid && spectral.valid;
+		if( !pel.valid || !spectral.valid ) continue;
+		double divergence[3] = {0.0,0.0,0.0};
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
+			divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
+			maximumDivergence[channel] = std::max(
+				maximumDivergence[channel], divergence[channel] );
+		}
+		std::cout << "  seed " << seed << " Pel=(" << pel.mean[0] << ","
+			<< pel.mean[1] << "," << pel.mean[2] << ") spectral=("
+			<< spectral.mean[0] << "," << spectral.mean[1] << ","
+			<< spectral.mean[2] << ") divergence=(" << divergence[0] << ","
+			<< divergence[1] << "," << divergence[2] << ")" << std::endl;
 	}
-	std::cout << "  Phase-A Pel/spectral means Pel=(" << pel.mean[0] << ","
-		<< pel.mean[1] << "," << pel.mean[2] << ") spectral=("
-		<< spectral.mean[0] << "," << spectral.mean[1] << ","
-		<< spectral.mean[2] << ") divergence=(" << divergence[0] << ","
-		<< divergence[1] << "," << divergence[2] << ")" << std::endl;
+	Check( allValid,
+		"Phase-A Pel and spectral reference scenes render for every recorded seed" );
+	if( !allValid ) return;
 
-	// Recorded on the 32x48, 256-spp Phase-A reference across repeated
-	// multi-thread runs: (1.13%,0.73%,0.08%) and (0.16%,2.51%,0.20%).
-	// The 5% cap leaves measured accumulation-order headroom while remaining
-	// a useful gross-regression guard.  These are consistency-only bounds,
-	// deliberately not an absolute Pel radiance or fidelity requirement.
-	Check( divergence[0] < 0.05 && divergence[1] < 0.05 &&
-		divergence[2] < 0.05,
+	// Measured single-thread against preset-v1 record
+	// 0b57c2edfb73e06b5d2ceac10f778d1386554be8818434dfc4c71dd9a11d2502
+	// at commit 15aa5447 over the paired seeds above: red 0.56-1.26%, green
+	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The
+	// coefficient change explains the blue shift: E_eff rises from the
+	// fixture's constant 0.26 to 0.420169 at 550 nm (+61.6%; +76.9% at
+	// 450 nm and +53.4% at 650 nm), while its 380/780 tilt rises from 1.0
+	// to 1.311 (+31.1%).  The 12% blue cap leaves 1.39 percentage points
+	// above the measured maximum; red and green retain the fixture-era 5%
+	// tripwire.  These are consistency-only bounds.
+	Check( maximumDivergence[0] < 0.05 && maximumDivergence[1] < 0.05 &&
+		maximumDivergence[2] < 0.12,
 		"Pel preview channel-mean divergence stays inside the recorded bound" );
 }
 
