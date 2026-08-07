@@ -4270,6 +4270,24 @@ static void TestAdversarialOracleControls()
 			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
 		insertMsg( "Ground geometry.",
 			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
+		// E4 SEQUENCING GATE: this control scripts one insert_chunk/
+		// propose_patch per message (10 mutating calls land right here,
+		// exactly the gate's default threshold) -- a draft-render check-in
+		// resets the blind-edit streak before the remaining 8 mutating
+		// calls below, so none of them (including herogeom, the SDF the
+		// checkpoints under test require) get refused by the gate.  A real
+		// model built under the gate would have to check in here too; this
+		// keeps the control's SCRIPTED sequence gate-compliant without
+		// changing what it ultimately builds or which checkpoints it
+		// targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		insertMsg( "Backdrop geometry.",
 			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
 		insertMsg( "Key light geometry.",
@@ -4441,6 +4459,24 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
 			"tool_use" ) );
+		// E4 SEQUENCING GATE: msg_3 (5 mutating calls) + msg_4 (4) = 9
+		// consecutive mutating calls with no look yet -- msg_5's 3 geometry
+		// inserts below would push the streak to 10/11/12, tripping the
+		// gate's default threshold (10) partway through msg_5 and refusing
+		// msg_6's herogeom (the SDF chunk the checkpoints under test
+		// require) along with everything after it.  A draft-render
+		// check-in here resets the streak, exactly what a real model built
+		// under the gate would have to do -- keeps the control's SCRIPTED
+		// sequence gate-compliant without changing what it ultimately
+		// builds or which checkpoints it targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4b",
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
 			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
 			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
@@ -4588,6 +4624,24 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
 			"tool_use" ) );
+		// E4 SEQUENCING GATE: msg_3 (5 mutating calls) + msg_4 (4) = 9
+		// consecutive mutating calls with no look yet -- msg_5's 3 geometry
+		// inserts below would push the streak to 10/11/12, tripping the
+		// gate's default threshold (10) partway through msg_5 and refusing
+		// msg_6's herogeom (the SDF chunk the checkpoints under test
+		// require) along with everything after it.  A draft-render
+		// check-in here resets the streak, exactly what a real model built
+		// under the gate would have to do -- keeps the control's SCRIPTED
+		// sequence gate-compliant without changing what it ultimately
+		// builds or which checkpoints it targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4b",
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
 			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
 			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
@@ -7245,6 +7299,213 @@ static void TestChunkNamePrefixCountGeometryCategoryRedProof()
 	}
 }
 
+//----------------------------------------------------------------------
+// P1b (E4 fix round): the SEQUENCING GATE pinned through the REAL
+// AgentEvalRunner::RunScenario driving loop -- not a hand-fed
+// AgentChatLoop unit test (AgentChatLoopTest.cpp already covers the
+// gate's OWN arithmetic/envelope in isolation), but the actual
+// interception order this eval-runner host wires in
+// (AgentEvalRunner.cpp: GateRefusalResponse checked BEFORE
+// dispatcher->HandleLine).  A scripted fixture crosses the gate's
+// default threshold (10) WITHOUT a look, so the gate genuinely fires
+// mid-replay against a LIVE AgentSession + AgentRpcDispatcher over a
+// real document -- not a synthesized envelope a unit test hands itself.
+//
+// Two sub-scenarios, both built on the SAME 10-setup-mutations prefix
+// (streak reaches exactly 10, none of the ten refused):
+//   (a) "blocked": the 11th mutating call (a distinctively-named
+//       chunk) is attempted and the turn ends immediately, no look.
+//       Proves the gate's refusal is not merely a WIRE-level rejection
+//       message -- the chunk is genuinely ABSENT from the document a
+//       real dispatcher produced, and the recorded trajectory record
+//       for that call carries applied:false/status:"rejected".
+//   (b) "recovered": the SAME sequence, but after the refused attempt
+//       the turn renders (the look, resetting the streak) and retries
+//       the SAME chunk -- proves it lands, and lands EXACTLY ONCE (the
+//       first attempt never reached the dispatcher at all, so there is
+//       only ever one real insert to land).
+//
+// RED-PROOF (manual, not re-run by this binary): reordering
+// AgentEvalRunner.cpp's tool-dispatch loop so GateRefusalResponse is
+// checked AFTER dispatcher->HandleLine (or removed) makes (a)'s
+// chunk_absent assertion FAIL -- the chunk really would have been
+// inserted for real before the gate's envelope overwrote the response
+// the model sees.  Verified by hand against that mutation while
+// developing this test; left as a comment (not a compile-time toggle)
+// since the production code has exactly one correct order and this
+// suite should not carry a deliberately-wrong branch just to exercise it.
+//----------------------------------------------------------------------
+static void TestSequencingGateRealRunScenario()
+{
+	std::printf( "P1b: SEQUENCING GATE fires through the REAL RunScenario driving loop...\n" );
+
+	// Shared prefix: read_document, then 10 setup mutations (each a
+	// distinct, disposable painter chunk) -- the streak reaches exactly
+	// the default threshold (10) without any of these ten being refused
+	// (GateRefusalResponse checks the streak BEFORE it advances, so the
+	// 10th setup call is checked at streak==9, still under threshold).
+	auto buildPrefix = []() {
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		for( int i = 1; i <= 10; ++i ) {
+			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_setup" + std::to_string( i ),
+				"Setup chunk " + std::to_string( i ) + ".",
+				{ { "insert_chunk", InsertChunkInput(
+					"uniformcolor_painter\n{\n\tname pnt_gate_" + std::to_string( i ) +
+					"\n\tcolor 0.1 0.1 0.1\n}" ) } }, "tool_use" ) );
+		}
+		return fixture;
+	};
+	// The chunk every "target" call below names -- distinctive enough
+	// that argsContains can select it out of the 10 setup calls above
+	// (none of which contain the substring "gate_target").
+	const std::string kTargetChunk =
+		"uniformcolor_painter\n{\n\tname pnt_gate_target\n\tcolor 0.2 0.3 0.4\n}";
+
+	// ---- (a) blocked: 11th mutating call refused, turn ends immediately ----
+	{
+		const std::string dir = ScratchRunDir( "p1b_gate_blocked" );
+		std::string fixture = buildPrefix();
+		// The 11th mutating call -- streak is 10 (>= threshold) when this
+		// is checked, so GateRefusalResponse refuses it BEFORE dispatch.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt",
+			"Adding the target chunk.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		// No look -- the turn just ends.  Proves the refusal alone (with
+		// no recovery) really does leave the document untouched.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_done",
+			"Stopped -- built 10 setup chunks, the 11th was refused.", {}, "end_turn" ) );
+
+		AgentEvalScenario s;
+		s.id = "p1b_gate_blocked";
+		s.title = s.id;
+		s.sceneInline = kScene;
+		s.autonomy = "commit";
+		s.prompts.push_back( std::string( "Insert 11 chunks without ever looking." ) );
+		s.replayFixturePath = dir + "/" + s.id + ".fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ), "P1b(a): fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text",
+			"P1b(a): run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( h.result.toolCalls == 12,
+			"P1b(a): 12 tool calls dispatched through the loop (1 read_document + 10 setup + 1 refused) -- "
+			"the refused call still counts as dispatched (it reached the eval runner's per-call accounting), "
+			"it just never reached the RPC dispatcher" );
+
+		// applied:false / status:"rejected" in the RECORDED trajectory
+		// result for the target attempt.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"insert_chunk\","
+				"\"argsContains\":\"pnt_gate_target\",\"expect\":\"rejected\"}]}]",
+				cps, err ), "P1b(a): toolOutcomes checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): the target chunk's insert_chunk call recorded applied:false/status:\"rejected\" "
+				"(detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// The document a REAL dispatcher produced never got the chunk.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_absent\",\"name\":\"pnt_gate_target\"}]",
+				cps, err ), "P1b(a): chunk_absent checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): pnt_gate_target is ABSENT from the final document -- the gate genuinely stopped "
+				"the mutation before the dispatcher, not merely relabeled its result "
+				"(detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// The 10 setup chunks DID land -- proves the gate refuses ONLY the
+		// (threshold+1)-th call, not the whole batch.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_gate_10\"}]",
+				cps, err ), "P1b(a): chunk_exists(pnt_gate_10) checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): the 10th SETUP chunk landed normally -- only the 11th call was refused" );
+		}
+	}
+
+	// ---- (b) recovered: refused -> look -> retry -> lands exactly once ----
+	{
+		const std::string dir = ScratchRunDir( "p1b_gate_recovered" );
+		std::string fixture = buildPrefix();
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt1",
+			"Adding the target chunk.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		// The look -- resets the streak to 0.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_look",
+			"That was refused -- let me check the scene before continuing.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		// Retry the IDENTICAL chunk -- the gate is clear now, so this one
+		// reaches the dispatcher and actually applies.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt2",
+			"Retrying the target chunk now that I've looked.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_done",
+			"Built the target chunk after looking.", {}, "end_turn" ) );
+
+		AgentEvalScenario s;
+		s.id = "p1b_gate_recovered";
+		s.title = s.id;
+		s.sceneInline = kScene;
+		s.autonomy = "commit";
+		s.prompts.push_back( std::string( "Insert 11 chunks without looking, then look and retry the refused one." ) );
+		s.replayFixturePath = dir + "/" + s.id + ".fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ), "P1b(b): fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text",
+			"P1b(b): run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( h.result.toolCalls == 14,
+			"P1b(b): 14 tool calls dispatched (1 read_document + 10 setup + 1 refused + 1 render + 1 retry)" );
+
+		// First attempt refused, retry applied -- SAME chunk, both outcomes
+		// pinned on the ONE trajectory via occurrence:first/last.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"trajectory\",\"toolOutcomes\":["
+				"{\"name\":\"insert_chunk\",\"argsContains\":\"pnt_gate_target\",\"occurrence\":\"first\",\"expect\":\"rejected\"},"
+				"{\"name\":\"insert_chunk\",\"argsContains\":\"pnt_gate_target\",\"occurrence\":\"last\",\"expect\":\"applied\"}"
+				"]}]",
+				cps, err ), "P1b(b): toolOutcomes checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(b): first attempt rejected, retry (after the look) applied -- both pinned on the "
+				"SAME trajectory (detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// It landed -- and since the first attempt never reached the
+		// dispatcher at all (proven by (a) above, same code path), the
+		// retry is the ONLY real insert that ever happened: "exactly
+		// once" holds by construction, not merely by the document's
+		// duplicate-name rejection rule masking a double-apply.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_gate_target\"}]",
+				cps, err ), "P1b(b): chunk_exists checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(b): pnt_gate_target EXISTS in the final document after the look+retry -- lands exactly "
+				"once (detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -7291,6 +7552,7 @@ int main()
 	TestParamBindingCheckpoint();
 	TestChunkNamePrefixCountCheckpoint();
 	TestChunkNamePrefixCountGeometryCategoryRedProof();
+	TestSequencingGateRealRunScenario();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 

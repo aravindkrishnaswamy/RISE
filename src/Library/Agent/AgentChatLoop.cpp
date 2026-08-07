@@ -400,6 +400,51 @@ namespace RISE
 				std::lock_guard<std::mutex> lock( ReasoningEffortCacheMutex() );
 				ReasoningEffortCacheSet().insert( ReasoningEffortCacheKey( providerName, modelId ) );
 			}
+
+			//! SEQUENCING GATE (see the file header): the DOCUMENT-MUTATING
+			//! verb allowlist -- shared by AddToolResult's streak accounting
+			//! and GateRefusalResponse's gate check, so the two can never
+			//! disagree about which verbs count.  The BATCH forms
+			//! (insert_chunks / propose_patches / insert_material_scaffold /
+			//! insert_geometry_scaffold) count too -- they still edit the
+			//! document with no visual observation in between, same
+			//! blind-edit risk, and if anything a LARGER one (N edits land
+			//! per call, so a model that batches would otherwise never
+			//! accrue the streak at all and the gate would silently never
+			//! fire for exactly the models making the biggest unobserved
+			//! edits).
+			bool IsMutatingToolName( const std::string& v )
+			{
+				return v == "insert_chunk" || v == "insert_chunks" ||
+				       v == "insert_material_scaffold" ||
+				       v == "insert_geometry_scaffold" ||
+				       v == "propose_patch" || v == "propose_patches" ||
+				       v == "remove_chunk";
+			}
+
+			//! The VISUAL-OBSERVE verb allowlist -- resets the blind-edit
+			//! streak (see IsMutatingToolName's doc).  compare_to_reference
+			//! belongs here for the same reason render/read_image/
+			//! read_viewport do: AgentRpc.cpp documents it as a PURE READ
+			//! that RENDERS (a visual side-by-side comparison), and the file
+			//! header's IMAGE RETENTION rule already treats it as an
+			//! image-bearing result alongside those three -- it was simply
+			//! missing from this specific allowlist.  query_object_at is
+			//! also a look even though it is not image-bearing itself: it
+			//! answers from a RENDERED frame (see AgentSession.cpp's
+			//! EphemeralRenderCacheGuard), so querying it requires the scene
+			//! to have actually been rendered first.  ask_user is
+			//! DELIBERATELY neither this nor a mutation: it neither mutates
+			//! the document nor observes the rendered result, so (like
+			//! read_document/read_schema/read_skill/validate) it leaves the
+			//! streak UNCHANGED -- pausing to ask a clarifying question is
+			//! not progress toward the blind-edit failure mode this gate
+			//! guards against, so it should neither reset nor grow it.
+			bool IsVisualObserveToolName( const std::string& v )
+			{
+				return v == "render" || v == "read_image" || v == "read_viewport" ||
+				       v == "query_object_at" || v == "compare_to_reference";
+			}
 		}
 
 		const char* AgentChatLoop::SystemPrompt()
@@ -521,7 +566,7 @@ namespace RISE
 			// Describes the transcript we just cleared, so it goes with it.
 			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
-			mPendingBuildNudge.clear();
+			mGateRefusedCallIds.clear();
 			// Describe the transcript we just cleared, like mCompactedEntryCount.
 			mDriverNoteCount = 0;
 			mLastDriverNoteText.clear();
@@ -766,8 +811,21 @@ namespace RISE
 			}
 
 			// A new conversation-turn: the tool-round cap starts over, and so
-			// does the blind-edit run (the user just spoke -- a fresh
-			// instruction, not a continuation of an unseen edit streak).
+			// does the SEQUENCING GATE's blind-edit streak.  DECISION (E4):
+			// a new user message ALWAYS resets the streak, even mid-gate --
+			// i.e. a redirect ("actually, make it blue instead") immediately
+			// un-gates the next mutating call, without requiring a look
+			// first.  Justification: the gate exists to stop a model from
+			// compounding errors it never checked, but a human who just
+			// spoke has, by definition, looked at SOMETHING (the running
+			// conversation/scene state) and made a deliberate judgment call
+			// to redirect -- inheriting a stale gate from an unrelated prior
+			// streak would refuse the model's very first attempt to act on
+			// fresh, human-supervised instructions, for no safety benefit.
+			// This mirrors the tool-round cap immediately above it (also
+			// reset unconditionally by a new user turn) and was already
+			// true of the pre-gate blind-edit-NUDGE streak this replaces --
+			// carried forward unchanged, now serving the gate instead.
 			mToolRounds = 0;
 			mBlindEditStreak = 0;
 		}
@@ -814,9 +872,12 @@ namespace RISE
 			// before system in every provider's cache prefix, so one changed
 			// system byte invalidates tools + system + the whole history for
 			// that request AND for the next one (which differs again by
-			// reverting).  The blind-edit nudge used to be appended here; it
-			// now rides the conversation instead -- see
-			// AppendPendingBuildNudge.
+			// reverting).  An early blind-edit NUDGE design used to append
+			// advisory text here (and, after that, to the conversation
+			// instead) -- both were retired for the SEQUENCING GATE (see the
+			// file header), which needs no system-prompt or conversation
+			// content at all: it answers a tool call, through the ordinary
+			// ToolResults path.
 			const std::string systemPrompt = ComposeSystemPrompt();
 
 			// The key goes straight through to the codec's auth header and
@@ -988,6 +1049,42 @@ namespace RISE
 			return line;
 		}
 
+		std::string AgentChatLoop::GateRefusalResponse( const ChatToolCall& call, int rpcId )
+		{
+			if( !IsMutatingToolName( call.name ) ) return std::string();
+			if( mBlindEditGateThreshold <= 0 ) return std::string();
+			if( mBlindEditStreak < mBlindEditGateThreshold ) return std::string();
+
+			// Gated: this call would be the (threshold+1)-th (or later)
+			// consecutive mutation with no look between.  Mark the call id
+			// so the AddToolResult the caller makes next (with THIS
+			// envelope, per the contract) knows to skip the streak
+			// accounting -- a refused call never touched the document, so
+			// it is not itself a blind edit and must not advance the streak
+			// further (every refusal reports the SAME streak count until a
+			// look resets it).
+			mGateRefusedCallIds.push_back( call.id );
+
+			char msg[400];
+			std::snprintf( msg, sizeof( msg ),
+				"%d document edits in a row without looking. Rendering catches compounding "
+				"errors -- call render (a small preview is enough) or read_viewport, then "
+				"edits continue.",
+				mBlindEditStreak );
+
+			JsonValue result = JsonValue::MakeObject();
+			result.set( "applied",   JsonValue::MakeBool( false ) );
+			result.set( "status",    JsonValue::MakeString( "rejected" ) );
+			result.set( "retriable", JsonValue::MakeBool( true ) );
+			result.set( "message",   JsonValue::MakeString( msg ) );
+
+			JsonValue env = JsonValue::MakeObject();
+			env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			env.set( "id", JsonValue::MakeNumber( static_cast<double>( rpcId ) ) );
+			env.set( "result", result );
+			return JsonSerialize( env );
+		}
+
 		void AgentChatLoop::AddToolResult( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
 		{
 			// Accept a result ONLY for a pending, not-yet-answered call of
@@ -1005,60 +1102,38 @@ namespace RISE
 
 			mPendingResults.push_back( std::make_pair( call, rawJsonRpcResponseLine ) );
 
-			// BLIND-EDIT NUDGE (see kDefaultBlindEditNudgeThreshold): track a
-			// run of document mutations with no VISUAL observation between
-			// them.  A model building a whole scene can slip into "insert
-			// forever, never look" -- measured: a local model emitted 70-100+
-			// chunks and rendered zero times.  We reset the run on any visual
-			// observe (render / read_image / read_viewport / query_object_at),
+			// SEQUENCING GATE (see kDefaultBlindEditGateThreshold and the
+			// file header): track a run of document mutations with no
+			// VISUAL observation between them.  A model building a whole
+			// scene can slip into "insert forever, never look" -- measured:
+			// a local model emitted 70-100+ chunks and rendered zero times.
+			// We reset the run on any visual observe (IsVisualObserveToolName),
 			// leave it UNCHANGED on a non-visual read (read_document /
 			// read_schema / read_skill / validate -- inspecting text or the
-			// registry is not looking at the RENDERED result), and grow it on
-			// a mutation.  When it hits a positive multiple of the threshold
-			// we arm a reminder (appended to the transcript as a user message
-			// by AppendPendingBuildNudge, once the whole parallel round is
-			// answered and flushed).  Threshold <= 0 disables it.
+			// registry is not looking at the RENDERED result) and on
+			// ask_user (see IsVisualObserveToolName's doc), and grow it on a
+			// mutation (IsMutatingToolName) -- UNLESS this particular result
+			// is itself a GateRefusalResponse the caller just built for this
+			// exact call id, in which case nothing was actually mutated and
+			// the streak must not move at all (see GateRefusalResponse's
+			// doc).  GateRefusalResponse is what actually REFUSES a call
+			// once the streak reaches the threshold; this block only ever
+			// counts.
 			{
-				const std::string& v = call.name;
-				// The BATCH forms (insert_chunks / propose_patches /
-				// insert_material_scaffold / insert_geometry_scaffold)
-				// count as a mutation here too --
-				// they still edit the document with no visual observation
-				// in between, same blind-edit risk, and if anything a
-				// LARGER one (N edits land per call, so a model that
-				// batches would otherwise never accrue the streak at all and
-				// the nudge would silently stop firing for exactly the models
-				// making the biggest unobserved edits).
-				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
-				                          v == "insert_material_scaffold" ||
-				                          v == "insert_geometry_scaffold" ||
-				                          v == "propose_patch" || v == "propose_patches" ||
-				                          v == "remove_chunk" );
-				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
-				                               v == "read_viewport" || v == "query_object_at" );
-				// ask_user is EXPLICITLY neither: it neither mutates the
-				// document nor observes the rendered result, so (like
-				// read_document/read_schema/read_skill/validate above) it
-				// falls through both branches below and leaves the streak
-				// UNCHANGED -- pausing to ask a clarifying question is not
-				// progress toward the blind-edit failure mode this nudge
-				// guards against, so it should neither reset nor grow it.
-				if( isVisualObserve ) {
-					mBlindEditStreak = 0;
+				bool wasGateRefused = false;
+				for( std::size_t i = 0; i < mGateRefusedCallIds.size(); ++i ) {
+					if( mGateRefusedCallIds[i] == call.id ) {
+						wasGateRefused = true;
+						mGateRefusedCallIds.erase( mGateRefusedCallIds.begin() + i );
+						break;
+					}
 				}
-				else if( isMutation ) {
-					++mBlindEditStreak;
-					if( mBlindEditNudgeThreshold > 0 &&
-					    ( mBlindEditStreak % mBlindEditNudgeThreshold ) == 0 ) {
-						char note[320];
-						std::snprintf( note, sizeof( note ),
-							"[system reminder] You have made %d document edits in a row without "
-							"rendering. Building blind compounds errors -- call render (or "
-							"read_viewport) now to SEE the current scene, check the framing, "
-							"lighting and placement of what you have built so far, then continue "
-							"from what you observe rather than inserting more unseen.",
-							mBlindEditStreak );
-						mPendingBuildNudge = note;
+				if( !wasGateRefused ) {
+					if( IsVisualObserveToolName( call.name ) ) {
+						mBlindEditStreak = 0;
+					}
+					else if( IsMutatingToolName( call.name ) ) {
+						++mBlindEditStreak;
 					}
 				}
 			}
@@ -1357,12 +1432,6 @@ namespace RISE
 			// pending calls.  Clear defensively all the same.)
 			if( mPendingCalls.empty() ) {
 				mPendingResults.clear();
-				// Defensive, and unreachable in practice: the nudge is armed
-				// ONLY inside AddToolResult, which requires a pending call,
-				// so a nudge always finds its flush on the main path below.
-				// Draining it here too makes "an armed nudge is never
-				// stranded" true by construction rather than by argument.
-				AppendPendingBuildNudge();
 				return;
 			}
 
@@ -1540,78 +1609,6 @@ namespace RISE
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
-
-			// BLIND-EDIT NUDGE: deliver it as conversation content, directly
-			// after the tool results whose flush it followed.  Runs AFTER the
-			// elision passes above so their entry indices are unperturbed.
-			AppendPendingBuildNudge();
-		}
-
-		void AgentChatLoop::AppendPendingBuildNudge()
-		{
-			if( mPendingBuildNudge.empty() ) return;
-
-			// WHY CONVERSATION CONTENT, NOT THE SYSTEM PROMPT.  The nudge
-			// used to be appended to BuildRequest's system prompt.  That made
-			// the system block differ on exactly the request carrying it --
-			// and differ again on the next one, which reverted -- so a single
-			// nudge cost TWO cache-invalidated turns on every provider:
-			// tools render before system in the cached prefix, so a changed
-			// system byte invalidates tools + system + everything after it
-			// (Anthropic's explicit cache_control breakpoint, OpenAI/xAI
-			// automatic prefix caching, and Gemini implicit caching all key
-			// on the leading prefix).  Appending a message instead EXTENDS
-			// the prefix rather than editing it, which is free.
-			//
-			// The reminder reaches the model with the same force -- it is a
-			// message it must read to answer, not a system line it may weigh
-			// against the rest of the prompt -- and it now persists in the
-			// history rather than evaporating after one request, so a model
-			// that keeps editing keeps seeing it.  This is deliberate: the
-			// alternative (drop it next turn) would mean rewriting the
-			// message suffix, which re-introduces the invalidation.
-			//
-			// WIRE POSITION: emitted from FlushPendingToolResults, i.e.
-			// immediately after the ToolResults entry that answers the
-			// assistant turn -- assistant(tool_use) -> user(tool_results) ->
-			// user(nudge).  Every tool_use is therefore still answered by the
-			// message that directly follows it, so no tool_result is
-			// orphaned.  Adjacent user entries are an ALREADY-SUPPORTED shape
-			// on all four codecs (AddUserMessage produces the same
-			// tool_results -> user(text) pair): Anthropic combines
-			// consecutive same-role messages, Gemini's BuildRequest merges a
-			// run of adjacent user contents with the functionResponse parts
-			// FIRST, and the OpenAI-family codecs emit a flat message list
-			// where a trailing user message is unremarkable.
-			//
-			// ROLE: DriverNote, not User.  The WIRE is unchanged -- rawJson
-			// still comes from the same MakeUserEntry a real user message
-			// uses, and BuildRequest reads rawJson only -- but a GUI that
-			// renders out of this transcript can now tell that the loop, not
-			// the human, said this, and render it as a system notice rather
-			// than as the user's chat bubble.  See Role::DriverNote's doc.
-			ChatTranscriptEntry entry;
-			entry.role = ChatTranscriptEntry::Role::DriverNote;
-			entry.displayText = mPendingBuildNudge;
-			entry.rawJson = mCodec->MakeUserEntry( mPendingBuildNudge );
-			mTranscript.push_back( entry );
-
-			// Display-mirror drivers (the Mac ChatViewModel) never read the
-			// transcript, so they watermark against this counter instead --
-			// see DriverNoteCount().
-			++mDriverNoteCount;
-			mLastDriverNoteText = mPendingBuildNudge;
-
-			// Eval-harness E1: recorded as a history edit, NOT as a `user`
-			// record.  A `user` record would inflate the running user-turn
-			// count that AgentEvalRunner's toolCallAfterUserTurn check walks,
-			// silently changing what that assertion means -- the nudge is a
-			// loop-synthesized message, not a turn the user took.
-			RecordHistoryEdit( "blind_edit_nudge", 0,
-			                   static_cast<long long>( entry.rawJson.size() ),
-			                   static_cast<int>( mTranscript.size() - 1 ) );
-
-			mPendingBuildNudge.clear();
 		}
 
 		void AgentChatLoop::ElideSupersededToolResults()

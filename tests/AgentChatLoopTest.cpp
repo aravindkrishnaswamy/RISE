@@ -1097,8 +1097,7 @@ static void TestAnthropicRollingCacheBreakpoint()
 	loop.AddUserMessage( "Describe the scene. " + pad );
 
 	// read_schema is deliberately neither a mutation nor a visual observe,
-	// so the blind-edit nudge (which would rewrite the system prompt and
-	// legitimately break the prefix comparison) can never arm here.
+	// so the SEQUENCING GATE (AgentChatLoop.h) can never trip here.
 	const std::string fixtureA = AnthropicFixture(
 		"[{\"type\":\"text\",\"text\":\"Reading the schema.\"},"
 		"{\"type\":\"tool_use\",\"id\":\"toolu_R1\",\"name\":\"read_schema\",\"input\":{}}]",
@@ -2140,97 +2139,235 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		       "an explicit host cap survives a switch back to a hosted provider" );
 	}
 
-	// BLIND-EDIT NUDGE, STREAK ACCOUNTING: which verbs grow the run, which
-	// reset it, and where the threshold trips.  Guards the behaviour that
-	// targets the measured "insert 70+ chunks, never render".  WHERE the
-	// reminder is delivered (a conversation message, never the system
-	// prompt) and its wire validity are T44's job, not this block's.
+	// SEQUENCING GATE (E4), STREAK ACCOUNTING AND REFUSAL: which verbs grow
+	// the run, which reset it, and where the threshold trips into an
+	// outright REFUSAL -- replacing the earlier blind-edit NUDGE (an
+	// advisory message found UNSAFE in production: a model echoed it back
+	// as its own final text -- see AgentChatLoop.h's SEQUENCING GATE
+	// block).  Guards the same measured failure the nudge targeted
+	// ("insert 70+ chunks, never render").  `stepWith` below mirrors the
+	// HOST's dispatch loop (AgentEvalRunner.cpp / ChatViewModel.swift):
+	// check the gate BEFORE dispatch; a non-empty refusal is fed straight
+	// to AddToolResult and the "dispatcher" (an always-succeeds stub here)
+	// is never consulted -- so a refused call never actually mutates.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
-		Check( loop.BlindEditNudgeThreshold() == 3, "the nudge threshold is settable" );
+		loop.SetBlindEditGateThreshold( 3 );   // small K so the test is short
+		Check( loop.BlindEditGateThreshold() == 3, "the gate threshold is settable" );
 		loop.AddUserMessage( "build a scene" );
 
 		const std::string insertFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_i\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
 		const std::string renderFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_r\",\"name\":\"render\",\"input\":{}}]", "tool_use" );
+		const std::string viewportFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_v\",\"name\":\"read_viewport\",\"input\":{}}]", "tool_use" );
+		const std::string compareFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_c\",\"name\":\"compare_to_reference\",\"input\":{}}]", "tool_use" );
 		const std::string schemaFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_s\",\"name\":\"read_schema\",\"input\":{}}]", "tool_use" );
-		auto okResult = []( const std::string& id ) {
-			return std::string( "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
-		};
-		auto stepWith = [&]( const std::string& fx ) {
+		int rpcId = 1;
+
+		// Returns true iff THIS call was gate-refused.  Whenever it IS
+		// refused, also pins the envelope's exact shape: applied:false,
+		// status:"rejected", retriable:true, and a message naming BOTH
+		// cheap exits (render, read_viewport) -- the standard rejection
+		// envelope the task brief specifies verbatim.
+		auto stepWith = [&]( const std::string& fx ) -> bool {
 			ChatStepResult st = loop.HandleResponse( 200, fx );
-			if( st.toolCalls.size() == 1 )
-				loop.AddToolResult( st.toolCalls[0], okResult( st.toolCalls[0].id ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) {
+				const JsonValue env = ParseBody( gate );
+				const JsonValue& result = env.get( "result" );
+				Check( result.get( "applied" ).isBool() && result.get( "applied" ).asBool() == false,
+				       "gate envelope: applied is false" );
+				Check( result.get( "status" ).asString() == "rejected",
+				       "gate envelope: status is \"rejected\"" );
+				Check( result.get( "retriable" ).isBool() && result.get( "retriable" ).asBool() == true,
+				       "gate envelope: retriable is true" );
+				const std::string msg = result.get( "message" ).asString();
+				Check( msg.find( "render" ) != std::string::npos &&
+				       msg.find( "read_viewport" ) != std::string::npos,
+				       "gate envelope: message names BOTH cheap exits (render, read_viewport)" );
+				loop.AddToolResult( call, gate );
+				return true;
+			}
+			loop.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			return false;
 		};
 
-		// Two inserts (streak 1,2): under threshold 3 -> no nudge yet.
+		// Threshold arithmetic: the gate fires EXACTLY at the
+		// (threshold+1)-th consecutive mutating call -- the streak is
+		// checked BEFORE it would advance, so a call that brings the
+		// streak TO the threshold still succeeds; the NEXT one is refused.
+		Check( !stepWith( insertFx ), "gate: 1st insert -- not refused (streak 0 -> 1)" );
+		Check( !stepWith( insertFx ), "gate: 2nd insert -- not refused (streak 1 -> 2)" );
+		// A non-visual read (read_schema) neither advances nor trips the
+		// gate -- and is NEVER itself refused (it is not a mutating verb).
+		Check( !stepWith( schemaFx ), "gate: read_schema does not advance the streak, and is never refused" );
+		Check( !stepWith( insertFx ), "gate: 3rd insert -- not refused (streak 2 -> 3, reaches the threshold)" );
+		Check( stepWith( insertFx ), "gate: 4th insert -- the (threshold+1)-th mutating call -- REFUSED" );
+
+		// Continued refusal without a look: the 5th mutating call in a row
+		// is ALSO refused -- the gate does not self-clear.
+		Check( stepWith( insertFx ), "gate: 5th insert -- still refused (no look yet)" );
+
+		// Non-mutating calls pass through freely WHILE GATED.
+		Check( !stepWith( schemaFx ), "gate: non-mutating calls pass through freely while gated" );
+
+		// refused -> look -> same mutation retried -> applies.  render is
+		// itself never gated (not a mutating verb) and resets the streak.
+		Check( !stepWith( renderFx ), "gate: render is itself never gated" );
+		Check( !stepWith( insertFx ), "gate: after a look, the SAME mutation applies again" );
+
+		// Re-arm via 3 more inserts (streak 1 -> 2 -> 3 -> refused on the
+		// 4th), then prove read_viewport is ALSO an honest looking verb,
+		// not just render -- the gap this slice's audit found and closed.
 		stepWith( insertFx );
 		stepWith( insertFx );
-		Check( loop.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "nudge: below threshold, no reminder in the request" );
+		Check( stepWith( insertFx ), "gate: re-armed -- REFUSED again after another 3 blind inserts" );
+		Check( !stepWith( viewportFx ), "gate: read_viewport is itself never gated, and resets the streak" );
+		Check( !stepWith( insertFx ), "gate: after read_viewport, the SAME mutation applies again" );
 
-		// A non-visual read (read_schema) does NOT reset the streak.
-		stepWith( schemaFx );
-		// Third insert -> streak hits 3 == threshold -> arm the nudge.
+		// Same again for compare_to_reference -- documented in
+		// AgentRpc.cpp as a PURE READ that RENDERS, and already treated as
+		// image-bearing by the IMAGE RETENTION rule; it was simply missing
+		// from the streak's own visual-observe allowlist before this slice.
 		stepWith( insertFx );
-		const ChatHttpRequest armed = loop.BuildRequest( kApiKey );
-		Check( armed.body.find( "edits in a row without rendering" ) != std::string::npos,
-		       "nudge: at the threshold, the reminder is on the wire" );
-
-		// A visual observe (render) RESETS the streak, so no SECOND reminder
-		// is added: three more inserts would be needed to re-arm.  Count
-		// occurrences rather than presence -- the first reminder is now a
-		// permanent history message, so a presence check would be vacuous.
-		const std::size_t armedCount = CountOccurrences( armed.body, "edits in a row without rendering" );
-		Check( armedCount == 1, "nudge: exactly one reminder at the threshold" );
-		stepWith( renderFx );
 		stepWith( insertFx );
-		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body,
-		                         "edits in a row without rendering" ) == armedCount,
-		       "nudge: a render resets the streak -- one edit after it does not re-arm" );
+		Check( stepWith( insertFx ), "gate: re-armed -- REFUSED again before the compare_to_reference check" );
+		Check( !stepWith( compareFx ), "gate: compare_to_reference is itself never gated, and resets the streak" );
+		Check( !stepWith( insertFx ), "gate: after compare_to_reference, the SAME mutation applies again" );
+	}
 
-		// Disable it entirely: threshold 0 -> never nudges no matter how many edits.
-		AgentChatLoop off;
-		off.SetProvider( ChatProvider::Anthropic );
-		off.SetBlindEditNudgeThreshold( 0 );
-		off.AddUserMessage( "build" );
-		for( int i = 0; i < 8; ++i ) {
-			ChatStepResult st = off.HandleResponse( 200, insertFx );
-			if( st.toolCalls.size() == 1 )
-				off.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
-		}
-		Check( off.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "nudge: threshold 0 disables it -- 8 blind edits, still no reminder" );
+	// USER-TURN RESET (decision, see AddUserMessage's doc in
+	// AgentChatLoop.cpp): a fresh user message resets the streak
+	// IMMEDIATELY, even mid-gate -- no look required.  A human who just
+	// spoke has, by construction, exercised their own judgment about the
+	// current state; inheriting a stale gate would refuse the model's
+	// very first attempt to act on fresh, human-supervised instructions
+	// for no safety benefit -- this mirrors the pre-existing tool-round
+	// cap reset on the very same call.
+	{
+		AgentChatLoop redirect;
+		redirect.SetProvider( ChatProvider::Anthropic );
+		redirect.SetBlindEditGateThreshold( 3 );
+		redirect.AddUserMessage( "build a scene" );
+		const std::string insertFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_ri\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
+		int rpcId = 1;
+		auto redirectStep = [&]() -> bool {
+			ChatStepResult st = redirect.HandleResponse( 200, insertFx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = redirect.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { redirect.AddToolResult( call, gate ); return true; }
+			redirect.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			return false;
+		};
+		Check( !redirectStep(), "gate/user-reset: setup insert 1/4 -- not refused" );
+		Check( !redirectStep(), "gate/user-reset: setup insert 2/4 -- not refused" );
+		Check( !redirectStep(), "gate/user-reset: setup insert 3/4 -- not refused" );
+		Check( redirectStep(), "gate/user-reset: setup insert 4/4 -- REFUSED (gate armed)" );
+		redirect.AddUserMessage( "actually, make it blue instead" );
+		Check( !redirectStep(),
+		       "gate/user-reset: a new user message resets the streak -- the redirect's first "
+		       "mutating call applies without requiring a look first" );
+	}
 
-		// EVERY mutating verb must grow the streak -- including the BATCH
-		// forms.  RED-PROVE target: a batch verb missing from the isMutation
-		// set makes the nudge silently STOP FIRING for exactly the models
-		// making the largest unobserved edits (a model that batches all its
-		// work never accrues a streak at all), which is the opposite of the
-		// intent.  Each batch verb is driven on its own fresh loop so one
-		// covering for the other cannot hide a miss.
+	// BATCH SEMANTICS: one insert_chunks/propose_patches call = ONE streak
+	// increment, regardless of how many elements the batch touches.
+	// RED-PROVE target: if a batch call were (mis-)counted per-ELEMENT, a
+	// single 5-element batch call would already exceed a threshold-3 gate
+	// on its own, refusing calls that never should have been refused.
+	{
 		const char* const kBatchVerbs[] = { "insert_chunks", "propose_patches" };
 		for( const char* verb : kBatchVerbs ) {
 			AgentChatLoop batch;
 			batch.SetProvider( ChatProvider::Anthropic );
-			batch.SetBlindEditNudgeThreshold( 3 );
+			batch.SetBlindEditGateThreshold( 3 );
 			batch.AddUserMessage( "build a scene" );
 			const std::string batchFx = AnthropicFixture(
 				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"" ) + verb +
 				"\",\"input\":{}}]", "tool_use" );
-			for( int i = 0; i < 3; ++i ) {
+			int rpcId = 1;
+			auto batchStep = [&]() -> bool {
 				ChatStepResult st = batch.HandleResponse( 200, batchFx );
-				if( st.toolCalls.size() == 1 )
-					batch.AddToolResult( st.toolCalls[0],
-						"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":2,\"total\":2,\"results\":[]}}" );
-			}
-			Check( batch.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) != std::string::npos,
-			       std::string( "nudge: " ) + verb + " COUNTS as a mutation -- 3 batch calls with no render arm the reminder" );
+				if( st.toolCalls.size() != 1 ) return false;
+				const ChatToolCall& call = st.toolCalls[0];
+				const std::string gate = batch.GateRefusalResponse( call, rpcId++ );
+				if( !gate.empty() ) { batch.AddToolResult( call, gate ); return true; }
+				batch.AddToolResult( call,
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":5,\"total\":5,\"results\":[]}}" );
+				return false;
+			};
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 1 (5 elements) -- ONE increment, not refused" );
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 2 -- ONE increment, not refused" );
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 3 -- ONE increment, not refused "
+			       "(streak 2->3; a per-ELEMENT count would already be 15, far past threshold 3)" );
+			Check( batchStep(), std::string( "gate/batch[" ) + verb +
+			       "]: call 4 -- REFUSED, proving the gate counts CALLS, not elements" );
 		}
+	}
+
+	// EVERY mutating verb must grow the streak -- including BOTH scaffold
+	// forms.  RED-PROVE target: a verb missing from IsMutatingToolName
+	// makes the gate silently never fire for exactly the models making the
+	// biggest unobserved edits.  Each verb is driven on its own fresh loop
+	// so one covering for another cannot hide a miss.
+	{
+		const char* const kMutatingVerbs[] = {
+			"insert_chunk", "insert_chunks", "insert_material_scaffold",
+			"insert_geometry_scaffold", "propose_patch", "propose_patches",
+			"remove_chunk"
+		};
+		for( const char* verb : kMutatingVerbs ) {
+			AgentChatLoop mv;
+			mv.SetProvider( ChatProvider::Anthropic );
+			mv.SetBlindEditGateThreshold( 3 );
+			mv.AddUserMessage( "build a scene" );
+			int rpcId = 1;
+			bool refused = false;
+			for( int i = 0; i < 4 && !refused; ++i ) {
+				const std::string fx = AnthropicFixture(
+					std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_mv\",\"name\":\"" ) + verb +
+					"\",\"input\":{}}]", "tool_use" );
+				ChatStepResult st = mv.HandleResponse( 200, fx );
+				if( st.toolCalls.size() != 1 ) break;
+				const ChatToolCall& call = st.toolCalls[0];
+				const std::string gate = mv.GateRefusalResponse( call, rpcId++ );
+				if( !gate.empty() ) { mv.AddToolResult( call, gate ); refused = true; }
+				else mv.AddToolResult( call,
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":2,\"total\":2,\"results\":[]}}" );
+			}
+			Check( refused, std::string( "gate: " ) + verb +
+			       " COUNTS as a mutation -- 4 calls with no look trip the gate" );
+		}
+	}
+
+	// Disable it entirely: threshold 0 -> never refuses no matter how many
+	// mutating calls.
+	{
+		AgentChatLoop off;
+		off.SetProvider( ChatProvider::Anthropic );
+		off.SetBlindEditGateThreshold( 0 );
+		off.AddUserMessage( "build" );
+		const std::string insertFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_off\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
+		int rpcId = 1;
+		bool everRefused = false;
+		for( int i = 0; i < 8; ++i ) {
+			ChatStepResult st = off.HandleResponse( 200, insertFx );
+			if( st.toolCalls.size() != 1 ) continue;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = off.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { everRefused = true; off.AddToolResult( call, gate ); }
+			else off.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		Check( !everRefused, "gate: threshold 0 disables it -- 8 blind edits, never refused" );
 	}
 
 	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
@@ -8574,40 +8711,208 @@ static void TestReasoningSurvivalMatrix()
 }
 
 //----------------------------------------------------------------------
-// T44: BLIND-EDIT NUDGE DELIVERY -- the nudge rides the CONVERSATION, not
-// the system prompt.
+// T44: DEGENERATE-TURN RETRY-ONCE PARITY (E4 Part 2, defense-in-depth).
 //
-// WHY THIS TEST EXISTS.  The nudge used to be appended to BuildRequest's
-// system prompt.  Tools render before system in every provider's cached
-// prefix, so that made the system block differ on exactly the request
-// carrying the nudge -- and differ again on the next one, which reverted
-// -- invalidating tools + system + the whole history for TWO turns per
-// nudge, on all four codecs (Anthropic's explicit cache_control
-// breakpoint, OpenAI/xAI automatic prefix caching, Gemini implicit
-// caching).  The load-bearing assertion is therefore NOT "the nudge is
-// somewhere in the body" but "the system prompt is BYTE-IDENTICAL on
-// every request of a session that fires a nudge, AND the nudge still
-// reaches the model, AND the transcript is still wire-valid".
+// AgentEvalRunner.cpp's driving loop already retries a genuine degenerate
+// turn (finish=stop, no text, no tool calls -- ChatStepResult::
+// retryDegenerateTurn) once, verbatim, before treating it as a terminal
+// provider_error: nothing was RECORDED for the degenerate response
+// (AgentChatLoop.cpp's HandleResponse: "ProviderError: record nothing"),
+// so BuildRequest at the top of the next attempt rebuilds from the
+// UNCHANGED transcript -- a true verbatim resend needs no request change.
+// The Mac GUI driver (ChatViewModel.swift's driveTurn) did NOT have this
+// -- a degenerate turn there surfaced as a user-facing error requiring a
+// manual Retry click.  This slice ported the SAME retry-once policy into
+// ChatViewModel.swift (untestable here; a Swift driving loop) and added
+// the `attempt`/`retryOf` RecordHttpRound overload + `retryDegenerateTurn`
+// bridge property that make it possible.
 //
-// RED-PROVE: against the pre-fix loop, SystemPromptOf() differs on the
-// armed turn and the nudge is found inside the system block -- the
-// byte-identity and not-in-system assertions both fail on every
-// provider.  A test that only grepped the whole body would have passed
-// before AND after, which is exactly why the old nudge test did not
-// catch this.
+// THIS test is the LOOP-LEVEL seam that both hosts' retry policy is built
+// on top of -- mirroring AgentEvalReplayTest.cpp/AgentEvalCheckTest.cpp's
+// pattern (a scripted blank turn, retried once, accepted if blank again)
+// but driving AgentChatLoop directly, with NO eval-runner or Swift
+// dependency: it proves (a) HandleResponse marks a genuine blank turn
+// retryDegenerateTurn, (b) nothing is recorded so a verbatim resend is
+// possible, (c) a HOST implementing the retry-once policy (simulated
+// here exactly as ChatViewModel.swift's `degenerateTurnRetried` flag
+// does) gets ONE retry per round and no more, and (d) the retry rides the
+// trajectory as an honest sibling `llm` record (attempt 2, retry_of 1) --
+// same convention T33's TestMultimodalRetry pins for retryWithoutImages.
+//----------------------------------------------------------------------
+static void TestDegenerateTurnRetryParity()
+{
+	std::printf( "T44: degenerate-turn retry-once parity (E4 Part 2)...\n" );
+
+	const std::string blank = AnthropicFixture( "[]", "end_turn" );
+	const std::string real  = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Done.\"}]", "end_turn" );
+
+	// --- (a) One retry, then a real answer: the HOST's retry-once policy
+	//     (simulated exactly as ChatViewModel.swift's `degenerateTurnRetried`
+	//     local does) accepts the SECOND response and moves on. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-degen-44a";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "say hello" );
+		const std::size_t sizeBeforeRound = loop.TranscriptSize();
+
+		// Attempt 1: the provider serves a genuine blank turn.
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, blank, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, blank );
+		Check( st1.kind == ChatStepResult::Kind::ProviderError,
+		       "T44a: attempt 1 (blank) is a ProviderError" );
+		Check( st1.retryDegenerateTurn,
+		       "T44a: attempt 1 is marked verbatim-retriable" );
+		Check( loop.TranscriptSize() == sizeBeforeRound,
+		       "T44a: the blank attempt records NOTHING (verbatim resend is safe)" );
+
+		// HOST policy: retryDegenerateTurn && !alreadyRetriedThisRound ->
+		// retry.  BuildRequest rebuilds from the SAME unchanged transcript.
+		bool degenerateTurnRetried = false;
+		Check( st1.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44a: the host's retry-once gate admits this attempt" );
+		degenerateTurnRetried = true;
+
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		Check( !retryReq.body.empty(), "T44a: the verbatim retry request is non-empty" );
+
+		// Attempt 2: a real answer -- the retry succeeds.
+		loop.RecordHttpRound( 200, real, 6, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, real );
+		Check( st2.kind == ChatStepResult::Kind::FinalText,
+		       "T44a: attempt 2 (real answer) succeeds -- the retry recovered the turn" );
+		Check( loop.TranscriptSize() == sizeBeforeRound + 1,
+		       "T44a: the recovered turn records the assistant's FinalText entry "
+		       "(the user entry was already there before the round began)" );
+
+		// Trajectory: the retry rides as an honest sibling llm record.
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1, "T44a: one attempt-1 llm record (the blank turn)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T44a: the retry is one honest sibling llm record (attempt 2, retry_of 1) -- "
+		       "the trajectory SHOWS the retry happened" );
+	}
+
+	// --- (b) Blank AGAIN on the retry: at most ONE retry per round -- the
+	//     host's `degenerateTurnRetried` flag is already true, so the
+	//     second blank response falls through to the ordinary terminal
+	//     ProviderError instead of retrying forever. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-degen-44b";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "say hello" );
+
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, blank, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, blank );
+		Check( st1.retryDegenerateTurn, "T44b: attempt 1 (blank) is retriable" );
+
+		bool degenerateTurnRetried = false;
+		Check( st1.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44b: the host retries attempt 1" );
+		degenerateTurnRetried = true;
+		(void)loop.BuildRequest( kApiKey );
+
+		// Attempt 2: STILL blank.
+		loop.RecordHttpRound( 200, blank, 5, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, blank );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError && st2.retryDegenerateTurn,
+		       "T44b: attempt 2 is STILL a retriable-shaped blank turn" );
+		// The host's gate is now `!degenerateTurnRetried` == false -- it
+		// does NOT retry again.  RED-PROVE: a host that forgot the
+		// per-round flag (always retries whenever retryDegenerateTurn is
+		// true) would spin forever on a persistently-blank backend.
+		Check( !( st2.retryDegenerateTurn && !degenerateTurnRetried ),
+		       "T44b: the host's retry-once gate REFUSES a second retry this round" );
+
+		// Both attempts recorded nothing -- the transcript never grew.
+		Check( loop.TranscriptSize() == 1, "T44b: neither blank attempt recorded anything" );
+
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1 && llmAttempt2RetryOf1 == 1,
+		       "T44b: the trajectory shows BOTH attempts (1 and the one retry), and no more" );
+	}
+
+	// --- (c) A later round's OWN degenerate response gets its OWN retry
+	//     allowance -- the per-round flag resets once a round succeeds
+	//     (ChatViewModel.swift resets `degenerateTurnRetried` in the
+	//     .toolCalls case; here a FinalText round is the analogous
+	//     "this round succeeded" signal for the NEXT user turn). ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "first" );
+		bool degenerateTurnRetried = false;
+
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 200, real );
+		Check( st1.kind == ChatStepResult::Kind::FinalText, "T44c: round 1 succeeds outright" );
+		degenerateTurnRetried = false;   // a fresh round begins
+
+		// NOTE: `degenerateTurnRetried` here is a PLAIN TEST-LOCAL bool
+		// (mirroring the Swift local of the same name), already reset to
+		// false explicitly above -- AddUserMessage itself does nothing to
+		// it (the bool is host-local, reset by ChatViewModel.driveTurn's
+		// own scoping on the NEXT round, not by any AgentChatLoop call).
+		// This line only advances the CONVERSATION to a second user turn
+		// so round 2's fetch is the one under test.
+		loop.AddUserMessage( "second" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st2 = loop.HandleResponse( 200, blank );
+		Check( st2.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44c: round 2's own blank response gets its OWN retry allowance "
+		       "(not blocked by round 1, which never needed one)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T45 (E4 fix round, P2 sweep): the gate proved on Anthropic only so far
+// (the streak-accounting block above) now driven across ALL FIVE provider
+// codecs, plus the system-prompt byte-identity guard T44 used to carry --
+// resurrected in its GATE-ERA form (a refusal is an ordinary tool result,
+// not an injected message, so there is far less to prove than the old
+// nudge-delivery T44 did, but the ONE property that still matters --
+// GateRefusalResponse must never perturb ComposeSystemPrompt -- is not
+// automatically covered by the streak-accounting block, which never
+// re-reads the system prompt after a refusal).
 //----------------------------------------------------------------------
 
-// The system prompt AS SENT, extracted per provider from the request body
-// (each codec puts it in a different place -- Anthropic a one-element
-// `system` block array, Gemini `systemInstruction`, OpenAI Responses
-// `instructions`, Chat Completions the leading system message).
+// Extract the system prompt AS SENT, per provider, from a built request
+// body (each codec places it differently) -- the gate-era trim of the old
+// T44's SystemPromptOf: same extraction, no nudge-specific callers left.
 static std::string SystemPromptOf( ChatProvider provider, const std::string& body )
 {
 	const JsonValue root = ParseBody( body );
 	switch( provider ) {
 		case ChatProvider::Anthropic: {
 			const JsonValue& sys = root.get( "system" );
-			// The codec emits a plain string only for an EMPTY prompt.
 			if( sys.isString() ) return sys.asString();
 			return sys.at( 0 ).get( "text" ).asString();
 		}
@@ -8618,7 +8923,6 @@ static std::string SystemPromptOf( ChatProvider provider, const std::string& bod
 		case ChatProvider::XAI:
 		case ChatProvider::Local:
 		default: {
-			// Chat Completions: messages[0] is the synthesized system turn.
 			const JsonValue& m0 = root.get( "messages" ).at( 0 );
 			if( m0.get( "role" ).asString() != "system" ) return "<<no leading system message>>";
 			return m0.get( "content" ).asString();
@@ -8627,11 +8931,13 @@ static std::string SystemPromptOf( ChatProvider provider, const std::string& bod
 }
 
 // Collect every tool-CALL id and every tool-RESULT id a request body
-// carries, in the provider's own wire shape.  Equal multisets == every
-// call is answered and no answer is orphaned.
+// carries, in the provider's own wire shape -- the gate-era trim of the
+// old T44's CollectToolIds: same extraction (a gate refusal is answered
+// through the SAME AddToolResult/PackToolResults path any other tool
+// result uses, so there is nothing gate-specific to add here), just
+// retargeted to check a refusal round instead of a nudge round.
 static void CollectToolIds( ChatProvider provider, const JsonValue& root,
-                            std::vector<std::string>& calls,
-                            std::vector<std::string>& results )
+                            std::vector<std::string>& calls, std::vector<std::string>& results )
 {
 	if( provider == ChatProvider::Anthropic ) {
 		const JsonValue& msgs = root.get( "messages" );
@@ -8645,10 +8951,6 @@ static void CollectToolIds( ChatProvider provider, const JsonValue& root,
 		}
 	}
 	else if( provider == ChatProvider::Gemini ) {
-		// Gemini deliberately withholds a SYNTHESIZED id from the wire, so
-		// count parts rather than match ids: a functionResponse part is
-		// pushed as a fixed placeholder so the multisets still line up
-		// one-for-one when every call is answered.
 		const JsonValue& contents = root.get( "contents" );
 		for( std::size_t i = 0; i < contents.size(); ++i ) {
 			const JsonValue& parts = contents.at( i ).get( "parts" );
@@ -8679,65 +8981,33 @@ static void CollectToolIds( ChatProvider provider, const JsonValue& root,
 	}
 }
 
-// Provider-specific structural validity of a built request body.  `tag`
-// names the provider in the failure message.
-static void CheckWireValid( ChatProvider provider, const std::string& body, const char* tag )
+// Drive ONE provider-shaped tool-call round WITHOUT answering it --
+// mirrors DriveToolRound's per-provider single-call fixture shape exactly,
+// stopping short of AddToolResult so the caller can gate-check first.
+static ChatStepResult DriveOneToolCallNoAnswer( AgentChatLoop& loop, ChatProvider provider,
+                                                const std::string& verb, const std::string& id )
 {
-	const JsonValue root = ParseBody( body );
-	Check( !root.isNull(), std::string( "T44[" ) + tag + "]: the request body parses as JSON" );
-	if( root.isNull() ) return;
-
-	std::vector<std::string> calls, results;
-	CollectToolIds( provider, root, calls, results );
-	std::sort( calls.begin(), calls.end() );
-	std::sort( results.begin(), results.end() );
-	Check( calls == results,
-	       std::string( "T44[" ) + tag + "]: WIRE -- every tool call is answered exactly once "
-	       "(the nudge message did not orphan a tool result)" );
-
-	if( provider == ChatProvider::Anthropic ) {
-		Check( AnthropicToolCallsAllAnswered( root.get( "messages" ) ),
-		       "T44[anthropic]: WIRE -- each tool_use is answered by the message that "
-		       "DIRECTLY follows it (the nudge lands after the results, never between)" );
-	}
-	else if( provider == ChatProvider::Gemini ) {
-		// Gemini requires ALTERNATING roles.  The nudge is a second
-		// adjacent user entry, so this is the assertion that proves
-		// BuildRequest's user-run merge actually absorbed it.
-		const JsonValue& contents = root.get( "contents" );
-		bool alternates = true;
-		for( std::size_t i = 1; i < contents.size(); ++i ) {
-			if( contents.at( i ).get( "role" ).asString() ==
-			    contents.at( i - 1 ).get( "role" ).asString() ) alternates = false;
-		}
-		Check( alternates,
-		       "T44[gemini]: WIRE -- contents still strictly alternate user/model "
-		       "(the adjacent-user merge absorbed the nudge)" );
-		// ... and within the merged content the functionResponse parts must
-		// still LEAD, ahead of the nudge text part.
-		bool responsesLead = true;
-		for( std::size_t i = 0; i < contents.size(); ++i ) {
-			const JsonValue& parts = contents.at( i ).get( "parts" );
-			bool sawNonResponse = false;
-			for( std::size_t j = 0; j < parts.size(); ++j ) {
-				if( parts.at( j ).has( "functionResponse" ) ) {
-					if( sawNonResponse ) responsesLead = false;
-				}
-				else { sawNonResponse = true; }
-			}
-		}
-		Check( responsesLead,
-		       "T44[gemini]: WIRE -- functionResponse parts still LEAD the merged content, "
-		       "ahead of the nudge text part" );
-	}
+	const bool chatCompletions = ( provider == ChatProvider::Local || provider == ChatProvider::XAI );
+	std::string block;
+	if( provider == ChatProvider::Anthropic )
+		block = "{\"type\":\"tool_use\",\"id\":\"" + id + "\",\"name\":\"" + verb + "\",\"input\":{}}";
+	else if( provider == ChatProvider::Gemini )
+		block = "{\"functionCall\":{\"id\":\"" + id + "\",\"name\":\"" + verb + "\",\"args\":{}}}";
+	else if( chatCompletions )
+		block = "{\"id\":\"" + id + "\",\"type\":\"function\",\"function\":{\"name\":\"" + verb + "\",\"arguments\":\"{}\"}}";
+	else
+		block = "{\"type\":\"function_call\",\"call_id\":\"" + id + "\",\"name\":\"" + verb + "\",\"arguments\":\"{}\"}";
+	std::string fx;
+	if( provider == ChatProvider::Anthropic ) fx = AnthropicFixture( "[" + block + "]", "tool_use" );
+	else if( provider == ChatProvider::Gemini ) fx = GeminiFixture( "{\"parts\":[" + block + "],\"role\":\"model\"}", "STOP" );
+	else if( chatCompletions ) fx = OpenAIFixture( "null", "[" + block + "]", "tool_calls" );
+	else fx = "{\"status\":\"completed\",\"output\":[" + block + "]}";
+	return loop.HandleResponse( 200, fx );
 }
 
-static void TestBlindEditNudgeDelivery()
+static void TestSequencingGateAcrossProvidersAndByteIdentity()
 {
-	std::printf( "T44: blind-edit nudge rides the conversation, not the system prompt...\n" );
-
-	// The substring the nudge text is recognized by (see AddToolResult).
-	const char* const kNudgeMark = "edits in a row without rendering";
+	std::printf( "T45: SEQUENCING GATE across all 5 provider codecs + system-prompt byte-identity...\n" );
 
 	const struct { ChatProvider provider; const char* tag; } kCases[] = {
 		{ ChatProvider::Anthropic, "anthropic" },
@@ -8753,286 +9023,237 @@ static void TestBlindEditNudgeDelivery()
 
 		AgentChatLoop loop;
 		loop.SetProvider( provider );
-		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
+		loop.SetBlindEditGateThreshold( 3 );
 		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
 
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+		// BASELINE: the system prompt before the gate ever fires.
+		const ChatHttpRequest baselineReq = loop.BuildRequest( kApiKey );
+		const std::string baseline = SystemPromptOf( provider, baselineReq.body );
+		Check( !baseline.empty(),
+		       std::string( "T45[" ) + tag + "]: baseline system prompt is non-empty" );
 
-		// BASELINE: the system prompt on a turn that has fired no nudge.
-		const std::string baseline = SystemPromptOf( provider, loop.BuildRequest( kApiKey ).body );
-		Check( !baseline.empty() && baseline.find( kNudgeMark ) == std::string::npos,
-		       std::string( "T44[" ) + tag + "]: baseline system prompt is non-empty and carries no nudge" );
+		// P2 item 4: the streak-count pin -- reported EXACTLY at the
+		// threshold across EVERY refusal (never higher), guarding the
+		// reset-to-ABSOLUTE-ZERO design (mBlindEditStreak stays PINNED at
+		// the threshold while gated, per GateRefusalResponse's doc) --
+		// against a future "relative reset" refactor that decremented or
+		// rolled the streak back on each refusal instead, which would
+		// silently change the reported count and could reopen the
+		// original "streak keeps climbing forever" spiral the gate exists
+		// to stop.
+		std::vector<int> reportedStreaks;
+		auto extractStreakFromMessage = []( const std::string& msg ) -> int {
+			// "<N> document edits in a row without looking." -- N is the
+			// leading integer.
+			std::size_t i = 0;
+			while( i < msg.size() && isdigit( (unsigned char)msg[i] ) ) ++i;
+			if( i == 0 ) return -1;
+			return std::atoi( msg.substr( 0, i ).c_str() );
+		};
 
-		// Three blind edits -> the streak hits the threshold and the nudge
-		// is delivered.  Every BuildRequest along the way is checked.
-		bool armedSeen = false;
-		std::size_t sawNudgeInMessagesAt = 0;
-		for( int round = 1; round <= 6; ++round ) {
-			const std::string id = std::string( "call_" ) + tag + std::to_string( round );
-			Check( DriveToolRound( loop, provider, Vec1( "insert_chunk" ), Vec1( id ), Vec1( ok ) ),
-			       std::string( "T44[" ) + tag + "]: setup -- round " +
-			       std::to_string( round ) + " drives one insert_chunk" );
+		// Three setup mutations -- streak reaches the threshold (3), none
+		// of these three refused.
+		for( int i = 0; i < 3; ++i ) {
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_setup" ) + tag + std::to_string( i ) );
+			Check( st.toolCalls.size() == 1,
+			       std::string( "T45[" ) + tag + "]: setup round " + std::to_string( i ) + " parses" );
+			if( st.toolCalls.size() != 1 ) continue;
+			const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+			Check( gate.empty(),
+			       std::string( "T45[" ) + tag + "]: setup insert " + std::to_string( i ) + " is not refused" );
+			loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+		}
 
-			const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		// The system prompt must be BYTE-IDENTICAL after the setup rounds
+		// (GateRefusalResponse has not even run yet, so this is really
+		// just confirming ordinary tool rounds never touch it -- the
+		// interesting assertions are the ones AFTER a refusal, below).
+		const ChatHttpRequest afterSetupReq = loop.BuildRequest( kApiKey );
+		Check( SystemPromptOf( provider, afterSetupReq.body ) == baseline,
+		       std::string( "T45[" ) + tag + "]: system prompt unchanged after 3 setup mutations" );
 
-			// (1) THE LOAD-BEARING ASSERTION: byte-identical system prompt.
-			Check( SystemPromptOf( provider, req.body ) == baseline,
-			       std::string( "T44[" ) + tag + "]: system prompt is BYTE-IDENTICAL after round " +
-			       std::to_string( round ) + " (the static cache prefix is never invalidated)" );
+		// TWO refusals in a row -- both pinned to report the SAME streak
+		// (the threshold, 3), never climbing, per GateRefusalResponse's
+		// "stays PINNED" contract.
+		for( int i = 0; i < 2; ++i ) {
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_refused" ) + tag + std::to_string( i ) );
+			Check( st.toolCalls.size() == 1,
+			       std::string( "T45[" ) + tag + "]: refused-round " + std::to_string( i ) + " parses" );
+			if( st.toolCalls.size() != 1 ) continue;
+			const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+			Check( !gate.empty(),
+			       std::string( "T45[" ) + tag + "]: insert " + std::to_string( i ) + " past the threshold IS refused" );
+			const JsonValue env = ParseBody( gate );
+			const std::string msg = env.get( "result" ).get( "message" ).asString();
+			const int streak = extractStreakFromMessage( msg );
+			reportedStreaks.push_back( streak );
+			loop.AddToolResult( st.toolCalls[0], gate );
 
-			// (2) The nudge is never smuggled into the system block.
-			Check( SystemPromptOf( provider, req.body ).find( kNudgeMark ) == std::string::npos,
-			       std::string( "T44[" ) + tag + "]: the nudge is NOT in the system block" );
+			// P2 item 1 (byte-identity, the resurrected T44 property):
+			// STILL byte-identical after a refusal -- a refusal is an
+			// ordinary tool result, never touches ComposeSystemPrompt.
+			const ChatHttpRequest afterRefusalReq = loop.BuildRequest( kApiKey );
+			Check( SystemPromptOf( provider, afterRefusalReq.body ) == baseline,
+			       std::string( "T45[" ) + tag + "]: system prompt STILL byte-identical after refusal " +
+			       std::to_string( i ) );
 
-			// (3) The transcript stays wire-valid for this provider.
-			CheckWireValid( provider, req.body, tag );
-
-			if( req.body.find( kNudgeMark ) != std::string::npos && !armedSeen ) {
-				armedSeen = true;
-				sawNudgeInMessagesAt = static_cast<std::size_t>( round );
+			// P2 item 2: wire-validity of the refusal envelope itself --
+			// every tool call this request carries is answered exactly
+			// once, refusal included, same as any other tool result.
+			const JsonValue reqRoot = ParseBody( afterRefusalReq.body );
+			std::vector<std::string> wcalls, wresults;
+			CollectToolIds( provider, reqRoot, wcalls, wresults );
+			std::sort( wcalls.begin(), wcalls.end() );
+			std::sort( wresults.begin(), wresults.end() );
+			Check( wcalls == wresults,
+			       std::string( "T45[" ) + tag + "]: WIRE -- every tool call (incl. the refused one) is "
+			       "answered exactly once after refusal " + std::to_string( i ) );
+			if( provider == ChatProvider::Anthropic ) {
+				Check( AnthropicToolCallsAllAnswered( reqRoot.get( "messages" ) ),
+				       std::string( "T45[" ) + tag + "]: WIRE -- each tool_use answered by the DIRECTLY "
+				       "following message (the refusal orphans nothing)" );
 			}
 		}
+		Check( reportedStreaks.size() == 2 && reportedStreaks[0] == 3 && reportedStreaks[1] == 3,
+		       std::string( "T45[" ) + tag + "]: BOTH refusals report the SAME streak (3, the threshold) -- "
+		       "pinned at absolute zero-relative-to-threshold, not climbing per refusal "
+		       "(got " + ( reportedStreaks.size() == 2 ?
+		           std::to_string( reportedStreaks[0] ) + "," + std::to_string( reportedStreaks[1] ) :
+		           std::string( "<wrong count>" ) ) + ")" );
 
-		// (4) The model really does receive it -- and at the threshold, not
-		// before.  Three mutations with no observe is the trip point.
-		Check( armedSeen,
-		       std::string( "T44[" ) + tag + "]: the nudge REACHES the model (it is on the wire)" );
-		Check( sawNudgeInMessagesAt == 3,
-		       std::string( "T44[" ) + tag + "]: it arrives on the threshold round (3), not earlier" );
+		// The look -- resets the streak -- and the system prompt is STILL
+		// byte-identical (P2 item 1, the third leg of the cycle: pre-gate,
+		// refused, post-look).
+		{
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "render",
+				std::string( "call_look" ) + tag );
+			Check( st.toolCalls.size() == 1, std::string( "T45[" ) + tag + "]: look round parses" );
+			if( st.toolCalls.size() == 1 ) {
+				const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+				Check( gate.empty(), std::string( "T45[" ) + tag + "]: render is never itself gated" );
+				loop.AddToolResult( st.toolCalls[0],
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"width\":4,\"height\":4,"
+					"\"meanR\":0.1,\"meanG\":0.1,\"meanB\":0.1}}" );
+			}
+		}
+		const ChatHttpRequest afterLookReq = loop.BuildRequest( kApiKey );
+		Check( SystemPromptOf( provider, afterLookReq.body ) == baseline,
+		       std::string( "T45[" ) + tag + "]: system prompt byte-identical after the look "
+		       "(pre-gate -> refused -> post-look, the FULL cycle)" );
+
+		// Retry the SAME mutation -- applies now.
+		{
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_retry" ) + tag );
+			Check( st.toolCalls.size() == 1, std::string( "T45[" ) + tag + "]: retry round parses" );
+			if( st.toolCalls.size() == 1 ) {
+				const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+				Check( gate.empty(),
+				       std::string( "T45[" ) + tag + "]: after the look, the SAME mutation applies again" );
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			}
+		}
 	}
 
-	// Anthropic close-ups: the nudge is a real user MESSAGE positioned
-	// directly after the tool results, and it persists (a deliberate
-	// change from the old one-shot system-prompt splice -- dropping it
-	// again would rewrite the message suffix and re-introduce exactly the
-	// invalidation this design removes).
+	// P2 item 3: batch per-call counting with a POPULATED chunks array --
+	// the streak-accounting block above proves "one insert_chunks call ==
+	// one increment" with 5-element batches, but every element in THOSE
+	// batches was IDENTICAL boilerplate ({"applied":5,"total":5,
+	// "results":[]}) -- a per-ELEMENT accounting bug (e.g. iterating the
+	// input chunks array instead of counting the CALL) would not show up
+	// against an empty `results` echo.  This drives insert_chunks with a
+	// REAL, populated `chunks` INPUT array (5 distinct chunk texts) and a
+	// REAL, populated `results` OUTPUT array (5 distinct per-element
+	// outcomes) -- so a bug that (mis-)walked either array during
+	// accounting has real per-element data to walk.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
+		loop.SetBlindEditGateThreshold( 3 );
 		loop.AddUserMessage( "build a scene" );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+		int rpcId = 1;
 
-		const std::size_t sizeBefore = loop.TranscriptSize();
-		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_p1" ), Vec1( ok ) ) &&
-		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_p2" ), Vec1( ok ) ),
-		       "T44: setup -- two blind inserts trip a threshold of 2" );
+		JsonValue chunksIn = JsonValue::MakeArray();
+		JsonValue resultsOut = JsonValue::MakeArray();
+		for( int i = 0; i < 5; ++i ) {
+			JsonValue c = JsonValue::MakeObject();
+			c.set( "chunkText", JsonValue::MakeString(
+				"uniformcolor_painter\n{\n\tname pnt_batch_" + std::to_string( i ) +
+				"\n\tcolor 0.1 0.2 0.3\n}" ) );
+			chunksIn.push_back( c );
+			JsonValue r = JsonValue::MakeObject();
+			r.set( "applied", JsonValue::MakeBool( true ) );
+			r.set( "status", JsonValue::MakeString( "applied" ) );
+			r.set( "name", JsonValue::MakeString( "pnt_batch_" + std::to_string( i ) ) );
+			r.set( "kind", JsonValue::MakeString( "uniformcolor_painter" ) );
+			resultsOut.push_back( r );
+		}
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "chunks", chunksIn );
+		const std::string chunksArgsJson = JsonSerialize( params );
 
-		// Two rounds add 2 x (Assistant + ToolResults) = 4 entries, plus the
-		// ONE nudge entry the second round's flush appended.
-		Check( loop.TranscriptSize() == sizeBefore + 5,
-		       "T44: the nudge is exactly ONE extra transcript entry" );
-		const ChatTranscriptEntry& tail = loop.TranscriptAt( loop.TranscriptSize() - 1 );
-		Check( tail.role == ChatTranscriptEntry::Role::DriverNote,
-		       "T44: ... carried as a DriverNote entry (USER CONTENT on the wire, but "
-		       "tagged so a GUI does not attribute it to the human)" );
-		Check( tail.displayText.find( "edits in a row without rendering" ) != std::string::npos,
-		       "T44: ... whose displayText is the reminder, so a GUI can show the guard firing" );
-		Check( loop.TranscriptAt( loop.TranscriptSize() - 2 ).role ==
-		       ChatTranscriptEntry::Role::ToolResults,
-		       "T44: ... placed DIRECTLY after the tool-results entry (never between a "
-		       "tool_use and its answer)" );
+		JsonValue resultObj = JsonValue::MakeObject();
+		resultObj.set( "applied", JsonValue::MakeNumber( 5 ) );
+		resultObj.set( "total", JsonValue::MakeNumber( 5 ) );
+		resultObj.set( "results", resultsOut );
+		JsonValue envObj = JsonValue::MakeObject();
+		envObj.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		envObj.set( "id", JsonValue::MakeNumber( 1 ) );
+		envObj.set( "result", resultObj );
+		const std::string populatedBatchEnvelope = JsonSerialize( envObj );
 
-		// Persistence: still on the wire two requests later, with the system
-		// prompt still untouched.
-		const std::string sys1 = SystemPromptOf( ChatProvider::Anthropic, loop.BuildRequest( kApiKey ).body );
-		const ChatHttpRequest later = loop.BuildRequest( kApiKey );
-		Check( later.body.find( "edits in a row without rendering" ) != std::string::npos,
-		       "T44: the reminder PERSISTS in history (re-dropping it would rewrite the "
-		       "suffix and re-invalidate the cache)" );
-		Check( SystemPromptOf( ChatProvider::Anthropic, later.body ) == sys1,
-		       "T44: ... and the system prompt is still byte-identical" );
-	}
-
-	// ==============================================================
-	// T44b: the DriverNote ROLE IS INVISIBLE ON THE WIRE.
-	//
-	// Role::DriverNote exists purely so the two GUIs can tell a
-	// loop-injected note apart from something the user typed.  It must not
-	// cost one byte of any request: `rawJson` still comes from the same
-	// mCodec->MakeUserEntry() a real user message uses, and BuildRequest
-	// assembles `rawEntries` from rawJson ALONE (it never reads `role`).
-	//
-	// Proved by CONSTRUCTION rather than against a stored golden: drive the
-	// identical tool rounds on two loops, one where the nudge fires
-	// (DriverNote entry) and one with the nudge DISABLED where the very
-	// same text is appended by AddUserMessage (a genuine User entry), and
-	// require the two request bodies to be byte-equal.  Since the User form
-	// is exactly what this loop emitted BEFORE the role existed, equality
-	// here IS "byte-identical to today's request for a nudge-firing
-	// session" -- on every provider.
-	//
-	// RED-PROVE: change AppendPendingBuildNudge to build rawJson any other
-	// way (or make any codec branch on role) and this fails on the first
-	// provider.
-	{
-		const struct { ChatProvider provider; const char* tag; } kWire[] = {
-			{ ChatProvider::Anthropic, "anthropic" },
-			{ ChatProvider::Gemini,    "gemini"    },
-			{ ChatProvider::OpenAI,    "openai"    },
-			{ ChatProvider::XAI,       "xai"       },
-			{ ChatProvider::Local,     "local"     },
+		auto batchStep = [&]() -> bool {
+			const std::string fx = AnthropicFixture(
+				"[{\"type\":\"tool_use\",\"id\":\"toolu_pb\",\"name\":\"insert_chunks\",\"input\":" +
+				chunksArgsJson + "}]", "tool_use" );
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			Check( call.argsJson.find( "pnt_batch_4" ) != std::string::npos,
+			       "T45/batch: the call really carries the 5-element populated chunks array" );
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, populatedBatchEnvelope );
+			return false;
 		};
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
-
-		for( std::size_t c = 0; c < sizeof( kWire ) / sizeof( kWire[0] ); ++c ) {
-			const ChatProvider provider = kWire[c].provider;
-			const char* const tag = kWire[c].tag;
-
-			// (a) The nudge-firing loop.
-			AgentChatLoop nudged;
-			nudged.SetProvider( provider );
-			nudged.SetBlindEditNudgeThreshold( 2 );
-			nudged.AddUserMessage( "build a scene" );
-			Check( DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
-			       DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
-			       std::string( "T44b[" ) + tag + "]: setup -- two blind inserts trip the nudge" );
-			const ChatTranscriptEntry& note = nudged.TranscriptAt( nudged.TranscriptSize() - 1 );
-			Check( note.role == ChatTranscriptEntry::Role::DriverNote,
-			       std::string( "T44b[" ) + tag + "]: setup -- the tail really is the DriverNote" );
-			const std::string noteText = note.displayText;
-
-			// (b) The control: same rounds, nudge OFF, same text sent as a
-			//     real user message -- i.e. the pre-role shape.
-			AgentChatLoop control;
-			control.SetProvider( provider );
-			control.SetBlindEditNudgeThreshold( 0 );
-			control.AddUserMessage( "build a scene" );
-			Check( DriveToolRound( control, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
-			       DriveToolRound( control, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
-			       std::string( "T44b[" ) + tag + "]: setup -- control drives the same two rounds" );
-			control.AddUserMessage( noteText );
-			Check( control.TranscriptAt( control.TranscriptSize() - 1 ).role ==
-			       ChatTranscriptEntry::Role::User,
-			       std::string( "T44b[" ) + tag + "]: setup -- the control's tail is a real User entry" );
-
-			// The entry the codecs will serialize is byte-equal...
-			Check( note.rawJson ==
-			       control.TranscriptAt( control.TranscriptSize() - 1 ).rawJson,
-			       std::string( "T44b[" ) + tag + "]: the DriverNote's rawJson is BYTE-IDENTICAL "
-			       "to the user message carrying the same text" );
-
-			// ...and so is the whole request built around it.
-			const ChatHttpRequest a = nudged.BuildRequest( kApiKey );
-			const ChatHttpRequest b = control.BuildRequest( kApiKey );
-			Check( a.body == b.body,
-			       std::string( "T44b[" ) + tag + "]: the REQUEST BODY is byte-identical -- the "
-			       "new role changes nothing on the wire" );
-			Check( a.url == b.url && a.headers == b.headers,
-			       std::string( "T44b[" ) + tag + "]: ... url and headers too" );
-		}
+		Check( !batchStep(), "T45/batch(populated): call 1 (5 populated elements) -- ONE increment, not refused" );
+		Check( !batchStep(), "T45/batch(populated): call 2 -- ONE increment, not refused" );
+		Check( !batchStep(), "T45/batch(populated): call 3 -- ONE increment, not refused (streak 2->3)" );
+		Check( batchStep(), "T45/batch(populated): call 4 -- REFUSED (streak 3 >= threshold 3), proving the "
+		       "gate counts CALLS even against a fully-populated input/output batch shape" );
 	}
+}
 
-	// ==============================================================
-	// T44c: a DriverNote is NOT a compaction span boundary.
-	//
-	// CompactTranscript drops whole SPANS, and a span starts at a
-	// Role::User entry.  A loop-injected note is not a turn the user took
-	// (the trajectory records it as a `history_edit`, not a `user` record,
-	// for exactly this reason), so counting it as a span start would let
-	// compaction cut a conversation in a place the user never spoke --
-	// and would leave a synthesized note as mTranscript[0], which is
-	// supposed to be a real user message.
-	//
-	// RED-PROVE: this fails against the pre-fix loop, where the nudge was a
-	// Role::User entry -- it made spanCount 3 on a TWO-turn conversation,
-	// so compaction fired and erased the first turn.
-	{
-		AgentChatLoop loop;
-		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
-		// A budget so low that compaction runs on every request and never
-		// reaches its low-water target -- the span floor (kMinRetainedSpans)
-		// is then the ONLY thing that stops it.  (low MUST be > 0 and < high
-		// or the window is inert -- see ContextBudgetActive.)
-		loop.SetContextBudget( 2, 1 );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+//----------------------------------------------------------------------
+// T46 (E4 fix round, P3 sweep): DriverNoteCount()/LastDriverNoteText()
+// smoke test -- the accessor pair is still LIVE on both the C++ core and
+// the macOS bridge (kept as generic infrastructure for a future
+// loop-injected advisory; see Role::DriverNote's doc) even though the ONE
+// thing that used to produce entries, the blind-edit NUDGE, is gone.  A
+// one-line liveness check that the mechanism itself did not silently
+// break (wrong initial state, Reset() forgetting to clear it) -- NOT a
+// claim that anything produces a DriverNote today; zero producers is the
+// documented, correct state.
+//----------------------------------------------------------------------
+static void TestDriverNoteSmoke()
+{
+	std::printf( "T46: DriverNoteCount()/LastDriverNoteText() smoke test (zero producers, still live)...\n" );
 
-		loop.AddUserMessage( "first instruction" );
-		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_s1" ), Vec1( ok ) ) &&
-		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_s2" ), Vec1( ok ) ),
-		       "T44c: setup -- turn 1 trips the nudge" );
-		Check( loop.DriverNoteCount() == 1, "T44c: setup -- exactly one note fired" );
-		loop.AddUserMessage( "second instruction" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+	       "T46: a fresh loop reports zero driver notes" );
 
-		// TWO user turns + one note.  If the note counted as a span the
-		// loop would see three spans, exceed the floor of two, and erase.
-		const std::size_t before = loop.TranscriptSize();
-		loop.BuildRequest( kApiKey );   // compaction runs inside BuildRequest
-		Check( loop.CompactedEntryCount() == 0,
-		       "T44c: nothing is dropped -- a DriverNote does not count as a user turn, so "
-		       "this is a TWO-span conversation and the floor holds" );
-		Check( loop.TranscriptSize() == before,
-		       "T44c: ... and the transcript is intact" );
-		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
-		       "T44c: ... with a real user message still leading it (wire invariant 1)" );
+	loop.AddUserMessage( "build a scene" );
+	Check( loop.DriverNoteCount() == 0,
+	       "T46: an ordinary user turn does not fire a driver note (no producer exists)" );
 
-		// A THIRD real user turn does make it compactable -- so the guard
-		// above is the span RULE holding, not compaction being inert.
-		loop.AddUserMessage( "third instruction" );
-		loop.BuildRequest( kApiKey );
-		Check( loop.CompactedEntryCount() > 0,
-		       "T44c: a third REAL user turn does compact (the check above is the span rule, "
-		       "not a dead compactor)" );
-		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
-		       "T44c: ... and the surviving head is still a real user message" );
-	}
-
-	// ==============================================================
-	// T44d: the driver-facing counters (DriverNoteCount /
-	// LastDriverNoteText).  The Mac driver keeps its own display list and
-	// never reads the transcript, so these are its ONLY way to tell the
-	// user the loop just steered the agent -- it watermarks against the
-	// count, which (unlike a transcript index) survives compaction.
-	{
-		AgentChatLoop loop;
-		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
-		loop.AddUserMessage( "build" );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
-		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
-		       "T44d: no notes before one fires" );
-		for( int i = 0; i < 4; ++i ) {
-			DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-			                Vec1( "toolu_n" + std::to_string( i ) ), Vec1( ok ) );
-		}
-		Check( loop.DriverNoteCount() == 2,
-		       "T44d: four blind edits at threshold 2 fire exactly two notes" );
-		Check( loop.LastDriverNoteText().find( "edits in a row without rendering" ) !=
-		       std::string::npos,
-		       "T44d: ... and the last note's text is available for the notice row" );
-		loop.Reset();
-		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
-		       "T44d: Reset clears them with the transcript they describe" );
-	}
-
-	// Disabled (threshold 0) and reset-on-observe still hold, and neither
-	// perturbs the system prompt.
-	{
-		AgentChatLoop off;
-		off.SetProvider( ChatProvider::Anthropic );
-		off.SetBlindEditNudgeThreshold( 0 );
-		off.AddUserMessage( "build" );
-		const std::string base = SystemPromptOf( ChatProvider::Anthropic, off.BuildRequest( kApiKey ).body );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
-		for( int i = 0; i < 8; ++i ) {
-			DriveToolRound( off, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-			                Vec1( "toolu_off" + std::to_string( i ) ), Vec1( ok ) );
-		}
-		const ChatHttpRequest req = off.BuildRequest( kApiKey );
-		Check( req.body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "T44: threshold 0 disables it -- 8 blind edits, still no reminder anywhere" );
-		Check( SystemPromptOf( ChatProvider::Anthropic, req.body ) == base,
-		       "T44: ... and the system prompt is unchanged either way" );
-	}
+	loop.Reset();
+	Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+	       "T46: Reset() leaves the count/text at their zero state" );
 }
 
 int main()
@@ -9104,7 +9325,9 @@ int main()
 	TestSkillIndexDiscourageRelist();
 	TestReasoningTokenAccounting();
 	TestReasoningSurvivalMatrix();
-	TestBlindEditNudgeDelivery();
+	TestDegenerateTurnRetryParity();
+	TestSequencingGateAcrossProvidersAndByteIdentity();
+	TestDriverNoteSmoke();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

@@ -297,12 +297,6 @@ final class ChatViewModel: ObservableObject {
     /// the loop's own counter is cleared by Reset()/SetProvider() too.
     private var lastReportedCompactedEntryCount: UInt = 0
 
-    /// Highest `driverNoteCount` already reported as a `.notice` row — the
-    /// same one-event-one-notice watermark as above, for the notes the LOOP
-    /// injects into the conversation (today: the blind-edit nudge).  Reset
-    /// alongside `lastReportedCompactedEntryCount`; the loop's own counter
-    /// is cleared by Reset()/SetProvider() too.
-    private var lastReportedDriverNoteCount: UInt = 0
     @Published var inputText: String = ""
     /// Images queued to go out with the NEXT send() (Model-B F5 chat
     /// image attachments) — populated by attachImageFile(at:), shown as
@@ -1108,7 +1102,6 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         pendingAttachments = []
@@ -1191,7 +1184,6 @@ final class ChatViewModel: ObservableObject {
                                    scenePath: "", headVersion: -1, enabled: false)
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
@@ -1254,7 +1246,6 @@ final class ChatViewModel: ObservableObject {
         modelId = chatBridge.modelId
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         // Eval-harness E1: setProvider closed the old session (a
@@ -1817,7 +1808,6 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
@@ -2094,6 +2084,23 @@ final class ChatViewModel: ObservableObject {
     /// promptly rather than merely safely-but-slowly (the pre-S2b
     /// pattern already handled "safely"; S2b adds "promptly").
     private func driveTurn() async {
+        // E4 retry parity: port of AgentEvalRunner.cpp's degenerate-turn
+        // retry-once (~line 2760-2792, `retryDegenerateTurn`) into this
+        // driver, so a local qwen3-thinking backend's occasional
+        // finish=stop + no-text + no-tool-calls turn gets ONE verbatim
+        // retry here too, instead of surfacing as a user-facing error the
+        // human has to notice and click Retry on.  `httpAttempt` mirrors
+        // the eval runner's per-round `attempt` counter (1 = first try of
+        // THIS round, 2 = the one verbatim retry); `degenerateTurnRetried`
+        // mirrors its `attempt == 1` gate -- at most ONE retry per round.
+        // Both are reset to their round-1 values the moment a round
+        // SUCCEEDS (the .toolCalls case below) since the retry allowance
+        // is per-round, not per-turn: a later round hitting its own
+        // degenerate response gets its own retry.  Neither is reset by
+        // the `continue` a retry itself takes -- that continuation IS the
+        // still-in-progress round, not a new one.
+        var httpAttempt = 1
+        var degenerateTurnRetried = false
         while true {
             if Task.isCancelled || stopRequested { return }
             guard viewportBridge != nil else { return }
@@ -2154,24 +2161,18 @@ final class ChatViewModel: ObservableObject {
                         + "no longer see them."))
             }
 
-            // DRIVER NOTES (Role::DriverNote — today the blind-edit nudge).
-            // The loop injects these into the conversation itself, so the
-            // model reads them and changes course.  This driver renders its
-            // own display list, not the wire transcript, so without this the
-            // note would be invisible here and the agent would appear to
-            // stop editing and render for no reason the user can see.
-            // Checked at the SAME place as the compaction notice: a note is
-            // appended when a tool round flushes, and the next thing that
-            // happens is always the buildRequest that carries it to the
-            // model — so the user is told at (or just before) the moment it
-            // takes effect.  The Windows panel paints the transcript entry
-            // itself; both end up showing the same text.
-            let notesNow = chatBridge.driverNoteCount
-            if notesNow > lastReportedDriverNoteCount {
-                lastReportedDriverNoteCount = notesNow
-                transcript.append(Entry(kind: .notice,
-                                        text: chatBridge.lastDriverNoteText))
-            }
+            // E4 (2026-08): this driver used to poll `driverNoteCount` /
+            // `lastDriverNoteText` here to surface the blind-edit NUDGE —
+            // advisory text the loop injected into the conversation.  That
+            // nudge was RETIRED (found unsafe: a model echoed it back as its
+            // own final text, and the loop had no way to tell the echo from
+            // genuine progress) and replaced by the SEQUENCING GATE, a tool
+            // call REFUSAL that arrives as an ordinary `.toolActivity` /
+            // outcome row via the existing per-call dispatch loop below —
+            // see the gate interception right before
+            // `chatBridge.toolCallToJsonRpcLine`.  No separate polling is
+            // needed: a refusal is already a tool RESULT, and this driver
+            // already renders every tool result.
             guard !request.isEmpty, let url = URL(string: request.url) else { return }
 
             var urlRequest = URLRequest(url: url)
@@ -2217,12 +2218,24 @@ final class ChatViewModel: ObservableObject {
             // into the trajectory BEFORE handling it (no-op when recording
             // is off).  The bridge strips auth headers from the cached
             // request; the writer redacts every line unconditionally.
-            chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            // E4: the attempt/retryOf overload once this round is itself a
+            // retry (httpAttempt > 1), so the trajectory shows it as an
+            // honest sibling `llm` record rather than silently duplicating
+            // attempt 1's -- same convention AgentEvalRunner.cpp uses.
+            if httpAttempt > 1 {
+                chatBridge.recordHttpRound(status: status, body: bodyString,
+                                           elapsedMs: elapsedMs,
+                                           attempt: httpAttempt, retryOf: httpAttempt - 1)
+            } else {
+                chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            }
             let step = chatBridge.handleResponse(status: status, body: bodyString)
 
             switch step.kind {
             case .toolCalls:
                 consecutiveHttp400s = 0
+                httpAttempt = 1
+                degenerateTurnRetried = false
                 // GUI stage 2: the model's reasoning for THIS turn, ahead
                 // of the assistant/tool rows it precedes on the wire —
                 // see ChatStepResult::reasoningText's doc (Anthropic
@@ -2277,8 +2290,26 @@ final class ChatViewModel: ObservableObject {
                     // so the later in-place update can't mismatch a
                     // same-named earlier call still visible above it.
                     let toolRowIndex = transcript.count - 1
-                    let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: nextRpcId)
+                    let dispatchRpcId = nextRpcId
+                    let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: dispatchRpcId)
                     nextRpcId += 1
+
+                    // SEQUENCING GATE (E4, AgentChatLoop.h): a mutating verb
+                    // refused by the blind-edit streak gate is intercepted
+                    // HERE, before dispatch -- the SAME shape as the
+                    // ask_user interception above and the eval runner's
+                    // identical check (AgentEvalRunner.cpp) -- some calls
+                    // must never reach the dispatcher.  `line` above is
+                    // still built (keeps the dispatch-latency stamp honest,
+                    // exactly as ask_user's comment already explains) but is
+                    // NEVER handed to agentHandleToolCall /
+                    // executeRenderToolCallAsync when gated -- the
+                    // underlying document is not touched.  The refusal
+                    // arrives as an ORDINARY tool result below (same
+                    // toolRowIndex / outcome-line / addToolResult path every
+                    // other call uses), so no new display code is needed:
+                    // it renders exactly like any other rejected edit.
+                    let gateResponse = chatBridge.gateRefusalResponse(for: call, rpcId: dispatchRpcId)
 
                     // Model-B F2 slice S2b: a `render` tool call goes
                     // through the NON-BLOCKING async path (submit +
@@ -2337,7 +2368,9 @@ final class ChatViewModel: ObservableObject {
                     // build/VS2022/RISE-GUI/ChatPanel.cpp's
                     // processNextToolCall / startAsyncRenderToolCall.
                     let responseLine: String
-                    if call.name == "render" {
+                    if !gateResponse.isEmpty {
+                        responseLine = gateResponse
+                    } else if call.name == "render" {
                         responseLine = await executeRenderToolCallAsync(
                             call: call, submitLine: line, vb: vb)
                     } else {
@@ -2418,6 +2451,19 @@ final class ChatViewModel: ObservableObject {
                 return
 
             case .providerError:
+                // E4 retry parity (see the doc above the `while true`):
+                // one verbatim retry of a genuine degenerate turn before
+                // falling back to the ordinary error UX.  Nothing was
+                // recorded for THIS response (AgentChatLoop.cpp: "record
+                // nothing" on every ProviderError), so the next
+                // buildRequest at the top of the loop rebuilds from the
+                // unchanged transcript -- a true verbatim resend, no
+                // request change needed.
+                if step.retryDegenerateTurn && !degenerateTurnRetried {
+                    degenerateTurnRetried = true
+                    httpAttempt += 1
+                    continue
+                }
                 handleProviderError(step, httpStatus: status)
                 return
 

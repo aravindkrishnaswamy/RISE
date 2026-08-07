@@ -2807,7 +2807,25 @@ namespace RISE
 								const int rpcId = nextRpcId++;
 								const std::string line = loop.ToolCallToJsonRpcLine( call, rpcId );
 								std::string resp;
-								if( call.name == "ask_user" ) {
+								// SEQUENCING GATE (E4, AgentChatLoop.h): a mutating
+								// verb refused by the blind-edit streak gate is
+								// intercepted HERE, before dispatch -- the SAME
+								// shape as the ask_user interception immediately
+								// below (checked first since a refusal must win
+								// even for a verb that also has other special
+								// handling -- ask_user itself is never a mutating
+								// verb, so the two branches never overlap in
+								// practice, but the ordering keeps the invariant
+								// obvious rather than incidental).  `line` above is
+								// still built (keeps the dispatch-latency stamp
+								// honest, exactly as ask_user's comment already
+								// explains) but is NEVER handed to the dispatcher
+								// here -- the underlying document is not touched.
+								const std::string gateResp = loop.GateRefusalResponse( call, rpcId );
+								if( !gateResp.empty() ) {
+									resp = gateResp;
+								}
+								else if( call.name == "ask_user" ) {
 									// PINNED DESIGN: ask_user is a chat-loop-only tool
 									// (see AgentChatCodecs.cpp) -- it has NO AgentRpc verb
 									// and is never sent to dispatcher->HandleLine.  The
@@ -6671,10 +6689,11 @@ namespace RISE
 								// askUserBeforeMutation: the FIRST "ask_user" record
 								// must precede the FIRST document-mutating tool
 								// record ("asked before building") -- mirrors the
-								// blind-edit-nudge mutation set AgentChatLoop::
-								// AddToolResult already tracks (insert_chunk/
+								// SEQUENCING GATE mutation set AgentChatLoop.cpp's
+								// IsMutatingToolName already tracks (insert_chunk/
 								// insert_chunks/insert_material_scaffold/
-								// propose_patch/propose_patches/remove_chunk).
+								// insert_geometry_scaffold/propose_patch/
+								// propose_patches/remove_chunk).
 								// EVERY mutating verb must be
 								// listed: a verb missing here is silently treated
 								// as non-mutating, so a run that built via that

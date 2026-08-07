@@ -2377,6 +2377,31 @@ void ChatPanel::processNextToolCall()
             });
         }
 
+        // E4 SEQUENCING GATE (mirrors AgentChatLoop.h's SEQUENCING GATE
+        // block and macOS ChatViewModel.driveTurn's identical check
+        // immediately before its own dispatch site -- see that file's
+        // `gateResponse` local): a mutating verb refused by the blind-edit
+        // streak gate is intercepted HERE, before dispatch, so a gated
+        // call's document mutation never happens.  `line` above is still
+        // built (keeps the dispatch-latency stamp honest, same rationale
+        // as the macOS comment) but is NEVER handed to agentHandleToolCall
+        // / startAsyncRenderToolCall when gated.  render is never itself a
+        // mutating verb, so this check running before the render branch
+        // below never intercepts a render call -- GateRefusalResponse
+        // returns "" for it unconditionally, same as any other
+        // non-mutating verb.  The refusal is finished through the SAME
+        // updatePendingToolRow / AddToolResult / processNextToolCall
+        // sequence the synchronous dispatch path below uses, so it
+        // renders exactly like any other tool result -- no new display
+        // code needed here.
+        const std::string gateResponse = m_loop->GateRefusalResponse(call, rpcId);
+        if (!gateResponse.empty()) {
+            updatePendingToolRow(call, gateResponse);
+            m_loop->AddToolResult(call, gateResponse);
+            processNextToolCall();
+            return;
+        }
+
         if (call.name == "render") {
             // SESSION-ROUTING INVARIANT (2026-07 fix): the async render path
             // below reaches the SAME autonomy-selected session every OTHER

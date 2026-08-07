@@ -1954,6 +1954,81 @@ int main()
 		EditRefusalGateBehaviour();
 	}
 
+	// ---- E4 Part 2: macOS degenerate-turn retry-once TEXTUAL pin ----
+	// Swift has NO test binary here (no swiftc/xcodebuild-driven unit test
+	// runs in this suite -- only xcodebuild's own compile gate does), so
+	// this is DISCLOSED as textual, not behavioural, exactly like every
+	// other macGate-style pin in the block above: it guards against
+	// SILENT DELETION OR DRIFT of the retry-once structure (the per-round
+	// `attempt==1` gate, the reset on a successful round, the
+	// attempt/retryOf trajectory stamp), not against a logic bug in it --
+	// AgentChatLoopTest.cpp's T44 (TestDegenerateTurnRetryParity) is what
+	// actually EXERCISES the equivalent host-loop policy, at the
+	// AgentChatLoop API level both Swift and the eval runner build on.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		auto bodyBetween = []( const std::string& src, const char* begin,
+		                       const char* next ) -> std::string {
+			const size_t b = src.find( begin );
+			if( b == std::string::npos ) return std::string();
+			const size_t e = src.find( next, b );
+			if( e == std::string::npos ) return std::string();
+			return src.substr( b, e - b );
+		};
+		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
+		Check( !macChat.empty(), "degenerate-retry pin: read ChatViewModel.swift" );
+		const std::string macChatCode = StripCommentsPreservingLayout( macChat );
+
+		// Symbol-anchored, like every bodyBetween extraction in this file:
+		// a marker inside driveTurn()'s own body cannot be satisfied by an
+		// unrelated occurrence elsewhere (e.g. the FIX-2 edit-retry gate's
+		// OWN `attempts`/`attempt` locals, which live in a DIFFERENT
+		// function and are excluded by these very boundaries).
+		const std::string macDriveTurn = bodyBetween( macChatCode,
+			"private func driveTurn() async {", "private static func parseAskUserArgs" );
+		Check( !macDriveTurn.empty()
+		       // The two per-round locals, declared OUTSIDE the `while true`
+		       // loop (so a retry's own `continue` does not reset them --
+		       // only a genuinely NEW round does).
+		       && macDriveTurn.find( "var httpAttempt = 1" ) != std::string::npos
+		       && macDriveTurn.find( "var degenerateTurnRetried = false" ) != std::string::npos
+		       // The retry-once GATE: exactly the eval runner's `attempt==1`
+		       // check, ported -- retryDegenerateTurn alone is NOT enough,
+		       // the per-round flag must also still be false.
+		       && macDriveTurn.find( "if step.retryDegenerateTurn && !degenerateTurnRetried {" )
+		          != std::string::npos
+		       && macDriveTurn.find( "degenerateTurnRetried = true" ) != std::string::npos
+		       && macDriveTurn.find( "httpAttempt += 1" ) != std::string::npos
+		       // RESET on a round that actually succeeded (.toolCalls) -- a
+		       // LATER round's own degenerate response must get its OWN
+		       // retry allowance, not inherit an already-spent one.  A bare
+		       // `.find("httpAttempt = 1")` would be VACUOUS here (it also
+		       // matches inside the "var httpAttempt = 1" DECLARATION above
+		       // -- caught in review), so the anchor is the whole
+		       // `case .toolCalls:` reset, contiguous and in order.
+		       && macDriveTurn.find(
+		              "case .toolCalls:\n                consecutiveHttp400s = 0\n"
+		              "                httpAttempt = 1\n                degenerateTurnRetried = false" )
+		          != std::string::npos
+		       // The trajectory STAMP: the retry rides as an honest sibling
+		       // `llm` record (attempt/retryOf), the SAME convention T33's
+		       // TestMultimodalRetry pins for retryWithoutImages.
+		       && macDriveTurn.find( "if httpAttempt > 1 {" ) != std::string::npos
+		       && macDriveTurn.find( "attempt: httpAttempt, retryOf: httpAttempt - 1" )
+		          != std::string::npos,
+		       "macOS driveTurn's degenerate-turn retry-once structure is still present: the two "
+		       "per-round locals, the attempt==1-equivalent gate before re-issuing, the reset on a "
+		       "successful round, and the attempt/retryOf trajectory stamp -- TEXTUAL PRESENCE ONLY "
+		       "(Swift has no unit-test binary here; this guards against silent deletion/drift, not "
+		       "against a logic bug in the retry policy itself)" );
+	}
+
 	// ---- Context-compaction budget wiring parity (FIX 3) ----
 	// AgentChatLoop::CompactTranscript is fully implemented but INERT until a
 	// host calls SetContextBudget -- and for the whole life of the feature
@@ -2094,26 +2169,28 @@ int main()
 		Check( winCode.find( "earlier transcript row(s)" ) != std::string::npos,
 		       "Windows compaction notice reports the same unit" );
 
-		// ...AND the same argument, for the same two shapes, applies to a
-		// note the LOOP injects into the conversation (Role::DriverNote --
-		// today the blind-edit nudge).  The model RECEIVES it and visibly
-		// changes course, so a driver that shows nothing leaves the user
-		// watching an unexplained swerve.  The two remedies differ because
-		// the two drivers differ:
-		//   * Windows renders the wire transcript, so it must handle the
-		//     Role::DriverNote entry itself -- and must not let it fall
-		//     through to the User branch, where it would be painted as the
-		//     user's own chat bubble (a lie about who said it).
-		//   * macOS renders its own display list and never sees the
-		//     transcript, so it polls DriverNoteCount()/LastDriverNoteText().
-		// Comment-stripped, like every check in this block.
+		// Role::DriverNote (E4, 2026-08): NO CURRENT PRODUCER.  The one
+		// message it existed for -- the blind-edit NUDGE -- was replaced by
+		// the SEQUENCING GATE (a tool-call REFUSAL, delivered as an
+		// ordinary ToolResults entry every driver already renders through
+		// its normal tool-result path; see AgentChatLoop.h's SEQUENCING
+		// GATE block).  Windows renders the wire transcript directly and
+		// its Role switch is exhaustive with no `default` (a compile-time
+		// -Wswitch guard against a silently-unhandled future enumerator --
+		// see ChatPanel.cpp's comment on that switch), so it MUST still
+		// carry a `case Role::DriverNote:` arm even with zero producers
+		// today; check that it still does, so a future removal of the
+		// case (leaving the enumerator behind, or vice versa) is caught
+		// here rather than at the next Windows build.  macOS renders its
+		// OWN display list rather than the wire transcript and had a
+		// polling mirror (driverNoteCount/lastDriverNoteText) for exactly
+		// this note -- retired alongside the nudge, since a SEQUENCING
+		// GATE refusal needs no such mirror (it is a tool result, and the
+		// per-call tool-result row is already generic) -- so there is
+		// nothing left to check on the macOS side.
 		Check( winCode.find( "Role::DriverNote" ) != std::string::npos,
-		       "Windows chat panel renders Role::DriverNote itself (a loop-injected note is "
-		       "not the user's chat bubble, and not invisible either)" );
-		Check( macVm.find( "driverNoteCount" ) != std::string::npos
-		       && macVm.find( "lastDriverNoteText" ) != std::string::npos,
-		       "macOS chat driver surfaces driverNoteCount/lastDriverNoteText (its display "
-		       "mirror would otherwise hide a message the model acted on)" );
+		       "Windows chat panel still handles Role::DriverNote (an exhaustive switch over "
+		       "a still-live enumerator, even with zero producers today)" );
 	}
 
 	// ---- read_viewport reason-code surface registry (fix rounds 17, 20) --

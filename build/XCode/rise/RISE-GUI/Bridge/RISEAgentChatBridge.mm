@@ -148,6 +148,7 @@ static NSString *ToNS(const std::string& s) {
     RISEAgentChatErrorKind _errorKind;
     NSString *_assistantDisplayText;
     NSString *_reasoningText;
+    BOOL _retryDegenerateTurn;
 }
 
 - (instancetype)initWithStep:(const Agent::ChatStepResult&)step {
@@ -195,6 +196,7 @@ static NSString *ToNS(const std::string& s) {
     _errorMessage         = ToNS(step.errorMessage);
     _assistantDisplayText = ToNS(step.assistantDisplayText);
     _reasoningText        = ToNS(step.reasoningText);
+    _retryDegenerateTurn  = step.retryDegenerateTurn ? YES : NO;
     return self;
 }
 
@@ -205,6 +207,7 @@ static NSString *ToNS(const std::string& s) {
 - (RISEAgentChatErrorKind)errorKind { return _errorKind; }
 - (NSString *)assistantDisplayText  { return _assistantDisplayText; }
 - (NSString *)reasoningText         { return _reasoningText; }
+- (BOOL)retryDegenerateTurn         { return _retryDegenerateTurn; }
 
 @end
 
@@ -360,6 +363,12 @@ static NSString *ToNS(const std::string& s) {
                                              static_cast<int>(rpcId)));
 }
 
+- (NSString *)gateRefusalResponseFor:(RISEAgentChatToolCall *)call
+                                rpcId:(NSInteger)rpcId {
+    return ToNS(_loop->GateRefusalResponse([call cppCall],
+                                           static_cast<int>(rpcId)));
+}
+
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line {
     _loop->AddToolResult([call cppCall], ToStd(line));
@@ -411,6 +420,15 @@ static NSString *ToNS(const std::string& s) {
                              body:(NSString *)rawBody
                         elapsedMs:(int64_t)elapsedMs {
     _loop->RecordHttpRound(static_cast<long>(httpStatus), ToStd(rawBody), elapsedMs);
+}
+
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+                          attempt:(NSInteger)attempt
+                          retryOf:(NSInteger)retryOf {
+    _loop->RecordHttpRound(static_cast<long>(httpStatus), ToStd(rawBody), elapsedMs,
+                           static_cast<int>(attempt), static_cast<int>(retryOf));
 }
 
 - (void)finishTrajectoryWithStatus:(NSString *)status {

@@ -170,6 +170,17 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// exposes no reasoning for this turn (every Gemini turn, a plain
 /// gpt-family turn, or any ProviderError).  DISPLAY-ONLY.
 @property (nonatomic, readonly, copy) NSString *reasoningText;
+/// E4 retry parity: mirrors RISE::Agent::ChatStepResult::
+/// retryDegenerateTurn — true ONLY on a ProviderError whose errorKind is
+/// Provider, when the provider returned HTTP 200 with an empty/
+/// whitespace final answer and no tool calls (a serving-side artifact
+/// observed on local qwen3-thinking backends, not a considered refusal).
+/// The driver's REQUIRED reaction: re-issue the SAME round ONCE — no
+/// request change is needed, since nothing was recorded for a
+/// ProviderError (BuildRequest at the top of the next iteration rebuilds
+/// from the unchanged transcript) — before falling back to the ordinary
+/// ProviderError handling.  Always false for every other kind/case.
+@property (nonatomic, readonly) BOOL retryDegenerateTurn;
 @end
 
 @interface RISEAgentChatBridge : NSObject
@@ -221,9 +232,15 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 @property (nonatomic, readonly) NSUInteger compactedEntryCount;
 
 /// Mirrors AgentChatLoop::DriverNoteCount() / LastDriverNoteText() — the
-/// notes the LOOP injected into the conversation this session (today only
-/// the blind-edit nudge, which tells the agent to stop editing blind and
-/// go render).
+/// notes the LOOP injects into the conversation this session.  NO CURRENT
+/// PRODUCER (E4, 2026-08): the one message this existed for, the
+/// blind-edit NUDGE, was replaced by a SEQUENCING GATE (a tool-call
+/// REFUSAL, delivered as an ordinary tool result — see
+/// -gateRefusalResponseFor:rpcId: and AgentChatLoop.h's SEQUENCING GATE
+/// block) because the nudge's advisory text turned out to be UNSAFE: a
+/// model echoed it back as its own final text and the driver had no way
+/// to tell the echo from genuine progress.  Kept as a name/mechanism for
+/// a FUTURE loop-injected advisory, not dead-coded away.
 ///
 /// Same shape as compactedEntryCount above, and for the same reason: this
 /// driver renders its OWN display list, never the wire transcript, so a
@@ -293,6 +310,27 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
                               rpcId:(NSInteger)rpcId
     NS_SWIFT_NAME(toolCallToJsonRpcLine(_:rpcId:));
 
+/// SEQUENCING GATE (E4) — mirrors RISE::Agent::AgentChatLoop::
+/// GateRefusalResponse.  Call this BEFORE dispatching `call` (i.e.
+/// before handing a JSON-RPC line to `-agentHandleToolCall:`) —
+/// mirroring the pre-existing ask_user interception this driver already
+/// performs before dispatch, for the identical reason: some calls must
+/// never reach the dispatcher.
+///
+/// Returns the ready-to-feed JSON-RPC SUCCESS envelope when `call` is a
+/// DOCUMENT-MUTATING verb AND the blind-edit streak has already reached
+/// the gate threshold.  THE CALLER MUST NOT DISPATCH `call` IN THAT
+/// CASE — pass the returned string straight to
+/// -addToolResult:jsonRpcResponseLine: instead, so the underlying
+/// document is never touched.
+///
+/// Returns "" (empty) for every other call, and the caller's normal
+/// toolCallToJsonRpcLine -> dispatch -> addToolResult path is completely
+/// unchanged.
+- (NSString *)gateRefusalResponseFor:(RISEAgentChatToolCall *)call
+                                rpcId:(NSInteger)rpcId
+    NS_SWIFT_NAME(gateRefusalResponse(for:rpcId:));
+
 /// Record the raw JSON-RPC response ENVELOPE line for one pending
 /// call.  First result per call id wins; unknown ids are ignored.
 - (void)addToolResult:(RISEAgentChatToolCall *)call
@@ -331,6 +369,20 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
                              body:(NSString *)rawBody
                         elapsedMs:(int64_t)elapsedMs
     NS_SWIFT_NAME(recordHttpRound(status:body:elapsedMs:));
+
+/// E4 retry parity: the `attempt`/`retryOf` sibling of the overload
+/// above — mirrors RISE::Agent::AgentChatLoop::RecordHttpRound's
+/// attempt/retryOf parameters (see its doc: `retryOf < 0` for a first
+/// attempt).  Use this overload when recording a driver-initiated retry
+/// (e.g. the degenerate-turn retry-once — see `retryDegenerateTurn`) so
+/// the trajectory shows the retry as an honest sibling `llm` record
+/// instead of silently overwriting/duplicating attempt 1's.
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+                          attempt:(NSInteger)attempt
+                          retryOf:(NSInteger)retryOf
+    NS_SWIFT_NAME(recordHttpRound(status:body:elapsedMs:attempt:retryOf:));
 
 /// Emit the terminal `summary` record with `status` and detach the
 /// session (a fresh session begins on the next recorded action).
