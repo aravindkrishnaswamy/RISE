@@ -8,9 +8,10 @@ import hashlib
 import io
 import json
 import math
+import re
 import struct
 import sys
-import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -99,6 +100,132 @@ def encode_argument(major: int, value: int) -> bytes:
     return bytes([(major << 5) | 27]) + struct.pack(">Q", value)
 
 
+@lru_cache(maxsize=1)
+def unicode17_tables():
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "src/Library/Utilities/UnicodeNFCData.inc"
+    ).read_text(encoding="utf-8")
+
+    def array_body(name: str) -> str:
+        match = re.search(
+            rf"static const [^\n]+ {name}\[\] = \{{(.*?)\n\}};",
+            source,
+            re.DOTALL,
+        )
+        if not match:
+            raise ValueError(f"runtime Unicode-17 table {name} is missing")
+        return match.group(1)
+
+    decomposition_rows = [
+        tuple(int(value, 16 if index == 0 else 10) for index, value in enumerate(row))
+        for row in re.findall(
+            r"\{0x([0-9a-f]+)u,([0-9]+)u,([0-9]+)u\}",
+            array_body("kCanonicalDecompositions"),
+        )
+    ]
+    decomposition_data = [
+        int(value, 16)
+        for value in re.findall(
+            r"0x([0-9a-f]+)u", array_body("kCanonicalDecompositionData")
+        )
+    ]
+    decompositions = {
+        codepoint: tuple(decomposition_data[offset : offset + length])
+        for codepoint, offset, length in decomposition_rows
+    }
+    combining = {
+        int(codepoint, 16): int(value)
+        for codepoint, value in re.findall(
+            r"\{0x([0-9a-f]+)u,([0-9]+)u\}",
+            array_body("kCanonicalCombiningClasses"),
+        )
+    }
+    compositions = {
+        (int(first, 16), int(second, 16)): int(composite, 16)
+        for first, second, composite in re.findall(
+            r"\{0x([0-9a-f]+)u,0x([0-9a-f]+)u,0x([0-9a-f]+)u\}",
+            array_body("kCanonicalCompositions"),
+        )
+    }
+    return decompositions, combining, compositions
+
+
+def is_unicode17_nfc(value: str) -> bool:
+    decompositions, combining, compositions = unicode17_tables()
+
+    def decompose(codepoint: int, output: list[int]) -> None:
+        s_base, l_base, v_base, t_base = 0xAC00, 0x1100, 0x1161, 0x11A7
+        l_count, v_count, t_count = 19, 21, 28
+        n_count = v_count * t_count
+        s_count = l_count * n_count
+        if s_base <= codepoint < s_base + s_count:
+            s_index = codepoint - s_base
+            output.append(l_base + s_index // n_count)
+            output.append(v_base + (s_index % n_count) // t_count)
+            t_index = s_index % t_count
+            if t_index:
+                output.append(t_base + t_index)
+            return
+        parts = decompositions.get(codepoint)
+        if not parts:
+            output.append(codepoint)
+            return
+        for part in parts:
+            decompose(part, output)
+
+    def compose_pair(first: int, second: int) -> int | None:
+        s_base, l_base, v_base, t_base = 0xAC00, 0x1100, 0x1161, 0x11A7
+        l_count, v_count, t_count = 19, 21, 28
+        n_count = v_count * t_count
+        s_count = l_count * n_count
+        l_index = first - l_base
+        if 0 <= l_index < l_count:
+            v_index = second - v_base
+            if 0 <= v_index < v_count:
+                return s_base + (l_index * v_count + v_index) * t_count
+        s_index = first - s_base
+        if 0 <= s_index < s_count and s_index % t_count == 0:
+            t_index = second - t_base
+            if 0 < t_index < t_count:
+                return first + t_index
+        return compositions.get((first, second))
+
+    codepoints = [ord(character) for character in value]
+    decomposed: list[int] = []
+    for codepoint in codepoints:
+        decompose(codepoint, decomposed)
+    for index in range(1, len(decomposed)):
+        ccc = combining.get(decomposed[index], 0)
+        if ccc == 0:
+            continue
+        insertion = index
+        while insertion > 0:
+            previous = combining.get(decomposed[insertion - 1], 0)
+            if previous == 0 or previous <= ccc:
+                break
+            decomposed[insertion], decomposed[insertion - 1] = (
+                decomposed[insertion - 1],
+                decomposed[insertion],
+            )
+            insertion -= 1
+
+    composed: list[int] = []
+    starter_index = 0
+    last_class = 0
+    for codepoint in decomposed:
+        ccc = combining.get(codepoint, 0)
+        composite = compose_pair(composed[starter_index], codepoint) if composed else None
+        if composite is not None and (last_class < ccc or last_class == 0):
+            composed[starter_index] = composite
+        else:
+            if ccc == 0:
+                starter_index = len(composed)
+            composed.append(codepoint)
+            last_class = ccc
+    return composed == codepoints
+
+
 def encode(value) -> bytes:
     if value is None:
         return b"\xf6"
@@ -115,8 +242,8 @@ def encode(value) -> bytes:
             value = 0.0
         return b"\xfb" + struct.pack(">d", value)
     if isinstance(value, str):
-        if unicodedata.normalize("NFC", value) != value:
-            raise ValueError("text is not NFC")
+        if not is_unicode17_nfc(value):
+            raise ValueError("text is not Unicode-17 NFC")
         payload = value.encode("utf-8")
         return encode_argument(3, len(payload)) + payload
     if isinstance(value, bytes):
@@ -141,6 +268,80 @@ def canonical_value_envelope(envelope: dict) -> dict:
 
 def component_statuses(*records: tuple[str, dict]) -> dict:
     return {name: record["record_status"] for name, record in records}
+
+
+def validate_unicode17_authority() -> None:
+    composed = "\U00016121"
+    decomposed = "\U0001611e\U0001611e"
+    if not is_unicode17_nfc(composed) or is_unicode17_nfc(decomposed):
+        raise ValueError("Unicode-17 NFC authority self-test failed")
+
+
+def predictive_operational_projection(record: dict) -> dict:
+    effective = record["effective_absorption"]
+    hot = record["hot_soot"]
+    cool = record["cool_carbon"]
+    condensed = record["condensed_organics"]
+
+    def phi_operations(section: dict) -> dict:
+        phi = section["phi_T_partition"]
+        return {
+            "form": phi["form"],
+            "hot_fraction_temperature_band_K": phi[
+                "hot_fraction_temperature_band_K"
+            ],
+        }
+
+    return {
+        "condensed_organics": {
+            key: condensed[key]
+            for key in (
+                "applicability",
+                "columns",
+                "domain_nm",
+                "extinction_angstrom_exponent_450_633",
+                "g_interpolation",
+                "ir_closure_status",
+                "k_ext_interpolation",
+                "omega_interpolation",
+                "predictive_reason_code",
+                "rows",
+            )
+        },
+        "cool_carbon": {
+            "certified_domain_nm": cool["certified_domain_nm"],
+            "g_633nm": cool["g_633nm"],
+            "k_m_extinction_633nm_m2_per_g": cool[
+                "k_m_extinction_633nm_m2_per_g"
+            ],
+            "n_spectral_exponent": cool["n_spectral_exponent"],
+            "n_supported_range": cool["n_supported_range"],
+            "omega_633nm": cool["omega_633nm"],
+            "out_of_domain_policy": cool["out_of_domain_policy"],
+            "phi_T_partition": phi_operations(cool),
+        },
+        "effective_absorption": {
+            key: effective[key]
+            for key in (
+                "columns",
+                "domain_nm",
+                "mac_interpolation",
+                "normative_quantity",
+                "pinned_density_g_cm3",
+                "rows",
+            )
+        },
+        "hot_soot": {
+            "columns": hot["columns"],
+            "domain_nm": hot["domain_nm"],
+            "g_interpolation": hot["g_interpolation"],
+            "omega_interpolation": hot["omega_interpolation"],
+            "phi_T_partition": phi_operations(hot),
+            "rows": hot["rows"],
+        },
+        "interpolation": record["interpolation"],
+        "record_class": record["record_class"],
+    }
 
 
 def predictive_payload(data_dir: Path) -> dict:
@@ -229,7 +430,9 @@ def predictive_payload(data_dir: Path) -> dict:
             "record_name": effective["record_name"],
             "quantity_name": effective["quantity_name"],
             "normative_quantity": effective["normative_quantity"],
-            "pinned_density_g_cm3": float(effective["definition"]["pinned_density_g_cm3"]),
+            "pinned_density_g_cm3": float(
+                effective["definition"]["pinned_density_g_cm3"]["value"]
+            ),
             "domain_nm": [380.0, 780.0],
             "columns": ["lambda_nm", "E_eff", "MAC_m2_per_g"],
             "rows": effective_rows,
@@ -256,7 +459,10 @@ def predictive_payload(data_dir: Path) -> dict:
             "g_633nm": float(cool_values["g_asymmetry"]["value"]),
             "n_spectral_exponent": float(cool_values["n_spectral_exponent"]["value"]),
             "n_supported_range": [
-                float(value) for value in cool_values["n_spectral_exponent"]["range"]
+                float(value)
+                for value in cool_values["n_spectral_exponent"]["uncertainty"][
+                    "magnitude"
+                ]
             ],
             "certified_domain_nm": [
                 float(value) for value in cool_values["n_spectral_exponent"]["validity_nm"]
@@ -346,8 +552,12 @@ def synthetic_payload(data_dir: Path) -> dict:
         "effective_absorption": {
             "model": "constant_E_eff",
             "E_eff": canonical_value_envelope(fixture_values["E_eff_fixture"]),
-            "pinned_density_g_cm3": float(effective["definition"]["pinned_density_g_cm3"]),
-            "pinned_density_metadata": effective["definition"],
+            "pinned_density_g_cm3": float(
+                effective["definition"]["pinned_density_g_cm3"]["value"]
+            ),
+            "pinned_density_metadata": effective["definition"][
+                "pinned_density_g_cm3"
+            ],
             "domain_nm": [380.0, 780.0],
         },
         "hot_soot": {
@@ -404,7 +614,19 @@ def main() -> None:
     parser.add_argument("data_dir", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    predictive = encode(predictive_payload(args.data_dir))
+    validate_unicode17_authority()
+    predictive_record = predictive_payload(args.data_dir)
+    operational_sha256 = hashlib.sha256(
+        encode(predictive_operational_projection(predictive_record))
+    ).hexdigest()
+    if operational_sha256 != (
+        "8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c"
+    ):
+        raise ValueError(
+            "metadata regeneration changed the canonical operational payload: "
+            + operational_sha256
+        )
+    predictive = encode(predictive_record)
     synthetic = encode(synthetic_payload(args.data_dir))
     target = io.StringIO(newline="\n")
     target.write(

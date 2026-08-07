@@ -234,6 +234,82 @@ namespace
 			!rejected.LoadCanonicalRecord(bytes,&error) &&
 			error.find(expectedError) != std::string::npos;
 	}
+
+	RISECBOR64::Value MemberOrNull(
+		const RISECBOR64::Value& map,
+		const char* key
+		)
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		return value ? *value : RISECBOR64::Value();
+	}
+
+	RISECBOR64::Value PhiOperations( const RISECBOR64::Value& section )
+	{
+		const RISECBOR64::Value* phi = section.Find("phi_T_partition");
+		if( !phi ) return RISECBOR64::Value();
+		return RISECBOR64::Value::MapValue({
+			{ "form", MemberOrNull(*phi,"form") },
+			{ "hot_fraction_temperature_band_K",
+				MemberOrNull(*phi,"hot_fraction_temperature_band_K") }
+		});
+	}
+
+	RISECBOR64::Value PredictiveOperationalProjection(
+		const RISECBOR64::Value& record
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* effective = record.Find("effective_absorption");
+		const Value* hot = record.Find("hot_soot");
+		const Value* cool = record.Find("cool_carbon");
+		const Value* condensed = record.Find("condensed_organics");
+		if( !effective || !hot || !cool || !condensed ) return Value();
+		return Value::MapValue({
+			{ "condensed_organics", Value::MapValue({
+				{ "applicability", MemberOrNull(*condensed,"applicability") },
+				{ "columns", MemberOrNull(*condensed,"columns") },
+				{ "domain_nm", MemberOrNull(*condensed,"domain_nm") },
+				{ "extinction_angstrom_exponent_450_633",
+					MemberOrNull(*condensed,"extinction_angstrom_exponent_450_633") },
+				{ "g_interpolation", MemberOrNull(*condensed,"g_interpolation") },
+				{ "ir_closure_status", MemberOrNull(*condensed,"ir_closure_status") },
+				{ "k_ext_interpolation", MemberOrNull(*condensed,"k_ext_interpolation") },
+				{ "omega_interpolation", MemberOrNull(*condensed,"omega_interpolation") },
+				{ "predictive_reason_code", MemberOrNull(*condensed,"predictive_reason_code") },
+				{ "rows", MemberOrNull(*condensed,"rows") }
+			}) },
+			{ "cool_carbon", Value::MapValue({
+				{ "certified_domain_nm", MemberOrNull(*cool,"certified_domain_nm") },
+				{ "g_633nm", MemberOrNull(*cool,"g_633nm") },
+				{ "k_m_extinction_633nm_m2_per_g",
+					MemberOrNull(*cool,"k_m_extinction_633nm_m2_per_g") },
+				{ "n_spectral_exponent", MemberOrNull(*cool,"n_spectral_exponent") },
+				{ "n_supported_range", MemberOrNull(*cool,"n_supported_range") },
+				{ "omega_633nm", MemberOrNull(*cool,"omega_633nm") },
+				{ "out_of_domain_policy", MemberOrNull(*cool,"out_of_domain_policy") },
+				{ "phi_T_partition", PhiOperations(*cool) }
+			}) },
+			{ "effective_absorption", Value::MapValue({
+				{ "columns", MemberOrNull(*effective,"columns") },
+				{ "domain_nm", MemberOrNull(*effective,"domain_nm") },
+				{ "mac_interpolation", MemberOrNull(*effective,"mac_interpolation") },
+				{ "normative_quantity", MemberOrNull(*effective,"normative_quantity") },
+				{ "pinned_density_g_cm3", MemberOrNull(*effective,"pinned_density_g_cm3") },
+				{ "rows", MemberOrNull(*effective,"rows") }
+			}) },
+			{ "hot_soot", Value::MapValue({
+				{ "columns", MemberOrNull(*hot,"columns") },
+				{ "domain_nm", MemberOrNull(*hot,"domain_nm") },
+				{ "g_interpolation", MemberOrNull(*hot,"g_interpolation") },
+				{ "omega_interpolation", MemberOrNull(*hot,"omega_interpolation") },
+				{ "phi_T_partition", PhiOperations(*hot) },
+				{ "rows", MemberOrNull(*hot,"rows") }
+			}) },
+			{ "interpolation", MemberOrNull(record,"interpolation") },
+			{ "record_class", MemberOrNull(record,"record_class") }
+		});
+	}
 }
 
 int main()
@@ -256,6 +332,18 @@ int main()
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
+	RISECBOR64::Value oldOperationalRecord;
+	std::string oldOperationalError;
+	RISECBOR64::Bytes oldOperationalBytes;
+	const bool oldOperationalDecoded = RISECBOR64::DecodeCanonical(
+		predictive.RecordBytes(),oldOperationalRecord,&oldOperationalError );
+	const bool oldOperationalEncoded = oldOperationalDecoded && RISECBOR64::Encode(
+		PredictiveOperationalProjection(oldOperationalRecord),oldOperationalBytes,
+		&oldOperationalError );
+	Check( oldOperationalEncoded &&
+		RISECBOR64::SHA256Hex(oldOperationalBytes) ==
+			"8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c",
+		"metadata regeneration preserves the previous canonical operational payload" );
 
 	Check( predictive.SootDensityGCM3() == 1.8,
 		"the pinned density is part of the loaded predictive payload" );

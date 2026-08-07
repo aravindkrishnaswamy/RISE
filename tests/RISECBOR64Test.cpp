@@ -104,6 +104,9 @@ int main()
 	const std::string hangulSyllable("\xea\xb0\x80",3);
 	const std::string hangulDecomposed("\xe1\x84\x80\xe1\x85\xa1",6);
 	const std::string cjk("\xe7\x81\xab",3);
+	const std::string unicode17Composed("\xf0\x96\x84\xa1",4);
+	const std::string unicode17Decomposed(
+		"\xf0\x96\x84\x9e\xf0\x96\x84\x9e",8);
 	Check( RISECBOR64::IsUTF8NFC(composedE) &&
 		!RISECBOR64::IsUTF8NFC(decomposedE),
 		"canonical Latin composition is enforced" );
@@ -115,6 +118,9 @@ int main()
 		!RISECBOR64::IsUTF8NFC(hangulDecomposed) &&
 		RISECBOR64::IsUTF8NFC(cjk),
 		"algorithmic Hangul composition and non-Latin UTF-8 are supported" );
+	Check( RISECBOR64::IsUTF8NFC(unicode17Composed) &&
+		!RISECBOR64::IsUTF8NFC(unicode17Decomposed),
+		"Unicode-17 compositions match the generator's pinned authority" );
 
 	RISECBOR64::Value::Members duplicateMembers;
 	duplicateMembers.push_back(std::make_pair("same",RISECBOR64::Value()));
