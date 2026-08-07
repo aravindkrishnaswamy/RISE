@@ -327,6 +327,32 @@ Verdict schema and Swift parser untouched.  Next live dragons-prompt
 GUI run is the E2 measurement; E3 (figure scaffolds) remains the
 heavier lever for the decomposition gap itself.
 
+**POST-ARC E3 (2026-08-06/07, `28182f40`) — "slice E3": the
+construction-grammar families.**  Designed from the post-E2 dreamscape
+census's sculptural-defect taxonomy (cheapest-primitive parts,
+assembly-by-overlap, unswirlable uniform volumes) under an explicit
+anti-overfit mandate from the user: no family may encode a subject.
+`blended_chain` (model-authored path — the creative act the census
+proved models CAN do — with taper/radii/smin continuity guaranteed by
+the scaffold: per-joint k floored at 2.5× the realized surface gap
+per the sminP bridging derivation k ≥ 2·(spacing−r₁−r₂), plus a
+node-density uplift; the shipped first version's 0.6×-center-spacing
+floor was refuted analytically by one reviewer and rendered
+fracturing into seven blobs by the other — the round's showcase of
+independent-perspective verification) and `volume_bank` (true
+painter-heterogeneous density — the engine already supported it —
+with the world-space-bbox coupling forcing the one graph-only
+deviation: the family emits its own object).  E2's manifest is the
+decomposition lever; E3 is the sculpture lever; the objectmap
+pixel-coverage fact remains the cheap presence check (E4-lite,
+unbuilt).  **Pre-committed measurement: a THREE-SUBJECT GUI battery**
+(the dragons prompt + two deliberately different figurative subjects,
+e.g. an organic/humanoid and an artifact/structure) censused per
+subject — a win that moves only dragons is overfit by definition.
+Stop-rule shape transplanted from S2: per-subject adoption + a
+chain-quality read (are chains used for figure parts, do endpoints
+attach), habituation watch on nothing (no escape params here).
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
