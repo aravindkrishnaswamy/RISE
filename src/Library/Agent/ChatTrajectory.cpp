@@ -169,6 +169,10 @@ namespace RISE
 			// The RAW body rides as a STRING so it round-trips byte-for-byte
 			// (the replay payload must not be re-serialized).
 			o.set( "response_body", JsonValue::MakeString( r.responseBody ) );
+			// Present ONLY on an auxiliary round (see the field's doc) -- an
+			// ordinary main-turn record omits the key entirely.
+			if( !r.purpose.empty() )
+				o.set( "purpose", JsonValue::MakeString( r.purpose ) );
 			return JsonSerialize( o );
 		}
 
@@ -310,6 +314,16 @@ namespace RISE
 
 		std::string ChatTrajectoryRecorder::EmitLlm( const TrajectoryLlmRecord& r )
 		{
+			// A purpose-tagged (auxiliary) round is recorded in FULL on its
+			// own line -- the accumulators below feed ONLY the summary's
+			// rollup, which is documented (and consumed by the eval
+			// harness) as the MAIN conversation's cost.  An auxiliary round
+			// (e.g. the Mac GUI's prompt-triage pre-flight) never was part
+			// of that conversation, so it must not inflate n_turns-adjacent
+			// totals or make the summary line lie about how many main-turn
+			// LLM rounds this session made.
+			if( !r.purpose.empty() )
+				return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
 			if( r.inputTokens > 0 ) mTotalInputTokens += r.inputTokens;
 			if( r.outputTokens > 0 ) mTotalOutputTokens += r.outputTokens;
 			// The reasoning total tracks the SAME turns as the output total:

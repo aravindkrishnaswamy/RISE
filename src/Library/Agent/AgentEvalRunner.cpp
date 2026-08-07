@@ -535,13 +535,18 @@ namespace RISE
 
 			//! "document" (mirrors CheckDocumentKind): "op"/"target"/"param"/
 			//! "value"/"name"/"chunkKind"/"referencedKind" are strings;
-			//! "numeric" is a bool; "referencedKinds" is a string array.
-			//! "min"/"max" are op-DEPENDENT -- chunk_count reads them as
-			//! numbers, param_range reads them as number arrays; every other
-			//! op ignores them entirely, so an op-less/unknown-op checkpoint
+			//! "numeric" is a bool; "referencedKinds"/"excludeReferencedKinds" are
+			//! string arrays.  "min"/"max" are op-DEPENDENT -- chunk_count reads
+			//! them as numbers, param_range reads them as number arrays,
+			//! objects_reaching_kinds/param_binding read "min" as a required
+			//! number and "max" as an optional number; every other op ignores
+			//! them entirely, so an op-less/unknown-op checkpoint
 			//! leaves them unchecked here (an unused stray field is out of
 			//! this fix's scope; CheckDocumentKind still runs and grades the
-			//! actual op normally).  The three TARGET-based ops (param_equals /
+			//! actual op normally).  "param_binding"'s "slots" (a non-empty array
+			//! of {chunkKind, params:[...]} objects) is validated in its own
+			//! branch below, since it is not a flat string/number/array field the
+			//! generic helpers above can express.  The three TARGET-based ops (param_equals /
 			//! param_range / param_references_kind) additionally accept an
 			//! ANY-OF-KIND form -- omit "target" (or leave it empty) and supply
 			//! a non-empty "chunkKind" to grade "ANY chunk of this kind
@@ -557,13 +562,14 @@ namespace RISE
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam",
-					"kindSuffix", "category", "rootKind" };
+					"kindSuffix", "category", "rootKind", "prefix" };
 				for( const char* f : kStringFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
 				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
 				if( !RequireArrayOfType( cp, "referencedKinds", JsonValue::Type::String, scenarioId, idx, "referencedKinds", err ) ) return false;
 				if( !RequireArrayOfType( cp, "kinds", JsonValue::Type::String, scenarioId, idx, "kinds", err ) ) return false;
 				if( !RequireArrayOfType( cp, "exclude", JsonValue::Type::String, scenarioId, idx, "exclude", err ) ) return false;
+				if( !RequireArrayOfType( cp, "excludeReferencedKinds", JsonValue::Type::String, scenarioId, idx, "excludeReferencedKinds", err ) ) return false;
 
 				const std::string op = ( cp.has( "op" ) && cp.get( "op" ).isString() ) ? cp.get( "op" ).asString() : std::string();
 				if( op == "chunk_count" ) {
@@ -640,6 +646,88 @@ namespace RISE
 						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 						      "] op 'any_param_references_kind' REQUIRES a non-empty string \"referencedKind\"";
 						return false;
+					}
+				} else if( op == "param_binding" ) {
+					// eval-harness S0.1: {slots:[{chunkKind,params:[...]}],
+					// excludeReferencedKinds?, min, max?} -- "slots" is a non-empty
+					// array of {chunkKind: non-empty string, params: non-empty array
+					// of non-empty strings} objects; "excludeReferencedKinds" (when
+					// present -- generic RequireArrayOfType above already checked its
+					// element TYPE) is otherwise unconstrained; "min"/"max" share the
+					// same sign/ordering guards as distinctMin/distinctMax and
+					// objects_reaching_kinds' min/max above -- a negative min is
+					// vacuous, an inverted band can never pass.
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op 'param_binding'";
+					if( !cp.has( "slots" ) || !cp.get( "slots" ).isArray() || cp.get( "slots" ).size() == 0 ) {
+						err = pfx + " REQUIRES a non-empty array \"slots\""; return false;
+					}
+					const JsonValue& slots = cp.get( "slots" );
+					for( std::size_t si = 0; si < slots.size(); ++si ) {
+						const JsonValue& slot = slots.at( si );
+						const std::string spfx = pfx + ".slots[" + std::to_string( si ) + "]";
+						if( !slot.isObject() ) { err = spfx + " must be an object"; return false; }
+						if( !slot.has( "chunkKind" ) || !slot.get( "chunkKind" ).isString() || slot.get( "chunkKind" ).asString().empty() ) {
+							err = spfx + " REQUIRES a non-empty string \"chunkKind\""; return false;
+						}
+						if( !slot.has( "params" ) || !slot.get( "params" ).isArray() || slot.get( "params" ).size() == 0 ) {
+							err = spfx + " REQUIRES a non-empty array \"params\""; return false;
+						}
+						const JsonValue& params = slot.get( "params" );
+						for( std::size_t pi = 0; pi < params.size(); ++pi ) {
+							if( !params.at( pi ).isString() || params.at( pi ).asString().empty() ) {
+								err = spfx + ".params[" + std::to_string( pi ) + "] must be a non-empty string"; return false;
+							}
+						}
+					}
+					if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"min\""; return false;
+					}
+					if( cp.get( "min" ).asNumber() < 0 ) {
+						err = pfx + " \"min\" must be >= 0 (a chunk-instance COUNT can never be negative)"; return false;
+					}
+					if( cp.has( "max" ) ) {
+						if( !cp.get( "max" ).isNumber() ) {
+							err = pfx + " \"max\", when present, must be a number"; return false;
+						}
+						if( cp.get( "max" ).asNumber() < cp.get( "min" ).asNumber() ) {
+							err = pfx + " \"max\" must be >= \"min\" (an inverted band can never pass)"; return false;
+						}
+					}
+				} else if( op == "chunk_name_prefix_count" ) {
+					// Arc-75 slice S2.3: {prefix,kinds?|kindSuffix?|category?,min,
+					// max?} -- counts chunks whose bare `name` param starts with
+					// "prefix", optionally narrowed by kind.  The kind filter here is
+					// OPTIONAL (0 or 1 of kindSuffix/kinds/category) -- UNLIKE
+					// distinct_chunk_kinds/no_orphan_chunks/objects_reaching_kinds,
+					// which REQUIRE exactly one -- because a scaffold expansion's
+					// generated chunks (material + N painters) share one name prefix
+					// across several different chunk KINDS; "count everything under
+					// this prefix" is the common case, kind-narrowing is the
+					// exception.  "min"/"max" share the same sign/ordering guards as
+					// every other count-grading op above.
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op 'chunk_name_prefix_count'";
+					if( !cp.has( "prefix" ) || !cp.get( "prefix" ).isString() || cp.get( "prefix" ).asString().empty() ) {
+						err = pfx + " REQUIRES a non-empty string \"prefix\""; return false;
+					}
+					if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"min\""; return false;
+					}
+					if( cp.get( "min" ).asNumber() < 0 ) {
+						err = pfx + " \"min\" must be >= 0 (a chunk COUNT can never be negative)"; return false;
+					}
+					if( cp.has( "max" ) ) {
+						if( !cp.get( "max" ).isNumber() ) {
+							err = pfx + " \"max\", when present, must be a number"; return false;
+						}
+						if( cp.get( "max" ).asNumber() < cp.get( "min" ).asNumber() ) {
+							err = pfx + " \"max\" must be >= \"min\" (an inverted band can never pass)"; return false;
+						}
+					}
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+					if( ( hasSuffix ? 1 : 0 ) + ( hasKinds ? 1 : 0 ) + ( hasCategory ? 1 : 0 ) > 1 ) {
+						err = pfx + " accepts AT MOST ONE of \"kindSuffix\"/\"kinds\"/\"category\" (0 = every chunk kind)"; return false;
 					}
 				}
 
@@ -1264,9 +1352,10 @@ namespace RISE
 			//! (CheckScenario's own reader), plus the OPTIONAL "metricLabel"
 			//! string every kind shares too (geometry scope expansion) --
 			//! type-checked generically here since a checkpoint of ANY kind may
-			//! in principle carry one, even though today only two "document" ops
-			//! (distinct_chunk_kinds / objects_reaching_kinds) ever populate a
-			//! metricValue for it to label.  An unrecognized kind name is
+			//! in principle carry one, even though today only four "document" ops
+			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding /
+			//! chunk_name_prefix_count) ever populate a metricValue for it to
+			//! label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
 			//! loudly at runtime ("unknown checkpoint kind").
 			bool ValidateCheckpointFieldTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
@@ -1530,9 +1619,11 @@ namespace RISE
 				}
 
 				// Geometry scope expansion / metric labeling: every METRIC-CARRYING
-				// checkpoint (today: "document" ops "distinct_chunk_kinds" and
-				// "objects_reaching_kinds" -- the two CheckOneCheckpoint populates
-				// CheckOutcome::metricValue from) resolves to an EFFECTIVE label --
+				// checkpoint (today: "document" ops "distinct_chunk_kinds",
+				// "objects_reaching_kinds", "param_binding" (S0.1), and
+				// "chunk_name_prefix_count" (S2.3) -- the FOUR CheckOneCheckpoint
+				// populates CheckOutcome::metricValue from) resolves to an
+				// EFFECTIVE label --
 				// its explicit "metricLabel" string when present and non-empty, else
 				// its "op" name (so a single such checkpoint needs no metricLabel at
 				// all).  Two metric-carrying checkpoints in the SAME scenario that
@@ -1550,7 +1641,9 @@ namespace RISE
 						const JsonValue& cp = cps.at( i );
 						const std::string cpKind = ( cp.has( "kind" ) && cp.get( "kind" ).isString() ) ? cp.get( "kind" ).asString() : std::string();
 						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
-						const bool carriesMetric = cpKind == "document" && ( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" );
+						const bool carriesMetric = cpKind == "document" &&
+							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" ||
+							  cpOp == "chunk_name_prefix_count" );
 						if( !carriesMetric ) continue;
 						std::string label = cpOp;
 						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
@@ -2442,6 +2535,18 @@ namespace RISE
 					if( scenario.budgets.maxToolCalls > cap ) cap = scenario.budgets.maxToolCalls;
 					loop.SetMaxToolRoundsPerTurn( cap );
 				}
+				// S0.2: parity with the GUI drivers -- carry the skills index
+				// in the system prompt here too. AgentSession::RenderSkillIndex
+				// is the single-source "name -- hook" rendering (see its doc
+				// in AgentSession.h) that this call, the Mac Swift copy, and
+				// the Windows/Qt ChatPanel::renderSkillIndex all produce
+				// identically; a headless run has no RPC round-trip to make,
+				// so this calls the same static AgentSession::ReadSkill("")
+				// the read_skill RPC verb calls, directly, and renders it
+				// through the shared helper. This changes the measurement
+				// instrument (turn structure / prompt size) deliberately;
+				// the 74-log records it as the reason S0 re-anchors.
+				loop.SetSkillIndex( AgentSession::RenderSkillIndex( AgentSession::ReadSkill() ) );
 				ChatTrajectoryConfig cfg;
 				cfg.clock = optClock;
 				cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;
@@ -2454,6 +2559,7 @@ namespace RISE
 				int llmCalls = 0;
 				int toolCalls = 0;
 				int nextRpcId = 1;
+				int degenerateTurnRetries = 0;
 				bool budgetHit = false;
 				std::string terminalStatus;
 				std::string errorMessage;
@@ -2651,6 +2757,39 @@ namespace RISE
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryReasoningEffortNone && attempt == 1 )
 								continue;   // one reasoning_effort:none retry of this round
+							// DEGENERATE-BLANK-TURN RETRY (see ChatStepResult::
+							// retryDegenerateTurn): a local qwen3-thinking
+							// backend stochastically ends the turn mid-
+							// reasoning with no text and no tool calls.
+							// Unlike the recoveries above, nothing about the
+							// NEXT request changes -- BuildRequest at the top
+							// of the next iteration rebuilds from the SAME
+							// transcript (this round recorded nothing, so
+							// there is nothing to un-record), giving a
+							// verbatim resend.  One retry per round, same
+							// attempt==1 gate as its siblings; a second
+							// degenerate response on attempt 2 falls through
+							// to the terminal ProviderError handling below.
+							// CONSTRAINT: degenerateTurnRetries must equal the
+							// number of retry POSTs actually issued, so the
+							// budget predicate here MUST mirror the loop-top
+							// check above verbatim -- taking this arm when the
+							// budget is exhausted would increment the counter
+							// for a POST that never goes out AND divert the
+							// terminal status to budget_llm_calls, when
+							// pre-degenerate-retry behavior (and every other
+							// exhausted-budget path) reports provider_error.
+							// When the budget does not allow another POST,
+							// fall through to the unconditional `break` below
+							// so the ProviderError branch after the attempt
+							// loop sets terminalStatus/errorMessage exactly as
+							// it would have with no retry arm at all.
+							if( st.kind == ChatStepResult::Kind::ProviderError &&
+							    st.retryDegenerateTurn && attempt == 1 &&
+							    ( scenario.budgets.maxLlmCalls < 0 || llmCalls < scenario.budgets.maxLlmCalls ) ) {
+								++degenerateTurnRetries;
+								continue;   // one verbatim retry of this round
+							}
 							break;
 						}
 						if( roundStopped ) break;
@@ -2781,6 +2920,7 @@ namespace RISE
 				handle.result.terminalStatus = terminalStatus;
 				handle.result.llmCalls = llmCalls;
 				handle.result.toolCalls = toolCalls;
+				handle.result.degenerateTurnRetries = degenerateTurnRetries;
 				handle.result.budgetHit = budgetHit;
 				handle.result.wallMs = endMs - startMs;
 				handle.result.finalText = finalText;
@@ -2796,6 +2936,10 @@ namespace RISE
 				r.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
 				r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
 				r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
+				// Always emitted, even when 0: field presence marks the
+				// instrument version in archived result lines (see
+				// AgentEvalRunResult::degenerateTurnRetries).
+				r.set( "degenerateTurnRetries", JsonValue::MakeNumber( static_cast<double>( handle.result.degenerateTurnRetries ) ) );
 				r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
 				r.set( "wallMs", JsonValue::MakeNumber( static_cast<double>( handle.result.wallMs ) ) );
 				r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );
@@ -3669,10 +3813,14 @@ namespace RISE
 				//! returns; CheckOneCheckpoint folds this into an
 				//! AgentEvalCheckpointResult (adding kind/weight).  `hasMetricValue`/
 				//! `metricValue` are an OPTIONAL numeric payload -- populated only by
-				//! "distinct_chunk_kinds" (the distinct-painter-kind count) so the
-				//! richness signal is a trend line, not just pass/fail; every other
-				//! op leaves hasMetricValue false (the aggregate-init default), and
-				//! CheckOneCheckpoint/CheckScenario thread it through unchanged.
+				//! "distinct_chunk_kinds" (the distinct-painter-kind count),
+				//! "objects_reaching_kinds" (the qualifying-root count),
+				//! "param_binding" (the bound-chunk-instance count), and
+				//! "chunk_name_prefix_count" (S2.3 -- the name-prefix-matching chunk
+				//! count) so the richness signal is a trend line, not just
+				//! pass/fail; every other op leaves hasMetricValue false (the
+				//! aggregate-init default), and CheckOneCheckpoint/CheckScenario
+				//! thread it through unchanged.
 				struct CheckOutcome { bool passed; std::string detail; bool hasMetricValue = false; double metricValue = 0.0; };
 
 				//----------------------------------------------------------
@@ -4076,6 +4224,68 @@ namespace RISE
 					return true;
 				}
 
+				//! Sibling scan for "chunk_name_prefix_count" (Arc-75 S2.3): same
+				//! document-wide walk as CheckerCollectKindFilterMatches, but the
+				//! kind filter is OPTIONAL (0 or 1 of "kindSuffix"/"kinds"/
+				//! "category" -- load-validated to at most one) and matching is by
+				//! bare `name` PREFIX rather than by chunk keyword.  A chunk with no
+				//! `name` param (CheckerChunkName returns "") never matches any
+				//! non-empty prefix.
+				bool CheckerCollectNamePrefixMatches( const Document& doc, const JsonValue& cp, const std::string& prefix,
+				                                      std::vector<std::pair<RISE::Cst::NodeId, NodeRef>>& out, std::string& errOut )
+				{
+					const bool hasSuffix   = cp.has( "kindSuffix" ) && cp.get( "kindSuffix" ).isString() && !cp.get( "kindSuffix" ).asString().empty();
+					const bool hasKinds    = cp.has( "kinds" ) && cp.get( "kinds" ).isArray() && cp.get( "kinds" ).size() > 0;
+					const bool hasCategory = cp.has( "category" ) && cp.get( "category" ).isString() && !cp.get( "category" ).asString().empty();
+
+					std::string suffix;
+					std::vector<std::string> kinds;
+					ChunkCategory wantCategory = ChunkCategory::Painter;
+					if( hasSuffix ) {
+						suffix = cp.get( "kindSuffix" ).asString();
+					} else if( hasKinds ) {
+						const JsonValue& arr = cp.get( "kinds" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() || arr.at( i ).asString().empty() ) {
+								errOut = "chunk_name_prefix_count: \"kinds\"[" + std::to_string( i ) + "] must be a non-empty string";
+								return false;
+							}
+							kinds.push_back( arr.at( i ).asString() );
+						}
+					} else if( hasCategory ) {
+						const std::string catName = cp.get( "category" ).asString();
+						if( !CheckerCategoryFromName( catName, wantCategory ) ) {
+							errOut = "chunk_name_prefix_count: unknown \"category\" '" + catName + "'";
+							return false;
+						}
+					}
+
+					out.clear();
+					const int n = RISE::Cst::DocItemCount( doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						const std::string& role = item->role;
+
+						if( hasSuffix ) {
+							if( !( role.size() >= suffix.size() &&
+							       role.compare( role.size() - suffix.size(), suffix.size(), suffix ) == 0 ) ) continue;
+						} else if( hasKinds ) {
+							if( std::find( kinds.begin(), kinds.end(), role ) == kinds.end() ) continue;
+						} else if( hasCategory ) {
+							const ChunkDescriptor* d = RISE::DescriptorForKeyword( role.c_str() );
+							if( !( d && d->category == wantCategory ) ) continue;
+						}
+
+						const std::string nm = CheckerChunkName( item );
+						if( nm.size() < prefix.size() || nm.compare( 0, prefix.size(), prefix ) != 0 ) continue;
+						out.emplace_back( id, item );
+					}
+					return true;
+				}
+
 				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
 				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
 				//! deliberately NOT named "kind": that name is already the top-level
@@ -4160,7 +4370,39 @@ namespace RISE
 				//! mitigation distinct_chunk_kinds/no_orphan_chunks cannot express
 				//! (both only see EXISTENCE + boundness, not WHICH object a binding
 				//! reaches); grades the qualifying-root count against min/max (both
-				//! bounds INCLUSIVE); the OTHER metricValue emitter.
+				//! bounds INCLUSIVE); one of FOUR metricValue emitters.
+				//! {op:"param_binding",slots:[{chunkKind,params:[...]}],
+				//! excludeReferencedKinds?,min,max?} (eval-harness S0.1) counts CHUNK
+				//! INSTANCES (never twice, even when several of a chunk's listed
+				//! params are bound) of a listed chunkKind that have >=1 of their
+				//! listed params bound to an EXISTING, non-excluded chunk anywhere in
+				//! the document -- the primitive any_param_references_kind cannot
+				//! express (that op fixes a single referencedKind; this op asks "is
+				//! THIS param on THIS chunk kind bound to ANY referenceable chunk",
+				//! e.g. a PBR material's roughness/metallic bound to any painter, not
+				//! specifically a scalar_painter).  A numeric literal, an inline
+				//! `r g b`, "none", or a name that resolves to nothing are all NOT a
+				//! binding.  Grades the qualifying-instance count against min
+				//! (required) / max (optional), both bounds INCLUSIVE; one of FOUR
+				//! metricValue emitters.
+				//! {op:"chunk_name_prefix_count",prefix,kindSuffix?|kinds?|category?,
+				//! min,max?} (Arc-75 S2.3, provenance metrics) counts chunks whose
+				//! bare `name` param starts with "prefix" -- the `tmpl_<name>_<role>`
+				//! naming convention BOTH scaffold tools' expansions carry
+				//! (insert_material_scaffold since S2.1, insert_geometry_scaffold
+				//! since S3b), so
+				//! this op is what tells expansion-driven richness (a scaffold call)
+				//! apart from hand-authored richness (a model typing out its own
+				//! painter graph) on the SAME param_binding count above: a
+				//! scaffold-expanded material legitimately satisfies param_binding,
+				//! and this op is the disclosed split -- read both labels TOGETHER,
+				//! never summed.  The kind filter is OPTIONAL here (0 or 1 of
+				//! kindSuffix/kinds/category), unlike distinct_chunk_kinds/
+				//! objects_reaching_kinds' REQUIRED exactly-one, because a scaffold
+				//! expansion's chunks span several different kinds (one material,
+				//! several painters) under one shared prefix.  Grades the count
+				//! against min (required) / max (optional), both bounds INCLUSIVE;
+				//! the FOURTH metricValue emitter.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -4850,6 +5092,281 @@ namespace RISE
 						oc.passed = true;
 						oc.detail = "objects_reaching_kinds: " + std::to_string( reachingCount ) + " of " + std::to_string( roots.size() ) +
 							" '" + rootKind + "' chunk(s) reach a qualifying chunk [" + namesList + "]";
+						return oc;
+					}
+
+					// param_binding: {slots:[{chunkKind,params:[...]}],
+					// excludeReferencedKinds?,min,max?} -- eval-harness S0.1.  Measures
+					// whether specific NAMED PARAMETERS on specific chunk kinds are
+					// bound to a referenceable chunk (a painter, typically) rather than
+					// left at a numeric constant.  any_param_references_kind fixes one
+					// exact referencedKind; this op instead asks "is THIS param on THIS
+					// chunk kind bound to ANY non-excluded chunk" -- e.g. (NON-EXHAUSTIVE:
+					// bare_prompt_build_courtyard.json's checkpoint additionally covers
+					// ward_isotropic_material.alpha, orennayar_material.roughness,
+					// sheen_material.sheen_roughness, schlick_material.roughness/
+					// .isotropy, ashikminshirley_anisotropicphong_material.nu/.nv, and
+					// isotropic_phong_material.N)
+					// pbr_metallic_roughness_material.roughness/.metallic,
+					// ggx_material/ward_anisotropic_material .alphax/.alphay, and
+					// cooktorrance_material.facets are all ValueKind::Reference
+					// IScalarPainter slots any_param_references_kind cannot address
+					// (it can only test against one referencedKind at a time).
+					//
+					// Resolution reuses RISE::Cst::BuildReferenceGraph's ALREADY-
+					// RESOLVED edges rather than re-implementing name lookup.  What is
+					// actually INHERITED from BuildReferenceGraph is its first-wins
+					// (category,name) NAMESPACE RESOLUTION (defs, in
+					// BuildReferenceNamespace) -- the conservative same-name
+					// scalar/colour painter ALIAS it separately computes only feeds
+					// `ReferenceGraph::dependents` (closure/rename bookkeeping this op
+					// never reads), so it plays no part here; a scalar_painter and a
+					// colour painter sharing a name are disambiguated (or conflated)
+					// exactly as BuildReferenceGraph's `defs` map resolves them, full
+					// stop.  Likewise inherited for free: numeric-literal / "none" /
+					// dangling-name values never produce an edge (ComputeChunkRefs
+					// skips them at the source), so this op never has to special-case
+					// them.
+					//
+					// A param absent from a given chunk resolves to paramId 0
+					// (Cst.cpp's ParamGet miss sentinel) at occurrence 0 already, so
+					// the occurrence-collection loop below exits immediately with zero
+					// ids collected -- "param not present" and "param present but every
+					// occurrence unbound" both fall out of the SAME empty-occIds /
+					// no-qualifying-occurrence path, no special-casing needed.
+					//
+					// OCCURRENCE HANDLING (review-round P1, two findings): a naive
+					// DocParamId(doc, chunkId, param, 0) silently ignores (a) occurrence
+					// >=1 of a REPEATABLE Reference param (e.g. a hypothetical repeated
+					// microsurface-relevant slot -- none of the pinned five happen to be
+					// repeatable today, but the op must not assume that), and (b)
+					// duplicate NON-repeatable lines, where the engine's own dispatch
+					// (ParseStateBag::SetSingle) overwrites on every re-occurrence, so
+					// only the LAST line is what Finalize actually reads -- a document
+					// authored `roughness 0.5` then `roughness pnt_perlin` DERIVES a
+					// varied surface but occurrence-0-only reading would score it
+					// constant.  Fixed by collecting EVERY occurrence's paramId (dense
+					// from 0 -- DocParamId returning 0 means "no more occurrences", not
+					// "a gap", since Cst.cpp's AddChunkParams mints one id per Param
+					// child in document order) and consulting the chunk's registered
+					// ChunkDescriptor (RISE::DescriptorForKeyword) for whether THIS
+					// param is `repeatable`: repeatable -> ANY occurrence qualifying is
+					// enough; non-repeatable -> ONLY the LAST occurrence decides,
+					// mirroring SetSingle.  A param name the descriptor doesn't declare
+					// (or a chunkKind the registry doesn't know) is treated as
+					// NON-repeatable -- conservative, since an unknown shape can't be
+					// assumed to accept more than one line, and it matches the engine's
+					// own default for anything the schema doesn't explicitly mark
+					// repeatable.
+					//
+					// MULTI-EDGE PARAMS (review-round P1): a single occurrence can carry
+					// MORE THAN ONE edge -- a tuple-Reference param with multiple
+					// Reference elements (e.g. a two-Reference tuple slot) has
+					// ComputeChunkRefs push one ReferenceUse per resolved element, all
+					// sharing the SAME sourceValueNodeId.  A plain `map` keyed on
+					// sourceValueNodeId (last-wins) would silently keep only the LAST
+					// edge and drop the rest; a `multimap` (insert-always) keeps all of
+					// them, and an occurrence qualifies iff ANY of its edges reaches a
+					// non-excluded, non-self chunk.
+					//
+					// CROSS-SLOT DEDUP (review-round P1): counts CHUNK INSTANCES, at
+					// MOST ONCE EVER -- both within one slots[] entry (several of a
+					// chunk's listed params bound still counts once) AND ACROSS
+					// slots[] entries that happen to repeat the same chunkKind (a
+					// document-wide `countedChunks` set, not a per-slot one, is what
+					// actually enforces "at most once"; a per-slot set would still
+					// double-count a chunkKind appearing in two different slots[]
+					// entries).  Self-references (a chunk's param resolving to its OWN
+					// NodeId) are excluded; this is DEFENSIVE for the five PINNED slots
+					// shipped today (a Material chunk can never be the resolution
+					// target of a Painter-only reference category, so it is currently
+					// unreachable) but protects any future slots[] config where
+					// chunkKind and the target's referenceCategories overlap.  Grades
+					// the qualifying-instance count against min (required) / max
+					// (optional), both bounds INCLUSIVE; the THIRD metricValue emitter.
+					if( op == "param_binding" ) {
+						if( !cp.has( "slots" ) || !cp.get( "slots" ).isArray() || cp.get( "slots" ).size() == 0 )
+							return { false, "param_binding requires a non-empty array \"slots\"" };
+						if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() )
+							return { false, "param_binding requires numeric \"min\"" };
+						const long minCount = static_cast<long>( cp.get( "min" ).asNumber() );
+						const bool hasMax = cp.has( "max" ) && cp.get( "max" ).isNumber();
+						const long maxCount = hasMax ? static_cast<long>( cp.get( "max" ).asNumber() ) : 0;
+
+						std::set<std::string> excludeKinds;
+						if( cp.has( "excludeReferencedKinds" ) && cp.get( "excludeReferencedKinds" ).isArray() ) {
+							const JsonValue& ex = cp.get( "excludeReferencedKinds" );
+							for( std::size_t i = 0; i < ex.size(); ++i )
+								if( ex.at( i ).isString() ) excludeKinds.insert( ex.at( i ).asString() );
+						}
+
+						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
+						// sourceValueNodeId -> targetNodeId, INSERT-ALWAYS (see the
+						// MULTI-EDGE PARAMS note above): a multimap so an occurrence
+						// that carries several edges keeps all of them.
+						std::multimap<RISE::Cst::NodeId, RISE::Cst::NodeId> edgesBySource;
+						for( const auto& e : graph.edges ) edgesBySource.insert( std::make_pair( e.sourceValueNodeId, e.targetNodeId ) );
+
+						// True iff ANY edge sourced at the occurrence NodeId `paramId`
+						// reaches a chunk that is neither the chunk itself (self-
+						// reference) nor of an excluded kind.
+						auto occurrenceQualifies = [&]( RISE::Cst::NodeId chunkId, RISE::Cst::NodeId paramId ) -> bool {
+							const auto range = edgesBySource.equal_range( paramId );
+							for( auto it = range.first; it != range.second; ++it ) {
+								if( it->second == chunkId ) continue;                      // self-reference excluded (defensive; see note above)
+								const NodeRef targetChunk = RISE::Cst::DocResolveNodeId( doc, it->second );
+								if( !targetChunk ) continue;                               // defensive: dead target id
+								if( excludeKinds.count( targetChunk->role ) ) continue;    // e.g. uniformcolor_painter: spatially constant, not "varied"
+								return true;
+							}
+							return false;
+						};
+
+						long boundCount = 0;
+						std::vector<std::string> boundDesc;
+						// Document-wide, NOT per-slot (see the CROSS-SLOT DEDUP note
+						// above): the same chunk reached via two different slots[]
+						// entries (a repeated chunkKind) must still count once.
+						std::set<RISE::Cst::NodeId> countedChunks;
+						const JsonValue& slots = cp.get( "slots" );
+						for( std::size_t si = 0; si < slots.size(); ++si ) {
+							const JsonValue& slot = slots.at( si );
+							if( !slot.isObject() || !slot.has( "chunkKind" ) || !slot.get( "chunkKind" ).isString() || slot.get( "chunkKind" ).asString().empty() )
+								return { false, "param_binding: slots[" + std::to_string( si ) + "] missing non-empty string \"chunkKind\"" };
+							if( !slot.has( "params" ) || !slot.get( "params" ).isArray() || slot.get( "params" ).size() == 0 )
+								return { false, "param_binding: slots[" + std::to_string( si ) + "] missing non-empty array \"params\"" };
+							const std::string chunkKind = slot.get( "chunkKind" ).asString();
+							std::vector<std::string> params;
+							const JsonValue& parr = slot.get( "params" );
+							for( std::size_t pi = 0; pi < parr.size(); ++pi )
+								if( parr.at( pi ).isString() && !parr.at( pi ).asString().empty() ) params.push_back( parr.at( pi ).asString() );
+
+							// Per-param "repeatable" flag (see OCCURRENCE HANDLING
+							// above), looked up ONCE per slot -- every chunk this slot
+							// examines shares chunkKind, hence the same descriptor.
+							const ChunkDescriptor* desc = RISE::DescriptorForKeyword( chunkKind.c_str() );
+							std::map<std::string, bool> repeatableByParam;
+							for( const std::string& param : params ) {
+								bool repeatable = false;
+								if( desc ) {
+									for( const ParameterDescriptor& pd : desc->parameters ) {
+										if( pd.name == param ) { repeatable = pd.repeatable; break; }
+									}
+								}
+								repeatableByParam[ param ] = repeatable;   // param (or chunkKind) unknown to the registry -> false, conservative
+							}
+
+							const std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> chunks = CheckerCollectChunkIdsOfKind( doc, chunkKind );
+							for( const auto& kv : chunks ) {
+								const RISE::Cst::NodeId chunkId = kv.first;
+								if( countedChunks.count( chunkId ) ) continue;   // already counted via an earlier slots[] entry -- skip the redundant work
+								bool bound = false;
+								for( const std::string& param : params ) {
+									// Every occurrence of this (chunkId, param) pair, in
+									// document order.  DocParamId's occurrence index is
+									// DENSE from 0 (Cst.cpp's AddChunkParams mints one id
+									// per Param child, per role, in document order), so a
+									// miss (id==0) means "no more occurrences", never a gap.
+									std::vector<RISE::Cst::NodeId> occIds;
+									for( int occ = 0; ; ++occ ) {
+										const RISE::Cst::NodeId pid = RISE::Cst::DocParamId( doc, chunkId, param, occ );
+										if( pid == 0 ) break;
+										occIds.push_back( pid );
+									}
+									if( occIds.empty() ) continue;   // param absent from this chunk entirely
+
+									bool qualifies = false;
+									if( repeatableByParam[ param ] ) {
+										// Repeatable: the chunk qualifies if ANY occurrence binds.
+										for( const RISE::Cst::NodeId pid : occIds )
+											if( occurrenceQualifies( chunkId, pid ) ) { qualifies = true; break; }
+									} else {
+										// Non-repeatable: the engine overwrites on every
+										// duplicate line (SetSingle), so only the LAST
+										// occurrence is what Finalize actually reads.
+										qualifies = occurrenceQualifies( chunkId, occIds.back() );
+									}
+									if( qualifies ) { bound = true; break; }
+								}
+								if( bound && countedChunks.insert( chunkId ).second ) {
+									++boundCount;
+									const std::string nm = CheckerChunkName( kv.second );
+									boundDesc.push_back( "'" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) + "' (kind '" + chunkKind + "')" );
+								}
+							}
+						}
+
+						std::string list;
+						for( std::size_t i = 0; i < boundDesc.size(); ++i ) { if( i ) list += ", "; list += boundDesc[i]; }
+
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = static_cast<double>( boundCount );
+						if( boundCount < minCount ) {
+							oc.passed = false;
+							oc.detail = "param_binding: " + std::to_string( boundCount ) + " bound chunk instance(s) [" + list + "] < min " + std::to_string( minCount );
+							return oc;
+						}
+						if( hasMax && boundCount > maxCount ) {
+							oc.passed = false;
+							oc.detail = "param_binding: " + std::to_string( boundCount ) + " bound chunk instance(s) [" + list + "] > max " + std::to_string( maxCount );
+							return oc;
+						}
+						oc.passed = true;
+						oc.detail = "param_binding: " + std::to_string( boundCount ) + " bound chunk instance(s) [" + list + "]";
+						return oc;
+					}
+
+					// chunk_name_prefix_count: {prefix,kindSuffix?|kinds?|category?,
+					// min,max?} -- Arc-75 S2.3 provenance metric.  Counts chunks
+					// whose bare `name` starts with "prefix" -- the
+					// `tmpl_<name>_<role>` convention BOTH scaffold tools' generated
+					// chunks carry (insert_material_scaffold, and its geometry
+					// sibling insert_geometry_scaffold since S3b) -- optionally
+					// narrowed to at most one
+					// kind filter.  Populates CheckOutcome::metricValue with the
+					// count (the FOURTH metricValue emitter; see this op's doc
+					// comment above CheckDocumentKind).
+					if( op == "chunk_name_prefix_count" ) {
+						if( !cp.has( "prefix" ) || !cp.get( "prefix" ).isString() || cp.get( "prefix" ).asString().empty() )
+							return { false, "chunk_name_prefix_count requires a non-empty string \"prefix\"" };
+						if( !cp.has( "min" ) || !cp.get( "min" ).isNumber() )
+							return { false, "chunk_name_prefix_count requires numeric \"min\"" };
+						const long minCount = static_cast<long>( cp.get( "min" ).asNumber() );
+						const bool hasMax = cp.has( "max" ) && cp.get( "max" ).isNumber();
+						const long maxCount = hasMax ? static_cast<long>( cp.get( "max" ).asNumber() ) : 0;
+						const std::string prefix = cp.get( "prefix" ).asString();
+
+						std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> matches;
+						std::string filterErr;
+						if( !CheckerCollectNamePrefixMatches( doc, cp, prefix, matches, filterErr ) )
+							return { false, filterErr };
+
+						std::string namesList;
+						for( const auto& kv : matches ) {
+							const std::string nm = CheckerChunkName( kv.second );
+							if( !namesList.empty() ) namesList += ", ";
+							namesList += "'" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) + "' (kind '" + kv.second->role + "')";
+						}
+						const long count = static_cast<long>( matches.size() );
+
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = static_cast<double>( count );
+						if( count < minCount ) {
+							oc.passed = false;
+							oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix +
+								"*' [" + namesList + "] < min " + std::to_string( minCount );
+							return oc;
+						}
+						if( hasMax && count > maxCount ) {
+							oc.passed = false;
+							oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix +
+								"*' [" + namesList + "] > max " + std::to_string( maxCount );
+							return oc;
+						}
+						oc.passed = true;
+						oc.detail = "chunk_name_prefix_count: " + std::to_string( count ) + " chunk(s) named '" + prefix + "*' [" + namesList + "]";
 						return oc;
 					}
 
@@ -6156,8 +6673,9 @@ namespace RISE
 								// record ("asked before building") -- mirrors the
 								// blind-edit-nudge mutation set AgentChatLoop::
 								// AddToolResult already tracks (insert_chunk/
-								// insert_chunks/propose_patch/propose_patches/
-								// remove_chunk).  EVERY mutating verb must be
+								// insert_chunks/insert_material_scaffold/
+								// propose_patch/propose_patches/remove_chunk).
+								// EVERY mutating verb must be
 								// listed: a verb missing here is silently treated
 								// as non-mutating, so a run that built via that
 								// verb before asking would VACUOUSLY PASS the
@@ -6198,6 +6716,15 @@ namespace RISE
 									// mutating verb ships, add it to BOTH.
 									static const char* const kMutatingToolNames[] = {
 										"insert_chunk", "insert_chunks",
+										// Arc-75 slice S2.1: insert_material_scaffold mutates
+										// the document (via the same InsertChunks path
+										// insert_chunks uses) -- same "did the MODEL mutate,
+										// and when?" membership; see the comment above.
+										"insert_material_scaffold",
+										// Arc-75 slice S3b: insert_geometry_scaffold is the
+										// geometry sibling, SAME InsertChunks path, SAME
+										// membership rationale.
+										"insert_geometry_scaffold",
 										"propose_patch", "propose_patches", "remove_chunk"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {

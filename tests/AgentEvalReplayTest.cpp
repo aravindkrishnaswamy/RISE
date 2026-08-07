@@ -31,10 +31,13 @@
 //        rounds; trajectory record sequence session,user,llm,tool,tool,
 //        llm,summary.
 //    T6  error_path scenario end-to-end: the canned degenerate blank-
-//        content end_turn turn -> terminalStatus "provider_error", 1 llm
-//        call, 0 tool calls, errorMessage names the degenerate turn (the
-//        loop's OWN documented error handling -- AgentChatLoopTest T19 --
-//        reached through the runner unmodified).
+//        content end_turn turn -> ChatStepResult::retryDegenerateTurn fires
+//        the runner's retry-once policy, the fixture's SECOND canned body
+//        (also degenerate) exhausts it -> terminalStatus "provider_error",
+//        2 llm calls, 1 degenerate-turn retry, 0 tool calls, errorMessage
+//        names the degenerate turn (the loop's OWN documented error
+//        handling -- AgentChatLoopTest T19 -- reached through the runner
+//        unmodified).
 //    T7  RED-PROVE budget enforcement: two_tool_observe with
 //        maxToolCalls=1 stops HONESTLY after the render call -- the
 //        SECOND tool call (read_image) in the same parallel-tool_use
@@ -559,7 +562,10 @@ static void TestReplaySourceLoad()
 		std::string err;
 		Check( AgentEvalReplaySource::LoadFromFile( "evals/fixtures/error_path.fixture.jsonl", src, err ),
 		       "error_path fixture loads (" + err + ")" );
-		Check( src.Total() == 1, "error_path fixture carries 1 canned body" );
+		// 2 bodies (not 1): the degenerate-blank-turn retry-once policy
+		// (ChatStepResult::retryDegenerateTurn) makes the runner fetch a
+		// SECOND canned body to prove replay-side exhaustion -- see T6.
+		Check( src.Total() == 2, "error_path fixture carries 2 canned bodies" );
 	}
 
 	// Loud-failure gates.
@@ -642,6 +648,8 @@ static void TestParamEditScenario()
 	Check( h.result.llmCalls == 2, "param_edit drove exactly 2 llm rounds" );
 	Check( h.result.toolCalls == 1, "param_edit dispatched exactly 1 tool call" );
 	Check( !h.result.budgetHit, "param_edit did not hit any budget" );
+	Check( h.result.degenerateTurnRetries == 0,
+	       "param_edit is a genuinely normal successful run -- no degenerate-blank-turn retry was consumed" );
 	Check( h.result.headVersionFinal > h.result.headVersionStart,
 	       "param_edit headVersion ADVANCED (start=" + std::to_string( h.result.headVersionStart ) +
 	       " final=" + std::to_string( h.result.headVersionFinal ) + ")" );
@@ -711,7 +719,14 @@ static void TestTwoToolObserveScenario()
 }
 
 //----------------------------------------------------------------------
-// T6: error_path end-to-end.
+// T6: error_path end-to-end.  The fixture's canned body is a degenerate
+//     blank turn (content:[], stop_reason end_turn), which the codec
+//     refuses with ChatStepResult::retryDegenerateTurn set -- so the
+//     runner's retry-once policy fetches a SECOND canned body from the
+//     fixture (also blank) before falling through to the terminal
+//     provider_error.  Proves replay-side exhaustion of the retry: the
+//     fixture carries 2 bodies (not 1) specifically so this round-trips
+//     through the replay source instead of hitting "replay_exhausted".
 //----------------------------------------------------------------------
 static void TestErrorPathScenario()
 {
@@ -728,7 +743,8 @@ static void TestErrorPathScenario()
 
 	Check( h.result.terminalStatus == "provider_error",
 	       "error_path terminal status is provider_error (got '" + h.result.terminalStatus + "')" );
-	Check( h.result.llmCalls == 1, "error_path drove exactly 1 llm round before refusing" );
+	Check( h.result.llmCalls == 2, "error_path drove exactly 2 llm rounds -- the degenerate turn's one retry, then exhaustion" );
+	Check( h.result.degenerateTurnRetries == 1, "error_path consumed exactly 1 degenerate-turn retry before exhaustion" );
 	Check( h.result.toolCalls == 0, "error_path dispatched no tool calls" );
 	Check( h.result.errorMessage.find( "no readable text" ) != std::string::npos,
 	       "error_path errorMessage names the degenerate-turn refusal (the loop's OWN documented handling): '" +
@@ -868,6 +884,77 @@ static void TestScenarioFileFnvStamp()
 	// param_edit's scene is INLINE (no scene.path), so sceneFileFnv must be
 	// OMITTED entirely -- absent means "not applicable", never a stale flag.
 	Check( !r.has( "sceneFileFnv" ), "param_edit (inline scene) does not stamp sceneFileFnv" );
+}
+
+//----------------------------------------------------------------------
+// T9b: result.jsonl always carries a "degenerateTurnRetries" key (the field
+//      is emitted unconditionally, even when 0 -- see the "Always emitted"
+//      comment beside AgentEvalRunner.cpp's r.set("degenerateTurnRetries",
+//      ...)).  Covers BOTH the 0 case (a normal run, param_edit) and the
+//      rescue/exhaustion case (error_path, whose T6 already pins the
+//      in-memory h.result.degenerateTurnRetries == 1 -- this test proves
+//      the SAME value round-trips through the on-disk result line, not just
+//      the in-process AgentEvalRunResult).
+//----------------------------------------------------------------------
+static void TestResultJsonlDegenerateTurnRetriesField()
+{
+	std::printf( "T9b: result.jsonl stamps degenerateTurnRetries (0 case + rescue/exhaustion case)...\n" );
+
+	// (A) 0 case: param_edit is a genuinely normal successful run.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T9b(A): param_edit loads" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = ScratchRunDir( "t9b_degenerate_field_zero" );
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+		Check( h.result.terminalStatus == "final_text",
+		       "T9b(A): param_edit reaches final_text (got '" + h.result.terminalStatus + "')" );
+		Check( !h.resultPath.empty(), "T9b(A): the run wrote a result.jsonl" );
+
+		std::ifstream rf( h.resultPath.c_str(), std::ios::binary );
+		std::string line;
+		Check( static_cast<bool>( std::getline( rf, line ) ), "T9b(A): result.jsonl has a line to parse" );
+		JsonValue r;
+		std::string perr;
+		Check( JsonParse( line, r, perr ), "T9b(A): result.jsonl line parses as JSON (" + perr + ")" );
+
+		Check( r.has( "degenerateTurnRetries" ), "T9b(A): result.jsonl carries the degenerateTurnRetries key" );
+		Check( r.get( "degenerateTurnRetries" ).asNumber( -1.0 ) == 0.0,
+		       "T9b(A): a normal successful run stamps degenerateTurnRetries == 0" );
+	}
+
+	// (B) rescue/exhaustion case: error_path's fixture forces exactly 1
+	//     degenerate-turn retry before exhaustion (see T6).
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/error_path.json", scenario, err ),
+		       "T9b(B): error_path loads" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = ScratchRunDir( "t9b_degenerate_field_one" );
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+		Check( h.result.terminalStatus == "provider_error",
+		       "T9b(B): error_path reaches provider_error (got '" + h.result.terminalStatus + "')" );
+		Check( !h.resultPath.empty(), "T9b(B): the run wrote a result.jsonl" );
+
+		std::ifstream rf( h.resultPath.c_str(), std::ios::binary );
+		std::string line;
+		Check( static_cast<bool>( std::getline( rf, line ) ), "T9b(B): result.jsonl has a line to parse" );
+		JsonValue r;
+		std::string perr;
+		Check( JsonParse( line, r, perr ), "T9b(B): result.jsonl line parses as JSON (" + perr + ")" );
+
+		Check( r.has( "degenerateTurnRetries" ), "T9b(B): result.jsonl carries the degenerateTurnRetries key" );
+		Check( r.get( "degenerateTurnRetries" ).asNumber( -1.0 ) == 1.0,
+		       "T9b(B): the rescue-then-exhaustion run stamps degenerateTurnRetries == 1 on disk, "
+		       "matching the in-memory h.result.degenerateTurnRetries T6 already pins" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1357,6 +1444,7 @@ int main()
 	TestBudgetEnforcementRedProve();
 	TestRecordOnceReplayForeverRedProve();
 	TestScenarioFileFnvStamp();
+	TestResultJsonlDegenerateTurnRetriesField();
 	TestIterationCapBudgetRaise();
 	TestAskUserMidScenario();
 	TestAskUserParallelWithDispatchedTool();

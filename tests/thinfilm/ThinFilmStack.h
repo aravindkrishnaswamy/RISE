@@ -14,7 +14,9 @@
 //    Conventions (must match TmmReference.h and AiryReference.h):
 //      * Complex index  N = n + i*k,  k >= 0 for an absorbing medium.
 //      * Time convention chosen so absorbing media DECAY: the cosTheta
-//        branch is picked with Im(N*cosTheta) >= 0 (a decaying, not a
+//        branch is picked with Im(N*cosTheta) > 0, tie-broken by Re > 0 (this file said ">= 0"
+//    until 2026-08-01 -- the FIFTH un-retracted copy of a rule the evaluators
+//    do not implement; see ThinFilm.h PickForwardCos) (a decaying, not a
 //        growing, evanescent wave).  See TmmReference.h / AiryReference.h.
 //      * Wavelength and film thickness are both in nanometres (nm); only
 //        their ratio enters the phase, so any consistent length unit

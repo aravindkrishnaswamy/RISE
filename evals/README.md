@@ -148,7 +148,8 @@ sink's append-mode silently concatenating two sessions into one file).
 <runDir>/<scenarioId>__<provider>[__<model>]__r<repeat>/
     <scenarioId>.trajectory.jsonl   E1 trajectory (see ChatTrajectory.h)
     <scenarioId>.result.jsonl       one-line run result (scenarioId, terminalStatus,
-                                     llmCalls, toolCalls, budgetHit, headVersionStart,
+                                     llmCalls, toolCalls, degenerateTurnRetries,
+                                     budgetHit, headVersionStart,
                                      headVersionFinal, finalText, errorMessage?)
     results.jsonl                  E3 checker output, appended (scenarioId,
                                      checkpointFraction, allPassed, checkpoints[])

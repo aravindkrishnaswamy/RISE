@@ -190,9 +190,14 @@ static const char* const kReadThenDoneFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
 
 // A degenerate blank end_turn -- the loop's own documented ProviderError
-// (matches evals/fixtures/error_path.fixture.jsonl).
+// (matches evals/fixtures/error_path.fixture.jsonl).  TWO bodies (not one):
+// ChatStepResult::retryDegenerateTurn makes the runner retry a degenerate
+// turn once, so a single-body fixture would exhaust the replay source on
+// the retry's fetch and report terminalStatus "replay_exhausted" instead of
+// the "provider_error" every caller of this fixture expects.
 static const char* const kErrorFixture =
-	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
 
 //----------------------------------------------------------------------
 // Fixtures for TestTrajectoryNewAssertions (T7c): "toolOutcomes" and
@@ -1210,6 +1215,108 @@ static void TestDiagnosticsCheckpointCleanIgnoresInfo()
 }
 
 //----------------------------------------------------------------------
+// T6d: "diagnostics" checkpoint expect:"clean" FAILS on a document carrying
+// the LUMINAIRE_NULL_GEOMETRY Warning (crash-fix round 2, closes 74-log open
+// item 2).  Sibling of T6c immediately above: T6c proves an Info-only
+// document stays "clean"; this proves a Warning-carrying document does NOT
+// -- the two together are the full clean-branch severity contract
+// (`d.severity != Severity::Info` is "unclean", covering BOTH Warning and
+// Error, not just Error).  A model that inserts a csg_object with an
+// emissive material bound (see LuminaryManager::AddToLuminaryList,
+// src/Library/Rendering/LuminaryManager.cpp) must see validate report
+// NOT-clean, not a false "no errors" verdict.  Reviewer B verified this
+// behaviour empirically via a throwaway probe during the fix-round-2 review;
+// this is that probe made permanent.
+//----------------------------------------------------------------------
+static void TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning()
+{
+	std::printf( "T6d: \"diagnostics\" expect:\"clean\" FAILS on the LUMINAIRE_NULL_GEOMETRY Warning...\n" );
+	const std::string dir = ScratchRunDir( "t6d_diagnostics_warning" );
+	const std::string scenePath = dir + "/csg_null_geometry_luminaire_probe.RISEscene";
+
+	// A csg_object with an emissive material bound -- no directly-owned
+	// geometry (CSGObject synthesizes its shape from its two operands), so
+	// LuminaryManager::AddToLuminaryList refuses it as an NEE luminary and
+	// AgentSession::ValidateText's null-geometry-luminaire walk (added
+	// alongside that fix) reports LUMINAIRE_NULL_GEOMETRY at Severity::Warning.
+	const std::string scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+		"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+		"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n\n"
+		"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}\n";
+	Check( WriteFile( scenePath, scene ), "wrote the csg null-geometry luminaire probe scene" );
+
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, "the csg null-geometry luminaire probe scene loads cleanly" );
+
+	if( loaded ) {
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "WrapJob produced a live session over the probe scene" );
+		if( session ) {
+			// Red-prove the fixture itself: LUMINAIRE_NULL_GEOMETRY must
+			// actually fire, at Warning severity, and it must be the ONLY
+			// non-Info diagnostic present -- else the assertions below are
+			// vacuous (either passing/failing for an unrelated reason).
+			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+			bool sawWarning = false;
+			unsigned int nonInfoCount = 0;
+			for( const AgentDiagnostic& d : diags ) {
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == AgentDiagnostic::Severity::Warning )
+					sawWarning = true;
+				if( d.severity != AgentDiagnostic::Severity::Info ) ++nonInfoCount;
+			}
+			Check( sawWarning, "RED-PROVE fixture: LUMINAIRE_NULL_GEOMETRY fires at Warning severity" );
+			Check( nonInfoCount == 1, "RED-PROVE fixture: the Warning is the ONLY non-Info diagnostic present" );
+
+			AgentEvalRunHandle h;
+			h.result.scenarioId = "csg_null_geometry_luminaire_probe";
+			h.result.terminalStatus = "final_text";
+			h.trajectoryPath = "";
+			h.resultPath = dir + "/csg_null_geometry_luminaire_probe.result.jsonl";
+			h.dispatcher.reset( new AgentRpcDispatcher( std::move( session ) ) );
+
+			AgentEvalScenario s2;
+			s2.id = "csg_null_geometry_luminaire_probe";
+
+			auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+				JsonValue cps; std::string err;
+				Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+				s2.checkpoints = cps;
+				AgentEvalCheckResult r = CheckScenario( h, s2 );
+				if( r.checkpoints.size() == 1 ) {
+					Check( r.checkpoints[0].passed == expectPass,
+						label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+						" (detail: " + r.checkpoints[0].detail + ")" );
+				} else Check( false, label + ": expected exactly one checkpoint result" );
+			};
+
+			// THE MONEY ASSERTION: expect:"clean" FAILS -- a Warning is a
+			// real functional gap (this light silently won't be NEE-sampled),
+			// not a style advisory, and must not be swallowed the way an
+			// Info-severity design note is (T6c, immediately above).
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"clean\"}]", false,
+				"expect:\"clean\" FAILS on a document carrying the LUMINAIRE_NULL_GEOMETRY Warning" );
+			// The deficit is also independently observable via expect:"code".
+			checkOne( "[{\"kind\":\"diagnostics\",\"expect\":\"code\",\"code\":\"LUMINAIRE_NULL_GEOMETRY\"}]", true,
+				"expect:\"code\" finds the LUMINAIRE_NULL_GEOMETRY code" );
+		}
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
 // T7: "trajectory" checkpoint kind.
 //----------------------------------------------------------------------
 static void TestTrajectoryCheckpoint()
@@ -1620,6 +1727,83 @@ static void TestFinalTextCheckpoint()
 		checkOne( "[{\"kind\":\"finalText\",\"absent\":[\"reserved\"]}]", true,
 			"empty finalText: absent passes (nothing forbidden is present)" );
 		h.result.finalText = savedFinal;
+	}
+}
+
+//----------------------------------------------------------------------
+// S0.2: headless SetSkillIndex parity.  The 74-log (docs/agentic-redesign/
+// 74-creative-richness-arc-log.md Sec.5) recorded that only the two GUI
+// drivers (ChatViewModel.swift / ChatPanel.cpp) called SetSkillIndex --
+// a headless eval run's system prompt carried no "Available skills"
+// section, so models had to burn a bare read_skill{} round-trip just to
+// discover the index.  RunScenarioDriven (AgentEvalRunner.cpp) now calls
+// the same static AgentSession::ReadSkill("") the GUI's read_skill RPC
+// verb calls, renders it into the identical "name -- hook" lines, and
+// feeds it to AgentChatLoop::SetSkillIndex before the turn loop runs --
+// this is the RED-PROOF that the section actually reaches the wire (via
+// the trajectory's session record, which carries ComposeSystemPrompt()'s
+// full text verbatim -- see AgentChatLoop::EnsureSessionRecordEmitted),
+// for both the present (skills root resolves) and absent (root missing --
+// degrades to today's pre-parity behavior, no crash) cases.
+//----------------------------------------------------------------------
+static void TestHeadlessSkillIndexParity()
+{
+	std::printf( "S0.2: headless SetSkillIndex parity (skills-index present/absent)...\n" );
+	const std::string dir = ScratchRunDir( "s0_2_skill_index" );
+
+	// Present case: default SkillsRoot() resolution -- no RISE_SKILLS_PATH /
+	// RISE_MEDIA_PATH override -- falls back to "./skills/agent/", which
+	// resolves against this repo's skills/agent/ directory when the test
+	// runs from repo root (the documented convention; see run_all_tests.sh
+	// and the gate command in the task brief).
+	{
+		AgentEvalScenario s = MakeScenario( "skillidx_present", kScene, "Explain the reserved name",
+			"commit", kFinalTextFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "skillidx_present: run reached final_text" );
+
+		std::ifstream tf( h.trajectoryPath.c_str(), std::ios::binary );
+		const std::string body( ( std::istreambuf_iterator<char>( tf ) ), std::istreambuf_iterator<char>() );
+		Check( body.find( "Available skills:" ) != std::string::npos,
+			"skillidx_present: the trajectory's session record carries the \"Available skills:\" section" );
+		Check( body.find( "lighting-recipes -- Read when adding or tuning lights" ) != std::string::npos,
+			"skillidx_present: a known skill's rendered \"name -- hook\" line appears verbatim "
+			"(skills/agent/lighting-recipes.md's header)" );
+	}
+
+	// Absent case: RISE_SKILLS_PATH overrides SkillsRoot() to a directory
+	// that does not exist on disk -- the same miswired-install shape
+	// AgentSession::ReadSkill already handles (empty index, `note` set).
+	// Parity must NOT invent new absent-root handling: no crash, no error
+	// spam anywhere in the trajectory, and the section is simply omitted --
+	// exactly the pre-parity behavior this slice preserves for the
+	// no-skills-root case.
+	{
+		const std::string missingRoot = dir + "/no_such_skills_root/";
+#ifdef _WIN32
+		_putenv_s( "RISE_SKILLS_PATH", missingRoot.c_str() );
+#else
+		setenv( "RISE_SKILLS_PATH", missingRoot.c_str(), 1 );
+#endif
+
+		AgentEvalScenario s = MakeScenario( "skillidx_absent", kScene, "Explain the reserved name",
+			"commit", kFinalTextFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+
+#ifdef _WIN32
+		_putenv_s( "RISE_SKILLS_PATH", "" );
+#else
+		unsetenv( "RISE_SKILLS_PATH" );
+#endif
+
+		Check( h.result.terminalStatus == "final_text", "skillidx_absent: run reached final_text (no crash)" );
+		std::ifstream tf( h.trajectoryPath.c_str(), std::ios::binary );
+		const std::string body( ( std::istreambuf_iterator<char>( tf ) ), std::istreambuf_iterator<char>() );
+		Check( body.find( "Available skills:" ) == std::string::npos,
+			"skillidx_absent: a missing skills root omits the \"Available skills:\" section "
+			"(today's pre-parity behavior, preserved)" );
 	}
 }
 
@@ -2412,6 +2596,58 @@ static void TestTerminalSuccessGuard()
 		Check( r.allPassed, "opt-in: scenario asserting terminalStatus:\"budget_tool_calls\" -> gate does not fire, allPassed true" );
 		Check( r.terminalGateNote.empty(), "opt-in: terminalGateNote empty when the gate doesn't fire" );
 	}
+}
+
+//----------------------------------------------------------------------
+// P1/P2: end-to-end grading of a RESCUED degenerate-blank-turn run, through
+//      the FULL run+check pipeline (RunScenario -> CheckScenario).  A run
+//      whose first LLM turn came back degenerate but whose retry succeeds
+//      must grade EXACTLY like any other final_text run reaching the
+//      checker: the retry is recovery plumbing, invisible to the scenario
+//      author's checkpoints.  Loads the COMMITTED evals/scenarios/
+//      degenerate_rescue.json + evals/fixtures/degenerate_rescue.fixture.jsonl
+//      (degenerate body, then a real completion) -- same on-disk-scenario
+//      convention TestErrorPathScenario / AgentEvalReplayTest.cpp's T6 use
+//      for error_path.json, so this scenario is also covered by
+//      TestSeedScenariosCheckpointsAreTrue's evals/scenarios/*.json sweep,
+//      not just this dedicated test.
+//----------------------------------------------------------------------
+static void TestDegenerateRescueEndToEnd()
+{
+	std::printf( "P1/P2: end-to-end grading of a rescued degenerate-blank-turn run...\n" );
+	const std::string dir = ScratchRunDir( "degenerate_rescue_e2e" );
+
+	AgentEvalScenario s;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/degenerate_rescue.json", s, err ),
+	       "degenerate_rescue.json loads (" + err + ")" );
+
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+
+	// The run itself: rescued, not exhausted -- distinguishes this from
+	// TestErrorPathScenario-style coverage (T6 in AgentEvalReplayTest.cpp),
+	// which pins the EXHAUSTION case (both bodies degenerate).
+	Check( h.result.terminalStatus == "final_text",
+	       "degenerate_rescue_probe reaches final_text (got '" + h.result.terminalStatus + "': " +
+	       h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "degenerate_rescue_probe drove 2 llm rounds -- the degenerate reply and its retry" );
+	Check( h.result.degenerateTurnRetries == 1, "degenerate_rescue_probe consumed exactly 1 degenerate-turn retry" );
+	Check( h.result.toolCalls == 0, "degenerate_rescue_probe dispatched no tool calls" );
+	Check( h.result.finalText == "Rescued and done.", "degenerate_rescue_probe's rescued final text is captured" );
+
+	// The checker: both checkpoints grade normally, allPassed true -- proves
+	// the rescue is INVISIBLE to CheckScenario, not a special case it has to
+	// account for.
+	AgentEvalCheckResult r = CheckScenario( h, s );
+	Check( r.checkpoints.size() == 2, "degenerate_rescue_probe: exactly 2 checkpoint results" );
+	if( r.checkpoints.size() == 2 ) {
+		Check( r.checkpoints[0].passed, "degenerate_rescue_probe: the trajectory terminalStatus checkpoint passes" );
+		Check( r.checkpoints[1].passed, "degenerate_rescue_probe: the finalText checkpoint passes" );
+	}
+	Check( r.allPassed, "degenerate_rescue_probe: allPassed true -- the rescue graded like any ordinary run" );
+	Check( r.checkpointFraction == 1.0, "degenerate_rescue_probe: checkpointFraction is 1.0" );
+	Check( r.terminalGateNote.empty(), "degenerate_rescue_probe: terminalGateNote empty -- the terminal-success gate never fires on final_text" );
 }
 
 //----------------------------------------------------------------------
@@ -5890,6 +6126,1125 @@ static void TestMaterialRichnessCheckpoints()
 	}
 }
 
+//----------------------------------------------------------------------
+// T-pb: eval-harness S0.1's "param_binding" document op -- whether specific
+// NAMED PARAMETERS on specific chunk kinds are bound to a referenceable
+// chunk (a painter, typically) rather than left at a numeric constant.
+// any_param_references_kind (T-mr above) can only test against ONE fixed
+// referencedKind; param_binding asks "is THIS param on THIS chunk kind
+// bound to ANY non-excluded chunk" -- e.g. a PBR material's roughness bound
+// to ANY painter, not specifically a scalar_painter.
+//
+// kParamBindingScene carries, among other chunks:
+//   * mat_pbr_bound (pbr_metallic_roughness_material): roughness AND
+//     metallic BOTH bound to pnt_perlin (a perlin3d_painter) -- the
+//     INSTANCE-counting red-proof (case 6): a naive per-BINDING counter
+//     would count this chunk TWICE.
+//   * mat_pbr_uniform: roughness bound to pnt_flat (a plain
+//     uniformcolor_painter); metallic left numeric -- the exclude
+//     red-proof (case 3): counted only when uniformcolor_painter is NOT
+//     excluded.
+//   * mat_pbr_none: roughness AND metallic both explicitly "none" -- the
+//     explicit-none case (case 5).  "none" is a legal value here (Job.cpp's
+//     PBR roughness/metallic guard accepts it: `pPntManager->GetItem(
+//     "none")` resolves to the Job-pre-registered null painter), so the
+//     scene still loads; BuildReferenceGraph's ComputeChunkRefs explicitly
+//     skips "none" ("explicit-none / empty: not an edge"), so it must not
+//     be counted as a binding.
+//   * mat_ggx_bound (ggx_material): alphax/alphay both bound to sp_rough
+//     (a scalar_painter) -- the scalar-pipe slot family, resolved via
+//     pScalarPntManager rather than the colour pPntManager.
+//   * mat_ct_numeric / mat_ward_numeric: facets/alphax/alphay all INLINE
+//     numeric constants -- never a binding regardless of slot family.
+//
+// kParamBindingConstantScene is BYTE-IDENTICAL to kParamBindingScene except
+// mat_pbr_bound's roughness/metallic are the literal numbers "0.5"/"0.0"
+// instead of pnt_perlin -- the direct case-1-vs-case-2 pair ("a painter
+// bound to roughness PASSES" / "the SAME slot at a numeric constant FAILS").
+//
+// kParamBindingDanglingScene exercises "a token that resolves to NO chunk
+// anywhere is not a binding" (case 4).  This cannot be constructed on any
+// of the five pinned MATERIAL slots -- every material Finalize in Job.cpp
+// hard-refuses an unresolved non-numeric, non-"none" reference value
+// (Job::LoadAsciiSceneViaCst's "refuse-all" derive gate would then fail the
+// ENTIRE scene load, never reaching the checker at all).  The rasterizer
+// chunks' shared `radiance_map` slot (AddRadianceMapParams,
+// ChunkParserRegistry.cpp) is the one Reference-kind slot in the registry
+// that is DELIBERATELY LENIENT about this -- Job::SetPathTracingPelRasterizer
+// only WARNS ("Global Radiance Map painter not found") and continues, so a
+// scene naming a nonexistent radiance_map painter still loads cleanly.  Used
+// here purely as a legitimate, load-bearing vehicle to reach the checker's
+// "unresolved name -> not counted" branch; the op's semantics are chunk-kind
+// agnostic, so this is not a departure from what the op actually measures.
+//----------------------------------------------------------------------
+
+static const char* const kParamBindingScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"expression_function2d\n{\n\tname fn_rough\n\tparam bands 4.0\n\tdef s sin( u * bands * tau )\n\texpr smoothstep( -0.3, 0.3, s )\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tfunction2d fn_rough\n\tscale 0.4\n\tbias 0.02\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_bound\n\tbase_color pnt_flat\n\troughness pnt_perlin\n\tmetallic pnt_perlin\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_uniform\n\tbase_color pnt_flat\n\troughness pnt_flat\n\tmetallic 0.0\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_none\n\tbase_color pnt_flat\n\troughness none\n\tmetallic none\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx_bound\n\trd pnt_flat\n\trs pnt_flat\n\talphax sp_rough\n\talphay sp_rough\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"cooktorrance_material\n{\n\tname mat_ct_numeric\n\trd pnt_flat\n\trs pnt_flat\n\tfacets 0.15\n}\n\n"
+	"ward_anisotropic_material\n{\n\tname mat_ward_numeric\n\trd pnt_flat\n\trs pnt_flat\n\talphax 0.1\n\talphay 0.2\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_pbr_bound\n}\n";
+
+// Byte-identical to kParamBindingScene EXCEPT mat_pbr_bound's roughness/
+// metallic are inline numeric constants, not a painter reference.
+static const char* const kParamBindingConstantScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"expression_function2d\n{\n\tname fn_rough\n\tparam bands 4.0\n\tdef s sin( u * bands * tau )\n\texpr smoothstep( -0.3, 0.3, s )\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tfunction2d fn_rough\n\tscale 0.4\n\tbias 0.02\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_bound\n\tbase_color pnt_flat\n\troughness 0.5\n\tmetallic 0.0\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_uniform\n\tbase_color pnt_flat\n\troughness pnt_flat\n\tmetallic 0.0\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_pbr_none\n\tbase_color pnt_flat\n\troughness none\n\tmetallic none\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx_bound\n\trd pnt_flat\n\trs pnt_flat\n\talphax sp_rough\n\talphay sp_rough\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"cooktorrance_material\n{\n\tname mat_ct_numeric\n\trd pnt_flat\n\trs pnt_flat\n\tfacets 0.15\n}\n\n"
+	"ward_anisotropic_material\n{\n\tname mat_ward_numeric\n\trd pnt_flat\n\trs pnt_flat\n\talphax 0.1\n\talphay 0.2\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_pbr_bound\n}\n";
+
+// Minimal scene proving "a token that resolves to no chunk anywhere is not
+// a binding" -- see the block comment above for why this uses the
+// rasterizer's radiance_map slot rather than a material slot.
+static const char* const kParamBindingDanglingScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n\tradiance_map totally_bogus_missing_name_xyz\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+// Review-round P1 fix #2/#3 red-proof: a REPEATABLE Reference param
+// (standard_shader's `shaderop`, ChunkParserRegistry.cpp -- `p.repeatable =
+// true`) where ONLY occurrence 1 carries a qualifying edge.  Occurrence 0 is
+// the literal "DefaultEmission" -- a Job-pre-registered RUNTIME DEFAULT
+// (Cst.cpp's kRuntimeDefaultTarget seeding), which the ENGINE accepts (it is
+// a real, pre-registered ShaderOp) but which BuildReferenceGraph explicitly
+// does NOT turn into an edge ("resolves to a runtime default: not an edge,
+// not dangling").  Occurrence 1 (`sop_ao`) is a real, user-authored
+// ambientocclusion_shaderop chunk -- DOES produce an edge.  A checker that
+// only reads DocParamId(doc, chunkId, "shaderop", 0) (the pre-fix bug) would
+// see occurrence 0's non-edge and conclude "not bound"; the fix must walk
+// every occurrence for a repeatable param and find the one at index 1.
+static const char* const kParamBindingRepeatableScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"ambientocclusion_shaderop\n{\n\tname sop_ao\n}\n\n"
+	"standard_shader\n{\n\tname sh_test\n\tshaderop DefaultEmission\n\tshaderop sop_ao\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+// Review-round P1 fix #2/#3 red-proof (duplicate NON-repeatable line,
+// engine-parity, order A): pbr_metallic_roughness_material.roughness is
+// NOT repeatable, so the engine's own dispatch (ParseStateBag::SetSingle,
+// ChunkParserRegistry.cpp's DispatchChunkParameters) OVERWRITES on each
+// duplicate line -- only the LAST one reaches Finalize.  This document
+// declares "roughness 0.5" THEN "roughness pnt_perlin": the engine derives
+// a PAINTER-bound roughness (last-wins), so the checker must too --
+// occurrence-0-only reading would wrongly see the numeric literal and score
+// it unbound.  This is also the empirical proof that ComputeChunkRefs (Cst.cpp)
+// emits an edge for occurrence >= 1 of a duplicated param, not just
+// occurrence 0 -- the checkpoint below can ONLY pass if that edge exists.
+static const char* const kParamBindingDupConstThenPainterScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_dup\n\tbase_color pnt_flat\n\troughness 0.5\n\troughness pnt_perlin\n\tmetallic 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_dup\n}\n";
+
+// Same red-proof, order B (the mirror): "roughness pnt_perlin" THEN
+// "roughness 0.5" -- last-wins means the engine derives a NUMERIC roughness,
+// so the checker must score this NOT bound (opposite of order A above),
+// proving the fix reads the LAST occurrence, not merely "any occurrence".
+static const char* const kParamBindingDupPainterThenConstScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_a\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_b\n\tcolor 0.1 0.1 0.1\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_perlin\n\tcolora pnt_a\n\tcolorb pnt_b\n}\n\n"
+	"pbr_metallic_roughness_material\n{\n\tname mat_dup\n\tbase_color pnt_flat\n\troughness pnt_perlin\n\troughness 0.5\n\tmetallic 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_dup\n}\n";
+
+// Review-round P1 fix #4 red-proof: a MULTI-EDGE occurrence.
+// scalar_painter.multiply is the ONLY tupleKinds param in the whole registry
+// carrying TWO Reference elements (ChunkParserRegistry.cpp ~line 1483) --
+// `multiply <a> <b>`, both operands resolved by the engine via
+// GetScalarPainters()->GetItem, so BOTH literal names must be registered
+// scalar_painter chunks for the scene to derive.  That engine constraint
+// means the two edges normally target the SAME kind ("scalar_painter"), so
+// getting genuinely MIXED excluded/non-excluded targets from one occurrence
+// needs the scalar/colour same-name alias (BuildReferenceGraph's
+// documented "conservative alias" case, not invented here): `shared_x` is
+// declared as BOTH a uniformcolor_painter (FIRST in the document) and a
+// scalar_painter (SECOND).  The ENGINE resolves "shared_x" via
+// GetScalarPainters() -- unambiguous, finds the scalar chunk.
+// BuildReferenceGraph resolves it via the coarser, first-wins
+// (Painter,"shared_x") namespace -- the uniformcolor_painter WINS (it
+// appears first), so the checker's edge for that operand targets a
+// DIFFERENT chunk (role "uniformcolor_painter") than the engine actually
+// used.  `sp_multi`'s "multiply sp_y shared_x" occurrence therefore carries
+// TWO edges from ONE sourceValueNodeId: one to sp_y (role scalar_painter),
+// one to the ALIASED uniformcolor_painter.  A `map` (last-wins) would keep
+// only ONE of the two; a `multimap` keeps both, so "is ANY edge from this
+// occurrence non-excluded" is answered correctly regardless of insertion
+// order.
+static const char* const kParamBindingMultiEdgeScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname shared_x\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"scalar_painter\n{\n\tname shared_x\n\tvalue 0.3\n}\n\n"
+	"scalar_painter\n{\n\tname sp_y\n\tvalue 0.7\n}\n\n"
+	"scalar_painter\n{\n\tname sp_multi\n\tmultiply sp_y shared_x\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+// Round-2 mutation-gap red-proof (a): the EARLY-qualifying repeatable case.
+// kParamBindingRepeatableScene's qualifying occurrence (index 1) is ALSO the
+// last occurrence, so a buggy "always read the last occurrence" checker (the
+// repeatable flag ignored / forced false) produces the same verdict there by
+// coincidence.  Here the order is REVERSED: occurrence 0 (`sop_ao`) is the
+// real edge and the LAST occurrence (`DefaultEmission`) is a runtime default
+// with no edge -- only a true walk-any-occurrence repeatable path counts
+// sh_early as bound; a last-occurrence-only reading reports it unbound.
+static const char* const kParamBindingRepeatableEarlyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"ambientocclusion_shaderop\n{\n\tname sop_ao\n}\n\n"
+	"standard_shader\n{\n\tname sh_early\n\tshaderop sop_ao\n\tshaderop DefaultEmission\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+// Round-2 mutation-gap red-proof (b): the REVERSED-operand multi-edge case.
+// kParamBindingMultiEdgeScene's "multiply sp_y shared_x" puts the qualifying
+// (non-excluded) edge FIRST, so replacing the multimap equal_range walk with
+// a single find() -- which returns one arbitrary element of the equal range,
+// first-inserted on this implementation -- happens to pick the qualifying
+// edge and passes by coincidence.  This scene reverses the operand order
+// ("multiply shared_x sp_y": excluded-aliased edge first, qualifying edge
+// second).  Together the two scenes pin the >=1-of-ALL-edges semantics
+// regardless of WHICH equal-range element a single-lookup bug would return:
+// whichever end find() favours, one of the two order tests goes red.
+static const char* const kParamBindingMultiEdgeRevScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname shared_x\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"scalar_painter\n{\n\tname shared_x\n\tvalue 0.3\n}\n\n"
+	"scalar_painter\n{\n\tname sp_y\n\tvalue 0.7\n}\n\n"
+	"scalar_painter\n{\n\tname sp_multi_rev\n\tmultiply shared_x sp_y\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_flat\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry sph\n\tmaterial mat_flat\n}\n";
+
+static void TestParamBindingCheckpoint()
+{
+	std::printf( "T-pb: eval-harness S0.1 -- \"param_binding\" document op...\n" );
+	const std::string dir = ScratchRunDir( "t_pb_param_binding" );
+
+	auto makeHandle = [&]( const char* id, const char* sceneText ) -> AgentEvalRunHandle {
+		AgentEvalScenario s = MakeScenario( id, sceneText, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", std::string( id ) + ": run reached final_text" );
+		Check( h.dispatcher != nullptr, std::string( id ) + ": run has a live dispatcher" );
+		return h;
+	};
+
+	const AgentEvalRunHandle hBound      = makeHandle( "pb_bound", kParamBindingScene );
+	const AgentEvalRunHandle hConstant   = makeHandle( "pb_constant", kParamBindingConstantScene );
+	const AgentEvalRunHandle hDangling   = makeHandle( "pb_dangling", kParamBindingDanglingScene );
+	const AgentEvalRunHandle hRepeatable = makeHandle( "pb_repeatable", kParamBindingRepeatableScene );
+	const AgentEvalRunHandle hDupConstThenPainter = makeHandle( "pb_dup_const_then_painter", kParamBindingDupConstThenPainterScene );
+	const AgentEvalRunHandle hDupPainterThenConst = makeHandle( "pb_dup_painter_then_const", kParamBindingDupPainterThenConstScene );
+	const AgentEvalRunHandle hMultiEdge  = makeHandle( "pb_multi_edge", kParamBindingMultiEdgeScene );
+	const AgentEvalRunHandle hRepeatableEarly = makeHandle( "pb_repeatable_early", kParamBindingRepeatableEarlyScene );
+	const AgentEvalRunHandle hMultiEdgeRev    = makeHandle( "pb_multi_edge_rev", kParamBindingMultiEdgeRevScene );
+
+	auto checkAgainst = [&]( const AgentEvalRunHandle& h, const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+	auto metricValueOf = [&]( const AgentEvalRunHandle& h, const std::string& cpJson, const std::string& label ) -> double {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+		return ( r.checkpoints.size() == 1 ) ? r.checkpoints[0].metricValue : -1.0;
+	};
+
+	// ---- case 1: a painter bound to a pinned slot PASSES, with the exact metricValue ----
+
+	// mat_pbr_bound (roughness+metallic -> pnt_perlin) and mat_ggx_bound
+	// (alphax/alphay -> sp_rough) both qualify -- 2 bound instances across
+	// the two chunk kinds; mat_pbr_uniform (bound to uniformcolor_painter,
+	// excluded here), mat_pbr_none ("none"), mat_ct_numeric/mat_ward_numeric
+	// (inline numbers) all do NOT qualify.
+	checkAgainst( hBound,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]},"
+		"{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\",\"alphay\"]},"
+		"{\"chunkKind\":\"ward_anisotropic_material\",\"params\":[\"alphax\",\"alphay\"]},"
+		"{\"chunkKind\":\"cooktorrance_material\",\"params\":[\"facets\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":1,\"max\":100}]",
+		true, "param_binding: a painter bound to roughness/alphax PASSES min:1" );
+	{
+		const double mv = metricValueOf( hBound,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]},"
+			"{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\",\"alphay\"]},"
+			"{\"chunkKind\":\"ward_anisotropic_material\",\"params\":[\"alphax\",\"alphay\"]},"
+			"{\"chunkKind\":\"cooktorrance_material\",\"params\":[\"facets\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":0}]",
+			"param_binding metricValue (excluded uniformcolor)" );
+		Check( mv == 2.0, "param_binding: metricValue == 2 (mat_pbr_bound + mat_ggx_bound; got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- case 2: the SAME slot at a numeric constant FAILS ----
+
+	// kParamBindingConstantScene is identical to kParamBindingScene except
+	// mat_pbr_bound's roughness/metallic are now "0.5"/"0.0" -- restricting
+	// the checkpoint to JUST pbr_metallic_roughness_material isolates this:
+	// mat_pbr_bound no longer qualifies (numeric), mat_pbr_uniform's
+	// roughness is still uniformcolor_painter-bound but EXCLUDED here too,
+	// mat_pbr_none is "none" -- so the qualifying count is 0.
+	checkAgainst( hConstant,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":1}]",
+		false, "param_binding: roughness/metallic replaced by numeric constants FAILS min:1" );
+	{
+		const double mv = metricValueOf( hConstant,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":0}]",
+			"param_binding metricValue (all-constant pbrmr)" );
+		Check( mv == 0.0, "param_binding: metricValue == 0 when the only painter-bound pbrmr chunk is excluded/none (got " +
+			std::to_string( mv ) + ")" );
+	}
+
+	// The DIRECT pair on the ORIGINAL (non-excluding) scene: mat_pbr_uniform
+	// alone (roughness -> pnt_flat) still PASSES min:1 on kParamBindingScene
+	// without an exclude list -- proving case 1/2 aren't confounded by the
+	// exclude config.
+	checkAgainst( hBound,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],\"min\":1}]",
+		true, "param_binding: pbrmr roughness/metallic bound (no exclude) PASSES min:1" );
+
+	// ---- case 3: exclude is load-bearing ----
+
+	// mat_pbr_uniform's roughness is bound to pnt_flat (uniformcolor_painter).
+	// Restricting the checkpoint to ONLY mat_pbr_uniform's kind+params is not
+	// directly possible (no name-based any-of-kind narrowing on param_binding
+	// itself), so isolate via a document where NO other pbr_metallic_roughness_
+	// material chunk can pass -- use kParamBindingScene's full pbrmr set: with
+	// exclude, mat_pbr_bound (perlin-bound) still counts, but max:0 would
+	// therefore be uninformative.  Directly assert PASS/FAIL by comparing the
+	// full metricValue with/without the exclude, mirroring T-mr's own
+	// "exclusion actually excludes" pattern (2 without exclude -- mat_pbr_bound
+	// AND mat_pbr_uniform both qualify -- vs 1 with it).
+	{
+		const double mvNoExclude = metricValueOf( hBound,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],\"min\":0}]",
+			"param_binding metricValue (pbrmr, no exclude)" );
+		Check( mvNoExclude == 2.0, "param_binding: WITHOUT exclude, both mat_pbr_bound and mat_pbr_uniform count (got " +
+			std::to_string( mvNoExclude ) + ")" );
+		const double mvExcluded = metricValueOf( hBound,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":0}]",
+			"param_binding metricValue (pbrmr, WITH exclude)" );
+		Check( mvExcluded == 1.0, "param_binding: WITH exclude, only mat_pbr_bound (perlin-bound) counts, mat_pbr_uniform drops out (got " +
+			std::to_string( mvExcluded ) + ")" );
+	}
+	// The exact FAIL/PASS pair the exclude config flips: max:1 (no exclude,
+	// count 2) FAILS; the SAME max:1 WITH the exclude (count 1) PASSES.
+	checkAgainst( hBound,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],\"min\":0,\"max\":1}]",
+		false, "param_binding: count 2 > max:1 FAILS without the exclude" );
+	checkAgainst( hBound,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":0,\"max\":1}]",
+		true, "param_binding: the SAME max:1 PASSES once the exclude drops the count to 1" );
+
+	// ---- case 4: a token naming no existing chunk is not counted ----
+
+	checkAgainst( hDangling,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pathtracing_pel_rasterizer\",\"params\":[\"radiance_map\"]}],\"min\":1}]",
+		false, "param_binding: radiance_map naming no existing chunk is NOT a binding, FAILS min:1" );
+	{
+		const double mv = metricValueOf( hDangling,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pathtracing_pel_rasterizer\",\"params\":[\"radiance_map\"]}],\"min\":0}]",
+			"param_binding metricValue (dangling radiance_map)" );
+		Check( mv == 0.0, "param_binding: metricValue == 0 for a dangling reference (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- case 5: "none" is not counted ----
+
+	// mat_pbr_none's roughness/metallic are BOTH the literal "none" -- must
+	// not contribute to the count even though the chunk itself exists.
+	// Isolate mat_pbr_none from mat_pbr_bound/mat_pbr_uniform (which DO
+	// qualify) by excluding uniformcolor_painter (drops mat_pbr_uniform) and
+	// checking the metricValue is exactly the mat_pbr_bound-only count of 1
+	// -- established already above (mvExcluded == 1.0) -- confirms
+	// mat_pbr_none contributes ZERO on top of it.  Direct pass/fail: a
+	// checkpoint that would ONLY be satisfied by mat_pbr_none binding (a
+	// scene with NOTHING else qualifying) FAILS min:1.
+	{
+		// A document with mat_pbr_none as the ONLY pbr_metallic_roughness_
+		// material-shaped candidate: reuse kParamBindingDanglingScene's
+		// minimal boilerplate plus a "none"-bound pbrmr chunk, so the
+		// checkpoint has no OTHER qualifying chunk to accidentally pass on.
+		const std::string noneOnlyScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"pbr_metallic_roughness_material\n{\n\tname mat_pbr_none\n\tbase_color pnt_flat\n\troughness none\n\tmetallic none\n}\n\n"
+			"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+			"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_pbr_none\n}\n";
+		const AgentEvalRunHandle hNoneOnly = makeHandle( "pb_none_only", noneOnlyScene.c_str() );
+		checkAgainst( hNoneOnly,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],\"min\":1}]",
+			false, "param_binding: roughness/metallic both \"none\" FAILS min:1 (not counted)" );
+		const double mv = metricValueOf( hNoneOnly,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],\"min\":0}]",
+			"param_binding metricValue (none-only)" );
+		Check( mv == 0.0, "param_binding: metricValue == 0 when both listed params are \"none\" (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- case 6: instance counting, not binding counting ----
+
+	// mat_pbr_bound has BOTH roughness AND metallic bound to pnt_perlin.
+	// Restricted to ONLY pbr_metallic_roughness_material with an exclude
+	// that drops mat_pbr_uniform, the qualifying count is 1 (mvExcluded
+	// above) -- if the implementation counted BINDINGS instead of CHUNK
+	// INSTANCES, mat_pbr_bound alone would contribute 2 (roughness AND
+	// metallic each bound), making the metricValue 2, not 1.  Restated here
+	// as its own directly-labeled assertion (in addition to the case-3
+	// mvExcluded check above, which already pins this same number) so the
+	// instance-counting property has its own explicit red-proof independent
+	// of the exclude-config test.
+	{
+		const double mv = metricValueOf( hBound,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":0}]",
+			"param_binding metricValue (instance-counting red-proof)" );
+		Check( mv == 1.0, "param_binding: mat_pbr_bound (BOTH roughness and metallic bound) counts ONCE, not twice (got " +
+			std::to_string( mv ) + ")" );
+	}
+
+	// ---- review-round P1 #1: cross-slot dedup (duplicate chunkKind across TWO slots[] entries) ----
+
+	// mat_ggx_bound has BOTH alphax and alphay bound to sp_rough.  Splitting
+	// the SAME chunkKind across two slots[] entries (one param each) must
+	// still count mat_ggx_bound only ONCE -- a per-slot (rather than
+	// document-wide) dedup set would count it twice (once per slots[]
+	// entry), since EACH entry's param independently qualifies it.
+	{
+		const double mv = metricValueOf( hBound,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]},"
+			"{\"chunkKind\":\"ggx_material\",\"params\":[\"alphay\"]}],\"min\":0}]",
+			"param_binding metricValue (cross-slot dedup, split ggx params)" );
+		Check( mv == 1.0, "param_binding: mat_ggx_bound counts ONCE even though TWO slots[] entries both name ggx_material (got " +
+			std::to_string( mv ) + ")" );
+	}
+	checkAgainst( hBound,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]},"
+		"{\"chunkKind\":\"ggx_material\",\"params\":[\"alphay\"]}],\"min\":2}]",
+		false, "param_binding: cross-slot dedup -- min:2 FAILS because the duplicated chunkKind still counts as ONE instance" );
+
+	// ---- review-round P1 #2/#3: occurrence handling (repeatable + duplicate non-repeatable) ----
+
+	// Repeatable param (standard_shader.shaderop): occurrence 0 is
+	// "DefaultEmission" (a runtime default -- no edge); occurrence 1
+	// (sop_ao) is a real user-authored ShaderOp chunk -- IS an edge.  Must
+	// PASS: the fix walks every occurrence for a repeatable param.
+	checkAgainst( hRepeatable,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"standard_shader\",\"params\":[\"shaderop\"]}],\"min\":1}]",
+		true, "param_binding: repeatable param bound ONLY at occurrence >=1 still PASSES min:1" );
+	{
+		const double mv = metricValueOf( hRepeatable,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"standard_shader\",\"params\":[\"shaderop\"]}],\"min\":0}]",
+			"param_binding metricValue (repeatable, occurrence>=1)" );
+		// Both standard_shader chunks (global + sh_test) are examined; only
+		// sh_test's occurrence-1 shaderop (sop_ao) qualifies -- "global"'s
+		// sole shaderop is DefaultPathTracing, a runtime default, no edge.
+		Check( mv == 1.0, "param_binding: exactly one standard_shader (sh_test) qualifies via occurrence 1 (got " +
+			std::to_string( mv ) + ")" );
+	}
+
+	// Duplicate NON-repeatable line, order A: "roughness 0.5" THEN
+	// "roughness pnt_perlin" -- engine last-wins means the DERIVED material
+	// is painter-bound; must count.  This is also the empirical proof that
+	// ComputeChunkRefs emits an edge for occurrence >= 1 of a duplicated
+	// param (ComputeChunkRefs runs unconditionally per Param CHILD, not just
+	// per role) -- confirmed: the checkpoint below only passes because that
+	// occurrence-1 edge exists.
+	checkAgainst( hDupConstThenPainter,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\"]}],\"min\":1}]",
+		true, "param_binding: duplicate roughness line, constant-then-painter (last-wins painter) PASSES min:1 -- engine parity" );
+
+	// Duplicate NON-repeatable line, order B (the mirror): "roughness
+	// pnt_perlin" THEN "roughness 0.5" -- last-wins means the DERIVED
+	// material is a numeric constant; must NOT count.  Proves the fix reads
+	// the LAST occurrence specifically, not merely "any occurrence" (which
+	// would wrongly PASS this one too, since occurrence 0 here IS bound).
+	checkAgainst( hDupPainterThenConst,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\"]}],\"min\":1}]",
+		false, "param_binding: duplicate roughness line, painter-then-constant (last-wins constant) FAILS min:1 -- engine parity" );
+
+	// Round-2 mutation-gap (a): repeatable param whose qualifying occurrence
+	// comes FIRST and whose LAST occurrence has no edge (see the scene
+	// comment).  Kills the "repeatable flag ignored / forced false" mutation,
+	// which the original repeatable scene cannot distinguish.
+	checkAgainst( hRepeatableEarly,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"standard_shader\",\"params\":[\"shaderop\"]}],\"min\":1}]",
+		true, "param_binding: repeatable param bound at an EARLY occurrence (last occurrence unbound) still PASSES min:1" );
+	{
+		const double mv = metricValueOf( hRepeatableEarly,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"standard_shader\",\"params\":[\"shaderop\"]}],\"min\":0}]",
+			"param_binding metricValue (repeatable, early occurrence)" );
+		Check( mv == 1.0, "param_binding: exactly one standard_shader (sh_early) qualifies via occurrence 0 (got " +
+			std::to_string( mv ) + ")" );
+	}
+
+	// ---- review-round P1 #4: multi-edge tuple param (scalar_painter.multiply) ----
+
+	// sp_multi's "multiply sp_y shared_x" occurrence carries TWO edges (see
+	// kParamBindingMultiEdgeScene's comment): one to sp_y (scalar_painter,
+	// non-excluded here), one to the aliased uniformcolor_painter (excluded
+	// here).  ONE excluded + ONE non-excluded target on the SAME occurrence
+	// must still count as bound -- a `map` (last-wins) could drop the
+	// qualifying edge depending on insertion order; the `multimap` fix keeps
+	// both, so ANY non-excluded edge is enough.
+	checkAgainst( hMultiEdge,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"scalar_painter\",\"params\":[\"multiply\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":1}]",
+		true, "param_binding: multi-edge occurrence with ONE excluded + ONE non-excluded target PASSES min:1" );
+
+	// Round-2 mutation-gap (b): the REVERSED operand order ("multiply
+	// shared_x sp_y" -- excluded-aliased edge first, qualifying edge second).
+	// Kills the "equal_range replaced by a single find()" mutation, which the
+	// original operand order lets pass by insertion-order coincidence.
+	checkAgainst( hMultiEdgeRev,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"scalar_painter\",\"params\":[\"multiply\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":1}]",
+		true, "param_binding: multi-edge occurrence with the EXCLUDED edge first still PASSES min:1 (>=1-of-all-edges)" );
+
+	// BOTH edges excluded (scalar_painter AND uniformcolor_painter both
+	// listed) -- must NOT count.
+	checkAgainst( hMultiEdge,
+		"[{\"kind\":\"document\",\"op\":\"param_binding\","
+		"\"slots\":[{\"chunkKind\":\"scalar_painter\",\"params\":[\"multiply\"]}],"
+		"\"excludeReferencedKinds\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":1}]",
+		false, "param_binding: multi-edge occurrence with BOTH targets excluded FAILS min:1" );
+	{
+		const double mvBothExcluded = metricValueOf( hMultiEdge,
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"scalar_painter\",\"params\":[\"multiply\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\",\"scalar_painter\"],\"min\":0}]",
+			"param_binding metricValue (multi-edge, both excluded)" );
+		Check( mvBothExcluded == 0.0, "param_binding: metricValue == 0 when both multi-edge targets are excluded (got " +
+			std::to_string( mvBothExcluded ) + ")" );
+	}
+
+	// ---- Loader validation: malformed param_binding configs are hard load errors ----
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kParamBindingScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// Missing "slots" entirely -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_no_slots",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\",\"min\":1}]", err ),
+			"param_binding: missing \"slots\" FAILS to load" );
+		Check( err.find( "\"slots\"" ) != std::string::npos,
+			"the load error names slots (got: " + err + ")" );
+	}
+	// Empty "slots" array -- refused (non-empty is required).
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_empty_slots",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\",\"slots\":[],\"min\":1}]", err ),
+			"param_binding: empty \"slots\" array FAILS to load" );
+		Check( err.find( "\"slots\"" ) != std::string::npos,
+			"the load error names slots (got: " + err + ")" );
+	}
+	// A slot missing "chunkKind" -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_slot_no_chunkkind",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"params\":[\"roughness\"]}],\"min\":1}]", err ),
+			"param_binding: a slot missing \"chunkKind\" FAILS to load" );
+		Check( err.find( "chunkKind" ) != std::string::npos,
+			"the load error names chunkKind (got: " + err + ")" );
+	}
+	// A slot's "params" is not an array (a bare string) -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_slot_params_not_array",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":\"alphax\"}],\"min\":1}]", err ),
+			"param_binding: a slot's non-array \"params\" FAILS to load" );
+		Check( err.find( "\"params\"" ) != std::string::npos,
+			"the load error names params (got: " + err + ")" );
+	}
+	// A slot's "params" is an empty array -- refused (non-empty is required).
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_slot_params_empty",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[]}],\"min\":1}]", err ),
+			"param_binding: a slot's empty \"params\" array FAILS to load" );
+		Check( err.find( "\"params\"" ) != std::string::npos,
+			"the load error names params (got: " + err + ")" );
+	}
+	// Missing "min" -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_no_min",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]}]}]", err ),
+			"param_binding: missing \"min\" FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// NEGATIVE min -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_negative_min",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]}],\"min\":-1}]", err ),
+			"param_binding: min -1 FAILS to load" );
+		Check( err.find( "never be negative" ) != std::string::npos,
+			"the load error explains a count can never be negative (got: " + err + ")" );
+	}
+	// INVERTED band (max < min) -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_inverted_band",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]}],\"min\":5,\"max\":1}]", err ),
+			"param_binding: max 1 < min 5 FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// The correctly-shaped checkpoint (mirroring the pinned brief's example)
+	// still loads cleanly, with excludeReferencedKinds/max/weight/metricLabel
+	// all accepted.
+	{
+		std::string err;
+		Check( writeAndLoad( "pb_good",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"pbr_metallic_roughness_material\",\"params\":[\"roughness\",\"metallic\"]},"
+			"{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\",\"alphay\"]},"
+			"{\"chunkKind\":\"ward_anisotropic_material\",\"params\":[\"alphax\",\"alphay\"]},"
+			"{\"chunkKind\":\"cooktorrance_material\",\"params\":[\"facets\"]}],"
+			"\"excludeReferencedKinds\":[\"uniformcolor_painter\"],\"min\":1,\"max\":100,\"weight\":0.5,"
+			"\"metricLabel\":\"varied_microsurface\"}]", err ),
+			"param_binding: the pinned-brief-shaped checkpoint loads cleanly (" + err + ")" );
+	}
+	// excludeReferencedKinds with a non-string element -- refused (generic
+	// RequireArrayOfType, shared with "referencedKinds"/"kinds"/"exclude").
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_exclude_wrong_type",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]}],"
+			"\"excludeReferencedKinds\":[5],\"min\":1}]", err ),
+			"param_binding: a non-string excludeReferencedKinds element FAILS to load" );
+		Check( err.find( "excludeReferencedKinds" ) != std::string::npos,
+			"the load error names excludeReferencedKinds (got: " + err + ")" );
+	}
+	// metricLabel collision with another metric-carrying op (param_binding
+	// participates in the SAME cross-checkpoint dedupe pass as
+	// distinct_chunk_kinds/objects_reaching_kinds).
+	{
+		std::string err;
+		Check( !writeAndLoad( "pb_bad_label_collision",
+			"[{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ggx_material\",\"params\":[\"alphax\"]}],\"min\":0},"
+			"{\"kind\":\"document\",\"op\":\"param_binding\","
+			"\"slots\":[{\"chunkKind\":\"ward_anisotropic_material\",\"params\":[\"alphax\"]}],\"min\":0}]", err ),
+			"param_binding: two param_binding checkpoints with no metricLabel (both default-collide) FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-cnp: Arc-75 slice S2.3's "chunk_name_prefix_count" document op --
+// counts chunks whose bare `name` starts with a given prefix, the
+// insert_material_scaffold provenance convention (tmpl_<name>_<role>).
+// Unlike distinct_chunk_kinds/objects_reaching_kinds/no_orphan_chunks,
+// the kind filter here is OPTIONAL: 0 (every kind) or 1 (narrowed) of
+// kindSuffix/kinds/category, never a required exactly-one.
+//
+// kChunkNamePrefixScene carries THREE chunks named tmpl_bowl1_* across
+// TWO different kinds (tmpl_bowl1_body/tmpl_bowl1_glaze are
+// uniformcolor_painter; tmpl_bowl1_mat is ggx_material) -- proving the
+// op counts across kinds when unfiltered, and narrows correctly when a
+// single kind filter is given.  pnt_flat and mat_other are NOT
+// tmpl_-prefixed, the absent-prefix control.
+//----------------------------------------------------------------------
+
+static const char* const kChunkNamePrefixScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_bowl1_body\n\tcolor 0.6 0.5 0.4\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_bowl1_glaze\n\tcolor 0.8 0.8 0.7\n}\n\n"
+	"ggx_material\n{\n\tname tmpl_bowl1_mat\n\trd tmpl_bowl1_body\n\trs tmpl_bowl1_glaze\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"lambertian_material\n{\n\tname mat_other\n\treflectance pnt_flat\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial tmpl_bowl1_mat\n}\n";
+
+static void TestChunkNamePrefixCountCheckpoint()
+{
+	std::printf( "T-cnp: Arc-75 S2.3 -- \"chunk_name_prefix_count\" document op...\n" );
+	const std::string dir = ScratchRunDir( "t_cnp_chunk_name_prefix_count" );
+
+	AgentEvalScenario sBase = MakeScenario( "cnp_base", kChunkNamePrefixScene, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( sBase, opts );
+	Check( h.result.terminalStatus == "final_text", "cnp_base: run reached final_text" );
+	Check( h.dispatcher != nullptr, "cnp_base: run has a live dispatcher" );
+
+	auto checkAgainst = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+	auto metricValueOf = [&]( const std::string& cpJson, const std::string& label ) -> double {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+		return ( r.checkpoints.size() == 1 ) ? r.checkpoints[0].metricValue : -1.0;
+	};
+
+	// ---- prefix present, no kind filter: counts across BOTH kinds ----
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":3,\"max\":3}]",
+		true, "chunk_name_prefix_count: unfiltered prefix count == 3 (min==max==3)" );
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (unfiltered)" );
+		Check( mv == 3.0, "chunk_name_prefix_count: metricValue == 3 across both kinds (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- prefix present, kind filter narrows to ONE kind (kinds:[...]) ----
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"kinds\":[\"ggx_material\"],\"min\":0}]",
+			"chunk_name_prefix_count metricValue (kinds filter)" );
+		Check( mv == 1.0, "chunk_name_prefix_count: kinds:[\"ggx_material\"] narrows to 1 (tmpl_bowl1_mat; got " +
+			std::to_string( mv ) + ")" );
+	}
+	// kindSuffix filter (uniformcolor_painter ends in "_painter") -> the two painters.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"kindSuffix\":\"_painter\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (kindSuffix filter)" );
+		Check( mv == 2.0, "chunk_name_prefix_count: kindSuffix:\"_painter\" narrows to 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category filter (painter) -> same two painters.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"category\":\"painter\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (category filter)" );
+		Check( mv == 2.0, "chunk_name_prefix_count: category:\"painter\" narrows to 2 (got " + std::to_string( mv ) + ")" );
+	}
+
+	// ---- prefix absent (no chunk carries it) -> count 0 ----
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]",
+			"chunk_name_prefix_count metricValue (absent prefix)" );
+		Check( mv == 0.0, "chunk_name_prefix_count: metricValue == 0 for a prefix that matches nothing (got " +
+			std::to_string( mv ) + ")" );
+	}
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]",
+		true, "chunk_name_prefix_count: min:0 passes VACUOUSLY on an absent prefix (the pure-metric shape S2.3 relies on)" );
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":1}]",
+		false, "chunk_name_prefix_count: min:1 FAILS on an absent prefix" );
+
+	// A chunk NAMED like the prefix but not a genuine prefix match (e.g. the
+	// prefix "tmpl_bowl1_matx" -- longer than any real name) still counts 0.
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_bowl1_matx\",\"min\":0,\"max\":0}]",
+		true, "chunk_name_prefix_count: a prefix longer than any real name matches nothing (min==max==0)" );
+
+	// max exceeded -- FAILS.
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"max\":2}]",
+		false, "chunk_name_prefix_count: count 3 > max:2 FAILS" );
+
+	// ---- Loader validation: malformed chunk_name_prefix_count configs are hard load errors ----
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kChunkNamePrefixScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// Missing "prefix" entirely -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_no_prefix",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: missing \"prefix\" FAILS to load" );
+		Check( err.find( "\"prefix\"" ) != std::string::npos,
+			"the load error names prefix (got: " + err + ")" );
+	}
+	// Empty "prefix" -- refused (non-empty is required).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_empty_prefix",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: empty \"prefix\" FAILS to load" );
+		Check( err.find( "\"prefix\"" ) != std::string::npos,
+			"the load error names prefix (got: " + err + ")" );
+	}
+	// Missing "min" -- refused.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_no_min",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\"}]", err ),
+			"chunk_name_prefix_count: missing \"min\" FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// Negative "min" -- refused (a chunk count can never be negative).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_negative_min",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":-1}]", err ),
+			"chunk_name_prefix_count: negative \"min\" FAILS to load" );
+		Check( err.find( "\"min\"" ) != std::string::npos,
+			"the load error names min (got: " + err + ")" );
+	}
+	// "max" < "min" -- refused (inverted band can never pass).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_inverted_band",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":5,\"max\":1}]", err ),
+			"chunk_name_prefix_count: max 1 < min 5 FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// MORE than one of kindSuffix/kinds/category -- refused (the OPTIONAL
+	// filter still enforces AT MOST ONE when more than one is given; this is
+	// the one place this op's validation differs from distinct_chunk_kinds'
+	// EXACTLY ONE -- proven by the "zero filters loads cleanly" case below).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_two_filters",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,"
+			"\"kindSuffix\":\"_painter\",\"kinds\":[\"ggx_material\"]}]", err ),
+			"chunk_name_prefix_count: kindSuffix AND kinds both given FAILS to load" );
+		Check( err.find( "kindSuffix" ) != std::string::npos && err.find( "kinds" ) != std::string::npos,
+			"the load error names both kindSuffix and kinds (got: " + err + ")" );
+	}
+	// ZERO kind filters loads cleanly -- the defining difference from
+	// distinct_chunk_kinds/objects_reaching_kinds' REQUIRED exactly-one.
+	{
+		std::string err;
+		Check( writeAndLoad( "cnp_good_no_filter",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: zero kind filters loads cleanly (" + err + ")" );
+	}
+	// The correctly-shaped, single-filter sibling also loads cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "cnp_good_one_filter",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\","
+			"\"category\":\"painter\",\"min\":0,\"max\":10}]", err ),
+			"chunk_name_prefix_count: single-filter checkpoint loads cleanly (" + err + ")" );
+	}
+
+	// ---- metricLabel: chunk_name_prefix_count participates in the SAME
+	// cross-checkpoint dedupe pass as distinct_chunk_kinds/
+	// objects_reaching_kinds/param_binding ----
+
+	// Two chunk_name_prefix_count checkpoints, neither carrying an explicit
+	// metricLabel -- both default to the op name, collide, FAILS to load.
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_label_default_collision",
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"nope_\",\"min\":0}]", err ),
+			"chunk_name_prefix_count: two checkpoints with no metricLabel (both default-collide) FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Cross-op collision: distinct_chunk_kinds (default label
+	// "distinct_chunk_kinds") + chunk_name_prefix_count EXPLICITLY relabeled
+	// to the same string -- still a collision (op-agnostic, keyed on the
+	// EFFECTIVE label).
+	{
+		std::string err;
+		Check( !writeAndLoad( "cnp_bad_label_cross_op_collision",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,"
+			"\"metricLabel\":\"distinct_chunk_kinds\"}]", err ),
+			"chunk_name_prefix_count: relabeled to collide with distinct_chunk_kinds' default label FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// A DISTINCT explicit label ("scaffold_expanded", the real S2.3 label)
+	// loads cleanly and threads its own metricValue/metricLabel through
+	// CheckScenario -- proving the dedupe guard doesn't over-fire.
+	{
+		std::string err;
+		const bool loaded = writeAndLoad( "cnp_good_label",
+			"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+			"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"metricLabel\":\"scaffold_expanded\"}]", err );
+		Check( loaded, "chunk_name_prefix_count: distinct explicit label loads cleanly alongside another metric-carrying op (" + err + ")" );
+		if( loaded ) {
+			JsonValue cps; std::string perr;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\",\"category\":\"painter\",\"distinctMin\":1,\"metricLabel\":\"painter_kinds\"},"
+				"{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0,\"metricLabel\":\"scaffold_expanded\"}]",
+				cps, perr ), "chunk_name_prefix_count: two-label checkpoint JSON re-parses for the runtime check" );
+			AgentEvalScenario s2; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 2, "chunk_name_prefix_count: two checkpoint results" );
+			if( r.checkpoints.size() == 2 ) {
+				Check( r.checkpoints[0].hasMetricValue && r.checkpoints[0].metricLabel == "painter_kinds",
+					"chunk_name_prefix_count: checkpoint[0] carries label 'painter_kinds' (got '" + r.checkpoints[0].metricLabel + "')" );
+				Check( r.checkpoints[1].hasMetricValue && r.checkpoints[1].metricLabel == "scaffold_expanded",
+					"chunk_name_prefix_count: checkpoint[1] carries label 'scaffold_expanded' (got '" + r.checkpoints[1].metricLabel + "')" );
+				Check( r.checkpoints[1].metricValue == 3.0,
+					"chunk_name_prefix_count: checkpoint[1] metricValue == 3 (got " + std::to_string( r.checkpoints[1].metricValue ) + ")" );
+			}
+		}
+	}
+	// Unknown "category" name -- refused at CHECK time (matching
+	// distinct_chunk_kinds' own convention: category NAMES are validated at
+	// runtime via CheckerCategoryFromName, not at load time).
+	checkAgainst(
+		"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"bogus_category_xyz\",\"min\":0}]",
+		false, "chunk_name_prefix_count: unknown category name FAILS at check time" );
+}
+
+//----------------------------------------------------------------------
+// T-cnp-geo: Arc-75 slice S3b.2's red-proof for the scaffold_geo_expanded
+// scenario checkpoint (evals/scenarios/bare_prompt_build_courtyard.json
+// and bare_prompt_build_cozy_study.json).  That checkpoint is
+// {op:"chunk_name_prefix_count", prefix:"tmpl_", category:"geometry",
+// min:0, weight:0} -- the geometry-only SUBSET of scaffold_expanded's
+// unfiltered tmpl_ count, since insert_geometry_scaffold's expansions
+// mix GEOMETRY chunks (box_geometry/sdf_geometry/sweep_geometry/
+// displaced_geometry, category "geometry") with, for exactly one family
+// (displaced_slab), a PAINTER chunk (its perlin2d_painter noise source,
+// category "painter") under the SAME tmpl_ prefix.
+//
+// kChunkNamePrefixGeometryScene carries exactly TWO tmpl_-prefixed
+// chunks of DIFFERENT categories: tmpl_col1_geo (sdf_geometry,
+// category geometry) and tmpl_col1_bump (uniformcolor_painter, category
+// painter) -- modeling the displaced_slab split directly (one geometry
+// chunk, one painter chunk, same prefix).  This proves the exact
+// distinction the scenario comment makes: unfiltered prefix count is 2,
+// category:"geometry"-filtered count is 1 -- the two are NOT the same
+// number, so a reviewer cannot assume "geometry family used" from the
+// unfiltered scaffold_expanded label alone.
+//----------------------------------------------------------------------
+
+static const char* const kChunkNamePrefixGeometryScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat2\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname tmpl_col1_bump\n\tcolor 0.4 0.35 0.3\n}\n\n"
+	"sdf_geometry\n{\n\tname tmpl_col1_geo\n\tpart\troundcone union 0  0 0 0  0 0 0  1 1 1  0.3 0.2 0.5  0.0\n\tmaxsteps 64\n}\n\n"
+	"lambertian_material\n{\n\tname mat_flat2\n\treflectance pnt_flat2\n}\n\n"
+	"box_geometry\n{\n\tname geo_b\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_b\n\tgeometry geo_b\n\tmaterial mat_flat2\n}\n";
+
+static void TestChunkNamePrefixCountGeometryCategoryRedProof()
+{
+	std::printf( "T-cnp-geo: Arc-75 S3b.2 red-proof -- category:'geometry' subsets the unfiltered tmpl_ count...\n" );
+	const std::string dir = ScratchRunDir( "t_cnp_geo_red_proof" );
+
+	AgentEvalScenario sBase = MakeScenario( "cnp_geo_base", kChunkNamePrefixGeometryScene, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( sBase, opts );
+	Check( h.result.terminalStatus == "final_text", "cnp_geo_base: run reached final_text" );
+	Check( h.dispatcher != nullptr, "cnp_geo_base: run has a live dispatcher" );
+
+	auto metricValueOf = [&]( const std::string& cpJson, const std::string& label ) -> double {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+		return ( r.checkpoints.size() == 1 ) ? r.checkpoints[0].metricValue : -1.0;
+	};
+
+	// Unfiltered: BOTH tmpl_-prefixed chunks count, across the two
+	// different kinds/categories -- 2 (the "scaffold_expanded" shape).
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"min\":0}]",
+			"cnp_geo: unfiltered metricValue" );
+		Check( mv == 2.0, "cnp_geo: unfiltered prefix count == 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category:"geometry": narrows to the ONE sdf_geometry chunk, excluding
+	// the tmpl_-prefixed uniformcolor_painter -- exactly the
+	// "scaffold_geo_expanded" shape the two bare_prompt scenarios use.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"geometry\",\"min\":0}]",
+			"cnp_geo: category:'geometry' metricValue" );
+		Check( mv == 1.0, "cnp_geo: category:'geometry'-filtered prefix count == 1, "
+			"NOT the same as the unfiltered 2 (got " + std::to_string( mv ) + ")" );
+	}
+	// category:"painter" is the complementary narrowing -- the ONE
+	// tmpl_-prefixed uniformcolor_painter, excluding the sdf_geometry.
+	{
+		const double mv = metricValueOf(
+			"[{\"kind\":\"document\",\"op\":\"chunk_name_prefix_count\",\"prefix\":\"tmpl_\",\"category\":\"painter\",\"min\":0}]",
+			"cnp_geo: category:'painter' metricValue" );
+		Check( mv == 1.0, "cnp_geo: category:'painter'-filtered prefix count == 1, "
+			"the complementary half of the unfiltered 2 (got " + std::to_string( mv ) + ")" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -5904,6 +7259,7 @@ int main()
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
 	TestDiagnosticsCheckpointCleanIgnoresInfo();
+	TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning();
 	TestTrajectoryCheckpoint();
 	TestTrajectoryNewAssertions();
 	TestToolOutcomesArgsContainsAndConflict();
@@ -5915,6 +7271,7 @@ int main()
 	TestRenderCameraCompareToImage();
 	TestCompareToImageOversizedReferenceIsRefusedCheaply();
 	TestFinalTextCheckpoint();
+	TestHeadlessSkillIndexParity();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
 	TestScenarioIntervention();
@@ -5924,12 +7281,16 @@ int main()
 	TestResultsLedgerRecordsTerminalStatus();
 	TestLoadEvalScenarioStrictCheckpointFieldTypes();
 	TestTerminalSuccessGuard();
+	TestDegenerateRescueEndToEnd();
 	TestAskUserScriptedResponderMatching();
 	TestAskUserLoaderValidation();
 	TestTrajectoryAskUserAssertions();
 	TestScenarioContentHashAskUserResponsesSensitivity();
 	TestAdversarialControlNeverAsksStillBuilds();
 	TestMaterialRichnessCheckpoints();
+	TestParamBindingCheckpoint();
+	TestChunkNamePrefixCountCheckpoint();
+	TestChunkNamePrefixCountGeometryCategoryRedProof();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 

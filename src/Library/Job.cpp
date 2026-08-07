@@ -8344,6 +8344,21 @@ bool Job::AddFileRasterizerOutput(
 		break;
 	}
 
+	// A file output attaches to the ACTIVE rasterizer (IJob.h: "This should
+	// be called after a rasterizer has been set").  With none set there is
+	// nothing to attach to -- fail the parse with a precise diagnostic.
+	// Pre-fix this was a null deref: any scene whose file_rasterizeroutput
+	// chunk preceded its rasterizer chunk (or that had no rasterizer chunk
+	// at all) segfaulted at load.
+	if( !pRasterizer ) {
+		static const char* const msg =
+			"no rasterizer is set -- declare a rasterizer chunk (e.g. "
+			"pathtracing_pel_rasterizer) BEFORE the file_rasterizeroutput chunk";
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddFileRasterizerOutput:: %s", msg );
+		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+		return false;
+	}
+
 	IRasterizerOutput* ro = 0;
 	RISE_API_CreateFileRasterizerOutput(
 		&ro, szPattern, bMultiple, type, bpp, gc,
@@ -9856,6 +9871,13 @@ unsigned int Job::GetObjectOverrideCount() const
 bool Job::RemoveRasterizerOutputs(
 	)
 {
+	// Same null-rasterizer crash class as AddFileRasterizerOutput: this is
+	// reachable from the interactive console before any rasterizer exists.
+	if( !pRasterizer ) {
+		GlobalLog()->PrintEasyWarning(
+			"Job::RemoveRasterizerOutputs:: no rasterizer is set, nothing to remove" );
+		return false;
+	}
 	pRasterizer->FreeRasterizerOutputs();
 	return true;
 }

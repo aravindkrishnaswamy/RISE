@@ -897,13 +897,20 @@ final class ChatViewModel: ObservableObject {
 
     /// "" (provider default) is legal — `runTriage` passes it straight
     /// to `setProvider:modelId:`, same as the main provider picker's
-    /// blank-model convention.  The DEFAULT value here (before the user
-    /// ever opens settings) is "qwen3.6:27b" — a small, fast local model
-    /// appropriate for a one-shot triage question, not the main chat's
-    /// default per-provider model.
+    /// blank-model convention.  The unset-field fallback is
+    /// PROVIDER-AWARE: "qwen3.6:27b" (a small, fast local model) applies
+    /// ONLY when the triage provider is `.local` — for a hosted provider
+    /// an empty field means "" -> nil -> the bridge's own per-provider
+    /// default model.  (Bug fixed 2026-08-05: the local fallback used to
+    /// apply unconditionally, so "provider: gemini + untouched model
+    /// field" sent model id "qwen3.6:27b" to the Google API -> HTTP 404
+    /// -> ProviderError -> the fall-through contract silently skipped
+    /// triage on every send, indistinguishable from a clean
+    /// no-clarification verdict.)
     private var triageModelId: String {
         let raw = UserDefaults.standard.string(forKey: Self.triageModelKey) ?? ""
-        return raw.isEmpty ? "qwen3.6:27b" : raw
+        if !raw.isEmpty { return raw }
+        return triageProvider == .local ? "qwen3.6:27b" : ""
     }
 
     /// GUI stage 2: cap a tool-call detail payload (args JSON or a raw
@@ -2673,7 +2680,15 @@ final class ChatViewModel: ObservableObject {
     /// normal path): on every one of the following, `chatBridge
     /// .addUserMessage(originalText)` is called with the UNMODIFIED
     /// original text and this returns true, exactly as if triage were
-    /// disabled —
+    /// disabled — with one 2026-08-05 amendment: MECHANICAL failures
+    /// (missing key, transport error/timeout, non-FinalText step,
+    /// unparseable verdict) now append a one-line `.notice` naming the
+    /// skip, so a persistently-misconfigured triage setup (the shipped
+    /// bug: a hosted provider paired with the stale local model id ->
+    /// perpetual 404) is visible instead of masquerading as "brief
+    /// judged clear".  Only a genuine no-clarification/no-augmentation
+    /// verdict falls through with no notice.  The never-block property
+    /// is unchanged —
     ///   * the triage provider's raw UserDefaults value no longer names
     ///     a real provider (defensive; `triageProvider` already falls
     ///     back to `.local`, so this is effectively unreachable),
@@ -2712,15 +2727,26 @@ final class ChatViewModel: ObservableObject {
     /// transcript and on the wire).  A `.notice` row ("Triage added
     /// context") follows.
     ///
-    /// KNOWN v1 GAP: the triage bridge has NO trajectory sink configured
-    /// (it is a throwaway instance, never `startTrajectory`'d), so this
-    /// one HTTP round-trip is NOT recorded to the eval-harness JSONL log
-    /// — only the MAIN turn is (automatic: whatever composed text this
-    /// function hands to `chatBridge.addUserMessage` is what the main
-    /// bridge's own `user` trajectory record captures, and
-    /// ComposeSystemPrompt on that side is unaffected by the triage
-    /// bridge's override — the two bridges are fully independent
-    /// objects).
+    /// TRAJECTORY RECORDING (v1 gap closed): the triage bridge itself has
+    /// NO trajectory sink configured (it stays a throwaway instance, never
+    /// `startTrajectory`'d) — but the triage HTTP round-trip is no longer
+    /// invisible to the eval harness. As soon as the round completes
+    /// (success OR a mechanical failure — network error, timeout, a
+    /// wrong-model 404, anything), this function calls
+    /// `chatBridge.recordAuxiliaryHttpRound(purpose: "triage", ...)` on the
+    /// MAIN bridge (the one with the active sink), which lands the round
+    /// in the MAIN SESSION'S trajectory — same trace_id, same JSONL file —
+    /// as a `purpose:"triage"` `llm` record. The request body passed is
+    /// SANS AUTH: this function never hands headers to that call, only
+    /// url + body + status + response body + elapsed. The record is
+    /// EXCLUDED from the trajectory summary's rollup totals (it is not
+    /// part of the main conversation's cost), so the eval harness keeps
+    /// reading a summary line that describes only the main turns. Whatever
+    /// composed text this function eventually hands to
+    /// `chatBridge.addUserMessage` is, separately and as before, what the
+    /// main bridge's own `user` trajectory record captures — the two
+    /// mechanisms are independent; this one just stops the triage HTTP
+    /// round itself from vanishing.
     private func runTriage(originalText: String) async -> Bool {
         // Local, non-escaping, called only synchronously within this
         // method -- an ordinary (strong) capture is fine, it never
@@ -2740,6 +2766,8 @@ final class ChatViewModel: ObservableObject {
         let apiKey: String
         if triageProviderChoice.requiresApiKey {
             guard let resolved = resolveApiKey(for: triageProviderChoice) else {
+                transcript.append(Entry(kind: .notice,
+                    text: "Triage skipped (no API key for the triage provider) — message sent unmodified."))
                 return sendUnmodified()
             }
             apiKey = resolved
@@ -2766,26 +2794,61 @@ final class ChatViewModel: ObservableObject {
 
         let data: Data
         let status: Int
+        let httpStarted = Date()
         do {
             let (body, response) = try await URLSession.shared.data(for: urlRequest)
             data = body
             status = (response as? HTTPURLResponse)?.statusCode ?? 0
         } catch {
+            // Record the round on the MAIN bridge (see below) even on a
+            // transport failure -- status 0 + the error description as
+            // the body is forensic gold for a persistently-misconfigured
+            // triage setup, not noise worth suppressing.
+            let elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
+            chatBridge.recordAuxiliaryHttpRound(
+                purpose: "triage", url: request.url, requestBody: request.body,
+                httpStatus: 0, responseBody: error.localizedDescription,
+                elapsedMs: elapsedMs)
             // Covers both a real transport error AND the 20s timeout
             // above (URLSession surfaces a timeout as NSURLErrorTimedOut
             // through this same catch). A Stop mid-request must abandon
             // triage like any other cancellation, not fall through to
             // sending the original text out from under the user.
             if Task.isCancelled || stopRequested { return false }
+            transcript.append(Entry(kind: .notice,
+                text: "Triage skipped (network error or timeout) — message sent unmodified."))
             return sendUnmodified()
         }
+        let elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        // Record the round into the MAIN bridge's trajectory (NOT the
+        // throwaway triage bridge, which has no sink of its own -- see
+        // this method's doc) -- same trace_id / same JSONL file as the
+        // main turn, tagged purpose:"triage" so the summary rollup keeps
+        // reporting only the main conversation's LLM cost.  Recorded
+        // unconditionally, mechanical failures included: a wrong triage
+        // model id returning 404 is exactly the evidence a persistent
+        // misconfiguration needs, and this line lands BEFORE the
+        // cancellation check below on purpose -- the round completed
+        // either way, so its record precedes whatever this call decides
+        // to do next.
+        chatBridge.recordAuxiliaryHttpRound(
+            purpose: "triage", url: request.url, requestBody: request.body,
+            httpStatus: status, responseBody: bodyString, elapsedMs: elapsedMs)
+
         if Task.isCancelled || stopRequested { return false }
 
-        let bodyString = String(data: data, encoding: .utf8) ?? ""
         let step = triageBridge.handleResponse(status: status, body: bodyString)
         guard step.kind == .finalText, !step.finalText.isEmpty,
               let verdict = Self.parseTriageVerdict(step.finalText)
         else {
+            // A mechanical failure (provider error -- e.g. a wrong model id
+            // returning 404 -- or an unparseable reply) is made VISIBLE so a
+            // persistent misconfiguration cannot masquerade as "the brief
+            // was judged clear" forever.  Only the genuine
+            // no-clarification/no-augmentation verdict below stays silent.
+            transcript.append(Entry(kind: .notice,
+                text: "Triage skipped (triage model unavailable or reply unusable) — message sent unmodified."))
             return sendUnmodified()
         }
 

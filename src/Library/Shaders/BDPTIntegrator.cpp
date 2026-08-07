@@ -63,6 +63,7 @@
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): crash-fix-round-2, s=0 eyeEnd.pObject->GetArea() null-geometry guard
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/ILightManager.h"
@@ -3220,6 +3221,7 @@ ConnectAndEvaluateImpl(
 		// eyeEnd.pdfRev should be the PDF that the light sampling process
 		// would have generated this point: pdfSelect * pdfPosition.
 		const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
+		const bool savedEyeEndLightSamplingAbsent = eyeEnd.lightSamplingStrategyAbsent;
 
 		if( pLightSampler && eyeEnd.pObject )
 		{
@@ -3235,9 +3237,105 @@ ConnectAndEvaluateImpl(
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
 				scene, luminaries, *eyeEnd.pObject,
 				predVert_s0.position, predVert_s0.normal );
-			const Scalar area = eyeEnd.pObject->GetArea();
+			// CRASH FIX (2026-07-31 fix round 2): eyeEnd.pObject->GetArea()
+			// used to be called UNCONDITIONALLY here -- reached on the
+			// primary camera ray directly viewing an emitter (the eye path's
+			// s=0 strategy), so a csg_object luminary null-derefed inside
+			// Object::GetArea() (pre this fix round).  PROVEN SAFE by TWO
+			// independent layers even without this restructure: (1)
+			// Object::GetArea() now has a base-layer null guard (Object.cpp)
+			// and returns 0 for a null-geometry object, so `area > 0` below
+			// was already false and pdfPosition was already 0 -- no
+			// div-by-zero; (2) eyeEnd.pObject is never a REGISTERED NEE
+			// luminary when its geometry is null (LuminaryManager refuses
+			// it), so PdfSelectLuminary() -- which only matches against
+			// LuminaryManager's already-filtered light table -- already
+			// returns pdfSelect == 0 for it, making `pdfSelect * pdfPosition`
+			// == 0 regardless of pdfPosition's value.  This restructure adds
+			// a THIRD layer (skip GetArea() entirely when there is no
+			// geometry to sample) purely for defense-in-depth /
+			// consistency with the null-safety convention now used at every
+			// other luminary-area call site -- it does not change the
+			// computed pdfRev value in any case (still 0 whenever geometry
+			// is null or CanBeAreaLight() is false, matching the existing
+			// area<=0 semantics; no new MIS weighting introduced).
+			//
+			// P3 (fix round 3): this value-identity argument (pdfSelect==0
+			// for a null-geometry/non-CanBeAreaLight object) is NOT purely
+			// local -- it depends on two invariants enforced elsewhere:
+			//   (a) LuminaryManager::AddToLuminaryList (LuminaryManager.cpp)
+			//       is the SOLE admission gate for the luminaries list
+			//       `pLightSampler`/`luminaries` are built from; no other
+			//       code path adds an object to it, so "not admitted" here
+			//       and "refused by LuminaryManager" are the same fact.
+			//   (b) RayCaster::AttachScene's realize pass (RayCaster.cpp
+			//       ~225-231, `obj.Realize()` over every world-visible
+			//       object) runs BEFORE RebuildLightSamplers (~246/259),
+			//       which runs before any pixel is shaded -- so by the time
+			//       LuminaryManager decided admission AND by the time this
+			//       code reads eyeEnd.pObject->GetGeometry() /
+			//       CanBeAreaLight() at shading time, the object's geometry
+			//       is in the SAME final realized state both times.  If
+			//       realize ran AFTER RebuildLightSamplers, LuminaryManager
+			//       could admit/refuse based on a not-yet-realized geometry
+			//       that later resolves differently, breaking the identity
+			//       this comment relies on.
+			//
+			// MIS CAVEAT -- RESOLVED 2026-08-01 (was: "known defect,
+			// deferred", fix round 3 / Opus review).  pdfRev == 0 for a
+			// non-NEE-sampleable emitter is the correct INPUT, but
+			// MISWeight's remap0 step used to promote that zero to 1,
+			// manufacturing a phantom NEE strategy in the denominator.  The
+			// zero is now TAGGED (`lightSamplingStrategyAbsent`) so the
+			// eye-side walk can tell it apart from the delta-vertex zero
+			// remap0 exists for; see that field's contract in BDPTVertex.h
+			// and the walk's own comment.
+			const IGeometry* pEyeEndGeom = eyeEnd.pObject->GetGeometry();
+			const bool eyeEndAreaSampleable = pEyeEndGeom && pEyeEndGeom->CanBeAreaLight();
+			const Scalar area = eyeEndAreaSampleable ? eyeEnd.pObject->GetArea() : Scalar( 0 );
 			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
+			const Scalar eyeEndPdfRev = pdfSelect * pdfPosition;
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = eyeEndPdfRev;
+
+			// The whole s >= 1 family -- NEE at s=1, and every light-tracing
+			// strategy behind it -- requires the light-sampling process to
+			// be able to root a subpath on THIS emitter.  When the emitter
+			// is not in the NEE light set at all, none of those strategies
+			// exists, so none of them may contribute to this path's MIS
+			// denominator.  Tag that here, where the reason is known, rather
+			// than trying to re-derive it inside the ratio walk.
+			//
+			// The predicate is SET MEMBERSHIP -- null geometry
+			// (LuminaryManager refuses it), CanBeAreaLight() == false (an
+			// SDF whose sampling mesh proved it misses renderable surface;
+			// see SDFGeometry.h), or a degenerate zero-area emitter -- and
+			// deliberately NOT `eyeEndPdfRev <= 0`.  The two differ on one
+			// real case: with `light_bvh` enabled (opt-in),
+			// `PdfSelectLuminary` can return 0 for an emitter that IS in the
+			// set (an orientation-zeroed cluster -- NodeImportance's
+			// max(0, cos thetaPrime) drives probL to 0 from THIS shading
+			// point), while the s >= 1 strategies actually root their light
+			// subpaths with the shading-point-independent alias draw, which
+			// is strictly positive for any in-set light.  Keying off the
+			// pdf would then delete EXISTING strategies from the
+			// denominator, pushing the weights' sum above 1 -- an energy
+			// EXCESS, the opposite error to the one being fixed.  Set
+			// membership is the property the s >= 1 family actually depends
+			// on, and it is what PT gates on too
+			// (PathTracingIntegrator.cpp:2173, `pEmitGeom &&
+			// pEmitGeom->CanBeAreaLight()` plus its own `area > 0`).
+			//
+			// For an out-of-set emitter this restores agreement with PT
+			// (which skips its emission-MIS block entirely, leaving
+			// emissionMiWeight = 1) and with VCM (`pdfSelect > 0 ?
+			// wCameraJoint / pdfSelect : 0`).  It says nothing about the
+			// zero-pdf-but-in-set case, which the three integrators handle
+			// differently by design and which this flag no longer touches --
+			// PT there falls back to pdfSelect = 1.0 and down-weights
+			// (PathTracingIntegrator.cpp:2206-2213), and BDPT keeps the
+			// treatment it has always had.
+			const_cast<BDPTVertex&>( eyeEnd ).lightSamplingStrategyAbsent =
+				( !eyeEndAreaSampleable || area <= 0 );
 		}
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
@@ -3282,6 +3380,12 @@ ConnectAndEvaluateImpl(
 		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
+		// Restored unconditionally alongside pdfRev (the set above is inside
+		// the `pLightSampler && pObject` guard, so an unconditional restore
+		// is what keeps the vertex array clean for the OTHER (s,t)
+		// evaluations that share it).
+		const_cast<BDPTVertex&>( eyeEnd ).lightSamplingStrategyAbsent =
+			savedEyeEndLightSamplingAbsent;
 		if( hasEyePred ) {
 			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRev;
 		}
@@ -4887,6 +4991,62 @@ Scalar BDPTIntegrator::MISWeight(
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
 				eyeVerts[j] : lightVerts[0];
+
+			// STRATEGY-DOES-NOT-EXIST ZERO (fixed 2026-08-01; this was the
+			// "known defect, deferred" note from fix round 3's Opus MIS
+			// review).  remap0, immediately below, maps a zero pdf to 1 so
+			// the ratio chain survives a DELTA vertex -- whose pdf is zero
+			// only because a Dirac has no density, while the strategy
+			// through it still exists.  It cannot tell that zero apart from
+			// a zero that means "this strategy has no density at all".
+			//
+			// The (s=0) emitter-hit strategy produces the second kind at
+			// j == t-1 (vj IS eyeEnd) whenever the emitter is outside the
+			// NEE light set, and tags it via `lightSamplingStrategyAbsent`
+			// (set where the reason is known -- see the s=0 block's
+			// comment and BDPTVertex.h's contract for the field).
+			//
+			// In Veach's sum w(s,t) = p_s^2 / sum_i p_i^2, the term this
+			// iteration would add is p_{s+t-j} for the strategy that
+			// light-samples vj; its density is p_s * ri with
+			// ri = pdfRev(vj) / pdfFwd(vj).  A genuinely zero pdfRev makes
+			// that density exactly ZERO -- and, because the walk carries ri
+			// forward multiplicatively, so is every later term (each of
+			// those strategies also needs a light subpath rooted at or
+			// through vj).  Leaving the loop therefore adds exactly the
+			// terms Veach's sum contains, no more: the phantom NEE term and
+			// the phantom s>=2 light-tracing family behind it are removed,
+			// and nothing else changes.  `break` is precisely equivalent to
+			// `ri = 0` plus running the remaining iterations -- the body has
+			// no other effect -- and says the reason out loud.
+			//
+			// Result: sumWeights collapses to 1 for such a path, i.e.
+			// weight 1, matching PT (PathTracingIntegrator.cpp skips its
+			// emission-MIS block for a non-NEE-sampleable emitter) and VCM
+			// (VCMIntegrator.cpp's `wCamera = pdfSelect > 0 ? ... : 0`).
+			// Nothing here touches remap0's delta semantics, the power-2
+			// heuristic, or any weight on a path whose emitter IS in the
+			// light set -- for those, pdfRev > 0 and the flag is never set.
+			// Pinned by tests/BDPTPhantomStrategyWeightTest.cpp; MLT
+			// inherits the correction (MLTRasterizer builds a
+			// BDPTIntegrator).
+			//
+			// SCOPE CONTRACT -- the only vertex that may carry this flag is
+			// the (s=0) eye END, i.e. j == t-1, the FIRST iteration of this
+			// loop.  That is what makes `break` sound: the flagged vertex is
+			// the ROOT the whole s >= 1 family would have to be
+			// light-sampled from, so zeroing the chain there zeroes exactly
+			// the strategies that do not exist.  If some future code ever
+			// tags an INTERIOR eye vertex, this `break` would silently
+			// truncate the walk and drop strategies that DO exist (an energy
+			// excess) -- such a change must revisit this gate, not just set
+			// the flag.  Stated as a comment rather than an assert because
+			// this file carries no asserts (checked: zero `assert(` in
+			// BDPTIntegrator.cpp) and MISWeight is on the per-sample hot
+			// path.
+			if( vj.lightSamplingStrategyAbsent ) {
+				break;
+			}
 
 			// Compute the ratio with remap0 (see light-side walk above)
 			const Scalar pdfR = (vj.pdfRev != 0) ? vj.pdfRev : Scalar(1);

@@ -1,0 +1,162 @@
+{
+  "id": "bare_prompt_build_cozy_study",
+  "title": "Bare build prompt -- material AND geometry richness without elicitation (indoor control)",
+  "//": "Anti-overfit CONTROL for bare_prompt_build_courtyard (74-log open item 3): identical checkpoint structure, different subject, so a skill edit that only helps 'courtyard' shows up as a divergence between the two scenarios' scores. A truly bare prompt -- no 'make it look nice' nudge -- against the shipping empty starter scene. Measures whether the agent reaches for spatially-varying painters, the scalar-pipe, and non-primitive geometry verbs on an unprompted build, without ever blocking on style questions (askUserMax tolerates at most one ask; ask_user stays reserved for material/subject AMBIGUITY per build_ambiguous_scene, not style taste). objects_reaching_kinds is a MEASUREMENT, not an anti-adversarial gate -- it defeats a single-decoy gaming pattern (all diversity bound to one hidden object) but a determined multi-decoy scene can still pass every CST-side checkpoint here; the render-side closer is the deferred A2/P3 detector. Geometry checkpoints (geometry_kinds/advanced_geometry) have NO reachability guard at all -- a tiny decoy chunk per missing kind satisfies them; disclosed deliberately rather than papered over, since requiring 2+ advanced-geometry objects would over-prescribe legitimate scenes. Render band is INDOOR and PROVISIONAL -- see the render checkpoint's own comment.",
+  "scene": {
+    "path": "scenes/Templates/empty_starter.RISEscene"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Build me a cozy study."
+  ],
+  "budgets": {
+    "//": "Matches bare_prompt_build_courtyard and the furnished build-scenario family (build_ambiguous_scene et al). Deliberately loose: a budget-exhausted run would be indistinguishable from the flat-materials signal this scenario exists to measure; efficiency stays visible via the report's toolCalls/wall columns.",
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/bare_prompt_build_cozy_study.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 100
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "painter",
+      "exclude": [
+        "uniformcolor_painter",
+        "scalar_painter"
+      ],
+      "distinctMin": 2,
+      "weight": 2,
+      "metricLabel": "painter_kinds"
+    },
+    {
+      "kind": "document",
+      "op": "no_orphan_chunks",
+      "category": "painter"
+    },
+    {
+      "kind": "document",
+      "op": "any_param_references_kind",
+      "referencedKind": "scalar_painter",
+      "weight": 0.5
+    },
+    {
+      "kind": "document",
+      "op": "param_binding",
+      "//": "Measurement, not a gate (see the scenario-level comment above). Taste-blind: ANY non-excluded painter counts however crude -- a scalar_painter bound to a flat 0.7 with zero spatial variation scores identically to a genuinely varied microsurface; this op cannot see the difference. Decoy caveats are inherited from distinct_chunk_kinds/objects_reaching_kinds above, and this op's own gap is STRICTLY WORSE than either: unlike objects_reaching_kinds, param_binding has NO reachability filter at all -- an ORPHANED material (bound to a painter but referenced by zero standard_object, zero geometry, not even a hidden 0.001-unit decoy box) still counts. A one-line, never-instantiated ggx_material with alphax bound to a scalar_painter satisfies this checkpoint on its own; objects_reaching_kinds' render-side closer (deferred A2/P3) does not cover this op either, since there may be no object to reach in the first place. Arc-75 S2.3: a scaffold-expanded material (insert_material_scaffold's tmpl_<name>_mat) legitimately satisfies this checkpoint -- expansion-driven richness is NOT a decoy or a gaming pattern, it is the mechanism S2 exists to encourage. Read this count TOGETHER with the chunk_name_prefix_count checkpoint below (metricLabel 'scaffold_expanded'): the two are never summed, but side by side they split expansion-driven microsurface variation from hand-authored microsurface variation.",
+      "slots": [
+        { "chunkKind": "pbr_metallic_roughness_material", "params": ["roughness", "metallic"] },
+        { "chunkKind": "ggx_material", "params": ["alphax", "alphay"] },
+        { "chunkKind": "ward_anisotropic_material", "params": ["alphax", "alphay"] },
+        { "chunkKind": "cooktorrance_material", "params": ["facets"] },
+        { "chunkKind": "ward_isotropic_material", "params": ["alpha"] },
+        { "chunkKind": "orennayar_material", "params": ["roughness"] },
+        { "chunkKind": "sheen_material", "params": ["sheen_roughness"] },
+        { "chunkKind": "schlick_material", "params": ["roughness", "isotropy"] },
+        { "chunkKind": "ashikminshirley_anisotropicphong_material", "params": ["nu", "nv"] },
+        { "chunkKind": "isotropic_phong_material", "params": ["N"] }
+      ],
+      "excludeReferencedKinds": ["uniformcolor_painter"],
+      "min": 1,
+      "max": 100,
+      "weight": 0.5,
+      "metricLabel": "varied_microsurface"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_name_prefix_count",
+      "//": "Arc-75 S2.3 provenance metric. PURE metric, never gates (weight 0, min 0 passes vacuously on any document, including one with zero scaffold calls) -- the kill rules read the trend on this label across runs, not a pass/fail here. Counts chunks named tmpl_<name>_<role> -- the insert_material_scaffold naming convention -- so scaffold_expanded is expansion count ONLY; it says nothing about whether the model then edited what the scaffold generated (propose_patch/set_param targeting a tmpl_* chunk). That post-expansion edit rate is the creativity signal and is measured from the TRAJECTORY (tool calls after the scaffold call), not from a checkpoint op -- there is deliberately no op for it here.",
+      "prefix": "tmpl_",
+      "min": 0,
+      "weight": 0,
+      "metricLabel": "scaffold_expanded"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_name_prefix_count",
+      "//": "Arc-75 S3b.2 provenance metric. PURE metric, never gates (weight 0, min 0 passes vacuously, including on a document with zero geometry-scaffold calls -- these fixtures predate insert_geometry_scaffold, so this checkpoint reads 0 on both today by construction). Same tmpl_ convention as scaffold_expanded above, narrowed to category:'geometry' so it counts ONLY insert_geometry_scaffold's generated GEOMETRY chunks (box_geometry/sdf_geometry/sweep_geometry/displaced_geometry), not the whole expansion -- the geometry graph is 1-2 chunks per call, NOT 1-3: displaced_slab emits 3 tmpl_ chunks total but only 2 classify as category:'geometry' (box_geometry + displaced_geometry; its perlin2d_painter noise source is category:'painter' and is deliberately excluded here), while sweep_rail/blended_vessel/sdf_column each emit exactly 1 (sweep_geometry / sdf_geometry / sdf_geometry). Read this label TOGETHER with TWO others, never summed into either: scaffold_expanded above (which counts ALL tmpl_ chunks including materials/painters -- this label is the geometry-only subset of it) and advanced_geometry below (a scaffold-expanded sdf_geometry/sweep_geometry/displaced_geometry chunk satisfies advanced_geometry mechanically, since all four scaffold families terminate in one of those three kinds -- so a nonzero count here predicts a passing advanced_geometry, but advanced_geometry can also pass from hand-authored geometry with zero scaffold calls).",
+      "prefix": "tmpl_",
+      "category": "geometry",
+      "min": 0,
+      "weight": 0,
+      "metricLabel": "scaffold_geo_expanded"
+    },
+    {
+      "kind": "document",
+      "op": "objects_reaching_kinds",
+      "category": "painter",
+      "exclude": [
+        "uniformcolor_painter",
+        "scalar_painter"
+      ],
+      "min": 2,
+      "weight": 1.5,
+      "metricLabel": "textured_objects"
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "geometry",
+      "distinctMin": 3,
+      "weight": 1.5,
+      "metricLabel": "geometry_kinds"
+    },
+    {
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": [
+        "sdf_geometry",
+        "sweep_geometry",
+        "displaced_geometry"
+      ],
+      "distinctMin": 1,
+      "weight": 1,
+      "metricLabel": "advanced_geometry"
+    },
+    {
+      "kind": "render",
+      "//": "PROVISIONAL. This is an INDOOR scene, so it does not inherit courtyard's outdoor 0.9 ceiling -- started instead from the harness's existing indoor precedent (build_study_scene.json / build_stilllife_scene.json / build_watch_scene.json all use meanLumaMax 0.35 with the same lamp-scale-9.0-at-z=3.5 lighting recipe). Deliberately NOT re-tuned beyond that precedent per the 70-doc Sec 6.3 lesson -- the S0 anchor run is what calibrates the measurement; over-tuning the band before that first real run just relocates the guesswork.",
+      "samples": 512,
+      "width": 32,
+      "height": 24,
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "askUserMax": 1
+    },
+    {
+      "kind": "finalText",
+      "containsAny": [
+        "wood",
+        "leather",
+        "book",
+        "brass",
+        "fabric",
+        "rug",
+        "warm",
+        "grain",
+        "texture",
+        "material"
+      ],
+      "weight": 0.5
+    }
+  ]
+}

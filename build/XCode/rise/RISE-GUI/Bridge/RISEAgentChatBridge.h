@@ -337,6 +337,23 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 - (void)finishTrajectoryWithStatus:(NSString *)status
     NS_SWIFT_NAME(finishTrajectory(status:));
 
+/// GUI stage 3 (prompt triage): record ONE auxiliary HTTP round-trip a
+/// driver performed OUTSIDE this instance's own conversation into THIS
+/// instance's trajectory, as a `purpose`-tagged `llm` record (same
+/// trace_id / same JSONL file as everything else this bridge records).
+/// Call this on the MAIN bridge, not the throwaway triage bridge — the
+/// triage bridge has no trajectory sink of its own.  `requestBody` MUST
+/// already be auth-stripped by the caller (no headers parameter exists
+/// here on purpose — never pass any). No-op when this bridge has no
+/// active trajectory session.
+- (void)recordAuxiliaryHttpRoundWithPurpose:(NSString *)purpose
+                                         url:(NSString *)url
+                                 requestBody:(NSString *)requestBody
+                                  httpStatus:(NSInteger)httpStatus
+                                responseBody:(NSString *)responseBody
+                                   elapsedMs:(int64_t)elapsedMs
+    NS_SWIFT_NAME(recordAuxiliaryHttpRound(purpose:url:requestBody:httpStatus:responseBody:elapsedMs:));
+
 /// Pending tool calls awaiting addToolResult (0 when idle).
 @property (nonatomic, readonly) NSUInteger pendingToolCallsCount;
 

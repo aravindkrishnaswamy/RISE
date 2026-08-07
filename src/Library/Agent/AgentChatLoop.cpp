@@ -1020,14 +1020,18 @@ namespace RISE
 			// answered and flushed).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
-				// The BATCH forms (insert_chunks / propose_patches) count as a
-				// mutation here too -- they still edit the document with no
-				// visual observation in between, same blind-edit risk, and if
-				// anything a LARGER one (N edits land per call, so a model that
+				// The BATCH forms (insert_chunks / propose_patches /
+				// insert_material_scaffold / insert_geometry_scaffold)
+				// count as a mutation here too --
+				// they still edit the document with no visual observation
+				// in between, same blind-edit risk, and if anything a
+				// LARGER one (N edits land per call, so a model that
 				// batches would otherwise never accrue the streak at all and
 				// the nudge would silently stop firing for exactly the models
 				// making the biggest unobserved edits).
 				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
+				                          v == "insert_material_scaffold" ||
+				                          v == "insert_geometry_scaffold" ||
 				                          v == "propose_patch" || v == "propose_patches" ||
 				                          v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
@@ -1152,7 +1156,7 @@ namespace RISE
 			//!   1. A JSON-RPC `error` envelope           -> "error: <msg, <=80 chars>"
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
-			//!   4. name in {insert_chunks,propose_patches}  -> "<applied>/<total> applied"
+			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1217,7 +1221,14 @@ namespace RISE
 				// "ok" of rule 9 and report the SAME string whether 17/17 or
 				// 0/17 elements applied, which is precisely the outcome a
 				// best-effort batch verb most needs to surface.
-				if( call.name == "insert_chunks" || call.name == "propose_patches" ) {
+				if( call.name == "insert_chunks" || call.name == "propose_patches" ||
+				    // Arc-75 S2.1: insert_material_scaffold returns the
+				    // EXACT same {applied,total,results} batch envelope
+				    // (it submits through InsertChunks) -- same rule.
+				    call.name == "insert_material_scaffold" ||
+				    // Arc-75 S3b: insert_geometry_scaffold is the geometry
+				    // sibling, SAME {applied,total,results} batch envelope.
+				    call.name == "insert_geometry_scaffold" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
@@ -2099,6 +2110,51 @@ namespace RISE
 		{
 			if( !mRecorder ) return;
 			RecordHttpRound( mLastRequest, httpStatus, rawBody, elapsedMs, attempt, retryOf );
+		}
+
+		void AgentChatLoop::RecordAuxiliaryHttpRound(
+			const std::string& purpose, const std::string& url,
+			const std::string& requestBodySansAuth,
+			long httpStatus, const std::string& responseBody, int64_t elapsedMs )
+		{
+			if( !mRecorder ) return;
+			EnsureSessionRecordEmitted();
+
+			TrajectoryLlmRecord rec;
+			rec.purpose = purpose;
+			// Provider-agnostic best-effort model sniff (a raw JSON parse
+			// checking "model"/"modelVersion" -- no mCodec involved, since
+			// the auxiliary round's provider need not be this loop's).
+			rec.requestModel = ExtractResponseModel( requestBodySansAuth );
+			rec.responseModel = ExtractResponseModel( responseBody );
+			// Reuse the same "strip the big arrays" helper the main path
+			// uses (also provider-agnostic), then fold in the URL -- the
+			// ONE piece of forensic context this call carries that the main
+			// `llm` record has no field for (e.g. it is what shows which
+			// model a Gemini-shaped path-embedded-model URL actually hit).
+			JsonValue params;
+			std::string perr;
+			std::string paramsJson = ExtractRequestParams( requestBodySansAuth );
+			if( !JsonParse( paramsJson, params, perr ) || !params.isObject() )
+				params = JsonValue::MakeObject();
+			params.set( "url", JsonValue::MakeString( url ) );
+			rec.requestParamsJson = JsonSerialize( params );
+			// No headers parameter exists on this call BY DESIGN -- the
+			// driver never hands this loop any header list to strip, so
+			// there is nothing to carry (and nothing that could leak).
+			rec.requestHeadersJson = "{}";
+			rec.httpStatus = httpStatus;
+			rec.latencyMs = elapsedMs;
+			// Usage/finish-reasons stay at their documented "absent"
+			// defaults (-1 / empty) -- this loop's mCodec parses ONE
+			// provider's wire shape, and an auxiliary round's provider need
+			// not match it; a wrong-codec guess would look authoritative
+			// and be silently misleading.  The verbatim response body below
+			// is the honest replacement: full forensic detail, no guess.
+			rec.attempt = 1;
+			rec.retryOf = -1;
+			rec.responseBody = responseBody;
+			mRecorder->EmitLlm( rec );
 		}
 
 		void AgentChatLoop::FinishTrajectory( const std::string& status )

@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the THIRTEEN provider-neutral tool definitions -- twelve are
+//    (1) the SIXTEEN provider-neutral tool definitions -- fifteen are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -319,6 +319,111 @@ namespace RISE
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"chunks\"]}"
+				},
+				{
+					"insert_material_scaffold",
+					"Expand ONE of five material-family templates into a small wired painter graph "
+					"(2-4 painters + 1 material) added to the scene in one call -- so a richly-varied "
+					"material costs one tool call instead of hand-typing a scalar/painter graph and "
+					"choosing which slot takes a painter yourself. Families: \"weathered_wood\" "
+					"(pbr_metallic_roughness, base_color AND roughness both bound to a domainwarp3d wood-"
+					"grain painter), \"rough_stone\" (cooktorrance, rd bound to a worley3d pebble field, "
+					"facets bound to a spatially-varying scalar field), \"brushed_metal\" "
+					"(ward_anisotropic, alphax/alphay both bound to a spatially-varying scalar field at "
+					"different scale for the anisotropic groove), \"aged_bronze\" (cooktorrance, rd bound "
+					"to a reactiondiffusion3d oxidation-patina field, facets bound to a spatially-varying "
+					"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay "
+					"both bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT "
+					"LEAST ONE microsurface parameter to a real painter chunk -- that is the whole point "
+					"of the tool. ALL FIVE params are REQUIRED, no defaults: `family` (exactly one of the "
+					"five names above), `name` (a fresh, unique prefix -- every generated chunk is named "
+					"tmpl_<name>_<role>, e.g. tmpl_desk1_mat, tmpl_desk1_grain; a name whose derived chunks "
+					"collide with existing ones is refused, document unchanged), `tone` (\"r g b\", each "
+					"0..1 -- the base colour), `wear` (0..1 -- variation intensity), `scale` (>0 -- spatial "
+					"frequency of the variation). Internal graph constants (noise phase/frequency, "
+					"secondary darkening, per-axis anisotropy) are jittered deterministically from `name` "
+					"-- the SAME name reproduces byte-identical chunks, a DIFFERENT name visibly differs. "
+					"Every generated chunk is an ORDINARY, EDITABLE document chunk -- read_document shows "
+					"them at the exact site of any future edit, and propose_patch/remove_chunk work on "
+					"them exactly like any hand-authored chunk (change tmpl_desk1_grain's `scale` to "
+					"retune the grain, or point a different material at tmpl_desk1_glaze). Applied IN "
+					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; "
+					"see that tool's description) -- returns {applied,total,results:[...]} (the EXACT "
+					"insert_chunk per-element shape) plus `material` ({name,kind} of the one material "
+					"chunk) and `boundSlots` ([{param,painter},...] -- every microsurface parameter this "
+					"expansion bound, purely factual). Check every element's own status; do not assume "
+					"the whole expansion landed just because the call returned. A missing/invalid param, "
+					"an unrecognized family, or a name collision refuses the WHOLE call before any chunk "
+					"is generated (document unchanged) -- these come back as a tool error, not a partial "
+					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"tone\":{\"type\":\"string\",\"description\":"
+						"\"Base colour as \\\"r g b\\\", each 0..1, e.g. \\\"0.55 0.42 0.30\\\".\"},"
+						"\"wear\":{\"type\":\"number\",\"description\":"
+						"\"Variation intensity, 0..1.\"},"
+						"\"scale\":{\"type\":\"number\",\"description\":"
+						"\"Spatial frequency of the variation, > 0 (larger = tighter/finer features).\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"tone\",\"wear\",\"scale\"]}"
+				},
+				{
+					"insert_geometry_scaffold",
+					"Expand ONE of four geometry-family templates into a small GEOMETRY-ONLY chunk graph "
+					"(1-3 chunks) added to the scene in one call -- so an advanced geometric form costs one "
+					"tool call instead of hand-composing a displaced_geometry/sweep_geometry/sdf_geometry "
+					"chunk yourself. Families: \"displaced_slab\" (a box tessellated + bumped by a perlin2d "
+					"noise source via displaced_geometry), \"sweep_rail\" (a compact closed polygon profile "
+					"swept along a short bowed path with a taper, via sweep_geometry), \"blended_vessel\" "
+					"(a base/belly/rim roundcone chain smoothly blended into a vessel or bowl silhouette, via "
+					"sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain into a turned-column "
+					"silhouette, via sdf_geometry). Unlike insert_material_scaffold, this tool NEVER emits a "
+					"material or a standard_object -- YOU wire the standard_object (and any material) "
+					"yourself, referencing the returned `geometry.name`. Families cover common forms; "
+					"anything else (an unusual silhouette, a shape none of the four fit) is hand-authored "
+					"alongside using the ordinary geometry chunks -- this tool composes with hand authoring, "
+					"it does not replace it. ALL THREE params are REQUIRED, no defaults: `family` (exactly "
+					"one of the four names above), `name` (a fresh, unique prefix -- every generated chunk is "
+					"named tmpl_<name>_<role>, e.g. tmpl_rail1_rail; a name whose derived chunks collide with "
+					"existing ones is refused, document unchanged), `size` (>0 -- overall scale), `detail` "
+					"(0..1 -- displacement amplitude / profile complexity / smin blend tightness / "
+					"tessellation, whichever is honest for that family), `aspect` (>0 -- elongation; 1.0 is "
+					"roughly proportionate, higher values stretch the form). Internal graph constants (noise "
+					"phase/frequency, profile-point phase, path bow, smin blend radii, segment counts) are "
+					"jittered deterministically from `name` -- the SAME name reproduces byte-identical "
+					"chunks, a DIFFERENT name visibly differs. Every generated chunk is an ORDINARY, EDITABLE "
+					"document chunk -- read_document shows them at the exact site of any future edit, and "
+					"propose_patch/remove_chunk work on them exactly like any hand-authored chunk. Applied IN "
+					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; see "
+					"that tool's description) -- returns {applied,total,results:[...]} (the EXACT insert_chunk "
+					"per-element shape) plus `geometry` ({name,kind} of the one geometry chunk to bind into a "
+					"standard_object.geometry slot). Check every element's own status; do not assume the "
+					"whole expansion landed just because the call returned. A missing/invalid param, an "
+					"unrecognized family, or a name collision refuses the WHOLE call before any chunk is "
+					"generated (document unchanged) -- these come back as a tool error, not a partial "
+					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"size\":{\"type\":\"number\",\"description\":"
+						"\"Overall scale, > 0.\"},"
+						"\"detail\":{\"type\":\"number\",\"description\":"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation, per family.\"},"
+						"\"aspect\":{\"type\":\"number\",\"description\":"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form).\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"size\",\"detail\",\"aspect\"]}"
 				},
 				{
 					"remove_chunk",
@@ -1925,6 +2030,12 @@ namespace RISE
 					// testing the extracted `text` for blankness catches both.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"anthropic ended the turn with no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
@@ -2745,6 +2856,12 @@ namespace RISE
 					// since it is then the only text the model produced.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"gemini candidate carries no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
@@ -3449,6 +3566,12 @@ namespace RISE
 				else if( ChatContentIsBlank( text ) ) {
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"openai ended the response with no text or function calls" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
 					return AttachReasoning();
 				}
 				else {
@@ -3621,6 +3744,14 @@ namespace RISE
 					else {
 						out.step = MakeProviderError( ChatErrorKind::Provider,
 							"openai ended the turn with no content -- refusing the degenerate turn" );
+						// Observed on local qwen3-thinking backends: a premature
+						// end-of-turn mid-reasoning, not a considered refusal -- see
+						// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+						// assignment above (same hazard AttachReasoning documents:
+						// MakeProviderError REPLACES out.step wholesale).  NOT set on
+						// the sibling Refusal branch above (message.refusal is a
+						// considered decision, not a serving glitch).
+						out.step.retryDegenerateTurn = true;
 					}
 					return AttachReasoning();
 				}

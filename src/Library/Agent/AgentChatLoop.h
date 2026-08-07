@@ -909,6 +909,50 @@ namespace RISE
 			//! True while a trajectory sink is attached.
 			bool TrajectoryActive() const { return mRecorder != nullptr; }
 
+			//! GUI STAGE 3 (prompt triage), closing the "KNOWN v1 GAP": record
+			//! ONE auxiliary HTTP round-trip a DRIVER performed OUTSIDE this
+			//! loop's own conversation -- the Mac GUI's triage bridge is a
+			//! throwaway `AgentChatLoop` instance with no trajectory sink of
+			//! its own, so its HTTP round would otherwise vanish.  This method
+			//! is called on the MAIN loop instance (the one WITH the sink) so
+			//! the round lands in the main session's trajectory -- same
+			//! trace_id, same JSONL file -- as a `purpose`-tagged `llm` record
+			//! (run_type stays "llm"; `purpose` is the distinguishing field,
+			//! e.g. "triage").
+			//!
+			//! PURE trajectory write: touches ONLY the trajectory sink
+			//! (EnsureSessionRecordEmitted + one EmitLlm call).  Does NOT
+			//! append to mTranscript, does NOT touch mPendingCalls, budgets,
+			//! or the compaction estimator -- none of those are reachable
+			//! except through AddUserMessage/HandleResponse/BuildRequest,
+			//! none of which this calls.  The running SUMMARY totals
+			//! (input/output/reasoning/cache tokens, latency) also exclude
+			//! this record -- see ChatTrajectoryRecorder::EmitLlm -- so the
+			//! summary line keeps reporting the main conversation's cost,
+			//! not the main conversation's cost PLUS every triage call.
+			//!
+			//! `requestBodySansAuth` MUST already have credentials stripped
+			//! by the caller -- there is deliberately no headers parameter
+			//! here for the loop to strip (the driver never hands headers to
+			//! this call in the first place).  `httpStatus`/`responseBody`
+			//! are recorded EXACTLY as measured, including the mechanical-
+			//! failure cases (a non-2xx status, or status 0 with the
+			//! transport error's description as the body) -- a persistent
+			//! misconfiguration is forensic gold, not noise to suppress.
+			//! request/response MODEL fields are best-effort JSON extraction
+			//! (the same provider-agnostic `model`/`modelVersion` sniff the
+			//! main `llm` record uses for its response side) -- "unknown"
+			//! (empty) when absent, never guessed from mCodec/mModelId
+			//! (the auxiliary round's provider need not match this loop's).
+			//! Usage/finish-reason fields stay at their "absent" defaults for
+			//! the same reason: this loop's codec cannot be trusted to parse
+			//! a body from a possibly-different provider.  No-op when no
+			//! trajectory sink is attached.
+			void RecordAuxiliaryHttpRound( const std::string& purpose, const std::string& url,
+			                               const std::string& requestBodySansAuth,
+			                               long httpStatus, const std::string& responseBody,
+			                               int64_t elapsedMs );
+
 			//! Eval-harness (scenario interventions): emit a `history_edit`
 			//! trajectory record for a NON-LLM, NON-tool, history-visible
 			//! event that mutated the shared head BETWEEN the model's turns

@@ -49,6 +49,7 @@
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
+#include "../Agent/AgentSession.h"    // Post-arc enforcement E1 / P1-3: CheckNonSamplingEmitterGateFor{Patch,Insert} -- ResolveProposal's stale-staged-proposal re-check (no header cycle: AgentSession.h forward-declares SceneEditController, does not include this header)
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
@@ -5528,17 +5529,75 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	// through is both the honest re-check this slice promises AND reuses
 	// the exact, already-reviewed conflict gate rather than duplicating it.
 	AgentCommitResult cr;
-	switch( snapshot.kind )
+
+	// P1-3 fix round (post-arc enforcement E1): a SECOND, DIFFERENT re-check
+	// -- the base-version conflict gate above answers "is the head still
+	// what this proposal was staged against"; it says nothing about
+	// whether APPLYING the proposal to the head AS IT STANDS NOW would
+	// create the E1-refused construct (an emissive material bound to a
+	// null-geometry csg_object).  A proposal staged while INNOCENT -- the
+	// referenced material was non-emissive, or the csg_object carried
+	// `allow_non_sampling_emitter TRUE` -- can still land that construct
+	// here if the world moved underneath it while it sat in the queue
+	// (someone else's approved edit made the material emissive, or
+	// stripped the acknowledgment, in the meantime).  AgentSession::
+	// ProposePatch/InsertChunk's OWN pre-commit gate ran at STAGE time,
+	// against the head as it was then -- it cannot see this.
+	//
+	// Only ParamEdit and InsertChunk proposals can create this construct
+	// (RemoveChunk cannot introduce a new binding).  LOCK DISCIPLINE:
+	// ReadAgentSceneSnapshot takes mMutex itself for a brief, non-
+	// reentrant read and releases before returning -- called here with
+	// ONLY mRenderAdmissionMutex held (a DIFFERENT, recursive mutex; see
+	// this function's admissionLk above), so this is not a re-entrant
+	// mMutex acquire.  CheckNonSamplingEmitterGateFor{Patch,Insert}
+	// (RISE::Agent, AgentSession.h) are pure functions over the returned
+	// text: fresh RISE_CreateJobPriv / DeriveToJob / release, entirely
+	// local to that call -- zero controller re-entry, zero park
+	// interaction, the SAME throwaway-Job pattern AgentSession::
+	// ProposePatch/InsertChunk's own pre-commit gate uses.
+	bool gateRefused = false;
+	if( snapshot.kind == AgentProposalKind::ParamEdit || snapshot.kind == AgentProposalKind::InsertChunk )
 	{
-		case AgentProposalKind::ParamEdit:
-			cr = ApplyAgentParamEdit( snapshot.target, snapshot.entityKind, snapshot.param, snapshot.value, &snapshot.baseVersion );
-			break;
-		case AgentProposalKind::InsertChunk:
-			cr = ApplyAgentInsertChunk( snapshot.chunkText, &snapshot.baseVersion );
-			break;
-		case AgentProposalKind::RemoveChunk:
-			cr = ApplyAgentRemoveChunk( snapshot.target, snapshot.entityKind, &snapshot.baseVersion );
-			break;
+		bool hasDoc = false;
+		std::string headText;
+		RISE::Cst::CstHeadVersion headVer;
+		ReadAgentSceneSnapshot( hasDoc, headText, headVer );
+		if( hasDoc )
+		{
+			const std::string clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
+				? RISE::Agent::CheckNonSamplingEmitterGateForPatch( headText,
+					std::string( snapshot.target.c_str() ), std::string( snapshot.entityKind.c_str() ),
+					std::string( snapshot.param.c_str() ), std::string( snapshot.value.c_str() ) )
+				: RISE::Agent::CheckNonSamplingEmitterGateForInsert( headText,
+					std::string( snapshot.chunkText.c_str() ) );
+			if( !clause.empty() )
+			{
+				gateRefused    = true;
+				cr.applied     = false;
+				cr.retriable   = false;
+				cr.rawCode     = 0;
+				cr.status      = String( "rejected" );
+				cr.headVersion = headVer;
+				cr.message     = String( ( "resolve refused: " + clause ).c_str() );
+			}
+		}
+	}
+
+	if( !gateRefused )
+	{
+		switch( snapshot.kind )
+		{
+			case AgentProposalKind::ParamEdit:
+				cr = ApplyAgentParamEdit( snapshot.target, snapshot.entityKind, snapshot.param, snapshot.value, &snapshot.baseVersion );
+				break;
+			case AgentProposalKind::InsertChunk:
+				cr = ApplyAgentInsertChunk( snapshot.chunkText, &snapshot.baseVersion );
+				break;
+			case AgentProposalKind::RemoveChunk:
+				cr = ApplyAgentRemoveChunk( snapshot.target, snapshot.entityKind, &snapshot.baseVersion );
+				break;
+		}
 	}
 
 	{

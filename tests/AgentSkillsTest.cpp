@@ -568,9 +568,9 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
 	// A rot guard for the extraction itself: the eight seed skills ship
-	// SEVENTEEN snippets total (lighting-recipes 3, materials-and-media-
+	// NINETEEN snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 2, object-modeling-recipes 4, observe-modes 1,
+	// geometry 3, object-modeling-recipes 5, observe-modes 1,
 	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
 	// fence tag or extraction regresses, this trips before a snippet
 	// silently escapes checking.  object-modeling-recipes gained Recipe 4
@@ -578,8 +578,14 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// sweep_geometry neck) with the lathe-forms guidance; procedural-
 	// textures added the nested-perlin3d wood top and the domainwarp3d
 	// marble slab (whose scalar-pipe roughness is the ISCALARPAINTER-trap
-	// worked example).
-	Check( totalSnippets == 17, "the seed skills carry the expected 17 ```rise snippets in total (got " +
+	// worked example).  Arc-75 S3a added two more: modeling-workflow-and-
+	// geometry's displaced_geometry bumpy-slab drop-in (the bolt-on noise-
+	// source recipe, execution-validated bumpy-vs-flat) and object-
+	// modeling-recipes' Recipe 5 (a compact standalone sweep_geometry rail,
+	// re-anchored on the scenes/Tests/Geometry/sweep_instances.RISEscene
+	// horn idiom, replacing Recipe 4's scenario-glued flask neck as the
+	// generic form -- Recipe 4 itself is untouched).
+	Check( totalSnippets == 19, "the seed skills carry the expected 19 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -1136,7 +1142,7 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (fourteen tools, three providers) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (sixteen tools, three providers) + SetSkillIndex...\n" );
 
 	// The count below is asserted, not narrated: every provider's request
 	// body must carry the SAME kToolDefs table, so a tool added to one codec
@@ -1153,7 +1159,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 14, "anthropic body carries fourteen tools" );
+		Check( tools.isArray() && tools.size() == 16, "anthropic body carries sixteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -1175,28 +1181,28 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: fourteen functionDeclarations, read_skill present.
+	// Gemini: sixteen functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 14, "gemini body carries fourteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 16, "gemini body carries sixteen functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI Responses: fourteen flat function tools, read_skill present.
+	// OpenAI Responses: sixteen flat function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 14, "openai body carries fourteen tools" );
+		Check( tools.isArray() && tools.size() == 16, "openai body carries sixteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "type" ).asString() == "function" &&

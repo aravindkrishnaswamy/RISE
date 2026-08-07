@@ -87,6 +87,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdint>  // Arc-75 S2.1: std::uint64_t for the material-scaffold jitter hash
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 #include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
@@ -561,6 +562,21 @@ namespace RISE
 			return r;
 		}
 
+		std::string AgentSession::RenderSkillIndex( const AgentSkillResult& skills )
+		{
+			// See the header doc: the single-source "name -- hook" rendering
+			// every C++ SetSkillIndex caller uses. Skip an unnamed entry
+			// (never emitted by ReadSkill(), but a defensive skip costs
+			// nothing); an empty hook renders as the bare name.
+			std::string out;
+			for( const AgentSkillEntry& e : skills.index ) {
+				if( e.name.empty() ) continue;
+				if( !out.empty() ) out += '\n';
+				out += e.hook.empty() ? e.name : ( e.name + " -- " + e.hook );
+			}
+			return out;
+		}
+
 		//==============================================================
 		// AgentImageCache -- the last-render frame, optionally shared by a
 		// group of sessions.  Every method is a single leaf critical
@@ -968,6 +984,358 @@ namespace RISE
 			//! declaration further down for the identical pattern), so this and
 			//! the later definition refer to the same symbol.
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out );
+
+			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
+			//! arc.md sec 7's LUMINAIRE_NULL_GEOMETRY entry; 76-...-log.md sec 3's
+			//! mechanism law -- blocking facts act, a Warning gets skimmed): the
+			//! SHARED classification predicate both the LUMINAIRE_NULL_GEOMETRY
+			//! Warning (ValidateText's (b2) audit, just below) and the
+			//! InsertChunk/ProposePatch creation gate key off -- an object binds
+			//! an emissive material but owns no directly-owned geometry of its
+			//! own (the csg_object class; see LuminaryManager::AddToLuminaryList,
+			//! src/Library/Rendering/LuminaryManager.cpp).  ONE predicate, two
+			//! consumers -- do not duplicate this test at either call site.
+			bool IsNullGeometryEmitter_( const IObject& obj )
+			{
+				const IMaterial* pMat = obj.GetMaterial();
+				return pMat && pMat->GetEmitter() && !obj.GetGeometry();
+			}
+
+			//! One post-derive finding: a named csg_object IsNullGeometryEmitter_
+			//! flags, plus whether ITS OWN chunk in the source Document
+			//! acknowledges the gap via `allow_non_sampling_emitter TRUE`.
+			struct NullGeometryEmitterFinding
+			{
+				std::string name;
+				bool        acknowledged = false;
+			};
+
+			//! Reads a Bool-kind param's raw value off a chunk NodeRef the same
+			//! way ParseStateBag::GetBool does (RISE::String::toBoolean) -- `def`
+			//! when the param is absent or value-less.  Same (pname,pvalue)
+			//! token walk AnalyzeRejectedInsert / AnalyzeRejectedParamEdit use
+			//! elsewhere in this file, just reading instead of collecting.
+			bool ChunkParamBool_( const NodeRef& chunkItem, const std::string& pname, bool def )
+			{
+				if( !chunkItem ) return def;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string thisName, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) thisName = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( thisName == pname ) return val.empty() ? def : RISE::String( val.c_str() ).toBoolean();
+				}
+				return def;
+			}
+
+			//! Reads a String-kind param's raw value off a chunk NodeRef -- same
+			//! walk as ChunkParamBool_, joined-token form.  "" when absent.
+			std::string ChunkParamString_( const NodeRef& chunkItem, const std::string& pname )
+			{
+				if( !chunkItem ) return std::string();
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string thisName, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) thisName = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( thisName == pname ) return val;
+				}
+				return std::string();
+			}
+
+			//! Every csg_object in `doc` that IsNullGeometryEmitter_ flags in
+			//! `job`, each paired with whether its own chunk acknowledges the
+			//! gap.  csg_object is the sole null-geometry Object class (see
+			//! LuminaryManager::AddToLuminaryList), so restricting the walk to
+			//! that keyword is exhaustive, not a heuristic.  `job` must already
+			//! be a completed DeriveToJob of `doc` (or of a document that
+			//! extends it while preserving every existing csg_object's
+			//! registered name) -- this function does not derive anything
+			//! itself.  Shared by ValidateText's post-derive Warning audit and
+			//! the agent-edit creation gate (InsertChunk/ProposePatch) -- ONE
+			//! emitter/geometry walk, not duplicated at either call site.
+			std::vector<NullGeometryEmitterFinding> CollectNullGeometryEmitters_( IJobPriv& job, const Document& doc )
+			{
+				std::vector<NullGeometryEmitterFinding> out;
+				IObjectManager* pObjMan = job.GetObjects();
+				if( !pObjMan ) return out;
+
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk || it->role != "csg_object" ) continue;
+					const std::string name = ChunkParamString_( it, "name" );
+					if( name.empty() ) continue;
+					const IObjectPriv* pObj = pObjMan->GetItem( name.c_str() );
+					if( !pObj || !IsNullGeometryEmitter_( *pObj ) ) continue;
+					NullGeometryEmitterFinding f;
+					f.name         = name;
+					f.acknowledged = ChunkParamBool_( it, "allow_non_sampling_emitter", false );
+					out.push_back( f );
+				}
+				return out;
+			}
+
+			//! Post-arc enforcement E1's creation gate, core derive step: given
+			//! `candidateDoc` (the CANDIDATE state -- the current head with the
+			//! touched edit already applied, NOT yet committed) and a list of
+			//! csg_object names the CALLER has determined are worth checking
+			//! (the touched csg_object itself, or every csg_object that
+			//! references a touched MATERIAL), derives a throwaway Job
+			//! (mirroring ValidateText's (b2) derive above) and reuses
+			//! CollectNullGeometryEmitters_ -- the SAME classification/ack-
+			//! lookup the Warning audit uses -- to return the SUBSET of
+			//! `candidateNames` that come back as UNACKNOWLEDGED null-geometry
+			//! emitters.  Empty when there is nothing to refuse: none of the
+			//! candidates resolve to an emitter, all are acknowledged, or the
+			//! candidate doesn't derive far enough to tell.  HONESTY: ambiguity
+			//! is not proof, so an inconclusive derive fails OPEN -- the normal
+			//! insert/patch machinery downstream still gets the last word (its
+			//! own dangling-reference / derive-failure diagnostics fire as
+			//! usual).
+			std::vector<std::string> FindUnacknowledgedNullGeometryEmitters_( const Document& candidateDoc,
+			                                                                  const std::vector<std::string>& candidateNames )
+			{
+				std::vector<std::string> out;
+				if( candidateNames.empty() ) return out;
+
+				IJobPriv* throwaway = nullptr;
+				if( !RISE_CreateJobPriv( &throwaway ) || !throwaway ) return out;
+
+				std::vector<std::string> diags;
+				RISE::Cst::DeriveToJob( candidateDoc, *throwaway, &diags );
+
+				for( const NullGeometryEmitterFinding& f : CollectNullGeometryEmitters_( *throwaway, candidateDoc ) ) {
+					if( f.acknowledged ) continue;
+					for( const std::string& n : candidateNames ) {
+						if( n == f.name ) { out.push_back( f.name ); break; }
+					}
+				}
+
+				throwaway->release();
+				return out;
+			}
+
+			//! P1-1 fix round: the cheap, CST-ONLY (no derive) pre-filter for
+			//! the creation gate's MATERIAL-side arm -- every csg_object chunk
+			//! in `doc` whose `material` param equals `materialName`.  A
+			//! material-chunk edit (e.g. `emissive` on ggx_material /
+			//! pbr_metallic_roughness_material, `exitance` on
+			//! lambertian_luminaire_material -- deliberately NOT enumerated by
+			//! param name here; see the header doc's "whatever its name" note)
+			//! can create the SAME refused construct the csg-side `material`
+			//! re-point does, without ever touching the csg_object chunk.
+			//! Empty here means "pay nothing further" -- the candidate-derive
+			//! below is skipped entirely for the overwhelming majority of
+			//! material edits, which are never bound to a csg_object at all.
+			std::vector<std::string> CollectCsgObjectsReferencingMaterial_( const Document& doc,
+			                                                                const std::string& materialName )
+			{
+				std::vector<std::string> out;
+				if( materialName.empty() ) return out;
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk || it->role != "csg_object" ) continue;
+					if( ChunkParamString_( it, "material" ) != materialName ) continue;
+					const std::string name = ChunkParamString_( it, "name" );
+					if( !name.empty() ) out.push_back( name );
+				}
+				return out;
+			}
+
+			//! The actionable refusal clause for CREATING the construct --
+			//! shared by every creation-gate arm (csg-side `material`
+			//! re-point, material-side edit, insert), in the SAME VERIFIED
+			//! phrasing ValidateText's (b2) Warning uses just below (P2a fix
+			//! round: the prior gate text overclaimed "will never illuminate"
+			//! / "only... direct camera view" -- LuminaryManager::
+			//! AddToLuminaryList's verified contract, reproduced in that
+			//! Warning's comment, is narrower: the gap is NEE light-sampling
+			//! specifically, and BOTH direct-view AND a BSDF-sampled hit still
+			//! contribute).  `csgNames` is the ACTUAL affected csg_object(s) --
+			//! a single name for the csg-side/insert arms, POSSIBLY several for
+			//! the material-side arm, so the fix reads actionably from either
+			//! direction ("csg_object 'obj_x' ... has no directly-owned
+			//! geometry" even when the edit under refusal is on the MATERIAL
+			//! chunk, not `obj_x` itself).  Always called with a non-empty list.
+			std::string DescribeUnacknowledgedNullGeometryEmitters_( const std::vector<std::string>& csgNames )
+			{
+				std::string named;
+				for( std::size_t i = 0; i < csgNames.size(); ++i ) {
+					if( i ) named += ( i + 1 == csgNames.size() ? " and " : ", " );
+					named += "'" + csgNames[i] + "'";
+				}
+				const bool plural = csgNames.size() > 1;
+				return "csg_object" + std::string( plural ? "s " : " " ) + named +
+					std::string( plural ? " bind" : " binds" ) + " an emissive material but " +
+					std::string( plural ? "have" : "has" ) + " no directly-owned geometry -- "
+					"it will NOT act as an area light for next-event estimation (no NEE "
+					"importance sampling, never selected by light-sampling); it still contributes "
+					"emission on direct camera view (PT/BDPT/VCM pel + the legacy EmissionShaderOp "
+					"chain) or a BSDF-sampled hit. Fix: back the emitter with a real-geometry object "
+					"(a standard_object) instead, or add `allow_non_sampling_emitter TRUE` to the "
+					"referencing csg_object" + std::string( plural ? "s" : "" ) +
+					" to acknowledge the glow-only intent.";
+			}
+
+			//! P1-2 fix round: the refusal clause for REMOVING an
+			//! acknowledgment (`allow_non_sampling_emitter TRUE` -> FALSE/
+			//! absent) that would RECREATE the construct a prior insert/patch
+			//! was already refused for (or that a scene-file load carried in
+			//! already-acknowledged, silencing the Warning) -- a distinct
+			//! message from DescribeUnacknowledgedNullGeometryEmitters_'s
+			//! "creates" framing because the causal story is "you already
+			//! disclosed this and are now un-disclosing it", not "you are
+			//! introducing it for the first time".  Same verified NEE-vs-
+			//! direct-view/BSDF-hit phrasing.
+			std::string DescribeAcknowledgmentRemoval_( const std::string& csgName )
+			{
+				return "removing `allow_non_sampling_emitter` from csg_object '" + csgName + "' would "
+					"RECREATE the construct insert_chunk/propose_patch already refuse elsewhere: an "
+					"emissive material with no directly-owned geometry will NOT act as an area light "
+					"for next-event estimation (no NEE importance sampling, never selected by "
+					"light-sampling); it still contributes emission on direct camera view (PT/BDPT/VCM "
+					"pel + the legacy EmissionShaderOp chain) or a BSDF-sampled hit. Fix: back the "
+					"emitter with a real-geometry object (a standard_object) instead, or keep the "
+					"acknowledgment flag TRUE.";
+			}
+		}
+
+		//! Post-arc enforcement E1's creation gate, patch arm -- see the
+		//! declaration in AgentSession.h for the full contract (three
+		//! triggers: csg-side `material` re-point, `allow_non_sampling_emitter`
+		//! removal, material-side edit).  A FREE function (external linkage,
+		//! declared in the header, OUTSIDE the anonymous namespace above) so
+		//! SceneEditController::ResolveProposal's stale-staged-proposal
+		//! re-check can call the identical logic AgentSession::ProposePatch
+		//! uses below, from a different translation unit, with zero
+		//! duplication of the resolve/derive/classify walk.
+		std::string CheckNonSamplingEmitterGateForPatch( const std::string& headText,
+		                                                 const std::string& target,
+		                                                 const std::string& kind,
+		                                                 const std::string& param,
+		                                                 const std::string& value )
+		{
+			if( target.empty() ) return std::string();
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( headText );
+			const bool uniqueFallback = ( kind == "camera" );
+			const RISE::Cst::NodeId id =
+				RISE::Cst::DocFindByNameAnyRole( headDoc, target, nullptr, kind, uniqueFallback );
+			if( !id ) return std::string();
+			const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( headDoc, id );
+			if( !chunkItem ) return std::string();
+
+			// Arm A/B: the touched chunk IS the csg_object -- re-pointing
+			// `material` (the original vehicle) or clearing
+			// `allow_non_sampling_emitter` (P1-2's ack-removal bypass).  Both
+			// reduce to the identical mechanical check (build the candidate
+			// with the edit applied, ask whether the csg's OWN name comes
+			// back unacknowledged); only the REFUSAL MESSAGE differs.
+			if( chunkItem->role == "csg_object" &&
+			    ( param == "material" || param == "allow_non_sampling_emitter" ) ) {
+				const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+				if( touchedName.empty() ) return std::string();
+				const RISE::Cst::Document candidate =
+					RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+				const std::vector<std::string> hits =
+					FindUnacknowledgedNullGeometryEmitters_( candidate, std::vector<std::string>( 1, touchedName ) );
+				if( hits.empty() ) return std::string();
+				return param == "allow_non_sampling_emitter"
+					? DescribeAcknowledgmentRemoval_( touchedName )
+					: DescribeUnacknowledgedNullGeometryEmitters_( hits );
+			}
+
+			// Arm C (P1-1): the touched chunk is a MATERIAL, not the
+			// csg_object.  Cheap CST-only pre-filter FIRST -- pay for the
+			// candidate-derive only when at least one csg_object in the
+			// CURRENT head actually references this material by name; the
+			// vast majority of material edits (nothing bound to a csg) skip
+			// the derive entirely.
+			const ChunkDescriptor* desc = DescriptorForKeyword( String( chunkItem->role.c_str() ) );
+			if( !desc || desc->category != ChunkCategory::Material ) return std::string();
+			const std::string materialName = ChunkParamString_( chunkItem, "name" );
+			if( materialName.empty() ) return std::string();
+			const std::vector<std::string> referencing =
+				CollectCsgObjectsReferencingMaterial_( headDoc, materialName );
+			if( referencing.empty() ) return std::string();
+
+			// DELTA, not state (round-2 fix): unlike Arm A/B -- which edit
+			// the EXACT field that determines a csg's emissive/acknowledged
+			// status, so "does the candidate come back unacknowledged" IS
+			// the right question -- Arm C's target is a MATERIAL, and
+			// `param` need not have anything to do with emission at all
+			// (alphax, roughness, ...).  A referencing csg can ALREADY be
+			// an unacknowledged null-geometry emitter on the CURRENT head
+			// (a pre-existing, scene-file-loaded construct Validate is
+			// already Warning about) -- that is NOT this edit's doing, and
+			// refusing an unrelated param edit on that basis would freeze
+			// every future edit to the material, contradicting the CREATE-
+			// or-RECREATE contract this whole gate exists to enforce (and
+			// the scene's correct posture: Warning nags, edits proceed).
+			// Compute the SAME finder on the CURRENT head (restricted to
+			// the same `referencing` set) and refuse ONLY names that are
+			// NEW in the candidate -- i.e. THIS edit created or worsened
+			// their unacknowledged status.  One extra head-derive, paid
+			// only inside this already-narrow (referencing non-empty) arm.
+			const RISE::Cst::Document candidate = RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+			const std::vector<std::string> candidateHits = FindUnacknowledgedNullGeometryEmitters_( candidate, referencing );
+			if( candidateHits.empty() ) return std::string();
+			const std::vector<std::string> headHits = FindUnacknowledgedNullGeometryEmitters_( headDoc, referencing );
+			std::vector<std::string> createdHits;
+			for( const std::string& n : candidateHits ) {
+				bool preExisting = false;
+				for( const std::string& h : headHits ) if( h == n ) { preExisting = true; break; }
+				if( !preExisting ) createdHits.push_back( n );
+			}
+			if( createdHits.empty() ) return std::string();
+			return DescribeUnacknowledgedNullGeometryEmitters_( createdHits );
+		}
+
+		//! Post-arc enforcement E1's creation gate, insert arm -- see the
+		//! declaration in AgentSession.h.  Free function for the same
+		//! cross-TU reason as the patch arm above.
+		std::string CheckNonSamplingEmitterGateForInsert( const std::string& headText, const std::string& chunkText )
+		{
+			RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+			RISE::Cst::NodeRef chunkItem;
+			{
+				const int n = RISE::Cst::DocItemCount( chunkDoc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+				}
+			}
+			if( !chunkItem || chunkItem->role != "csg_object" ) return std::string();
+
+			// P3: skip the candidate-derive entirely when the inserted chunk
+			// ALREADY carries the acknowledgment -- cheap (a single param
+			// read on the not-yet-merged candidate chunk), and no false
+			// negative is possible: an already-acknowledged insert can never
+			// be refused regardless of what the rest of the document says.
+			if( ChunkParamBool_( chunkItem, "allow_non_sampling_emitter", false ) ) return std::string();
+
+			const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+			if( touchedName.empty() ) return std::string();
+
+			RISE::Cst::Document candidate = RISE::Cst::ParseToCst( headText );
+			const int endAt = RISE::Cst::DocItemCount( candidate );
+			candidate = RISE::Cst::DocInsertItem( candidate, endAt, chunkItem );
+
+			const std::vector<std::string> hits =
+				FindUnacknowledgedNullGeometryEmitters_( candidate, std::vector<std::string>( 1, touchedName ) );
+			if( hits.empty() ) return std::string();
+			return DescribeUnacknowledgedNullGeometryEmitters_( hits );
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -1029,6 +1397,68 @@ namespace RISE
 
 			std::vector<std::string> diags;
 			RISE::Cst::DeriveToJob( candidateDoc, *throwaway, &diags );
+
+			// (b2) Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
+			// src/Library/Rendering/LuminaryManager.cpp): a luminaire-bound
+			// object with no directly-owned geometry (a csg_object, whose shape
+			// comes from its two operand objects rather than a single geometry
+			// chunk) is silently skipped by NEE at render time -- refused, not
+			// dereferenced, so it no longer crashes, but a model authoring the
+			// scene should still be told its light won't act as an area light.
+			// Walk the throwaway job's realized objects (post-derive, so
+			// geometry/material bindings are fully resolved) BEFORE releasing
+			// it and surface one Warning diagnostic summarizing every match.
+			{
+				// Post-arc enforcement E1: the walk itself is shared
+				// (CollectNullGeometryEmitters_, defined above) with the
+				// InsertChunk/ProposePatch creation gate -- this audit now
+				// only WARNS on UNACKNOWLEDGED bindings.  An object whose
+				// csg_object chunk carries `allow_non_sampling_emitter TRUE`
+				// has already told the reader its glow-only intent is
+				// deliberate; repeating the same Warning on every subsequent
+				// Validate call is the nag-loop anti-pattern the two-tier
+				// design (75-arc sec 7 / 76-log sec 3) exists to avoid, and
+				// it would fail eval's `diagnostics: clean` on a scene that
+				// deliberately, honestly acknowledged the gap.
+				unsigned int unacknowledgedCount = 0;
+				for( const NullGeometryEmitterFinding& f : CollectNullGeometryEmitters_( *throwaway, candidateDoc ) )
+					if( !f.acknowledged ) ++unacknowledgedCount;
+				if( unacknowledgedCount > 0 ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Warning;
+					d.code     = AgentDiagnosticCode::LUMINAIRE_NULL_GEOMETRY;
+					// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix
+					// round 3 / P2b -- see LuminaryManager.cpp's AddToLuminaryList for
+					// the full "exactly what is verified" breakdown, reproduced in
+					// scope here): "contributes emission" is VERIFIED (not merely
+					// asserted) for DIRECT camera view under pathtracing_pel_rasterizer,
+					// bdpt_pel_rasterizer, vcm_pel_rasterizer, AND the legacy
+					// EmissionShaderOp (DefaultEmission) shaderop chain under
+					// pixelpel_rasterizer -- all four in
+					// tests/CSGNullGeometryLuminaireCrashTest.cpp.  For an INDIRECT
+					// (BSDF-sampled) hit, only PathTracingIntegrator.cpp's bsdfPdf>0
+					// block is independently tested; EmissionShaderOp.cpp's identically-
+					// gated bsdfPdf>0 block is code-verified but untested.  Spectral/HWSS
+					// twins of every path above are code-identical fixes, untested.  BDPT
+					// additionally carries a PRE-EXISTING, unrelated MIS energy deficit
+					// on this class of emitter (see BDPTIntegrator.cpp's eye-walk
+					// comment) -- "contributes emission" holds for BDPT, "full weight"
+					// does not.
+					d.message  = std::to_string( unacknowledgedCount ) +
+						" object(s) bind an emissive material but have no directly-owned "
+						"geometry (e.g. a csg_object, whose geometry comes from its two "
+						"operand objects rather than a single geometry chunk) -- they will "
+						"NOT act as an area light for next-event estimation (no NEE "
+						"importance sampling, never selected by light-sampling); each still "
+						"contributes emission on direct camera view (PT/BDPT/VCM pel + the "
+						"legacy EmissionShaderOp chain) or a BSDF-sampled hit. Bind the "
+						"emissive material to a standard_object with real geometry instead, "
+						"or add `allow_non_sampling_emitter TRUE` to acknowledge the glow-only "
+						"intent and silence this warning.";
+					out.push_back( d );
+				}
+			}
+
 			throwaway->release();
 			throwaway = nullptr;
 
@@ -1402,6 +1832,37 @@ namespace RISE
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
+
+			// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
+			// arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking
+			// facts act, a Warning gets skimmed): does this patch CREATE (or
+			// RECREATE, via an acknowledgment removal) an unacknowledged
+			// emissive-CSG null-geometry binding?  Engine-side, ahead of the
+			// authority/mode branching below, so every surface (CLI, GUI,
+			// External-authority staging) inherits it identically.  The three
+			// triggers (csg-side `material` re-point / `allow_non_sampling_
+			// emitter` removal / a material-side edit reaching a referencing
+			// csg_object) and the cheap pre-filters that bound the cost of
+			// each live in CheckNonSamplingEmitterGateForPatch (AgentSession.h)
+			// -- SHARED with SceneEditController::ResolveProposal's stale-
+			// staged-proposal re-check, so this is a two-line call-through,
+			// not a duplicate of that logic.
+			if( !patch.target.empty() )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const std::string clause = CheckNonSamplingEmitterGateForPatch(
+						snap.document, patch.target, patch.kind, patch.param, patch.value );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = snap.headVersion;
+						r.message     = "propose_patch refused: " + clause;
+						return r;
+					}
+				}
+			}
 
 			// Secure-MCP slice 5a: the authority gate, enforced HERE -- not
 			// trusted to any caller-side flag -- BEFORE the existing LIVE-mode
@@ -2708,6 +3169,46 @@ namespace RISE
 		{
 			AgentChunkResult r;
 
+			// Post-arc enforcement E1: the InsertChunk sibling of ProposePatch's
+			// identical gate -- does inserting this chunk CREATE an
+			// unacknowledged emissive-CSG null-geometry binding?  SHARED with
+			// SceneEditController::ResolveProposal's stale-staged-proposal
+			// re-check via CheckNonSamplingEmitterGateForInsert
+			// (AgentSession.h); this parse-for-echo is ONLY so a refusal can
+			// still stamp r.kind/r.name (the same identity-echo-even-on-
+			// refusal contract every other InsertChunk guard honours) --
+			// the gate function does its OWN parse + the derive-bearing work.
+			{
+				const RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( chunkItem && chunkItem->role == "csg_object" ) {
+					const std::string touchedName = ChunkParamString_( chunkItem, "name" );
+					if( !touchedName.empty() ) {
+						const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+						if( snap.hasDocument ) {
+							const std::string clause = CheckNonSamplingEmitterGateForInsert( snap.document, chunkText );
+							if( !clause.empty() ) {
+								r.applied     = false;
+								r.rawCode     = 0;
+								r.status      = "rejected";
+								r.headVersion = snap.headVersion;
+								r.kind        = chunkItem->role;
+								r.name        = touchedName;
+								r.message     = "insert_chunk refused: " + clause;
+								return r;
+							}
+						}
+					}
+				}
+			}
+
 			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch
 			// (see that method's doc for the full rationale) -- enforced
 			// before the existing LIVE-mode commit branch.
@@ -2891,6 +3392,1053 @@ namespace RISE
 				out.push_back( InsertChunk( chunkTexts[i], base ) );
 			}
 
+			return out;
+		}
+
+		namespace
+		{
+			//----------------------------------------------------------------
+			// Arc-75 slice S2.1 (insert_material_scaffold): deterministic
+			// jitter + the five family chunk-graph generators.  See
+			// AgentSession::InsertMaterialScaffold's header doc for the
+			// contract; this namespace holds pure text-generation helpers
+			// with NO session/controller/lock interaction at all -- the
+			// generated chunk texts are submitted through the EXISTING
+			// InsertChunks path, so nothing here touches
+			// SceneEditController::mMutex.
+			//----------------------------------------------------------------
+
+			//! FNV-1a 64-bit -- byte-stable across platforms/compilers/runs
+			//! (unlike std::hash<std::string>, which the standard leaves
+			//! implementation-defined).  The determinism red-proof (same
+			//! `name` twice -> byte-identical chunk text) depends on this
+			//! function NEVER changing for a given input.  Weak-avalanche
+			//! caveat: FNV-1a's per-byte diffusion is modest, so two SHORT
+			//! salts differing only in a trailing sequential digit (e.g.
+			//! "axis1" vs "axis2") can correlate more than a stronger hash
+			//! would -- every call site below therefore uses a distinctive
+			//! WORD per knob ("wood_persist", "stone_axis", ...), never a
+			//! numbered/sequential salt scheme, so this weakness is never
+			//! actually exercised.
+			std::uint64_t ScaffoldFnv1a64( const std::string& s )
+			{
+				std::uint64_t h = 14695981039346656037ull;
+				for( unsigned char c : s ) { h ^= c; h *= 1099511628211ull; }
+				return h;
+			}
+
+			//! Deterministic value in [0,1) from `name` + a per-knob `salt`
+			//! string -- different salts decorrelate different knobs of the
+			//! SAME scaffold; different `name`s decorrelate different
+			//! scaffolds (two families with the same name still differ
+			//! because each knob's salt is also family-specific text).
+			double ScaffoldJitter01( const std::string& name, const char* salt )
+			{
+				const std::uint64_t h = ScaffoldFnv1a64( name + "|" + salt );
+				// Top 53 bits -> a double in [0,1) (mirrors the standard
+				// generate_canonical technique for a one-shot deterministic
+				// draw, no distribution object needed).
+				return static_cast<double>( ( h >> 11 ) & ( ( 1ull << 53 ) - 1 ) )
+				     / static_cast<double>( 1ull << 53 );
+			}
+			double ScaffoldJitterRange( const std::string& name, const char* salt, double lo, double hi )
+			{
+				return lo + ScaffoldJitter01( name, salt ) * ( hi - lo );
+			}
+			unsigned int ScaffoldJitterUInt( const std::string& name, const char* salt, unsigned int lo, unsigned int hi )
+			{
+				return lo + static_cast<unsigned int>( ScaffoldJitter01( name, salt ) * static_cast<double>( hi - lo + 1 ) );
+			}
+
+			//! Fixed 4-decimal formatting -- deterministic text (no
+			//! scientific notation at the magnitudes used here).
+			std::string ScaffoldFmt( double v )
+			{
+				char buf[64];
+				std::snprintf( buf, sizeof( buf ), "%.4f", v );
+				return buf;
+			}
+			double ScaffoldClamp01( double v ) { return v < 0.0 ? 0.0 : ( v > 1.0 ? 1.0 : v ); }
+
+			std::string ScaffoldChunkText( const char* keyword,
+			                               const std::vector<std::pair<std::string,std::string>>& params )
+			{
+				std::string out = std::string( keyword ) + "\n{\n";
+				for( const auto& kv : params ) out += kv.first + " " + kv.second + "\n";
+				out += "}\n";
+				return out;
+			}
+
+			std::string ScaffoldVec3( double a, double b, double c )
+			{
+				return ScaffoldFmt( a ) + " " + ScaffoldFmt( b ) + " " + ScaffoldFmt( c );
+			}
+
+			std::string ScaffoldUniformColorText( const std::string& name, double r, double g, double b )
+			{
+				return ScaffoldChunkText( "uniformcolor_painter", {
+					{ "name",  name },
+					{ "color", ScaffoldVec3( r, g, b ) },
+				} );
+			}
+
+			//! A genuinely UV-varying [0,1] scalar field, defined directly
+			//! as a math expression of u,v.  IMPORTANT -- this is the ONLY
+			//! chunk kind this generator wraps in scalar_painter's
+			//! `function2d` slot for a truly spatially-varying scalar.  The
+			//! 3D-SOLID noise painters (perlin3d/worley3d/domainwarp3d/
+			//! reactiondiffusion3d/...) dual-register into the SAME
+			//! Function2D manager (Job::RegisterPainterDual), so
+			//! scalar_painter{function2d `a_3d_noise_painter`} PARSES and
+			//! RENDERS non-black -- but their GetColor reads
+			//! ri.ptIntersection (world-space), which the base
+			//! Painter::Evaluate(x,y)'s synthetic RayIntersectionGeometric
+			//! (Painter.cpp) never populates (it sets only ptCoord), so
+			//! that binding is silently evaluated at the SAME fixed point
+			//! every time -- spatially CONSTANT, not varying.  Verified by
+			//! reading Perlin3DPainter::GetColor / Painter::Evaluate /
+			//! Function2DScalarPainter::GetValuesAt directly; not used here.
+			//! expression_function2d has no such trap (its value IS u,v).
+			std::string ScaffoldExprFunction2DText( const std::string& name, double freqU, double freqV, double phase )
+			{
+				std::string out = "expression_function2d\n{\n";
+				out += "name " + name + "\n";
+				out += "param freq_u " + ScaffoldFmt( freqU ) + "\n";
+				out += "param freq_v " + ScaffoldFmt( freqV ) + "\n";
+				out += "param ph " + ScaffoldFmt( phase ) + "\n";
+				out += "expr 0.5 + 0.5 * sin(freq_u * u * 6.283185 + ph) * cos(freq_v * v * 6.283185 + ph)\n";
+				out += "}\n";
+				return out;
+			}
+
+			std::string ScaffoldScalarFn2DText( const std::string& name, const std::string& fn2d, double scale, double bias )
+			{
+				return ScaffoldChunkText( "scalar_painter", {
+					{ "name",       name },
+					{ "function2d", fn2d },
+					{ "scale",      ScaffoldFmt( scale ) },
+					{ "bias",       ScaffoldFmt( bias ) },
+				} );
+			}
+
+			std::string ScaffoldDomainWarp3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                      double persistence, unsigned int octaves, double warpAmp, unsigned int warpLevels,
+			                                      double axisA, double axisB, double axisC, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "domainwarp3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "persistence", ScaffoldFmt( persistence ) }, { "octaves", std::to_string( octaves ) },
+					{ "warp_amplitude", ScaffoldFmt( warpAmp ) }, { "warp_levels", std::to_string( warpLevels ) },
+					{ "scale", ScaffoldVec3( axisA, axisB, axisC ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldWorley3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                  double jitter, const std::string& output,
+			                                  double axis, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "worley3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "jitter", ScaffoldFmt( jitter ) }, { "output", output },
+					{ "scale", ScaffoldVec3( axis, axis, axis ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldReactionDiffusion3DText( const std::string& name, const std::string& colora, const std::string& colorb,
+			                                             unsigned int gridSize, double feed, double kill, unsigned int iterations,
+			                                             double axis, double shiftX, double shiftY, double shiftZ )
+			{
+				return ScaffoldChunkText( "reactiondiffusion3d_painter", {
+					{ "name", name }, { "colora", colora }, { "colorb", colorb },
+					{ "grid_size", std::to_string( gridSize ) },
+					{ "feed", ScaffoldFmt( feed ) }, { "kill", ScaffoldFmt( kill ) },
+					{ "iterations", std::to_string( iterations ) },
+					{ "scale", ScaffoldVec3( axis, axis, axis ) },
+					{ "shift", ScaffoldVec3( shiftX, shiftY, shiftZ ) },
+				} );
+			}
+
+			std::string ScaffoldPbrMetallicRoughnessText( const std::string& name, const std::string& baseColor,
+			                                              const std::string& roughness, double metallic )
+			{
+				return ScaffoldChunkText( "pbr_metallic_roughness_material", {
+					{ "name", name }, { "base_color", baseColor },
+					{ "metallic", ScaffoldFmt( metallic ) }, { "roughness", roughness },
+				} );
+			}
+
+			std::string ScaffoldCookTorranceText( const std::string& name, const std::string& rd, const std::string& rs,
+			                                      const std::string& facets )
+			{
+				return ScaffoldChunkText( "cooktorrance_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs }, { "facets", facets },
+				} );
+			}
+
+			std::string ScaffoldWardAnisotropicText( const std::string& name, const std::string& rd, const std::string& rs,
+			                                         const std::string& alphax, const std::string& alphay )
+			{
+				return ScaffoldChunkText( "ward_anisotropic_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs },
+					{ "alphax", alphax }, { "alphay", alphay },
+				} );
+			}
+
+			std::string ScaffoldGGXText( const std::string& name, const std::string& rd, const std::string& rs,
+			                            const std::string& alphax, const std::string& alphay, const std::string& fresnelMode )
+			{
+				return ScaffoldChunkText( "ggx_material", {
+					{ "name", name }, { "rd", rd }, { "rs", rs },
+					{ "alphax", alphax }, { "alphay", alphay },
+					{ "fresnel_mode", fresnelMode },
+				} );
+			}
+
+			//! `tone` is "r g b", each 0..1 -- parsed strictly (no trailing
+			//! junk beyond whitespace) so a malformed value is refused
+			//! rather than silently truncated.
+			bool ScaffoldParseTone( const std::string& tone, double& r, double& g, double& b )
+			{
+				char trailing[8] = { 0 };
+				if( std::sscanf( tone.c_str(), "%lf %lf %lf %7s", &r, &g, &b, trailing ) != 3 ) return false;
+				if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) return false;
+				if( r < 0.0 || r > 1.0 || g < 0.0 || g > 1.0 || b < 0.0 || b > 1.0 ) return false;
+				return true;
+			}
+
+			//! Arc-75 S2.1 fix-round P3: a sane upper bound on `name`'s
+			//! length.  Nothing downstream is unsafe past this (every
+			//! generated chunk name is a plain `std::string` concatenation,
+			//! no fixed buffer involved) -- this is purely a SANITY cap
+			//! against a pathological caller-supplied prefix bloating every
+			//! generated chunk name (`tmpl_<name>_<role>`) past what any
+			//! honest scene-authoring `name` should ever need.  64 is
+			//! generous against every real chunk name in this codebase's
+			//! own scenes/tests.
+			const std::size_t kScaffoldMaxNameLength = 64;
+
+			//! `name` is embedded directly into generated `name <token>`
+			//! lines and `tmpl_<name>_<role>` chunk names -- restrict to
+			//! characters that can never split a line or open/close a brace
+			//! early (the same token-safety policy every other chunk name
+			//! in this file relies on implicitly), and cap the length
+			//! (kScaffoldMaxNameLength) against a pathological caller.
+			bool ScaffoldNameIsValid( const std::string& name )
+			{
+				if( name.empty() || name.size() > kScaffoldMaxNameLength ) return false;
+				for( unsigned char c : name ) {
+					if( !( std::isalnum( c ) || c == '_' || c == '-' ) ) return false;
+				}
+				return true;
+			}
+
+			//! One generated chunk: its kind (for the collision precheck),
+			//! its own chunk `name` (ditto), and its full chunk text.
+			struct ScaffoldChunkEntry
+			{
+				std::string kind;
+				std::string name;
+				std::string text;
+			};
+
+			//! The whole expansion for one family: every chunk in insertion
+			//! order, plus the factual material/bound-slot summary
+			//! InsertMaterialScaffold's result reports.
+			struct ScaffoldGraph
+			{
+				std::vector<ScaffoldChunkEntry> chunks;
+				std::string materialName;
+				std::string materialKind;
+				std::vector<std::pair<std::string,std::string>> boundSlots;   //!< (param, painterName)
+			};
+
+			//! weathered_wood: pbr_metallic_roughness_material, base_color
+			//! AND roughness both bound to the SAME domainwarp3d grain
+			//! painter (a real wood ridge is both darker-and-rougher at the
+			//! same grain lines, so sharing one painter across both slots
+			//! is the honest choice, not just the cheap one).  `wear` warps
+			//! the grain harder and darkens the low end more; `scale`
+			//! stretches the grain frequency (anisotropic per-axis, for a
+			//! grain direction rather than blobs).
+			ScaffoldGraph BuildWeatheredWood( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nLight = "tmpl_" + name + "_tonelight";
+				const std::string nDark  = "tmpl_" + name + "_tonedark";
+				const std::string nGrain = "tmpl_" + name + "_grain";
+				const std::string nMat   = "tmpl_" + name + "_mat";
+
+				const double darkFactor = ScaffoldClamp01(
+					ScaffoldJitterRange( name, "wood_dark", 0.35, 0.60 ) - wear * 0.15 );
+				out.chunks.push_back( { "uniformcolor_painter", nLight, ScaffoldUniformColorText( nLight, r, g, b ) } );
+				out.chunks.push_back( { "uniformcolor_painter", nDark,
+					ScaffoldUniformColorText( nDark, r * darkFactor, g * darkFactor, b * darkFactor ) } );
+
+				const double persistence  = ScaffoldJitterRange( name, "wood_persist", 0.50, 0.80 );
+				const unsigned int octaves = ScaffoldJitterUInt( name, "wood_octaves", 3, 5 );
+				const double warpAmp      = ScaffoldJitterRange( name, "wood_warpamp", 2.0, 6.0 ) * ( 0.5 + wear );
+				const unsigned int warpLevels = ScaffoldJitterUInt( name, "wood_warplevels", 1, 3 );
+				const double axisA = ScaffoldJitterRange( name, "wood_axisa", 0.6, 1.4 ) * scale;
+				const double axisB = ScaffoldJitterRange( name, "wood_axisb", 2.0, 4.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "wood_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "wood_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "wood_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "domainwarp3d_painter", nGrain,
+					ScaffoldDomainWarp3DText( nGrain, nDark, nLight, persistence, octaves, warpAmp, warpLevels,
+						axisA, axisB, axisA, shiftX, shiftY, shiftZ ) } );
+
+				out.chunks.push_back( { "pbr_metallic_roughness_material", nMat,
+					ScaffoldPbrMetallicRoughnessText( nMat, nGrain, nGrain, 0.0 ) } );
+				out.materialName = nMat;
+				out.materialKind = "pbr_metallic_roughness_material";
+				out.boundSlots.push_back( { "roughness", nGrain } );
+				out.boundSlots.push_back( { "base_color", nGrain } );
+				return out;
+			}
+
+			//! rough_stone: cooktorrance_material, rd bound to a worley3d
+			//! pebble/cell field (colora=tone, colorb="none"), facets bound
+			//! to scalar_painter{function2d} over a jittered
+			//! expression_function2d.  `wear` widens and raises the facet
+			//! band; `scale` sets the pebble frequency.
+			ScaffoldGraph BuildRoughStone( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTone   = "tmpl_" + name + "_tone";
+				const std::string nPebble = "tmpl_" + name + "_pebble";
+				const std::string nWear   = "tmpl_" + name + "_wearfield";
+				const std::string nFacets = "tmpl_" + name + "_facets";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTone, ScaffoldUniformColorText( nTone, r, g, b ) } );
+
+				const double jitterAmt = ScaffoldJitterRange( name, "stone_jitter", 0.6, 1.0 );
+				const std::string output = ( ScaffoldJitter01( name, "stone_output" ) < 0.5 ) ? "f1" : "f2-f1";
+				const double axis  = ScaffoldJitterRange( name, "stone_axis", 3.0, 8.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "stone_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "stone_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "stone_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "worley3d_painter", nPebble,
+					ScaffoldWorley3DText( nPebble, nTone, "none", jitterAmt, output, axis, shiftX, shiftY, shiftZ ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "stone_frequ", 6.0, 14.0 );
+				const double freqV = ScaffoldJitterRange( name, "stone_freqv", 6.0, 14.0 );
+				const double phase = ScaffoldJitterRange( name, "stone_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nWear,
+					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nFacets,
+					ScaffoldScalarFn2DText( nFacets, nWear, 0.05 + 0.30 * wear, 0.04 + 0.05 * wear ) } );
+
+				out.chunks.push_back( { "cooktorrance_material", nMat,
+					ScaffoldCookTorranceText( nMat, nPebble, "none", nFacets ) } );
+				out.materialName = nMat;
+				out.materialKind = "cooktorrance_material";
+				out.boundSlots.push_back( { "facets", nFacets } );
+				out.boundSlots.push_back( { "rd", nPebble } );
+				return out;
+			}
+
+			//! brushed_metal: ward_anisotropic_material, alphax (narrow,
+			//! along the brush direction) AND alphay (wide, across it) both
+			//! bound to scalar_painter{function2d} wrapping the SAME
+			//! groove expression_function2d at different scale/bias --
+			//! the anisotropy IS the two bands reading a shared groove
+			//! field differently, not two unrelated noises.  `wear` widens
+			//! both bands (a more-worn brushed surface scatters more in
+			//! both directions); `scale` sets the groove pitch.
+			ScaffoldGraph BuildBrushedMetal( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTint   = "tmpl_" + name + "_tint";
+				const std::string nGroove = "tmpl_" + name + "_groove";
+				const std::string nAlphaX = "tmpl_" + name + "_alphax";
+				const std::string nAlphaY = "tmpl_" + name + "_alphay";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTint, ScaffoldUniformColorText( nTint, r, g, b ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "metal_frequ", 20.0, 40.0 ) * scale;
+				const double freqV = ScaffoldJitterRange( name, "metal_freqv", 1.0, 3.0 ) * scale;
+				const double phase = ScaffoldJitterRange( name, "metal_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nGroove,
+					ScaffoldExprFunction2DText( nGroove, freqU, freqV, phase ) } );
+
+				out.chunks.push_back( { "scalar_painter", nAlphaX,
+					ScaffoldScalarFn2DText( nAlphaX, nGroove, 0.01 + 0.02 * wear, 0.015 + 0.01 * wear ) } );
+				out.chunks.push_back( { "scalar_painter", nAlphaY,
+					ScaffoldScalarFn2DText( nAlphaY, nGroove, 0.05 + 0.25 * wear, 0.10 + 0.10 * wear ) } );
+
+				out.chunks.push_back( { "ward_anisotropic_material", nMat,
+					ScaffoldWardAnisotropicText( nMat, "none", nTint, nAlphaX, nAlphaY ) } );
+				out.materialName = nMat;
+				out.materialKind = "ward_anisotropic_material";
+				out.boundSlots.push_back( { "alphax", nAlphaX } );
+				out.boundSlots.push_back( { "alphay", nAlphaY } );
+				return out;
+			}
+
+			//! aged_bronze: cooktorrance_material, rd bound to a
+			//! reactiondiffusion3d patina field (its OWN description names
+			//! "oxidation blooms" -- the honest fit for bronze patina,
+			//! deliberately distinct from rough_stone's worley so the two
+			//! families don't read as the same recipe in different paint),
+			//! rs reuses the base tone (a warm specular tint), facets bound
+			//! to scalar_painter{function2d} like rough_stone.  `wear`
+			//! raises the facet band (more pitting); `scale` sets the
+			//! patina blotch frequency.
+			ScaffoldGraph BuildAgedBronze( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nTone   = "tmpl_" + name + "_tone";
+				const std::string nPatina = "tmpl_" + name + "_patina";
+				const std::string nWear   = "tmpl_" + name + "_wearfield";
+				const std::string nFacets = "tmpl_" + name + "_facets";
+				const std::string nMat    = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nTone, ScaffoldUniformColorText( nTone, r, g, b ) } );
+
+				const unsigned int gridSize   = ScaffoldJitterUInt( name, "bronze_grid", 14, 20 );
+				const double feed             = ScaffoldJitterRange( name, "bronze_feed", 0.030, 0.045 );
+				const double kill             = ScaffoldJitterRange( name, "bronze_kill", 0.055, 0.065 );
+				const unsigned int iterations = ScaffoldJitterUInt( name, "bronze_iter", 300, 700 );
+				const double axis  = ScaffoldJitterRange( name, "bronze_axis", 2.0, 5.0 ) * scale;
+				const double shiftX = ScaffoldJitterRange( name, "bronze_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "bronze_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "bronze_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "reactiondiffusion3d_painter", nPatina,
+					ScaffoldReactionDiffusion3DText( nPatina, nTone, "none", gridSize, feed, kill, iterations,
+						axis, shiftX, shiftY, shiftZ ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "bronze_frequ", 6.0, 14.0 );
+				const double freqV = ScaffoldJitterRange( name, "bronze_freqv", 6.0, 14.0 );
+				const double phase = ScaffoldJitterRange( name, "bronze_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nWear,
+					ScaffoldExprFunction2DText( nWear, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nFacets,
+					ScaffoldScalarFn2DText( nFacets, nWear, 0.03 + 0.20 * wear, 0.03 + 0.04 * wear ) } );
+
+				out.chunks.push_back( { "cooktorrance_material", nMat,
+					ScaffoldCookTorranceText( nMat, nPatina, nTone, nFacets ) } );
+				out.materialName = nMat;
+				out.materialKind = "cooktorrance_material";
+				out.boundSlots.push_back( { "facets", nFacets } );
+				out.boundSlots.push_back( { "rd", nPatina } );
+				return out;
+			}
+
+			//! glazed_ceramic: ggx_material, fresnel_mode schlick_f0 (a
+			//! dielectric glaze, not a conductor), rd is the body colour,
+			//! rs is a small F0 tint (the glaze coat), alphax AND alphay
+			//! both bound to the SAME LOW-amplitude scalar_painter{function2d}
+			//! (isotropic, "low-alpha with subtle scalar variation" per the
+			//! family brief).  `wear` nudges the alpha band up slightly;
+			//! `scale` sets the ripple frequency.
+			ScaffoldGraph BuildGlazedCeramic( const std::string& name, double r, double g, double b, double wear, double scale )
+			{
+				ScaffoldGraph out;
+				const std::string nBody      = "tmpl_" + name + "_body";
+				const std::string nGlaze     = "tmpl_" + name + "_glaze";
+				const std::string nVariation = "tmpl_" + name + "_variation";
+				const std::string nAlpha     = "tmpl_" + name + "_alpha";
+				const std::string nMat       = "tmpl_" + name + "_mat";
+
+				out.chunks.push_back( { "uniformcolor_painter", nBody, ScaffoldUniformColorText( nBody, r, g, b ) } );
+
+				const double f0 = ScaffoldJitterRange( name, "ceramic_f0", 0.04, 0.06 );
+				out.chunks.push_back( { "uniformcolor_painter", nGlaze,
+					ScaffoldUniformColorText( nGlaze, ScaffoldClamp01( f0 + 0.02 * r ),
+						ScaffoldClamp01( f0 + 0.02 * g ), ScaffoldClamp01( f0 + 0.02 * b ) ) } );
+
+				const double freqU = ScaffoldJitterRange( name, "ceramic_frequ", 8.0, 16.0 ) * scale;
+				const double freqV = ScaffoldJitterRange( name, "ceramic_freqv", 8.0, 16.0 ) * scale;
+				const double phase = ScaffoldJitterRange( name, "ceramic_phase", 0.0, 6.283185 );
+				out.chunks.push_back( { "expression_function2d", nVariation,
+					ScaffoldExprFunction2DText( nVariation, freqU, freqV, phase ) } );
+				out.chunks.push_back( { "scalar_painter", nAlpha,
+					ScaffoldScalarFn2DText( nAlpha, nVariation, 0.005 + 0.015 * wear, 0.01 + 0.01 * wear ) } );
+
+				out.chunks.push_back( { "ggx_material", nMat,
+					ScaffoldGGXText( nMat, nBody, nGlaze, nAlpha, nAlpha, "schlick_f0" ) } );
+				out.materialName = nMat;
+				out.materialKind = "ggx_material";
+				out.boundSlots.push_back( { "alphax", nAlpha } );
+				out.boundSlots.push_back( { "alphay", nAlpha } );
+				return out;
+			}
+
+			bool ScaffoldParseFamily( const std::string& family, AgentSession::MaterialScaffoldFamily& out )
+			{
+				if( family == "weathered_wood" ) { out = AgentSession::MaterialScaffoldFamily::WeatheredWood; return true; }
+				if( family == "rough_stone" )    { out = AgentSession::MaterialScaffoldFamily::RoughStone;    return true; }
+				if( family == "brushed_metal" )  { out = AgentSession::MaterialScaffoldFamily::BrushedMetal;  return true; }
+				if( family == "aged_bronze" )    { out = AgentSession::MaterialScaffoldFamily::AgedBronze;    return true; }
+				if( family == "glazed_ceramic" ) { out = AgentSession::MaterialScaffoldFamily::GlazedCeramic; return true; }
+				return false;
+			}
+
+			ScaffoldGraph BuildScaffoldGraph( AgentSession::MaterialScaffoldFamily family, const std::string& name,
+			                                  double r, double g, double b, double wear, double scale )
+			{
+				switch( family )
+				{
+					case AgentSession::MaterialScaffoldFamily::WeatheredWood:  return BuildWeatheredWood( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::RoughStone:     return BuildRoughStone( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::BrushedMetal:   return BuildBrushedMetal( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::AgedBronze:     return BuildAgedBronze( name, r, g, b, wear, scale );
+					case AgentSession::MaterialScaffoldFamily::GlazedCeramic:  return BuildGlazedCeramic( name, r, g, b, wear, scale );
+				}
+				return ScaffoldGraph();
+			}
+		}
+
+		AgentSession::AgentScaffoldResult AgentSession::InsertMaterialScaffold(
+			const std::string& family, const std::string& name, const std::string& tone,
+			double wear, double scale, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentScaffoldResult out;
+			out.family = family;
+
+			MaterialScaffoldFamily fam;
+			if( !ScaffoldParseFamily( family, fam ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: unknown family `" + family +
+					"` -- valid families are: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic";
+				return out;
+			}
+			if( !ScaffoldNameIsValid( name ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `name` must be a non-empty token "
+					"(letters, digits, underscore, hyphen only) -- got `" + name + "`";
+				return out;
+			}
+			double r = 0.0, g = 0.0, b = 0.0;
+			if( !ScaffoldParseTone( tone, r, g, b ) ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `tone` must be three numbers `r g b`, "
+					"each in [0,1] -- got `" + tone + "`";
+				return out;
+			}
+			if( !std::isfinite( wear ) || wear < 0.0 || wear > 1.0 ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `wear` must be a finite number in [0,1]";
+				return out;
+			}
+			if( !std::isfinite( scale ) || scale <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_material_scaffold refused: `scale` must be a finite number > 0";
+				return out;
+			}
+
+			const ScaffoldGraph graph = BuildScaffoldGraph( fam, name, r, g, b, wear, scale );
+
+			// Collision precheck: refuse the WHOLE expansion, document
+			// UNCHANGED, if ANY generated (kind,name) already exists AT
+			// SNAPSHOT TIME.  InsertChunks' own duplicate rejection is
+			// per-ELEMENT and best-effort by design (see its header doc)
+			// -- a mid-batch collision would still land the chunks before
+			// and after it, leaving a half-wired graph -- so without this
+			// precheck a caller reusing a colliding `name` could end up
+			// with a partial scaffold instead of a clean refusal.
+			//
+			// Arc-75 S2.1 fix-round P2c (precision correction -- the prior
+			// comment here overclaimed "atomic: either the whole graph
+			// lands, or nothing does", which AgentScaffoldResult's OWN doc
+			// already hedges more carefully).  What this precheck DOES
+			// guarantee: ok==false refuses BEFORE any chunk is generated,
+			// so a genuine collision (the common case: replaying the same
+			// `name`) never partially lands.  What it does NOT guarantee:
+			//   * TOCTOU -- there is a real window between this snapshot
+			//     read and the InsertChunks submission below.  A
+			//     CONCURRENT live writer (another session, or the
+			//     interactive editor, mutating the SAME controller's
+			//     document) that inserts a colliding chunk inside that
+			//     window is invisible to this precheck; the collision then
+			//     surfaces as InsertChunks' own ordinary per-element
+			//     "rejected" result for THAT chunk -- best-effort, not a
+			//     whole-batch rollback (see InsertChunks' header doc).
+			//   * Once the precheck passes, everything downstream is
+			//     InsertChunks' EXISTING best-effort semantics, unchanged:
+			//     a LATER element can still be rejected for an unrelated
+			//     reason (e.g. a concurrent edit invalidating an earlier-
+			//     landed reference), leaving a partially-applied graph on
+			//     the document -- callers must check every `chunkResults[i]`
+			//     rather than trusting ok==true as "the whole graph
+			//     landed" (see AgentScaffoldResult's own doc).
+			//   * Optimistic concurrency (`baseOrNull`) is honored exactly
+			//     as InsertChunks documents it: checked against the FIRST
+			//     element only: a stale head surfaces as that element's
+			//     own "conflict" status, not a distinct scaffold-level
+			//     guarantee.
+			//   * A chunk that APPLIES but references a name the document
+			//     has no definition for yet is a non-blocking WARNING
+			//     (`issues`), never a failure -- same AttachChunkIssueWarnings
+			//     contract InsertChunk/InsertChunks already carry.
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+					for( const ScaffoldChunkEntry& c : graph.chunks ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocFindByName( headDoc, c.kind + "/" + c.name );
+						if( id != 0 ) {
+							out.ok = false;
+							out.message = "insert_material_scaffold refused: a `" + c.kind + "` named `" + c.name +
+								"` already exists -- every generated chunk is named tmpl_<name>_<role>, "
+								"and this collides; pick a different `name` -- document unchanged";
+							return out;
+						}
+					}
+				}
+			}
+
+			std::vector<std::string> chunkTexts;
+			chunkTexts.reserve( graph.chunks.size() );
+			for( const ScaffoldChunkEntry& c : graph.chunks ) chunkTexts.push_back( c.text );
+
+			out.chunkResults = InsertChunks( chunkTexts, baseOrNull );
+			out.ok           = true;
+			out.materialName = graph.materialName;
+			out.materialKind = graph.materialKind;
+			out.boundSlots   = graph.boundSlots;
+			return out;
+		}
+
+		namespace
+		{
+			//----------------------------------------------------------------
+			// Arc-75 slice S3b (insert_geometry_scaffold): the geometry
+			// sibling of the material-scaffold block above.  Reuses
+			// ScaffoldFnv1a64/ScaffoldJitter01/ScaffoldJitterRange/
+			// ScaffoldJitterUInt/ScaffoldFmt/ScaffoldClamp01/ScaffoldVec3/
+			// ScaffoldChunkText/ScaffoldNameIsValid/kScaffoldMaxNameLength
+			// VERBATIM (defined above, same translation unit, same
+			// anonymous namespace linkage) -- do NOT duplicate them here,
+			// per the S2.1 avalanche-caveat lesson: a second copy is a
+			// second thing that can drift out of determinism-lockstep.
+			//
+			// DECOY-LANDMINE NOTE (S2.1's design landmine, checked and
+			// found NOT to apply here): S2.1's decoy was 3D-SOLID noise
+			// painters (perlin3d/worley3d/...) silently evaluating at a
+			// FIXED point when wrapped in scalar_painter{function2d},
+			// because their GetColor reads world-space ptIntersection,
+			// which the scalar-pipe's synthetic RayIntersectionGeometric
+			// never populates.  displaced_slab's noise source is
+			// perlin2d_painter bound DIRECTLY to displaced_geometry's
+			// `displacement` slot -- no scalar_painter/expression_function2d
+			// wrapper anywhere in this family.  Job::AddDisplacedGeometry
+			// (src/Library/Job.cpp ~5316-5352) resolves `displacement`
+			// through `pFunc2DManager->GetItem(...)` -- the SAME
+			// Function2D manager perlin2d_painter dual-registers into
+			// (Job::AddPerlin2DPainter) -- and DisplacedGeometry evaluates
+			// it as a genuine IFunction2D at each tessellated vertex's
+			// (u,v), exactly the domain perlin2d's own GetValue(u,v) is
+			// defined over.  There is no fixed-point-evaluation trap here
+			// because there is no colour-pipe GetColor(ri) call anywhere
+			// on this path -- unlike scalar_painter{function2d}, which
+			// wraps a painter's colour-pipe accessor and can therefore
+			// land on the WRONG accessor for a 3D-solid painter.  The
+			// spatial-effect test (see GS1b in AgentChunkCrudTest.cpp)
+			// still pins this DIRECTLY (bbox height-extent of the
+			// resolved DisplacedGeometry vs the flat base box), rather
+			// than trusting this argument alone.
+			//----------------------------------------------------------------
+
+			bool ScaffoldParseGeometryFamily( const std::string& family, AgentSession::GeometryScaffoldFamily& out )
+			{
+				if( family == "displaced_slab" )  { out = AgentSession::GeometryScaffoldFamily::DisplacedSlab;  return true; }
+				if( family == "sweep_rail" )      { out = AgentSession::GeometryScaffoldFamily::SweepRail;      return true; }
+				if( family == "blended_vessel" )  { out = AgentSession::GeometryScaffoldFamily::BlendedVessel;  return true; }
+				if( family == "sdf_column" )      { out = AgentSession::GeometryScaffoldFamily::SdfColumn;      return true; }
+				return false;
+			}
+
+			std::string ScaffoldBoxGeometryText( const std::string& name, double width, double height, double depth )
+			{
+				return ScaffoldChunkText( "box_geometry", {
+					{ "name",   name },
+					{ "width",  ScaffoldFmt( width ) },
+					{ "height", ScaffoldFmt( height ) },
+					{ "depth",  ScaffoldFmt( depth ) },
+				} );
+			}
+
+			//! perlin2d_painter with NO colora/colorb (both default "none")
+			//! -- the drop-in recipe's own choice (modeling-workflow-and-
+			//! geometry.md): a displacement source needs no colour, only
+			//! its raw [0,1] noise magnitude, which Job::AddDisplacedGeometry
+			//! reads straight off the Function2D accessor.
+			std::string ScaffoldPerlin2DText( const std::string& name, double persistence, unsigned int octaves,
+			                                  double scaleU, double scaleV, double shiftU, double shiftV )
+			{
+				return ScaffoldChunkText( "perlin2d_painter", {
+					{ "name",        name },
+					{ "persistence", ScaffoldFmt( persistence ) },
+					{ "octaves",     std::to_string( octaves ) },
+					{ "scale",       ScaffoldFmt( scaleU ) + " " + ScaffoldFmt( scaleV ) },
+					{ "shift",       ScaffoldFmt( shiftU ) + " " + ScaffoldFmt( shiftV ) },
+				} );
+			}
+
+			std::string ScaffoldDisplacedGeometryText( const std::string& name, const std::string& baseGeometry,
+			                                           unsigned int tessDetail, const std::string& displacement, double dispScale )
+			{
+				return ScaffoldChunkText( "displaced_geometry", {
+					{ "name",          name },
+					{ "base_geometry", baseGeometry },
+					{ "detail",        std::to_string( tessDetail ) },
+					{ "displacement",  displacement },
+					{ "disp_scale",    ScaffoldFmt( dispScale ) },
+				} );
+			}
+
+			//! One `sweep_geometry` `part`-style repeatable line's VALUE
+			//! (the "profile_point <x> <h>" grammar -- see
+			//! SweepGeometryAsciiChunkParser::Describe).
+			std::string ScaffoldProfilePointLine( double x, double h )
+			{
+				return ScaffoldFmt( x ) + " " + ScaffoldFmt( h );
+			}
+
+			std::string ScaffoldSweepGeometryText( const std::string& name,
+			                                       const std::vector<std::pair<double,double>>& profile,
+			                                       const std::vector<std::array<double,3>>& path,
+			                                       unsigned int nLen, double endScaleX, double endScaleY )
+			{
+				std::vector<std::pair<std::string,std::string>> params;
+				params.push_back( { "name", name } );
+				for( const auto& pp : profile ) params.push_back( { "profile_point", ScaffoldProfilePointLine( pp.first, pp.second ) } );
+				for( const auto& pt : path )     params.push_back( { "point", ScaffoldVec3( pt[0], pt[1], pt[2] ) } );
+				params.push_back( { "n_len",       std::to_string( nLen ) } );
+				params.push_back( { "end_scale_x", ScaffoldFmt( endScaleX ) } );
+				params.push_back( { "end_scale_y", ScaffoldFmt( endScaleY ) } );
+				return ScaffoldChunkText( "sweep_geometry", params );
+			}
+
+			//! One `sdf_geometry` `part` line's VALUE: `<prim> <op> <k>
+			//! <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <c1 c2 c3>  <round>`
+			//! (the shape-specific third triple is spelled `c1 c2 c3` here,
+			//! not the single-letter form SDFGeometryAsciiChunkParser::
+			//! Describe's `part` doc uses, ONLY because clang's
+			//! `-Wdocumentation-html` misreads a single-letter placeholder
+			//! immediately after an opening angle bracket as an HTML tag
+			//! name needing a matching close tag; no OTHER placeholder
+			//! above collides with a real HTML tag name, so none of the
+			//! others needed renaming) -- see that `part` doc for the
+			//! authoritative field meanings.
+			//! Every part below uses identity rotation/scale (matching
+			//! both object-modeling-recipes.md worked examples), so this
+			//! helper hardcodes those two triples rather than taking six
+			//! more parameters nobody would ever vary.
+			std::string ScaffoldSdfPartLine( const char* prim, const char* op, double k,
+			                                 double px, double py, double pz,
+			                                 double a, double b, double c, double round )
+			{
+				return std::string( prim ) + " " + op + " " + ScaffoldFmt( k ) + "  " +
+				       ScaffoldVec3( px, py, pz ) + "  " + ScaffoldVec3( 0.0, 0.0, 0.0 ) + "  " +
+				       ScaffoldVec3( 1.0, 1.0, 1.0 ) + "  " + ScaffoldVec3( a, b, c ) + "  " + ScaffoldFmt( round );
+			}
+
+			std::string ScaffoldSDFGeometryText( const std::string& name, const std::vector<std::string>& partLines, unsigned int maxsteps )
+			{
+				std::vector<std::pair<std::string,std::string>> params;
+				params.push_back( { "name", name } );
+				for( const std::string& pl : partLines ) params.push_back( { "part", pl } );
+				params.push_back( { "maxsteps", std::to_string( maxsteps ) } );
+				return ScaffoldChunkText( "sdf_geometry", params );
+			}
+
+			//! One generated chunk: its kind (for the collision precheck),
+			//! its own chunk `name` (ditto), and its full chunk text --
+			//! deliberately the SAME shape as ScaffoldChunkEntry above
+			//! (not reused directly: that struct is anonymous-namespace-
+			//! local to the material-scaffold block and duplicating a
+			//! 3-field aggregate is cheaper and clearer than exporting it).
+			struct GeoScaffoldChunkEntry
+			{
+				std::string kind;
+				std::string name;
+				std::string text;
+			};
+
+			//! The whole expansion for one geometry family: every chunk in
+			//! insertion order, plus the ONE geometry chunk's name/kind a
+			//! model should bind into a `standard_object.geometry` slot.
+			struct GeoScaffoldGraph
+			{
+				std::vector<GeoScaffoldChunkEntry> chunks;
+				std::string geometryName;
+				std::string geometryKind;
+			};
+
+			//! displaced_slab: box_geometry base + perlin2d_painter noise
+			//! source + displaced_geometry bolt-on (the S3a skill fence's
+			//! proven drop-in pattern -- modeling-workflow-and-geometry.md
+			//! "Drop-in: a bumpy slab via displaced_geometry").  `size`
+			//! sets the footprint and thickness; `aspect` elongates the
+			//! footprint (width:depth ratio, footprint area held roughly
+			//! constant); `detail` is HONEST for BOTH displacement
+			//! amplitude (disp_scale) AND tessellation (displaced_geometry's
+			//! own `detail` field) -- the one family in this tool where
+			//! finer tessellation is warranted by genuinely finer surface
+			//! content, unlike the SMS "finer tessellation does not fix a
+			//! too-busy displacement" caution (that caution is about
+			//! FIXING a bad amplitude choice by adding more triangles;
+			//! this scaffold ties both to the SAME creative knob so they
+			//! move together, not the too-busy failure mode).
+			GeoScaffoldGraph BuildDisplacedSlab( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nBase = "tmpl_" + name + "_base";
+				const std::string nBump = "tmpl_" + name + "_bump";
+				const std::string nDisp = "tmpl_" + name + "_disp";
+
+				const double width  = size * std::sqrt( aspect );
+				const double depth  = size / std::sqrt( aspect );
+				const double thin   = ScaffoldJitterRange( name, "slab_thin", 0.12, 0.22 );
+				const double height = size * thin;
+				out.chunks.push_back( { "box_geometry", nBase, ScaffoldBoxGeometryText( nBase, width, height, depth ) } );
+
+				const double persistence   = ScaffoldJitterRange( name, "slab_persist", 0.35, 0.65 );
+				const unsigned int octaves = ScaffoldJitterUInt( name, "slab_octaves", 3, 5 );
+				const double freqJitter    = ScaffoldJitterRange( name, "slab_freq", 3.0, 7.0 );
+				const double freqU = freqJitter * ( 1.0 + 3.0 * detail );
+				const double freqV = ScaffoldJitterRange( name, "slab_freqv", 3.0, 7.0 ) * ( 1.0 + 3.0 * detail );
+				const double shiftU = ScaffoldJitterRange( name, "slab_shiftu", 0.0, 100.0 );
+				const double shiftV = ScaffoldJitterRange( name, "slab_shiftv", 0.0, 100.0 );
+				out.chunks.push_back( { "perlin2d_painter", nBump,
+					ScaffoldPerlin2DText( nBump, persistence, octaves, freqU, freqV, shiftU, shiftV ) } );
+
+				const double dispScale = size * ( 0.03 + 0.22 * detail ) * ScaffoldJitterRange( name, "slab_dispjit", 0.85, 1.15 );
+				const unsigned int tessBase = 16 + static_cast<unsigned int>( 40.0 * detail + 0.5 );
+				const unsigned int tessDetail = ScaffoldJitterUInt( name, "slab_tess",
+					tessBase > 4 ? tessBase - 4 : tessBase, tessBase + 4 );
+				out.chunks.push_back( { "displaced_geometry", nDisp,
+					ScaffoldDisplacedGeometryText( nDisp, nBase, tessDetail, nBump, dispScale ) } );
+
+				out.geometryName = nDisp;
+				out.geometryKind = "displaced_geometry";
+				return out;
+			}
+
+			//! sweep_rail: a single sweep_geometry chunk -- a compact
+			//! regular-polygon profile ("compact closed profile" per the
+			//! design brief) swept along a 3-point bowed path with a
+			//! linear end taper (the sweep_instances.RISEscene horn idiom
+			//! -- square profile, 3 path points, end_scale taper --
+			//! generalized to a jittered N-gon).  `size` sets the profile
+			//! radius and path bow; `aspect` elongates the path length
+			//! (a thin long rail vs a short stub); `detail` is the
+			//! profile's SIDE COUNT (4..8 -- "profile complexity"; `sides =
+			//! 4 + uint(detail*4.0 + 0.5)` maxes out at detail's own upper
+			//! bound of 1.0 -> 4+uint(4.5) = 8, so 8 is a REACHED ceiling,
+			//! not a clamp -- there is deliberately no `sides > 8` guard
+			//! below, only the `< 4` floor for detail's lower bound of 0.0).
+			GeoScaffoldGraph BuildSweepRail( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nRail = "tmpl_" + name + "_rail";
+
+				unsigned int sides = 4 + static_cast<unsigned int>( detail * 4.0 + 0.5 );
+				if( sides < 4 ) sides = 4;
+				const double profileRadius = size * ScaffoldJitterRange( name, "rail_profr", 0.06, 0.12 );
+				const double phase0 = ScaffoldJitterRange( name, "rail_profphase", 0.0, 6.283185 );
+				std::vector<std::pair<double,double>> profile;
+				profile.reserve( sides );
+				for( unsigned int i = 0; i < sides; ++i ) {
+					const double ang = phase0 + 2.0 * 3.14159265358979323846 * static_cast<double>( i ) / static_cast<double>( sides );
+					profile.push_back( { profileRadius * std::cos( ang ), profileRadius * std::sin( ang ) } );
+				}
+
+				const double halfLen = size * aspect * ScaffoldJitterRange( name, "rail_halflen", 0.6, 1.0 );
+				const double bowSignY = ( ScaffoldJitter01( name, "rail_bowsigny" ) < 0.5 ) ? -1.0 : 1.0;
+				const double bowSignZ = ( ScaffoldJitter01( name, "rail_bowsignz" ) < 0.5 ) ? -1.0 : 1.0;
+				const double bowY = bowSignY * size * ScaffoldJitterRange( name, "rail_bowy", 0.10, 0.35 );
+				const double bowZ = bowSignZ * size * ScaffoldJitterRange( name, "rail_bowz", 0.05, 0.20 );
+				std::vector<std::array<double,3>> path;
+				path.push_back( { -halfLen, 0.0, 0.0 } );
+				path.push_back( { 0.0, bowY, bowZ } );
+				path.push_back( { halfLen, 0.0, 0.0 } );
+
+				const unsigned int nLen = ScaffoldJitterUInt( name, "rail_nlen", 24, 64 );
+				const double endScaleX = ScaffoldJitterRange( name, "rail_endx", 0.20, 0.45 );
+				const double endScaleY = ScaffoldJitterRange( name, "rail_endy", 0.20, 0.45 );
+				out.chunks.push_back( { "sweep_geometry", nRail,
+					ScaffoldSweepGeometryText( nRail, profile, path, nLen, endScaleX, endScaleY ) } );
+
+				out.geometryName = nRail;
+				out.geometryKind = "sweep_geometry";
+				return out;
+			}
+
+			//! blended_vessel: a single sdf_geometry chunk -- a 3-segment
+			//! roundcone+smin profile (base -> belly -> rim, the
+			//! object-modeling-recipes.md turned-vessel idiom, simplified
+			//! to 3 spans with no separate swept neck) closed with a
+			//! flat-bottom `box subtract` (Recipe 4's flat-bottom-needs-a-
+			//! cut rule).  `size` sets the base/belly radii; `aspect`
+			//! elongates total height (a squat bowl at low aspect, a
+			//! tall vase at high aspect); `detail` is SMIN TIGHTNESS (the
+			//! two blend radii shrink toward a crisper joint as detail
+			//! rises toward 1, widen toward a softer shoulder as it falls
+			//! toward 0).
+			GeoScaffoldGraph BuildBlendedVessel( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nVessel = "tmpl_" + name + "_vessel";
+
+				const double totalH  = size * aspect * ScaffoldJitterRange( name, "vessel_h", 0.7, 1.1 );
+				const double baseR   = size * ScaffoldJitterRange( name, "vessel_baser", 0.10, 0.16 );
+				const double baseTopR = baseR * ScaffoldJitterRange( name, "vessel_basetopr", 1.05, 1.30 );
+				const double bellyR  = size * ScaffoldJitterRange( name, "vessel_bellyr", 0.34, 0.46 );
+				const double rimR    = bellyR * ScaffoldJitterRange( name, "vessel_rimr", 0.55, 0.78 );
+
+				double baseH  = totalH * ScaffoldJitterRange( name, "vessel_baseh", 0.12, 0.20 );
+				double bellyH = totalH * ScaffoldJitterRange( name, "vessel_bellyh", 0.42, 0.58 );
+				double rimH   = totalH - baseH - bellyH;
+				if( rimH < totalH * 0.08 ) rimH = totalH * 0.08;   // guard: keep every span honestly positive
+
+				const double tightness = 1.0 - 0.6 * detail;
+				const double k1 = size * ScaffoldJitterRange( name, "vessel_k1", 0.14, 0.24 ) * tightness;
+				const double k2 = size * ScaffoldJitterRange( name, "vessel_k2", 0.10, 0.18 ) * tightness;
+
+				std::vector<std::string> parts;
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "union", 0.0,   0.0, 0.0, 0.0,               baseR, baseTopR, baseH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k1,     0.0, baseH, 0.0,             baseTopR, bellyR, bellyH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k2,     0.0, baseH + bellyH, 0.0,    bellyR, rimR, rimH, 0.0 ) );
+				const double cutHalfY = baseR * 1.5;
+				parts.push_back( ScaffoldSdfPartLine( "box", "subtract", 0.0,      0.0, -cutHalfY, 0.0,         baseR * 2.0, cutHalfY, baseR * 2.0, 0.0 ) );
+
+				out.chunks.push_back( { "sdf_geometry", nVessel, ScaffoldSDFGeometryText( nVessel, parts, 256 ) } );
+				out.geometryName = nVessel;
+				out.geometryKind = "sdf_geometry";
+				return out;
+			}
+
+			//! sdf_column: a single sdf_geometry chunk -- a 3-segment
+			//! base/shaft/capital roundcone+smin chain (a turned-column
+			//! silhouette: a wide flat foot narrowing into a constant-
+			//! radius shaft, then flaring back out into a capital),
+			//! closed with the SAME flat-bottom `box subtract` as
+			//! blended_vessel.  `size` sets the base/shaft/capital radii;
+			//! `aspect` elongates the SHAFT (a squat pedestal at low
+			//! aspect, a tall slender column at high aspect); `detail` is
+			//! SMIN TIGHTNESS, identical semantics to blended_vessel's.
+			GeoScaffoldGraph BuildSdfColumn( const std::string& name, double size, double detail, double aspect )
+			{
+				GeoScaffoldGraph out;
+				const std::string nCol = "tmpl_" + name + "_col";
+
+				const double baseR   = size * ScaffoldJitterRange( name, "col_baser", 0.28, 0.38 );
+				const double shaftR  = baseR * ScaffoldJitterRange( name, "col_shaftr", 0.45, 0.62 );
+				const double capTopR = shaftR * ScaffoldJitterRange( name, "col_captopr", 1.4, 1.9 );
+
+				const double baseH  = size * ScaffoldJitterRange( name, "col_baseh", 0.10, 0.18 );
+				const double shaftH = size * aspect * ScaffoldJitterRange( name, "col_shafth", 0.55, 0.85 );
+				const double capH   = size * ScaffoldJitterRange( name, "col_caph", 0.10, 0.16 );
+
+				const double tightness = 1.0 - 0.6 * detail;
+				const double k1 = size * ScaffoldJitterRange( name, "col_k1", 0.16, 0.26 ) * tightness;
+				const double k2 = size * ScaffoldJitterRange( name, "col_k2", 0.14, 0.22 ) * tightness;
+
+				std::vector<std::string> parts;
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "union", 0.0,   0.0, 0.0, 0.0,              baseR, shaftR, baseH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k1,     0.0, baseH, 0.0,            shaftR, shaftR, shaftH, 0.0 ) );
+				parts.push_back( ScaffoldSdfPartLine( "roundcone", "smin", k2,     0.0, baseH + shaftH, 0.0,   shaftR, capTopR, capH, 0.0 ) );
+				const double cutHalfY = baseR * 1.5;
+				parts.push_back( ScaffoldSdfPartLine( "box", "subtract", 0.0,      0.0, -cutHalfY, 0.0,        baseR * 2.0, cutHalfY, baseR * 2.0, 0.0 ) );
+
+				out.chunks.push_back( { "sdf_geometry", nCol, ScaffoldSDFGeometryText( nCol, parts, 256 ) } );
+				out.geometryName = nCol;
+				out.geometryKind = "sdf_geometry";
+				return out;
+			}
+
+			GeoScaffoldGraph BuildGeometryScaffoldGraph( AgentSession::GeometryScaffoldFamily family, const std::string& name,
+			                                             double size, double detail, double aspect )
+			{
+				switch( family )
+				{
+					case AgentSession::GeometryScaffoldFamily::DisplacedSlab: return BuildDisplacedSlab( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::SweepRail:     return BuildSweepRail( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::BlendedVessel: return BuildBlendedVessel( name, size, detail, aspect );
+					case AgentSession::GeometryScaffoldFamily::SdfColumn:     return BuildSdfColumn( name, size, detail, aspect );
+				}
+				return GeoScaffoldGraph();
+			}
+		}
+
+		AgentSession::AgentGeometryScaffoldResult AgentSession::InsertGeometryScaffold(
+			const std::string& family, const std::string& name, double size, double detail, double aspect,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentGeometryScaffoldResult out;
+			out.family = family;
+
+			GeometryScaffoldFamily fam;
+			if( !ScaffoldParseGeometryFamily( family, fam ) ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: unknown family `" + family +
+					"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column";
+				return out;
+			}
+			if( !ScaffoldNameIsValid( name ) ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `name` must be a non-empty token "
+					"(letters, digits, underscore, hyphen only, max " + std::to_string( kScaffoldMaxNameLength ) +
+					" chars) -- got `" + name + "`";
+				return out;
+			}
+			if( !std::isfinite( size ) || size <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `size` must be a finite number > 0";
+				return out;
+			}
+			if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `detail` must be a finite number in [0,1]";
+				return out;
+			}
+			if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+				out.ok = false;
+				out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
+				return out;
+			}
+
+			const GeoScaffoldGraph graph = BuildGeometryScaffoldGraph( fam, name, size, detail, aspect );
+
+			// Collision precheck: refuse the WHOLE expansion, document
+			// UNCHANGED, if ANY generated (kind,name) already exists AT
+			// SNAPSHOT TIME -- the IDENTICAL precheck (and the IDENTICAL
+			// TOCTOU/best-effort hedge) InsertMaterialScaffold's own
+			// precheck comment documents in full above; not restated
+			// verbatim here to avoid the two copies drifting -- read that
+			// comment for what this precheck DOES and does NOT guarantee.
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+					for( const GeoScaffoldChunkEntry& c : graph.chunks ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocFindByName( headDoc, c.kind + "/" + c.name );
+						if( id != 0 ) {
+							out.ok = false;
+							out.message = "insert_geometry_scaffold refused: a `" + c.kind + "` named `" + c.name +
+								"` already exists -- every generated chunk is named tmpl_<name>_<role>, "
+								"and this collides; pick a different `name` -- document unchanged";
+							return out;
+						}
+					}
+				}
+			}
+
+			std::vector<std::string> chunkTexts;
+			chunkTexts.reserve( graph.chunks.size() );
+			for( const GeoScaffoldChunkEntry& c : graph.chunks ) chunkTexts.push_back( c.text );
+
+			out.chunkResults = InsertChunks( chunkTexts, baseOrNull );
+			out.ok           = true;
+			out.geometryName = graph.geometryName;
+			out.geometryKind = graph.geometryKind;
 			return out;
 		}
 

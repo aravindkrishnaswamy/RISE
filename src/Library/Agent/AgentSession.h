@@ -1304,6 +1304,79 @@ namespace RISE
 		//!     teardown, including calls still queued for mAsyncCacheMutex,
 		//!     plus every registered sink lease. Callers must not initiate a
 		//!     new member call after destruction begins.
+		//! Post-arc enforcement E1's creation gate -- FREE functions (not
+		//! AgentSession methods) so SceneEditController::ResolveProposal can
+		//! call the SAME logic AgentSession::ProposePatch/InsertChunk use,
+		//! without a circular header dependency (SceneEditController.cpp
+		//! includes this header; this header does not include
+		//! SceneEditController.h, only forward-declares the class above).
+		//! The motivating case: a propose_patch/insert_chunk staged while
+		//! innocent (the referenced material was non-emissive, or the
+		//! csg_object was acknowledged) can still land the refused
+		//! construct at RESOLVE time if the world moved underneath the
+		//! pending proposal -- see ResolveProposal's approve branch for the
+		//! stale-staged-proposal re-check that calls these.
+		//!
+		//! Both operate on `headText` (the CANDIDATE base -- the CURRENT
+		//! head at the moment of the check, NOT necessarily what the
+		//! caller originally staged against) and return "" when nothing
+		//! should be refused (HONESTY: an inconclusive candidate-derive
+		//! fails OPEN, same as everywhere else in this design), or the
+		//! actionable refusal clause otherwise.  Implemented in
+		//! AgentSession.cpp beside the shared classification/derive
+		//! machinery (CollectNullGeometryEmitters_ et al.) they're built
+		//! from -- see that file for the full design comment.
+		//!
+		//! CheckNonSamplingEmitterGateForPatch covers THREE triggers:
+		//!   * `target` resolves to a csg_object and `param` is `material`
+		//!     (re-pointing the csg's own material reference);
+		//!   * `target` resolves to a csg_object and `param` is
+		//!     `allow_non_sampling_emitter` (REMOVING the acknowledgment --
+		//!     the two-call bypass);
+		//!   * `target` resolves to a MATERIAL-category chunk that at
+		//!     least one EXISTING csg_object in `headText` references (a
+		//!     cheap CST-only scan gates this BEFORE the candidate-derive)
+		//!     -- covers editing the material's OWN emissive-capable
+		//!     param (`emissive`, `exitance`, ...) in place, whatever its
+		//!     name, without hard-coding a per-material-kind param list.
+		//! Every other target/param combination returns "" immediately
+		//! (cheap: a CST parse + one name resolution, no derive).
+		//!
+		//! The first two triggers (the touched chunk IS the csg_object)
+		//! are STATE-based: `param` is exactly the field that determines
+		//! the csg's emissive/acknowledged status, so "does the
+		//! candidate come back unacknowledged" is the right question,
+		//! and it correctly ALLOWS a fixing edit (re-pointing `material`
+		//! to a non-emissive one clears the refusal).  The third trigger
+		//! (round-2 fix: a MATERIAL edit is unrelated to emission far
+		//! more often than not -- alphax, roughness, base_color, ...)
+		//! is DELTA-based instead: it refuses ONLY a referencing csg
+		//! that is unacknowledged in the CANDIDATE but was NOT already
+		//! unacknowledged on the CURRENT head.  A csg that was ALREADY
+		//! an unacknowledged null-geometry emitter before this edit (a
+		//! pre-existing, e.g. scene-file-loaded, construct Validate is
+		//! already Warning about) is untouched by an unrelated param
+		//! edit and must not freeze every future edit to that material
+		//! -- Warning nags, edits proceed, exactly as an already-broken
+		//! scene's correct posture requires.  Do NOT generalize this
+		//! delta comparison to the first two triggers: they already
+		//! test the transition-capable field directly, so state-based
+		//! is the correct (and cheaper) answer there.
+		std::string CheckNonSamplingEmitterGateForPatch( const std::string& headText,
+		                                                  const std::string& target,
+		                                                  const std::string& kind,
+		                                                  const std::string& param,
+		                                                  const std::string& value );
+
+		//! CheckNonSamplingEmitterGateForInsert: does inserting `chunkText`
+		//! into `headText` create the construct?  "" immediately unless
+		//! the candidate chunk parses as a single csg_object chunk that
+		//! does NOT already carry `allow_non_sampling_emitter TRUE` (an
+		//! already-acknowledged insert can never be refused, so that check
+		//! skips the candidate-derive too).
+		std::string CheckNonSamplingEmitterGateForInsert( const std::string& headText,
+		                                                   const std::string& chunkText );
+
 		class AgentSession
 		{
 		public:
@@ -1589,6 +1662,36 @@ namespace RISE
 			//! names off the operator's own index).
 			static AgentSkillResult ReadSkill( const std::string& name = std::string() );
 
+			//! S0.2: the SINGLE-SOURCE rendering of a ReadSkill("") index
+			//! into the stable "name -- hook" lines (one per entry,
+			//! newline-joined) that AgentChatLoop::SetSkillIndex documents
+			//! as its input.  Entries with an empty `name` are skipped; an
+			//! entry with an empty `hook` renders as the bare name.  Pure,
+			//! stateless, no IO -- callers fetch the AgentSkillResult
+			//! themselves (via ReadSkill(), or via the read_skill RPC verb
+			//! for a caller across an IPC/language boundary) and pass it in.
+			//!
+			//! Every C++ site that needs this rendering calls THIS function
+			//! rather than re-implementing the loop -- added precisely to
+			//! close a duplication the two GUI drivers already had (Mac's
+			//! ChatViewModel.renderSkillIndex, Windows' ChatPanel::
+			//! renderSkillIndex) and the headless eval runner (S0.2,
+			//! AgentEvalRunner.cpp) would otherwise have made a third of.
+			//! Mirrors the repo's ToolOutcomeLineForDisplay precedent
+			//! (AgentChatLoop.h) for giving an external caller one
+			//! canonical rendering instead of a re-derived copy.
+			//!
+			//! Two GUI copies remain independent BY NECESSITY, each with a
+			//! lockstep comment naming this function as the source of
+			//! truth: the Mac Swift copy (ChatViewModel.renderSkillIndex)
+			//! lives across the Swift/C++ boundary, and the Windows/Qt
+			//! copy (ChatPanel::renderSkillIndex) consumes the raw
+			//! read_skill JSON-RPC response text rather than an
+			//! AgentSkillResult, so neither can call this function
+			//! directly.  Any change to the rendering must update all
+			//! three in step.
+			static std::string RenderSkillIndex( const AgentSkillResult& skills );
+
 			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one
 			//! param-value edit to the retained CST Document via
 			//! Job::ApplyCstParamEdit -- the SAME call the GUI property panel
@@ -1741,6 +1844,223 @@ namespace RISE
 			//! InsertChunk call is made.
 			std::vector<AgentChunkResult> InsertChunks( const std::vector<std::string>& chunkTexts,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Arc-75 slice S2.1 (insert_material_scaffold): the one of FIVE
+			//! material-family templates this call expanded -- pin the
+			//! strings, they are the wire/tool-schema enum.
+			enum class MaterialScaffoldFamily
+			{
+				WeatheredWood,
+				RoughStone,
+				BrushedMetal,
+				AgedBronze,
+				GlazedCeramic,
+			};
+
+			//! The structured result of InsertMaterialScaffold.  `ok==false`
+			//! means the call was refused BEFORE any chunk was generated --
+			//! a missing/invalid param, an unknown family, or a NAME
+			//! collision against an existing (kind,name) in the document
+			//! (checked up front against a document snapshot, precisely so
+			//! a collision refuses the WHOLE expansion cleanly instead of
+			//! landing a partial graph -- see the .cpp for why InsertChunks'
+			//! own best-effort per-element semantics are not enough here).
+			//! `message` carries the actionable reason.  The document is
+			//! BYTE-IDENTICAL to before the call on any ok==false result.
+			//!
+			//! `ok==true` means generation succeeded and the batch was
+			//! submitted via InsertChunks -- `chunkResults` is one
+			//! AgentChunkResult per generated chunk, IN INSERTION ORDER
+			//! (the exact per-element shape InsertChunks/insert_chunks
+			//! returns); a caller must still check each element's own
+			//! `applied`/`status` -- ok==true is NOT a promise every chunk
+			//! landed, only that the request itself was well-formed and
+			//! collision-free at submission time (a later element can still
+			//! be rejected by the SAME dry-run-guarded derive insert_chunk
+			//! uses, e.g. an unrelated concurrent edit).  `materialName` /
+			//! `materialKind` name the ONE material chunk the family
+			//! produced; `boundSlots` lists every microsurface PARAMETER
+			//! this family bound to a spatially-varying painter (param name
+			//! + the painter chunk name it references) -- purely factual,
+			//! no advisory prose.  Some families bind more than one slot
+			//! (e.g. brushed_metal's alphax AND alphay).
+			struct AgentScaffoldResult
+			{
+				bool        ok = false;
+				std::string message;
+				std::string family;
+				std::string materialName;
+				std::string materialKind;
+				std::vector<std::pair<std::string,std::string>> boundSlots;   //!< (param, painterName)
+				std::vector<AgentChunkResult> chunkResults;
+			};
+
+			//! Expand material `family` into a small wired painter graph (2-4
+			//! painters + 1 material, every chunk named `tmpl_<name>_<role>`)
+			//! and submit it through InsertChunks -- so richness costs ONE
+			//! tool call and the model never hand-types a microsurface slot
+			//! or assembles the painter graph itself.  See
+			//! docs/agentic-redesign/75-expressive-surface-arc.md S2 for the
+			//! design and AgentSession.cpp's BuildMaterialScaffold for the
+			//! per-family chunk-graph design + the binding-form rationale
+			//! (which slots take a colour-pipe painter vs a
+			//! scalar_painter{function2d}).  ALL FIVE params are REQUIRED --
+			//! `family` (one of the MaterialScaffoldFamily strings), `name`
+			//! (a fresh, unique prefix), `tone` ("r g b", each 0..1),
+			//! `wear` (0..1, variation intensity), `scale` (>0, spatial
+			//! frequency).  Internal graph constants (noise phase/frequency,
+			//! secondary darkening factors, per-axis anisotropy) are
+			//! jittered DETERMINISTICALLY from a hash of `name` -- no RNG,
+			//! no clock, so two calls with the SAME name produce
+			//! byte-identical chunk text and two DIFFERENT names visibly
+			//! differ beyond their explicit params.  Routes entirely through
+			//! InsertChunks (see that method's doc): AUTHORITY (Owner vs
+			//! External) staging-vs-commit, conflict detection, and per-chunk
+			//! `issues` diagnostics are ALL inherited unchanged for a caller
+			//! at THIS C++ API -- including the Secure-MCP External-authority
+			//! staging behaviour (an External session with a live controller
+			//! attached STAGES every generated chunk instead of committing,
+			//! exactly like InsertChunk).
+			//!
+			//! CAVEAT (arc-75 S2.1 fix-round P1): that "inherited unchanged"
+			//! claim is about AUTHORITY, a SESSION-level concept this method
+			//! never touches directly (it only ever sees whatever mAuthority
+			//! the session was constructed with).  AUTONOMY is a DIFFERENT,
+			//! WIRE-TRANSPORT-level concept (AgentRpcDispatcher's launch-time
+			//! Read/Propose/Commit posture) this method has NO visibility into
+			//! at all -- a caller reaching THIS method directly (as every
+			//! path above does) has, by construction, already cleared
+			//! whatever autonomy gate its transport enforces.  Deliberately
+			//! NOT added to AgentRpc.cpp's IsProposeSafeVerb (the ripple
+			//! across dozens of "N mutating verbs" prose restatements plus
+			//! two GUI client-side retry-verb sets SourceHygieneTest.cpp
+			//! mechanically pins to it was judged out of scope for this
+			//! slice), so a WIRE caller (tools/call over MCP, or a raw
+			//! insert_material_scaffold JSON-RPC request) running under
+			//! AgentAutonomy::Propose is refused with kAutonomyRefused
+			//! BEFORE ever reaching this method -- mirroring the identical
+			//! caveat AgentMcpAdapter.cpp's kScaffoldProposeRefusedNote
+			//! already carries for the MCP tools/list surface.  A DIRECT
+			//! session-API caller (this method, called in-process) is
+			//! unaffected -- there is no autonomy gate at this layer.
+			AgentScaffoldResult InsertMaterialScaffold( const std::string& family,
+			                                            const std::string& name,
+			                                            const std::string& tone,
+			                                            double wear,
+			                                            double scale,
+			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Arc-75 slice S3b (insert_geometry_scaffold): the one of FOUR
+			//! geometry-family templates this call expanded -- pin the
+			//! strings, they are the wire/tool-schema enum.  The geometry
+			//! sibling of MaterialScaffoldFamily above; same conventions.
+			enum class GeometryScaffoldFamily
+			{
+				DisplacedSlab,
+				SweepRail,
+				BlendedVessel,
+				SdfColumn,
+			};
+
+			//! The structured result of InsertGeometryScaffold.  Same
+			//! ok/message/family/chunkResults contract as AgentScaffoldResult
+			//! above -- `ok==false` means the call was refused BEFORE any
+			//! chunk was generated (a missing/invalid param, an unknown
+			//! family, or a NAME collision against an existing (kind,name)
+			//! in the document, checked up front against a document
+			//! snapshot for the SAME reason AgentScaffoldResult's doc gives:
+			//! a mid-batch collision would otherwise land a half-wired
+			//! graph).  `message` carries the actionable reason; the
+			//! document is BYTE-IDENTICAL to before the call on any
+			//! ok==false result.
+			//!
+			//! `ok==true` means generation succeeded and the batch was
+			//! submitted via InsertChunks -- `chunkResults` is one
+			//! AgentChunkResult per generated chunk, IN INSERTION ORDER; a
+			//! caller must still check each element's own `applied`/
+			//! `status` -- ok==true is NOT a promise every chunk landed,
+			//! only that the request itself was well-formed and
+			//! collision-free at submission time (see AgentScaffoldResult's
+			//! doc for the identical hedge).  `geometryName`/`geometryKind`
+			//! name the ONE geometry chunk the family produced that a
+			//! model should bind into a `standard_object.geometry` slot --
+			//! unlike insert_material_scaffold, this tool never emits a
+			//! material or a `standard_object` itself (S2's census proved
+			//! models handle that wiring on their own); every family also
+			//! never emits a colour-pipe painter -- displaced_slab's noise
+			//! source is bound directly to displaced_geometry's
+			//! `displacement` slot, which resolves through the Function2D
+			//! manager (Job::AddDisplacedGeometry), not the colour pipe --
+			//! so there is no `boundSlots`-equivalent field here.
+			struct AgentGeometryScaffoldResult
+			{
+				bool        ok = false;
+				std::string message;
+				std::string family;
+				std::string geometryName;
+				std::string geometryKind;
+				std::vector<AgentChunkResult> chunkResults;
+			};
+
+			//! Expand geometry `family` into a small GEOMETRY-ONLY chunk
+			//! graph (1-3 chunks: displaced_slab is base box + noise
+			//! Function2D source + displaced_geometry bolt-on; sweep_rail,
+			//! blended_vessel, and sdf_column are each a SINGLE geometry
+			//! chunk, every chunk named `tmpl_<name>_<role>`) and submit it
+			//! through InsertChunks -- so an advanced geometric form costs
+			//! ONE tool call instead of hand-composing a displaced_geometry/
+			//! sweep_geometry/sdf_geometry chunk from scratch.  See
+			//! docs/agentic-redesign/75-expressive-surface-arc.md S3b for
+			//! the design and AgentSession.cpp's BuildGeometryScaffoldGraph
+			//! for the per-family chunk design + the param-flow rationale.
+			//! Deliberately emits GEOMETRY chunks ONLY (plus, for
+			//! displaced_slab, the one Function2D noise source it bolts
+			//! on) -- the model wires the `standard_object` (and any
+			//! material) itself, the exact division S2's census proved
+			//! models handle.  ALL THREE params are REQUIRED -- `family`
+			//! (one of the GeometryScaffoldFamily strings), `name` (a
+			//! fresh, unique prefix), `size` (>0, overall scale), `detail`
+			//! (0..1: displacement amplitude / profile complexity / smin
+			//! tightness / tessellation, whichever is honest for that
+			//! family -- see each BuildXxx's own comment), `aspect` (>0:
+			//! elongation).  Internal graph constants (noise phase/
+			//! frequency, profile-point phase, path bow, smin blend radii,
+			//! segment counts) are jittered DETERMINISTICALLY from a hash
+			//! of `name` (the SAME ScaffoldFnv1a64/ScaffoldJitter* helpers
+			//! insert_material_scaffold uses -- see ScaffoldFnv1a64's doc
+			//! for the distinctive-salt-per-knob avalanche caveat, which
+			//! applies identically here) -- no RNG, no clock, so two calls
+			//! with the SAME name produce byte-identical chunk text and two
+			//! DIFFERENT names visibly differ beyond their explicit params.
+			//! Routes entirely through InsertChunks (see that method's
+			//! doc): AUTHORITY (Owner vs External) staging-vs-commit,
+			//! conflict detection, and per-chunk `issues` diagnostics are
+			//! ALL inherited unchanged for a caller at THIS C++ API --
+			//! including the Secure-MCP External-authority staging
+			//! behaviour.
+			//!
+			//! AUTONOMY CAVEAT (identical to InsertMaterialScaffold's --
+			//! see that method's doc for the full authority-vs-autonomy
+			//! distinction): this method itself has no autonomy gate at
+			//! all -- a caller reaching it directly has, by construction,
+			//! already cleared whatever autonomy gate its transport
+			//! enforces.  Deliberately NOT added to AgentRpc.cpp's
+			//! IsProposeSafeVerb, for the SAME reason
+			//! insert_material_scaffold was not (out of scope for a single
+			//! slice to ripple across every "N mutating verbs" prose
+			//! restatement and the two GUI client-side retry-verb sets) --
+			//! so a WIRE caller running under AgentAutonomy::Propose is
+			//! refused with kAutonomyRefused BEFORE ever reaching this
+			//! method, via the SAME MakeProposeAutonomyRefusedError path
+			//! (truthful `data.autonomy:"propose"`) AgentRpc.cpp's
+			//! `m == "insert_material_scaffold"` branch already uses,
+			//! mirrored for `m == "insert_geometry_scaffold"`.
+			AgentGeometryScaffoldResult InsertGeometryScaffold( const std::string& family,
+			                                                    const std::string& name,
+			                                                    double size,
+			                                                    double detail,
+			                                                    double aspect,
+			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix

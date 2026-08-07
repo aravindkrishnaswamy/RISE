@@ -125,6 +125,21 @@ namespace RISE
 			int         attempt = 1;               //!< 1-based attempt counter
 			int         retryOf = -1;              //!< index of the attempt this retries (-1 = none)
 			std::string responseBody;              //!< the RAW response body (replay payload)
+			//! Empty for an ordinary main-turn LLM round (the common case --
+			//! nothing new here).  Non-empty marks this `llm` record as an
+			//! AUXILIARY HTTP round the loop recorded on a driver's behalf
+			//! that is NOT part of the main conversation -- e.g. "triage"
+			//! for the Mac GUI's prompt-triage pre-flight
+			//! (RecordAuxiliaryHttpRound).  Serialized as a `purpose` key
+			//! ONLY when non-empty, so an ordinary record gains no noise.
+			//! Doubles as the running-summary EXCLUSION key: see
+			//! ChatTrajectoryRecorder::EmitLlm -- a purpose-tagged record's
+			//! tokens/latency are recorded verbatim in ITS OWN line (full
+			//! forensic detail) but are NOT folded into the summary's
+			//! totals, because those totals are documented (and consumed by
+			//! the eval harness) as the MAIN conversation's cost, and an
+			//! auxiliary round was never part of it.
+			std::string purpose;
 		};
 
 		//! run_type "tool": one dispatched tool call + its JSON-RPC result.

@@ -158,6 +158,170 @@ with anything.
      semantics in the sdf descriptor — structure on the `read_schema`
      carrier both models measurably read.
   Stop rule: `advanced_geometry` ≥2/6 → bank; 0/6 → S3b decision point.
+
+**S3 CONCRETE DESIGN (2026-08-02, post-S2 amendment — supersedes the
+sketch above; drafted against the full S0–S2 evidence):**
+
+*Why the S1 failure does NOT pre-doom S3a examples:* S1's copy-source
+failure was about overriding a value-shape prior INSIDE an existing
+slot (roughness = a number).  The geometry deficit is chunk-ADDITION —
+the class that measurably moved in the 74-arc (painter families,
+floor 1→3) — and the S0.4 audit showed displaced_geometry's zero
+adoption coincides with ZERO copyable examples anywhere.  The
+aligned-example rung was never actually tried for displaced.  It is
+one small slice; run it first.
+
+**S3a — drop-in examples (one skill-edit slice + one batch):**
+- The ~11-line displaced_geometry recipe (noise painter + displaced
+  bolt-on over an existing base shape; no colour vocabulary — the
+  audit's Job.cpp:5338 finding) placed in the read-set skills models
+  actually consult for geometry (modeling-workflow-and-geometry,
+  object-modeling-recipes; plus the compact standalone sweep idiom
+  re-anchored from scenes/Tests/Geometry/sweep_instances.RISEscene
+  replacing the scenario-glued flask example).  Execution-validated;
+  zero subject vocabulary; hooks frozen.
+- Stop rule (pre-committed): census-verified HAND-AUTHORED
+  displaced/sweep usage in ≥2/6 runs per model → bank A, S3b optional;
+  0/6 both models → A dead, S3b proceeds; 1/6 → one re-run then
+  decide.  (`advanced_geometry` is the metric; census must attribute
+  hand-vs-scaffold once S3b exists.)
+
+**S3b — `insert_geometry_scaffold` (the S2-proven mechanism, geometry
+form; scaffold-not-prefab per the standing taste ruling — expands into
+ordinary editable chunks, never an opaque asset):**
+- Families (4): `displaced_slab` (base slab + noise painter +
+  displaced_geometry bolt-on), `sweep_rail` (compact profile swept
+  along a short path — the sweep_instances idiom), `blended_vessel`
+  (sdf roundcone+smin chain), `sdf_column` (base/shaft/capital smin
+  chain).  Every family emits the GEOMETRY graph only (painters/
+  functions + geometry chunks, `tmpl_<name>_*`); the model wires the
+  standard_object + material — the exact division the material
+  scaffold proved models handle (S2 census: expanded materials were
+  object-bound by the model in all 8 cases).
+- Params (ALL required, mirroring S2's proven shape): `family`,
+  `name`, `size` (overall scale), `detail` (0-1: displacement
+  amplitude / profile complexity / smin tightness), `aspect` (>0:
+  elongation).  Name-hash jitter on bump frequencies, profile wobble,
+  smin k, segment counts — same FNV mechanism, same determinism bar.
+- **The qwen articulated-decline lesson applied**: the tool
+  description states factually that scaffolds compose with
+  hand-authored geometry ("families cover common forms; anything else
+  is hand-authored alongside") — addressing the measured
+  wholesale-decline failure mode at the surface the decline reasoned
+  about.  Facts, not advice.
+- Metrics: `scaffold_geo_expanded` via the existing
+  chunk_name_prefix_count op with `category:"geometry"` filter (no
+  new ops); `advanced_geometry` unchanged; census splits
+  hand-vs-expansion.
+- Stop rules (S2's, transposed): floor = called ≥1× in ≥2/6 runs per
+  model with survival; kill-1 = 0/6 both models → snippets removed,
+  tool judged on product merit; kill-2 = never-edited AND one family
+  >80% → one iteration, one re-measure, accept-or-revert.
+- **Strict sequencing**: S3b's tool must NOT be in the tree during
+  S3a's measurement (a visible tool contaminates the example-only
+  treatment).  Build S3b only after S3a's batch completes.
+
+**S3c (parked, unscheduled):** sdf descriptor per-primitive semantics
+enrichment (structure on the read_schema carrier, for the one verb
+models already use).  Revisit only if S3a+S3b leave sdf-specific
+authoring quality as the residual complaint.
+
+**S3a gemini leg (2026-08-04, retry-once instrument, batches run after
+the hold): 0/6 clean.**  displaced_geometry 0/6, sweep_geometry 0/6
+hand-authored; sdf (non-counting) 5/6 as ever, one insert voluntarily
+abandoned for primitives.  Both carrier skills read before authoring
+in most runs — exposed and inert, the S1 shape now confirmed on the
+chunk-addition class for this model.  Side-signals: material-scaffold
+persistence 5/6 (S2 banked behavior stable across batches); cozy r3
+called no scaffold and hand-authored pbr+painter materials instead —
+possible delayed hand-authoring emergence, watch not credit.  qwen leg
+completes the verdict; 0/6 there → S3a dead, S3b proceeds per the
+standing instruction.
+
+**S3b gemini leg (2026-08-04): FLOOR MET — and the workstream's first
+PERFECT GROUP, causally attributed.**  Courtyard 3/3 allPassed=1.0,
+meanCkpt 1.000, pass^k=1: the census traced it checkpoint-by-checkpoint
+— the two S3a courtyard failures were exactly advanced_geometry (no
+sdf existed; columns/basins were plain cylinders), and sdf_column
+scaffold expansions landed WIRED sdf chunks in all 3 runs, directly
+closing them, with the material scaffold closing the residual orphan
+failure.  8 geometry-scaffold calls in 3/6 runs (all courtyard), family
+split 50/50 sdf_column/blended_vessel (kill-2 clear).  **The creativity
+signal arrived in force in r1**: scaffold called twice for columns,
+objects REBOUND to the preferred expansion, the orphan removed — and
+one blended_vessel called-then-DISCARDED for a hand-built CSG basin
+that kept the scaffold's material: scaffolds treated as drafts, the
+ordinary-editable-chunks design intent working exactly as argued to the
+user in the S2 redesign.  Discovery: scene-skeleton (read FIRST in 6/6
+runs) is the carrier; r1's first call reused the example's name
+verbatim with retuned params.  Cozy control: zero geometry-scaffold
+calls and flat vs S3a — honestly attributed to FAMILY COVERAGE (a lamp
+shade maps to none of the four families; its advanced_geometry is a
+hand-copied Recipe-3 roundcone predating the arc) — the same
+coverage boundary qwen articulated in S2, now measured on gemini.
+Also: LUMINAIRE_NULL_GEOMETRY fired in the wild (cozy r1 bound
+emissive to CSG again) — the crash-fix diagnostic failing the run
+truthfully instead of segfaulting the harness, working as designed.
+qwen leg completes the verdict.
+
+**S3b VERDICT and ARC CLOSE (2026-08-04): PARTIAL BANK — the S2 shape,
+now measured twice and therefore a stable cross-model finding.**
+gemini: floor MET (3/6 called+wired), kill rules clear, first perfect
+group causally attributed → geometry scaffold + snippets BANKED.
+qwen: 0/6 both scaffolds; the S2 articulated-decline did NOT recur —
+5/6 never-engaged, 1/6 fleeting, zero coverage reasoning anywhere:
+there is no stable objection to iterate against; qwen's engagement
+with ANY optional surface is run-to-run unstable (bimodal output:
+one 6-painter-kind hand-authored run beside flat lambertian runs).
+The retry-once instrument recovered its one degenerate turn cleanly.
+**The mechanism law, final form:** models act on facts that BLOCK;
+advice moves nothing at any exposure (0/24); examples move copying
+only WITHIN existing authoring shapes (painter families, floor 1→3)
+— not across slot-typing or material-choice priors (S1 0/12) and not
+for chunk-addition (S3a 0/12); ONE-CALL STRUCTURE moves behavior by
+restructuring the cost landscape (S2, S3b) — and its adopters then
+EDIT the expansions (rebind, retune, discard-and-replace), keeping
+the ceiling open exactly as the scaffold-not-preset design argued.
+The measured boundary of the scaffold mechanism, on both models, is
+FAMILY COVERAGE — the named, unscheduled next lever.
+**Open items:** family breadth; sweep_rail/displaced_slab families
+never adopted (gemini used only the sdf families — a family-level
+adoption question); S3c sdf descriptor enrichment (parked); both
+scaffolds excluded from the propose-autonomy allowlist (product
+follow-up before GUI propose-mode users get them); Qt textual mirrors
+never compiled here; re-run the standing runconfigs when the model
+roster changes (the 74-arc's advice — a stronger local model may
+adopt where qwen did not).
+
+**POST-ARC E1 (2026-08-06, `dc256c73`): the law's enforcement half,
+applied to its cleanest case.**  LUMINAIRE_NULL_GEOMETRY — correct,
+actionable, and ignored 2/2 as a Warning in the live dreamscape run —
+is now a BLOCKING refusal at every creation path (insert, both patch
+arms, material-side with delta semantics, resolve-time re-gate under
+verified lock discipline), with an honest escape
+(`allow_non_sampling_emitter TRUE`: the rare glow-only intent becomes
+a deliberate, trajectory-visible act).  Two review rounds fixed four
+P1s — three bypass paths and one over-refusal (state-vs-delta on
+pre-existing warned constructs: Warning nags, edits proceed, only
+creation blocks).  Enforcement scope deliberately ends here: content
+richness (scalar pipe, painter families) stays UN-gated per the
+settled score verdict — flat is sometimes right, and the decoy record
+shows what dishonest gates teach.  **Pre-committed stop rule**: if
+future trajectories show reflexive escape-param spam (habituation
+transplanted), the gate reverts to Warning; watched passively via the
+standing trajectory record (grep allow_non_sampling_emitter).
+
+**S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
+qwen: advanced_geometry 0.00 in all six build runs (no census needed —
+the document metric is the census for absence; even sdf, qwen's
+occasional verb, was absent).  Retry-once instrument note: zero
+provider_errors this batch (was 3/9), counterweight 66.7% —
+instrument working as intended.  The chunk-addition-copying hypothesis
+is now refuted alongside slot-override copying: across every rung, the
+predictive distinction is not the KIND of edit an example shows but
+whether adoption requires the model to COMPOSE anything — one-call
+structure moved (S2); everything compositional measured zero.
+S3b (insert_geometry_scaffold) proceeds.
 - **S3b** (structural; needs explicit user taste sign-off before detailed
   design): parametric scaffold expansion into editable sdf/sweep chunks.
   Same stop-rule shape as S2.
@@ -276,7 +440,282 @@ main checkout after any worktree agent.  Runs: gemini via
   hallucinated `gallery` field that reportedly failed SILENTLY — spun
   off as its own investigation (agent-side insert validation vs the
   descriptor hard-fail scene loading gets).
-- **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
+- **2026-07-31 — S0.1 LANDED** (`a17921c5`): `param_binding` op + the
+  `varied_microsurface` checkpoint (10-kind slots) on the courtyard
+  scenario.  Two review rounds to zero P1: round 1 found 5 P1s
+  (cross-slot dedup, occurrence handling ×2, multi-edge collapse,
+  undisclosed slot-coverage gap) — all fixed; round 2 zero code P1s +
+  two test-vacuity gaps closed with discriminating fixtures, each
+  verified by re-applying its target mutation.  Known interpretation
+  discontinuity: the new required checkpoint flips `allPassed` on runs
+  that previously passed — archived bare_prompt runDirs are not
+  comparable at the pass@1 level (reviewer R3's quantification: the
+  fraction shift is only 1.0→0.96, the pass/fail flip is the real
+  break).
+- **2026-07-31 — S0.2 LANDED** (`2ebc244b`): headless SetSkillIndex
+  parity via a new shared `AgentSession::RenderSkillIndex` single-source
+  helper (Qt/Swift GUI copies carry lockstep comments — delegation
+  impossible across their input/language boundaries).  Two fresh
+  reviewers, zero P1s; one P2 (rendering triplication) fixed; one
+  supervisor-caught truth defect in the new header comment (claimed a
+  Qt delegation that doesn't exist) — §4.3's lesson, again, caught by
+  the supervisor truth-pass this time.  Deliberate instrument change:
+  headless runs now carry the skills index (turn structure differs from
+  every archived runDir).
+- **2026-07-31 — S0.3 LANDED** (`5969e929`): `bare_prompt_build_cozy_study`
+  — byte-identical measurement structure to courtyard, indoor
+  provisional luma band (0.35), study vocabulary.  One fresh data
+  reviewer, zero P1s; confirmed `eval_report.py` aggregates labels per
+  (scenario, provider, model) group so cross-scenario label reuse never
+  pools — the anti-overfit A/B interpretation is safe.
+- **2026-07-31 — S0.6 anchor OPENED**: runconfigs
+  `bare_prompt_s0_anchor{,_qwen}.json` — 3 scenarios (courtyard +
+  cozy-study + counterweight) × N=3 per instrument, serialized, gemini
+  first then qwen.  This anchor is the sole valid comparison base for
+  every subsequent arc-75 phase.
+- **2026-08-01 — the anchor's first payoff was a CRASH, fixed to zero-P1
+  over 3 rounds (`d07a0994`)**: both gemini cozy-study attempts
+  segfaulted (null `Object::pGeometry` via `RebuildLightSamplers` —
+  CSGObject never sets it; the model bound an emissive material to a
+  csg_object lamp shade).  Courtyard never triggers it; the anti-overfit
+  subject found a latent product crash on day one.  Fix hardened 7 sites
+  (5 found only by successive fresh-review rounds — the audit-by-bug-
+  pattern lesson compounding), added the first real Warning-severity
+  diagnostic (`LUMINAIRE_NULL_GEOMETRY`) and with it closed 74-log open
+  item 2 (the CheckDiagnosticsKind Warning fixture).  **Eval-semantics
+  change to carry forward**: a live run that binds emissive to CSG now
+  FAILS `diagnostics: clean` (truthfully — the emitter is never
+  light-sampled) instead of crashing the harness; anchor numbers must be
+  read with that in mind.  **Deferred, tracked**: pre-existing BDPT
+  remap0 phantom-NEE-term energy deficit for non-light-sampled emitters
+  (fenced MIS work; comments at both sites).
+- **2026-08-01 — S0.6 gemini leg COMPLETE** (9/9 post-fix, zero crashes,
+  all `final_text`; qwen leg in flight).  Anchor numbers
+  (gemini-3.5-flash, N=3): courtyard meanCkpt 0.880 / painter_kinds
+  2.33 / advanced_geometry 0.67 / **varied_microsurface 0.00**;
+  cozy-study meanCkpt 0.813 / painter_kinds 1.33 / advanced_geometry
+  1.00 / **varied_microsurface 0.00**; counterweight ask-guard 3/3
+  (its 33% pass@1 is the known-tight objectmap/luma bands at N=3, not
+  an ask-side regression).  Forensics: every microsurface failure is
+  the construct metric itself (no calibration artifact); the cozy
+  provisional 0.35 luma band held with no recalibration needed.
+  **New finding the second subject exists to surface: the 74-arc
+  painter-floor win does NOT fully transfer** — cozy r2/r3 bound only
+  perlin3d (floor 1 vs courtyard's 2.33); the P1 snippet families are
+  plausibly subject-associated.  S1 design input: the aligned-example
+  edits must be checked for cross-subject transfer, not just courtyard
+  deltas.  S1's baseline is now anchored: varied_microsurface 0.00 on
+  both subjects, stop rule ≥2/6 runs with ≥1.
+- **2026-08-01 — BDPT phantom-NEE-term fix LANDED (`7e91d5a9`)** — the
+  deferred defect turned out to be a **~2400× energy wipeout** on
+  indirect paths (weight ~4e-4), not mild dimming: scenes lit primarily
+  by non-light-sampled emitters rendered essentially black under
+  BDPT/MLT.  Narrow set-membership flag mechanism (NOT the global
+  delta-aware remap0); 3×3×2 A/B protocol closed the BDPT/PT ratio
+  0.0004→1.001 with an MC-indistinguishable control; env-vertex fence
+  verified two layers deep; fresh Opus review zero P1s, both P2s fixed
+  (a pdf-valued predicate would have flipped the defect into energy
+  EXCESS under the opt-in light BVH — caught in review).  Gate 227/227.
+- **2026-08-01 — S0.6 qwen leg COMPLETE; S0 CLOSED.**  qwen3.6:27b N=3:
+  varied_microsurface **0.00 both subjects** (baseline anchored on both
+  instruments); painter_kinds 0.67/0.00 (consistent with qwen's known
+  uniformcolor habit, not a regression — cozy 3/3 all-uniformcolor
+  confirmed from insert payloads); counterweight noisy but diagnosed
+  (r1 asked properly — guard intact; r3 "provider_error" = a degenerate
+  reasoning-only turn, HTTP 200; r2 wall-budget = render-perfectionism,
+  samples escalated to 4096 on a 2-object scene).
+  **Thinking-probe verdict (S1-critical): never-considered, 6/6.**
+  Zero reasoning about microsurface variation despite the advisory
+  firing up to 21×/run and two runs reading the full
+  materials-and-media-basics scalar section — the concept never enters
+  the option set.  `procedural-textures` (the skill every advisory
+  points to) was read 0/6 times.  **The strongest S1 evidence yet:**
+  the two pbr-using runs pasted constant roughness values with zero
+  deliberation, and the constants MATCH THE SKILL'S OWN DEMO VALUES —
+  models copy the copy-source verbatim and silently.  S1 therefore
+  edits the snippets in the skills models MEASURABLY read
+  (scene-skeleton-and-conventions, lighting-recipes,
+  materials-and-media-basics, modeling-workflow, object-modeling — the
+  anchor's observed read-set), carries the binding IN the copied
+  snippet, and is checked on both subjects for transfer.
+- **2026-08-01 — S1 edit LANDED; measurement opened.**  The read-set
+  audit found the convertible surface far narrower than designed:
+  **3 of 5 read-set skills are lambertian-only** (no microsurface slot
+  exists in any of their snippets — which is also WHY anchor runs are
+  lambertian-dominated), object-modeling-recipes already carried the
+  74-arc conversions, and the whole live surface was
+  `materials-and-media-basics` — where both converted sites are exactly
+  the demo constants qwen was observed pasting verbatim
+  (cooktorrance `facets 0.08`→scalar_painter wear;
+  pbr `roughness 0.35`→perlin3d — each binding-form verified against
+  Job.cpp's per-slot manager resolution; the golden-sequence `0.1`
+  site honestly skipped, its teaching point IS the inline-scalar
+  fallback).  One fresh reviewer: zero P1/P2 (independent
+  execution re-validation; anti-overfit sweep clean; hook lines
+  frozen).  **Reach caveat pre-committed in the runconfigs before the
+  run**: this lever only touches runs that instantiate
+  pbr/cooktorrance-class materials — a 0/6 on all-lambertian documents
+  is a REACH failure (points at material-choice, an S2+ question), not
+  a copying failure; material-kind census precedes any verdict.
+  (Also for the record: the supervisor's S1 brief mis-stated the skill
+  path as docs/skills — the agent corpus lives at skills/agent/; the
+  writer caught it.  §4.3 discipline, mine again.)
+- **2026-08-01 — S1 gemini leg: COPYING-FAILURE 6/6 (the clean
+  disconfirmation).**  Precision census (authored payloads only,
+  validated against final.RISEscene chunk counts): every run authored
+  bindable pbr materials (33 microsurface-slot instances), every run
+  genuinely read the edited materials-and-media-basics BEFORE authoring
+  (edited content confirmed served — pnt_pbr_roughness present in the
+  read_skill result), and ALL 33 slots are inline numeric constants.
+  Zero copy trace of the demo painters, not even renamed.  Neither
+  reach-failure nor exposure-failure applies — the copy-source carried
+  the binding and the model reproduced the SHAPE of its prior instead
+  (numbers in number-looking slots).  Refined mechanism model this
+  licenses: the 74-arc's "examples move copying" lever moved painter
+  FAMILIES in slots models already bound painters to (reflectance /
+  base_color); it does not override the slot-TYPING prior that
+  roughness is a scalar.  Per the pre-committed rule the gemini half is
+  0/6 → example ceiling confirmed at construct level for gemini; the
+  qwen leg (in flight) completes the phase verdict — its
+  copy-verbatim-constants habit is the strongest remaining test of the
+  hypothesis.
+- **2026-08-01 — S1 CLOSED by its own stop rule: 0/6 both models; the
+  two models fail for DIFFERENT structural reasons.**  qwen census:
+  5/6 reach-failure (lambertian-only documents — metal lamps modeled
+  as diffuse, one literally named mat_lamp_metal; qwen opens the
+  materials skill only AFTER deciding via read_schema that it wants a
+  non-diffuse material, 1/6 runs) + 1/6 exposed-and-authored-constants
+  (cozy r2: read the edited demo, then authored pbr with numeric
+  roughness; its reasoning between read and insert never mentions
+  roughness/binding at all — never-engaged, not noticed-and-overrode).
+  Also: one provider_error = the known degenerate reasoning-only-turn
+  class, pre-materials, uninformative.  Combined S1 verdict:
+  - gemini: slot-TYPING prior survives a perfectly-exposed copy-source
+    (33/33 constants with full reach).
+  - qwen: material-CHOICE prior (lambertian default) makes the
+    copy-source unreachable, and consultation order runs
+    schema→skill only after the choice is made.
+  Both failure structures are exactly what the S2 scaffold bypasses:
+  one tool call authors the whole wired graph — no slot is ever typed
+  by the model, no material family chosen chunk-by-chunk.  The ladder
+  now has prose 0/24 (74-arc), advice 0/24 (74-arc), copy-source 0/12
+  (this rung, exposure/reach-verified) — S2 proceeds for BOTH domains
+  per the rule.
+- **2026-08-02 — S2 SHIPPED (`f5187349` tool, `28e39f1e`
+  discoverability+metrics) and the gemini leg MOVED THE METRIC — the
+  first nonzero in 42 measured runs.**  varied_microsurface 1.67/1.33
+  (was 0.00 everywhere, ever); scaffold_expanded 7.00/6.00; cozy-study
+  posted the workstream's first nonzero bare-prompt pass@1 (33%).
+  Census (validated to reproduce the metric values exactly):
+  **8 scaffold calls across 4/6 runs, zero failures, 100% survival to
+  final documents; success floor MET (needs ≥2/6); kill rule 2 NOT
+  triggered** (family spread tops at 50% rough_stone; edit rate 1/8
+  nonzero — one genuine rebind+retune where the model rewired a
+  scaffold facets painter into a NEW hand-authored material and
+  retuned the scaffold's pebble painter).  Discovery is SKILL-DRIVEN:
+  every first call lands within 1-2 tool calls after reading
+  materials-and-media-basics; no tool-list browsing; exposure is
+  necessary but not sufficient (cozy r3 read all four example skills
+  and still hand-typed).  The law's boundary re-confirmed even in
+  success: hand-authored materials stayed numeric in 9/10 cases — the
+  in-document tmpl_ graphs did NOT teach hand-authored imitation;
+  the richness is expansion-carried.  Structure moved behavior by
+  RESTRUCTURING THE COST LANDSCAPE, exactly as designed.  qwen leg in
+  flight; phase verdict completes on it.
+- **2026-08-02 — S2 qwen leg: 0/6 calls under FULL exposure — and the
+  workstream's first ARTICULATED decline.  Phase verdict: PARTIAL
+  BANK.**  Every qwen run read scene-skeleton (which carries an
+  example); 4/6 never engaged the concept in reasoning; one fleeting
+  consideration was derailed by an unrelated parse bug; and one run
+  EXPLICITLY DECLINED with a stated reason: "it only handles five
+  specific material types, whereas my scene needs a broader palette
+  including plaster and fabric... so I'll stick with manual
+  authoring" — the reason is half-true (weathered_wood would have
+  covered its wood surfaces; it declined wholesale rather than
+  mixing).  This is not habituation and not never-considered — it is
+  a coverage-based rejection, the first reasoned engagement with any
+  mechanism in 60+ measured runs.  Named next lever if ever wanted
+  (NOT scheduled): family breadth or a description clarifying
+  mix-and-match use.  Kill rules: rule 1 does not fire (gemini 4/6);
+  rule 2 clear; success floor met on gemini only.  VERDICT: scaffold +
+  snippets BANKED on the gemini result; qwen recorded as
+  exposed-and-declined.
+  Secondary findings: qwen cozy painter_kinds moved 0→1.67 (2/3 runs
+  nonzero vs 6/6 zero in S0+S1) — ALL hand-authored colour painters on
+  reflectance, unrelated to the scaffold treatment; a real qualitative
+  shift of ambiguous cause (recorded, not credited to any lever).
+  qwen degenerate-turn rate worsened (3/9 this batch, same
+  reasoning-without-tool-call shape) — instrument reliability item,
+  spun off.  The crash file in this window was the KNOWN
+  file_rasterizeroutput CLI segfault (tracked separately), not the
+  eval.
+- **2026-08-02 — INSTRUMENT CHANGE (`bcadae0d`): degenerate-turn
+  retry-once — landed BEFORE any S3 batch, per the versioning rule.**
+  Root cause of the "reasoning-without-tool-call" run deaths is
+  SERVING-side, not harness-side: qwen3-thinking models on Ollama
+  stochastically emit a premature end-of-turn INSIDE the reasoning
+  block (HTTP 200, finish_reason "stop", content "", reasoning cut off
+  mid-word far below the token cap) — exact match for the still-open
+  upstream bug ollama/ollama#10976 ("thinking + tools + qwen3 = empty
+  output").  Archive forensics across all runDirs: 13 cases, ALL in
+  thinking-capable Qwen-family models (qwen3.6:27b 0.29%/call,
+  qwen3:32b 0.93%/call; 0 across ~1,430 calls for the four
+  non-thinking/non-Qwen local models; one 0.02%/call gemini-flash
+  analogue), which compounds to the observed 1/9 → 2/9 → 3/9 per-run
+  death rates in the S0→S1→S2 qwen legs.  Likely rate amplifier:
+  Ollama's qwen3.6:27b Modelfile bakes in presence_penalty=1.5 — a
+  value Qwen's own card assigns to the 35B-A3B MoE variant, not the
+  27B dense model (recommendation 0.0); not necessary for the bug
+  (qwen3:32b has none and still fails) but a plausible multiplier.
+  **Policy**: on the FIRST blank-turn Provider refusal per LLM round
+  (the four codec `ChatContentIsBlank` sites; structured refusals and
+  content_filter excluded), the runner resends the IDENTICAL context
+  once — no injected feedback, no history mutation (verified: a
+  ProviderError step records nothing to the transcript) — gated on the
+  llm-call budget still allowing the POST; a second consecutive blank,
+  or a budget-exhausted first blank, is terminal provider_error
+  exactly as before.  New ALWAYS-emitted result-line counter
+  `degenerateTurnRetries`; its presence marks the instrument version
+  in archived result lines, and eval_report surfaces it per group.
+  **Bias ruling**: this converts censoring into observation — the
+  pre-change alternative was run death at a random progress point
+  charged to the model's pass@1, so retry-once removes a
+  serving-reliability confound rather than inflating capability; the
+  per-run counter preserves post-hoc excludability.  Residual risk at
+  the measured rates: p² ≈ 1e-5 per round → <0.1% per 50-round
+  session.  **Comparability ruling (supersedes a bare footnote)**:
+  archived S0–S2 qwen pass@1/allPassed cells carry the RISING
+  censoring rate above baked in as failures — S3+ qwen pass@1 is NOT
+  comparable to S0–S2 raw numbers; treat S3+ as the new qwen baseline
+  and exclude provider_error-terminated cells from any historical
+  trend claim.  Treatment-engagement readings (scaffold calls,
+  reasoning mentions) are unaffected in kind, merely N-reduced, so
+  the S1/S2 verdicts stand.  The S3 qwen batch doubles as the
+  empirical fix verification (expect ~0 degenerate deaths; rescues
+  visible via the counter).  Reviewed to zero P1 over 3 rounds
+  (round 1: 3 P1s — budget-veto counter lie, an uncovered codec site,
+  and the comparability ruling itself; round 2: 1 P1 — nothing proved
+  the counter ACCUMULATES across rescued rounds, red-proofed by a
+  simulated per-round-reset regression; round 3 clean, with every
+  data claim above independently re-derived from the runDir archive).
+- **2026-08-03 — presence_penalty A/B probe: NULL on the amplifier
+  hypothesis (0 events both arms); the artifact does not reproduce in
+  synthetic contexts.**  496 interleaved calls on qwen3.6:27b (8
+  mid-conversation agentic contexts × 31 repeats × {Modelfile default
+  pp=1.5, explicit pp=0}): degenerate turns 0/247 vs 0/248 — per-arm
+  rate bounded < 1.48% (95% CP) in these contexts, no arm comparison
+  possible.  Combined with the earlier 7-call pilot, 0 events in ~500
+  synthetic replays vs 0.29–2%/call in real sessions: the trigger
+  depends on something real sessions have that a replayed battery
+  lacks (accumulated multi-round context/server state), so further
+  chasing means replaying REAL harness sessions or waiting on the
+  upstream fix (ollama/ollama#10976) — the S3 qwen batch is the live
+  post-fix verification either way.  Secondary finding (paired,
+  same-context): the misapplied pp=1.5 default costs real compute
+  even absent the bug — ~18% more completion tokens and ~34% more
+  wall-time than pp=0 (A longer in 6/8 contexts, up to 2.0×).
+  Probe: scratchpad ppab_probe.py; data ppab_full_run1.jsonl (session
+  scratch, regenerable).
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
   (`AgentSession::InsertChunk` → `Job::ApplyCstInsertChunk` →

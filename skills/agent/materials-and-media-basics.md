@@ -161,26 +161,72 @@ dielectric_material
 	scattering	100000.0
 }
 
+# SCALAR pipe: facets is a physical scalar, so it takes a scalar_painter,
+# never a colour painter -- a worn gold surface polishes unevenly with
+# handling rather than holding one uniform facet size everywhere.
+expression_function2d
+{
+	name	fn_gold_wear
+	param	bands 3.0
+	def		s abs( v * bands - 0.5 )
+	expr	smoothstep( 0.05, 0.3, s )
+}
+
+scalar_painter
+{
+	name		sp_gold_wear
+	function2d	fn_gold_wear
+	scale		0.10
+	bias		0.03
+}
+
 # 3. Metal: a glossy Cook-Torrance conductor (rd/rs tints, facets =
-#    microfacet roughness, ior/extinction = conductor Fresnel).
+#    microfacet roughness, ior/extinction = conductor Fresnel).  facets
+#    is bound to the scalar_painter above instead of one constant.
 cooktorrance_material
 {
 	name		mat_gold
 	rd			pnt_gold_deep
 	rs			pnt_gold_warm
-	facets		0.08
+	facets		sp_gold_wear
 	ior			2.5
 	extinction	3.0
 }
 
+uniformcolor_painter
+{
+	name	pnt_pbr_rough_lo
+	color	0.15 0.15 0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_pbr_rough_hi
+	color	0.55 0.55 0.55
+}
+
+# roughness is a COLOUR-painter slot on this chunk (auto-adapted to a
+# scalar internally), not a scalar_painter slot -- a moulded/machined
+# part rarely holds one uniform roughness edge to edge.
+perlin3d_painter
+{
+	name		pnt_pbr_roughness
+	colora		pnt_pbr_rough_lo
+	colorb		pnt_pbr_rough_hi
+	octaves		3
+	persistence	0.6
+	scale		5.0 5.0 5.0
+}
+
 # 4. PBR metallic-roughness (glTF-style; metallic/roughness accept a
-#    painter name OR an inline scalar).
+#    painter name OR an inline scalar -- roughness here uses the
+#    grayscale procedural painter above).
 pbr_metallic_roughness_material
 {
 	name		mat_pbr
 	base_color	pnt_red
 	metallic	0.0
-	roughness	0.35
+	roughness	pnt_pbr_roughness
 }
 
 lambertian_material
@@ -252,6 +298,20 @@ directional_light
 	direction	0.3 0.5 0.8
 }
 ```
+
+## A one-call route to a wired varied material
+
+The four starters above are hand-typed, one painter and one material at
+a time.  `insert_material_scaffold` gets a comparable richly-varied
+material -- base colour AND microsurface both bound to a real painter --
+in one call instead of a multi-chunk hand-wired graph:
+`insert_material_scaffold {family:"aged_bronze", name:"urn1",
+tone:"0.35 0.22 0.12", wear:0.5, scale:2.5}` expands into a
+`cooktorrance_material` (`tmpl_urn1_mat`) with `rd` bound to a
+reaction-diffusion patina field and `facets` bound to a spatially-varying
+scalar field.  Every generated `tmpl_*` chunk is an ordinary chunk like
+any other -- `propose_patch`/`remove_chunk` retune or rebind it exactly
+as they would a hand-authored one.
 
 ## Colors vs physical scalars — why `scalar_painter` matters
 

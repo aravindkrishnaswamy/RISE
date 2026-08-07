@@ -3566,6 +3566,21 @@ namespace {
 				return true;   // continue enumeration
 			}
 
+			// Sibling of the LuminaryManager::AddToLuminaryList / SSS null-geometry
+			// crash fix: obj.GetGeometry() can legitimately be null (a CSGObject has
+			// no single owned IGeometry* -- its shape is synthesized from its two
+			// operand objects and it does not override UniformRandomPoint()).  The
+			// probe loop below unconditionally calls obj.UniformRandomPoint(...) for
+			// EVERY material'd object in the scene, so a null-geometry object with
+			// ANY material (not just an emitter) reached this and null-derefed
+			// (Object::UniformRandomPoint -> pGeometry->UniformRandomPoint with
+			// pGeometry == 0) the moment SMS classification enumerated it -- before
+			// the CanBeAreaLight() gate further down even runs.  Skip it up front
+			// with the same refusal semantics as that gate.
+			if( !obj.GetGeometry() ) {
+				return true;   // continue enumeration
+			}
+
 			// Probe at several deterministic prands.  A `SwitchPel`-style
 			// painter that keys off (u, v) and reports `isSpecular` only
 			// in some patches must still classify the object as a caster
@@ -6216,10 +6231,58 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// (a curved tube), the heart-shaped cardioid roots are reachable from
 	// generic surface samples.  Photon-aided seeding (trials with photons
 	// available) takes precedence; surface sampling fills the remainder.
+	//
+	// NULL-GEOMETRY GUARD (crash-fix sibling, mirrors SpecularCasterCollector::
+	// operator()'s `if( !obj.GetGeometry() ) return true;` gate at ~line 3580):
+	// pFirstCaster is `baseSeedChain[0].pObject`, sourced from a LIVE ray hit
+	// (CSGObject::IntersectRay publishes `ri.pObject = this`), NOT from the
+	// already-null-geometry-filtered `mSpecularCasters` cache -- so an
+	// on-screen REFLECTIVE csg_object driving a k=1 chain reaches here with a
+	// non-null `pFirstCaster` whose GetGeometry() is null.  Object::
+	// UniformRandomPoint() has its own base-layer null guard now (Object.cpp)
+	// so this no longer crashes, but silently falling through would feed
+	// Object::UniformRandomPoint's fabricated (object-origin, +Y-normal)
+	// fallback point into Newton as a manifold seed -- a WRONG-POSITION seed,
+	// not a zero-measure/refused one (Newton would either fail to converge
+	// from a bogus point or, worse, converge to a spurious root far from any
+	// real reflection).  Refuse the fallback the same way a null-geometry
+	// object is refused everywhere else in the SMS/luminary/SSS null-geometry
+	// audit: no surface to uniformly sample, so no surface-sample fallback.
+	// (baseSeedChain[0] itself -- the Snell-traced hit -- is still used
+	// as-is when this is false; only the SUPPLEMENTAL surface-sample fallback
+	// is refused.)
 	const bool surfaceSampleReflectionFallback =
 		( baseSeedChain.size() == 1 ) &&
 		( !baseSeedChain[0].canRefract ) &&
-		( pFirstCaster != nullptr );
+		( pFirstCaster != nullptr ) &&
+		( pFirstCaster->GetGeometry() != nullptr );
+
+	// Log-once (process-wide) diagnostic + red-proof hook: fires exactly
+	// when every OTHER surfaceSampleReflectionFallback condition holds but
+	// the null-geometry guard above is what refused it -- i.e. an on-screen
+	// reflective csg_object driving a k=1 chain.  Distinguishing this from
+	// "the fallback just doesn't apply" (wrong chain length / refractive
+	// material / no caster) is deliberate: it is the one case where the
+	// refusal is a NEW behavior change (crash-fix round 3) rather than the
+	// fallback's pre-existing scope, so tests can assert on it directly
+	// (see ManifoldSolverNullGeometryReflectionFallbackTest.cpp).  Same
+	// log-once idiom as SplatFilm.cpp's EvaluateFilter-support warning.
+	if( ( baseSeedChain.size() == 1 ) &&
+		( !baseSeedChain[0].canRefract ) &&
+		( pFirstCaster != nullptr ) &&
+		( pFirstCaster->GetGeometry() == nullptr ) )
+	{
+		static std::atomic<bool> warnedNullGeomReflectionFallback{ false };
+		bool expected = false;
+		if( warnedNullGeomReflectionFallback.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"ManifoldSolver:: a k=1 reflective specular caster has no directly-owned "
+				"geometry (e.g. a csg_object, whose shape comes from its two operand "
+				"objects rather than a single geometry chunk) -- the surface-sample "
+				"fallback (NULL_GEOM_REFLECTION_FALLBACK_REFUSED) is refused rather than "
+				"fabricating a seed point; affected trials are skipped instead." );
+		}
+	}
 
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{

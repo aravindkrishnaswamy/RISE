@@ -398,6 +398,24 @@ namespace RISE
 			int  toolCalls = 0;    //!< total tool calls actually dispatched
 			bool budgetHit = false;   //!< true iff terminalStatus is one of the three budget_* stops
 
+			//! Count of degenerate-blank-turn retries consumed this run (see
+			//! ChatStepResult::retryDegenerateTurn) -- a local qwen3-thinking
+			//! backend stochastically ending a turn mid-reasoning with no
+			//! text and no tool calls.  At most 1 PER ROUND (attempt==1 only,
+			//! same as the 5xx/image/reasoning-effort retries), so this is
+			//! bounded by the number of rounds in the run, not by
+			//! kRateLimitMaxAttempts or any other per-round cap.  Already
+			//! reflected in llmCalls (each retry is its own POST, billed
+			//! there like every other retry) -- this field exists to make
+			//! the degenerate-turn RATE separately visible without having to
+			//! re-derive it from the trajectory's attempt/retry_of pairs.
+			//! INVARIANT: this must equal the number of retry POSTs actually
+			//! issued -- a degenerate turn that arrives with the llm-calls
+			//! budget already exhausted is NOT counted here and does not
+			//! retry; it terminates provider_error like any other exhausted-
+			//! budget ProviderError, matching pre-retry-feature behavior.
+			int  degenerateTurnRetries = 0;
+
 			//! Total WALL-CLOCK duration of the run in milliseconds (the whole
 			//! turn loop: LLM round-trips + tool dispatch), measured via the
 			//! same wall clock maxWallMs uses (TrajectoryNowMs, or the injected

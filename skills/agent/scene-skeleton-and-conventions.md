@@ -80,6 +80,36 @@ directional_light
 }
 ```
 
+## A one-call alternative for a varied material
+
+Hand-typing a painter + material pair like `pnt_white`/`mat_white` above
+is fine for a flat colour.  When the material should have real spatial
+variation instead of a single flat colour, `insert_material_scaffold`
+expands one of five family templates (`weathered_wood`, `rough_stone`,
+`brushed_metal`, `aged_bronze`, `glazed_ceramic`) into a small wired
+painter graph in a single call, e.g. `insert_material_scaffold
+{family:"glazed_ceramic", name:"bowl1", tone:"0.85 0.82 0.76", wear:0.3,
+scale:3.0}` -- this lands `tmpl_bowl1_mat` (a `ggx_material`) plus its
+wired painters as ordinary, editable chunks; point a
+`standard_object.material` at `tmpl_bowl1_mat` exactly like `mat_white`
+above.
+
+## A one-call alternative for turned geometry
+
+Hand-authoring a turned profile -- a chain of `sdf_geometry`
+`roundcone` parts joined by `smin` (see object-modeling-recipes' turned-
+vessel recipe) -- is the right verb but several lines of `part` math.
+`insert_geometry_scaffold` expands one of four family templates
+(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`) into
+that graph in a single call, e.g. `insert_geometry_scaffold
+{family:"sdf_column", name:"column1", size:1.0, detail:0.5,
+aspect:1.5}` -- this lands `tmpl_column1_col` (a single `sdf_geometry`
+base/shaft/capital `smin` chain, closed with the same flat-bottom cut)
+as an ordinary, editable chunk.  Unlike `insert_material_scaffold`,
+this tool never emits a material or a `standard_object` -- point a
+`standard_object.geometry` at `tmpl_column1_col` yourself, exactly like
+`sph` in the minimal scene above.
+
 ## Convention traps (each has caused real bugs)
 
 1. **`directional_light.direction` is FROM-surface-TO-light**, not the
@@ -112,3 +142,6 @@ anything else.
 scene run via the CLI writes NO image unless the scene carries a
 `file_rasterizeroutput` chunk — see docs/SCENE_CONVENTIONS.md §10 for
 the standard dual EXR (HDR archive) + PNG (display preview) idiom.
+Declare the rasterizer chunk BEFORE any `file_rasterizeroutput`
+chunk; FRO-first (or no rasterizer chunk) fails the load with a
+"no rasterizer is set" diagnostic.

@@ -121,6 +121,16 @@ render -- the same observe loop, applied at the object level:
    frame (silhouette, proportion relationships) rather than just check
    the render's channel means -- the image rides back in that one call.
 
+**A one-call materials pass.** Once the blockout proportions are
+confirmed, `insert_material_scaffold {family:"rough_stone",
+name:"block1", tone:"0.5 0.48 0.44", wear:0.6, scale:1.2}` expands a
+family template (`weathered_wood`, `rough_stone`, `brushed_metal`,
+`aged_bronze`, `glazed_ceramic`) into a wired painter graph -- here a
+`cooktorrance_material` (`tmpl_block1_mat`) with both `rd` and `facets`
+bound to real painters -- in place of hand-typing the painter chain
+yourself; point any `standard_object.material` at `tmpl_block1_mat` and
+continue the refine pass from there.
+
 ## Recipe 1: a mug (`csg_object` hollow body + `torus_geometry` handle)
 
 A cylinder body with a second, slightly-taller and narrower cylinder
@@ -954,6 +964,127 @@ the intended base height).  If the neck floats beside the body, its
 first `point` is outside the body's radius at that height -- move it
 inward until it is buried, and confirm with a render, not with
 arithmetic.
+
+**A one-call alternative to the body profile above.**
+`insert_geometry_scaffold {family:"blended_vessel", name:"vessel1",
+size:1.0, detail:0.5, aspect:1.0}` expands a base/belly/rim roundcone
+`smin` chain plus the same flat-bottom `box subtract` into ONE
+`sdf_geometry` chunk (`tmpl_vessel1_vessel`) in a single call --
+`size` sets the base/belly radii, `aspect` elongates total height (a
+squat bowl at low aspect, a tall vase at high), `detail` is smin blend
+tightness (crisper joints as it rises toward 1, softer shoulders as it
+falls toward 0).  Point a `standard_object.geometry` at
+`tmpl_vessel1_vessel` exactly like `flask_body` above; the scaffold is
+geometry-only, so a swept neck (or any other hand-authored addition)
+still composes alongside it the same way Recipe 4's `spout` does, and
+you still wire the material and `standard_object` yourself.
+
+## Recipe 5: a compact standalone sweep (no vessel)
+
+Recipe 4's sweep is scenario-glued to the flask's neck; this is the
+generic form -- a closed profile tapered at both ends via
+`end_scale_x`/`end_scale_y`, carried along a short 3-point path, with
+no cross-object coordination required.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0 -9 4.5
+	lookat		0 0 0.6
+	up			0 0 1
+	fov			42.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name	pnt_rail
+	color	0.75 0.45 0.15
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+lambertian_material
+{
+	name		mat_rail
+	reflectance	pnt_rail
+}
+
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 0 -0.6
+}
+
+sweep_geometry
+{
+	name			rail1geom
+	profile_point	0.5 0.5
+	profile_point	-0.5 0.5
+	profile_point	-0.5 -0.5
+	profile_point	0.5 -0.5
+	point			-3 0 0
+	point			0 0 1.2
+	point			3 0 0
+	n_len			32
+	end_scale_x		0.2
+	end_scale_y		0.2
+}
+
+standard_object
+{
+	name		rail1
+	geometry	rail1geom
+	material	mat_rail
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
 
 ## Traps specific to object modeling
 

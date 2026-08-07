@@ -17,6 +17,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
+#include <atomic>		// P2a: log-once idiom for UniformRandomPoint's null-geometry fallback warning
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -335,6 +336,22 @@ bool Object::ComputeAnalyticalDerivatives(
 
 const BoundingBox Object::getBoundingBox() const
 {
+	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): pGeometry is
+	// null for a CSGObject, but CSGObject OVERRIDES getBoundingBox()
+	// entirely (CSGObject::getBoundingBox unions/intersects its two operand
+	// objects' boxes) and never calls this base-class version -- CSGObject
+	// is the sole Object subclass in the tree, and Job::AddObject hard-fails
+	// (returns false, no object created) when a standard_object's geometry
+	// reference doesn't resolve, so a base `Object` instance can never carry
+	// a null pGeometry in a realized scene either.  This branch is therefore
+	// UNREACHABLE in the current call graph; guarded anyway (empty box,
+	// matching CSGObject::getBoundingBox's own no-operand fallback) for
+	// defense-in-depth against a future Object subclass that doesn't
+	// override this.
+	if( !pGeometry ) {
+		return BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+	}
+
 	const BoundingBox bbox = pGeometry->GenerateBoundingBox();
 
 	// Transform all 8 corners of the local bbox and take the AABB of the
@@ -374,6 +391,26 @@ const BoundingBox Object::getBoundingBox() const
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): see
+	// getBoundingBox()'s doc comment above -- CSGObject overrides
+	// IntersectRay() completely and is the only Object subclass, and
+	// Job::AddObject never creates a base Object with null geometry, so this
+	// branch is UNREACHABLE in the current call graph.  Guarded anyway (no
+	// hit) for defense-in-depth.  P3 CORRECTION (fix round 3): this does
+	// NOT match CSGObject::IntersectRay's own no-operand fallback -- CSG's
+	// `if( !pObjectA || !pObjectB ) { ...; return; }` fires BEFORE it ever
+	// sets `ri.geometric.bHit = false`, so it returns WITHOUT touching
+	// bHit at all (relying on the caller's own pre-call initialization).
+	// This guard explicitly clears bHit instead, which is the stronger,
+	// correct contract for THIS call site (Object::IntersectRay is a
+	// public entry point with no such caller-init guarantee) -- the
+	// behavior here is right, but the earlier comment's "matching..."
+	// claim was not.
+	if( !pGeometry ) {
+		ri.geometric.bHit = false;
+		return;
+	}
+
 	// Bring the ray into our frame, first tuck away the original ray value
 	const Ray orig = ri.geometric.ray;
 
@@ -614,6 +651,16 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): see
+	// getBoundingBox()'s doc comment above -- CSGObject overrides this
+	// method completely and is the only Object subclass, and Job::AddObject
+	// never creates a base Object with null geometry, so this branch is
+	// UNREACHABLE in the current call graph.  Guarded anyway (no
+	// intersection) for defense-in-depth.
+	if( !pGeometry ) {
+		return false;
+	}
+
 	// Bring the ray into our frame, but use our own copy
 	Ray		orig = ray;
 
@@ -667,6 +714,51 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 
 void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
+	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, caller list corrected
+	// fix round 3): pGeometry is null for a CSGObject (see GetArea()'s doc
+	// comment above).  Every known caller of UniformRandomPoint on an
+	// IObject now refuses to reach here with a null pGeometry:
+	// LightSampler (safe by LUMINARIES-LIST MEMBERSHIP -- see GetArea()'s
+	// doc comment's class (2) argument, not a local check);
+	// SubSurfaceScatteringShaderOp / DonnerJensenSkinSSSShaderOp via their
+	// own CanBeAreaLight-or-null gate (local check, fix round 1);
+	// ManifoldSolver's SpecularCasterCollector via its own GetGeometry()
+	// gate (local check, fix round 1); and ManifoldSolver's
+	// surfaceSampleReflectionFallback k=1-mirror gate (local check, fix
+	// round 3 -- P1a: this call site was MISSED in rounds 1-2 because its
+	// object comes from a live ray hit, not the pre-filtered
+	// mSpecularCasters cache).  This is a belt-and-suspenders base-layer
+	// guard, not a path exercised in the audited call graph.  Returns a
+	// DEFINED (not garbage / NaN) fallback rather than crashing: this
+	// object's own local origin transformed to world space, a canonical
+	// world +Y normal (transformed the same way UniformRandomPoint's
+	// normal always is, below), and a zero UV.  This is deliberately NOT a
+	// "sampling contract" value (no surface exists to sample uniformly).
+	//
+	// P2a (fix round 3, Opus review): unlike GetArea()'s silent 0 (0 is
+	// the established "not sampleable" signal every caller already reads
+	// correctly), a wrong-POSITION fallback point is not self-announcing
+	// to a caller that forgets its own gate -- it looks like a valid
+	// sample.  Warn once per process (SplatFilm.cpp's EvaluateFilter-
+	// support log-once idiom) so a future regression is loud, not silent.
+	if( !pGeometry ) {
+		static std::atomic<bool> warnedNullGeometryFallback{ false };
+		bool expected = false;
+		if( warnedNullGeometryFallback.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Object::UniformRandomPoint:: called on an object with no directly-owned "
+				"geometry (e.g. a csg_object) -- every known caller gates this away, so "
+				"reaching here means a caller is missing its null-geometry check.  "
+				"Returning a FABRICATED fallback point (object origin, +Y normal) rather "
+				"than crashing -- this is NOT a valid uniform surface sample; fix the "
+				"calling site's gate." );
+		}
+		if( point )  *point  = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );
+		if( normal ) *normal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxFinalTrans, Vector3( 0, 1, 0 ) ) );
+		if( coord )  *coord  = Point2( 0, 0 );
+		return;
+	}
+
 	pGeometry->UniformRandomPoint( point, normal, coord, prand );
 
 	if( point ) {
@@ -680,7 +772,39 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 
 Scalar Object::GetArea( ) const
 {
-	return pGeometry->GetArea();
+	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2): pGeometry is null for a
+	// CSGObject (its shape is synthesized from two operand objects rather
+	// than owned directly -- see CSGObject.h/.cpp, which overrides
+	// IntersectRay/getBoundingBox but NOT GetArea()).  Returns 0 -- an area
+	// of zero is the same "cannot be uniformly area-sampled" signal every
+	// caller already checks for CanBeAreaLight()==false: `area > 0` gates
+	// all of them, so 0 flows through as "not sampleable" without a
+	// division anywhere reading pGeometry again.
+	//
+	// P3 CORRECTION (fix round 3): "every known call site ALSO now
+	// null-checks GetGeometry() before calling this" OVERSTATED it -- the
+	// call sites split into two DIFFERENT safety arguments, not one:
+	//   (1) LOCAL CHECK immediately before the call: EmissionShaderOp.cpp,
+	//       PathTracingIntegrator.cpp, BDPTIntegrator.cpp, VCMIntegrator.cpp
+	//       (all fix-round-2), and SubSurfaceScatteringShaderOp.cpp /
+	//       DonnerJensenSkinSSSShaderOp.cpp (fix-round-1) -- each reads
+	//       GetGeometry() and gates on it right there.
+	//   (2) LUMINARIES-LIST MEMBERSHIP, not a local check: LightSampler.cpp
+	//       (4 call sites, `lumEntry.pLum->GetArea()`), PhotonTracer.h,
+	//       SpectralPhotonTracer.h, SMSPhotonMap.cpp -- none of these
+	//       re-check GetGeometry() at the call site; they are safe because
+	//       `pLum`/the luminary they iterate can ONLY be an object that
+	//       already passed LuminaryManager::AddToLuminaryList's null-
+	//       geometry gate to get onto the luminaries list in the first
+	//       place.  A null-geometry object never reaches these loops at
+	//       all -- the safety is upstream admission control, not a
+	//       per-call re-verification.
+	// This base-layer guard is what makes class (2) actually safe (absent
+	// it, membership alone wouldn't help if some OTHER path ever mutated
+	// or bypassed the luminaries list) and is belt-and-suspenders for
+	// class (1); it exists so a future caller that forgets its own check
+	// degrades to "zero area" instead of a null-deref.
+	return pGeometry ? pGeometry->GetArea() : Scalar( 0 );
 }
 
 void Object::Realize() const

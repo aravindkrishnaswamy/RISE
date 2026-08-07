@@ -92,6 +92,28 @@
 //        DYNAMIC reference (a timeline `element`, outside any declared
 //        Reference param) still targets the chunk emits NO invented
 //        issue, since the static reference graph cannot see it.
+//    E1  Post-arc enforcement: the LUMINAIRE_NULL_GEOMETRY Warning gets a
+//        CREATION-TIME BLOCK.  insert_chunk of an emissive-bound
+//        csg_object without `allow_non_sampling_emitter TRUE` is REFUSED
+//        (consequence + both escapes named, head unchanged); the SAME
+//        insert WITH the flag applies and Validate goes silent;
+//        propose_patch re-pointing an existing csg_object's `material` to
+//        an emitter is refused the same way; an insert_chunks batch with
+//        one offending + one clean element splits per-item (BEST-EFFORT);
+//        a scene FILE carrying the unacknowledged construct still only
+//        WARNS (R1/T6d's pre-existing contract, unchanged), and the
+//        acknowledged file-loaded construct is silent.  Fix rounds:
+//        editing a referenced MATERIAL's own emissive-capable param in
+//        place (never touching the csg_object) is refused too, naming
+//        the referencing csg; removing an acknowledgment RE-creates the
+//        construct and is refused; a proposal staged while innocent that
+//        becomes dangerous before it is approved is refused at RESOLVE
+//        time.  Round-2 fix: the material-side check is DELTA-based, not
+//        state-based -- a pre-existing unacknowledged construct a scene
+//        FILE already carries is Validate's job to keep Warning about, so
+//        an edit to that material UNRELATED to emission (e.g. alphax)
+//        still APPLIES; only an edit that CREATES or WORSENS the
+//        unacknowledged state is refused.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -101,6 +123,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -120,8 +143,18 @@
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/Interfaces/IGeometryManager.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -2582,6 +2615,506 @@ static void TestActionablePatchDiagnostics()
 }
 
 //----------------------------------------------------------------------
+// E1: post-arc enforcement (docs/agentic-redesign/75-expressive-surface-
+// arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking facts
+// act, a Warning gets skimmed): the LUMINAIRE_NULL_GEOMETRY Warning
+// (R1(a)-adjacent, T6d in AgentEvalCheckTest.cpp) is now paired with a
+// CREATION-TIME BLOCK.  A csg_object has no directly-owned geometry, so
+// an emissive material bound to it is never NEE-light-sampled -- glow-
+// only-on-direct-view.  insert_chunk / propose_patch REFUSE the edit that
+// would CREATE that binding unless the csg_object chunk carries
+// `allow_non_sampling_emitter TRUE`; a scene FILE loaded with the
+// unacknowledged construct still only WARNS (R1/T6d's PRE-EXISTING
+// contract, unchanged); the same flag silences that Warning too.
+//
+// Fix round (fresh review): THREE more ways to land the SAME construct --
+// (P1-1) editing the MATERIAL's own emissive-capable param in place while
+// a csg_object already references it (never touching the csg_object
+// chunk at all); (P1-2) removing `allow_non_sampling_emitter` from an
+// already-acknowledged emissive csg (a two-call bypass: insert
+// acknowledged, then patch the flag away); (P1-3) a proposal staged while
+// INNOCENT that becomes dangerous by the time it is APPROVED, because the
+// world moved underneath it while it sat in the queue.  (g)-(j) cover the
+// first two; (k) covers the third via SceneEditController's stage/
+// resolve seam.  The refusal wording (P2a fix) is the PRECISE, VERIFIED
+// claim ValidateText's Warning uses -- NEE light-sampling is where the
+// gap is; direct-view AND a BSDF-sampled hit both still contribute.
+//
+// Round-2 fix round: (g)'s material-side check was STATE-based (does the
+// candidate come back unacknowledged?), which refused ANY edit -- even
+// alphax/roughness, nothing to do with emission -- on a material a
+// PRE-EXISTING unacknowledged construct already references, forever,
+// once that construct existed.  (l) red-proves the DELTA-based
+// replacement: only an edit that CREATES or WORSENS the unacknowledged
+// state is refused; a pre-existing one (Validate's job) does not freeze
+// unrelated edits.
+//----------------------------------------------------------------------
+static const char* const kCsgReadyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+	// P1-1/P1-3 vehicle: a MATERIAL-category chunk with its OWN inline
+	// `emissive` param (default "none" -- non-emissive as authored here),
+	// distinct from mat_glow's separate-wrapper-chunk idiom above.  Not
+	// referenced by anything in the base fixture; each sub-test below
+	// binds it (or not) as its scenario needs.
+	"ggx_material\n{\n\tname mat_ggx\n\trd albedo\n\trs albedo\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+	"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n";
+
+static void TestNonSamplingEmitterGate()
+{
+	std::printf( "E1: non-sampling-emitter creation gate (insert/patch refuse; ack flag escapes)...\n" );
+
+	// (a) insert_chunk: a csg_object bound to the emissive material, no
+	// acknowledgement flag -> REFUSED, message names the PRECISE
+	// consequence (NEE light-sampling specifically -- P2a fix: NOT the
+	// overclaiming "will never illuminate" / "only... direct camera view"
+	// text an earlier round shipped) and BOTH escapes (real geometry, or
+	// the acknowledgement flag).  Head byte-identical, revision unmoved.
+	//
+	// (b) the SAME insert, WITH the flag -> applies; a subsequent Validate
+	// is SILENT (no LUMINAIRE_NULL_GEOMETRY at all -- an acknowledged
+	// choice must not nag).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1a.RISEscene" );
+		Job* pJob = LoadScene( kCsgReadyScene, tmp );
+		Check( pJob != nullptr, "E1(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentChunkResult r = sess->InsertChunk(
+			"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}" );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(a) inserting an emissive-bound csg_object WITHOUT the flag is REFUSED" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(a) message states the PRECISE consequence (NEE light-sampling specifically)" );
+		Check( r.message.find( "BSDF-sampled hit" ) != std::string::npos,
+		       "E1(a) message honestly names the paths that STILL contribute (P2a: not overclaiming total invisibility)" );
+		Check( r.message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+		       "E1(a) message states the ESCAPE (acknowledgement flag)" );
+		Check( r.message.find( "standard_object" ) != std::string::npos,
+		       "E1(a) message ALSO states the other fix (real-geometry object)" );
+		Check( sess->ReadDocument() == headBefore, "E1(a) the refusal leaves the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore, "E1(a) the refusal leaves the revision unmoved" );
+		std::printf( "  E1(a) message: %s\n", r.message.c_str() );
+
+		Agent::AgentChunkResult r2 = sess->InsertChunk(
+			"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+			"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}" );
+		Check( r2.applied && r2.status == "applied",
+		       "E1(b) the SAME insert WITH `allow_non_sampling_emitter TRUE` APPLIES" );
+		if( r2.applied ) {
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(b) validate is SILENT on the acknowledged construct -- no nag" );
+		}
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) propose_patch: an EXISTING csg_object (bound to a non-emissive
+	// material) has its `material` re-pointed to the emissive one WITHOUT
+	// the flag -> REFUSED.  P2b fix: pin the revision (not just the byte-
+	// identical document) before/after, matching E1(a)'s asymmetry.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1c.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_plain\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_plain";
+		p.kind   = "csg_object";
+		p.param  = "material";
+		p.value  = "mat_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(c) patching a csg_object's material to an emitter WITHOUT the flag is REFUSED" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(c) message states the precise consequence" );
+		Check( r.message.find( "BSDF-sampled hit" ) != std::string::npos,
+		       "E1(c) message honestly names the paths that still contribute" );
+		Check( r.message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+		       "E1(c) message states the escape" );
+		Check( sess->ReadDocument() == headBefore, "E1(c) the refusal leaves the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore, "E1(c) [P2b] the refusal leaves the revision unmoved" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) insert_chunks BATCH: one offending element (emissive csg_object,
+	// no flag) alongside one clean, unrelated element -> PER-ITEM split;
+	// the clean element still applies (BEST-EFFORT, same contract as IC2).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1d.RISEscene" );
+		Job* pJob = LoadScene( kCsgReadyScene, tmp );
+		Check( pJob != nullptr, "E1(d) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		std::vector<std::string> chunks;
+		chunks.push_back(
+			"csg_object\n{\n\tname csg_glow_batch\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n\tmaterial mat_glow\n}" );
+		chunks.push_back(
+			"sphere_geometry\n{\n\tname sph_clean\n\tradius 0.2\n}" );
+
+		const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+		Check( results.size() == 2, "E1(d) one result per input chunk" );
+		if( results.size() == 2 ) {
+			Check( !results[0].applied && results[0].status == "rejected",
+			       "E1(d) the offending element is REFUSED" );
+			Check( results[0].message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+			       "E1(d) the refusal names the escape" );
+			Check( results[1].applied && results[1].status == "applied",
+			       "E1(d) BEST-EFFORT: the unrelated clean element still applies" );
+		}
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "csg_glow_batch" ) == nullptr,
+		       "E1(d) the refused csg_object never reached the live managers" );
+		Check( pJob->GetGeometry( "sph_clean" ) != nullptr,
+		       "E1(d) the clean element DID reach the live managers" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) scene-FILE load of the UNACKNOWLEDGED construct -- unchanged
+	// behaviour: loads fine (the derive-side gate is agent-edit-only, the
+	// construct DERIVES legally), and Validate still WARNS (R1/T6d's
+	// pre-existing contract, untouched).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1e.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_glow\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(e) a scene FILE carrying the unacknowledged construct loads cleanly" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawWarning = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == Agent::AgentDiagnostic::Severity::Warning )
+					sawWarning = true;
+			Check( sawWarning, "E1(e) an unacknowledged file-loaded construct still WARNS (unchanged)" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (f) scene-FILE load of the ACKNOWLEDGED construct -- loads AND
+	// validate is silent (the flag suppresses the Warning too, not just
+	// the agent-edit gate).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1f.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(f) a scene FILE carrying the ACKNOWLEDGED construct loads cleanly" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(f) an acknowledged file-loaded construct is SILENT" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (g) [P1-1] MATERIAL-side creation: mat_ggx starts non-emissive and a
+	// csg_object (csg_ggx) already references it; patching mat_ggx's OWN
+	// `emissive` param (never touching csg_ggx at all) is REFUSED, and the
+	// message NAMES the referencing csg_object -- actionable from the
+	// material side, where the fix ("csg_ggx has no directly-owned
+	// geometry...") is not obvious from the material chunk alone.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1g.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ggx\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_ggx\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(g) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx";
+		p.kind   = "ggx_material";
+		p.param  = "emissive";
+		p.value  = "pnt_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(g) [P1-1] editing a MATERIAL's own emissive param while a csg references it is REFUSED" );
+		Check( r.message.find( "csg_ggx" ) != std::string::npos,
+		       "E1(g) message NAMES the referencing csg_object (actionable from the material side)" );
+		Check( r.message.find( "NOT act as an area light for next-event estimation" ) != std::string::npos,
+		       "E1(g) message states the precise consequence" );
+		Check( sess->ReadDocument() == headBefore, "E1(g) the refusal leaves the head byte-identical" );
+		std::printf( "  E1(g) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (h) [P1-1] the SAME material-side edit, but the referencing csg is
+	// ALREADY acknowledged -> APPLIES (the material-side gate is scoped to
+	// UNACKNOWLEDGED referencing csg_objects only).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1h.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ggx_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_ggx\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(h) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx";
+		p.kind   = "ggx_material";
+		p.param  = "emissive";
+		p.value  = "pnt_glow";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(h) [P1-1] the SAME material-side edit APPLIES when the referencing csg is already acknowledged" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (i) [P1-2] removing the acknowledgment from an ALREADY-emissive,
+	// already-acknowledged csg_object -> REFUSED (would RECREATE the
+	// construct -- the two-call bypass the fresh review found).
+	{
+		const std::string tmp = TempPath( "agentcrud_e1i.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(i) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// RED-PROVE the fixture: silent BEFORE the removal attempt (the
+		// acknowledgment is doing real work) -- else the refusal below
+		// would be trivially unfalsifiable.
+		{
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags ) if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawCode = true;
+			Check( !sawCode, "E1(i) RED-PROVE: the fixture starts silent (genuinely acknowledged)" );
+		}
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_ack";
+		p.kind   = "csg_object";
+		p.param  = "allow_non_sampling_emitter";
+		p.value  = "FALSE";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "E1(i) [P1-2] removing the acknowledgment from an emissive-bound csg is REFUSED" );
+		Check( r.message.find( "RECREATE" ) != std::string::npos,
+		       "E1(i) message frames this as RECREATING the already-refused construct" );
+		Check( r.message.find( "keep the" ) != std::string::npos,
+		       "E1(i) message's escape is 'keep the flag' (distinct framing from the 'add the flag' creation-arm message)" );
+		std::printf( "  E1(i) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (j) [P1-2 negation] removing the flag from a csg bound to a NON-
+	// emissive material APPLIES -- the flag alone is not load-bearing;
+	// only removing it FROM AN EMISSIVE BINDING is refused.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1j.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_vacuous_ack\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+		         "\tmaterial matte\n\tallow_non_sampling_emitter TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(j) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "csg_vacuous_ack";
+		p.kind   = "csg_object";
+		p.param  = "allow_non_sampling_emitter";
+		p.value  = "FALSE";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(j) [P1-2 negation] removing the flag from a csg bound to a NON-emissive material APPLIES" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (k) [P1-3] a proposal staged while INNOCENT becomes dangerous by the
+	// time it is APPROVED: External stages a csg_object material re-point
+	// while the target material is still non-emissive (stages cleanly);
+	// an Owner direct edit then makes that material emissive (applies
+	// cleanly -- nothing references it live yet, only the PENDING
+	// proposal would); approving the now-stale proposal must be REFUSED,
+	// not silently land the construct.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1k.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_stale\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(k) fixture loads" );
+		if( !pJob ) return;
+
+		TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+		c.Start();
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		Agent::AgentSetPatch stagePatch;
+		stagePatch.target = "csg_stale";
+		stagePatch.kind   = "csg_object";
+		stagePatch.param  = "material";
+		stagePatch.value  = "mat_ggx";
+		Agent::AgentPatchResult staged = ext->ProposePatch( stagePatch );
+		Check( staged.status == "staged",
+		       "E1(k) the re-point stages CLEANLY -- innocent at stage time (mat_ggx is not yet emissive)" );
+		std::uint64_t id = 0;
+		for( const auto& p : owner->ListProposals() ) if( p.status == "pending" ) id = p.id;
+		Check( id != 0, "E1(k) the proposal is pending" );
+
+		// The world moves: an OWNER direct edit makes mat_ggx emissive.
+		// No csg currently references mat_ggx yet -- csg_stale still
+		// points at `matte` LIVE; the re-point is only PENDING -- so this
+		// edit is not itself refused by the material-side gate.
+		Agent::AgentSetPatch makeEmissive;
+		makeEmissive.target = "mat_ggx";
+		makeEmissive.kind   = "ggx_material";
+		makeEmissive.param  = "emissive";
+		makeEmissive.value  = "pnt_glow";
+		Agent::AgentPatchResult em = owner->ProposePatch( makeEmissive );
+		Check( em.applied, "E1(k) the intervening edit (nobody references mat_ggx yet) applies cleanly" );
+
+		// Approve the now-dangerous stale proposal.
+		Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok, "E1(k) resolve runs (the id is found)" );
+		Check( rr.status == "rejected",
+		       "E1(k) RED-PROVE: the stale-but-now-dangerous approve is REFUSED at resolve time" );
+		Check( rr.message.find( "resolve refused" ) != std::string::npos,
+		       "E1(k) message carries the resolve-refusal marker" );
+		Check( rr.message.find( "csg_stale" ) != std::string::npos,
+		       "E1(k) message names the affected csg_object" );
+		std::printf( "  E1(k) message: %s\n", rr.message.c_str() );
+
+		// The live document is unchanged -- the stale re-point never
+		// landed (nothing else in this fixture ever writes this token).
+		const std::string liveDoc = owner->ReadDocument();
+		Check( liveDoc.find( "material mat_ggx" ) == std::string::npos,
+		       "E1(k) the live document NEVER received the stale re-point" );
+
+		c.Stop();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (l) [round-2 fix] DELTA, not state, in Arm C: a scene FILE (loaded,
+	// not agent-edited) already carries an UNACKNOWLEDGED emissive csg --
+	// `mat_ggx_glow` is emissive from the moment it's authored, so
+	// `csg_ggx_preexisting` is ALREADY the refused construct before any
+	// agent edit runs (Validate is already Warning about it, exactly like
+	// E1(e)).  Patching an UNRELATED param on that SAME material
+	// (`alphax` -- nothing to do with emission) must APPLY: the edit did
+	// not create or worsen the construct, so Arm C's state-based
+	// predecessor (which the round-2 review found: ANY edit to a
+	// referenced material was refused, forever, once a csg went
+	// unacknowledged) would wrongly freeze it.  The Warning is Validate's
+	// job to keep nagging about, not this gate's job to block on.
+	{
+		const std::string tmp = TempPath( "agentcrud_e1l.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "ggx_material\n{\n\tname mat_ggx_glow\n\trd albedo\n\trs albedo\n\talphax 0.2\n\talphay 0.2\n"
+		         "\tior 1.5\n\textinction 0.0\n\temissive pnt_glow\n}\n";
+		scene += "csg_object\n{\n\tname csg_ggx_preexisting\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial mat_ggx_glow\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "E1(l) fixture (pre-existing unacknowledged emissive csg) loads cleanly" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// RED-PROVE the fixture: the construct is ALREADY there, unrelated
+		// to anything this test will do -- Validate Warns before any edit.
+		auto sawLuminaireWarning = [&]() {
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "LUMINAIRE_NULL_GEOMETRY" && d.severity == Agent::AgentDiagnostic::Severity::Warning )
+					return true;
+			return false;
+		};
+		Check( sawLuminaireWarning(), "E1(l) RED-PROVE: the fixture is ALREADY unacknowledged+emissive before any edit" );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_ggx_glow";
+		p.kind   = "ggx_material";
+		p.param  = "alphax";
+		p.value  = "0.4";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied",
+		       "E1(l) [round-2 fix] an UNRELATED param edit on the referenced material APPLIES -- "
+		       "it neither created nor worsened the pre-existing construct" );
+		Check( sawLuminaireWarning(),
+		       "E1(l) the Warning is STILL present after the edit -- unchanged posture, "
+		       "Validate keeps nagging, the gate did not silently \"fix\" anything" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
 // R3: actionable REJECTED remove_chunk diagnostics -- the remove_chunk
 // sibling of R1/R2. The reference graph's reverse adjacency NAMES the
 // blocking referrer(s) instead of the engine's own hedged "likely still
@@ -3189,6 +3722,1096 @@ static void TestProposePatchesConflictIsBatchFatal()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// MS1-MS6: Arc-75 slice S2.1 -- insert_material_scaffold.
+//----------------------------------------------------------------------
+
+//! Every generated chunk is named tmpl_<name>_<role>; helper for the
+//! per-family expected-shape table below.
+static std::string TmplName( const std::string& name, const char* role )
+{
+	return "tmpl_" + name + "_" + role;
+}
+
+//! Arc-75 S2.1 fix-round P2a: PIN the tool against the "resolves to a
+//! painter but is actually spatially CONSTANT" decoy landmine (a real
+//! bug class -- the 3D-solid noise painters dual-register into the
+//! Function2D manager and PARSE/RENDER fine when wrapped in
+//! scalar_painter{function2d}, but silently evaluate at a fixed point
+//! every time; see ScaffoldExprFunction2DText's doc in AgentSession.cpp).
+//! Render-pixel non-black checks are VACUOUS here (Monte Carlo noise
+//! varies every pixel regardless of whether the material itself is
+//! spatially varying) -- so these two helpers EVALUATE the resolved
+//! live painter DIRECTLY, through the SAME accessor the renderer uses
+//! (IPainter::GetColor / IScalarPainter::GetValuesAt), at several
+//! distinct synthetic points, and report the max spread observed.  A
+//! genuinely-varying painter spreads well past any honest epsilon; a
+//! spatially-constant one (the decoy) returns EXACTLY the same value at
+//! every point, spread == 0.0.
+//!
+//! Colour-pipe (world-space 3D noise painters): distinct `ptIntersection`
+//! points, mirroring how Perlin3DPainter::GetColor etc. actually sample.
+static double ColorPainterMaxSpread( IPainterManager* mgr, const std::string& name )
+{
+	IPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
+	if( !p ) return -1.0;   // sentinel: not found in this manager
+	double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+	for( int i = 0; i < 8; ++i ) {
+		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+		ri.bHit = true;
+		ri.ptIntersection = Point3( i * 0.37, i * 0.71 - 1.3, i * 1.9 + 0.5 );
+		const RISEPel c = p->GetColor( ri );
+		for( int ch = 0; ch < 3; ++ch ) { lo[ch] = std::min( lo[ch], c[ch] ); hi[ch] = std::max( hi[ch], c[ch] ); }
+	}
+	double spread = 0.0;
+	for( int ch = 0; ch < 3; ++ch ) spread = std::max( spread, hi[ch] - lo[ch] );
+	return spread;
+}
+
+//! Scalar-pipe (scalar_painter{function2d expression_function2d}): distinct
+//! `ptCoord` (u,v) points -- mirroring Function2DScalarPainter::GetValuesAt,
+//! which calls `pFunc->Evaluate(ri.ptCoord.x, ri.ptCoord.y)` for real.
+static double ScalarPainterMaxSpread( IScalarPainterManager* mgr, const std::string& name )
+{
+	IScalarPainter* p = mgr ? mgr->GetItem( name.c_str() ) : nullptr;
+	if( !p ) return -1.0;   // sentinel: not found in this manager
+	double lo = 1e30, hi = -1e30;
+	for( int i = 0; i < 8; ++i ) {
+		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+		ri.bHit = true;
+		ri.ptCoord = Point2( ( i % 8 ) / 8.0, ( ( i * 3 ) % 8 ) / 8.0 );
+		const double v = p->GetValuesAt( ri ).v[0];
+		lo = std::min( lo, v ); hi = std::max( hi, v );
+	}
+	return hi - lo;
+}
+
+//! MS1: each of the 5 families, at a FIXED name -- the expansion
+//! applies, the document contains the expected chunk set, the
+//! microsurface slot resolves to a real painter (checked via the
+//! DOCUMENT and the LIVE managers, not the generator string), EVERY
+//! bound slot is a GENUINELY spatially-varying painter (evaluated
+//! directly at several points through the renderer's own accessor --
+//! see ColorPainterMaxSpread/ScalarPainterMaxSpread's doc for why this,
+//! not a render-pixel check, is what actually pins the decoy landmine),
+//! and the scene derive+renders clean and non-black once an object is
+//! bound to the new material.
+static void TestMaterialScaffoldFamilies()
+{
+	std::printf( "MS1: insert_material_scaffold -- all 5 families, applies + binds + renders...\n" );
+
+	struct FamilyCase
+	{
+		const char* family;
+		const char* materialKind;
+		std::size_t expectedChunkCount;
+		// Honest-against-amplitude epsilons for the spread checks below
+		// (see each family's own comment in AgentSession.cpp's
+		// BuildXxx functions for the designed bias/scale ranges this is
+		// derived from) -- deliberately well BELOW the smallest
+		// expected spread so the check has real headroom, and well
+		// ABOVE 0.0 so the decoy (spread identically 0.0) still fails
+		// it by a wide margin.
+		double colorEps;    // for boundSlots resolved in the colour-pipe manager
+		double scalarEps;   // for boundSlots resolved in the scalar-pipe manager
+	};
+	const FamilyCase cases[] = {
+		// weathered_wood: colour-pipe only (roughness+base_color share
+		// the grain painter); dark/light tone endpoints differ by a
+		// 0.35-0.60 factor, easily > 0.01 spread.
+		{ "weathered_wood",  "pbr_metallic_roughness_material", 4, 0.01,  0.0   },
+		// rough_stone: rd (colour, worley pebble) + facets (scalar,
+		// bias 0.04-0.09 + scale 0.05-0.35 at wear=0.6 -> span ~0.23).
+		{ "rough_stone",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// brushed_metal: alphax/alphay (scalar only) -- the NARROWEST
+		// amplitude family by design (alphax span ~0.02 at wear=0.6).
+		{ "brushed_metal",   "ward_anisotropic_material",       5, 0.0,   0.002 },
+		// aged_bronze: rd (colour, reaction-diffusion patina) + facets
+		// (scalar, span ~0.15 at wear=0.6).
+		{ "aged_bronze",     "cooktorrance_material",           5, 0.01,  0.01  },
+		// glazed_ceramic: alphax/alphay (scalar only) -- DELIBERATELY
+		// "low-alpha with SUBTLE scalar variation" (span ~0.014 at
+		// wear=0.6) -- the tightest epsilon of the five, honestly so.
+		{ "glazed_ceramic",  "ggx_material",                     5, 0.0,   0.001 },
+	};
+
+	for( const FamilyCase& fc : cases ) {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_ms1_" ) + fc.family + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( "MS1(" ) + fc.family + ") fixture loads" );
+		if( !pJob ) continue;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+			fc.family, "deskA", "0.55 0.42 0.30", 0.6, 1.5, &v0 );
+
+		Check( sr.ok, std::string( "MS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
+		Check( sr.chunkResults.size() == fc.expectedChunkCount,
+		       std::string( "MS1(" ) + fc.family + ") generated the expected chunk count" );
+		Check( sr.materialKind == fc.materialKind,
+		       std::string( "MS1(" ) + fc.family + ") material chunk kind matches the family design" );
+		Check( sr.materialName == TmplName( "deskA", "mat" ),
+		       std::string( "MS1(" ) + fc.family + ") material chunk is named tmpl_deskA_mat" );
+		Check( !sr.boundSlots.empty(),
+		       std::string( "MS1(" ) + fc.family + ") at least one microsurface slot is bound (the tool's reason to exist)" );
+
+		bool allApplied = true;
+		for( const Agent::AgentChunkResult& cr : sr.chunkResults ) if( !cr.applied ) allApplied = false;
+		Check( allApplied, std::string( "MS1(" ) + fc.family + ") every generated chunk applied" );
+
+		// The microsurface slot resolves to a painter -- via the DOCUMENT
+		// (the material's own chunk literally names the bound painter) AND
+		// via the LIVE MANAGERS (Job::Add*Material only succeeds, and the
+		// chunk only comes back applied==true, when every referenced
+		// painter/scalar_painter name actually resolved -- an unresolved
+		// slot would have rejected the material chunk).
+		const std::string doc = sess->ReadDocument();
+		for( const auto& kv : sr.boundSlots ) {
+			Check( doc.find( kv.first + " " + kv.second ) != std::string::npos,
+			       std::string( "MS1(" ) + fc.family + ") document binds `" + kv.first + "` to `" + kv.second + "`" );
+		}
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( sr.materialName.c_str() ) != nullptr,
+		       std::string( "MS1(" ) + fc.family + ") the live material manager resolved the whole graph" );
+
+		// P2a: EVERY bound slot is a GENUINELY spatially-varying painter,
+		// not just a name that happens to resolve.  Try the scalar-pipe
+		// manager first (scalar_painter chunks register ONLY there, never
+		// dual-registered), then the colour-pipe manager -- exactly one
+		// must resolve (a boundSlot painter that resolves in NEITHER, or a
+		// spread <= its family's honest epsilon, both fail loudly).
+		for( const auto& kv : sr.boundSlots ) {
+			IScalarPainter* asScalar = pJob->GetScalarPainters() ? pJob->GetScalarPainters()->GetItem( kv.second.c_str() ) : nullptr;
+			if( asScalar ) {
+				const double spread = ScalarPainterMaxSpread( pJob->GetScalarPainters(), kv.second );
+				Check( spread > fc.scalarEps,
+				       std::string( "MS1(" ) + fc.family + ") scalar slot `" + kv.first + "` -> `" + kv.second +
+				       "` is GENUINELY spatially varying (spread " + std::to_string( spread ) +
+				       " > epsilon " + std::to_string( fc.scalarEps ) + ", evaluated directly via IScalarPainter::GetValuesAt "
+				       "at distinct UVs -- NOT a render-pixel check)" );
+				continue;
+			}
+			IPainter* asColor = pJob->GetPainters() ? pJob->GetPainters()->GetItem( kv.second.c_str() ) : nullptr;
+			Check( asColor != nullptr,
+			       std::string( "MS1(" ) + fc.family + ") bound painter `" + kv.second +
+			       "` resolves in EITHER the scalar or colour painter manager" );
+			if( asColor ) {
+				const double spread = ColorPainterMaxSpread( pJob->GetPainters(), kv.second );
+				Check( spread > fc.colorEps,
+				       std::string( "MS1(" ) + fc.family + ") colour slot `" + kv.first + "` -> `" + kv.second +
+				       "` is GENUINELY spatially varying (spread " + std::to_string( spread ) +
+				       " > epsilon " + std::to_string( fc.colorEps ) + ", evaluated directly via IPainter::GetColor "
+				       "at distinct world points -- NOT a render-pixel check)" );
+			}
+		}
+
+		// Bind an object to the new material and render a small non-black
+		// check -- "derive+render clean" per the family's own binding, not
+		// a hand-typed sanity material.
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "sphere_geometry\n{\nname sph_" + std::string( fc.family ) + "\nradius 0.5\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_" + std::string( fc.family ) +
+			"\ngeometry sph_" + fc.family + "\nmaterial " + sr.materialName + "\nposition 1.6 0 0\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		Check( objResults.size() == 2 && objResults[0].applied && objResults[1].applied,
+		       std::string( "MS1(" ) + fc.family + ") the follow-up object binding the scaffold material applied" );
+
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, std::string( "MS1(" ) + fc.family + ") the scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       std::string( "MS1(" ) + fc.family + ") the render is non-black" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! Extract the value on the FIRST line starting with `param ` that
+//! appears AFTER chunk `chunkName`'s own `name <chunkName>` line --
+//! good enough for these single-chunk-per-name fixtures (no nested
+//! braces to worry about).
+static std::string ExtractParamAfter( const std::string& doc, const std::string& chunkName, const std::string& param )
+{
+	const std::string nameMarker = "name " + chunkName + "\n";
+	const std::size_t namePos = doc.find( nameMarker );
+	if( namePos == std::string::npos ) return std::string();
+	const std::string paramMarker = "\n" + param + " ";
+	const std::size_t paramPos = doc.find( paramMarker, namePos );
+	if( paramPos == std::string::npos ) return std::string();
+	const std::size_t valStart = paramPos + paramMarker.size();
+	const std::size_t valEnd = doc.find( '\n', valStart );
+	return doc.substr( valStart, valEnd - valStart );
+}
+
+//! MS2: determinism -- the SAME name, in TWO FRESH documents, produces
+//! BYTE-IDENTICAL generated chunk text (no RNG, no clock); a DIFFERENT
+//! name visibly differs in its jittered constants (not just the renamed
+//! chunk tokens).
+static void TestMaterialScaffoldDeterminism()
+{
+	std::printf( "MS2: insert_material_scaffold -- determinism (same name twice byte-identical; different name differs)...\n" );
+
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_ms2_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+			"weathered_wood", name, "0.5 0.4 0.3", 0.5, 1.0 );
+		Check( sr.ok, "MS2 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "scafA" );
+	const std::string docA2 = expandFresh( "scafA" );
+	Check( !docA1.empty() && !docA2.empty(), "MS2 both `scafA` fixtures produced a document" );
+	Check( docA1 == docA2,
+	       "MS2 SAME name, two FRESH documents -> BYTE-IDENTICAL generated chunk text (deterministic, no RNG/clock)" );
+
+	const std::string docB = expandFresh( "scafB" );
+	Check( !docB.empty(), "MS2 `scafB` fixture produced a document" );
+	Check( docA1 != docB, "MS2 a DIFFERENT name produces a different document (trivially true from the renamed chunks alone)" );
+
+	// The STRONGER claim: the JITTERED NUMERIC CONSTANTS differ, not just
+	// the renamed chunk tokens -- extract the grain painter's own
+	// `persistence` value for each name and require them to differ.
+	const std::string persA = ExtractParamAfter( docA1, TmplName( "scafA", "grain" ), "persistence" );
+	const std::string persB = ExtractParamAfter( docB,  TmplName( "scafB", "grain" ), "persistence" );
+	Check( !persA.empty() && !persB.empty(), "MS2 extracted a `persistence` value from both fixtures' grain painter" );
+	Check( persA != persB,
+	       "MS2 a DIFFERENT name jitters a DIFFERENT `persistence` value (the internal constants really do vary with `name`, not just the labels)" );
+}
+
+//! MS3: each of the 5 required params, omitted in turn, is a BLOCKING
+//! error naming the missing param -- driven through the REAL wire
+//! (AgentRpcDispatcher::HandleLine), mirroring IC3's style.
+static void TestMaterialScaffoldMissingParams()
+{
+	std::printf( "MS3: insert_material_scaffold -- each missing required param -> blocking -32602...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"name\":\"x1\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5,\"scale\":1.0}", "family" },
+		{ "2", "{\"family\":\"weathered_wood\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5,\"scale\":1.0}", "name" },
+		{ "3", "{\"family\":\"weathered_wood\",\"name\":\"x3\",\"wear\":0.5,\"scale\":1.0}", "tone" },
+		{ "4", "{\"family\":\"weathered_wood\",\"name\":\"x4\",\"tone\":\"0.5 0.5 0.5\",\"scale\":1.0}", "wear" },
+		{ "5", "{\"family\":\"weathered_wood\",\"name\":\"x5\",\"tone\":\"0.5 0.5 0.5\",\"wear\":0.5}", "scale" },
+	};
+	int id = 10;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_material_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "MS3(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "MS3(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "MS3 none of the 5 missing-param refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS4: an unrecognized `family` is refused with a message listing the
+//! valid families -- document unchanged.
+static void TestMaterialScaffoldBadFamily()
+{
+	std::printf( "MS4: insert_material_scaffold -- unknown family -> error listing valid families...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"rusty_chrome", "x", "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( !sr.ok, "MS4 an unknown family refuses the call (ok==false)" );
+	Check( sr.chunkResults.empty(), "MS4 no chunks were generated for an unknown family" );
+	const char* families[] = { "weathered_wood", "rough_stone", "brushed_metal", "aged_bronze", "glazed_ceramic" };
+	for( const char* f : families ) {
+		Check( sr.message.find( f ) != std::string::npos,
+		       std::string( "MS4 the error message lists valid family `" ) + f + "`" );
+	}
+	Check( sess->ReadDocument() == headBefore, "MS4 the refusal mutated nothing" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS4b (fix-round P3): `name` past the sane length cap (kScaffoldMaxNameLength
+//! == 64 in AgentSession.cpp) is refused, same as any other invalid `name`.
+static void TestMaterialScaffoldNameLengthCap()
+{
+	std::printf( "MS4b: insert_material_scaffold -- `name` past the length cap is refused...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms4b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS4b fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string tooLongName( 65, 'a' );   // one past the 64-char cap
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"weathered_wood", tooLongName, "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( !sr.ok, "MS4b a 65-char `name` (one past the cap) is refused" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS5: a name collision -- a family/name expanded once, then the SAME
+//! family+name expanded again -- refuses the WHOLE second call cleanly
+//! (document unchanged), rather than landing a partial second graph.
+static void TestMaterialScaffoldNameCollision()
+{
+	std::printf( "MS5: insert_material_scaffold -- name collision -> clean refusal, document unchanged...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS5 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const Agent::AgentSession::AgentScaffoldResult sr1 = sess->InsertMaterialScaffold(
+		"rough_stone", "dup1", "0.5 0.5 0.5", 0.5, 1.0 );
+	Check( sr1.ok && !sr1.chunkResults.empty() && sr1.chunkResults.back().applied,
+	       "MS5 the FIRST expansion under this name applies cleanly" );
+
+	const std::string headAfterFirst = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+	// A SECOND expansion, same family AND name -- every generated chunk
+	// name collides with the first expansion's.
+	const Agent::AgentSession::AgentScaffoldResult sr2 = sess->InsertMaterialScaffold(
+		"rough_stone", "dup1", "0.9 0.1 0.1", 0.9, 2.0 );
+	Check( !sr2.ok, "MS5 the SECOND expansion (same family+name) is refused (ok==false)" );
+	Check( sr2.chunkResults.empty(), "MS5 the refused expansion generated NO chunk results (refused before InsertChunks ran)" );
+	Check( sr2.message.find( "dup1" ) != std::string::npos, "MS5 the refusal message names the colliding `name`" );
+
+	Check( sess->ReadDocument() == headAfterFirst, "MS5 the document is BYTE-IDENTICAL to before the collision (no partial graph landed)" );
+	Check( sess->HeadVersion() == vAfterFirst, "MS5 the head revision did not move" );
+
+	// A collision against a DIFFERENT family sharing the same `name` also
+	// refuses cleanly (rough_stone and aged_bronze both emit tmpl_<name>_tone
+	// and tmpl_<name>_mat).
+	const Agent::AgentSession::AgentScaffoldResult sr3 = sess->InsertMaterialScaffold(
+		"aged_bronze", "dup1", "0.5 0.5 0.3", 0.4, 1.0 );
+	Check( !sr3.ok, "MS5 a collision against a DIFFERENT family sharing the same `name` is also refused" );
+	Check( sess->ReadDocument() == headAfterFirst, "MS5 that cross-family collision ALSO left the document byte-identical" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! MS6: under External authority with a live controller attached (the
+//! same Secure-MCP staging posture insert_chunk/insert_chunks use), the
+//! expansion STAGES proposals rather than committing -- every generated
+//! chunk comes back status=="staged", applied==false, and the document
+//! is untouched until an Owner resolves them.
+static void TestMaterialScaffoldProposalMode()
+{
+	std::printf( "MS6: insert_material_scaffold -- External authority STAGES, does not commit...\n" );
+	const std::string tmp = TempPath( "agentcrud_ms6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "MS6 fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+	sess->AttachController( &c );
+	Check( sess->Authority() == Agent::AgentAuthority::External, "MS6 session reports External authority" );
+
+	const std::string headBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentScaffoldResult sr = sess->InsertMaterialScaffold(
+		"glazed_ceramic", "extA", "0.8 0.8 0.75", 0.3, 1.0 );
+
+	Check( sr.ok, "MS6 the call itself is well-formed under External authority (ok==true -- generation + collision-precheck succeeded)" );
+	Check( !sr.chunkResults.empty(), "MS6 the expansion produced per-chunk results" );
+	bool allStaged = true;
+	for( const Agent::AgentChunkResult& cr : sr.chunkResults ) {
+		if( cr.applied || cr.status != "staged" ) allStaged = false;
+	}
+	Check( allStaged, "MS6 EVERY generated chunk is staged (applied==false, status==\"staged\"), none committed directly" );
+	Check( sess->ReadDocument() == headBefore, "MS6 the document is UNCHANGED -- nothing committed, only proposals queued" );
+
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// GS1-GS6: Arc-75 slice S3b -- insert_geometry_scaffold.  The geometry
+// sibling of MS1-MS6 above; same fixture/helper conventions
+// (TempPath/LoadScene/TmplName reused verbatim).
+//----------------------------------------------------------------------
+
+//! Local-space bbox extents (width,height,depth) for a named geometry
+//! chunk, resolved through the LIVE geometry manager -- exactly what
+//! every spatial-effect assertion below needs: the scaffold's
+//! `size`/`aspect` params are baked into the chunk's own authored
+//! numbers, not into any `standard_object` binding transform, so no
+//! object needs to exist for this to be meaningful.
+static bool GeometryBBoxExtents( Job* pJob, const std::string& name, double& ex, double& ey, double& ez )
+{
+	IGeometry* g = ( pJob && pJob->GetGeometries() ) ? pJob->GetGeometries()->GetItem( name.c_str() ) : nullptr;
+	if( !g ) return false;
+	// displaced_geometry defers its tessellation bake to Realize() (normally
+	// called from RayCaster::AttachScene at render time) -- an un-rendered
+	// scene's DisplacedGeometry has a null internal mesh and reports a
+	// degenerate (0,0,0) bbox until baked.  Realize() is idempotent/no-op
+	// for every other geometry kind, so calling it unconditionally here is
+	// always safe.
+	g->Realize();
+	const BoundingBox bb = g->GenerateBoundingBox();
+	ex = bb.ur.x - bb.ll.x;
+	ey = bb.ur.y - bb.ll.y;
+	ez = bb.ur.z - bb.ll.z;
+	return std::isfinite( ex ) && std::isfinite( ey ) && std::isfinite( ez );
+}
+
+//! P2a fix-round: the Nth (0-indexed) repeatable `part` line belonging to
+//! `sdf_geometry` chunk `chunkName` -- text found after that chunk's own
+//! "name <chunkName>" line, one `part ` line per iteration, stopping at
+//! `maxsteps` or the closing brace.  Returns everything AFTER the "part "
+//! keyword (the `<prim> <op> <k> ...` fields); empty on any lookup miss.
+static std::string ExtractNthPartLine( const std::string& doc, const std::string& chunkName, std::size_t n )
+{
+	const std::string nameMarker = "name " + chunkName + "\n";
+	std::size_t pos = doc.find( nameMarker );
+	if( pos == std::string::npos ) return std::string();
+	pos += nameMarker.size();
+	std::size_t found = 0;
+	while( pos < doc.size() ) {
+		std::size_t lineEnd = doc.find( '\n', pos );
+		if( lineEnd == std::string::npos ) lineEnd = doc.size();
+		const std::string line = doc.substr( pos, lineEnd - pos );
+		if( line.rfind( "part ", 0 ) == 0 ) {
+			if( found == n ) return line.substr( 5 );
+			++found;
+		} else if( line == "}" || line.rfind( "maxsteps", 0 ) == 0 ) {
+			break;
+		}
+		pos = ( lineEnd >= doc.size() ) ? doc.size() : lineEnd + 1;
+	}
+	return std::string();
+}
+
+//! P2a fix-round: the `idx`-th (0-indexed) whitespace-separated token of
+//! `line` -- used to pull the `k` field (index 2: `<prim> <op> <k> ...`)
+//! out of one ExtractNthPartLine result without pulling in <sstream> for
+//! a single-purpose tokenizer.
+static std::string NthWhitespaceToken( const std::string& line, std::size_t idx )
+{
+	std::size_t pos = 0;
+	for( std::size_t i = 0; ; ++i ) {
+		while( pos < line.size() && std::isspace( static_cast<unsigned char>( line[pos] ) ) ) ++pos;
+		if( pos >= line.size() ) return std::string();
+		const std::size_t start = pos;
+		while( pos < line.size() && !std::isspace( static_cast<unsigned char>( line[pos] ) ) ) ++pos;
+		if( i == idx ) return line.substr( start, pos - start );
+	}
+}
+
+//! Per-pixel luma decode of a rendered PNG, through RISE's OWN PNGReader
+//! (the same decode idiom AgentObjectMapTest.cpp's DecodePng uses) --
+//! needed for GS1b's flat-vs-bumpy comparison, which needs the SPREAD of
+//! shading across the image, not just its mean (meanR/G/B alone cannot
+//! tell "uniformly lit flat face" apart from "genuinely varying bumpy
+//! face" when both variants sit in the same base scene under the same
+//! light).
+struct DecodedLuma
+{
+	unsigned int        w = 0, h = 0;
+	std::vector<double> luma;   // row-major, linear
+};
+
+static bool DecodeRenderLuma( const std::vector<unsigned char>& png, DecodedLuma& out )
+{
+	if( png.empty() ) return false;
+	Implementation::MemoryBuffer* buf = new Implementation::MemoryBuffer(
+		const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+		(unsigned int)png.size(), /*bTakeOwnership*/false );
+	IRasterImageReader* reader = nullptr;
+	if( !RISE_API_CreatePNGReader( &reader, *buf, eColorSpace_sRGB ) || !reader ) {
+		safe_release( buf );
+		return false;
+	}
+	unsigned int w = 0, h = 0;
+	if( !reader->BeginRead( w, h ) ) { safe_release( reader ); safe_release( buf ); return false; }
+	out.w = w; out.h = h;
+	out.luma.resize( (std::size_t)w * h );
+	for( unsigned int y = 0; y < h; ++y ) {
+		for( unsigned int x = 0; x < w; ++x ) {
+			RISEColor c;
+			reader->ReadColor( c, x, y );
+			out.luma[ (std::size_t)y * w + x ] = 0.2126 * c.base.r + 0.7152 * c.base.g + 0.0722 * c.base.b;
+		}
+	}
+	reader->EndRead();
+	safe_release( reader );
+	safe_release( buf );
+	return true;
+}
+
+static double LumaStdDev( const DecodedLuma& d )
+{
+	if( d.luma.empty() ) return 0.0;
+	double mean = 0.0;
+	for( double v : d.luma ) mean += v;
+	mean /= static_cast<double>( d.luma.size() );
+	double var = 0.0;
+	for( double v : d.luma ) var += ( v - mean ) * ( v - mean );
+	var /= static_cast<double>( d.luma.size() );
+	return std::sqrt( var );
+}
+
+//! A tiny dedicated scene (no pre-existing objects/lights beyond camera +
+//! one directional key) for GS1b's flat-vs-bumpy comparison.  Camera
+//! looks STRAIGHT DOWN (-Y) from close range at a NARROW fov chosen so
+//! the frame's covered footprint (2 * camHeight * tan(fov/2) ~= 1.07) is
+//! well INSIDE the box's 1.2x1.2 footprint (size=1.2, aspect=1.0 in the
+//! call below) -- every pixel is the object's top face, no background,
+//! no silhouette/side-face edges.  That matters because a 3/4 view's
+//! edge pixels (object-vs-background, top-vs-side-face) contribute
+//! stddev unrelated to bumpiness, common to BOTH variants and large
+//! enough to swamp the genuinely-bumpy signal at this render's modest
+//! sample count -- this framing removes that confound entirely rather
+//! than trying to out-margin it.
+static const char* const kGeoRenderScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 2.0 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tfov 30.0\n}\n\n"
+	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.3 0.6 0.7\n}\n";
+
+//! GS1: each of the 4 families, at a FIXED name -- the expansion
+//! applies, the document contains the expected chunk set, the ONE
+//! geometry chunk resolves through the live geometry manager, its bbox
+//! has genuinely nonzero extent on all three axes, and the scene
+//! derive+renders clean once an object (+ a plain material) is bound to
+//! the new geometry.
+static void TestGeometryScaffoldFamilies()
+{
+	std::printf( "GS1: insert_geometry_scaffold -- all 4 families, applies + realizes + renders...\n" );
+
+	struct FamilyCase
+	{
+		const char* family;
+		const char* geometryKind;
+		const char* roleSuffix;      // tmpl_<name>_<roleSuffix> is the hero geometry chunk
+		std::size_t expectedChunkCount;
+	};
+	const FamilyCase cases[] = {
+		{ "displaced_slab", "displaced_geometry", "disp",   3 },
+		{ "sweep_rail",     "sweep_geometry",      "rail",   1 },
+		{ "blended_vessel", "sdf_geometry",        "vessel", 1 },
+		{ "sdf_column",     "sdf_geometry",        "col",    1 },
+	};
+
+	for( const FamilyCase& fc : cases ) {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_gs1_" ) + fc.family + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( "GS1(" ) + fc.family + ") fixture loads" );
+		if( !pJob ) continue;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
+			fc.family, "geoA", 1.4, 0.6, 1.3, &v0 );
+
+		Check( sr.ok, std::string( "GS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
+		Check( sr.chunkResults.size() == fc.expectedChunkCount,
+		       std::string( "GS1(" ) + fc.family + ") generated the expected chunk count" );
+		Check( sr.geometryKind == fc.geometryKind,
+		       std::string( "GS1(" ) + fc.family + ") geometry chunk kind matches the family design" );
+		Check( sr.geometryName == TmplName( "geoA", fc.roleSuffix ),
+		       std::string( "GS1(" ) + fc.family + ") geometry chunk is named tmpl_geoA_" + fc.roleSuffix );
+
+		bool allApplied = true;
+		for( const Agent::AgentChunkResult& cr : sr.chunkResults ) if( !cr.applied ) allApplied = false;
+		Check( allApplied, std::string( "GS1(" ) + fc.family + ") every generated chunk applied" );
+
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) != nullptr,
+		       std::string( "GS1(" ) + fc.family + ") the live geometry manager resolved the graph" );
+
+		double ex = 0.0, ey = 0.0, ez = 0.0;
+		Check( GeometryBBoxExtents( pJob, sr.geometryName, ex, ey, ez ),
+		       std::string( "GS1(" ) + fc.family + ") geometry bbox is queryable" );
+		Check( ex > 0.0 && ey > 0.0 && ez > 0.0,
+		       std::string( "GS1(" ) + fc.family + ") geometry bbox has NONZERO extent on all three axes (" +
+		       std::to_string( ex ) + ", " + std::to_string( ey ) + ", " + std::to_string( ez ) + ")" );
+
+		// Bind an object (+ a plain hand-authored material -- this tool
+		// never emits one) to the new geometry and render a small
+		// non-black check: "derive+render clean" per the family's own
+		// binding, exactly MS1's rigor level for the material scaffold.
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "uniformcolor_painter\n{\nname pnt_" + std::string( fc.family ) + "\ncolor 0.6 0.5 0.4\n}" );
+		objChunks.push_back( "lambertian_material\n{\nname mat_" + std::string( fc.family ) +
+			"\nreflectance pnt_" + fc.family + "\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_" + std::string( fc.family ) +
+			"\ngeometry " + sr.geometryName + "\nmaterial mat_" + fc.family + "\nposition 0 0 0\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		bool objAllApplied = true;
+		for( const Agent::AgentChunkResult& r : objResults ) if( !r.applied ) objAllApplied = false;
+		Check( objAllApplied,
+		       std::string( "GS1(" ) + fc.family + ") the follow-up material+object binding the scaffold geometry applied" );
+
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, std::string( "GS1(" ) + fc.family + ") the scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       std::string( "GS1(" ) + fc.family + ") the render is non-black" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! GS1b: the SPATIAL-EFFECT assertion for displaced_slab -- render the
+//! flat base box and the displaced geometry (SAME expansion, SAME
+//! material, SAME camera/light, only the bound geometry chunk differs)
+//! and require the displaced render's per-pixel luma STDDEV to be
+//! markedly higher than the flat render's.  A flat box under a single
+//! directional light has a near-uniform top/side shading (its stddev is
+//! essentially Monte Carlo noise); a genuinely bumpy surface has real
+//! per-pixel shading variation from its varying normals.  This is a
+//! render-based check (unlike GS1's/GS1c's direct bbox queries)
+//! precisely because "genuinely bumpy" is a SHADING claim, not a bbox
+//! claim -- displacement barely moves the silhouette/bbox at these
+//! amplitudes, so a bbox check alone would not distinguish "real bump"
+//! from "decoy no-op displacement" (the S2.1 decoy-landmine lesson,
+//! applied here to geometry).
+static void TestGeometryScaffoldDisplacedBumpyVsFlat()
+{
+	std::printf( "GS1b: insert_geometry_scaffold -- displaced_slab render genuinely differs from its own flat base...\n" );
+
+	auto renderVariant = [&]( const char* roleSuffix, DecodedLuma& outLuma ) -> bool {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_gs1b_" ) + roleSuffix + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kGeoRenderScene, tmp );
+		if( !pJob ) return false;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->InsertGeometryScaffold( "displaced_slab", "bumpy", 1.2, 0.75, 1.0 );
+		bool ok = sr.ok;
+
+		std::vector<std::string> objChunks;
+		objChunks.push_back( "uniformcolor_painter\n{\nname pnt_bv\ncolor 0.6 0.55 0.5\n}" );
+		objChunks.push_back( "lambertian_material\n{\nname mat_bv\nreflectance pnt_bv\n}" );
+		objChunks.push_back( "standard_object\n{\nname obj_bv\ngeometry " + TmplName( "bumpy", roleSuffix ) +
+			"\nmaterial mat_bv\n}" );
+		const std::vector<Agent::AgentChunkResult> objResults = sess->InsertChunks( objChunks );
+		for( const Agent::AgentChunkResult& r : objResults ) if( !r.applied ) ok = false;
+
+		Agent::AgentRenderParams rp;
+		rp.width = 48; rp.height = 48; rp.samples = 16;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		ok = ok && rr.ok;
+		if( ok ) ok = DecodeRenderLuma( rr.png, outLuma );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return ok;
+	};
+
+	DecodedLuma flatLuma, bumpyLuma;
+	Check( renderVariant( "base", flatLuma ),  "GS1b flat-base variant (tmpl_bumpy_base) renders and decodes" );
+	Check( renderVariant( "disp", bumpyLuma ), "GS1b displaced variant (tmpl_bumpy_disp) renders and decodes" );
+
+	const double flatStdDev  = LumaStdDev( flatLuma );
+	const double bumpyStdDev = LumaStdDev( bumpyLuma );
+	std::printf( "    GS1b flat luma stddev %.5f, bumpy luma stddev %.5f\n", flatStdDev, bumpyStdDev );
+	Check( bumpyStdDev > flatStdDev * 2.0,
+	       "GS1b the displaced render's per-pixel luma stddev is markedly HIGHER than the flat base's "
+	       "(genuinely varying shading, not just MC noise): flat=" + std::to_string( flatStdDev ) +
+	       " bumpy=" + std::to_string( bumpyStdDev ) );
+	Check( bumpyStdDev > 0.01,
+	       "GS1b the displaced render's stddev also clears an ABSOLUTE floor, not just a relative one "
+	       "(bumpy=" + std::to_string( bumpyStdDev ) + ")" );
+}
+
+//! GS1c: the SPATIAL-EFFECT assertion for the other three families (and,
+//! cheaply, displaced_slab too) -- `size`/`aspect` genuinely flow into
+//! the realized geometry's bbox, not just into the chunk text.  Two
+//! FRESH expansions under the SAME `name` (so every jittered internal
+//! constant is IDENTICAL between them -- only the explicit `aspect`
+//! differs) at a LOW and a HIGH aspect; asserts the elongation axis's
+//! bbox extent grows by more than an absolute floor derived from each
+//! family's own authored jitter ranges (a DIFFERENCE assertion, not a
+//! ratio one, so it is insensitive to the constant, aspect-independent
+//! term in blended_vessel's/sdf_column's bbox).  That constant term is
+//! NOT the flat-bottom `box subtract` part -- SDFGeometry::ComputeBounds
+//! (SDFGeometry.cpp ~385-387) SKIPS every subtract-op part entirely
+//! ("a carve never extends the solid" -> no-op on the bound), so the cut
+//! contributes NOTHING to the bbox union.  The real source is the FIRST
+//! `roundcone` part's own local AABB (primLocalAABB, SDFGeometry.cpp
+//! ~175-195): a roundcone's `ry0` (its bottom extent) is `-pt.a` --
+//! i.e. `-baseR`, from the rounded cap that bulges below the part's own
+//! y=0 -- and `baseR` depends only on `name`+`size` (never `aspect`) in
+//! both families, so it is IDENTICAL between the low- and high-aspect
+//! calls below and cancels out of the delta.
+static void TestGeometryScaffoldAspectFlow()
+{
+	std::printf( "GS1c: insert_geometry_scaffold -- size/aspect genuinely flow into every family's bbox...\n" );
+
+	struct FamilyAxis { const char* family; int axis; };   // axis: 0=X, 1=Y -- which bbox extent `aspect` elongates
+	const FamilyAxis cases[] = {
+		{ "displaced_slab", 0 },   // footprint width (X) grows with aspect
+		{ "sweep_rail",     0 },   // path length (X) grows with aspect
+		{ "blended_vessel", 1 },   // total height (Y) grows with aspect
+		{ "sdf_column",     1 },   // shaft height (Y) grows with aspect
+	};
+	const double kLowAspect  = 0.5;
+	const double kHighAspect = 3.0;
+	const double kSize       = 1.0;
+	// A floor well below the SMALLEST possible delta across every
+	// family's own authored jitter range at size=1.0 (see each BuildXxx
+	// in AgentSession.cpp -- the tightest is displaced_slab's
+	// width = size*sqrt(aspect), delta = sqrt(3.0)-sqrt(0.5) ~= 1.02).
+	const double kMinDelta = 0.5;
+
+	for( const FamilyAxis& fc : cases ) {
+		auto expandAndBBox = [&]( double aspect, double ext[3] ) -> bool {
+			const std::string tmp = TempPath( ( std::string( "agentcrud_gs1c_" ) + fc.family + "_" +
+				std::to_string( static_cast<int>( aspect * 100 ) ) + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kScene, tmp );
+			if( !pJob ) return false;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->InsertGeometryScaffold( fc.family, "aspA", kSize, 0.5, aspect );
+			bool ok = sr.ok;
+			if( ok ) ok = GeometryBBoxExtents( pJob, sr.geometryName, ext[0], ext[1], ext[2] );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+			return ok;
+		};
+
+		double lowExt[3] = { 0.0, 0.0, 0.0 }, highExt[3] = { 0.0, 0.0, 0.0 };
+		Check( expandAndBBox( kLowAspect, lowExt ),
+		       std::string( "GS1c(" ) + fc.family + ") low-aspect expansion resolves a bbox" );
+		Check( expandAndBBox( kHighAspect, highExt ),
+		       std::string( "GS1c(" ) + fc.family + ") high-aspect expansion resolves a bbox" );
+
+		const double delta = highExt[fc.axis] - lowExt[fc.axis];
+		Check( delta > kMinDelta,
+		       std::string( "GS1c(" ) + fc.family + ") the elongation axis's bbox extent grows with `aspect` "
+		       "well past the deterministic-jitter floor (low=" + std::to_string( lowExt[fc.axis] ) +
+		       " high=" + std::to_string( highExt[fc.axis] ) + " delta=" + std::to_string( delta ) +
+		       " > " + std::to_string( kMinDelta ) + ")" );
+	}
+}
+
+//! GS1d (P2a fix-round): `detail` genuinely flows into the emitted smin
+//! blend-radius (`k`) fields for BOTH sdf-based families.  GS1c only
+//! pins `aspect`'s flow into bbox extent -- a mutation that hardcodes
+//! blended_vessel's smin tightness (drops the `* tightness` factor from
+//! k1/k2) passes GS1 AND GS1c untouched (neither observes `k`, and
+//! bbox extent is insensitive to a smin blend radius at these part
+//! sizes), so this is a DEDICATED text-extraction pin on the `k` token
+//! itself, mirroring GS2's persistence-extraction pattern.  Two FRESH
+//! documents, SAME name, detail=0.1 vs detail=0.9 (size/aspect held
+//! fixed) -- every other jittered constant is IDENTICAL between them,
+//! so any difference in the extracted `k` token is attributable to
+//! `detail` alone.  sdf_column is structurally identical to
+//! blended_vessel here (same `tightness = 1.0 - 0.6*detail` factor on
+//! its own k1/k2), so both families get the SAME check, independently.
+static void TestGeometryScaffoldSdfDetailFlow()
+{
+	std::printf( "GS1d: insert_geometry_scaffold -- `detail` genuinely flows into smin blend-radius k (both sdf families)...\n" );
+
+	struct Case { const char* family; const char* roleSuffix; };
+	const Case cases[] = {
+		{ "blended_vessel", "vessel" },   // part[1] is the base->belly smin (k1)
+		{ "sdf_column",     "col" },      // part[1] is the base->shaft smin (k1)
+	};
+
+	for( const Case& c : cases ) {
+		auto expandK = [&]( double detail ) -> std::string {
+			const std::string tmp = TempPath( ( std::string( "agentcrud_gs1d_" ) + c.family + "_" +
+				std::to_string( static_cast<int>( detail * 100 ) ) + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kScene, tmp );
+			if( !pJob ) return std::string();
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->InsertGeometryScaffold( c.family, "detflow", 1.0, detail, 1.0 );
+			std::string k;
+			if( sr.ok ) {
+				const std::string doc = sess->ReadDocument();
+				const std::string partLine = ExtractNthPartLine( doc, TmplName( "detflow", c.roleSuffix ), 1 );
+				k = NthWhitespaceToken( partLine, 2 );
+			}
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+			return k;
+		};
+
+		const std::string kLow  = expandK( 0.1 );
+		const std::string kHigh = expandK( 0.9 );
+		Check( !kLow.empty() && !kHigh.empty(),
+		       std::string( "GS1d(" ) + c.family + ") extracted a smin `k` token at both detail=0.1 and detail=0.9" );
+		Check( kLow != kHigh,
+		       std::string( "GS1d(" ) + c.family + ") `detail` genuinely changes the emitted smin `k` (0.1 -> " +
+		       kLow + ", 0.9 -> " + kHigh + ") -- pins the mutation class that hardcoding smin tightness would hide" );
+	}
+}
+
+//! GS2: determinism -- the SAME name, in TWO FRESH documents, produces
+//! BYTE-IDENTICAL generated chunk text (no RNG, no clock); a DIFFERENT
+//! name visibly differs in its jittered constants (not just the renamed
+//! chunk tokens).
+static void TestGeometryScaffoldDeterminism()
+{
+	std::printf( "GS2: insert_geometry_scaffold -- determinism (same name twice byte-identical; different name differs)...\n" );
+
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_gs2_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->InsertGeometryScaffold( "displaced_slab", name, 1.1, 0.5, 1.0 );
+		Check( sr.ok, "GS2 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "gscafA" );
+	const std::string docA2 = expandFresh( "gscafA" );
+	Check( !docA1.empty() && !docA2.empty(), "GS2 both `gscafA` fixtures produced a document" );
+	Check( docA1 == docA2,
+	       "GS2 SAME name, two FRESH documents -> BYTE-IDENTICAL generated chunk text (deterministic, no RNG/clock)" );
+
+	const std::string docB = expandFresh( "gscafB" );
+	Check( !docB.empty(), "GS2 `gscafB` fixture produced a document" );
+	Check( docA1 != docB, "GS2 a DIFFERENT name produces a different document (trivially true from the renamed chunks alone)" );
+
+	// The STRONGER claim: the JITTERED NUMERIC CONSTANT differs, not just
+	// the renamed chunk tokens -- extract the noise painter's own
+	// `persistence` value for each name and require them to differ.
+	const std::string persA = ExtractParamAfter( docA1, TmplName( "gscafA", "bump" ), "persistence" );
+	const std::string persB = ExtractParamAfter( docB,  TmplName( "gscafB", "bump" ), "persistence" );
+	Check( !persA.empty() && !persB.empty(), "GS2 extracted a `persistence` value from both fixtures' noise painter" );
+	Check( persA != persB,
+	       "GS2 a DIFFERENT name jitters a DIFFERENT `persistence` value (the internal constants really do vary with `name`, not just the labels)" );
+}
+
+//! GS3: each of the 5 required params, omitted in turn, is a BLOCKING
+//! error naming the missing param -- driven through the REAL wire
+//! (AgentRpcDispatcher::HandleLine), mirroring MS3's style.
+static void TestGeometryScaffoldMissingParams()
+{
+	std::printf( "GS3: insert_geometry_scaffold -- each missing required param -> blocking -32602...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"name\":\"x1\",\"size\":1.0,\"detail\":0.5,\"aspect\":1.0}", "family" },
+		{ "2", "{\"family\":\"sdf_column\",\"size\":1.0,\"detail\":0.5,\"aspect\":1.0}", "name" },
+		{ "3", "{\"family\":\"sdf_column\",\"name\":\"x3\",\"detail\":0.5,\"aspect\":1.0}", "size" },
+		{ "4", "{\"family\":\"sdf_column\",\"name\":\"x4\",\"size\":1.0,\"aspect\":1.0}", "detail" },
+		{ "5", "{\"family\":\"sdf_column\",\"name\":\"x5\",\"size\":1.0,\"detail\":0.5}", "aspect" },
+	};
+	int id = 10;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_geometry_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "GS3(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "GS3(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "GS3 none of the 5 missing-param refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS4: an unrecognized `family` is refused with a message listing the
+//! valid families -- document unchanged.
+static void TestGeometryScaffoldBadFamily()
+{
+	std::printf( "GS4: insert_geometry_scaffold -- unknown family -> error listing valid families...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "twisted_lattice", "x", 1.0, 0.5, 1.0 );
+	Check( !sr.ok, "GS4 an unknown family refuses the call (ok==false)" );
+	Check( sr.chunkResults.empty(), "GS4 no chunks were generated for an unknown family" );
+	const char* families[] = { "displaced_slab", "sweep_rail", "blended_vessel", "sdf_column" };
+	for( const char* f : families ) {
+		Check( sr.message.find( f ) != std::string::npos,
+		       std::string( "GS4 the error message lists valid family `" ) + f + "`" );
+	}
+	Check( sess->ReadDocument() == headBefore, "GS4 the refusal mutated nothing" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS4b (fix-round-parity P3): `name` past the sane length cap
+//! (kScaffoldMaxNameLength == 64, the SAME shared constant
+//! insert_material_scaffold uses) is refused, same as any other invalid
+//! `name`.
+static void TestGeometryScaffoldNameLengthCap()
+{
+	std::printf( "GS4b: insert_geometry_scaffold -- `name` past the length cap is refused...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs4b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS4b fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string tooLongName( 65, 'a' );   // one past the 64-char cap
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "sdf_column", tooLongName, 1.0, 0.5, 1.0 );
+	Check( !sr.ok, "GS4b a 65-char `name` (one past the cap) is refused" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS5: a name collision -- a family/name expanded once, then the SAME
+//! family+name expanded again -- refuses the WHOLE second call cleanly
+//! (document unchanged), rather than landing a partial second graph;
+//! PLUS a collision against a HAND-AUTHORED chunk sharing the derived
+//! name (geometry families don't share role suffixes with each other
+//! the way the material families do, so a cross-family collision isn't
+//! reachable here -- a hand-authored collision covers the same
+//! "collides against anything already in the document" guarantee).
+static void TestGeometryScaffoldNameCollision()
+{
+	std::printf( "GS5: insert_geometry_scaffold -- name collision -> clean refusal, document unchanged...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS5 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr1 =
+		sess->InsertGeometryScaffold( "blended_vessel", "gdup1", 1.0, 0.5, 1.0 );
+	Check( sr1.ok && !sr1.chunkResults.empty() && sr1.chunkResults.back().applied,
+	       "GS5 the FIRST expansion under this name applies cleanly" );
+
+	const std::string headAfterFirst = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+	// A SECOND expansion, same family AND name -- the generated chunk
+	// name collides with the first expansion's.
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr2 =
+		sess->InsertGeometryScaffold( "blended_vessel", "gdup1", 2.0, 0.9, 1.5 );
+	Check( !sr2.ok, "GS5 the SECOND expansion (same family+name) is refused (ok==false)" );
+	Check( sr2.chunkResults.empty(), "GS5 the refused expansion generated NO chunk results (refused before InsertChunks ran)" );
+	Check( sr2.message.find( "gdup1" ) != std::string::npos, "GS5 the refusal message names the colliding `name`" );
+
+	Check( sess->ReadDocument() == headAfterFirst, "GS5 the document is BYTE-IDENTICAL to before the collision (no partial graph landed)" );
+	Check( sess->HeadVersion() == vAfterFirst, "GS5 the head revision did not move" );
+
+	// A collision against a HAND-AUTHORED chunk sharing the derived name.
+	const std::vector<Agent::AgentChunkResult> handResults = sess->InsertChunks( {
+		"sdf_geometry\n{\nname tmpl_gdup2_col\npart sphere union 0  0 0 0  0 0 0  1 1 1  0.2 0.2 0.2  0.0\n}"
+	} );
+	Check( handResults.size() == 1 && handResults[0].applied, "GS5 the hand-authored collision fixture itself applied" );
+	const std::string headAfterHand = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr3 =
+		sess->InsertGeometryScaffold( "sdf_column", "gdup2", 1.0, 0.5, 1.0 );
+	Check( !sr3.ok, "GS5 a collision against a HAND-AUTHORED chunk sharing the derived name is also refused" );
+	Check( sess->ReadDocument() == headAfterHand, "GS5 that hand-authored collision ALSO left the document byte-identical" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS6: under External authority with a live controller attached (the
+//! same Secure-MCP staging posture insert_chunk/insert_chunks/
+//! insert_material_scaffold use), the expansion STAGES proposals rather
+//! than committing -- every generated chunk comes back status=="staged",
+//! applied==false, and the document is untouched until an Owner resolves
+//! them.
+static void TestGeometryScaffoldProposalMode()
+{
+	std::printf( "GS6: insert_geometry_scaffold -- External authority STAGES, does not commit...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS6 fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+	sess->AttachController( &c );
+	Check( sess->Authority() == Agent::AgentAuthority::External, "GS6 session reports External authority" );
+
+	const std::string headBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->InsertGeometryScaffold( "sweep_rail", "extG", 1.0, 0.4, 1.0 );
+
+	Check( sr.ok, "GS6 the call itself is well-formed under External authority (ok==true -- generation + collision-precheck succeeded)" );
+	Check( !sr.chunkResults.empty(), "GS6 the expansion produced per-chunk results" );
+	bool allStaged = true;
+	for( const Agent::AgentChunkResult& cr : sr.chunkResults ) {
+		if( cr.applied || cr.status != "staged" ) allStaged = false;
+	}
+	Check( allStaged, "GS6 EVERY generated chunk is staged (applied==false, status==\"staged\"), none committed directly" );
+	Check( sess->ReadDocument() == headBefore, "GS6 the document is UNCHANGED -- nothing committed, only proposals queued" );
+
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -3215,6 +4838,7 @@ int main()
 	TestUnresolvedReferenceWarning();
 	TestRejectedInsertDiagnostics();
 	TestActionablePatchDiagnostics();
+	TestNonSamplingEmitterGate();
 	TestActionableRemoveDiagnostics();
 	TestInsertChunksBatchAllApply();
 	TestInsertChunksBestEffort();
@@ -3224,6 +4848,23 @@ int main()
 	TestProposePatchesBestEffort();
 	TestProposePatchesValidation();
 	TestProposePatchesConflictIsBatchFatal();
+	TestMaterialScaffoldFamilies();
+	TestMaterialScaffoldDeterminism();
+	TestMaterialScaffoldMissingParams();
+	TestMaterialScaffoldBadFamily();
+	TestMaterialScaffoldNameLengthCap();
+	TestMaterialScaffoldNameCollision();
+	TestMaterialScaffoldProposalMode();
+	TestGeometryScaffoldFamilies();
+	TestGeometryScaffoldDisplacedBumpyVsFlat();
+	TestGeometryScaffoldAspectFlow();
+	TestGeometryScaffoldSdfDetailFlow();
+	TestGeometryScaffoldDeterminism();
+	TestGeometryScaffoldMissingParams();
+	TestGeometryScaffoldBadFamily();
+	TestGeometryScaffoldNameLengthCap();
+	TestGeometryScaffoldNameCollision();
+	TestGeometryScaffoldProposalMode();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

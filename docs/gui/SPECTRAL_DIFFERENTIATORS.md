@@ -3,8 +3,8 @@
 **Status:** DESIGN. No D-feature code. Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
 Ground truth for what *backing* actually ships is [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (it supersedes
 this header where they disagree). Two backing-state caveats the audit pins: **D5's per-pixel probe buffers are
-private** (a net-new additive readback, not a free read — §5.3) and **D3's thin-film backing is on the unpushed
-`feature/thin-film-interference` branch, not master** (so "already in the tree" for D3 means that branch — §4.2).
+private** (a net-new additive readback, not a free read — §5.3) and D3's thin-film backing was on an unpushed branch when this
+was written; it **merged to master on 2026-07-31**, so "already in the tree" for D3 is now literal (§4.2).
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the seven GUI features (D1–D7) that an RGB renderer **physically cannot** do, because they
 expose RISE's spectral engine: live spectral colour/curve editing, measured-metal n,k, real thin-film
@@ -41,14 +41,14 @@ they lead the priority order (§9).
 | **1** | **D4 — JH gamut warning** | LUT + residual fully shipped | a const-query helper + a tiny in-gamut test | Near-zero cost; a *uniquely-spectral honesty* badge no RGB tool can show. Rides on every colour pick (D1, material editor). |
 | **2** | **D1 — Spectral picker / curve editor** | all four painters ship | swatch-render helper + curve sampler + named-glass table | Exposes 4 existing painters through one widget; the headline "spectral" UI. Kelvin sub-slider is trivial (`blackbody_painter` exists). |
 | **3** | **D2 — Measured-metal n,k picker** | `scalar_painter { file }` → GGX `ior`/`ext` ships; conductor Fresnel ships | a bundled n,k library + a metal dropdown | Pure data + a dropdown; "gold's colour from physics." Reuses D1's swatch renderer. |
-| **4** | **D3 — Spectral thin-film slider** | **branch-only** — `fresnel_mode thinfilm` + `film_*` slots + introspection are on the unpushed `feature/thin-film-interference` branch, **not master** (§4.2; [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) punch-list) | reuse D1/D2 swatch at a few angles | Two sliders (thickness nm, view angle) over the branch material. RISE *beats* glTF here (exact vs RGB approx). **Ships only once the branch lands.** |
+| **4** | **D3 — Spectral thin-film slider** | **on master since 2026-07-31** — `fresnel_mode thinfilm` + `film_*` slots + introspection all merged (§4.2) | reuse D1/D2 swatch at a few angles | Two sliders (thickness nm, view angle). RISE *beats* glTF here (exact vs RGB approx). No longer blocked. |
 | **5** | **D5 — "Explain the auto-router" heatmap** | probe (`RunProbe`) + per-pixel σ² ship | expose probe AOVs + a heatmap overlay | No competitor can replicate. Medium lift (plumb probe outputs to the GUI). Pair with RMSE per §5.4. |
 | **6** | **D7 — Spectral Light Mix** | partial — NEE picks one light, but emission/env/BDPT-splat/VCM-merge attribution does **not** exist (§7.2a) | **PT** per-light attribution binning (NEE + camera-visible emission + MIS-consistent BSDF-on-emitter) + **Top-K selector** (pilot/scout pass or static-power preselection, §7.3a) + bounded AOV accumulation (Top-K + Environment + other) + re-balance compositor + **single composite-denoise** (§7.2b) | Heaviest engine work (multi-buffer render). **V1 = exact intensity-only re-balance, PT-only** (sound, the V-Ray feature); BDPT/VCM/MLT out of V1 (§7.2a). Top-K chosen up front, frozen for the render (no mid-render swap, §7.3a). Layers stored raw, denoised once on composite (§7.2b). The *spectral* SPD-swap is research-flagged, not v1 (§7.3). |
 | **7** | **D6 — EDR cinematography scopes** | EDR display path (`MetalEDRView`) ships | scope compute (CPU/Metal) + overlays | Read-only over the framebuffer; high polish value, but 4 sub-scopes + the EDR-headroom plumbing make it the biggest UI surface. |
 
 The ordering is deliberately **engine-debt-ascending**: D4/D1/D2 ship on painters that already exist on master;
-**D3 rides on the thin-film material, which is branch-only** (`feature/thin-film-interference`, not yet merged —
-§4.2), so D3 is "wire a widget to an existing painter/material" *once that branch lands*; D5/D7/D6 each need a new
+**D3 rides on the thin-film material, which merged to master on 2026-07-31** (§4.2),
+so D3 is now simply "wire a widget to an existing painter/material"; D5/D7/D6 each need a new
 render-output or compute path. Lead with the cheap four (D4/D1/D2/D3) that are "wire a widget to a painter/material
 RISE already has," which also seeds the material editor (Direction C) and the approachability story (Direction A).
 
@@ -1027,7 +1027,7 @@ net-new engine read-back this spec identified.
   read-only over render outputs; D7 V1 "bake to scene" writes existing light-chunk fields). **No public-ABI
   break** if the D5/D6/D7 read-backs are introduced as additive accessors/overloads rather than signature changes
   (follow the [abi-preserving-api-evolution](../../.claude/skills/abi-preserving-api-evolution/SKILL.md)
-  discipline). Caveat: D3 thin-film facts are on the unpushed `feature/thin-film-interference` branch, not master
+  discipline). (Historical caveat: D3 thin-film facts were on an unpushed branch when written; merged to master 2026-07-31)
   ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) punch-list) — D3 ships only once that branch lands.
 - **Rollback** — Each widget is independently toggleable and additive; removing a D-feature widget leaves the
   shipped painters/LUT/probe untouched. The engine read-backs (D5 probe buffers, D6 XYZ retention, D7
@@ -1044,7 +1044,7 @@ net-new engine read-back this spec identified.
   IScalarPainter scoping).
 - [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) — code-verified ground truth (supersedes any `Status:` header
   here); §11 confirms the `ProbeResult` per-pixel buffers are **private** (D5 net-new readback) and the punch-list
-  notes D3 thin-film is on the unpushed `feature/thin-film-interference` branch.
+  noted D3 thin-film as branch-only; it merged to master on 2026-07-31.
 - [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) — the isolated preview/thumbnail job model + single render slot;
   D1 prism / D3 full-object previews, D5 RMSE reference, and D7's multi-buffer pass all route through it (§2.5,
   §5.6, §7.5, §8.2).

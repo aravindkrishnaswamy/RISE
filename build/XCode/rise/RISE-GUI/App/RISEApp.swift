@@ -65,7 +65,11 @@ enum SkillsRootBootstrap {
         return candidates.first(where: isDirectory)?.path
     }
 
-    private static func isDirectory(_ url: URL) -> Bool {
+    // nonisolated: the module builds with default MainActor isolation, but
+    // this is a pure FileManager predicate (fileExists is thread-safe, no
+    // main-actor state) handed to `first(where:)`, whose predicate runs in
+    // a nonisolated synchronous context.
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
             && isDir.boolValue

@@ -1,0 +1,13 @@
+{
+  "//": "Arc-75 S2 measurement, gemini instrument. Treatment vs bare_prompt_s1: the insert_material_scaffold tool exists (f5187349 -- 15th chat tool, visible in every tool list) + one-call examples in 4 read-set skills + the scaffold_expanded pure metric. KILL RULES, pre-committed (75-doc sec 3 + S1-close): (1) tool called in 0/6 build runs (both models pooled per model) -> remove the snippets, keep-or-drop the tool on product merit alone, rung dead; (2) called but scaffold chunks never edited AND one family >80% of expansions across the batch -> ONE family/param iteration, ONE re-measure, then accept-or-revert; (3) success floor: called >=1 time in >=2/6 runs per model with the expansion surviving to the final document. scaffold_expanded counts tmpl_-prefixed CHUNKS (4-5 per expansion -- divide by graph size for expansion count); post-expansion edit rate is trajectory-forensic. varied_microsurface will move mechanically when scaffolds land -- read the two labels TOGETHER (expansion-driven vs hand-authored), never summed.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_s2"
+}

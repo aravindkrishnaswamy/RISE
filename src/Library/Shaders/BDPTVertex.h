@@ -181,6 +181,54 @@ namespace RISE
 		/// continuous-PMF fix.  See `VCMRecurrence::InitLight` for the
 		/// algebraic derivation.
 		Scalar					pdfSelect;
+
+		/// TRUE iff this vertex's `pdfRev` is a GENUINE zero -- "the
+		/// light-sampling family of strategies has zero density here" --
+		/// rather than the delta-vertex zero that `MISWeight`'s remap0
+		/// convention exists to paper over.
+		///
+		/// WHY IT EXISTS.  `MISWeight` maps a zero pdf to 1 (`pdfR =
+		/// (v.pdfRev != 0) ? v.pdfRev : 1`) so the ratio chain survives a
+		/// DELTA vertex, whose `SPF::Pdf` legitimately returns 0 while the
+		/// strategy through it still exists.  That remap cannot distinguish
+		/// a delta zero from a "this strategy does not exist" zero.  BDPT's
+		/// (s=0) strategy hits the second kind whenever the emitter the eye
+		/// path landed on is NOT in the NEE light set -- `CanBeAreaLight()
+		/// == false` (e.g. an SDF with proven missed-feature cells) or a
+		/// null-geometry CSG emitter LuminaryManager refused -- so
+		/// `pdfSelect * pdfPosition` is exactly 0.  Remapped to 1, that
+		/// zero manufactures a PHANTOM NEE strategy (and, because the walk
+		/// multiplies ratios cumulatively, a phantom s>=2 light-tracing
+		/// family behind it) in the power-heuristic denominator, giving the
+		/// ONLY strategy that can generate the path a weight of
+		/// 1/(1 + r^2 + ...) < 1 where PT and VCM both give 1.  Measured on
+		/// a floor lit by such an emitter, that is a ~2000x energy deficit
+		/// (BDPTPhantomStrategyWeightTest) -- the eye-path pdfFwd there is
+		/// the small cosine-hemisphere area density, so r = 1/pdfFwd is
+		/// large.
+		///
+		/// CONTRACT.  Set ONLY by the (s=0) emitter-hit strategy, on the eye
+		/// END vertex, alongside the `pdfRev` it just computed, and restored
+		/// with it before that strategy returns -- exactly like `pdfRev`,
+		/// this is scratch state for one MISWeight call, never a persistent
+		/// property of a generated subpath.  The set predicate is SET
+		/// MEMBERSHIP in the NEE light table, not "the pdf came out zero";
+		/// see the set-site comment in BDPTIntegrator.cpp for why the
+		/// distinction matters under `light_bvh`.
+		///
+		/// RELATIONSHIP TO isDelta: none -- the flag's correctness does not
+		/// depend on the vertex's delta-ness, and nothing here assumes it is
+		/// never set on a delta vertex (an emissive material wrapping a
+		/// specular BSDF can present a delta eye end).  Either way the
+		/// answer is the same: the flag says no light subpath can be rooted
+		/// on this emitter, which is a property of the EMITTER's membership
+		/// in the light set, independent of the lobe sampled at the vertex
+		/// -- so terminating the ratio chain is right in both cases.  Delta
+		/// weights elsewhere are untouched because the flag is never set on
+		/// any vertex other than the (s=0) eye end.  Consumed by
+		/// `BDPTIntegrator::MISWeight`'s eye-side walk.
+		bool					lightSamplingStrategyAbsent;
+
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
@@ -251,6 +299,7 @@ namespace RISE
 		emissionPdfW( 0 ),
 		cosAtGen( 0 ),
 		pdfSelect( 1.0 ),	///< Default 1.0: SmallVCM-invariance on non-light vertices and master back-compat
+		lightSamplingStrategyAbsent( false ),
 
 		isDelta( false ),
 		isConnectible( true ),
