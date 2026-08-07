@@ -1,0 +1,869 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   Dreamscape: "The Covenant of the Vale"                                                                  #
+#   A wizard communes with a dragon in a psychedelic dusk valley -- spiral nebula sky, mist, glowing        #
+#   terrain veins.  Authored for the Fable benchmark.                                                       #
+#############################################################################################################
+
+#############################################################################################################
+#   BENCHMARK PROVENANCE                                                                                    #
+#   Prompt (verbatim): "Build me a dreamy landscape with dragons, wizards, and mist.  Make it               #
+#   psychedelic, creative that sparks the imagination and makes you wonder how that was made.  Use          #
+#   textures, shapes and objects creatively."                                                               #
+#   Model: Claude Fable 5 (claude-fable-5), subagent with full RISE context, 17 look iterations.            #
+#   Date: 2026-08-06.  Held as the frontier-model qualitative bar for agent scene-building comparisons.     #
+#############################################################################################################
+
+##################################################
+# Sky: a spiral nebula painted in the angular map
+# (radiance_map evaluates its painter at UV derived
+# from the ray direction; center of map = -Z, which
+# is dead ahead of the +Z camera).
+##################################################
+
+# NOTE: with a 52-degree fov the visible frame occupies only
+# r < ~0.09 of the angular map (r = angle/2pi), so every sky
+# feature is scaled into that window.
+
+# Spiral arm field: log-spiral interference around the map center.
+expression_function2d
+{
+	name	fn_sky_spiral
+	def		dx u - 0.5
+	def		dy v - 0.5
+	def		r hypot( dx, dy )
+	def		th atan2( dy, dx )
+	def		arm 0.5 + 0.5 * sin( th * 4.0 + r * 320.0 + 1.5 )
+	expr	pow( arm, 3.0 ) * smoothstep( 0.12, 0.012, r )
+}
+
+# Radial core glow: hot center fading out.
+expression_function2d
+{
+	name	fn_sky_glow
+	def		dx u - 0.5
+	def		dy v - 0.5
+	def		r hypot( dx, dy )
+	expr	exp( -2200.0 * r * r )
+}
+
+uniformcolor_painter
+{
+	name	pnt_sky_indigo
+	color	0.012 0.008 0.045
+}
+
+uniformcolor_painter
+{
+	name	pnt_sky_magenta
+	color	0.60 0.08 0.70
+}
+
+uniformcolor_painter
+{
+	name	pnt_sky_teal
+	color	0.03 0.38 0.45
+}
+
+uniformcolor_painter
+{
+	name	pnt_sky_gold
+	color	1.0 0.62 0.20
+}
+
+# Teal base washed with indigo away from the spiral zone.
+blend_painter
+{
+	name	pnt_sky_base
+	colora	pnt_sky_teal
+	colorb	pnt_sky_indigo
+	mask	fn_sky_spiral
+}
+
+# Magenta spiral arms over the teal/indigo wash.
+expression_function2d
+{
+	name	fn_sky_arms2
+	def		dx u - 0.5
+	def		dy v - 0.5
+	def		r hypot( dx, dy )
+	def		th atan2( dy, dx )
+	def		arm 0.5 + 0.5 * sin( th * 4.0 - r * 420.0 - 0.8 )
+	expr	pow( arm, 3.0 ) * smoothstep( 0.11, 0.008, r )
+}
+
+blend_painter
+{
+	name	pnt_sky_swirl
+	colora	pnt_sky_magenta
+	colorb	pnt_sky_base
+	mask	fn_sky_arms2
+}
+
+# Golden core burning through the middle of the vortex.
+blend_painter
+{
+	name	pnt_sky
+	colora	pnt_sky_gold
+	colorb	pnt_sky_swirl
+	mask	fn_sky_glow
+}
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					256
+	pixel_filter			box
+	oidn_denoise			TRUE
+	radiance_map			pnt_sky
+	radiance_scale			0.75
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern		final
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+film
+{
+	width	800
+	height	600
+}
+
+pinhole_camera
+{
+	location	0 2.4 9.5
+	lookat		0 1.8 0
+	up			0 1 0
+	fov			52.0
+}
+
+##################################################
+# Terrain: displaced rolling valley floor
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_terra_violet
+	color	0.16 0.05 0.24
+}
+
+uniformcolor_painter
+{
+	name	pnt_terra_teal
+	color	0.03 0.28 0.26
+}
+
+# Psychedelic dusk ground: warped teal-into-violet fields.
+domainwarp3d_painter
+{
+	name			pnt_terrain
+	colora			pnt_terra_teal
+	colorb			pnt_terra_violet
+	octaves			4
+	persistence		0.6
+	warp_amplitude	2.5
+	warp_levels		2
+	scale			0.35 0.35 0.35
+}
+
+lambertian_material
+{
+	name		mat_terrain
+	reflectance	pnt_terrain
+}
+
+# Glowing leyline veins: worley f2-f1 is ~0 on cell BOUNDARIES, and
+# colora sits at the low end -- electric cyan cracks running across
+# the valley, black elsewhere.  The luminaire wraps the base terrain.
+uniformcolor_painter
+{
+	name	pnt_vein_glow
+	color	0.25 0.85 0.95
+}
+
+uniformcolor_painter
+{
+	name	pnt_vein_black
+	color	0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_vein_white
+	color	1.0 1.0 1.0
+}
+
+# (An emissive-terrain attempt turned the frame into NEE noise -- a
+# 60x60 luminaire is a variance bomb.  The veins are now BRIGHT
+# REFLECTANCE layered over the warped base instead: mask 1 keeps the
+# base, mask ~0 at cell boundaries lets the cyan vein through.)
+worley3d_painter
+{
+	name	pnt_vein_mask
+	colora	pnt_vein_black
+	colorb	pnt_vein_white
+	output	f2-f1
+	jitter	1.0
+	scale	0.55 0.55 0.55
+}
+
+blend_painter
+{
+	name	pnt_terrain_veined
+	colora	pnt_terrain
+	colorb	pnt_vein_glow
+	mask	pnt_vein_mask
+}
+
+lambertian_material
+{
+	name		mat_terrain_glow
+	reflectance	pnt_terrain_veined
+}
+
+# Rolling hills displacement over the big ground quad.
+expression_function2d
+{
+	name	fn_hills
+	def		a sin( u * 19.0 + 1.3 ) * cos( v * 15.0 - 0.7 )
+	def		b sin( u * 41.0 - 2.0 ) * sin( v * 37.0 + 0.9 )
+	def		c sin( u * 7.0 ) * sin( v * 9.0 + 2.1 )
+	expr	0.5 * c + 0.35 * a + 0.15 * b
+}
+
+clippedplane_geometry
+{
+	name	ground_base
+	pta		-30.0 0.0 -30.0
+	ptb		-30.0 0.0 30.0
+	ptc		30.0 0.0 30.0
+	ptd		30.0 0.0 -30.0
+}
+
+displaced_geometry
+{
+	name			ground_hills
+	base_geometry	ground_base
+	detail			160
+	displacement	fn_hills
+	disp_scale		1.8
+	uv_seam_fold	FALSE
+}
+
+standard_object
+{
+	name		obj_ground
+	geometry	ground_hills
+	material	mat_terrain_glow
+	position	0 -0.6 0
+}
+
+##################################################
+# The dragon: serpentine SDF sphere-chain
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_drg_magenta
+	color	0.75 0.12 0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_drg_teal_lo
+	color	0.02 0.20 0.18
+}
+
+uniformcolor_painter
+{
+	name	pnt_drg_teal_hi
+	color	0.10 0.55 0.45
+}
+
+# Labyrinthine hide pattern.
+reactiondiffusion3d_painter
+{
+	name		pnt_drg_hide
+	colora		pnt_drg_teal_hi
+	colorb		pnt_drg_teal_lo
+	feed		0.037
+	kill		0.06
+	grid_size	48
+	iterations	3000
+	scale		1.4 1.4 1.4
+}
+
+# Magenta sheen at grazing angles over the patterned hide.
+iridescent_painter
+{
+	name	pnt_dragon
+	colora	pnt_drg_magenta
+	colorb	pnt_drg_hide
+	bias	0.05
+}
+
+lambertian_material
+{
+	name		mat_dragon
+	reflectance	pnt_dragon
+}
+
+# Body: local frame, head toward +X.  Dense sphere chain along a
+# serpentine ground path rising through an S-curved neck into a real
+# skull + snout + jaw; horns as swept-back roundcones.
+sdf_geometry
+{
+	name	dragon_body
+	part	sphere smin 0.30  -3.7 0.24 1.25  0 0 0  1 1 1  0.10 0 0  0.0
+	part	sphere smin 0.34  -3.3 0.30 1.02  0 0 0  1 1 1  0.16 0 0  0.0
+	part	sphere smin 0.38  -2.85 0.36 0.78  0 0 0  1 1 1  0.22 0 0  0.0
+	part	sphere smin 0.40  -2.45 0.42 0.55  0 0 0  1 1 1  0.28 0 0  0.0
+	part	sphere smin 0.42  -1.85 0.50 0.25  0 0 0  1 1 1  0.36 0 0  0.0
+	part	sphere smin 0.42  -1.2 0.58 0.02  0 0 0  1 1 1  0.45 0 0  0.0
+	part	sphere smin 0.42  -0.55 0.64 -0.08  0 0 0  1 1 1  0.52 0 0  0.0
+	part	sphere smin 0.42  0.1 0.68 -0.05  0 0 0  1 1 1  0.52 0 0  0.0
+	part	sphere smin 0.40  0.7 0.72 0.05  0 0 0  1 1 1  0.46 0 0  0.0
+	part	sphere smin 0.36  1.25 0.85 0.12  0 0 0  1 1 1  0.38 0 0  0.0
+	part	sphere smin 0.30  1.55 1.25 0.10  0 0 0  1 1 1  0.28 0 0  0.0
+	part	sphere smin 0.28  1.85 1.70 0.06  0 0 0  1 1 1  0.24 0 0  0.0
+	part	sphere smin 0.26  2.00 2.10 0.03  0 0 0  1 1 1  0.21 0 0  0.0
+	part	sphere smin 0.24  2.05 2.45 0.0  0 0 0  1 1 1  0.19 0 0  0.0
+	part	sphere smin 0.18  2.15 2.68 0.0  0 0 0  1 1 1  0.24 0 0  0.0
+	part	sphere smin 0.14  2.40 2.72 0.0  0 0 0  1 1 1  0.34 0 0  0.0
+	part	sphere smin 0.12  2.66 2.62 0.0  0 0 0  1 1 1  0.19 0 0  0.0
+	part	sphere smin 0.10  2.88 2.54 0.0  0 0 0  1 1 1  0.14 0 0  0.0
+	part	sphere smin 0.08  3.06 2.48 0.0  0 0 0  1 1 1  0.10 0 0  0.0
+	part	sphere smin 0.07  2.70 2.44 0.0  0 0 0  1 1 1  0.12 0 0  0.0
+	part	roundcone smin 0.05  2.20 2.98 0.16  30 0 -55  1 1 1  0.08 0.01 0.75  0.0
+	part	roundcone smin 0.05  2.20 2.98 -0.16  -30 0 -55  1 1 1  0.08 0.01 0.75  0.0
+	part	roundcone smin 0.05  1.45 1.35 0.10  0 0 -45  1 1 1  0.07 0.01 0.50  0.0
+	part	roundcone smin 0.05  0.85 1.10 0.10  0 0 -35  1 1 1  0.08 0.01 0.55  0.0
+	part	roundcone smin 0.05  0.15 1.14 -0.05  0 0 -25  1 1 1  0.08 0.01 0.55  0.0
+	part	roundcone smin 0.05  -0.55 1.10 -0.08  0 0 -18  1 1 1  0.07 0.01 0.50  0.0
+	part	roundcone smin 0.05  -1.35 0.82 0.05  0 0 -10  1 1 1  0.05 0.01 0.32  0.0
+	part	roundcone smin 0.05  -2.1 0.62 0.35  0 0 -5  1 1 1  0.04 0.01 0.26  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_dragon
+	geometry	dragon_body
+	material	mat_dragon
+	position	-2.6 1.15 -4.0
+	scale		1.25 1.25 1.25
+	orientation	0 -30 0
+}
+
+# Wings: flattened ellipsoids, angled up and back.
+ellipsoid_geometry
+{
+	name	wing
+	radii	1.3 0.035 0.7
+}
+
+uniformcolor_painter
+{
+	name	pnt_wing_violet
+	color	0.30 0.08 0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_wing_teal
+	color	0.03 0.35 0.42
+}
+
+iridescent_painter
+{
+	name	pnt_wing
+	colora	pnt_wing_violet
+	colorb	pnt_wing_teal
+	bias	0.1
+}
+
+lambertian_material
+{
+	name		mat_wing
+	reflectance	pnt_wing
+}
+
+# Wings rise as a V from the shoulders.  The X euler tips the membrane
+# toward the camera (a pure Z bank leaves the thin axis edge-on to +Z
+# and the wing renders as a stick); the Z euler banks the span upward.
+standard_object
+{
+	name		obj_wing_l
+	geometry	wing
+	material	mat_wing
+	position	-3.1 3.0 -4.1
+	orientation	55 20 -55
+}
+
+standard_object
+{
+	name		obj_wing_r
+	geometry	wing
+	material	mat_wing
+	position	-0.45 3.0 -4.5
+	orientation	65 -25 60
+}
+
+##################################################
+# The wizard: robed SDF figure + staff + orb
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_robe_indigo
+	color	0.08 0.05 0.30
+}
+
+uniformcolor_painter
+{
+	name	pnt_robe_gold
+	color	0.85 0.60 0.15
+}
+
+# Turbulence clusters LOW (mostly colora): a deep-indigo robe run
+# through with occasional gold filaments.
+turbulence3d_painter
+{
+	name		pnt_robe
+	colora		pnt_robe_indigo
+	colorb		pnt_robe_gold
+	octaves		4
+	persistence	0.6
+	scale		3.5 3.5 3.5
+}
+
+lambertian_material
+{
+	name		mat_robe
+	reflectance	pnt_robe
+}
+
+sdf_geometry
+{
+	name	wizard_body
+	part	roundcone union 0  0 0 0  0 0 0  1 1 1  0.42 0.14 1.15  0.0
+	part	sphere smin 0.10  0 1.22 0  0 0 0  1 1 1  0.19 0 0  0.0
+	part	sphere smin 0.05  0 1.46 0  0 0 0  1 1 1  0.13 0 0  0.0
+	part	sphere smin 0.09  0.20 1.20 0.14  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.09  0.29 1.30 0.19  0 0 0  1 1 1  0.08 0 0  0.0
+	part	sphere smin 0.09  0.36 1.38 0.24  0 0 0  1 1 1  0.075 0 0  0.0
+	part	torus smin 0.03  0 1.56 0  0 0 0  1 1 1  0.24 0.035 0  0.0
+	part	roundcone smin 0.04  0 1.57 0  0 0 8  1 1 1  0.20 0.01 0.62  0.0
+	part	box subtract 0  0 -0.6 0  0 0 0  1 1 1  1.0 0.6 1.0  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_wizard
+	geometry	wizard_body
+	material	mat_robe
+	position	2.2 1.35 3.2
+	orientation	0 -20 0
+}
+
+# Staff: thin tilted cylinder rising past the wizard's hand.
+cylinder_geometry
+{
+	name	staff
+	axis	y
+	radius	0.035
+	height	2.3
+}
+
+uniformcolor_painter
+{
+	name	pnt_staff
+	color	0.25 0.14 0.08
+}
+
+lambertian_material
+{
+	name		mat_staff
+	reflectance	pnt_staff
+}
+
+standard_object
+{
+	name		obj_staff
+	geometry	staff
+	material	mat_staff
+	position	2.50 2.50 3.55
+	orientation	0 0 -6
+}
+
+# The orb: emissive heart of the scene's magic.
+uniformcolor_painter
+{
+	name	pnt_orb
+	color	0.55 1.0 0.85
+}
+
+lambertian_luminaire_material
+{
+	name		mat_orb
+	exitance	pnt_orb
+	scale		60.0
+	material	none
+}
+
+sphere_geometry
+{
+	name	orb
+	radius	0.14
+}
+
+standard_object
+{
+	name		obj_orb
+	geometry	orb
+	material	mat_orb
+	position	2.63 3.72 3.55
+}
+
+# Cheap local light doing the orb's illumination work.
+omni_light
+{
+	name		orb_light
+	power		25
+	color		0.55 1.0 0.85
+	position	2.63 3.62 3.70
+}
+
+##################################################
+# Distant dragon: small silhouette high in the sky
+##################################################
+
+standard_object
+{
+	name		obj_dragon_far
+	geometry	dragon_body
+	material	mat_dragon
+	position	-3.6 6.3 -13.0
+	scale		0.35 0.35 0.35
+	orientation	0 180 6
+}
+
+standard_object
+{
+	name		obj_wing_far_l
+	geometry	wing
+	material	mat_wing
+	position	-3.95 6.75 -12.9
+	scale		0.35 0.35 0.35
+	orientation	55 20 -55
+}
+
+standard_object
+{
+	name		obj_wing_far_r
+	geometry	wing
+	material	mat_wing
+	position	-3.25 6.75 -13.1
+	scale		0.35 0.35 0.35
+	orientation	55 -20 55
+}
+
+##################################################
+# Mist: thin global haze + banked valley fog
+##################################################
+
+# (A global_medium haze was tried and removed: on an OPEN landscape
+# every ray that escapes to the environment in-scatters the
+# directional lights over an unbounded path, drowning the sky in the
+# rim light's colour.  Bounded mist banks below are the right idiom.)
+
+# Dense banked mist pooling in the hollows.
+homogeneous_medium
+{
+	name		med_mist
+	absorption	0.010 0.010 0.015
+	scattering	0.22 0.20 0.28
+	phase		hg 0.35
+}
+
+# Near-invisible shell that carries the interior medium.
+dielectric_material
+{
+	name		mat_mist_shell
+	tau			0.999
+	ior			1.001
+	scattering	100000.0
+}
+
+ellipsoid_geometry
+{
+	name	mist_bank
+	radii	4.5 0.40 2.2
+}
+
+standard_object
+{
+	name			obj_mist_a
+	geometry		mist_bank
+	material		mat_mist_shell
+	interior_medium	med_mist
+	position		0.5 0.35 -1.2
+	orientation		0 20 0
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name			obj_mist_b
+	geometry		mist_bank
+	material		mat_mist_shell
+	interior_medium	med_mist
+	position		-3.2 0.55 0.8
+	orientation		0 -15 0
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name			obj_mist_c
+	geometry		mist_bank
+	material		mat_mist_shell
+	interior_medium	med_mist
+	position		2.8 0.35 -3.5
+	orientation		0 30 0
+	casts_shadows	FALSE
+}
+
+# Low foreground veil drifting in front of the camera path.
+ellipsoid_geometry
+{
+	name	mist_veil
+	radii	6.0 0.30 2.5
+}
+
+standard_object
+{
+	name			obj_mist_d
+	geometry		mist_veil
+	material		mat_mist_shell
+	interior_medium	med_mist
+	position		-1.0 0.15 5.0
+	orientation		0 10 0
+	casts_shadows	FALSE
+}
+
+##################################################
+# Crystal spires: dielectric needles with a lit heart
+##################################################
+
+dielectric_material
+{
+	name		mat_crystal
+	tau			0.82 0.93 1.0
+	ior			1.55
+	scattering	100000.0
+}
+
+sdf_geometry
+{
+	name	crystal_spire
+	part	roundcone union 0  0 0 0  0 0 0  1 1 1  0.30 0.02 2.4  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_crystal_a
+	geometry	crystal_spire
+	material	mat_crystal
+	position	-0.6 -0.45 -1.2
+	scale		1.0 1.6 1.0
+	orientation	0 0 8
+}
+
+standard_object
+{
+	name		obj_crystal_b
+	geometry	crystal_spire
+	material	mat_crystal
+	position	0.35 -0.50 -0.8
+	scale		0.65 0.7 0.65
+	orientation	6 40 -10
+}
+
+standard_object
+{
+	name		obj_crystal_c
+	geometry	crystal_spire
+	material	mat_crystal
+	position	-1.35 -0.45 -0.6
+	scale		0.5 0.55 0.5
+	orientation	-5 70 -14
+}
+
+# The lit heart of the tall spire.
+uniformcolor_painter
+{
+	name	pnt_crystal_heart
+	color	0.35 0.95 1.0
+}
+
+lambertian_luminaire_material
+{
+	name		mat_crystal_heart
+	exitance	pnt_crystal_heart
+	scale		30.0
+	material	none
+}
+
+sphere_geometry
+{
+	name	crystal_core
+	radius	0.09
+}
+
+standard_object
+{
+	name		obj_crystal_heart
+	geometry	crystal_core
+	material	mat_crystal_heart
+	position	-0.52 0.5 -1.2
+}
+
+omni_light
+{
+	name		crystal_light
+	power		7
+	color		0.35 0.95 1.0
+	position	-0.52 0.65 -1.2
+}
+
+##################################################
+# Floating shards: craggy displaced rocks adrift
+##################################################
+
+sphere_geometry
+{
+	name	shard_base
+	radius	0.7
+}
+
+# Craggy surface via UV-domain ridges (3D painters are constant
+# through the function2d bridge, so the field is authored in UV).
+expression_function2d
+{
+	name	fn_crag
+	def		a sin( u * 55.0 ) * sin( v * 47.0 + 1.0 )
+	def		b sin( u * 23.0 + 2.0 ) * sin( v * 19.0 )
+	expr	0.5 * abs( a ) + 0.5 * abs( b )
+}
+
+displaced_geometry
+{
+	name			shard_rock
+	base_geometry	shard_base
+	detail			64
+	displacement	fn_crag
+	disp_scale		0.35
+}
+
+standard_object
+{
+	name		obj_shard_a
+	geometry	shard_rock
+	material	mat_terrain_glow
+	position	-5.2 5.3 -10.0
+	orientation	20 40 10
+}
+
+standard_object
+{
+	name		obj_shard_b
+	geometry	shard_rock
+	material	mat_terrain_glow
+	position	5.6 5.7 -10.5
+	scale		0.65 0.65 0.65
+	orientation	-15 70 30
+}
+
+##################################################
+# The spell: a luminous arc from orb to dragon
+##################################################
+
+lambertian_luminaire_material
+{
+	name		mat_spell
+	exitance	pnt_orb
+	scale		4.0
+	material	none
+}
+
+sweep_geometry
+{
+	name			spell_arc
+	profile_point	0.032 0.0
+	profile_point	0.023 0.023
+	profile_point	0.0 0.032
+	profile_point	-0.023 0.023
+	profile_point	-0.032 0.0
+	profile_point	-0.023 -0.023
+	profile_point	0.0 -0.032
+	profile_point	0.023 -0.023
+	point	2.63 3.72 3.55
+	point	1.90 4.00 1.60
+	point	1.30 4.25 -0.30
+	point	0.80 4.26 -2.00
+	n_len	96
+	cap_start	TRUE
+	cap_end		TRUE
+}
+
+standard_object
+{
+	name		obj_spell
+	geometry	spell_arc
+	material	mat_spell
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		1.6
+	color		1.0 0.82 0.58
+	direction	0.45 0.55 0.55
+}
+
+directional_light
+{
+	name		fill
+	power		0.7
+	color		0.50 0.45 0.90
+	direction	-0.55 0.35 0.60
+}
+
+directional_light
+{
+	name		rim
+	power		3.2
+	color		1.0 0.35 0.75
+	direction	0.10 0.45 -0.85
+}
