@@ -353,6 +353,28 @@ Stop-rule shape transplanted from S2: per-subject adoption + a
 chain-quality read (are chains used for figure parts, do endpoints
 attach), habituation watch on nothing (no escape params here).
 
+**POST-ARC E4 (2026-08-07, `3de94b68`): the render-cadence gate — and
+the strongest datapoint the mechanism law will ever get.**  A live
+mermaid-battery run died mid-build: the blind-edit nudge (advice,
+injected as a synthetic user message) fired for the FIRST time and the
+model echoed a synthesis of the guidance back as its final text — the
+advice form of render-cadence didn't just fail, it killed the run.
+Replaced by the sequencing gate (72-log item 6, at last): 10 blind
+mutations → mutations refused (retriable, actionable) until one cheap
+look; resets on looks and user turns; refusals never self-count.  All
+three host loops intercept (review caught Windows silently losing even
+its old transcript-carried protection — the nudge's one virtue);
+MCP scope boundary documented; empty-turn retry ported GUI-side;
+document-untouched-on-refusal pinned through the REAL eval loop;
+byte-identity guarded across all 5 codecs.  Nine fixtures gained the
+draft-render check-in real models must now perform.  **INSTRUMENT
+CHANGE**: post-E4 runs are not turn-structure-comparable to earlier
+batches — blind-batching now meets a wall, which is the point.
+Follow-up recorded: failed-render still counts as a look (inherited;
+the gate makes it newly load-bearing).  The echo-turn text-pattern
+detector remains deliberately unbuilt (the echo was a synthesis;
+removing the in-band trigger was the fix).
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
