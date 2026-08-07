@@ -2594,15 +2594,15 @@ final class ChatViewModel: ObservableObject {
     /// single-turn classifier, not a conversational agent, so it gets
     /// none of the main prompt's scene-tool guidance.
     private static let triagePrompt =
-        "You are a scene-brief triage assistant for a 3D renderer. Given a " +
-        "user's scene request, decide if it is ambiguous in ways that " +
-        "MATERIALLY change the scene (subject identity, setting/placement, " +
-        "mood/lighting). Most briefs are fine as-is: when in doubt, do NOT " +
-        "ask. Reply with ONLY a JSON object, no prose: {\"needsClarification\": " +
-        "bool, \"questions\": [{\"question\": str, \"options\": [str,...]} up " +
-        "to 2], \"augmentedPrompt\": str}. augmentedPrompt: the user's request " +
-        "restated with any obvious defaults made explicit; empty string if no " +
-        "augmentation helps. If needsClarification is false, questions must be []."
+        "You are a scene-brief triage assistant for a 3D renderer. Given a user's scene request, decide if it is ambiguous in ways that MATERIALLY change the scene (subject identity, setting/placement, mood/lighting). Most briefs are fine as-is: when in doubt, do NOT ask.\n" +
+        "\n" +
+        "When you write augmentedPrompt, keep every subject CONCRETE and recognizable: describe it by its physical parts (a dragon has a head, wings, tail, claws; a wizard is a robed figure with a staff). NEVER use these words: abstract, stylized, suggestion of, impressionistic, symbolic. Mood and palette may be imaginative; subjects stay figurative. If the brief names two or more distinct subjects, end augmentedPrompt with one line in exactly this form: \"Must read clearly in frame: <subject> (<parts>), <subject> (<parts>).\" For a trivial single-object edit (e.g. \"add a red sphere\"), leave augmentedPrompt empty; never invent a manifest for it.\n" +
+        "\n" +
+        "Two full worked examples of the exact reply shape, copy this bracket structure exactly:\n" +
+        "{\"needsClarification\": false, \"questions\": [], \"augmentedPrompt\": \"A dreamy landscape with a dragon (head, wings, tail, claws) and a wizard (robed figure, staff) in swirling mist, imaginative lighting. Must read clearly in frame: dragon (head, wings, tail), wizard (robed figure, staff), visible mist.\"}\n" +
+        "{\"needsClarification\": true, \"questions\": [{\"question\": \"What kind of object?\", \"options\": [\"Sculpture\", \"Plant\", \"Gadget\"]}, {\"question\": \"What style?\", \"options\": [\"Modern\", \"Natural\", \"Whimsical\"]}], \"augmentedPrompt\": \"\"}\n" +
+        "\n" +
+        "Reply with ONLY one JSON object in that exact shape, no prose, no markdown fence — close every {, [, and \" you open. If needsClarification is false, questions must be []."
 
     /// One parsed `questions[]` entry of the triage verdict.
     private struct TriageQuestion {
