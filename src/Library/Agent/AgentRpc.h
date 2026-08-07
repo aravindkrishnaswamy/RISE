@@ -158,36 +158,98 @@
 //                                            hardcoded "read") -- see AgentSession.h's
 //                                            InsertMaterialScaffold doc for the full
 //                                            autonomy-vs-authority caveat.)
-//      insert_geometry_scaffold {family,name,size,detail,aspect,baseHeadVersion?}
+//      insert_geometry_scaffold {family,name,size,detail,aspect,points?,taper?,tone?,
+//                                 baseHeadVersion?}
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
-//                                            family,name,geometry:{name,kind}}
-//                                           (Arc-75 slice S3b: the geometry sibling of
-//                                            insert_material_scaffold -- expand ONE of
-//                                            FOUR geometry-family templates --
-//                                            displaced_slab/sweep_rail/blended_vessel/
-//                                            sdf_column -- into a small GEOMETRY-ONLY
-//                                            chunk graph (1-3 chunks, every chunk named
-//                                            tmpl_<name>_<role>; displaced_slab bolts a
-//                                            perlin2d_painter noise source onto a
-//                                            displaced_geometry, the other three families
-//                                            are each a single sdf_geometry/sweep_geometry
-//                                            chunk), submitted through the SAME batch
-//                                            machinery insert_chunks uses.  ALL THREE
-//                                            params are REQUIRED, no defaults -- a
-//                                            missing one, an unrecognized family, or a
-//                                            NAME COLLISION refuses the WHOLE call
-//                                            BEFORE any chunk is generated (document
-//                                            unchanged), reported as a tool ERROR, not a
-//                                            partial result.  `geometry` names the ONE
+//                                            family,name,geometry:{name,kind},
+//                                            material?:{name,kind},medium?:{name,kind},
+//                                            object?:{name,kind},message?}
+//                                           (Arc-75 slice S3b + slice E3: the geometry
+//                                            sibling of insert_material_scaffold --
+//                                            expand ONE of SIX geometry-family
+//                                            templates into a chunk graph (every chunk
+//                                            named tmpl_<name>_<role>), submitted
+//                                            through the SAME batch machinery
+//                                            insert_chunks uses.  REQUIRED params
+//                                            DIFFER BY FAMILY (`family`/`name` always;
+//                                            a missing one for the RESOLVED family, an
+//                                            unrecognized family, or a NAME COLLISION
+//                                            refuses the WHOLE call BEFORE any chunk is
+//                                            generated (document unchanged), reported
+//                                            as a tool ERROR, not a partial result --
+//                                            `family` is validated against the known
+//                                            list FIRST, before any other param is
+//                                            checked, so an unrecognized family always
+//                                            gets the "unknown family" message, never a
+//                                            misleading "param X is required"):
+//                                              - displaced_slab/sweep_rail/
+//                                                blended_vessel/sdf_column: ALSO need
+//                                                `size` (>0)/`detail` (0..1)/`aspect`
+//                                                (>0).  GEOMETRY ONLY (displaced_slab
+//                                                bolts a perlin2d_painter noise source
+//                                                onto a displaced_geometry; the other
+//                                                three are each a single sdf_geometry/
+//                                                sweep_geometry chunk) -- the model
+//                                                wires the standard_object (and any
+//                                                material) itself, mirroring the
+//                                                material scaffold's own proven
+//                                                division; `points`/`taper`/`tone` are
+//                                                accepted but IGNORED for these four.
+//                                              - blended_chain (E3): ALSO needs
+//                                                `points` (2-6 semicolon-separated
+//                                                "x y z" triplets, each coordinate
+//                                                |v|<=1e6 -- the spine path; the FIRST/
+//                                                LAST emitted node lands EXACTLY on the
+//                                                first/last triplet), `size` (>0: base
+//                                                radius at the first point), `taper`
+//                                                (0..1: end-to-end radius falloff),
+//                                                `detail` (0..1: node density) --
+//                                                `aspect` is IGNORED.  ONE sdf_geometry
+//                                                chunk (a smin-blended sphere chain);
+//                                                every joint's smin `k` is floored at
+//                                                the EXACT bridging threshold derived
+//                                                from the realized post-jitter radii/
+//                                                spacing (not a coarse spacing-only
+//                                                guess), so the chain cannot fracture
+//                                                regardless of size/taper/detail --
+//                                                see AgentSession.cpp's
+//                                                BuildBlendedChain for the sminP
+//                                                derivation.
+//                                              - volume_bank (E3): ALSO needs `size`
+//                                                (>0), `aspect` (>0: elongation),
+//                                                `detail` (0..1: density-field swirl),
+//                                                `tone` ("r g b" each 0..1: scatter
+//                                                tint) -- `points`/`taper` are IGNORED.
+//                                                THE ONE FAMILY THAT ALSO EMITS a
+//                                                dielectric_material, a
+//                                                painter_heterogeneous_medium (density
+//                                                driven by a domain-warped noise
+//                                                painter -- a genuinely swirling
+//                                                volume, not a flat uniform haze), and
+//                                                a standard_object binding all three --
+//                                                a bare volume graph does nothing until
+//                                                an object binds it, and the medium's
+//                                                `bbox_min`/`bbox_max` are WORLD-SPACE
+//                                                and fixed at creation time, so this
+//                                                scaffold places the object itself
+//                                                (identity transform) to keep the
+//                                                bbox aligned; result carries non-empty
+//                                                `material`/`medium`/`object`
+//                                                ({name,kind} each) plus a FACTUAL
+//                                                `message` reminding a caller who
+//                                                repositions the object to also update
+//                                                the medium's bbox.  See
+//                                                AgentSession.h's InsertGeometryScaffold
+//                                                doc for the full per-family param
+//                                                table and BuildVolumeBank's own
+//                                                comment for the bbox-coupling
+//                                                rationale.
+//                                            `geometry` (every family) names the ONE
 //                                            geometry chunk a model should bind into a
-//                                            `standard_object.geometry` slot -- unlike
-//                                            insert_material_scaffold, this verb never
-//                                            emits a material or a standard_object
-//                                            itself (the model wires those, mirroring
-//                                            the material scaffold's own proven
-//                                            division).  Internal graph constants are
-//                                            jittered DETERMINISTICALLY from `name` (no
-//                                            RNG, no clock).  DELIBERATELY excluded from
+//                                            `standard_object.geometry` slot.  Internal
+//                                            graph constants are jittered
+//                                            DETERMINISTICALLY from `name` (no RNG, no
+//                                            clock).  DELIBERATELY excluded from
 //                                            IsProposeSafeVerb, for the SAME reason
 //                                            insert_material_scaffold is -- refused
 //                                            under BOTH Read AND Propose autonomy, with

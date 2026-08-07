@@ -1950,16 +1950,28 @@ namespace RISE
 			                                            double scale,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
-			//! Arc-75 slice S3b (insert_geometry_scaffold): the one of FOUR
-			//! geometry-family templates this call expanded -- pin the
-			//! strings, they are the wire/tool-schema enum.  The geometry
-			//! sibling of MaterialScaffoldFamily above; same conventions.
+			//! Arc-75 slice S3b (insert_geometry_scaffold), extended by
+			//! slice E3: the one of SIX geometry-family templates this call
+			//! expanded -- pin the strings, they are the wire/tool-schema
+			//! enum.  The geometry sibling of MaterialScaffoldFamily above;
+			//! same conventions.  E3 added BlendedChain (a smin-blended
+			//! sphere chain swept along a model-authored path -- the
+			//! family whose "creative essence" is the path, so it takes
+			//! `points`/`taper` instead of `aspect`) and VolumeBank (an
+			//! elongated atmospheric volume -- container + near-invisible
+			//! dielectric shell + painter-driven heterogeneous medium,
+			//! ready-wired -- the one family that DOES emit a material and
+			//! a standard_object; see InsertGeometryScaffold's doc for
+			//! why).  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! slice E3 for the design.
 			enum class GeometryScaffoldFamily
 			{
 				DisplacedSlab,
 				SweepRail,
 				BlendedVessel,
 				SdfColumn,
+				BlendedChain,
+				VolumeBank,
 			};
 
 			//! The structured result of InsertGeometryScaffold.  Same
@@ -1992,6 +2004,16 @@ namespace RISE
 			//! `displacement` slot, which resolves through the Function2D
 			//! manager (Job::AddDisplacedGeometry), not the colour pipe --
 			//! so there is no `boundSlots`-equivalent field here.
+			//! E3 addendum: `materialName`/`materialKind`, `mediumName`/
+			//! `mediumKind`, and `objectName`/`objectKind` are empty for
+			//! every family except `volume_bank`, the ONE family that
+			//! emits a material, a medium, AND a standard_object (see
+			//! InsertGeometryScaffold's doc for why that family alone
+			//! deviates from the graph-only convention).  When populated,
+			//! `message` ALSO carries a factual (non-advisory) note on an
+			//! `ok==true` volume_bank result -- see InsertGeometryScaffold's
+			//! doc -- unlike every other family, where `message` stays
+			//! empty on success.
 			struct AgentGeometryScaffoldResult
 			{
 				bool        ok = false;
@@ -1999,43 +2021,116 @@ namespace RISE
 				std::string family;
 				std::string geometryName;
 				std::string geometryKind;
+				std::string materialName;
+				std::string materialKind;
+				std::string mediumName;
+				std::string mediumKind;
+				std::string objectName;
+				std::string objectKind;
 				std::vector<AgentChunkResult> chunkResults;
 			};
 
-			//! Expand geometry `family` into a small GEOMETRY-ONLY chunk
-			//! graph (1-3 chunks: displaced_slab is base box + noise
-			//! Function2D source + displaced_geometry bolt-on; sweep_rail,
-			//! blended_vessel, and sdf_column are each a SINGLE geometry
-			//! chunk, every chunk named `tmpl_<name>_<role>`) and submit it
-			//! through InsertChunks -- so an advanced geometric form costs
-			//! ONE tool call instead of hand-composing a displaced_geometry/
-			//! sweep_geometry/sdf_geometry chunk from scratch.  See
-			//! docs/agentic-redesign/75-expressive-surface-arc.md S3b for
+			//! Expand geometry `family` into a small chunk graph (1-3 chunks
+			//! for the ORIGINAL four families: displaced_slab is base box +
+			//! noise Function2D source + displaced_geometry bolt-on;
+			//! sweep_rail, blended_vessel, and sdf_column are each a SINGLE
+			//! geometry chunk; every chunk named `tmpl_<name>_<role>`) and
+			//! submit it through InsertChunks -- so an advanced geometric
+			//! form costs ONE tool call instead of hand-composing a
+			//! displaced_geometry/sweep_geometry/sdf_geometry chunk from
+			//! scratch.  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! S3b (original four) and E3 (blended_chain, volume_bank) for
 			//! the design and AgentSession.cpp's BuildGeometryScaffoldGraph
 			//! for the per-family chunk design + the param-flow rationale.
-			//! Deliberately emits GEOMETRY chunks ONLY (plus, for
-			//! displaced_slab, the one Function2D noise source it bolts
-			//! on) -- the model wires the `standard_object` (and any
-			//! material) itself, the exact division S2's census proved
-			//! models handle.  ALL THREE params are REQUIRED -- `family`
-			//! (one of the GeometryScaffoldFamily strings), `name` (a
-			//! fresh, unique prefix), `size` (>0, overall scale), `detail`
-			//! (0..1: displacement amplitude / profile complexity / smin
-			//! tightness / tessellation, whichever is honest for that
-			//! family -- see each BuildXxx's own comment), `aspect` (>0:
-			//! elongation).  Internal graph constants (noise phase/
-			//! frequency, profile-point phase, path bow, smin blend radii,
-			//! segment counts) are jittered DETERMINISTICALLY from a hash
-			//! of `name` (the SAME ScaffoldFnv1a64/ScaffoldJitter* helpers
-			//! insert_material_scaffold uses -- see ScaffoldFnv1a64's doc
-			//! for the distinctive-salt-per-knob avalanche caveat, which
-			//! applies identically here) -- no RNG, no clock, so two calls
-			//! with the SAME name produce byte-identical chunk text and two
-			//! DIFFERENT names visibly differ beyond their explicit params.
-			//! Routes entirely through InsertChunks (see that method's
-			//! doc): AUTHORITY (Owner vs External) staging-vs-commit,
-			//! conflict detection, and per-chunk `issues` diagnostics are
-			//! ALL inherited unchanged for a caller at THIS C++ API --
+			//!
+			//! PARAM SHAPE VARIES BY FAMILY (E3 widened the signature to the
+			//! union of every family's params; each family validates and
+			//! uses only its own subset -- unused params for a given family
+			//! are silently ignored, never validated):
+			//!   - displaced_slab / sweep_rail / blended_vessel / sdf_column
+			//!     (unchanged from S3b): REQUIRE `family`, `name`, `size`
+			//!     (>0, overall scale), `detail` (0..1: displacement
+			//!     amplitude / profile complexity / smin tightness /
+			//!     tessellation, whichever is honest for that family --
+			//!     see each BuildXxx's own comment), `aspect` (>0:
+			//!     elongation).  `points`/`taper`/`tone` are ignored.
+			//!     Deliberately emit GEOMETRY chunks ONLY (plus, for
+			//!     displaced_slab, the one Function2D noise source it
+			//!     bolts on) -- the model wires the `standard_object`
+			//!     (and any material) itself, the exact division S2's
+			//!     census proved models handle.
+			//!   - blended_chain (E3): a smin-blended chain of spheres
+			//!     swept along a model-authored path -- the path IS this
+			//!     family's creative essence, so it takes `points`
+			//!     (REQUIRED: 2-6 semicolon-separated "x y z" triplets,
+			//!     each a finite number -- e.g. "0 0 0; 0.5 1.2 -0.3; 1 3 0")
+			//!     and `taper` (REQUIRED, 0..1: end-to-end radius falloff
+			//!     from the first point to the last) INSTEAD of `aspect`
+			//!     (ignored).  `size` (>0: base radius at the first point)
+			//!     and `detail` (0..1: node density along the path -- more
+			//!     nodes = smoother -- and smin-k tightness) are still
+			//!     REQUIRED.  Emits ONE sdf_geometry chunk (continuity by
+			//!     construction: every node-to-node joint's smin blend
+			//!     radius is floored at the EXACT polynomial-smin bridging
+			//!     threshold derived from the REALIZED post-jitter radii
+			//!     and spacing at that joint -- not a coarse spacing-only
+			//!     guess -- so the chain can never show a visible gap
+			//!     regardless of size/taper/detail; node count also scales
+			//!     with a geometric density estimate so a heavily-tapered/
+			//!     sparse chain adds more, closer nodes near the thin end
+			//!     rather than ballooning the blend into an oversized
+			//!     bulge there.  See BuildBlendedChain's own comment for
+			//!     the full sminP derivation.)  The path is interpolated
+			//!     with a clamped Catmull-Rom spline through
+			//!     every given point (so the FIRST and LAST nodes land
+			//!     EXACTLY on the first/last given point -- a model's
+			//!     documented attachment mechanism: end a chain exactly at
+			//!     another part's surface by naming that surface's
+			//!     coordinate as an endpoint).  See BuildBlendedChain's own
+			//!     comment for the interpolation + jitter details.
+			//!   - volume_bank (E3): an elongated atmospheric volume --
+			//!     container geometry + a near-invisible dielectric
+			//!     boundary material + a painter-driven heterogeneous
+			//!     medium, ready-wired.  REQUIRES `family`, `name`, `size`
+			//!     (>0, overall scale), `aspect` (>0: elongation), `detail`
+			//!     (0..1: density-field wispiness/swirl -- modulates the
+			//!     domain-warped noise density painter's warp amplitude
+			//!     and frequency), `tone` (REQUIRED, "r g b" each 0..1: the
+			//!     medium's scatter tint).  `points`/`taper` are ignored.
+			//!     THE ONE FAMILY THAT DEVIATES from the graph-only
+			//!     convention -- it ALSO emits a dielectric_material and a
+			//!     standard_object (not just geometry) -- for two reasons,
+			//!     both explained in BuildVolumeBank's own comment: (1) a
+			//!     bare volume graph does nothing until an object binds it
+			//!     via `interior_medium`, and (2) more importantly,
+			//!     painter_heterogeneous_medium's `bbox_min`/`bbox_max` are
+			//!     WORLD-SPACE and fixed at chunk-parse time (see
+			//!     HeterogeneousMedium.cpp's LookupDensity) -- they are NOT
+			//!     re-derived from the interior_medium object's transform,
+			//!     so this scaffold can only guarantee a correctly-aligned
+			//!     density field by choosing the object's placement itself
+			//!     (identity transform at the origin) and computing the
+			//!     bbox to match.  On an `ok==true` volume_bank result,
+			//!     `message` carries a FACTUAL (not advisory) reminder of
+			//!     this: repositioning/rescaling the emitted
+			//!     `standard_object` needs a matching hand-edit to the
+			//!     medium chunk's `bbox_min`/`bbox_max`, or the density
+			//!     field will no longer align with the container.
+			//!
+			//! Internal graph constants (noise phase/frequency, profile-
+			//! point phase, path bow, smin blend radii, segment counts,
+			//! per-node path/radius jitter) are jittered DETERMINISTICALLY
+			//! from a hash of `name` (the SAME ScaffoldFnv1a64/
+			//! ScaffoldJitter* helpers insert_material_scaffold uses -- see
+			//! ScaffoldFnv1a64's doc for the distinctive-salt-per-knob
+			//! avalanche caveat, which applies identically here) -- no RNG,
+			//! no clock, so two calls with the SAME name (and same other
+			//! params) produce byte-identical chunk text and two DIFFERENT
+			//! names visibly differ beyond their explicit params.  Routes
+			//! entirely through InsertChunks (see that method's doc):
+			//! AUTHORITY (Owner vs External) staging-vs-commit, conflict
+			//! detection, and per-chunk `issues` diagnostics are ALL
+			//! inherited unchanged for a caller at THIS C++ API --
 			//! including the Secure-MCP External-authority staging
 			//! behaviour.
 			//!
@@ -2060,6 +2155,9 @@ namespace RISE
 			                                                    double size,
 			                                                    double detail,
 			                                                    double aspect,
+			                                                    const std::string& points = std::string(),
+			                                                    double taper = 0.0,
+			                                                    const std::string& tone = std::string(),
 			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved

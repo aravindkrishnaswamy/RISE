@@ -388,6 +388,40 @@ standard_object
 }
 ```
 
+## Atmospheric volumes
+
+A hand-built "atmosphere" is easy to get wrong two ways: a uniform-
+density sphere/box filled with a plain `homogeneous_medium` never
+swirls (it looks like a flat grey haze, not drifting mist or smoke),
+and the medium is USELESS unless an object's `interior_medium` binds
+it -- a medium chunk sitting unreferenced in the document does nothing.
+
+**A one-call elongated, swirling volume: `volume_bank`.**
+`insert_geometry_scaffold {family:"volume_bank", name:"mist1",
+size:1.4, aspect:2.2, detail:0.6, tone:"0.75 0.8 0.85"}` expands a
+fully-wired atmospheric bank in one call: an elongated ellipsoid
+container, a near-invisible dielectric boundary (so the container's
+own surface never reads as a hard edge), and a
+`painter_heterogeneous_medium` whose density comes from a domain-
+warped noise painter -- so the volume genuinely drifts and swirls
+instead of reading as a flat fog block.  `aspect` elongates the bank
+along its local X axis (a horizontal drift, not a ball of fog);
+`detail` raises the noise field's warp amplitude and frequency
+together for a wispier, more turbulent result; `tone` tints what the
+medium scatters (and, inversely, what it absorbs) -- a cool pale blue
+like the example above reads as mist, a warm dim orange as smoke or
+haze.  Unlike every other `insert_geometry_scaffold` family, this ONE
+family also emits the dielectric material AND a `standard_object`
+binding geometry + material + `interior_medium` together (returned as
+`material`/`medium`/`object`, each `{name,kind}`) -- a bare volume
+graph would otherwise do nothing, and the medium's density field is
+anchored in WORLD SPACE at creation time, so the scaffold has to place
+the object itself to keep the density aligned with the container.  The
+call's result carries a factual `message`: if you reposition or
+rescale the emitted object afterward, the medium's `bbox_min`/
+`bbox_max` need a matching hand-edit or the swirl will drift out of
+alignment with the container's new position.
+
 ## Power / units guidance
 
 - Directional & ambient: radiance = `color * power`, no distance

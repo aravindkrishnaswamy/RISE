@@ -996,8 +996,10 @@ void AgentLoopbackHttpServer::Serve()
 		// AgentRpcDispatcher it wraps -- documented NOT thread-safe) is
 		// never entered from two connections at once: there is only ever
 		// ONE connection alive in this loop's body at a time. A second
-		// client's SYN queues in the OS listen backlog (16 deep, set in
-		// Bind()) and is accepted on the NEXT loop iteration.
+		// client's SYN queues in the OS listen backlog (8 deep, set in
+		// Bind() -- exactly fits AgentLoopbackHttpTest.cpp's kN=8
+		// serialization burst, so raise BOTH together) and is accepted on
+		// the NEXT loop iteration.
 		ServeOneConnection( client );
 		CloseSock( client );
 	}

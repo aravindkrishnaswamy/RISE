@@ -4342,7 +4342,7 @@ static void TestGeometryScaffoldFamilies()
 		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
 
 		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
-			fc.family, "geoA", 1.4, 0.6, 1.3, &v0 );
+			fc.family, "geoA", 1.4, 0.6, 1.3, std::string(), 0.0, std::string(), &v0 );
 
 		Check( sr.ok, std::string( "GS1(" ) + fc.family + ") call itself is well-formed (ok==true): " + sr.message );
 		Check( sr.chunkResults.size() == fc.expectedChunkCount,
@@ -4686,7 +4686,8 @@ static void TestGeometryScaffoldBadFamily()
 		sess->InsertGeometryScaffold( "twisted_lattice", "x", 1.0, 0.5, 1.0 );
 	Check( !sr.ok, "GS4 an unknown family refuses the call (ok==false)" );
 	Check( sr.chunkResults.empty(), "GS4 no chunks were generated for an unknown family" );
-	const char* families[] = { "displaced_slab", "sweep_rail", "blended_vessel", "sdf_column" };
+	const char* families[] = { "displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
+	                           "blended_chain", "volume_bank" };
 	for( const char* f : families ) {
 		Check( sr.message.find( f ) != std::string::npos,
 		       std::string( "GS4 the error message lists valid family `" ) + f + "`" );
@@ -4812,6 +4813,877 @@ static void TestGeometryScaffoldProposalMode()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// GS7-GS20: Arc-75 slice E3 -- insert_geometry_scaffold's two NEW
+// families, blended_chain and volume_bank.  Same fixture/helper
+// conventions as GS1-GS6 above (TempPath/LoadScene/TmplName/
+// ExtractParamAfter/ExtractNthPartLine/GeometryBBoxExtents reused
+// verbatim).
+//----------------------------------------------------------------------
+
+//! The Nth (0-indexed) `part` line's count for `chunkName` -- keeps
+//! incrementing until ExtractNthPartLine comes back empty.  Every part
+//! line this generator ever emits has real content, so "empty" only
+//! ever means "ran off the end of the list".
+static std::size_t CountPartLines( const std::string& doc, const std::string& chunkName )
+{
+	std::size_t n = 0;
+	while( !ExtractNthPartLine( doc, chunkName, n ).empty() ) ++n;
+	return n;
+}
+
+//! GS7: blended_chain -- basic expansion.  ONE sdf_geometry chunk
+//! applies; its bbox spans (at least) the authored path's own extent
+//! on every axis (the chain's radius only ADDS to the path's own
+//! bounding box, never subtracts); the geometry binds to a plain
+//! object+material and that graph applies cleanly.
+static void TestGeometryScaffoldBlendedChainBasic()
+{
+	std::printf( "GS7: insert_geometry_scaffold -- blended_chain basic expansion...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs7.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS7 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
+		"blended_chain", "chainA", 0.2, 0.5, 0.5, "0 0 0; 0.5 1.0 0.2; 1.0 2.0 0.0", 0.4, std::string() );
+
+	Check( sr.ok, std::string( "GS7 call itself is well-formed: " ) + sr.message );
+	Check( sr.chunkResults.size() == 1, "GS7 exactly ONE chunk generated (the sdf_geometry chain)" );
+	Check( sr.geometryKind == "sdf_geometry", "GS7 geometry chunk kind is sdf_geometry" );
+	Check( sr.geometryName == TmplName( "chainA", "chain" ), "GS7 geometry chunk named tmpl_chainA_chain" );
+	Check( sr.materialName.empty() && sr.objectName.empty(),
+	       "GS7 blended_chain, like the original four families, emits NO material/object" );
+
+	double ex = 0.0, ey = 0.0, ez = 0.0;
+	Check( GeometryBBoxExtents( pJob, sr.geometryName, ex, ey, ez ), "GS7 the chain geometry resolves through the live manager" );
+	// Path bbox: x in [0,1.0], y in [0,2.0], z in [0,0.2] -> own extents 1.0/2.0/0.2.
+	Check( ex >= 1.0 - 1e-6, "GS7 bbox X extent covers the path's own X extent" );
+	Check( ey >= 2.0 - 1e-6, "GS7 bbox Y extent covers the path's own Y extent" );
+	Check( ez >= 0.2 - 1e-6, "GS7 bbox Z extent covers the path's own Z extent" );
+
+	const std::vector<Agent::AgentChunkResult> bound = sess->InsertChunks( {
+		"uniformcolor_painter\n{\nname pnt_gs7\ncolor 0.6 0.6 0.6\n}",
+		"lambertian_material\n{\nname mat_gs7\nreflectance pnt_gs7\n}",
+		"standard_object\n{\nname obj_gs7\ngeometry " + sr.geometryName + "\nmaterial mat_gs7\n}",
+	} );
+	bool allApplied = true;
+	for( const auto& cr : bound ) if( !cr.applied ) allApplied = false;
+	Check( allApplied, "GS7 binding chunks (painter/material/object) all applied" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS8: `taper` genuinely flows into the realized silhouette -- SAME
+//! `name` for both calls (so every other jitter draw is pinned
+//! identical), taper=0.9 vs taper=0.0, on a path whose LAST point is
+//! the bbox's extremal X corner.  Node 0's radius is UNAFFECTED by
+//! taper (taperFactor at u=0 is always 1 regardless of `taper`), but
+//! the last node's radius falls from 100% of `size` (taper=0) to ~12%
+//! (taper=0.9) -- the X extent (which spans from node0's -radius edge
+//! to node-last's +radius edge) must shrink measurably.
+static void TestGeometryScaffoldBlendedChainTaperFlow()
+{
+	std::printf( "GS8: insert_geometry_scaffold -- blended_chain taper genuinely changes the bbox...\n" );
+
+	const std::string points = "0 0 0; 1.0 0.3 0; 2.0 0.0 0";
+	const double kSize = 0.2;
+
+	auto expandExtentX = [&]( double taper ) -> double {
+		const std::string tmp = TempPath( "agentcrud_gs8.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return -1.0;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "blended_chain", "chainT", kSize, 0.5, 1.0, points, taper, std::string() );
+		double ex = -1.0, ey = 0.0, ez = 0.0;
+		if( sr.ok ) GeometryBBoxExtents( pJob, sr.geometryName, ex, ey, ez );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return ex;
+	};
+
+	const double exLow  = expandExtentX( 0.0 );
+	const double exHigh = expandExtentX( 0.9 );
+	Check( exLow > 0.0 && exHigh > 0.0, "GS8 both taper variants produced a valid bbox" );
+	Check( exLow - exHigh > kSize * 0.3,
+	       "GS8 taper=0.9 measurably shrinks the X extent vs taper=0.0 (tip radius genuinely falls off)" );
+}
+
+//! GS9 (mutation-style red-proof): `detail` genuinely flows into NODE
+//! COUNT -- extracted as the raw `part`-line count of the emitted
+//! sdf_geometry chunk, not just a coarse bbox proxy (the GS1d "decoy
+//! landmine" discipline: a bbox check alone would not catch a mutation
+//! that hardcodes node count away).
+static void TestGeometryScaffoldBlendedChainDetailFlow()
+{
+	std::printf( "GS9: insert_geometry_scaffold -- blended_chain detail genuinely changes node/part count...\n" );
+
+	const std::string points = "0 0 0; 1.0 1.0 0; 2.0 0.0 0";
+	auto expandPartCount = [&]( double detail ) -> std::size_t {
+		const std::string tmp = TempPath( "agentcrud_gs9.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return 0;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "blended_chain", "chainD", 0.2, detail, 1.0, points, 0.3, std::string() );
+		std::size_t n = 0;
+		if( sr.ok ) n = CountPartLines( sess->ReadDocument(), sr.geometryName );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return n;
+	};
+
+	const std::size_t nLow  = expandPartCount( 0.0 );
+	const std::size_t nHigh = expandPartCount( 1.0 );
+	Check( nLow > 0 && nHigh > 0, "GS9 both detail variants produced part lines" );
+	Check( nHigh > nLow, "GS9 detail=1.0 produces MORE nodes/part-lines than detail=0.0 (node density genuinely flows)" );
+}
+
+//! GS10: hostile `points` strings -- wrong arity (1, and 7), a
+//! malformed triplet (too few/too many numbers), a non-finite
+//! coordinate, an empty string, and non-numeric garbage -- ALL refused
+//! with an actionable message, document unchanged.
+static void TestGeometryScaffoldBlendedChainHostilePoints()
+{
+	std::printf( "GS10: insert_geometry_scaffold -- blended_chain hostile `points` strings -> actionable refusals...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs10.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS10 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	struct Case { const char* id; const char* points; };
+	const Case cases[] = {
+		{ "onePoint",    "0 0 0" },                                                   // arity < 2
+		{ "sevenPoints", "0 0 0; 1 0 0; 2 0 0; 3 0 0; 4 0 0; 5 0 0; 6 0 0" },          // arity > 6
+		{ "nanCoord",    "0 0 0; nan 1 1" },
+		{ "tooFewNums",  "0 0 0; 1 1" },
+		{ "tooManyNums", "0 0 0; 1 1 1 1" },
+		{ "empty",       "" },
+		{ "garbage",     "abc def ghi; 1 2 3" },
+	};
+
+	for( const Case& c : cases ) {
+		const auto sr = sess->InsertGeometryScaffold( "blended_chain", std::string( "hostile_" ) + c.id,
+			0.2, 0.5, 1.0, c.points, 0.3, std::string() );
+		Check( !sr.ok, std::string( "GS10(" ) + c.id + ") hostile points string is refused" );
+		Check( !sr.message.empty(), std::string( "GS10(" ) + c.id + ") refusal carries a message" );
+	}
+
+	Check( sess->ReadDocument() == headBefore, "GS10 none of the hostile-points refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS11: determinism -- SAME name, two FRESH documents -> BYTE-
+//! IDENTICAL; a DIFFERENT name jitters different node positions/radii
+//! (pinned via a raw `part` line, not just the renamed chunk labels).
+static void TestGeometryScaffoldBlendedChainDeterminism()
+{
+	std::printf( "GS11: insert_geometry_scaffold -- blended_chain determinism...\n" );
+
+	const std::string points = "0 0 0; 0.6 1.1 -0.2; 1.3 1.8 0.4";
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_gs11_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "blended_chain", name, 0.25, 0.5, 1.0, points, 0.4, std::string() );
+		Check( sr.ok, "GS11 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "chainDetA" );
+	const std::string docA2 = expandFresh( "chainDetA" );
+	Check( !docA1.empty() && !docA2.empty(), "GS11 both `chainDetA` fixtures produced a document" );
+	Check( docA1 == docA2, "GS11 SAME name, two FRESH documents -> BYTE-IDENTICAL chunk text" );
+
+	const std::string docB = expandFresh( "chainDetB" );
+	Check( !docB.empty(), "GS11 `chainDetB` fixture produced a document" );
+	Check( docA1 != docB, "GS11 a DIFFERENT name produces a different document" );
+
+	const std::string lineA = ExtractNthPartLine( docA1, TmplName( "chainDetA", "chain" ), 1 );
+	const std::string lineB = ExtractNthPartLine( docB,  TmplName( "chainDetB", "chain" ), 1 );
+	Check( !lineA.empty() && !lineB.empty(), "GS11 extracted part-line 1 from both fixtures" );
+	Check( lineA != lineB, "GS11 a DIFFERENT name jitters different node positions/radii (not just labels)" );
+}
+
+//! GS12: wire-level required-param shape for blended_chain -- `points`
+//! and `taper` are REQUIRED (missing -> -32602 naming the param);
+//! `aspect` is genuinely NOT required (a well-formed call omitting it
+//! entirely still succeeds).
+static void TestGeometryScaffoldBlendedChainMissingParamsWire()
+{
+	std::printf( "GS12: insert_geometry_scaffold -- blended_chain wire-level required params (points/taper, NOT aspect)...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs12.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS12 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"family\":\"blended_chain\",\"name\":\"cw1\",\"size\":0.2,\"detail\":0.5,\"taper\":0.3}", "points" },
+		{ "2", "{\"family\":\"blended_chain\",\"name\":\"cw2\",\"size\":0.2,\"detail\":0.5,\"points\":\"0 0 0; 1 1 1\"}", "taper" },
+	};
+	int id = 120;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_geometry_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "GS12(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "GS12(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "GS12 the two missing-param refusals mutated nothing" );
+
+	{
+		const std::string req = "{\"jsonrpc\":\"2.0\",\"id\":129,\"method\":\"insert_geometry_scaffold\","
+			"\"params\":{\"family\":\"blended_chain\",\"name\":\"cw3\",\"size\":0.2,\"detail\":0.5,"
+			"\"points\":\"0 0 0; 1 1 1\",\"taper\":0.3}}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "\"error\"" ) == std::string::npos,
+		       "GS12(3) a well-formed blended_chain call WITHOUT `aspect` succeeds (genuinely not required)" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS13: volume_bank -- basic expansion.  SEVEN chunks (container,
+//! two tone painters, the domain-warped density painter, the
+//! dielectric shell, the medium, the standard_object); the object's
+//! own text correctly WIRES geometry/material/interior_medium to the
+//! other emitted chunks; the success `message` carries the factual
+//! bbox-coupling note; and -- E1 gate interplay -- deriving the
+//! resulting document does NOT trip LUMINAIRE_NULL_GEOMETRY (the
+//! emitted object is non-emissive with real geometry, nothing like the
+//! null-geometry csg_object class that gate targets).
+static void TestGeometryScaffoldVolumeBankBasic()
+{
+	std::printf( "GS13: insert_geometry_scaffold -- volume_bank basic expansion + wiring + E1 non-trip...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs13.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS13 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->InsertGeometryScaffold(
+		"volume_bank", "bankA", 1.2, 0.5, 1.8, std::string(), 0.0, "0.7 0.75 0.9" );
+
+	Check( sr.ok, std::string( "GS13 call itself is well-formed: " ) + sr.message );
+	Check( sr.chunkResults.size() == 7,
+	       "GS13 exactly SEVEN chunks generated (container, 2 tone painters, density, shell, medium, object)" );
+	Check( sr.geometryKind == "ellipsoid_geometry", "GS13 geometry chunk kind is ellipsoid_geometry" );
+	Check( sr.materialKind == "dielectric_material", "GS13 material chunk kind is dielectric_material" );
+	Check( sr.mediumKind == "painter_heterogeneous_medium", "GS13 medium chunk kind is painter_heterogeneous_medium" );
+	Check( sr.objectKind == "standard_object", "GS13 object chunk kind is standard_object" );
+	Check( !sr.message.empty(), "GS13 an ok==true volume_bank result carries a non-empty `message`" );
+	Check( sr.message.find( "bbox" ) != std::string::npos,
+	       "GS13 the message actually mentions the bbox coupling caveat" );
+
+	bool allApplied = true;
+	for( const auto& cr : sr.chunkResults ) if( !cr.applied ) allApplied = false;
+	Check( allApplied, "GS13 every generated chunk applied" );
+
+	const std::string doc = sess->ReadDocument();
+	Check( ExtractParamAfter( doc, sr.objectName, "geometry" ) == sr.geometryName,
+	       "GS13 the emitted object's `geometry` references the emitted container" );
+	Check( ExtractParamAfter( doc, sr.objectName, "material" ) == sr.materialName,
+	       "GS13 the emitted object's `material` references the emitted dielectric shell" );
+	Check( ExtractParamAfter( doc, sr.objectName, "interior_medium" ) == sr.mediumName,
+	       "GS13 the emitted object's `interior_medium` references the emitted medium" );
+
+	const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+	bool sawNullGeomEmitter = false;
+	for( const Agent::AgentDiagnostic& d : diags ) if( d.code == "LUMINAIRE_NULL_GEOMETRY" ) sawNullGeomEmitter = true;
+	Check( !sawNullGeomEmitter, "GS13 volume_bank's non-emissive, real-geometry object does NOT trip the E1 emissive-CSG gate" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS14: `aspect` genuinely elongates the container along local X.
+static void TestGeometryScaffoldVolumeBankAspectFlow()
+{
+	std::printf( "GS14: insert_geometry_scaffold -- volume_bank aspect elongates the container along X...\n" );
+
+	auto expandExtentX = [&]( double aspect ) -> double {
+		const std::string tmp = TempPath( "agentcrud_gs14.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return -1.0;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "volume_bank", "bankAsp", 1.0, 0.5, aspect, std::string(), 0.0, "0.6 0.6 0.6" );
+		double ex = -1.0, ey = 0.0, ez = 0.0;
+		if( sr.ok ) GeometryBBoxExtents( pJob, sr.geometryName, ex, ey, ez );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return ex;
+	};
+
+	const double exLow  = expandExtentX( 1.0 );
+	const double exHigh = expandExtentX( 3.0 );
+	Check( exLow > 0.0 && exHigh > 0.0, "GS14 both aspect variants produced a valid bbox" );
+	Check( exHigh > exLow * 1.8, "GS14 aspect=3.0 measurably elongates the container's X extent vs aspect=1.0" );
+}
+
+//! GS15 (mutation-style red-proof): `tone` genuinely flows into the
+//! MEDIUM'S OWN `scattering` value -- a different tone -> a different
+//! raw `scattering` token, pinned via text extraction (not a render
+//! proxy, which Monte Carlo noise would make vacuous).
+static void TestGeometryScaffoldVolumeBankToneFlow()
+{
+	std::printf( "GS15: insert_geometry_scaffold -- volume_bank tone genuinely changes the medium's scattering...\n" );
+
+	auto expandScattering = [&]( const std::string& tone ) -> std::string {
+		const std::string tmp = TempPath( "agentcrud_gs15.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "volume_bank", "bankTone", 1.0, 0.5, 1.5, std::string(), 0.0, tone );
+		std::string scattering;
+		if( sr.ok ) scattering = ExtractParamAfter( sess->ReadDocument(), sr.mediumName, "scattering" );
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return scattering;
+	};
+
+	const std::string scatWarm = expandScattering( "0.95 0.15 0.05" );
+	const std::string scatCool = expandScattering( "0.05 0.15 0.95" );
+	Check( !scatWarm.empty() && !scatCool.empty(), "GS15 both tone variants produced a `scattering` value" );
+	Check( scatWarm != scatCool, "GS15 a DIFFERENT `tone` produces a DIFFERENT medium `scattering` value" );
+}
+
+//! GS16 (mutation-style red-proof; P1c fix round): `detail` genuinely
+//! flows into the density painter's `warp_amplitude` -- pinned via text
+//! extraction, but ONLY after confirming the MEDIUM chunk's own
+//! `density_painter` reference actually points at that chunk.  The
+//! ORIGINAL version of this test extracted `warp_amplitude` straight
+//! off `tmpl_bankDet_density` by NAME, which is silently vacuous
+//! against a mutation that re-points the medium's `density_painter` at
+//! some OTHER (e.g. constant) painter and leaves the real density
+//! chunk orphaned in the document -- the orphan would still exist,
+//! still be named correctly, and still show a `detail`-varying
+//! `warp_amplitude`, even though the RENDERED medium no longer reads
+//! it at all.  Checking the wiring FIRST closes that gap.
+static void TestGeometryScaffoldVolumeBankDetailFlow()
+{
+	std::printf( "GS16: insert_geometry_scaffold -- volume_bank detail genuinely changes the WIRED density painter's warp_amplitude...\n" );
+
+	auto expandWarpAmp = [&]( double detail ) -> std::string {
+		const std::string tmp = TempPath( "agentcrud_gs16.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "volume_bank", "bankDet", 1.0, detail, 1.5, std::string(), 0.0, "0.6 0.6 0.6" );
+		std::string warpAmp;
+		if( sr.ok ) {
+			const std::string doc = sess->ReadDocument();
+			// THE WIRING CHECK: the medium's `density_painter` param must
+			// actually reference the density chunk this generator emitted
+			// -- not just that a correctly-named chunk happens to exist
+			// somewhere in the document.
+			const std::string wired = ExtractParamAfter( doc, sr.mediumName, "density_painter" );
+			Check( wired == TmplName( "bankDet", "density" ),
+			       "GS16 the medium's `density_painter` is WIRED to the emitted density painter (not an orphan)" );
+			if( wired == TmplName( "bankDet", "density" ) ) {
+				warpAmp = ExtractParamAfter( doc, wired, "warp_amplitude" );
+			}
+		}
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return warpAmp;
+	};
+
+	const std::string ampLow  = expandWarpAmp( 0.0 );
+	const std::string ampHigh = expandWarpAmp( 1.0 );
+	Check( !ampLow.empty() && !ampHigh.empty(), "GS16 both detail variants produced a `warp_amplitude` value" );
+	Check( ampLow != ampHigh, "GS16 a DIFFERENT `detail` produces a DIFFERENT density-painter `warp_amplitude`" );
+}
+
+//! GS17: hostile `tone` strings -- empty, wrong arity (2, 4), out of
+//! [0,1] range (both directions), non-finite, and non-numeric garbage
+//! -- ALL refused with an actionable message, document unchanged.
+static void TestGeometryScaffoldVolumeBankHostileTone()
+{
+	std::printf( "GS17: insert_geometry_scaffold -- volume_bank hostile `tone` strings -> actionable refusals...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs17.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS17 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	struct Case { const char* id; const char* tone; };
+	const Case cases[] = {
+		{ "empty",     "" },
+		{ "twoNums",   "0.5 0.5" },
+		{ "fourNums",  "0.5 0.5 0.5 0.5" },
+		{ "outOfLow",  "-0.1 0.5 0.5" },
+		{ "outOfHigh", "0.5 1.5 0.5" },
+		{ "nan",       "nan 0.5 0.5" },
+		{ "garbage",   "red green blue" },
+	};
+
+	for( const Case& c : cases ) {
+		const auto sr = sess->InsertGeometryScaffold( "volume_bank", std::string( "hbank_" ) + c.id,
+			1.0, 0.5, 1.5, std::string(), 0.0, c.tone );
+		Check( !sr.ok, std::string( "GS17(" ) + c.id + ") hostile tone string is refused" );
+		Check( !sr.message.empty(), std::string( "GS17(" ) + c.id + ") refusal carries a message" );
+	}
+
+	Check( sess->ReadDocument() == headBefore, "GS17 none of the hostile-tone refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS18: wire-level required-param shape for volume_bank -- `aspect`
+//! and `tone` are REQUIRED (missing -> -32602 naming the param);
+//! `points`/`taper` are genuinely NOT required.
+static void TestGeometryScaffoldVolumeBankMissingParamsWire()
+{
+	std::printf( "GS18: insert_geometry_scaffold -- volume_bank wire-level required params (aspect/tone, NOT points/taper)...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs18.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS18 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* id; const char* paramsJson; const char* missing; };
+	const Case cases[] = {
+		{ "1", "{\"family\":\"volume_bank\",\"name\":\"bw1\",\"size\":1.0,\"detail\":0.5,\"tone\":\"0.5 0.5 0.5\"}", "aspect" },
+		{ "2", "{\"family\":\"volume_bank\",\"name\":\"bw2\",\"size\":1.0,\"detail\":0.5,\"aspect\":1.5}", "tone" },
+	};
+	int id = 130;
+	for( const Case& c : cases ) {
+		const std::string req = std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"insert_geometry_scaffold\",\"params\":" + c.paramsJson + "}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       std::string( "GS18(" ) + c.id + ") missing `" + c.missing + "` -> -32602 invalid params" );
+		Check( resp.find( c.missing ) != std::string::npos,
+		       std::string( "GS18(" ) + c.id + ") the error message NAMES the missing param `" + c.missing + "`" );
+	}
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "GS18 the two missing-param refusals mutated nothing" );
+
+	{
+		const std::string req = "{\"jsonrpc\":\"2.0\",\"id\":139,\"method\":\"insert_geometry_scaffold\","
+			"\"params\":{\"family\":\"volume_bank\",\"name\":\"bw3\",\"size\":1.0,\"detail\":0.5,"
+			"\"aspect\":1.5,\"tone\":\"0.5 0.6 0.7\"}}";
+		const std::string resp = disp.HandleLine( req );
+		Check( resp.find( "\"error\"" ) == std::string::npos,
+		       "GS18(3) a well-formed volume_bank call WITHOUT `points`/`taper` succeeds (genuinely not required)" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS19: volume_bank determinism -- SAME name, two FRESH documents ->
+//! BYTE-IDENTICAL; a DIFFERENT name jitters a different density-
+//! painter `persistence` (not just the renamed chunk labels).
+static void TestGeometryScaffoldVolumeBankDeterminism()
+{
+	std::printf( "GS19: insert_geometry_scaffold -- volume_bank determinism...\n" );
+
+	auto expandFresh = [&]( const std::string& name ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_gs19_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "volume_bank", name, 1.1, 0.5, 1.8, std::string(), 0.0, "0.6 0.7 0.8" );
+		Check( sr.ok, "GS19 expansion for `" + name + "` is well-formed" );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docA1 = expandFresh( "bankDetmA" );
+	const std::string docA2 = expandFresh( "bankDetmA" );
+	Check( !docA1.empty() && !docA2.empty(), "GS19 both `bankDetmA` fixtures produced a document" );
+	Check( docA1 == docA2, "GS19 SAME name, two FRESH documents -> BYTE-IDENTICAL chunk text" );
+
+	const std::string docB = expandFresh( "bankDetmB" );
+	Check( !docB.empty(), "GS19 `bankDetmB` fixture produced a document" );
+	Check( docA1 != docB, "GS19 a DIFFERENT name produces a different document" );
+
+	const std::string persA = ExtractParamAfter( docA1, TmplName( "bankDetmA", "density" ), "persistence" );
+	const std::string persB = ExtractParamAfter( docB,  TmplName( "bankDetmB", "density" ), "persistence" );
+	Check( !persA.empty() && !persB.empty(), "GS19 extracted a `persistence` value from both fixtures' density painter" );
+	Check( persA != persB, "GS19 a DIFFERENT name jitters a DIFFERENT `persistence` value" );
+}
+
+//! GS20: the ORIGINAL four families genuinely IGNORE the E3-added
+//! `points`/`taper`/`tone` params -- a call passing garbage for all
+//! three produces BYTE-IDENTICAL output to omitting them entirely
+//! (same `name`, so every jittered constant is pinned identical; the
+//! ONLY variable is whether points/taper/tone carry garbage).  The
+//! "points ignored" red-proof the slice brief calls for.
+static void TestGeometryScaffoldOriginalFamiliesIgnoreNewParams()
+{
+	std::printf( "GS20: insert_geometry_scaffold -- original families genuinely IGNORE points/taper/tone...\n" );
+
+	auto expand = [&]( const std::string& tmpSuffix, const std::string& points, double taper, const std::string& tone ) -> std::string {
+		const std::string tmp = TempPath( ( "agentcrud_gs20_" + tmpSuffix + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		if( !pJob ) return std::string();
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "sdf_column", "ignA", 1.0, 0.5, 1.2, points, taper, tone );
+		Check( sr.ok, std::string( "GS20 expansion (" ) + tmpSuffix + ") is well-formed: " + sr.message );
+		const std::string doc = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		return doc;
+	};
+
+	const std::string docPlain   = expand( "plain",   std::string(), 0.0, std::string() );
+	const std::string docGarbage = expand( "garbage", "this is not a points string!!", 0.77, "not a tone either" );
+
+	Check( !docPlain.empty() && !docGarbage.empty(), "GS20 both `ignA` variants produced a document" );
+	Check( docPlain == docGarbage,
+	       "GS20 sdf_column's output is BYTE-IDENTICAL whether points/taper/tone are omitted or garbage -- genuinely ignored" );
+}
+
+//----------------------------------------------------------------------
+// GS21-GS25: E3 FIX ROUND (P1a-P1d, P2) -- two fresh reviewers found the
+// original blended_chain smin floor mathematically insufficient (a
+// spacing-only guess, not derived from the actual bridging condition of
+// RISE's polynomial smin), plus three test-coverage gaps (endpoint
+// exactness, volume_bank wiring, volume_bank bbox coupling) that
+// existing mutation-style checks did not actually kill.  See
+// BuildBlendedChain's own comment (AgentSession.cpp) for the sminP
+// bridging derivation these tests pin.
+//----------------------------------------------------------------------
+
+//! One parsed chain-part line's geometrically relevant fields (position,
+//! smin `k`, radius) -- pulled via NthWhitespaceToken off the SAME
+//! ExtractNthPartLine text ExtractNthPartLine already returns (the
+//! `<prim> <op> <k>  <px py pz>  ...  <a b c>  <round>` 16-token grammar
+//! -- k is token 2, px/py/pz are tokens 3/4/5, a (radius, for a sphere
+//! part) is token 12).
+struct ChainPartNode
+{
+	double px = 0.0, py = 0.0, pz = 0.0, k = 0.0, radius = 0.0;
+};
+
+static bool ParseChainPartLine( const std::string& line, ChainPartNode& out )
+{
+	if( line.empty() ) return false;
+	const std::string kStr  = NthWhitespaceToken( line, 2 );
+	const std::string pxStr = NthWhitespaceToken( line, 3 );
+	const std::string pyStr = NthWhitespaceToken( line, 4 );
+	const std::string pzStr = NthWhitespaceToken( line, 5 );
+	const std::string aStr  = NthWhitespaceToken( line, 12 );
+	if( kStr.empty() || pxStr.empty() || pyStr.empty() || pzStr.empty() || aStr.empty() ) return false;
+	out.k      = std::atof( kStr.c_str() );
+	out.px     = std::atof( pxStr.c_str() );
+	out.py     = std::atof( pyStr.c_str() );
+	out.pz     = std::atof( pzStr.c_str() );
+	out.radius = std::atof( aStr.c_str() );
+	return true;
+}
+
+//! Every part-line node of `chunkName`, IN ORDER -- keeps incrementing
+//! until ExtractNthPartLine (or the parse) comes back empty, same
+//! convention as CountPartLines above.
+static std::vector<ChainPartNode> ParseAllChainNodes( const std::string& doc, const std::string& chunkName )
+{
+	std::vector<ChainPartNode> out;
+	for( std::size_t i = 0; ; ++i ) {
+		const std::string line = ExtractNthPartLine( doc, chunkName, i );
+		if( line.empty() ) break;
+		ChainPartNode n;
+		if( !ParseChainPartLine( line, n ) ) break;
+		out.push_back( n );
+	}
+	return out;
+}
+
+//! GS21 (P1a fix-round text-level invariant -- "kills mutation a", the
+//! raw-k-with-no-bridging-floor mutation): parses EVERY joint of an
+//! emitted blended_chain and asserts the EXACT polynomial-smin bridging
+//! condition holds -- k_j >= 2*max(0, spacing_j - r_{j-1} - r_j) (see
+//! BuildBlendedChain's own comment for the sminP derivation).  This
+//! checks the TIGHT mathematical necessity, NOT the generator's own
+//! 1.25x-padded floor -- so it cannot be fooled by an implementation
+//! that merely echoes its own formula back at itself; a genuinely
+//! insufficient k (even one that satisfies some OTHER, wrong formula)
+//! fails this check.  Run across: reviewer B's adversarial config (2
+//! points 8 units apart, size 0.3, taper 1.0 -- full taper, the worst
+//! case for radius/spacing mismatch -- detail 0.0 -- minimum detail-
+//! driven node count, relying entirely on the geometric density uplift
+//! + the per-joint floor), the skill doc's shipped worked example
+//! (modeling-workflow-and-geometry.md's `branch1`), and 3 additional
+//! jittered name variants on a shared moderate config.
+static void TestGeometryScaffoldBlendedChainContinuityInvariant()
+{
+	std::printf( "GS21: insert_geometry_scaffold -- blended_chain EXACT smin-bridging invariant holds per joint...\n" );
+
+	auto checkInvariant = [&]( const std::string& label, const std::string& name,
+	                           double size, double detail, const std::string& points, double taper ) {
+		const std::string tmp = TempPath( ( "agentcrud_gs21_" + name + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, label + " fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const auto sr = sess->InsertGeometryScaffold( "blended_chain", name, size, detail, 1.0, points, taper, std::string() );
+		Check( sr.ok, label + " expansion is well-formed: " + sr.message );
+		if( sr.ok ) {
+			const std::vector<ChainPartNode> nodes = ParseAllChainNodes( sess->ReadDocument(), sr.geometryName );
+			Check( nodes.size() >= 2, label + " parsed at least 2 chain nodes" );
+			bool allBridge = true;
+			double worstMargin = 1e30;
+			for( std::size_t i = 1; i < nodes.size(); ++i ) {
+				const double dx = nodes[i].px - nodes[i-1].px;
+				const double dy = nodes[i].py - nodes[i-1].py;
+				const double dz = nodes[i].pz - nodes[i-1].pz;
+				const double spacing = std::sqrt( dx*dx + dy*dy + dz*dz );
+				const double gap = std::max( 0.0, spacing - nodes[i-1].radius - nodes[i].radius );
+				const double required = 2.0 * gap;
+				if( nodes[i].k < required - 1e-9 ) allBridge = false;
+				worstMargin = std::min( worstMargin, nodes[i].k - required );
+			}
+			Check( allBridge, label + " EVERY joint satisfies k >= 2*surface_gap (the exact sminP bridging condition)" );
+			std::printf( "    %s: %zu nodes, worst (k - required) margin = %.6f\n",
+			             label.c_str(), nodes.size(), worstMargin );
+		}
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	};
+
+	checkInvariant( "GS21(adversarial)", "gs21adv", 0.3, 0.0, "0 0 0; 8 0 0", 1.0 );
+	checkInvariant( "GS21(skilldoc)", "branch1", 0.22, 0.6,
+	                "0 0 0; 0.4 1.1 -0.2; 0.9 1.6 0.3; 1.5 1.4 0.9", 0.65 );
+	checkInvariant( "GS21(jitterA)", "gs21jitA", 0.25, 0.4, "0 0 0; 1 1 0.5; 2 0.5 1", 0.5 );
+	checkInvariant( "GS21(jitterB)", "gs21jitB", 0.25, 0.4, "0 0 0; 1 1 0.5; 2 0.5 1", 0.5 );
+	checkInvariant( "GS21(jitterC)", "gs21jitC", 0.25, 0.4, "0 0 0; 1 1 0.5; 2 0.5 1", 0.5 );
+}
+
+//! GS22 (P1b fix-round -- "kills mutation b", the u*m extrapolation
+//! bug class): parses the FIRST and LAST emitted chain nodes and
+//! asserts they equal the authored first/last `points` triplet within
+//! 1e-6 -- the documented attachment-mechanism guarantee, previously
+//! only checked informally (GS7's bbox-covers-the-path-extent
+//! assertion, which a u*m-style off-by-one could still pass).
+static void TestGeometryScaffoldBlendedChainEndpointExactness()
+{
+	std::printf( "GS22: insert_geometry_scaffold -- blended_chain first/last node lands EXACTLY on the authored endpoints...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs22.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS22 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string points = "0.3 -0.5 1.2; 1.1 0.7 -0.3; 2.4 1.9 0.6";
+	const auto sr = sess->InsertGeometryScaffold( "blended_chain", "gs22ep", 0.2, 0.5, 1.0, points, 0.4, std::string() );
+	Check( sr.ok, std::string( "GS22 expansion is well-formed: " ) + sr.message );
+	if( sr.ok ) {
+		const std::vector<ChainPartNode> nodes = ParseAllChainNodes( sess->ReadDocument(), sr.geometryName );
+		Check( nodes.size() >= 2, "GS22 parsed at least 2 chain nodes" );
+		if( nodes.size() >= 2 ) {
+			const ChainPartNode& first = nodes.front();
+			const ChainPartNode& last  = nodes.back();
+			Check( std::fabs( first.px - 0.3 ) < 1e-6 && std::fabs( first.py - ( -0.5 ) ) < 1e-6 &&
+			       std::fabs( first.pz - 1.2 ) < 1e-6,
+			       "GS22 the FIRST node lands EXACTLY on the first authored point (within 1e-6)" );
+			Check( std::fabs( last.px - 2.4 ) < 1e-6 && std::fabs( last.py - 1.9 ) < 1e-6 &&
+			       std::fabs( last.pz - 0.6 ) < 1e-6,
+			       "GS22 the LAST node lands EXACTLY on the last authored point (within 1e-6)" );
+		}
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS23 (P1d fix-round -- "kills mutation e", a wrong bbox-margin
+//! mutation): parses the medium's `bbox_min`/`bbox_max` AND the
+//! container's own `radii` from the emitted volume_bank document and
+//! asserts the bbox contains the container's realized extent with
+//! (approximately) the documented 8% margin -- BOTH directions: the
+//! bbox must not be too small (the density field would clip the
+//! container's own surface) and must not be "wildly larger" than the
+//! documented margin either (a stale/mismatched constant silently
+//! drifting).  The emitted object sits at the origin with an identity
+//! transform (BuildVolumeBank's own documented design), so the
+//! container's WORLD-space extent is exactly +-radii.
+static void TestGeometryScaffoldVolumeBankBboxContainerCoupling()
+{
+	std::printf( "GS23: insert_geometry_scaffold -- volume_bank bbox_min/max match the container's radii within the documented 8%% margin...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs23.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS23 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const auto sr = sess->InsertGeometryScaffold( "volume_bank", "gs23bbox", 1.3, 0.5, 2.1, std::string(), 0.0, "0.5 0.6 0.7" );
+	Check( sr.ok, std::string( "GS23 expansion is well-formed: " ) + sr.message );
+	if( sr.ok ) {
+		const std::string doc = sess->ReadDocument();
+		const std::string radiiStr   = ExtractParamAfter( doc, sr.geometryName, "radii" );
+		const std::string bboxMinStr = ExtractParamAfter( doc, sr.mediumName, "bbox_min" );
+		const std::string bboxMaxStr = ExtractParamAfter( doc, sr.mediumName, "bbox_max" );
+		Check( !radiiStr.empty() && !bboxMinStr.empty() && !bboxMaxStr.empty(),
+		       "GS23 extracted radii/bbox_min/bbox_max text" );
+
+		double rx=0.0, ry=0.0, rz=0.0, bMinX=0.0, bMinY=0.0, bMinZ=0.0, bMaxX=0.0, bMaxY=0.0, bMaxZ=0.0;
+		std::sscanf( radiiStr.c_str(), "%lf %lf %lf", &rx, &ry, &rz );
+		std::sscanf( bboxMinStr.c_str(), "%lf %lf %lf", &bMinX, &bMinY, &bMinZ );
+		std::sscanf( bboxMaxStr.c_str(), "%lf %lf %lf", &bMaxX, &bMaxY, &bMaxZ );
+
+		const double kMargin = 1.08;
+		const double kTol = 0.01;   // 1% relative tolerance around the documented margin
+		auto checkAxis = [&]( const char* axis, double r, double bMin, double bMax ) {
+			Check( bMax >= r, std::string( "GS23 bbox_max." ) + axis + " contains the container's radius (not too small)" );
+			Check( bMin <= -r, std::string( "GS23 bbox_min." ) + axis + " contains the container's radius (not too small)" );
+			Check( std::fabs( bMax - r * kMargin ) < r * kTol,
+			       std::string( "GS23 bbox_max." ) + axis + " matches radius*1.08 within 1% (not wildly larger than documented)" );
+			Check( std::fabs( bMin - ( -r * kMargin ) ) < r * kTol,
+			       std::string( "GS23 bbox_min." ) + axis + " matches -radius*1.08 within 1% (not wildly larger than documented)" );
+		};
+		checkAxis( "x", rx, bMinX, bMaxX );
+		checkAxis( "y", ry, bMinY, bMaxY );
+		checkAxis( "z", rz, bMinZ, bMaxZ );
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS24 (P2 fix-round): a `points` coordinate past the 1e6 sane
+//! magnitude bound is refused with an actionable message naming the
+//! offending triplet -- document unchanged.
+static void TestGeometryScaffoldBlendedChainPointsMagnitudeCap()
+{
+	std::printf( "GS24: insert_geometry_scaffold -- blended_chain `points` magnitude cap...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs24.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "GS24 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+
+	const auto sr = sess->InsertGeometryScaffold( "blended_chain", "gs24big", 0.2, 0.5, 1.0,
+		"0 0 0; 1e9 0 0", 0.3, std::string() );
+	Check( !sr.ok, "GS24 a points coordinate past the 1e6 magnitude cap is refused" );
+	Check( sr.message.find( "1e9" ) != std::string::npos,
+	       "GS24 the refusal names the offending triplet" );
+	Check( sess->ReadDocument() == headBefore, "GS24 the refusal mutated nothing" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! GS25 (P1a re-verification -- render-based, INDEPENDENT of the
+//! algebraic invariant in GS21, which shares the SAME bridging formula
+//! with the generator itself and so cannot catch a bug in that shared
+//! formula): renders reviewer B's adversarial config (the exact config
+//! that fractured into 7 blobs against the pre-fix floor) front-on and
+//! confirms a CONTINUOUS silhouette -- along the row through the
+//! chain's centerline, every pixel between the first and last bright
+//! (object) pixel is ALSO bright; a fractured chain shows dark
+//! "interior gap" pixels between separate blobs (the exact methodology
+//! the reviewing round itself used: "278/640 interior gap pixels" on
+//! the pre-fix floor-removed variant).
+static const char* const kChainRenderScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 240\n\theight 240\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.2 0.3 1.0\n}\n";
+
+static void TestGeometryScaffoldBlendedChainAdversarialContinuityRender()
+{
+	std::printf( "GS25: insert_geometry_scaffold -- blended_chain adversarial config renders a CONTINUOUS silhouette...\n" );
+	const std::string tmp = TempPath( "agentcrud_gs25.RISEscene" );
+	Job* pJob = LoadScene( kChainRenderScene, tmp );
+	Check( pJob != nullptr, "GS25 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const auto sr = sess->InsertGeometryScaffold( "blended_chain", "gs25adv", 0.3, 0.0, 1.0, "-4 0 0; 4 0 0", 1.0, std::string() );
+	Check( sr.ok, std::string( "GS25 expansion is well-formed: " ) + sr.message );
+	if( !sr.ok ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+
+	const std::vector<Agent::AgentChunkResult> bound = sess->InsertChunks( {
+		"uniformcolor_painter\n{\nname pnt_gs25\ncolor 0.8 0.8 0.8\n}",
+		"lambertian_material\n{\nname mat_gs25\nreflectance pnt_gs25\n}",
+		"standard_object\n{\nname obj_gs25\ngeometry " + sr.geometryName + "\nmaterial mat_gs25\n}",
+	} );
+	bool allApplied = true;
+	for( const auto& cr : bound ) if( !cr.applied ) allApplied = false;
+	Check( allApplied, "GS25 binding chunks (painter/material/object) all applied" );
+
+	Agent::AgentRenderParams rp;
+	rp.width = 240; rp.height = 240; rp.samples = 8;
+	const Agent::AgentRenderResult rr = sess->Render( rp );
+	Check( rr.ok, "GS25 the adversarial config renders" );
+
+	DecodedLuma luma;
+	Check( rr.ok && DecodeRenderLuma( rr.png, luma ), "GS25 the render decodes" );
+	if( rr.ok && luma.w > 0 && luma.h > 0 ) {
+		const unsigned int rowY = luma.h / 2;
+		const double kThresh = 0.02;
+		int firstBright = -1, lastBright = -1;
+		for( unsigned int x = 0; x < luma.w; ++x ) {
+			if( luma.luma[ (std::size_t)rowY * luma.w + x ] > kThresh ) {
+				if( firstBright < 0 ) firstBright = static_cast<int>( x );
+				lastBright = static_cast<int>( x );
+			}
+		}
+		Check( firstBright >= 0 && lastBright > firstBright,
+		       "GS25 the centerline row shows a bright object span" );
+		int gapPixels = 0;
+		if( firstBright >= 0 && lastBright > firstBright ) {
+			for( int x = firstBright + 1; x < lastBright; ++x ) {
+				if( luma.luma[ (std::size_t)rowY * luma.w + x ] <= kThresh ) ++gapPixels;
+			}
+		}
+		std::printf( "    GS25 centerline span [%d,%d] of %u px, interior gap pixels = %d\n",
+		             firstBright, lastBright, luma.w, gapPixels );
+		Check( gapPixels == 0,
+		       "GS25 ZERO interior gap pixels between the object's silhouette span (continuous, not fractured)" );
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -4865,6 +5737,25 @@ int main()
 	TestGeometryScaffoldNameLengthCap();
 	TestGeometryScaffoldNameCollision();
 	TestGeometryScaffoldProposalMode();
+	TestGeometryScaffoldBlendedChainBasic();
+	TestGeometryScaffoldBlendedChainTaperFlow();
+	TestGeometryScaffoldBlendedChainDetailFlow();
+	TestGeometryScaffoldBlendedChainHostilePoints();
+	TestGeometryScaffoldBlendedChainDeterminism();
+	TestGeometryScaffoldBlendedChainMissingParamsWire();
+	TestGeometryScaffoldVolumeBankBasic();
+	TestGeometryScaffoldVolumeBankAspectFlow();
+	TestGeometryScaffoldVolumeBankToneFlow();
+	TestGeometryScaffoldVolumeBankDetailFlow();
+	TestGeometryScaffoldVolumeBankHostileTone();
+	TestGeometryScaffoldVolumeBankMissingParamsWire();
+	TestGeometryScaffoldVolumeBankDeterminism();
+	TestGeometryScaffoldOriginalFamiliesIgnoreNewParams();
+	TestGeometryScaffoldBlendedChainContinuityInvariant();
+	TestGeometryScaffoldBlendedChainEndpointExactness();
+	TestGeometryScaffoldVolumeBankBboxContainerCoupling();
+	TestGeometryScaffoldBlendedChainPointsMagnitudeCap();
+	TestGeometryScaffoldBlendedChainAdversarialContinuityRender();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

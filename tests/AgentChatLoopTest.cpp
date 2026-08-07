@@ -496,8 +496,18 @@ static void TestOpenAIRequestShape()
 			const JsonValue& params = fn.get( "parameters" );
 			Check( params.isObject(), "insert_geometry_scaffold OpenAI tool carries a parameters object" );
 			const JsonValue& required = params.get( "required" );
-			Check( required.isArray() && required.size() == 5,
-			       "insert_geometry_scaffold declares all 5 params required" );
+			// Arc-75 slice E3: required params now differ BY FAMILY
+			// (blended_chain needs points/taper instead of aspect;
+			// volume_bank needs aspect PLUS tone) -- JSON Schema's flat
+			// top-level "required" can only name what EVERY family needs
+			// (family/name/size/detail), so it shrank from 5 to 4; the
+			// per-family requirement is enforced as a blocking error by
+			// AgentRpc.cpp's handler, not by this schema array (see
+			// AgentSession::InsertGeometryScaffold's header doc).
+			Check( required.isArray() && required.size() == 4,
+			       "insert_geometry_scaffold declares the four family-universal params required "
+			       "(family/name/size/detail; aspect/points/taper/tone are family-conditional, "
+			       "enforced by the handler, not this schema)" );
 		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );

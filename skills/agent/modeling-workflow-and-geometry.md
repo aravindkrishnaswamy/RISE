@@ -324,6 +324,29 @@ Unlike `insert_material_scaffold`, this tool NEVER emits a material or
 a `standard_object` -- wire those yourself exactly as `pnt_slab` /
 `mat_slab` / `slab1` do above.
 
+**A one-call tapered, blended limb/branch/tendril: `blended_chain`.**
+Any part that reads as a jointed, organic protrusion -- a limb, a
+branch, a tendril, a root, a horn, a tentacle -- suffers two recurring
+defects when hand-built: an untapered cylinder (uniform thickness end
+to end, reads as a pipe) and assembly by positional overlap (segments
+butted together with no smin blend, so the joints show as visible
+seams).  `insert_geometry_scaffold {family:"blended_chain",
+name:"branch1", points:"0 0 0; 0.4 1.1 -0.2; 0.9 1.6 0.3; 1.5 1.4 0.9",
+size:0.22, taper:0.65, detail:0.6}` sweeps a smin-blended chain of
+spheres along that path (a clamped Catmull-Rom spline through every
+point, so the chain's first and last nodes land EXACTLY on `0 0 0` and
+`1.5 1.4 0.9` -- aim an endpoint precisely at another part's surface by
+naming that surface's coordinate as a `points` entry) and returns
+`geometry` naming the one `sdf_geometry` chunk (`tmpl_branch1_chain`)
+to bind into a `standard_object.geometry` slot, exactly like every
+other family here.  `taper` shrinks the radius from `size` at the
+first point toward the last (0.65 here: a base three times thicker
+than the tip); every joint's blend radius is floored against the
+realized node spacing, so the chain can never show a visible seam
+regardless of `size`/`taper`/`detail`.  Unlike the other families,
+`blended_chain` takes `points` and `taper` INSTEAD of `aspect` -- the
+path itself is this family's creative essence.
+
 **One override to "reach for the analytic primitives first": turned
 forms.**  If an object's silhouette is a solid of revolution -- bottle,
 jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,

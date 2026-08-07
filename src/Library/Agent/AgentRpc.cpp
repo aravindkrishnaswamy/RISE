@@ -1662,35 +1662,49 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// insert_geometry_scaffold {family, name, size, detail, aspect, baseHeadVersion?}
+				// insert_geometry_scaffold {family, name, ..., baseHeadVersion?}
 				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
 				//       family, name, geometry:{name,kind}}
-				//   Arc-75 slice S3b: expand one of FOUR geometry-family
-				//   templates ("displaced_slab", "sweep_rail",
-				//   "blended_vessel", "sdf_column") into a small
-				//   GEOMETRY-ONLY chunk graph (1-3 chunks, every chunk
-				//   named tmpl_<name>_<role>) -- one tool call instead of
-				//   hand-composing a displaced_geometry/sweep_geometry/
-				//   sdf_geometry chunk.  ALL THREE params are REQUIRED (no
-				//   defaults): a missing param is a BLOCKING error naming
-				//   it.  `size` is >0 (overall scale); `detail` is 0..1
-				//   (displacement amplitude / profile complexity / smin
-				//   tightness / tessellation, per family); `aspect` is >0
-				//   (elongation).  Chunk generation, param validation, and
-				//   the name-collision precheck (refuses the WHOLE
-				//   expansion, document unchanged, before any chunk is
-				//   generated) all happen in
-				//   AgentSession::InsertGeometryScaffold; this handler only
-				//   extracts params and serializes the result.  The actual
-				//   insert is submitted through the SAME InsertChunks path
-				//   insert_chunks/insert_material_scaffold use, so
-				//   authority/autonomy staging-vs-commit, conflict
+				//   Arc-75 slice S3b (original four families) + slice E3
+				//   (blended_chain, volume_bank): expand one of SIX
+				//   geometry-family templates into a small chunk graph
+				//   (every chunk named tmpl_<name>_<role>) -- one tool call
+				//   instead of hand-composing the underlying chunk(s)
+				//   yourself.  REQUIRED params differ BY FAMILY (E3 widened
+				//   this beyond the original uniform five -- see
+				//   AgentSession::InsertGeometryScaffold's header doc for
+				//   the full per-family table):
+				//     - displaced_slab / sweep_rail / blended_vessel /
+				//       sdf_column: family, name, size (>0), detail (0..1),
+				//       aspect (>0).
+				//     - blended_chain: family, name, points (2-6
+				//       semicolon-separated "x y z" triplets), size (>0),
+				//       taper (0..1), detail (0..1) -- NO aspect.
+				//     - volume_bank: family, name, size (>0), aspect (>0),
+				//       detail (0..1), tone ("r g b" each 0..1) -- NO
+				//       points/taper.
+				//   A missing param for the RESOLVED family is a BLOCKING
+				//   error naming it; `family` itself must resolve to one of
+				//   the six names before any other param is checked (so an
+				//   unrecognized family is refused before a family-specific
+				//   "missing param" message would be misleading).  Chunk
+				//   generation, full param validation, and the name-
+				//   collision precheck (refuses the WHOLE expansion,
+				//   document unchanged, before any chunk is generated) all
+				//   happen in AgentSession::InsertGeometryScaffold; this
+				//   handler only extracts params and serializes the result.
+				//   The actual insert is submitted through the SAME
+				//   InsertChunks path insert_chunks/insert_material_scaffold
+				//   use, so authority/autonomy staging-vs-commit, conflict
 				//   detection, and per-chunk `issues` are all inherited
 				//   unchanged.  Unlike insert_material_scaffold, no
-				//   material/standard_object is ever generated -- the
-				//   model wires those itself; `geometry` names the ONE
-				//   geometry chunk to bind into a standard_object.geometry
-				//   slot.
+				//   material/standard_object is generated for FIVE of the
+				//   six families -- the model wires those itself;
+				//   `geometry` names the ONE geometry chunk to bind into a
+				//   standard_object.geometry slot.  volume_bank is the sole
+				//   exception (see InsertGeometryScaffold's doc for why) --
+				//   its result additionally carries non-empty `material`/
+				//   `medium`/`object` fields.
 				//--------------------------------------------------------------
 				if( m == "insert_geometry_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1698,8 +1712,32 @@ namespace RISE
 					if( !familyVal || !familyVal->isString() ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
-							"sweep_rail, blended_vessel, sdf_column" );
+							"sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank" );
 					}
+					const std::string familyStr = familyVal->asString();
+					// P3 fix-round: validate `family` against the known list
+					// BEFORE any per-family required-param check runs -- an
+					// unrecognized family must always come back as "unknown
+					// family", never as a misleading "'aspect' is required"
+					// (or similar) just because the unrecognized name
+					// happened to fall through to the wrong per-family
+					// branch below.
+					static const char* const kKnownGeometryScaffoldFamilies[] = {
+						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
+						"blended_chain", "volume_bank",
+					};
+					bool familyKnown = false;
+					for( const char* f : kKnownGeometryScaffoldFamilies ) {
+						if( familyStr == f ) { familyKnown = true; break; }
+					}
+					if( !familyKnown ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank" );
+					}
+					const bool isChain = ( familyStr == "blended_chain" );
+					const bool isBank  = ( familyStr == "volume_bank" );
+
 					const JsonValue* nameVal = params.find( "name" );
 					if( !nameVal || !nameVal->isString() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
@@ -1712,18 +1750,51 @@ namespace RISE
 					if( !detailVal || !detailVal->isNumber() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
 					}
-					const JsonValue* aspectVal = params.find( "aspect" );
-					if( !aspectVal || !aspectVal->isNumber() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+
+					double aspectNum = 1.0;   // placeholder for blended_chain, which ignores it
+					std::string pointsStr;
+					double taperNum = 0.0;
+					std::string toneStr;
+
+					if( isChain ) {
+						const JsonValue* pointsVal = params.find( "points" );
+						if( !pointsVal || !pointsVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'points' (string, 2-6 semicolon-separated \"x y z\" triplets) "
+								"is required for family blended_chain" );
+						}
+						pointsStr = pointsVal->asString();
+						const JsonValue* taperVal = params.find( "taper" );
+						if( !taperVal || !taperVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
+						}
+						taperNum = taperVal->asNumber();
+					} else {
+						const JsonValue* aspectVal = params.find( "aspect" );
+						if( !aspectVal || !aspectVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+						}
+						aspectNum = aspectVal->asNumber();
+						if( isBank ) {
+							const JsonValue* toneVal = params.find( "tone" );
+							if( !toneVal || !toneVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'tone' (string, \"r g b\" each 0..1) is required for family volume_bank" );
+							}
+							toneStr = toneVal->asString();
+						}
 					}
+
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
 					const int b = ParseBaseHeadVersionParam( params, base, bErr );
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 
 					const AgentSession::AgentGeometryScaffoldResult sr = s->InsertGeometryScaffold(
-						familyVal->asString(), nameVal->asString(),
-						sizeVal->asNumber(), detailVal->asNumber(), aspectVal->asNumber(),
+						familyStr, nameVal->asString(),
+						sizeVal->asNumber(), detailVal->asNumber(), aspectNum,
+						pointsStr, taperNum, toneStr,
 						( b == 1 ) ? &base : nullptr );
 
 					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
@@ -1747,6 +1818,30 @@ namespace RISE
 					result.set( "family",   JsonValue::MakeString( sr.family ) );
 					result.set( "name",     JsonValue::MakeString( nameVal->asString() ) );
 					result.set( "geometry", geometry );
+					// E3: volume_bank is the sole family with non-empty
+					// material/medium/object -- see BuildVolumeBank's doc.
+					// Every other family keeps these three objects with
+					// empty name/kind, matching `geometry` on the original
+					// four families' shape.
+					if( !sr.materialName.empty() || !sr.materialKind.empty() ) {
+						JsonValue material = JsonValue::MakeObject();
+						material.set( "name", JsonValue::MakeString( sr.materialName ) );
+						material.set( "kind", JsonValue::MakeString( sr.materialKind ) );
+						result.set( "material", material );
+					}
+					if( !sr.mediumName.empty() || !sr.mediumKind.empty() ) {
+						JsonValue medium = JsonValue::MakeObject();
+						medium.set( "name", JsonValue::MakeString( sr.mediumName ) );
+						medium.set( "kind", JsonValue::MakeString( sr.mediumKind ) );
+						result.set( "medium", medium );
+					}
+					if( !sr.objectName.empty() || !sr.objectKind.empty() ) {
+						JsonValue object = JsonValue::MakeObject();
+						object.set( "name", JsonValue::MakeString( sr.objectName ) );
+						object.set( "kind", JsonValue::MakeString( sr.objectKind ) );
+						result.set( "object", object );
+					}
+					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

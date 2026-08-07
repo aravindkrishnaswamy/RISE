@@ -4050,7 +4050,132 @@ namespace RISE
 				if( family == "sweep_rail" )      { out = AgentSession::GeometryScaffoldFamily::SweepRail;      return true; }
 				if( family == "blended_vessel" )  { out = AgentSession::GeometryScaffoldFamily::BlendedVessel;  return true; }
 				if( family == "sdf_column" )      { out = AgentSession::GeometryScaffoldFamily::SdfColumn;      return true; }
+				if( family == "blended_chain" )   { out = AgentSession::GeometryScaffoldFamily::BlendedChain;   return true; }
+				if( family == "volume_bank" )     { out = AgentSession::GeometryScaffoldFamily::VolumeBank;     return true; }
 				return false;
+			}
+
+			//! Parses `raw` as 2-6 semicolon-separated "x y z" triplets (each
+			//! of the three numbers finite) -- the wire grammar `points`
+			//! REQUIRES for blended_chain.  Returns false with an actionable
+			//! `err` on ANY malformed input: wrong triplet count (<2 or >6),
+			//! a triplet that isn't exactly three whitespace-separated
+			//! numbers, or a non-finite number (NaN/inf).  A single leading
+			//! or trailing pure-whitespace segment (from a stray leading/
+			//! trailing `;`) is tolerated and dropped; any OTHER blank or
+			//! malformed segment (a doubled `;;`, a triplet missing a
+			//! coordinate) fails the "exactly three numbers" check below
+			//! rather than being silently skipped, so a typo'd separator
+			//! is caught instead of quietly changing the point count.
+			bool ScaffoldParsePoints( const std::string& raw, std::vector<std::array<double,3>>& out, std::string& err )
+			{
+				out.clear();
+				std::vector<std::string> segs;
+				{
+					std::string cur;
+					for( char ch : raw ) {
+						if( ch == ';' ) { segs.push_back( cur ); cur.clear(); }
+						else cur += ch;
+					}
+					segs.push_back( cur );
+				}
+				auto isBlank = []( const std::string& s ) {
+					for( unsigned char c : s ) { if( !std::isspace( c ) ) return false; }
+					return true;
+				};
+				if( !segs.empty() && isBlank( segs.front() ) ) segs.erase( segs.begin() );
+				if( !segs.empty() && isBlank( segs.back() ) )  segs.pop_back();
+
+				if( segs.size() < 2 || segs.size() > 6 ) {
+					err = "`points` must have 2-6 semicolon-separated \"x y z\" triplets -- got " +
+						std::to_string( segs.size() );
+					return false;
+				}
+
+				for( std::size_t i = 0; i < segs.size(); ++i ) {
+					double x = 0.0, y = 0.0, z = 0.0;
+					char trailing[8] = { 0 };
+					const int n = std::sscanf( segs[i].c_str(), " %lf %lf %lf %7s", &x, &y, &z, trailing );
+					if( n != 3 ) {
+						err = "`points` triplet " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") must be exactly three numbers \"x y z\"";
+						return false;
+					}
+					if( !std::isfinite( x ) || !std::isfinite( y ) || !std::isfinite( z ) ) {
+						err = "`points` triplet " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") must be finite (no NaN/inf)";
+						return false;
+					}
+					// P2 fix-round: a sane magnitude cap.  Nothing downstream
+					// is UNSAFE past this (every coordinate is a plain
+					// double flowing into text formatting and arithmetic,
+					// no fixed buffer) -- this guards against a
+					// pathological coordinate silently producing a
+					// degenerate/absurdly-scaled chain (a path point at
+					// 1e300 would swamp every other point's contribution to
+					// the Catmull-Rom curve and the node-count/spacing
+					// heuristics above).  1e6 is generous against any real
+					// scene's world-space units (RISE scenes are typically
+					// authored in the 0.1-1000 range).
+					constexpr double kScaffoldPointsMaxCoord = 1e6;
+					if( std::fabs( x ) > kScaffoldPointsMaxCoord || std::fabs( y ) > kScaffoldPointsMaxCoord ||
+					    std::fabs( z ) > kScaffoldPointsMaxCoord ) {
+						err = "`points` triplet " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") has a coordinate magnitude past the " + std::to_string( static_cast<long long>( kScaffoldPointsMaxCoord ) ) +
+							" sane bound";
+						return false;
+					}
+					out.push_back( { x, y, z } );
+				}
+				return true;
+			}
+
+			//! One component of a clamped Catmull-Rom spline through `ctrl`
+			//! (2-6 points): the standard 4-point basis, with the endpoints
+			//! DUPLICATED at each boundary (a virtual P[-1]:=P[0], virtual
+			//! P[m]:=P[m-1]) so the curve is clamped rather than looped, and
+			//! passes through EVERY control point exactly at its own segment
+			//! boundary (q(local t=0) == p1 exactly) -- the property
+			//! BuildBlendedChain relies on to land its first/last node
+			//! EXACTLY on the model-authored first/last `points` entry (the
+			//! documented attachment mechanism: end a chain precisely at
+			//! another part's surface by naming that surface's coordinate).
+			double ScaffoldCatmullRom1D( double p0, double p1, double p2, double p3, double t )
+			{
+				const double t2 = t * t;
+				const double t3 = t2 * t;
+				return 0.5 * ( 2.0 * p1 + ( -p0 + p2 ) * t
+				             + ( 2.0*p0 - 5.0*p1 + 4.0*p2 - p3 ) * t2
+				             + ( -p0 + 3.0*p1 - 3.0*p2 + p3 ) * t3 );
+			}
+
+			//! Evaluates the clamped Catmull-Rom path through `ctrl` at
+			//! global parameter `u` in [0,1] (0 = first point, 1 = last
+			//! point) -- componentwise ScaffoldCatmullRom1D on x/y/z.
+			std::array<double,3> ScaffoldCatmullRomPath( const std::vector<std::array<double,3>>& ctrl, double u )
+			{
+				const int m = static_cast<int>( ctrl.size() );
+				if( m <= 1 ) return ctrl.empty() ? std::array<double,3>{0.0,0.0,0.0} : ctrl[0];
+				double segF = ScaffoldClamp01( u ) * static_cast<double>( m - 1 );
+				int segIdx = static_cast<int>( segF );
+				if( segIdx > m - 2 ) segIdx = m - 2;
+				if( segIdx < 0 ) segIdx = 0;
+				const double t = segF - static_cast<double>( segIdx );
+
+				const int i0 = ( segIdx - 1 < 0 ) ? 0 : segIdx - 1;
+				const int i1 = segIdx;
+				const int i2 = segIdx + 1;
+				const int i3 = ( segIdx + 2 > m - 1 ) ? m - 1 : segIdx + 2;
+
+				std::array<double,3> out;
+				for( int k = 0; k < 3; ++k ) {
+					out[static_cast<std::size_t>(k)] = ScaffoldCatmullRom1D(
+						ctrl[static_cast<std::size_t>(i0)][static_cast<std::size_t>(k)],
+						ctrl[static_cast<std::size_t>(i1)][static_cast<std::size_t>(k)],
+						ctrl[static_cast<std::size_t>(i2)][static_cast<std::size_t>(k)],
+						ctrl[static_cast<std::size_t>(i3)][static_cast<std::size_t>(k)], t );
+				}
+				return out;
 			}
 
 			std::string ScaffoldBoxGeometryText( const std::string& name, double width, double height, double depth )
@@ -4164,11 +4289,21 @@ namespace RISE
 			//! The whole expansion for one geometry family: every chunk in
 			//! insertion order, plus the ONE geometry chunk's name/kind a
 			//! model should bind into a `standard_object.geometry` slot.
+			//! E3 addendum: materialName/materialKind, mediumName/mediumKind,
+			//! objectName/objectKind stay empty for every family except
+			//! volume_bank -- see BuildVolumeBank's own comment for why
+			//! that ONE family emits a material/medium/object too.
 			struct GeoScaffoldGraph
 			{
 				std::vector<GeoScaffoldChunkEntry> chunks;
 				std::string geometryName;
 				std::string geometryKind;
+				std::string materialName;
+				std::string materialKind;
+				std::string mediumName;
+				std::string mediumKind;
+				std::string objectName;
+				std::string objectKind;
 			};
 
 			//! displaced_slab: box_geometry base + perlin2d_painter noise
@@ -4354,6 +4489,342 @@ namespace RISE
 				return out;
 			}
 
+			//----------------------------------------------------------------
+			// Slice E3: blended_chain, volume_bank.  Both take a param
+			// SHAPE different from the original four (points/taper instead
+			// of aspect; tone in addition to aspect) so, unlike
+			// DisplacedSlab/SweepRail/BlendedVessel/SdfColumn, they are
+			// NOT routed through BuildGeometryScaffoldGraph below --
+			// InsertGeometryScaffold calls BuildBlendedChain/BuildVolumeBank
+			// directly.  See docs/agentic-redesign/75-expressive-surface-arc.md
+			// slice E3 for the full design; the census that motivated it
+			// (cheapest-primitive parts, assembly-by-overlap instead of
+			// smin, uniform-density atmosphere that cannot swirl).
+			//----------------------------------------------------------------
+
+			//! blended_chain: ONE sdf_geometry chunk -- a smin-blended chain
+			//! of spheres swept along the model-authored `ctrl` path (a
+			//! clamped Catmull-Rom spline through every given point -- see
+			//! ScaffoldCatmullRomPath).  Deliberately SPHERES ONLY, not
+			//! roundcones: a sphere's SDF is position-only, so no per-
+			//! segment orientation math is needed to keep every node
+			//! correctly aligned to an arbitrary 3D path direction --
+			//! continuity comes from smin alone, never from matching a
+			//! cone's local axis to a path tangent (which would need a
+			//! from-Y-to-tangent rotation-to-Euler-angle derivation this
+			//! generator deliberately avoids -- one fewer place for a sign/
+			//! convention bug to hide).  `size` sets the base radius AT THE
+			//! FIRST POINT; `taper` (0..1) linearly falls the radius toward
+			//! the LAST point (floored at 12% of `size`, and a second hard
+			//! floor at 5%, so a fully-tapered tip never collapses to a
+			//! literal zero-radius degenerate sphere); `detail` (0..1) sets
+			//! the DETAIL-DRIVEN component of node count (5..20 -- "more
+			//! nodes = smoother") AND, independently, the cosmetic
+			//! component of each joint's smin blend radius (see kCosmetic
+			//! below).
+			//!
+			//! CONTINUITY BY CONSTRUCTION -- FIX-ROUND P1a (a review round
+			//! found the original "k >= 0.6x spacing" floor mathematically
+			//! insufficient: a reviewer's render of a sparse/tapered
+			//! adversarial config fractured into 7 disconnected blobs).
+			//! The exact bridging condition for RISE's polynomial smin
+			//! (SDFGeometry.cpp's `sminP`: min(a,b) - h*h*k/4, h =
+			//! max(k-|a-b|,0)/k) is derived by evaluating it along the
+			//! straight line joining two adjacent sphere centers: the two
+			//! spheres' signed distances cross at the point where each
+			//! equals HALF the surface gap (gap = spacing - r[i-1] - r[i],
+			//! the sphere-SURFACE-to-surface distance, floored at 0 when
+			//! they already overlap); substituting a=b=gap/2 into sminP
+			//! gives gap/2 - k/4, so the blended field reaches THAT point
+			//! (genuinely bridges, no visible neck) iff **k >= 2*gap**.
+			//! This chunk applies that EXACT threshold, UNCONDITIONALLY,
+			//! per joint, computed from the REALIZED (post-jitter) radii
+			//! and node spacing -- with a 1.25x safety margin (k >=
+			//! 2.5*gap) absorbing finite ray-march step size and the fact
+			//! the derivation is a 1-D argument along one line, not a full
+			//! 3-D proof.  THIS is the correctness guarantee: it holds
+			//! regardless of node count, `size`, `taper`, or `detail`.
+			//!
+			//! A second, independent mechanism keeps the RESULT
+			//! sculptural rather than merely correct: naive uniform-in-u
+			//! node placement on a heavily-tapered/long/sparse chain would
+			//! force the bridging floor to demand a k many times larger
+			//! than the local radius (fixing the gap by ballooning the
+			//! blend into an oversized blob near the tapered tip, not by
+			//! genuinely sculpting it) -- so node count ALSO scales with a
+			//! GEOMETRIC estimate (`nodeCountGeom` below) that targets
+			//! spacing <= 1.5x the worst-case realizable radius sum,
+			//! capped at 40 total nodes.  Sparse, heavily-tapered chains
+			//! past that cap trade blend sharpness (a wider-than-ideal k
+			//! near the tip) for the UNCONDITIONAL continuity guarantee --
+			//! an honest, documented trade, never a silent fracture.
+			//! Per-node radius jitter (+-12%) and a small perpendicular
+			//! path-jitter on INTERIOR nodes only (enveloped to EXACTLY
+			//! ZERO at both endpoints via a sin(pi*u) window, so the
+			//! model's authored endpoint coordinates are preserved EXACTLY
+			//! -- the documented attachment mechanism) keep two chains
+			//! with identical params from being visually identical beyond
+			//! their explicit params, matching every other family's
+			//! jitter contract.
+			GeoScaffoldGraph BuildBlendedChain( const std::string& name, const std::vector<std::array<double,3>>& ctrl,
+			                                    double size, double taper, double detail )
+			{
+				GeoScaffoldGraph out;
+				const std::string nChain = "tmpl_" + name + "_chain";
+
+				const unsigned int nodeCountDetail = ScaffoldJitterUInt( name, "chain_nodecount",
+					5 + static_cast<unsigned int>( 10.0 * detail ), 8 + static_cast<unsigned int>( 12.0 * detail ) );
+
+				// Geometric density uplift (P1a fix round) -- a cheap,
+				// deterministic (no jitter) path-length estimate via a
+				// fine Catmull-Rom sampling, and the GLOBAL worst-case
+				// realizable radius (taperFactor is non-increasing in u,
+				// so its minimum is at u=1; the per-node jitter's
+				// documented range below is [0.88,1.12], so 0.88 is its
+				// conservative lower bound) -- see the function doc above
+				// for the target-spacing derivation.
+				double pathLen = 0.0;
+				{
+					const int kLenSamples = 64;
+					std::array<double,3> prev = ScaffoldCatmullRomPath( ctrl, 0.0 );
+					for( int s = 1; s <= kLenSamples; ++s ) {
+						const double u = static_cast<double>( s ) / static_cast<double>( kLenSamples );
+						const std::array<double,3> cur = ScaffoldCatmullRomPath( ctrl, u );
+						const double dx = cur[0]-prev[0], dy = cur[1]-prev[1], dz = cur[2]-prev[2];
+						pathLen += std::sqrt( dx*dx + dy*dy + dz*dz );
+						prev = cur;
+					}
+				}
+				const double tipFactor = std::max( 1.0 - taper, 0.12 );
+				const double rMinConservative = size * tipFactor * 0.88;
+				unsigned int nodeCountGeom = 2;
+				if( rMinConservative > 1e-9 ) {
+					const double targetSpacing = 3.0 * rMinConservative;   // 1.5 * (r+r)
+					nodeCountGeom = static_cast<unsigned int>( std::ceil( pathLen / targetSpacing ) ) + 1;
+				}
+				unsigned int n = std::max( nodeCountDetail, nodeCountGeom );
+				if( n < 2 )  n = 2;
+				if( n > 40 ) n = 40;   // sane cap on part count; the per-joint floor below still guarantees bridging past it
+
+				std::vector<std::array<double,3>> pos( n );
+				for( unsigned int i = 0; i < n; ++i ) {
+					const double u = static_cast<double>( i ) / static_cast<double>( n - 1 );
+					pos[i] = ScaffoldCatmullRomPath( ctrl, u );
+				}
+
+				// Interior-node perpendicular jitter, enveloped to zero at
+				// both ends -- a stable perpendicular basis per node from
+				// the local finite-difference tangent crossed with a
+				// reference axis (world-up, falling back to world-X when
+				// the tangent is nearly parallel to world-up).
+				const double jitterMag = size * 0.10 * ( 0.4 + 0.6 * ScaffoldJitter01( name, "chain_jmagbase" ) );
+				for( unsigned int i = 1; i + 1 < n; ++i ) {
+					const double u = static_cast<double>( i ) / static_cast<double>( n - 1 );
+					const double envelope = std::sin( 3.14159265358979323846 * u );
+
+					double tx = pos[i+1][0] - pos[i-1][0];
+					double ty = pos[i+1][1] - pos[i-1][1];
+					double tz = pos[i+1][2] - pos[i-1][2];
+					const double tlen = std::sqrt( tx*tx + ty*ty + tz*tz );
+					if( tlen < 1e-9 ) continue;
+					tx /= tlen; ty /= tlen; tz /= tlen;
+
+					double rx = 0.0, ry = 1.0, rz = 0.0;
+					if( std::fabs( ty ) > 0.98 ) { rx = 1.0; ry = 0.0; rz = 0.0; }
+					double px = ty*rz - tz*ry;
+					double py = tz*rx - tx*rz;
+					double pz = tx*ry - ty*rx;
+					const double plen = std::sqrt( px*px + py*py + pz*pz );
+					if( plen < 1e-9 ) continue;
+					px /= plen; py /= plen; pz /= plen;
+
+					const std::string saltA = "chain_jn" + std::to_string( i );
+					const double amt = ( ScaffoldJitter01( name, saltA.c_str() ) * 2.0 - 1.0 ) * jitterMag * envelope;
+					pos[i][0] += px * amt;
+					pos[i][1] += py * amt;
+					pos[i][2] += pz * amt;
+				}
+
+				// Realized (post-jitter) per-node radii -- computed BEFORE
+				// the part-assembly loop so the bridging floor below can
+				// reference BOTH radii of a joint (radii[i-1], radii[i]).
+				std::vector<double> radii( n );
+				for( unsigned int i = 0; i < n; ++i ) {
+					const double u = static_cast<double>( i ) / static_cast<double>( n - 1 );
+					const double taperFactor = 1.0 - taper * u;
+					const std::string saltR = "chain_r" + std::to_string( i );
+					const double rJit = 1.0 + ( ScaffoldJitter01( name, saltR.c_str() ) * 2.0 - 1.0 ) * 0.12;
+					double radius = size * std::max( taperFactor, 0.12 ) * rJit;
+					if( radius < size * 0.05 ) radius = size * 0.05;   // hard floor: never a literal zero-radius sphere
+					radii[i] = radius;
+				}
+
+				const double detailK = 1.0 - 0.35 * detail;
+				std::vector<std::string> parts;
+				for( unsigned int i = 0; i < n; ++i ) {
+					if( i == 0 ) {
+						parts.push_back( ScaffoldSdfPartLine( "sphere", "union", 0.0,
+							pos[i][0], pos[i][1], pos[i][2], radii[i], 0.0, 0.0, 0.0 ) );
+					} else {
+						const double dx = pos[i][0] - pos[i-1][0];
+						const double dy = pos[i][1] - pos[i-1][1];
+						const double dz = pos[i][2] - pos[i-1][2];
+						const double spacing = std::sqrt( dx*dx + dy*dy + dz*dz );
+						const std::string saltK = "chain_k" + std::to_string( i );
+						const double kJit = ScaffoldJitterRange( name, saltK.c_str(), 0.75, 1.05 );
+						const double kCosmetic = spacing * kJit * detailK;
+
+						// EXACT sminP bridging floor -- see the function
+						// doc above for the derivation.  UNCONDITIONAL:
+						// always wins over kCosmetic when the realized
+						// geometry demands it, regardless of detail/size/
+						// taper/node-count.
+						const double gap = std::max( 0.0, spacing - radii[i-1] - radii[i] );
+						const double kBridgeFloor = 2.5 * gap;   // 1.25 * 2 * gap
+						const double k = std::max( kCosmetic, kBridgeFloor );
+
+						parts.push_back( ScaffoldSdfPartLine( "sphere", "smin", k,
+							pos[i][0], pos[i][1], pos[i][2], radii[i], 0.0, 0.0, 0.0 ) );
+					}
+				}
+
+				out.chunks.push_back( { "sdf_geometry", nChain, ScaffoldSDFGeometryText( nChain, parts, 256 ) } );
+				out.geometryName = nChain;
+				out.geometryKind = "sdf_geometry";
+				return out;
+			}
+
+			//! volume_bank: an elongated atmospheric volume, ready-wired --
+			//! ellipsoid_geometry container + a near-invisible dielectric
+			//! boundary material + a painter_heterogeneous_medium whose
+			//! density comes from a domain-warped 3D noise painter (so the
+			//! volume genuinely SWIRLS, unlike a uniform-density sphere --
+			//! see the media-surface finding in
+			//! docs/agentic-redesign/75-expressive-surface-arc.md slice E3:
+			//! RISE DOES support spatially-modulated density via ANY painter
+			//! bound to painter_heterogeneous_medium's `density_painter`
+			//! slot (ChunkParserRegistry.cpp's PainterHeterogeneousMedium
+			//! parser + Job::AddPainterHeterogeneousMedium), so this family
+			//! uses that path directly rather than the layered-homogeneous-
+			//! banks fallback the design brief allowed for if heterogeneous
+			//! density were unsupported) -- PLUS a standard_object binding
+			//! all three together.  `size` sets the container's cross-
+			//! section radii; `aspect` (>0) elongates it along local X (a
+			//! horizontal atmospheric bank; reorient with the emitted
+			//! object's own `orientation` for a different axis); `detail`
+			//! (0..1) raises the density painter's domain-warp amplitude AND
+			//! frequency together (a genuinely wispier, more swirled field,
+			//! not just a louder single knob); `toneR/G/B` (each 0..1, the
+			//! parsed `tone` param) tints the medium's `scattering`
+			//! coefficient (and inversely its `absorption`, so a strongly-
+			//! tinted tone both scatters its own hue and absorbs less of
+			//! it -- the physically honest direction).
+			//!
+			//! THE ONE FAMILY THAT EMITS A MATERIAL, A MEDIUM, AND A
+			//! STANDARD_OBJECT (every other family emits geometry only, per
+			//! S3b's "the model wires standard_object/material itself"
+			//! convention -- see InsertGeometryScaffold's header doc for the
+			//! two-part rationale this family deviates for): (1) a bare
+			//! volume graph does nothing until an object binds the medium
+			//! via `interior_medium` (Job::SetObjectInteriorMedium is the
+			//! ONLY thing that traces a medium chunk at all), and (2) more
+			//! importantly, painter_heterogeneous_medium's `bbox_min`/
+			//! `bbox_max` are WORLD-SPACE and fixed at chunk-parse time (see
+			//! HeterogeneousMedium.cpp's LookupDensity, which tests the
+			//! RAY's world-space point against m_bboxMin/m_bboxMax directly
+			//! -- there is no per-object inverse-transform step) -- so this
+			//! scaffold can only guarantee a correctly-aligned density field
+			//! by choosing the object's placement ITSELF (identity transform
+			//! at the origin) and computing the bbox to match.  The emitted
+			//! object sits at the origin with `casts_shadows FALSE` (the
+			//! pt_alchemists_sanctum.RISEscene idiom for a pure-volume
+			//! container -- see that scene's `fog_ring`/`aureole` objects)
+			//! -- the medium's bbox is computed DIRECTLY from the
+			//! container's own realized radii at that same identity
+			//! transform, with an 8% margin so the density field comfortably
+			//! covers the ellipsoid's surface.  InsertGeometryScaffold
+			//! attaches a FACTUAL (not advisory) reminder of this coupling
+			//! to `message` on an ok==true result.
+			GeoScaffoldGraph BuildVolumeBank( const std::string& name, double size, double detail, double aspect,
+			                                  double toneR, double toneG, double toneB )
+			{
+				GeoScaffoldGraph out;
+				const std::string nContainer = "tmpl_" + name + "_container";
+				const std::string nDenseLo   = "tmpl_" + name + "_denselo";
+				const std::string nDenseHi   = "tmpl_" + name + "_densehi";
+				const std::string nDensity   = "tmpl_" + name + "_density";
+				const std::string nShell     = "tmpl_" + name + "_shell";
+				const std::string nMedium    = "tmpl_" + name + "_medium";
+				const std::string nObject    = "tmpl_" + name + "_obj";
+
+				const double rx = size * aspect * ScaffoldJitterRange( name, "bank_rx", 0.9, 1.1 );
+				const double ry = size * ScaffoldJitterRange( name, "bank_ry", 0.28, 0.42 );
+				const double rz = size * ScaffoldJitterRange( name, "bank_rz", 0.28, 0.42 );
+				out.chunks.push_back( { "ellipsoid_geometry", nContainer, ScaffoldChunkText( "ellipsoid_geometry", {
+					{ "name", nContainer }, { "radii", ScaffoldVec3( rx, ry, rz ) } } ) } );
+
+				const double loV = ScaffoldJitterRange( name, "bank_lo", 0.01, 0.05 );
+				const double hiV = ScaffoldJitterRange( name, "bank_hi", 0.85, 1.0 );
+				out.chunks.push_back( { "uniformcolor_painter", nDenseLo, ScaffoldUniformColorText( nDenseLo, loV, loV, loV ) } );
+				out.chunks.push_back( { "uniformcolor_painter", nDenseHi, ScaffoldUniformColorText( nDenseHi, hiV, hiV, hiV ) } );
+
+				const double persistence   = ScaffoldJitterRange( name, "bank_persist", 0.45, 0.75 );
+				const unsigned int octaves = ScaffoldJitterUInt( name, "bank_octaves", 3, 5 );
+				const double warpAmp       = ScaffoldJitterRange( name, "bank_warpamp", 1.5, 4.0 ) * ( 0.4 + 1.2 * detail );
+				const unsigned int warpLevels = ScaffoldJitterUInt( name, "bank_warplevels", 1, 3 );
+				const double freqBase = ScaffoldJitterRange( name, "bank_freq", 1.5, 3.5 ) * ( 0.6 + 1.0 * detail ) / size;
+				const double shiftX = ScaffoldJitterRange( name, "bank_shiftx", 0.0, 100.0 );
+				const double shiftY = ScaffoldJitterRange( name, "bank_shifty", 0.0, 100.0 );
+				const double shiftZ = ScaffoldJitterRange( name, "bank_shiftz", 0.0, 100.0 );
+				out.chunks.push_back( { "domainwarp3d_painter", nDensity,
+					ScaffoldDomainWarp3DText( nDensity, nDenseLo, nDenseHi, persistence, octaves, warpAmp, warpLevels,
+						freqBase, freqBase, freqBase, shiftX, shiftY, shiftZ ) } );
+
+				const double iorEps = ScaffoldJitterRange( name, "bank_ior", 0.0005, 0.003 );
+				const double tauEps = ScaffoldJitterRange( name, "bank_tau", 0.0005, 0.003 );
+				out.chunks.push_back( { "dielectric_material", nShell, ScaffoldChunkText( "dielectric_material", {
+					{ "name", nShell },
+					{ "ior", ScaffoldFmt( 1.0 + iorEps ) },
+					{ "tau", ScaffoldFmt( 1.0 - tauEps ) },
+					{ "scattering", "100000.0" },
+				} ) } );
+
+				const double scatScale = ScaffoldJitterRange( name, "bank_scatscale", 0.25, 0.55 ) * ( 0.5 + 0.8 * detail );
+				const double absScale  = ScaffoldJitterRange( name, "bank_absscale", 0.01, 0.05 );
+				const double hg        = ScaffoldJitterRange( name, "bank_hg", 0.15, 0.45 );
+				const double margin = 1.08;
+				out.chunks.push_back( { "painter_heterogeneous_medium", nMedium, ScaffoldChunkText( "painter_heterogeneous_medium", {
+					{ "name", nMedium },
+					{ "absorption", ScaffoldVec3( (1.0-toneR)*absScale, (1.0-toneG)*absScale, (1.0-toneB)*absScale ) },
+					{ "scattering", ScaffoldVec3( toneR*scatScale, toneG*scatScale, toneB*scatScale ) },
+					{ "phase", "hg " + ScaffoldFmt( hg ) },
+					{ "density_painter", nDensity },
+					{ "resolution", std::to_string( ScaffoldJitterUInt( name, "bank_res", 28, 48 ) ) },
+					{ "color_to_scalar", "luminance" },
+					{ "bbox_min", ScaffoldVec3( -rx*margin, -ry*margin, -rz*margin ) },
+					{ "bbox_max", ScaffoldVec3(  rx*margin,  ry*margin,  rz*margin ) },
+				} ) } );
+
+				out.chunks.push_back( { "standard_object", nObject, ScaffoldChunkText( "standard_object", {
+					{ "name", nObject },
+					{ "geometry", nContainer },
+					{ "material", nShell },
+					{ "interior_medium", nMedium },
+					{ "position", ScaffoldVec3( 0.0, 0.0, 0.0 ) },
+					{ "casts_shadows", "FALSE" },
+				} ) } );
+
+				out.geometryName = nContainer;
+				out.geometryKind = "ellipsoid_geometry";
+				out.materialName = nShell;
+				out.materialKind = "dielectric_material";
+				out.mediumName   = nMedium;
+				out.mediumKind   = "painter_heterogeneous_medium";
+				out.objectName   = nObject;
+				out.objectKind   = "standard_object";
+				return out;
+			}
+
 			GeoScaffoldGraph BuildGeometryScaffoldGraph( AgentSession::GeometryScaffoldFamily family, const std::string& name,
 			                                             double size, double detail, double aspect )
 			{
@@ -4363,6 +4834,15 @@ namespace RISE
 					case AgentSession::GeometryScaffoldFamily::SweepRail:     return BuildSweepRail( name, size, detail, aspect );
 					case AgentSession::GeometryScaffoldFamily::BlendedVessel: return BuildBlendedVessel( name, size, detail, aspect );
 					case AgentSession::GeometryScaffoldFamily::SdfColumn:     return BuildSdfColumn( name, size, detail, aspect );
+					// BlendedChain/VolumeBank take a DIFFERENT param shape
+					// (points/taper, tone) and are dispatched directly by
+					// InsertGeometryScaffold via BuildBlendedChain/
+					// BuildVolumeBank -- never routed through this function.
+					// Cases kept here (rather than a `default:`) so this
+					// switch stays EXHAUSTIVE and -Wswitch still catches a
+					// future family added to the enum but forgotten here.
+					case AgentSession::GeometryScaffoldFamily::BlendedChain:  return GeoScaffoldGraph();
+					case AgentSession::GeometryScaffoldFamily::VolumeBank:    return GeoScaffoldGraph();
 				}
 				return GeoScaffoldGraph();
 			}
@@ -4370,6 +4850,7 @@ namespace RISE
 
 		AgentSession::AgentGeometryScaffoldResult AgentSession::InsertGeometryScaffold(
 			const std::string& family, const std::string& name, double size, double detail, double aspect,
+			const std::string& points, double taper, const std::string& tone,
 			const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentGeometryScaffoldResult out;
@@ -4379,7 +4860,8 @@ namespace RISE
 			if( !ScaffoldParseGeometryFamily( family, fam ) ) {
 				out.ok = false;
 				out.message = "insert_geometry_scaffold refused: unknown family `" + family +
-					"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column";
+					"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column, "
+					"blended_chain, volume_bank";
 				return out;
 			}
 			if( !ScaffoldNameIsValid( name ) ) {
@@ -4399,13 +4881,55 @@ namespace RISE
 				out.message = "insert_geometry_scaffold refused: `detail` must be a finite number in [0,1]";
 				return out;
 			}
-			if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
-				out.ok = false;
-				out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
-				return out;
+
+			// Per-family param shape (E3): blended_chain takes `points`/
+			// `taper` INSTEAD of `aspect`; volume_bank takes `aspect` PLUS
+			// `tone`; the original four take only `aspect`.  See
+			// InsertGeometryScaffold's header doc for the full per-family
+			// param table.
+			std::vector<std::array<double,3>> parsedPoints;
+			double toneR = 0.0, toneG = 0.0, toneB = 0.0;
+
+			if( fam == GeometryScaffoldFamily::BlendedChain ) {
+				std::string perr;
+				if( !ScaffoldParsePoints( points, parsedPoints, perr ) ) {
+					out.ok = false;
+					out.message = "insert_geometry_scaffold refused: " + perr;
+					return out;
+				}
+				if( !std::isfinite( taper ) || taper < 0.0 || taper > 1.0 ) {
+					out.ok = false;
+					out.message = "insert_geometry_scaffold refused: `taper` must be a finite number in [0,1]";
+					return out;
+				}
+			} else if( fam == GeometryScaffoldFamily::VolumeBank ) {
+				if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+					out.ok = false;
+					out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
+					return out;
+				}
+				if( !ScaffoldParseTone( tone, toneR, toneG, toneB ) ) {
+					out.ok = false;
+					out.message = "insert_geometry_scaffold refused: `tone` must be \"r g b\", each 0..1 -- got `" +
+						tone + "`";
+					return out;
+				}
+			} else {
+				if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+					out.ok = false;
+					out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
+					return out;
+				}
 			}
 
-			const GeoScaffoldGraph graph = BuildGeometryScaffoldGraph( fam, name, size, detail, aspect );
+			GeoScaffoldGraph graph;
+			if( fam == GeometryScaffoldFamily::BlendedChain ) {
+				graph = BuildBlendedChain( name, parsedPoints, size, taper, detail );
+			} else if( fam == GeometryScaffoldFamily::VolumeBank ) {
+				graph = BuildVolumeBank( name, size, detail, aspect, toneR, toneG, toneB );
+			} else {
+				graph = BuildGeometryScaffoldGraph( fam, name, size, detail, aspect );
+			}
 
 			// Collision precheck: refuse the WHOLE expansion, document
 			// UNCHANGED, if ANY generated (kind,name) already exists AT
@@ -4439,6 +4963,21 @@ namespace RISE
 			out.ok           = true;
 			out.geometryName = graph.geometryName;
 			out.geometryKind = graph.geometryKind;
+			out.materialName = graph.materialName;
+			out.materialKind = graph.materialKind;
+			out.mediumName   = graph.mediumName;
+			out.mediumKind   = graph.mediumKind;
+			out.objectName   = graph.objectName;
+			out.objectKind   = graph.objectKind;
+			if( fam == GeometryScaffoldFamily::VolumeBank ) {
+				// Factual (not advisory) wiring note -- see BuildVolumeBank's
+				// doc for why this coupling exists.  message stays empty on
+				// an ok==true result for every OTHER family, unchanged.
+				out.message = "volume_bank emitted its own `" + graph.objectKind + "` (`" + graph.objectName +
+					"`) because painter_heterogeneous_medium's bbox_min/bbox_max are WORLD-SPACE and fixed at "
+					"creation time -- if you reposition or rescale that object, also update `" + graph.mediumName +
+					"`'s bbox_min/bbox_max to match, or the density field will no longer align with the container.";
+			}
 			return out;
 		}
 
