@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import struct
@@ -133,6 +134,9 @@ def encode(value) -> bytes:
 
 
 def predictive_payload(data_dir: Path) -> dict:
+    schema = json.loads(
+        (data_dir / "fire_optics_record_schema.draft.json").read_text()
+    )
     effective = json.loads(
         (data_dir / "fire_optics_mac_equivalent_e.draft.json").read_text()
     )
@@ -187,6 +191,13 @@ def predictive_payload(data_dir: Path) -> dict:
         "record_name": "fire-optics-predictive-v1",
         "record_class": "predictive_optical_preset",
         "interpolation": "pchip_monotone_c1_v1",
+        "provenance_schema": schema,
+        "source_records": {
+            "condensed_organics": condensed,
+            "cool_carbon": cool,
+            "effective_absorption": effective,
+            "hot_soot": hot,
+        },
         "effective_absorption": {
             "record_name": effective["record_name"],
             "quantity_name": effective["quantity_name"],
@@ -244,6 +255,12 @@ def predictive_payload(data_dir: Path) -> dict:
 
 
 def synthetic_payload(data_dir: Path) -> dict:
+    schema = json.loads(
+        (data_dir / "fire_optics_record_schema.draft.json").read_text()
+    )
+    fixtures = json.loads(
+        (data_dir / "fire_optics_synthetic_fixtures.draft.json").read_text()
+    )
     effective = json.loads(
         (data_dir / "fire_optics_mac_equivalent_e.draft.json").read_text()
     )
@@ -263,39 +280,51 @@ def synthetic_payload(data_dir: Path) -> dict:
         float(value) for value in hot_phi_source["hot_fraction_temperature_band_K"]
     ]
     cool_phi = dict(hot_phi)
+    fixture_values = fixtures["values"]
+    fixture_hot = fixture_values["hot_soot"]
+    fixture_cool = fixture_values["fresh_smoke_cool_carbon"]
+    fixture_condensed = fixture_values["organic_droplets_condensed"]
     return {
         "schema_version": 1,
         "record_kind": "fire_optics_preset",
         "record_name": "fire-optics-synthetic-regression-v1",
         "record_class": "synthetic_regression_fixture",
         "interpolation": "analytic_fixture_v1",
+        "provenance_schema": schema,
+        "source_records": {
+            "condensed_organics": condensed,
+            "cool_carbon": cool,
+            "effective_absorption": effective,
+            "hot_soot": hot,
+            "synthetic_fixtures": fixtures,
+        },
         "effective_absorption": {
             "model": "constant_E_eff",
-            "E_eff": 0.26,
+            "E_eff": float(fixture_values["E_eff_fixture"]),
             "pinned_density_g_cm3": float(effective["definition"]["pinned_density_g_cm3"]),
             "domain_nm": [380.0, 780.0],
         },
         "hot_soot": {
-            "omega": 0.10,
-            "g": 0.50,
+            "omega": float(fixture_hot["omega"]),
+            "g": float(fixture_hot["g"]),
             "phi_T_partition": hot_phi,
         },
         "cool_carbon": {
             "k_m_extinction_633nm_m2_per_g": float(
                 cool["values"]["k_m_extinction_633nm_m2_per_g"]["value"]
             ),
-            "n_spectral_exponent": 1.20,
-            "omega": 0.60,
-            "g": 0.60,
+            "n_spectral_exponent": float(fixture_cool["n_exponent"]),
+            "omega": float(fixture_cool["omega"]),
+            "g": float(fixture_cool["g"]),
             "phi_T_partition": cool_phi,
         },
         "condensed_organics": {
             "k_m_extinction_633nm_m2_per_g": float(
                 condensed["computed_outputs_full_mie"]["table"]["rows"][3][1]
             ),
-            "n_spectral_exponent": 0.50,
-            "omega": 0.90,
-            "g": 0.70,
+            "n_spectral_exponent": float(fixture_condensed["n_exponent"]),
+            "omega": float(fixture_condensed["omega"]),
+            "g": float(fixture_condensed["g"]),
             "predictive_reason_code": condensed["ir_closure"]["predictive_reason_code"],
         },
     }
@@ -315,18 +344,27 @@ def emit_array(target, name: str, payload: bytes) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
     parser.add_argument("data_dir", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     predictive = encode(predictive_payload(args.data_dir))
     synthetic = encode(synthetic_payload(args.data_dir))
-    with args.output.open("w", encoding="utf-8", newline="\n") as target:
-        target.write(
-            "// Generated exclusively from docs/data/fire_optics_*.draft.json and\n"
-            "// the synthetic fixture values frozen in FIRE_SMOKE_DESIGN.md SS12.\n\n"
-        )
-        emit_array(target, "kPredictiveFireOpticsV1", predictive)
-        emit_array(target, "kSyntheticFireOpticsV1", synthetic)
+    target = io.StringIO(newline="\n")
+    target.write(
+        "// Generated exclusively from docs/data/fire_optics_*.draft.json.\n\n"
+    )
+    emit_array(target, "kPredictiveFireOpticsV1", predictive)
+    emit_array(target, "kSyntheticFireOpticsV1", synthetic)
+    generated = target.getvalue()
+    if args.check:
+        if not args.output.is_file() or args.output.read_text(encoding="utf-8") != generated:
+            raise SystemExit(
+                f"{args.output} is stale; regenerate it with {Path(__file__).name}"
+            )
+        return
+    with args.output.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(generated)
 
 
 if __name__ == "__main__":

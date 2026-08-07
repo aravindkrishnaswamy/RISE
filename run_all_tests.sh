@@ -7,6 +7,9 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
+FIRE_OPTICS_GENERATOR="$REPO_ROOT/tools/generate_fire_optics_records.py"
+FIRE_OPTICS_DATA="$REPO_ROOT/docs/data"
+FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -22,6 +25,16 @@ if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
 	exit 1
 fi
+
+python_bin="$(command -v python3 || command -v python || true)"
+if [ -z "$python_bin" ]; then
+	echo "Missing Python interpreter required for the fire-optics record parity gate"
+	exit 1
+fi
+printf 'Checking embedded fire-optics records ... '
+"$python_bin" "$FIRE_OPTICS_GENERATOR" --check \
+	"$FIRE_OPTICS_DATA" "$FIRE_OPTICS_EMBEDDED"
+echo "pass"
 
 # Remove orphan .o files only (no matching .cpp). Active .o files are kept
 # so the per-test build target can skip up-to-date binaries.

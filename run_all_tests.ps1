@@ -37,6 +37,25 @@ $BinDir        = Join-Path $RepoRoot "$BinSubdir\tests"
 $SrcDir        = Join-Path $RepoRoot 'tests'
 $CmakeSrcDir   = Join-Path $RepoRoot 'build\cmake\rise-tests'
 $CmakeBuildDir = Join-Path $CmakeSrcDir '_out'
+$FireOpticsGenerator = Join-Path $RepoRoot 'tools\generate_fire_optics_records.py'
+$FireOpticsData = Join-Path $RepoRoot 'docs\data'
+$FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecordData.inc'
+
+$python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
+if (-not $python) {
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+}
+if (-not $python) {
+    Write-Host 'ERROR: Python is required for the fire-optics record parity gate.' -ForegroundColor Red
+    exit 1
+}
+Write-Host -NoNewline 'Checking embedded fire-optics records ... '
+& $python $FireOpticsGenerator --check $FireOpticsData $FireOpticsEmbedded
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
 
 # Logs go outside the repo to mirror the .sh script's intent.
 if (-not $LogDir) {

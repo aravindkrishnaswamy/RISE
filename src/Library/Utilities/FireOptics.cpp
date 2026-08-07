@@ -533,6 +533,41 @@ namespace RISE
 			!ReadText(record, "interpolation", interpolation, error) ) {
 			return Fail(error, "unsupported fire-optics record header");
 		}
+		if( m_recordName == "fire-optics-predictive-v1" ||
+			m_recordName == "fire-optics-synthetic-regression-v1" ) {
+			const RISECBOR64::Value* provenanceSchema = Required(
+				record, "provenance_schema", RISECBOR64::Value::Map, error );
+			const RISECBOR64::Value* sourceRecords = Required(
+				record, "source_records", RISECBOR64::Value::Map, error );
+			std::string provenanceSchemaName;
+			if( !provenanceSchema || !sourceRecords ||
+				!ReadText(*provenanceSchema, "record_name", provenanceSchemaName, error) ||
+				provenanceSchemaName != "fire-optics-canonical-provenance-schema-v1" ) {
+				return Fail(error, "fire-optics canonical provenance schema is missing");
+			}
+			const char* requiredSources[] = {
+				"effective_absorption", "hot_soot", "cool_carbon",
+				"condensed_organics"
+			};
+			for( std::size_t i=0; i<sizeof(requiredSources)/sizeof(requiredSources[0]); ++i ) {
+				if( !Required(*sourceRecords, requiredSources[i],
+					RISECBOR64::Value::Map, error) ) {
+					return Fail(error, "fire-optics canonical source record is missing");
+				}
+			}
+			if( m_recordName == "fire-optics-synthetic-regression-v1" ) {
+				const RISECBOR64::Value* fixtures = Required(
+					*sourceRecords, "synthetic_fixtures", RISECBOR64::Value::Map, error );
+				std::string fixtureName, fixtureStatus;
+				if( !fixtures || !ReadText(*fixtures, "record_name", fixtureName, error) ||
+					!ReadText(*fixtures, "record_status", fixtureStatus, error) ||
+					fixtureName != "fire-optics-synthetic-fixtures-v1" ||
+					fixtureStatus !=
+						"SYNTHETIC_NON_PREDICTIVE__REGRESSION_FIXTURES_ONLY" ) {
+					return Fail(error, "fire-optics synthetic fixture provenance is missing");
+				}
+			}
+		}
 		const RISECBOR64::Value* effective = Required(
 			record, "effective_absorption", RISECBOR64::Value::Map, error );
 		const RISECBOR64::Value* hot = Required(
@@ -569,11 +604,6 @@ namespace RISE
 				if( effectiveRows[i][0] != 380.0+5.0*static_cast<double>(i) ||
 					effectiveRows[i][1] <= 0.0 || effectiveRows[i][2] <= 0.0 ) {
 					return Fail(error, "fire-optics E/MAC row is not the frozen positive grid");
-				}
-				const double derived = effectiveRows[i][2]*(m_densityGCM3*1000000.0)*
-					effectiveRows[i][0]*1.0e-9/(6.0*kPi);
-				if( !NearlyEqual(derived, effectiveRows[i][1], 5.0e-6) ) {
-					return Fail(error, "fire-optics E_eff row disagrees with normative MAC");
 				}
 			}
 			if( !ReadInterpolation(*effective, "mac_interpolation", wavelengths,
@@ -664,21 +694,45 @@ namespace RISE
 				return false;
 			}
 
-			if( m_hotFractionMinK != 700.0 || m_hotFractionMaxK != 900.0 ||
-				m_densityGCM3 != 1.8 || !NearlyEqual(MAC(550.0), 8.0, 1.0e-12) ||
-				!NearlyEqual(MAC(632.8), 6.647, 5.0e-4) ||
-				!NearlyEqual(EffectiveAbsorption(380.0)/EffectiveAbsorption(780.0),
-					1.311, 5.0e-4) ||
-				!NearlyEqual(-std::log(MAC(380.0)/MAC(780.0))/
-					std::log(380.0/780.0), 1.377, 5.0e-4) ||
-				!NearlyEqual(HotAlbedo(550.0), 0.10, 2.0e-3) ||
-				!NearlyEqual(HotG(550.0), 0.22, 1.0e-12) ||
-				!NearlyEqual(m_coolKm633, 8.7, 1.0e-12) ||
+			if( m_hotFractionMinK != 700.0 || m_hotFractionMaxK != 900.0 ) {
+				return Fail(error, "fire-optics predictive v1 phi(T) band gate failed");
+			}
+			if( m_densityGCM3 != 1.8 ) {
+				return Fail(error, "fire-optics predictive v1 density gate failed");
+			}
+			if( !NearlyEqual(MAC(550.0), 8.0, 1.0e-12) ) {
+				return Fail(error, "fire-optics predictive v1 MAC(550 nm) gate failed");
+			}
+			if( !NearlyEqual(MAC(632.8), 6.647, 5.0e-4) ) {
+				return Fail(error, "fire-optics predictive v1 MAC(632.8 nm) gate failed");
+			}
+			if( !NearlyEqual(effectiveValues.front()/effectiveValues.back(),
+				1.311, 5.0e-4) ) {
+				return Fail(error, "fire-optics predictive v1 E_eff shape gate failed");
+			}
+			if( !NearlyEqual(-std::log(MAC(380.0)/MAC(780.0))/
+				std::log(380.0/780.0), 1.377, 5.0e-4) ) {
+				return Fail(error, "fire-optics predictive v1 visible AAE gate failed");
+			}
+			for( std::size_t i=0; i<effectiveRows.size(); i++ ) {
+				const double derived = effectiveRows[i][2]*(m_densityGCM3*1000000.0)*
+					effectiveRows[i][0]*1.0e-9/(6.0*kPi);
+				if( !NearlyEqual(derived, effectiveRows[i][1], 5.0e-6) ) {
+					return Fail(error, "fire-optics E_eff row disagrees with normative MAC");
+				}
+			}
+			if( !NearlyEqual(HotAlbedo(550.0), 0.10, 2.0e-3) ||
+				!NearlyEqual(HotG(550.0), 0.22, 1.0e-12) ) {
+				return Fail(error, "fire-optics predictive v1 hot-soot gate failed");
+			}
+			if( !NearlyEqual(m_coolKm633, 8.7, 1.0e-12) ||
 				!NearlyEqual(m_coolOmega, 0.25, 1.0e-12) ||
-				!NearlyEqual(m_coolG, 0.58, 1.0e-12) ||
-				m_condensedPredictiveReason != "condensed_organics_ir_unclosed" ||
+				!NearlyEqual(m_coolG, 0.58, 1.0e-12) ) {
+				return Fail(error, "fire-optics predictive v1 cool-carbon gate failed");
+			}
+			if( m_condensedPredictiveReason != "condensed_organics_ir_unclosed" ||
 				m_condensedIRClosureStatus != "blocked" ) {
-				return Fail(error, "fire-optics predictive v1 numeric gate failed");
+				return Fail(error, "fire-optics predictive v1 condensed-organics gate failed");
 			}
 			return true;
 		}

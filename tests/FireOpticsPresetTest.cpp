@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
+#include <vector>
 
 using namespace RISE;
 
@@ -52,6 +54,131 @@ namespace
 		}
 		return RISECBOR64::Value::MapValue(members);
 	}
+
+	std::vector<double> PCHIPSlopes(
+		const std::vector<double>& wavelengths,
+		const std::vector<double>& values
+		)
+	{
+		const std::size_t count = wavelengths.size();
+		std::vector<double> intervals(count-1), secants(count-1), slopes(count,0.0);
+		for( std::size_t i=0; i+1<count; ++i ) {
+			intervals[i] = wavelengths[i+1]-wavelengths[i];
+			secants[i] = (values[i+1]-values[i])/intervals[i];
+		}
+		for( std::size_t i=1; i+1<count; ++i ) {
+			if( secants[i-1]*secants[i] > 0.0 ) {
+				const double w1 = 2.0*intervals[i]+intervals[i-1];
+				const double w2 = intervals[i]+2.0*intervals[i-1];
+				slopes[i] = (w1+w2)/(w1/secants[i-1]+w2/secants[i]);
+			}
+		}
+		auto endpoint = []( const double h0, const double h1,
+			const double d0, const double d1 ) {
+			double value = ((2.0*h0+h1)*d0-h0*d1)/(h0+h1);
+			if( value*d0 <= 0.0 ) return 0.0;
+			if( d0*d1 < 0.0 && std::fabs(value) > std::fabs(3.0*d0) ) {
+				return 3.0*d0;
+			}
+			return value;
+		};
+		slopes.front() = endpoint(intervals[0],intervals[1],secants[0],secants[1]);
+		slopes.back() = endpoint(intervals[count-2],intervals[count-3],
+			secants[count-2],secants[count-3]);
+		return slopes;
+	}
+
+	void DerivativeExtrema(
+		const double x0, const double x1, const double y0, const double y1,
+		const double slope0, const double slope1, double& minimum, double& maximum
+		)
+	{
+		const double h = x1-x0;
+		const double a = 2.0*y0-2.0*y1+h*(slope0+slope1);
+		const double b = -3.0*y0+3.0*y1-h*(2.0*slope0+slope1);
+		const double c = h*slope0;
+		auto derivative = [a,b,c,h]( const double u ) {
+			return (3.0*a*u*u+2.0*b*u+c)/h;
+		};
+		minimum = std::min(derivative(0.0),derivative(1.0));
+		maximum = std::max(derivative(0.0),derivative(1.0));
+		if( a != 0.0 ) {
+			const double vertex = -b/(3.0*a);
+			if( vertex > 0.0 && vertex < 1.0 ) {
+				minimum = std::min(minimum,derivative(vertex));
+				maximum = std::max(maximum,derivative(vertex));
+			}
+		}
+	}
+
+	RISECBOR64::Value InterpolationValue(
+		const std::vector<double>& wavelengths,
+		const std::vector<double>& values
+		)
+	{
+		using RISECBOR64::Value;
+		const std::vector<double> slopes = PCHIPSlopes(wavelengths,values);
+		Value::Values encodedSlopes, encodedEnclosures;
+		for( std::size_t i=0; i<slopes.size(); ++i ) {
+			encodedSlopes.push_back(Value::Float(slopes[i]));
+		}
+		for( std::size_t i=0; i+1<wavelengths.size(); ++i ) {
+			double minimum, maximum;
+			DerivativeExtrema(wavelengths[i],wavelengths[i+1],values[i],values[i+1],
+				slopes[i],slopes[i+1],minimum,maximum);
+			encodedEnclosures.push_back(Value::ArrayValue({
+				Value::Float(wavelengths[i]), Value::Float(wavelengths[i+1]),
+				Value::Float(std::nextafter(minimum,-std::numeric_limits<double>::infinity())),
+				Value::Float(std::nextafter(maximum,std::numeric_limits<double>::infinity()))
+			}));
+		}
+		return Value::MapValue({
+			{ "derivative_enclosures", Value::ArrayValue(encodedEnclosures) },
+			{ "slopes", Value::ArrayValue(encodedSlopes) }
+		});
+	}
+
+	RISECBOR64::Value ReplaceSpectrumCell(
+		const RISECBOR64::Value& record, const char* sectionKey,
+		const std::size_t rowIndex, const std::size_t valueColumn,
+		const double replacement, const char* interpolationKey
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* section = record.Find(sectionKey);
+		const Value* rowsValue = section ? section->Find("rows") : 0;
+		if( !section || !rowsValue || rowIndex >= rowsValue->GetArray().size() ) {
+			return Value();
+		}
+		Value::Values rows = rowsValue->GetArray();
+		Value::Values changedRow = rows[rowIndex].GetArray();
+		changedRow[valueColumn] = Value::Float(replacement);
+		rows[rowIndex] = Value::ArrayValue(changedRow);
+		Value changedSection = ReplaceMember(*section,"rows",Value::ArrayValue(rows));
+		if( interpolationKey ) {
+			std::vector<double> wavelengths, values;
+			for( std::size_t i=0; i<rows.size(); ++i ) {
+				wavelengths.push_back(rows[i].GetArray()[0].GetFloat());
+				values.push_back(rows[i].GetArray()[valueColumn].GetFloat());
+			}
+			changedSection = ReplaceMember(changedSection,interpolationKey,
+				InterpolationValue(wavelengths,values));
+		}
+		return ReplaceMember(record,sectionKey,changedSection);
+	}
+
+	bool RejectsWith(
+		const RISECBOR64::Value& record,
+		const char* expectedError
+		)
+	{
+		RISECBOR64::Bytes bytes;
+		std::string error;
+		FireOpticsPreset rejected;
+		return RISECBOR64::Encode(record,bytes,&error) &&
+			!rejected.LoadCanonicalRecord(bytes,&error) &&
+			error.find(expectedError) != std::string::npos;
+	}
 }
 
 int main()
@@ -68,9 +195,9 @@ int main()
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
-		"0b57c2edfb73e06b5d2ceac10f778d1386554be8818434dfc4c71dd9a11d2502" &&
+		"e9a6761d0966a2e520490ae46ac0179189f76ef7d04a6a11d01c42541333f610" &&
 		synthetic.RecordId() ==
-		"b1f177756bbe960fd2a618ac50ff6a35519f288b50c9c1f712482b2e36b204ae",
+		"75e3075123b2b83cdc7401307692723cefb17b4532bf431f786259833624a315",
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
@@ -241,6 +368,39 @@ int main()
 	RISECBOR64::Value decodedPredictive;
 	Check( RISECBOR64::DecodeCanonical(predictive.RecordBytes(),decodedPredictive,
 		&mutationError), "the predictive record decodes for policy mutation tests" );
+	const RISECBOR64::Value* provenanceSchema = decodedPredictive.Find("provenance_schema");
+	const RISECBOR64::Value* sourceRecords = decodedPredictive.Find("source_records");
+	Check( provenanceSchema && sourceRecords &&
+		provenanceSchema->Find("hashed_payload_required_fields") &&
+		sourceRecords->Find("effective_absorption") && sourceRecords->Find("hot_soot") &&
+		sourceRecords->Find("cool_carbon") && sourceRecords->Find("condensed_organics"),
+		"the canonical payload hashes its provenance schema and every source record" );
+	if( sourceRecords ) {
+		const RISECBOR64::Value* sourceCool = sourceRecords->Find("cool_carbon");
+		const RISECBOR64::Value* sourceValues = sourceCool ? sourceCool->Find("values") : 0;
+		const RISECBOR64::Value* sourceOmega = sourceValues ?
+			sourceValues->Find("omega_633nm") : 0;
+		if( sourceCool && sourceValues && sourceOmega ) {
+			const RISECBOR64::Value changedOmega = ReplaceMember(*sourceOmega,"source",
+				RISECBOR64::Value::String("distinct provenance for identity mutation"));
+			const RISECBOR64::Value changedValues = ReplaceMember(*sourceValues,
+				"omega_633nm",changedOmega);
+			const RISECBOR64::Value changedCool = ReplaceMember(*sourceCool,
+				"values",changedValues);
+			const RISECBOR64::Value changedSources = ReplaceMember(*sourceRecords,
+				"cool_carbon",changedCool);
+			const RISECBOR64::Value changedRecord = ReplaceMember(decodedPredictive,
+				"source_records",changedSources);
+			RISECBOR64::Bytes changedBytes;
+			FireOpticsPreset changedProvenance;
+			Check( RISECBOR64::Encode(changedRecord,changedBytes,&mutationError) &&
+				changedProvenance.LoadCanonicalRecord(changedBytes,&mutationError) &&
+				changedProvenance.RecordId() != predictive.RecordId(),
+				"a provenance-only change changes the canonical record identity" );
+		} else {
+			Check(false,"cool-carbon per-value provenance is present in the hashed payload");
+		}
+	}
 	const RISECBOR64::Value* cool = decodedPredictive.Find("cool_carbon");
 	if( cool ) {
 		const RISECBOR64::Value changedCool = ReplaceMember(*cool,
@@ -254,13 +414,102 @@ int main()
 			"load rejects a cool-carbon policy that permits extrapolation" );
 	}
 
+	const RISECBOR64::Value* predictiveEffective =
+		decodedPredictive.Find("effective_absorption");
+	const RISECBOR64::Value* predictiveHot = decodedPredictive.Find("hot_soot");
+	const RISECBOR64::Value* predictiveCondensed =
+		decodedPredictive.Find("condensed_organics");
+	if( predictiveEffective && predictiveHot && cool && predictiveCondensed ) {
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+			ReplaceMember(*predictiveEffective,"pinned_density_g_cm3",
+				RISECBOR64::Value::Float(1.81))),"density gate failed"),
+			"a density mutation reaches the specific load-time density gate" );
+		const RISECBOR64::Value* effectiveRows = predictiveEffective->Find("rows");
+		if( effectiveRows ) {
+			const double mac550 = effectiveRows->GetArray()[34].GetArray()[2].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"effective_absorption",34,2,mac550+0.02,"mac_interpolation"),
+				"MAC(550 nm) gate failed"),
+				"a MAC-550 mutation reaches its specific load-time gate" );
+			const double mac630 = effectiveRows->GetArray()[50].GetArray()[2].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"effective_absorption",50,2,mac630+0.10,"mac_interpolation"),
+				"MAC(632.8 nm) gate failed"),
+				"a MAC-632.8 mutation reaches its specific load-time gate" );
+			const double effective380 =
+				effectiveRows->GetArray().front().GetArray()[1].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"effective_absorption",0,1,effective380*1.01,0),
+				"E_eff shape gate failed"),
+				"an E_eff endpoint mutation reaches the specific shape gate" );
+			const double mac380 =
+				effectiveRows->GetArray().front().GetArray()[2].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,
+				"effective_absorption",0,2,mac380*1.01,"mac_interpolation"),
+				"visible AAE gate failed"),
+				"a MAC endpoint mutation reaches the specific visible-AAE gate" );
+		}
+		const RISECBOR64::Value* macInterpolation =
+			predictiveEffective->Find("mac_interpolation");
+		if( macInterpolation ) {
+			const RISECBOR64::Value* slopes = macInterpolation->Find("slopes");
+			const RISECBOR64::Value* enclosures =
+				macInterpolation->Find("derivative_enclosures");
+			if( slopes && enclosures ) {
+				RISECBOR64::Value::Values changedSlopes = slopes->GetArray();
+				changedSlopes[10] = RISECBOR64::Value::Float(
+					changedSlopes[10].GetFloat()+0.01);
+				const RISECBOR64::Value changedInterpolation = ReplaceMember(
+					*macInterpolation,"slopes",
+					RISECBOR64::Value::ArrayValue(changedSlopes));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+					ReplaceMember(*predictiveEffective,"mac_interpolation",
+						changedInterpolation)),"PCHIP slope does not match"),
+					"a slope mutation reaches the specific PCHIP load-time gate" );
+
+				RISECBOR64::Value::Values changedEnclosures = enclosures->GetArray();
+				RISECBOR64::Value::Values firstEnclosure =
+					changedEnclosures.front().GetArray();
+				firstEnclosure[3] = firstEnclosure[2];
+				changedEnclosures.front() =
+					RISECBOR64::Value::ArrayValue(firstEnclosure);
+				const RISECBOR64::Value narrowInterpolation = ReplaceMember(
+					*macInterpolation,"derivative_enclosures",
+					RISECBOR64::Value::ArrayValue(changedEnclosures));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+					ReplaceMember(*predictiveEffective,"mac_interpolation",
+						narrowInterpolation)),"derivative is outside its enclosure"),
+					"a one-bound mutation reaches the derivative-enclosure gate" );
+			}
+		}
+		const RISECBOR64::Value* hotRows = predictiveHot->Find("rows");
+		if( hotRows ) {
+			const double hotG550 = hotRows->GetArray()[2].GetArray()[2].GetFloat();
+			Check( RejectsWith(ReplaceSpectrumCell(decodedPredictive,"hot_soot",2,2,
+				hotG550+0.01,"g_interpolation"),"hot-soot gate failed"),
+				"a hot-soot anchor mutation reaches its specific load-time gate" );
+		}
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"cool_carbon",
+			ReplaceMember(*cool,"g_633nm",RISECBOR64::Value::Float(0.59))),
+			"cool-carbon gate failed"),
+			"a cool-carbon anchor mutation reaches its specific load-time gate" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
+			ReplaceMember(*predictiveCondensed,"ir_closure_status",
+				RISECBOR64::Value::String("open"))),"condensed-organics gate failed"),
+			"a condensed-organics status mutation reaches its specific load-time gate" );
+	} else {
+		Check(false,"predictive record sections exist for numeric mutation tests");
+	}
+
 	const FireFidelityEvaluation preview = predictive.EvaluateFidelity(false,true,false);
 	Check( !preview.predictiveAllowed && preview.renderFidelityStatus == "preview" &&
 		HasReason(preview,"requested_preview") && HasReason(preview,"producer_unqualified") &&
 		HasReason(preview,"chem_none_unqualified") &&
 		HasReason(preview,"condensed_organics_ir_unclosed") &&
 		!HasReason(preview,"table_domain_exceeded") &&
-		std::is_sorted(preview.reasonCodes.begin(),preview.reasonCodes.end()),
+		std::is_sorted(preview.reasonCodes.begin(),preview.reasonCodes.end()) &&
+		std::adjacent_find(preview.reasonCodes.begin(),preview.reasonCodes.end()) ==
+			preview.reasonCodes.end(),
 		"preview fidelity reasons are specific, unique, and sorted" );
 	const FireFidelityEvaluation predictiveAttempt = predictive.EvaluateFidelity(true,true,true);
 	Check( !predictiveAttempt.predictiveAllowed &&
