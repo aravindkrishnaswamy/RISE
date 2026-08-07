@@ -131,6 +131,12 @@ namespace RISE
 				Fail(error,std::string("fire-optics source is missing '")+key+"'");
 		}
 
+		bool ValidateSourceEnvelope(
+			const RISECBOR64::Value& envelope,
+			double& value,
+			std::string* error
+			);
+
 		bool ReadSourceEnvelopeNumber(
 			const RISECBOR64::Value& map,
 			const char* key,
@@ -140,7 +146,7 @@ namespace RISE
 		{
 			const RISECBOR64::Value* envelope = Required(
 				map,key,RISECBOR64::Value::Map,error );
-			return envelope && ReadSourceNumber(*envelope,"value",result,error);
+			return envelope && ValidateSourceEnvelope(*envelope,result,error);
 		}
 
 		bool ReadText(
@@ -227,6 +233,31 @@ namespace RISE
 					RISECBOR64::Value::Boolean, error) ||
 				!ValidateUncertainty(*uncertainty, "synthetic_exact", error) ) {
 				return Fail(error, "fire-optics synthetic fixture metadata envelope is incomplete");
+			}
+			return true;
+		}
+
+		bool ValidateSourceEnvelope(
+			const RISECBOR64::Value& envelope,
+			double& value,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* uncertainty = Required(
+				envelope,"uncertainty",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* provenance = Required(
+				envelope,"provenance",RISECBOR64::Value::Map,error );
+			if( !uncertainty || !provenance ||
+				!ReadSourceNumber(envelope,"value",value,error) ||
+				!Required(envelope,"applicability",RISECBOR64::Value::Text,error) ||
+				!Required(*provenance,"citation",RISECBOR64::Value::Text,error) ||
+				!Required(*provenance,"locator",RISECBOR64::Value::Text,error) ||
+				!Required(*provenance,"access",RISECBOR64::Value::Text,error) ||
+				!Required(*provenance,"secondary_source",
+					RISECBOR64::Value::Boolean,error) ||
+				!ValidateUncertainty(*uncertainty,0,error) ) {
+				return Fail(error,
+					"fire-optics source scalar metadata envelope is incomplete");
 			}
 			return true;
 		}
@@ -519,6 +550,60 @@ namespace RISE
 			return true;
 		}
 
+		bool ValidateColumns(
+			const RISECBOR64::Value& table,
+			const char* const* expected,
+			const std::size_t count,
+			const char* tableName,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* columns = Required(
+				table,"columns",RISECBOR64::Value::Array,error );
+			if( !columns || columns->GetArray().size() != count ) {
+				return Fail(error,std::string("fire-optics ")+tableName+
+					" columns do not match the frozen unit-bearing schema");
+			}
+			for( std::size_t i=0; i<count; ++i ) {
+				const RISECBOR64::Value& column = columns->GetArray()[i];
+				if( column.GetType() != RISECBOR64::Value::Text ||
+					column.GetText() != expected[i] ) {
+					return Fail(error,std::string("fire-optics ")+tableName+
+						" columns do not match the frozen unit-bearing schema");
+				}
+			}
+			return true;
+		}
+
+		bool PhiSourceMatchesOperational(
+			const RISECBOR64::Value& source,
+			const RISECBOR64::Value& operational,
+			std::string* error
+			)
+		{
+			std::string sourceForm, sourceConsistency, sourceProvenance;
+			std::string operationalForm, operationalConsistency, operationalProvenance;
+			std::vector<double> sourceBand, operationalBand;
+			if( !ReadText(source,"form",sourceForm,error) ||
+				!ReadText(source,"consistency_requirement",sourceConsistency,error) ||
+				!ReadText(source,"provenance",sourceProvenance,error) ||
+				!ReadSourceNumberArray(source,"hot_fraction_temperature_band_K",
+					sourceBand,error) ||
+				!ReadText(operational,"form",operationalForm,error) ||
+				!ReadText(operational,"consistency_requirement",operationalConsistency,error) ||
+				!ReadText(operational,"provenance",operationalProvenance,error) ||
+				!ReadSourceNumberArray(operational,"hot_fraction_temperature_band_K",
+					operationalBand,error) ||
+				sourceForm != operationalForm ||
+				sourceConsistency != operationalConsistency ||
+				sourceProvenance != operationalProvenance ||
+				sourceBand != operationalBand ) {
+				return Fail(error,
+					"fire-optics operational phi_T_partition differs from its source record");
+			}
+			return true;
+		}
+
 		bool ValidatePredictiveSourceBindings(
 			const RISECBOR64::Value& sourceEffective,
 			const RISECBOR64::Value& sourceHot,
@@ -542,16 +627,24 @@ namespace RISE
 			std::string* error
 			)
 		{
+			const char* effectiveColumns[] = {
+				"lambda_nm", "E_eff", "MAC_m2_per_g" };
 			const RISECBOR64::Value* effectiveTable = Required(
 				sourceEffective,"table",RISECBOR64::Value::Map,error );
 			const RISECBOR64::Value* effectiveDefinition = Required(
 				sourceEffective,"definition",RISECBOR64::Value::Map,error );
 			std::vector<std::vector<double> > sourceEffectiveRows;
 			double sourceDensity = 0.0;
+			if( effectiveTable && !ValidateColumns(*effectiveTable,effectiveColumns,3,
+				"source effective-absorption table",error) ) return false;
 			if( !effectiveTable || !effectiveDefinition ||
-				!ReadSourceRows(*effectiveTable,3,sourceEffectiveRows,error) ||
-				!ReadSourceNumber(*effectiveDefinition,"pinned_density_g_cm3",
-					sourceDensity,error) || sourceDensity != density ||
+				!ReadSourceRows(*effectiveTable,3,sourceEffectiveRows,error) ) {
+				return Fail(error,
+					"fire-optics operational effective absorption differs from its source record");
+			}
+			if( !ReadSourceEnvelopeNumber(*effectiveDefinition,"pinned_density_g_cm3",
+				sourceDensity,error) ) return false;
+			if( sourceDensity != density ||
 				!RowsExactlyEqual(effectiveRows,sourceEffectiveRows) ) {
 				return Fail(error,
 					"fire-optics operational effective absorption differs from its source record");
@@ -565,6 +658,9 @@ namespace RISE
 				*computed,"young_in_flame_550nm",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<std::vector<double> > sourceHotRows;
 			double adoptedOmega = 0.0, adoptedG = 0.0;
+			const char* hotColumns[] = { "lambda_nm", "omega", "g" };
+			if( sourceSpectrum && !ValidateColumns(*sourceSpectrum,hotColumns,3,
+				"source hot-soot table",error) ) return false;
 			if( !sourceSpectrum || !adopted ||
 				!ReadSourceRows(*sourceSpectrum,3,sourceHotRows,error) ||
 				!ReadSourceNumber(*adopted,"omega_central",adoptedOmega,error) ||
@@ -590,13 +686,22 @@ namespace RISE
 				*coolValues,"n_spectral_exponent",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<double> sourceRange, sourceDomain;
 			std::string sourcePolicy;
-			if( !coolValues || !sourceExponent ||
-				!ReadSourceEnvelopeNumber(*coolValues,"k_m_extinction_633nm_m2_per_g",
-					sourceCoolKm,error) ||
+			if( !coolValues || !sourceExponent ) {
+				return Fail(error,
+					"fire-optics operational cool-carbon values differ from their source record");
+			}
+			if( !ReadSourceEnvelopeNumber(*coolValues,
+					"k_m_extinction_633nm_m2_per_g",sourceCoolKm,error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"omega_633nm",sourceCoolOmega,error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"g_asymmetry",sourceCoolG,error) ||
-				!ReadSourceNumber(*sourceExponent,"value",sourceCoolExponent,error) ||
-				!ReadSourceNumberArray(*sourceExponent,"range",sourceRange,error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"n_spectral_exponent",
+					sourceCoolExponent,error) ) return false;
+			const RISECBOR64::Value* sourceExponentUncertainty = Required(
+				*sourceExponent,"uncertainty",RISECBOR64::Value::Map,error );
+			if( !sourceExponentUncertainty ) return false;
+			if(
+				!ReadSourceNumberArray(*sourceExponentUncertainty,"magnitude",
+					sourceRange,error) ||
 				!ReadSourceNumberArray(*sourceExponent,"validity_nm",sourceDomain,error) ||
 				!ReadText(*sourceExponent,"out_of_domain_policy",sourcePolicy,error) ||
 				sourceCoolKm != coolKm || sourceCoolExponent != coolExponent ||
@@ -616,6 +721,10 @@ namespace RISE
 			std::vector<std::vector<double> > sourceCondensedRows;
 			double sourceCondensedExponent = 0.0;
 			std::string sourceApplicability, sourceIRStatus, sourceReason;
+			const char* condensedColumns[] = {
+				"lambda_nm", "k_ext_m2_per_g", "omega", "g" };
+			if( condensedTable && !ValidateColumns(*condensedTable,condensedColumns,4,
+				"source condensed-organics table",error) ) return false;
 			if( !condensedComputed || !condensedTable || !irClosure ||
 				!ReadSourceRows(*condensedTable,4,sourceCondensedRows,error) ||
 				!ReadSourceNumber(*condensedComputed,
@@ -1088,13 +1197,31 @@ namespace RISE
 			record, "cool_carbon", RISECBOR64::Value::Map, error );
 		const RISECBOR64::Value* condensed = Required(
 			record, "condensed_organics", RISECBOR64::Value::Map, error );
+		const RISECBOR64::Value* operationalHotPhi = hot ? hot->Find(
+			"phi_T_partition") : 0;
+		const RISECBOR64::Value* operationalCoolPhi = cool ? cool->Find(
+			"phi_T_partition") : 0;
 		if( !effective || !hot || !cool || !condensed ||
+			!operationalHotPhi || !operationalCoolPhi ||
+			operationalHotPhi->GetType() != RISECBOR64::Value::Map ||
+			operationalCoolPhi->GetType() != RISECBOR64::Value::Map ||
 			!ReadPhiPartition(*hot, *cool, m_hotFractionMinK,
 				m_hotFractionMaxK, error) ||
 			!ReadDomain(*effective, m_domainMinNM, m_domainMaxNM, error) ||
 			!ReadFloat(*effective, "pinned_density_g_cm3", m_densityGCM3, error) ||
 			m_densityGCM3 <= 0.0 ) {
 			return false;
+		}
+		if( sourceHot && sourceCool ) {
+			const RISECBOR64::Value* sourceHotPhi = Required(
+				*sourceHot,"phi_T_partition",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* sourceCoolPhi = Required(
+				*sourceCool,"phi_T_partition",RISECBOR64::Value::Map,error );
+			if( !sourceHotPhi || !sourceCoolPhi ||
+				!PhiSourceMatchesOperational(*sourceHotPhi,*operationalHotPhi,error) ||
+				!PhiSourceMatchesOperational(*sourceCoolPhi,*operationalCoolPhi,error) ) {
+				return false;
+			}
 		}
 		if( recordClass == "predictive_optical_preset" &&
 			interpolation == "pchip_monotone_c1_v1" ) {
@@ -1119,7 +1246,12 @@ namespace RISE
 				return Fail(error, "fire-optics operational table metadata is incomplete");
 			}
 			std::vector<std::vector<double> > effectiveRows;
-			if( !ReadRows(*effective, 3, effectiveRows, error) || effectiveRows.size() != 81 ) {
+			const char* effectiveColumns[] = {
+				"lambda_nm", "E_eff", "MAC_m2_per_g" };
+			if( !ValidateColumns(*effective,effectiveColumns,3,
+				"operational effective-absorption table",error) ) return false;
+			if( !ReadRows(*effective, 3, effectiveRows, error) ||
+				effectiveRows.size() != 81 ) {
 				return Fail(error, "fire-optics E/MAC table must contain 81 rows");
 			}
 			std::vector<double> wavelengths, effectiveValues, macValues;
@@ -1137,6 +1269,9 @@ namespace RISE
 				return false;
 			}
 			std::vector<std::vector<double> > hotRows;
+			const char* hotColumns[] = { "lambda_nm", "omega", "g" };
+			if( !ValidateColumns(*hot,hotColumns,3,
+				"operational hot-soot table",error) ) return false;
 			if( !ReadRows(*hot, 3, hotRows, error) || hotRows.size() != 5 ) {
 				return Fail(error, "fire-optics hot-soot table must contain five rows");
 			}
@@ -1194,7 +1329,12 @@ namespace RISE
 			m_coolDomainMinNM = certifiedDomain[0];
 			m_coolDomainMaxNM = certifiedDomain[1];
 			std::vector<std::vector<double> > condensedRows;
-			if( !ReadRows(*condensed, 4, condensedRows, error) || condensedRows.size() != 5 ) {
+			const char* condensedColumns[] = {
+				"lambda_nm", "k_ext_m2_per_g", "omega", "g" };
+			if( !ValidateColumns(*condensed,condensedColumns,4,
+				"operational condensed-organics table",error) ) return false;
+			if( !ReadRows(*condensed, 4, condensedRows, error) ||
+				condensedRows.size() != 5 ) {
 				return Fail(error, "fire-optics condensed-organics table must contain five rows");
 			}
 			std::vector<double> condensedWavelengths, condensedKm, condensedOmega, condensedG;
@@ -1355,6 +1495,24 @@ namespace RISE
 			} else if( sourceFixtures ) {
 				const RISECBOR64::Value* fixtureValues = Required(
 					*sourceFixtures, "values", RISECBOR64::Value::Map, error );
+				const RISECBOR64::Value* sourceEffectiveDefinition = Required(
+					*sourceEffective,"definition",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* sourceDensityEnvelope = sourceEffectiveDefinition ?
+					Required(*sourceEffectiveDefinition,"pinned_density_g_cm3",
+						RISECBOR64::Value::Map,error) : 0;
+				const RISECBOR64::Value* sourceCoolRecordValues = Required(
+					*sourceCool,"values",RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* sourceCoolKmEnvelope = sourceCoolRecordValues ?
+					Required(*sourceCoolRecordValues,"k_m_extinction_633nm_m2_per_g",
+						RISECBOR64::Value::Map,error) : 0;
+				const RISECBOR64::Value* sourceCondensedComputed = Required(
+					*sourceCondensed,"computed_outputs_full_mie",
+					RISECBOR64::Value::Map,error );
+				const RISECBOR64::Value* sourceCondensedTable = sourceCondensedComputed ?
+					Required(*sourceCondensedComputed,"table",RISECBOR64::Value::Map,error) : 0;
+				const RISECBOR64::Value* sourceCondensedMetadata = sourceCondensedComputed ?
+					Required(*sourceCondensedComputed,"table_metadata",
+						RISECBOR64::Value::Map,error) : 0;
 				const RISECBOR64::Value* sourceEffectiveEnvelope = fixtureValues ? Required(
 					*fixtureValues, "E_eff_fixture", RISECBOR64::Value::Map, error ) : 0;
 				const RISECBOR64::Value* sourceHotValues = fixtureValues ? Required(
@@ -1367,7 +1525,9 @@ namespace RISE
 					RISECBOR64::Value::Map, error ) : 0;
 				const RISECBOR64::Value* effectiveEnvelope = Required(
 					*effective, "E_eff", RISECBOR64::Value::Map, error );
-				if( !sourceEffectiveEnvelope || !sourceHotValues || !sourceCoolValues ||
+				if( !sourceDensityEnvelope || !sourceCoolKmEnvelope ||
+					!sourceCondensedTable || !sourceCondensedMetadata ||
+					!sourceEffectiveEnvelope || !sourceHotValues || !sourceCoolValues ||
 					!sourceCondensedValues || !effectiveEnvelope ||
 					!CanonicallyEqual(*sourceEffectiveEnvelope, *effectiveEnvelope, error) ||
 					!MembersCanonicallyEqual(*hot, "omega", *sourceHotValues,
@@ -1411,6 +1571,34 @@ namespace RISE
 					!ReadEnvelopedFixtureFloat(*condensed, "g",
 						m_condensedFixtureG, error) ) {
 					return false;
+				}
+				double sourceDensity = 0.0, sourceCoolKm = 0.0;
+				std::vector<std::vector<double> > sourceCondensedRows;
+				double sourceCondensedKm = -1.0;
+				const RISECBOR64::Value* densityMetadata = effective->Find(
+					"pinned_density_metadata");
+				const RISECBOR64::Value* coolKmMetadata = cool->Find(
+					"k_m_extinction_metadata");
+				const RISECBOR64::Value* condensedKmMetadata = condensed->Find(
+					"k_m_extinction_metadata");
+				if( !densityMetadata || !coolKmMetadata || !condensedKmMetadata ||
+					!CanonicallyEqual(*densityMetadata,*sourceDensityEnvelope,error) ||
+					!CanonicallyEqual(*coolKmMetadata,*sourceCoolKmEnvelope,error) ||
+					!CanonicallyEqual(*condensedKmMetadata,*sourceCondensedMetadata,error) ||
+					!ValidateSourceEnvelope(*sourceDensityEnvelope,sourceDensity,error) ||
+					!ValidateSourceEnvelope(*sourceCoolKmEnvelope,sourceCoolKm,error) ||
+					!ValidateTableMetadata(*sourceCondensedMetadata,error) ||
+					!ReadSourceRows(*sourceCondensedTable,4,sourceCondensedRows,error) ) {
+					return Fail(error,
+						"fire-optics synthetic scalar source binding is incomplete");
+				}
+				for( const std::vector<double>& row : sourceCondensedRows ) {
+					if( row[0] == 633.0 ) sourceCondensedKm = row[1];
+				}
+				if( sourceDensity != m_densityGCM3 || sourceCoolKm != m_coolKm633 ||
+					sourceCondensedKm != m_condensedFixtureKm633 ) {
+					return Fail(error,
+						"fire-optics synthetic scalar differs from its source record");
 				}
 			} else if( !ReadFloat(*effective, "E_eff", m_constantEffectiveAbsorption, error) ||
 				!ReadFloat(*hot, "omega", hotOmega, error) ||

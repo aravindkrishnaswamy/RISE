@@ -204,6 +204,70 @@ namespace
 		return changedRecord;
 	}
 
+	RISECBOR64::Value ReplaceSourcePhiBand(
+		const RISECBOR64::Value& record,
+		const double minimumK,
+		const double maximumK
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* sourceRecords = record.Find("source_records");
+		if( !sourceRecords ) return Value();
+		Value changedSources = *sourceRecords;
+		const char* sourceKeys[] = { "hot_soot", "cool_carbon" };
+		const Value band = Value::ArrayValue({
+			Value::Float(minimumK), Value::Float(maximumK) });
+		for( std::size_t i=0; i<sizeof(sourceKeys)/sizeof(sourceKeys[0]); ++i ) {
+			const Value* source = changedSources.Find(sourceKeys[i]);
+			const Value* phi = source ? source->Find("phi_T_partition") : 0;
+			if( !source || !phi ) return Value();
+			const Value changedPhi = ReplaceMember(
+				*phi,"hot_fraction_temperature_band_K",band );
+			changedSources = ReplaceMember(changedSources,sourceKeys[i],
+				ReplaceMember(*source,"phi_T_partition",changedPhi));
+		}
+		return ReplaceMember(record,"source_records",changedSources);
+	}
+
+	RISECBOR64::Value ReplaceTextArrayElement(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::size_t index,
+		const char* replacement
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* array = map.Find(key);
+		if( !array || array->GetType() != Value::Array ||
+			index >= array->GetArray().size() ) return Value();
+		Value::Values changed = array->GetArray();
+		changed[index] = Value::String(replacement);
+		return ReplaceMember(map,key,Value::ArrayValue(changed));
+	}
+
+	RISECBOR64::Value RemoveSyntheticFixtureEnvelopeMember(
+		const RISECBOR64::Value& record,
+		const char* groupKey,
+		const char* valueKey,
+		const char* memberKey
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* sources = record.Find("source_records");
+		const Value* fixtures = sources ? sources->Find("synthetic_fixtures") : 0;
+		const Value* values = fixtures ? fixtures->Find("values") : 0;
+		const Value* group = groupKey && values ? values->Find(groupKey) : values;
+		const Value* envelope = group ? group->Find(valueKey) : 0;
+		if( !sources || !fixtures || !values || !group || !envelope ) return Value();
+		const Value changedGroup = ReplaceMember(*group,valueKey,
+			RemoveMember(*envelope,memberKey));
+		const Value changedValues = groupKey ?
+			ReplaceMember(*values,groupKey,changedGroup) : changedGroup;
+		const Value changedFixtures = ReplaceMember(*fixtures,"values",changedValues);
+		return ReplaceMember(record,"source_records",
+			ReplaceMember(*sources,"synthetic_fixtures",changedFixtures));
+	}
+
 	RISECBOR64::Value ReplaceFloatArrayElement(
 		const RISECBOR64::Value& map,
 		const char* key,
@@ -326,9 +390,9 @@ int main()
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
-		"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87" &&
+		"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" &&
 		synthetic.RecordId() ==
-		"e4d939b940468df2b29b80cb4de26e51a4d47ce776cb7f67dfce33023bdcbf80",
+		"59a3fccbc868d985465522728648cc31f2bf82ba90f71ab48b9ba1be71ebf830",
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
@@ -506,6 +570,52 @@ int main()
 		fixtureEffective->Find("uncertainty") && fixtureEffective->Find("provenance") &&
 		fixtureEffective->Find("applicability"),
 		"the synthetic source carries aggregate and per-value metadata envelopes" );
+	struct FixtureScalarBinding
+	{
+		const char* group;
+		const char* key;
+	};
+	const FixtureScalarBinding fixtureBindings[] = {
+		{ 0, "E_eff_fixture" },
+		{ "hot_soot", "omega" },
+		{ "hot_soot", "g" },
+		{ "fresh_smoke_cool_carbon", "n_exponent" },
+		{ "fresh_smoke_cool_carbon", "omega" },
+		{ "fresh_smoke_cool_carbon", "g" },
+		{ "organic_droplets_condensed", "n_exponent" },
+		{ "organic_droplets_condensed", "omega" },
+		{ "organic_droplets_condensed", "g" }
+	};
+	for( const FixtureScalarBinding& binding : fixtureBindings ) {
+		Check( RejectsWith(RemoveSyntheticFixtureEnvelopeMember(decodedSynthetic,
+			binding.group,binding.key,"provenance"),
+			"synthetic operational provenance is incomplete"),
+			"each consumed synthetic scalar remains bound to its frozen metadata envelope" );
+	}
+	const RISECBOR64::Value* syntheticEffective =
+		decodedSynthetic.Find("effective_absorption");
+	const RISECBOR64::Value* syntheticCool = decodedSynthetic.Find("cool_carbon");
+	const RISECBOR64::Value* syntheticCondensed =
+		decodedSynthetic.Find("condensed_organics");
+	if( syntheticEffective && syntheticCool && syntheticCondensed ) {
+		Check( RejectsWith(ReplaceMember(decodedSynthetic,"effective_absorption",
+			ReplaceMember(*syntheticEffective,"pinned_density_g_cm3",
+				RISECBOR64::Value::Float(1.81))),
+			"synthetic scalar differs from its source record"),
+			"the synthetic density scalar remains bound to its predictive source envelope" );
+		Check( RejectsWith(ReplaceMember(decodedSynthetic,"cool_carbon",
+			ReplaceMember(*syntheticCool,"k_m_extinction_633nm_m2_per_g",
+				RISECBOR64::Value::Float(8.8))),
+			"synthetic scalar differs from its source record"),
+			"the synthetic cool-carbon extinction remains bound to its source envelope" );
+		Check( RejectsWith(ReplaceMember(decodedSynthetic,"condensed_organics",
+			ReplaceMember(*syntheticCondensed,"k_m_extinction_633nm_m2_per_g",
+				RISECBOR64::Value::Float(3.4))),
+			"synthetic scalar differs from its source record"),
+			"the synthetic condensed extinction remains bound to its source table" );
+	} else {
+		Check(false,"synthetic operational sections exist for scalar binding tests");
+	}
 	const RISECBOR64::Value* hot = decodedSynthetic.Find("hot_soot");
 	const RISECBOR64::Value* hotPhi = hot ? hot->Find("phi_T_partition") : 0;
 	if( hot && hotPhi ) {
@@ -597,12 +707,60 @@ int main()
 			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
 				changedSources),"source table metadata is incomplete"),
 				"load rejects a source table with an empty metadata envelope" );
+			const RISECBOR64::Value changedColumns = ReplaceTextArrayElement(
+				*sourceEffectiveTable,"columns",1,"E_eff_unit_unspecified");
+			const RISECBOR64::Value changedColumnEffective = ReplaceMember(
+				*sourceEffective,"table",changedColumns);
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				ReplaceMember(*sourceRecords,"effective_absorption",
+					changedColumnEffective)),
+				"source effective-absorption table columns do not match"),
+				"load rejects changed source effective-absorption column semantics" );
+			const RISECBOR64::Value* sourceDefinition =
+				sourceEffective->Find("definition");
+			const RISECBOR64::Value* sourceDensity = sourceDefinition ?
+				sourceDefinition->Find("pinned_density_g_cm3") : 0;
+			if( sourceDefinition && sourceDensity ) {
+				const char* envelopeMembers[] = { "provenance", "uncertainty" };
+				for( const char* member : envelopeMembers ) {
+					const RISECBOR64::Value changedDefinition = ReplaceMember(
+						*sourceDefinition,"pinned_density_g_cm3",
+						RemoveMember(*sourceDensity,member));
+					const RISECBOR64::Value changedEffectiveEnvelope = ReplaceMember(
+						*sourceEffective,"definition",changedDefinition);
+					Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"effective_absorption",
+							changedEffectiveEnvelope)),
+						"source scalar metadata envelope is incomplete"),
+						"the pinned-density source requires provenance and uncertainty metadata" );
+				}
+			} else {
+				Check(false,"effective-absorption density envelope is present");
+			}
 		} else {
 			Check(false,"effective-absorption source table metadata is present");
 		}
 		const RISECBOR64::Value* sourceHot = sourceRecords->Find("hot_soot");
 		const RISECBOR64::Value* sourceHotPhi = sourceHot ?
 			sourceHot->Find("phi_T_partition") : 0;
+		const RISECBOR64::Value* sourceHotComputed = sourceHot ?
+			sourceHot->Find("computed_outputs") : 0;
+		const RISECBOR64::Value* sourceHotTable = sourceHotComputed ?
+			sourceHotComputed->Find("spectral_young_dp30_N50") : 0;
+		if( sourceHot && sourceHotComputed && sourceHotTable ) {
+			const RISECBOR64::Value changedTable = ReplaceTextArrayElement(
+				*sourceHotTable,"columns",2,"g_unitless_unpinned");
+			const RISECBOR64::Value changedComputed = ReplaceMember(*sourceHotComputed,
+				"spectral_young_dp30_N50",changedTable);
+			const RISECBOR64::Value changedHot = ReplaceMember(*sourceHot,
+				"computed_outputs",changedComputed);
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				ReplaceMember(*sourceRecords,"hot_soot",changedHot)),
+				"source hot-soot table columns do not match"),
+				"load rejects changed source hot-soot column semantics" );
+		} else {
+			Check(false,"hot-soot source table is present");
+		}
 		if( sourceHot && sourceHotPhi ) {
 			const RISECBOR64::Value changedSourcePhi = ReplaceMember(*sourceHotPhi,
 				"hot_fraction_temperature_band_K",
@@ -623,9 +781,38 @@ int main()
 		const RISECBOR64::Value* sourceValues = sourceCool ? sourceCool->Find("values") : 0;
 		const RISECBOR64::Value* sourceOmega = sourceValues ?
 			sourceValues->Find("omega_633nm") : 0;
-		if( sourceCool && sourceValues && sourceOmega ) {
-			const RISECBOR64::Value changedOmega = ReplaceMember(*sourceOmega,"source",
-				RISECBOR64::Value::String("distinct provenance for identity mutation"));
+		const RISECBOR64::Value* sourceOmegaProvenance = sourceOmega ?
+			sourceOmega->Find("provenance") : 0;
+		if( sourceCool && sourceValues ) {
+			const char* coolEnvelopeKeys[] = {
+				"k_m_extinction_633nm_m2_per_g", "omega_633nm",
+				"g_asymmetry", "n_spectral_exponent" };
+			const char* envelopeMembers[] = { "provenance", "uncertainty" };
+			for( const char* key : coolEnvelopeKeys ) {
+				const RISECBOR64::Value* envelope = sourceValues->Find(key);
+				if( !envelope ) {
+					Check(false,"cool-carbon scalar envelope is present");
+					continue;
+				}
+				for( const char* member : envelopeMembers ) {
+					const RISECBOR64::Value changedValues = ReplaceMember(*sourceValues,
+						key,RemoveMember(*envelope,member));
+					const RISECBOR64::Value changedCool = ReplaceMember(*sourceCool,
+						"values",changedValues);
+					Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"cool_carbon",changedCool)),
+						"source scalar metadata envelope is incomplete"),
+						"each cool-carbon source scalar requires provenance and uncertainty" );
+				}
+			}
+		} else {
+			Check(false,"cool-carbon source scalar envelopes are present");
+		}
+		if( sourceCool && sourceValues && sourceOmega && sourceOmegaProvenance ) {
+			const RISECBOR64::Value changedOmega = ReplaceMember(*sourceOmega,
+				"provenance",ReplaceMember(*sourceOmegaProvenance,"access",
+					RISECBOR64::Value::String(
+						"distinct access provenance for identity mutation")));
 			const RISECBOR64::Value changedValues = ReplaceMember(*sourceValues,
 				"omega_633nm",changedOmega);
 			const RISECBOR64::Value changedCool = ReplaceMember(*sourceCool,
@@ -642,6 +829,26 @@ int main()
 				"a provenance-only change changes the canonical record identity" );
 		} else {
 			Check(false,"cool-carbon per-value provenance is present in the hashed payload");
+		}
+		const RISECBOR64::Value* sourceCondensed =
+			sourceRecords->Find("condensed_organics");
+		const RISECBOR64::Value* sourceCondensedComputed = sourceCondensed ?
+			sourceCondensed->Find("computed_outputs_full_mie") : 0;
+		const RISECBOR64::Value* sourceCondensedTable = sourceCondensedComputed ?
+			sourceCondensedComputed->Find("table") : 0;
+		if( sourceCondensed && sourceCondensedComputed && sourceCondensedTable ) {
+			const RISECBOR64::Value changedTable = ReplaceTextArrayElement(
+				*sourceCondensedTable,"columns",1,"k_ext_units_missing");
+			const RISECBOR64::Value changedComputed = ReplaceMember(
+				*sourceCondensedComputed,"table",changedTable);
+			const RISECBOR64::Value changedCondensed = ReplaceMember(
+				*sourceCondensed,"computed_outputs_full_mie",changedComputed);
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				ReplaceMember(*sourceRecords,"condensed_organics",changedCondensed)),
+				"source condensed-organics table columns do not match"),
+				"load rejects changed source condensed-organics column semantics" );
+		} else {
+			Check(false,"condensed-organics source table is present");
 		}
 	}
 	const RISECBOR64::Value* cool = decodedPredictive.Find("cool_carbon");
@@ -663,10 +870,27 @@ int main()
 	const RISECBOR64::Value* predictiveCondensed =
 		decodedPredictive.Find("condensed_organics");
 	if( predictiveEffective && predictiveHot && cool && predictiveCondensed ) {
-		Check( RejectsWith(ReplaceOperationalPhiBand(decodedPredictive,701.0,900.0),
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+			ReplaceTextArrayElement(*predictiveEffective,"columns",2,"MAC_kg_per_m2")),
+			"operational effective-absorption table columns do not match"),
+			"load rejects changed operational effective-absorption column semantics" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+			ReplaceTextArrayElement(*predictiveHot,"columns",1,"albedo")),
+			"operational hot-soot table columns do not match"),
+			"load rejects changed operational hot-soot column semantics" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
+			ReplaceTextArrayElement(*predictiveCondensed,"columns",3,"phase_g")),
+			"operational condensed-organics table columns do not match"),
+			"load rejects changed operational condensed-organics column semantics" );
+		Check( RejectsWith(ReplaceSourcePhiBand(decodedPredictive,701.0,900.0),
+			"operational phi_T_partition differs from its source record"),
+			"a coordinated source-only phi(T) mutation cannot detach operations from provenance" );
+		Check( RejectsWith(ReplaceSourcePhiBand(
+			ReplaceOperationalPhiBand(decodedPredictive,701.0,900.0),701.0,900.0),
 			"predictive v1 phi(T) band gate failed"),
 			"a lower phi(T) edge mutation reaches the pinned-band gate" );
-		Check( RejectsWith(ReplaceOperationalPhiBand(decodedPredictive,700.0,899.0),
+		Check( RejectsWith(ReplaceSourcePhiBand(
+			ReplaceOperationalPhiBand(decodedPredictive,700.0,899.0),700.0,899.0),
 			"predictive v1 phi(T) band gate failed"),
 			"an upper phi(T) edge mutation reaches the pinned-band gate" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",

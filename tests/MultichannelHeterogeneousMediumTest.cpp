@@ -469,7 +469,7 @@ namespace
 		bool IsFireMedium() const override { return true; }
 		const char* GetFireOpticsRecordId() const override
 		{
-			return "ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87";
+			return "c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc";
 		}
 		const char* GetFireRenderFidelityStatus( const bool ) const override
 		{
@@ -2260,7 +2260,7 @@ namespace
 					store->Meta().renderReasonCodes.end() &&
 				store->Meta().activeFireOpticsRecordIds.size() == 1u &&
 				store->Meta().activeFireOpticsRecordIds[0] ==
-					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87",
+					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc",
 				"production FrameStore carries sorted preview reasons and record identity" );
 
 			const std::filesystem::path outputBase =
@@ -2306,7 +2306,7 @@ namespace
 				sidecar.Find("active_fire_optics_record_ids") : nullptr;
 			Check( lateIds && lateIds->GetArray().size() == 1u &&
 				lateIds->GetArray()[0].GetText() ==
-					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87",
+					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc",
 				"late-added file output inherits canonical fire provenance" );
 			std::filesystem::remove(outputFile);
 			std::filesystem::remove(sidecarFile);

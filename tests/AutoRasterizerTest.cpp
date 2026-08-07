@@ -513,7 +513,7 @@ static void TestFirePelPreviewDivergence()
 		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
 
 	// Measured single-thread against preset-v1 record
-	// ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87
+	// c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc
 	// (metadata-complete canonicalization 6d7f67b8; tripwire recorded by cdb1aad4)
 	// over the paired
 	// seeds above: red 0.56-1.26%, green

@@ -499,7 +499,7 @@ namespace
 			"pel_transport", "producer_unqualified", "requested_preview"
 		};
 		store.MutableMeta().activeFireOpticsRecordIds = {
-			"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87"
+			"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc"
 		};
 	}
 
@@ -543,7 +543,7 @@ namespace
 				reasons->GetArray()[2].GetText() == "requested_preview" && ids &&
 				ids->GetArray().size() == 1u &&
 				ids->GetArray()[0].GetText() ==
-					"ad002cef185d055cb24e63c913e8fcf9db384cf5586a9703a5401117d4d15c87" && digest &&
+					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" && digest &&
 				digest->GetText() == RISECBOR64::SHA256Hex(artifactBytes),
 				"GUI sidecar carries exact fidelity metadata and artifact digest" );
 		}
