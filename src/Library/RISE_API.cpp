@@ -4923,6 +4923,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Rendering/FileRasterizerOutput.h"
+#include "Rendering/FrameEncoders.h"
 
 namespace RISE
 {
@@ -4951,6 +4952,7 @@ namespace RISE
 		if( !ppi ) {
 			return false;
 		}
+		*ppi = 0;
 
 		// Map char type code to FRO_TYPE enum once; the per-case body
 		// is otherwise identical across all formats.
@@ -4965,6 +4967,13 @@ namespace RISE
 		case 4:  fro_type = FileRasterizerOutput::TIFF;  break;
 		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
 		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
+		}
+		const char* formatName = FileRasterizerOutput::FormatNameForType(fro_type);
+		if( !Implementation::FrameEncoderRegistry::Get().ByFormatName(formatName) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: encoder '%s' is unavailable in this build",
+				formatName );
+			return false;
 		}
 
 		(*ppi) = new FileRasterizerOutput(

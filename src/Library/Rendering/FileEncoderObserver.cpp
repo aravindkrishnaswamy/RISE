@@ -185,10 +185,12 @@ FileEncoderObserver::FileEncoderObserver(
 	, bMultiple_( bMultiple )
 {
 	if ( store_ ) store_->addref();
+	if ( encoder_ ) encoder_->addref();
 }
 
 FileEncoderObserver::~FileEncoderObserver()
 {
+	if ( encoder_ ) encoder_->release();
 	if ( store_ ) store_->release();
 }
 

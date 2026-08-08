@@ -128,6 +128,7 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 {
 	if( !ro ) return false;
+	FrameStore* frameStoreSnapshot = 0;
 
 	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
 	// Rasterizer.h.  Dedup eliminates the unbounded-vector-growth
@@ -154,14 +155,18 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 			ro->release();
 			throw;
 		}
+		frameStoreSnapshot = mFrameStore;
+		if( frameStoreSnapshot ) frameStoreSnapshot->addref();
 	}
 	try {
-		ro->OnRasterizerFrameStoreChanged( mFrameStore );
+		ro->OnRasterizerFrameStoreChanged( frameStoreSnapshot );
 	}
 	catch( ... ) {
+		safe_release(frameStoreSnapshot);
 		RemoveRasterizerOutput( ro );
 		throw;
 	}
+	safe_release(frameStoreSnapshot);
 	return true;
 }
 
@@ -233,17 +238,20 @@ void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 // legacy callback sinks are unaffected.
 void Rasterizer::SetFrameStore( FrameStore* frameStore )
 {
-	// Same-pointer early-return: existing outputs are already bound, while
-	// outputs attached after the original swap receive the current store from
-	// RegisterRasterizerOutput at insertion time.
-	if( frameStore == mFrameStore ) {
-		return;  // no-op when caller passes the same pointer
+	FrameStore* previous = 0;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		// Same-pointer early-return: existing outputs are already bound, while
+		// outputs attached after the original swap receive the current store from
+		// RegisterRasterizerOutput at insertion time.
+		if( frameStore == mFrameStore ) {
+			return;
+		}
+		if( frameStore ) frameStore->addref();
+		previous = mFrameStore;
+		mFrameStore = frameStore;
 	}
-	if( frameStore ) {
-		frameStore->addref();
-	}
-	safe_release( mFrameStore );  // null-safe + zeroes the local
-	mFrameStore = frameStore;
+	safe_release(previous);
 
 	// L6e-3 — Re-dispatch path lives in `ReannounceFrameStore`
 	// below; the swap path here calls into it after updating
@@ -269,9 +277,22 @@ void Rasterizer::ReannounceFrameStore()
 	// against concurrent mutators from non-render threads (Swift
 	// UI display-refresh path).
 	RetainedRasterizerOutputSnapshot snapshot( outs, outsMutex );
-	for( RasterizerOutputListType::const_iterator it = snapshot.Outputs().begin(),
-	     e = snapshot.Outputs().end(); it != e; ++it )
+	FrameStore* frameStoreSnapshot = 0;
 	{
-		(*it)->OnRasterizerFrameStoreChanged( mFrameStore );
+		std::lock_guard<std::mutex> lock( outsMutex );
+		frameStoreSnapshot = mFrameStore;
+		if( frameStoreSnapshot ) frameStoreSnapshot->addref();
 	}
+	try {
+		for( RasterizerOutputListType::const_iterator it = snapshot.Outputs().begin(),
+		     e = snapshot.Outputs().end(); it != e; ++it )
+		{
+			(*it)->OnRasterizerFrameStoreChanged( frameStoreSnapshot );
+		}
+	}
+	catch( ... ) {
+		safe_release(frameStoreSnapshot);
+		throw;
+	}
+	safe_release(frameStoreSnapshot);
 }

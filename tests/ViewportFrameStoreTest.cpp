@@ -49,6 +49,7 @@
 #include "../src/Library/Rendering/ViewportFrameStore.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
+#include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
@@ -95,6 +96,33 @@ namespace
 
 	protected:
 		~NoWriteFrameEncoder() override {}
+	};
+
+	class RetainedFrameEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		explicit RetainedFrameEncoder( bool& destroyed ) :
+			encodeCalls(0), destroyed_(destroyed) {}
+		std::string FormatName() const override { return "RETAINED_ENCODER_TEST"; }
+		std::vector<std::string> Extensions() const override { return { "retained" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore&, IWriteBuffer& output,
+			const EncodeOpts& ) override
+		{
+			++encodeCalls;
+			output.setUChar(0x5a);
+		}
+
+		unsigned int encodeCalls;
+
+	protected:
+		~RetainedFrameEncoder() override { destroyed_ = true; }
+
+	private:
+		bool& destroyed_;
 	};
 
 	RISEColor PatternPixel( unsigned int x, unsigned int y )
@@ -1129,6 +1157,34 @@ namespace
 		safe_release( img );
 		vfs->release();
 	}
+
+	void TestObserverRetainsUnregisteredEncoder()
+	{
+		FrameStore::Spec spec;
+		spec.width = 1;
+		spec.height = 1;
+		spec.tileEdge = 1;
+		FrameStore* store = new FrameStore(spec);
+		bool destroyed = false;
+		RetainedFrameEncoder* encoder = new RetainedFrameEncoder(destroyed);
+		FrameEncoderRegistry& registry = FrameEncoderRegistry::Get();
+		registry.Register(encoder);
+		const std::string pattern = MakeTempPath() + "_retained_encoder";
+		const std::string artifact = pattern + ".retained";
+		EncodeOpts opts;
+		FileEncoderObserver* observer = new FileEncoderObserver(
+			store,encoder,opts,pattern,false);
+		const bool removed = registry.Unregister("RETAINED_ENCODER_TEST");
+		observer->OnFrameComplete(0,store->Generation());
+		Check( removed && !destroyed && encoder->encodeCalls == 1 &&
+			std::filesystem::exists(artifact),
+			"file observer retains an encoder across registry removal" );
+		observer->release();
+		Check( destroyed,
+			"retained encoder is released when the observer is destroyed" );
+		store->release();
+		std::remove(artifact.c_str());
+	}
 }
 
 int main()
@@ -1150,6 +1206,7 @@ int main()
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
 	TestSetFrameStoreNotification_L6e2b();
+	TestObserverRetainsUnregisteredEncoder();
 
 	std::cout << "------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

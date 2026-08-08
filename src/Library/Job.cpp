@@ -9755,6 +9755,11 @@ bool Job::PrepareFireRenderFidelityMetadata()
 			 active->second.params.autoIntegrator == AutoIntegratorChoice::VCM) ) {
 			unsupportedIntegrator = true;
 		}
+		if( pRasterizer->IsAutoDispatcher() ) {
+			const char* resolved = pRasterizer->ResolvedIntegratorName();
+			unsupportedIntegrator = unsupportedIntegrator || (resolved &&
+				(std::strcmp(resolved,"bdpt") == 0 || std::strcmp(resolved,"vcm") == 0));
+		}
 		if( unsupportedIntegrator ) {
 			reasons.insert("unsupported_integrator_for_fire_media");
 		}

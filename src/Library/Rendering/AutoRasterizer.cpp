@@ -1051,14 +1051,21 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
 	const bool wrapperAdded = RegisterRasterizerOutput( ro );
 	IRasterizer* delegate = nullptr;
+	bool wrapperContains = false;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
 		if( wrapperAdded ) ++mReplayRevision;
+		for( IRasterizerOutput* output : outs ) {
+			if( output == ro ) {
+				wrapperContains = true;
+				break;
+			}
+		}
 		delegate = mDelegate;
 		if( delegate ) delegate->addref();
 	}
 	try {
-		if( delegate ) {
+		if( delegate && wrapperContains ) {
 			delegate->AddRasterizerOutput( ro );
 		}
 	}

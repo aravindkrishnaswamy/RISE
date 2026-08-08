@@ -2506,6 +2506,12 @@ namespace
 				("rise_unavailable_encoder_" + std::to_string(::getpid()));
 			const bool rejectedUnavailable = !job->AddFileRasterizerOutput(
 				unavailableOutput.string().c_str(),false,2,8,1,0.0,0,2,true);
+			IRasterizerOutput* directOutput = nullptr;
+			const bool directRejected = !RISE_API_CreateFileRasterizerOutput(
+				&directOutput,unavailableOutput.string().c_str(),false,2,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				directOutput == nullptr;
+			safe_release(directOutput);
 			if( removedPNG ) {
 				encoders.Register(png);
 				png = nullptr;
@@ -2513,8 +2519,8 @@ namespace
 			safe_release(png);
 			const bool encoderRestored = !removedPNG ||
 				encoders.ByFormatName("PNG") != nullptr;
-			Check( rejectedUnavailable && encoderRestored,
-				"file output API rejects an unavailable encoder before attachment" );
+			Check( rejectedUnavailable && directRejected && encoderRestored,
+				"Job and public C APIs reject an unavailable encoder before attachment" );
 		} else {
 			Check(false,"unavailable-encoder production fixture loads");
 		}

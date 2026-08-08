@@ -215,36 +215,10 @@ namespace RISE
 		void ViewportFrameStore::Attach( IRasterizer* rasterizer )
 		{
 			if ( !rasterizer ) return;
+			// Rasterizer registration publishes the current FrameStore through
+			// OnRasterizerFrameStoreChanged before it returns. Pulling a second raw
+			// pointer here would race a concurrent SetFrameStore replacement.
 			rasterizer->AddRasterizerOutput( this );
-
-			// L6e-2b — Auto-bind to the rasterizer's current
-			// FrameStore (if non-null).  Two cases at Attach time:
-			//   * Rasterizer already has a FrameStore (typical: Job
-			//     pushed it on scene-load before any bridge attached
-			//     a VFS).  Bind immediately.
-			//   * Rasterizer's FrameStore is null (atypical: VFS
-			//     attached pre-Job-push).  Stay in internal-managed
-			//     mode for now; when Job's
-			//     `PushJobFrameStoreToRasterizers` later fires
-			//     `Rasterizer::SetFrameStore`, our
-			//     `OnRasterizerFrameStoreChanged` override picks it
-			//     up automatically (we're now in the rasterizer's
-			//     outputs list).
-			//
-			// Benign TOCTOU: if a second thread invokes
-			// `SetFrameStore(newFs)` after our
-			// `AddRasterizerOutput` but before the
-			// `GetFrameStore()` read below, we receive the
-			// notification (newFs) AND race-read the new value.
-			// Result: we bind to newFs twice (once via
-			// notification, once via the GetFrameStore read).
-			// `BindFrameStore` is idempotent on same-pointer rebind,
-			// so the second bind is a no-op.  See L6e-2b
-			// adversarial review P2.
-			FrameStore* fs = rasterizer->GetFrameStore();
-			if ( fs ) {
-				BindFrameStore( fs );
-			}
 		}
 
 		void ViewportFrameStore::Detach( IRasterizer* rasterizer )

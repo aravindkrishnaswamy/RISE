@@ -132,8 +132,10 @@ class FrameStoreNotificationOutput
 {
 public:
 	unsigned int notifications = 0;
+	unsigned int images = 0;
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
-	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+		{ ++images; }
 	void OnRasterizerFrameStoreChanged( FrameStore* ) override { ++notifications; }
 
 protected:
@@ -240,19 +242,21 @@ public:
 		Rasterizer& rasterizer,
 		IProgressCallback& replacementProgress,
 		IRasterizerOutput& removedOutput,
-		IRasterizerOutput& survivingOutput
+		IRasterizerOutput& survivingOutput,
+		const unsigned int triggerNotification
 		) :
 		mutated(false),
 		rasterizer_(rasterizer),
 		replacementProgress_(replacementProgress),
 		removedOutput_(removedOutput),
-		survivingOutput_(survivingOutput)
+		survivingOutput_(survivingOutput),
+		triggerNotification_(triggerNotification)
 	{}
 
 	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
 	{
 		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
-		if( notifications == 2 ) {
+		if( notifications == triggerNotification_ ) {
 			mutated = true;
 			rasterizer_.SetProgressCallback(&replacementProgress_);
 			rasterizer_.RemoveRasterizerOutput(&removedOutput_);
@@ -271,6 +275,7 @@ private:
 	IProgressCallback& replacementProgress_;
 	IRasterizerOutput& removedOutput_;
 	IRasterizerOutput& survivingOutput_;
+	unsigned int triggerNotification_;
 };
 
 class HomogeneousFireTestMedium : public HomogeneousMedium
@@ -1459,7 +1464,7 @@ static void TestTransactionalDelegateReplay()
 	removed->addref();
 	survivor->addref();
 	TransactionalReplayOutput* mutator = concrete ? new TransactionalReplayOutput(
-		*concrete,replacementProgress,*removed,*survivor) : nullptr;
+		*concrete,replacementProgress,*removed,*survivor,2) : nullptr;
 	if( !mutator ) {
 		Check(false,"concrete rasterizer available: " + label);
 		safe_release(removed);
@@ -1484,6 +1489,84 @@ static void TestTransactionalDelegateReplay()
 	safe_release(mutator);
 	safe_release(removed);
 	safe_release(survivor);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestPostResolutionAddReentrancy()
+{
+	const std::string label = "post-resolution output attachment honors reentrant removal";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"post_resolution_add_reentrancy") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	const bool initiallyRendered = job->Rasterize();
+	CountingProgressCallback replacementProgress;
+	CapturingRasterizerOutput* unused = new CapturingRasterizerOutput();
+	CapturingRasterizerOutput* survivor = new CapturingRasterizerOutput();
+	FrameStoreNotificationOutput* mutatorBase = nullptr;
+	TransactionalReplayOutput* mutator = concrete ? new TransactionalReplayOutput(
+		*concrete,replacementProgress,*unused,*survivor,1) : nullptr;
+	mutatorBase = mutator;
+	if( !mutator ) {
+		Check(false,"concrete rasterizer available: " + label);
+		safe_release(unused);
+		safe_release(survivor);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(mutator);
+	const bool rendered = job->Rasterize();
+	Check(initiallyRendered && mutator->mutated,
+		"resolved delegate attachment callback replaced the wrapper output set: " + label);
+	Check(rendered && survivor->width > 0 && mutatorBase->images == 0,
+		"removed output is not resurrected in the resolved delegate: " + label);
+	safe_release(mutator);
+	safe_release(unused);
+	safe_release(survivor);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolvedAutoFirePreflight()
+{
+	const std::string label = "resolved unpinned Auto fails closed after fire is installed";
+	std::cout << "Testing " << label << std::endl;
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAuto +
+		kSceneCommon + kGlassSphere;
+	const std::string path = WriteSceneToTempFile(scene.c_str(),"resolved_auto_fire");
+	IJobPriv* job = nullptr;
+	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
+		!job->LoadAsciiSceneViaCst(path.c_str()) ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool firstRendered = job->Rasterize();
+	IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+	HomogeneousFireTestMedium* fire = new HomogeneousFireTestMedium(*phase);
+	job->GetScene()->SetGlobalMedium(fire);
+	const bool rejected = !job->Rasterize();
+	Check(firstRendered && rasterizer &&
+		rasterizer->ResolvedIntegrator() == AutoIntegratorChoice::VCM,
+		"unpinned Auto first resolves to VCM on the caustic fixture: " + label);
+	Check(rejected,
+		"preflight rejects the already-resolved unsupported delegate: " + label);
+	safe_release(fire);
+	safe_release(phase);
 	safe_release(job);
 	std::remove(path.c_str());
 }
@@ -1734,8 +1817,10 @@ int main()
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
 	TestRetainedOutputSnapshots();
 	TestTransactionalDelegateReplay();
+	TestPostResolutionAddReentrancy();
 	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();
+	TestResolvedAutoFirePreflight();
 
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: auto-rasterizer UI param pass-through ---" << std::endl;

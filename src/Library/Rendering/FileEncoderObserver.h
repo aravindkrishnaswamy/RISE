@@ -15,10 +15,8 @@
 //    bMultiple == true   →  "<pattern><suffix>NNNN.<ext>"
 //    bMultiple == false  →  "<pattern><suffix>.<ext>"
 //
-//  The observer takes a non-owning IFrameEncoder pointer (typically
-//  from FrameEncoderRegistry::Get().ByFormatName(...) which returns
-//  a registry-lifetimed encoder).  It addrefs the FrameStore so
-//  the store survives even if the rasterizer/Job tears down first.
+//  The observer retains both the IFrameEncoder and FrameStore so they
+//  survive registry replacement and rasterizer/Job teardown.
 //
 //  Author: design landing L3
 //  License: see LICENSE.TXT
@@ -59,8 +57,7 @@ namespace RISE
 			//!                     from on each callback.  Caller's
 			//!                     reference is addref'd internally.
 			//! @param encoder      Format encoder (typically from
-			//!                     FrameEncoderRegistry).  Non-owning;
-			//!                     caller guarantees lifetime.
+			//!                     FrameEncoderRegistry).  Retained.
 			//! @param opts         Encoder options.  Copied into
 			//!                     the observer (caller may mutate
 			//!                     their copy after construction).
@@ -91,7 +88,7 @@ namespace RISE
 			void WriteFile( unsigned int frame, const char* suffix );
 
 			FrameStore*    store_;     // addref'd in ctor
-			IFrameEncoder* encoder_;   // non-owning
+			IFrameEncoder* encoder_;   // addref'd in ctor
 			EncodeOpts     opts_;
 			std::string    pattern_;
 			bool           bMultiple_;
