@@ -186,7 +186,7 @@ namespace RISE
 		// the FrameStore it could not get at construction time
 		// (typical scene files declare rasterizer BEFORE camera).
 		void PushJobFrameStoreToRasterizers();
-		bool PrepareFireRenderFidelityMetadata();
+		bool PrepareFireRenderFidelityMetadata( bool publishMetadata = true );
 
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.

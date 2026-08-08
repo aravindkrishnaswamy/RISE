@@ -9568,7 +9568,7 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(false) ) {
 		return false;
 	}
 
@@ -9643,7 +9643,7 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 	return pSeq;
 }
 
-bool Job::PrepareFireRenderFidelityMetadata()
+bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 {
 	if( !pScene || !pRasterizer ) {
 		return false;
@@ -9791,7 +9791,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 			static_cast<double>(wavelengthMax), joined.str().c_str() );
 		return false;
 	}
-	if( FrameStore* store = pRasterizer->GetFrameStore() ) {
+	if( publishMetadata ) {
+		FrameStore* store = pRasterizer->GetFrameStore();
+		if( !store ) return true;
 		store->SetFireFidelityMetadata(status,
 			std::vector<std::string>(reasons.begin(),reasons.end()),
 			std::vector<std::string>(recordIds.begin(),recordIds.end()));

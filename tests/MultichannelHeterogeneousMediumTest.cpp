@@ -2364,6 +2364,25 @@ namespace
 					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
 				"production FrameStore carries sorted preview reasons and record identity" );
 
+			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
+			const uint64_t renderedGeneration = store->Generation();
+			PluginPhase* predictionPhase = new PluginPhase();
+			InconsistentPredictiveFireMedium* predictedMedium =
+				new InconsistentPredictiveFireMedium(*predictionPhase,true);
+			job->GetScene()->SetGlobalMedium(predictedMedium);
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			const bool acceptedPrediction =
+				job->PredictRasterizationTime(1,&predictedMs,&actualMs);
+			Check( acceptedPrediction && predictedMs != 0xA5A5A5A5u &&
+				actualMs != 0x5A5A5A5Au && store->Generation() == renderedGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"accepted prediction does not relabel the last completed frame" );
+			Check( job->SetGlobalMedium("fire"),
+				"prediction metadata fixture restores the authored fire medium" );
+			safe_release(predictedMedium);
+			safe_release(predictionPhase);
+
 			const std::filesystem::path outputBase =
 				std::filesystem::temp_directory_path() /
 				("rise_fire_late_output_" + std::to_string(::getpid()));
