@@ -590,7 +590,7 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
-		bool BuildBakedChannelDigest( std::string& digest ) const;
+		bool BuildBakedChannelRecord( std::vector<unsigned char>& record ) const;
 		// Test-only controlled ablation; set before Rasterize launches workers.
 		bool ForTest_SetEffectiveAbsorptionAblation(
 			const EffectiveAbsorptionAblation ablation );

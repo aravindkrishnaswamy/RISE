@@ -393,29 +393,33 @@ namespace
 			RISECBOR64::Value::Unsigned(z) });
 	}
 
-	std::string FireCanonicalDigest(
+	bool FireCanonicalRecord(
 		RISECBOR64::Value::Members members,
 		const char* recordKind,
-		const char* diagnosticName )
+		const char* diagnosticName,
+		RISECBOR64::Bytes& bytes )
 	{
 		members.push_back(std::make_pair("record_kind",
 			RISECBOR64::Value::String(recordKind)));
 		members.push_back(std::make_pair("schema_version",
 			RISECBOR64::Value::Unsigned(1)));
-		RISECBOR64::Bytes bytes;
+		bytes.clear();
 		std::string error;
 		if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue(members),bytes,&error) ) {
 			GlobalLog()->PrintEx(eLog_Error,
 				"Job:: could not canonically encode %s: %s",diagnosticName,error.c_str());
-			return std::string();
+			return false;
 		}
-		return RISECBOR64::SHA256Hex(bytes);
+		return true;
 	}
 
-	std::string FireAuthoredConfigDigest( RISECBOR64::Value::Members members )
+	RISECBOR64::Bytes FireAuthoredParameterRecord(
+		RISECBOR64::Value::Members members )
 	{
-		return FireCanonicalDigest(members,"static_fire_medium_authoring",
-			"static fire-medium authoring");
+		RISECBOR64::Bytes bytes;
+		FireCanonicalRecord(members,"static_fire_medium_parameters_v1",
+			"static fire-medium parameters",bytes);
+		return bytes;
 	}
 
 	RISECBOR64::Value FireCommonAuthoring(
@@ -952,7 +956,7 @@ void Job::DestroyContainers()
 	safe_shutdown_and_release( pCameraManager );
 	safe_shutdown_and_release( pPntManager );
 	safe_shutdown_and_release( pScalarPntManager );
-	fireFunction1DDefinitionDigests.clear();
+	fireFunction1DDefinitionRecords.clear();
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
 	// P1-#8: clear the H3 self-invalidation callback BEFORE releasing the
@@ -5862,13 +5866,15 @@ bool Job::AddPiecewiseLinearFunction(
 					RISECBOR64::Value::Float(x[i]),
 					RISECBOR64::Value::Float(y[i]) }));
 			}
-			const std::string definitionDigest = FireCanonicalDigest({
+			RISECBOR64::Bytes definitionRecord;
+			const bool definitionEncoded = FireCanonicalRecord({
 				{ "control_points", RISECBOR64::Value::ArrayValue(controlPoints) },
 				{ "lut_size", RISECBOR64::Value::Unsigned(lutsize) },
 				{ "use_lut", RISECBOR64::Value::Bool(bUseLUTs) }
-			},"piecewise_linear_function_1d_authoring","1D function authoring");
-			if( !definitionDigest.empty() ) {
-				fireFunction1DDefinitionDigests[pFunction] = definitionDigest;
+			},"piecewise_linear_function_1d_authoring","1D function authoring",
+				definitionRecord);
+			if( definitionEncoded ) {
+				fireFunction1DDefinitionRecords[pFunction] = definitionRecord;
 			}
 		}
 	}
@@ -6422,41 +6428,51 @@ bool Job::AddPainterHeterogeneousMedium(
 
 std::string Job::FinalizeFireAuthoredConfigDigest(
 	const IMedium& medium,
-	const std::string& authoredParameterDigest,
+	const std::vector<unsigned char>& authoredParameterRecord,
 	const IFunction1D* const chemSPDs[3]
 	)
 {
 	const MultichannelHeterogeneousMedium* fire =
 		dynamic_cast<const MultichannelHeterogeneousMedium*>(&medium);
-	std::string bakedChannelDigest;
-	if( !fire || authoredParameterDigest.empty() ||
-		!fire->BuildBakedChannelDigest(bakedChannelDigest) ) {
+	RISECBOR64::Bytes bakedChannelRecord;
+	RISECBOR64::Value authoredParameters;
+	RISECBOR64::Value bakedChannels;
+	std::string error;
+	if( !fire || authoredParameterRecord.empty() ||
+		!RISECBOR64::DecodeCanonical(authoredParameterRecord,authoredParameters,&error) ||
+		!fire->BuildBakedChannelRecord(bakedChannelRecord) ||
+		!RISECBOR64::DecodeCanonical(bakedChannelRecord,bakedChannels,&error) ) {
 		GlobalLog()->PrintEasyError(
-			"Job:: could not bind static fire-medium provenance to its frozen channel bakes" );
+			"Job:: could not bind static fire-medium provenance to its direct parameter and channel-bake records" );
 		return std::string();
 	}
-	RISECBOR64::Value::Values chemDefinitionDigests;
+	RISECBOR64::Value::Values chemDefinitions;
 	for( unsigned int band=0; band<3u; ++band ) {
 		if( !chemSPDs || !chemSPDs[band] ) continue;
-		const std::map<const IFunction1D*,std::string>::const_iterator definition =
-			fireFunction1DDefinitionDigests.find(chemSPDs[band]);
-		if( definition == fireFunction1DDefinitionDigests.end() ||
+		const std::map<const IFunction1D*,std::vector<unsigned char> >::const_iterator definition =
+			fireFunction1DDefinitionRecords.find(chemSPDs[band]);
+		if( definition == fireFunction1DDefinitionRecords.end() ||
 			definition->second.empty() ) {
 			GlobalLog()->PrintEasyError(
 				"Job:: could not bind static fire-medium provenance to a chem SPD definition" );
 			return std::string();
 		}
-		chemDefinitionDigests.push_back(
-			RISECBOR64::Value::String(definition->second));
+		RISECBOR64::Value definitionRecord;
+		if( !RISECBOR64::DecodeCanonical(definition->second,definitionRecord,&error) ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: chem SPD authoring record is noncanonical" );
+			return std::string();
+		}
+		chemDefinitions.push_back(definitionRecord);
 	}
-	return FireAuthoredConfigDigest({
-		{ "authored_parameters_sha256",
-			RISECBOR64::Value::String(authoredParameterDigest) },
-		{ "baked_channels_sha256",
-			RISECBOR64::Value::String(bakedChannelDigest) },
-		{ "chem_spd_definition_sha256",
-			RISECBOR64::Value::ArrayValue(chemDefinitionDigests) }
-	});
+	RISECBOR64::Bytes resolvedRecord;
+	if( !FireCanonicalRecord({
+		{ "authored_parameters", authoredParameters },
+		{ "baked_channels", bakedChannels },
+		{ "chem_spd_definitions", RISECBOR64::Value::ArrayValue(chemDefinitions) }
+	},"static_fire_medium_authored_config_v1",
+		"resolved static fire-medium authoring",resolvedRecord) ) return std::string();
+	return RISECBOR64::SHA256Hex(resolvedRecord);
 }
 
 bool Job::AddMultichannelHeterogeneousMedium(
@@ -6498,7 +6514,7 @@ bool Job::AddMultichannelHeterogeneousMedium(
 			"Job::AddMultichannelHeterogeneousMedium:: carbon and temperature require single-valued scalar painters" );
 		return false;
 	}
-	const std::string authoredParameterDigest = FireAuthoredConfigDigest({
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
 		{ "authoring_variant", RISECBOR64::Value::String("synthetic_two_channel") },
 		{ "optical_parameters", RISECBOR64::Value::MapValue({
 			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
@@ -6513,7 +6529,7 @@ bool Job::AddMultichannelHeterogeneousMedium(
 			temperature_painter,0,bake_width,bake_height,bake_depth,bboxMin,
 			bboxMax,scene_unit_meters) }
 	});
-	if( authoredParameterDigest.empty() ) return false;
+	if( authoredParameterRecord.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMedium(
@@ -6528,7 +6544,7 @@ bool Job::AddMultichannelHeterogeneousMedium(
 		return false;
 	}
 	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
-		*medium,authoredParameterDigest,0);
+		*medium,authoredParameterRecord,0);
 	if( authoredDigest.empty() ) {
 		safe_release(medium);
 		return false;
@@ -6588,7 +6604,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: physical channels require single-valued scalar painters" );
 		return false;
 	}
-	const std::string authoredParameterDigest = FireAuthoredConfigDigest({
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
 		{ "authoring_variant", RISECBOR64::Value::String("synthetic_condensed") },
 		{ "optical_parameters", RISECBOR64::Value::MapValue({
 			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
@@ -6607,7 +6623,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
 			bboxMin,bboxMax,scene_unit_meters) }
 	});
-	if( authoredParameterDigest.empty() ) return false;
+	if( authoredParameterRecord.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
@@ -6624,7 +6640,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 		return false;
 	}
 	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
-		*medium,authoredParameterDigest,0);
+		*medium,authoredParameterRecord,0);
 	if( authoredDigest.empty() ) {
 		safe_release(medium);
 		return false;
@@ -6706,7 +6722,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 			return false;
 		}
 	}
-	const std::string authoredParameterDigest = FireAuthoredConfigDigest({
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
 		{ "authoring_variant", RISECBOR64::Value::String("synthetic_chem") },
 		{ "chemistry", RISECBOR64::Value::MapValue({
 			{ "c2_interval_nm", FireFloatArray(chem_interval_c2,2) },
@@ -6735,7 +6751,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
 			bboxMin,bboxMax,scene_unit_meters) }
 	});
-	if( authoredParameterDigest.empty() ) return false;
+	if( authoredParameterRecord.empty() ) return false;
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
 		&medium, *painters[0], *painters[1], painters[2],
@@ -6754,7 +6770,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 		Scalar(smoke_km_cond), Scalar(smoke_n_cond),
 		Scalar(smoke_albedo_cond), Scalar(smoke_g_cond)) || !medium ) return false;
 	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
-		*medium,authoredParameterDigest,curves);
+		*medium,authoredParameterRecord,curves);
 	if( authoredDigest.empty() ) {
 		safe_release(medium);
 		return false;
@@ -6856,7 +6872,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithPreset(
 		{ "co2_spd", FireText(chem_spd_co2) },
 		{ "model", RISECBOR64::Value::String(hasAllChem ? "synthetic_fixture" : "none") }
 	});
-	const std::string authoredParameterDigest = FireAuthoredConfigDigest({
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
 		{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
 		{ "chemistry", chemistry },
 		{ "optical_record", FireText(optical_record) },
@@ -6864,7 +6880,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithPreset(
 			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
 			bboxMin,bboxMax,scene_unit_meters) }
 	});
-	if( authoredParameterDigest.empty() ) return false;
+	if( authoredParameterRecord.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
@@ -6884,7 +6900,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithPreset(
 	const IFunction1D* const consumedSPDs[3] = {
 		chemSPDs[0], chemSPDs[1], chemSPDs[2] };
 	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
-		*medium,authoredParameterDigest,consumedSPDs);
+		*medium,authoredParameterRecord,consumedSPDs);
 	if( authoredDigest.empty() ) {
 		safe_release(medium);
 		return false;

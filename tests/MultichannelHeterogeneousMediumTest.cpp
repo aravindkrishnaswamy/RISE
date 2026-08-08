@@ -2410,7 +2410,74 @@ namespace
 
 			const std::string originalAuthoredDigest =
 				metadata.activeFireMedia.empty() ? std::string() :
-				metadata.activeFireMedia[0].authoredConfigDigest;
+					metadata.activeFireMedia[0].authoredConfigDigest;
+			RISECBOR64::Value::Values carbonBake;
+			RISECBOR64::Value::Values temperatureBake;
+			for( unsigned int i=0; i<8u; ++i ) {
+				carbonBake.push_back(RISECBOR64::Value::Float(1.0));
+				temperatureBake.push_back(RISECBOR64::Value::Float(800.0));
+			}
+			const RISECBOR64::Value directAuthoredParameters =
+				RISECBOR64::Value::MapValue({
+					{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
+					{ "chemistry", RISECBOR64::Value::MapValue({
+						{ "c2_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "c2_painter", RISECBOR64::Value::String("") },
+						{ "c2_spd", RISECBOR64::Value::String("") },
+						{ "ch_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "ch_painter", RISECBOR64::Value::String("") },
+						{ "ch_spd", RISECBOR64::Value::String("") },
+						{ "co2_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "co2_painter", RISECBOR64::Value::String("") },
+						{ "co2_spd", RISECBOR64::Value::String("") },
+						{ "model", RISECBOR64::Value::String("none") } }) },
+					{ "optical_record", RISECBOR64::Value::String("fire_optics_v1") },
+					{ "record_kind", RISECBOR64::Value::String(
+						"static_fire_medium_parameters_v1") },
+					{ "resolved_parameters", RISECBOR64::Value::MapValue({
+						{ "bake_resolution", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Unsigned(2), RISECBOR64::Value::Unsigned(2),
+							RISECBOR64::Value::Unsigned(2) }) },
+						{ "bbox_max", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Float(1), RISECBOR64::Value::Float(1),
+							RISECBOR64::Value::Float(1) }) },
+						{ "bbox_min", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Float(-1), RISECBOR64::Value::Float(-1),
+							RISECBOR64::Value::Float(-1) }) },
+						{ "channel_carbon_painter", RISECBOR64::Value::String("carbon") },
+						{ "channel_condensed_painter", RISECBOR64::Value::String("") },
+						{ "channel_temperature_painter", RISECBOR64::Value::String("temperature") },
+						{ "manager_name", RISECBOR64::Value::String("fire") },
+						{ "scene_unit_meters", RISECBOR64::Value::Float(1) } }) },
+					{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+				});
+			const RISECBOR64::Value directBakedChannels =
+				RISECBOR64::Value::MapValue({
+					{ "channels", RISECBOR64::Value::ArrayValue({
+						RISECBOR64::Value::MapValue({
+							{ "name", RISECBOR64::Value::String("carbon") },
+							{ "values_z_y_x", RISECBOR64::Value::ArrayValue(carbonBake) } }),
+						RISECBOR64::Value::MapValue({
+							{ "name", RISECBOR64::Value::String("temperature") },
+							{ "values_z_y_x", RISECBOR64::Value::ArrayValue(temperatureBake) } }) }) },
+					{ "dimensions", RISECBOR64::Value::ArrayValue({
+						RISECBOR64::Value::Unsigned(2), RISECBOR64::Value::Unsigned(2),
+						RISECBOR64::Value::Unsigned(2) }) },
+					{ "record_kind", RISECBOR64::Value::String("static_fire_medium_bakes_v1") },
+					{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+				});
+			RISECBOR64::Bytes reconstructedAuthoredRecord;
+			RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+				{ "authored_parameters", directAuthoredParameters },
+				{ "baked_channels", directBakedChannels },
+				{ "chem_spd_definitions", RISECBOR64::Value::ArrayValue({}) },
+				{ "record_kind", RISECBOR64::Value::String(
+					"static_fire_medium_authored_config_v1") },
+				{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+			}),reconstructedAuthoredRecord,&provenanceDecodeError);
+			Check( !reconstructedAuthoredRecord.empty() && originalAuthoredDigest ==
+				RISECBOR64::SHA256Hex(reconstructedAuthoredRecord),
+				"static authored_config_digest directly hashes resolved parameters and frozen bakes" );
 			writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",false,true,2.0);
 			IJobPriv* changedBakeJob = nullptr;
 			RISE_CreateJobPriv(&changedBakeJob);

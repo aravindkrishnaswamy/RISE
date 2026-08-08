@@ -2242,11 +2242,11 @@ bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(
 	return true;
 }
 
-bool MultichannelHeterogeneousMedium::BuildBakedChannelDigest(
-	std::string& digest
+bool MultichannelHeterogeneousMedium::BuildBakedChannelRecord(
+	std::vector<unsigned char>& recordBytes
 	) const
 {
-	digest.clear();
+	recordBytes.clear();
 	if( !m_valid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
 	using RISECBOR64::Value;
 	Value::Values channels;
@@ -2287,11 +2287,8 @@ bool MultichannelHeterogeneousMedium::BuildBakedChannelDigest(
 		{ "record_kind", Value::String("static_fire_medium_bakes_v1") },
 		{ "schema_version", Value::Unsigned(1) }
 	});
-	RISECBOR64::Bytes bytes;
 	std::string error;
-	if( !RISECBOR64::Encode(record,bytes,&error) ) return false;
-	digest = RISECBOR64::SHA256Hex(bytes);
-	return true;
+	return RISECBOR64::Encode(record,recordBytes,&error);
 }
 
 Scalar MultichannelHeterogeneousMedium::AblatedHotAbsorptionMass(
