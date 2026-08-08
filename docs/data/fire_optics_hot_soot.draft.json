@@ -146,7 +146,7 @@
   "omega_hot_fixture_0.10": "CONFIRMED (central computed 0.10 for verified N=30-80 young soot)"
  },
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "1c4640f119f93b7b4eda393831de18908971ee70cf48d6699f5887361f565acb",
+ "draft_record_id_sha256_of_payload": "7e7821e97cfdf814f407a4caafc45dc0993b7ff252420e0853ebd36c570a9036",
  "g_hot_adopted": {
   "ruling": "Owner 2026-08-05: computed value adopted for the young in-flame constituent; 0.5 describes mature aggregates already assigned to cool carbon by the phi(T) split (keeping it would double-count maturation in the wrong constituent). omega_hot~0.10 means weak scattering, so limited total radiometric leverage. The 0.5 value may persist ONLY in the explicitly synthetic regression fixture, and fixture vs predictive preset must carry DISTINCT record IDs.",
   "supported_range": [
@@ -234,6 +234,7 @@
    "value": 1880
   }
  },
+ "out_of_domain_policy": "NO preview extrapolation rule is named for this record. The spectral tables' certified domain is [380, 780] nm; out-of-domain lookups REJECT in both predictive and preview modes. Temperature applicability is governed by the phi_T_partition (hot optics weight phi(T)), not by this policy.",
  "phi_T_partition": {
   "consistency_requirement": "the hot-soot and cool-carbon records must carry bit-identical phi_T fields at record freeze (one optical record in the final SS8 CBOR encoding)",
   "form": "phi(T) = smoothstep over T in [700, 900] K: 0 below, 1 above. FIRE_SMOKE_DESIGN.md SS3.4 says 'smoothstep' unqualified; the cubic Hermite 3t^2-2t^3 (C1) is the assumed canonical form - if the SS3.5 backward-Euler solver requires C2 (smootherstep), that is a design-loop question, not an implementation choice",

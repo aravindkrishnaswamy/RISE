@@ -1,7 +1,7 @@
 {
  "aggregate_required": "every record carries aggregate 'version' (semver-like string) and 'record_status'",
  "compiled": "2026-08-06",
- "draft_record_id_sha256_of_payload": "35e4d1145d2ffece3989cc50178813d2cb3ea3c24aef269ba9bd03d9f47306d4",
+ "draft_record_id_sha256_of_payload": "5dc4619115a3845f3ea2c637c42c3a4d26c38aafd6a0b5f2f46cfb8336c430ed",
  "encoding": "final form RISE-CBOR64-v1 per SS8; record ID = SHA-256 of exact bytes; draft JSONs carry the same fields with draft IDs",
  "hashed_payload_required_fields": {
   "explicitly_excluded_from_hash": [
@@ -26,12 +26,16 @@
    "phi_T_partition (hot-soot and cool-carbon records; bit-identical)"
   ]
  },
+ "out_of_domain_policy_rules": {
+  "aggregate_records": "aggregate canonical records carry NO aggregate-level out_of_domain_policy of their own: each component's policy governs its own axes, copied verbatim from its source record. An aggregate-level policy would create a cross-component fallback the design does not define; the generator must copy per-component policies from per-component source records (not replicate one record's policy across components)",
+  "per_record": "required on every record. Records with tabulated axes state the certified domain and the reject/extrapolate behavior per mode; records with NO tabulated axes must say so explicitly and state their usage-based domain instead - the field is never omitted and never implicit"
+ },
  "purpose": "Pins WHICH fields belong inside the hashed canonical payload of every fire-optics record: per-value provenance, uncertainty, and applicability ARE part of the record identity - two records differing only in provenance or uncertainty must have different IDs (SS8 metadata-completeness rule: physically different records must never carry indistinguishable metadata; a changed uncertainty IS a different record).",
  "ratification": "This pin unblocks implementation now; formal ratification happens in the design loop at record freeze. If the owner's freeze changes the field set, record IDs change with it - which is the correct behavior.",
  "record_kind": "record_schema_pin",
  "record_name": "fire-optics-canonical-provenance-schema-v1",
  "record_status": "DRAFT_SCHEMA_PIN__RATIFY_AT_DESIGN_LOOP_FREEZE",
- "schema_version": "draft-2",
+ "schema_version": "draft-3",
  "table_metadata_granularity": "Table metadata (provenance, applicability, uncertainty) applies PER TABLE by default; a table MAY carry per-column overrides in a 'column_metadata' map; per-row and per-cell metadata are NOT supported in v1 (a value needing row-level provenance belongs in its own record or a split table).",
  "uncertainty_kind_enum": {
   "assumption_bound": "a bound ASSUMED, not measured: magnitude = the bounding factor or interval actually used, one_sided flag set as applicable, with a 'basis' string naming the assumption (e.g. the 1-cd convention). This is how design assumptions with no measured uncertainty satisfy the required magnitude field: the magnitude is the assumed bound itself, never omitted.",

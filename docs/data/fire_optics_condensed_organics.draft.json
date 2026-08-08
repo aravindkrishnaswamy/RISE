@@ -75,7 +75,7 @@
   "Chen & Bond validated only ~300-550nm; >550nm k is extrapolated (their own linear extrapolation labelled non-physical). Visible-red k rests on Sumlin's peat-BrC flatness claim."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "e1041739ecfb69bb2f71a43225f7d25874da69904519e847d6db3c1a4b1dfbee",
+ "draft_record_id_sha256_of_payload": "c49833d328d86b337598f6babec0998e5abf832cdb4c3c16ddfe5b5cc56933a7",
  "gaps": [
   "IR absorption for SS3.5 Kirchhoff emission: no verified dataset in hand for condensed organics beyond 780nm (Sumlin extends to 1047nm only; owner decision on IR closure needed)",
   "Sumlin per-wavelength SI tables: hosted with the PAYWALLED Elsevier version - owner library pull",
@@ -163,6 +163,7 @@
    "type": "lognormal_number"
   }
  },
+ "out_of_domain_policy": "NO preview extrapolation rule is named for this record. The computed table's certified domain is [380, 780] nm; out-of-domain lookups REJECT in both predictive and preview modes. The IR gap is governed by the ir_closure block (predictive reason code condensed_organics_ir_unclosed), which is a closure requirement on SS3.5 use - NOT an extrapolation permission; nothing in this policy softens it.",
  "record_kind": "constituent_optics",
  "record_name": "condensed-organics-smoke-v1",
  "record_status": "VISIBLE_PRESET_FROZEN_2026-08-05__IR_CLOSURE_BLOCKED",

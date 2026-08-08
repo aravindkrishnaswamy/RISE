@@ -45,8 +45,9 @@
   "Forestieri scope: the 9.1/7.1 m2/g plateau describes larger mature soot (>~160nm); maturity dependence is explicit in that paper. It anchors the mass-to-absorption normalization, not young-soot optics per se."
  ],
  "design_revision_evaluated_against": 45,
- "draft_record_id_sha256_of_payload": "ed160a6469c740d81e9816c07be79497477878e4bd68ebc48e73152f9e169dac",
+ "draft_record_id_sha256_of_payload": "187b68b1f2712e9cdad21ccd292533698b46e1077a62cddc6b21d1aaec87af29",
  "normative_quantity": "MAC_lambda_m2_per_g",
+ "out_of_domain_policy": "NO preview extrapolation rule is named for this record. The tabulated certified domain is [380, 780] nm, matching the renderer's NM band exactly; per SS8, out-of-domain lookups REJECT in both predictive and preview modes. The long-wave (>780nm) extension for SS3.5 Planck means is NOT carried by this table: it is a separate future record axis (C&C dispersion to 30um with the explicit long-wave model-form uncertainty per the 2026-08-05 freeze), and consuming this record outside [380, 780] nm is an error, never an extrapolation.",
  "quantity_name": "mac_equivalent_E (effective_absorption_function)",
  "quantity_semantics": "NOT an unqualified refractive-index-derived E(m). Population-averaged hot-carbon effective absorption closure: incorporates everything needed to reproduce measured absorption per transported soot mass through the renderer's simple Rayleigh expression sigma_a = 6*pi*E_eff*f_v/lambda, which applies no separate aggregate-interaction correction. Not a universal soot material constant; not a soot-maturity model. Liu et al.'s E>0.32 lower bound is NOT the runtime central value for exactly this reason (it assumes optical-model corrections RISE does not apply).",
  "record_kind": "soot_effective_absorption_function",

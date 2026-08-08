@@ -1,10 +1,11 @@
 {
  "compiled": "2026-08-06",
- "draft_record_id_sha256_of_payload": "35def2429946fcd3818942ceb9f534337ddc59465a3496c28486b7f77b2439a5",
+ "draft_record_id_sha256_of_payload": "70a1945e46516c002303aadbda23babdbb39aafc466a96c4a3e2e952722a48a2",
  "notes": [
   "g=0.50 for hot soot is the fixture value only; the predictive preset adopted g_hot=0.22 (owner, 2026-08-05)",
   "the condensed n=0.5 fixture describes the aged/droplet regime; the predictive fresh-flaming preset computes n~1.78 - the divergence is intentional and documented in FIRE_OPTICS_PRESET_V1.md SS4.4"
  ],
+ "out_of_domain_policy": "Not axis-based by construction: the fixtures are wavelength-independent analytic constants with no tabulated axes, so no extrapolation concept applies. Their domain is USAGE-based: consumption by any predictive path is a hard error regardless of wavelength; synthetic regression contexts only.",
  "provenance": "FIRE_SMOKE_DESIGN.md SS12 'Phase-function form / provisional optics fixtures' (lines ~4287-4294 at r45+): values quoted verbatim from the design's closed decision; design-owned, not literature-derived. E=0.26 is the SS12 Phase-A analytic default/regression fixture (Dalzell-Sarofim m=1.57-0.56i -> E=0.2595, quoted as 0.26).",
  "record_kind": "synthetic_regression_fixtures",
  "record_name": "fire-optics-synthetic-fixtures-v1",
