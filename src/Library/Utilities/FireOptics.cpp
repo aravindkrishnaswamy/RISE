@@ -1770,7 +1770,7 @@ namespace RISE
 				*syntheticPolicySource,*effective,*hot,*cool,*condensed,error) ) {
 				return false;
 			}
-			double hotOmega, hotGValue;
+			double hotOmega = -1.0, hotGValue = -2.0;
 			if( sourceExplicitFixtures ) {
 				const RISECBOR64::Value* fixtureValues = Required(
 					*sourceExplicitFixtures,"values",RISECBOR64::Value::Map,error );
