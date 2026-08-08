@@ -93,6 +93,8 @@ namespace RISE
 		DifferentiableSpectrum m_mac;
 		DifferentiableSpectrum m_hotOmega;
 		DifferentiableSpectrum m_hotG;
+		double m_hotFixtureOmega;
+		double m_hotFixtureG;
 		double m_coolKm633;
 		double m_coolExponent;
 		double m_coolOmega;

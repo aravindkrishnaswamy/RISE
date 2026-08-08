@@ -56,6 +56,17 @@ namespace
 		return RISECBOR64::Value::MapValue(members);
 	}
 
+	RISECBOR64::Value AddMember(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value& value
+		)
+	{
+		RISECBOR64::Value::Members members = map.GetMap();
+		members.push_back(std::make_pair(std::string(key),value));
+		return RISECBOR64::Value::MapValue(members);
+	}
+
 	RISECBOR64::Value RemoveMember(
 		const RISECBOR64::Value& map,
 		const char* key
@@ -447,13 +458,17 @@ int main()
 		"the embedded predictive record validates" );
 	Check( synthetic.IsValid() && synthetic.IsSynthetic(),
 		"the embedded regression fixture validates as explicitly synthetic" );
+	Check( synthetic.SupportsWavelengthRange(1.0,1000000.0) &&
+		!synthetic.SupportsWavelengthRange(0.0,1000000.0) &&
+		!synthetic.SupportsWavelengthRange(1000.0,999.0),
+		"the synthetic fixture has a usage-based domain rather than a wavelength axis" );
 	Check( predictive.RecordId().size() == 64 && synthetic.RecordId().size() == 64 &&
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
 		"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
 		synthetic.RecordId() ==
-		"f5a6d4955ceecb0b8f243accb9a51d60634c88edf6813858160502001ff9ec1d",
+		"ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb",
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
@@ -610,6 +625,8 @@ int main()
 		"changing pinned density changes the canonical record identity" );
 	Check( originalDensity.RecordId() != synthetic.RecordId(),
 		"legacy loose-value fixtures remain distinct from the frozen fixture record" );
+	Check( originalDensity.SupportsWavelengthRange(1.0,1000000.0),
+		"explicit synthetic fixtures are not constrained to the renderer NM band" );
 	RISECBOR64::Value decodedExplicit;
 	std::string explicitDecodeError;
 	const bool explicitDecoded = RISECBOR64::DecodeCanonical(
@@ -627,6 +644,12 @@ int main()
 		explicitDensity->Find("uncertainty") && explicitDensity->Find("provenance") &&
 		explicitDensity->Find("applicability"),
 		"explicit synthetic records carry the complete hashed metadata contract" );
+	Check( explicitDecoded && !decodedExplicit.Find("out_of_domain_policy"),
+		"explicit synthetic aggregates carry no out-of-domain policy" );
+	Check( explicitDecoded && RejectsWith(AddMember(decodedExplicit,
+		"out_of_domain_policy",RISECBOR64::Value::String("usage based")),
+		"aggregate out_of_domain_policy is forbidden"),
+		"explicit synthetic aggregates reject a component policy at aggregate scope" );
 	if( explicitSources && explicitSource ) {
 		const RISECBOR64::Value changedSource = ReplaceMember(*explicitSource,
 			"schema_version",RISECBOR64::Value::String("unknown-version"));
@@ -651,6 +674,8 @@ int main()
 		const RISECBOR64::Value* explicitEffective =
 			decodedExplicit.Find("effective_absorption");
 		if( explicitEffective ) {
+			Check( !explicitEffective->Find("domain_nm"),
+				"the explicit synthetic effective fixture carries no invented wavelength axis" );
 			Check( RejectsWith(ReplaceMember(decodedExplicit,"effective_absorption",
 				ReplaceMember(*explicitEffective,"out_of_domain_policy",
 					RISECBOR64::Value::String("predictive allowed"))),
@@ -669,6 +694,11 @@ int main()
 	std::string mutationError;
 	Check( RISECBOR64::DecodeCanonical(synthetic.RecordBytes(),decodedSynthetic,
 		&mutationError), "the synthetic record decodes for semantic mutation tests" );
+	Check( !decodedSynthetic.Find("out_of_domain_policy") &&
+		RejectsWith(AddMember(decodedSynthetic,"out_of_domain_policy",
+			RISECBOR64::Value::String("usage based")),
+			"aggregate out_of_domain_policy is forbidden"),
+		"frozen synthetic aggregates reject a component policy at aggregate scope" );
 	const RISECBOR64::Value* syntheticSources = decodedSynthetic.Find("source_records");
 	const RISECBOR64::Value* fixtureSource = syntheticSources ?
 		syntheticSources->Find("synthetic_fixtures") : 0;
@@ -731,6 +761,8 @@ int main()
 	const RISECBOR64::Value* syntheticCondensed =
 		decodedSynthetic.Find("condensed_organics");
 	if( syntheticEffective && syntheticCool && syntheticCondensed ) {
+		Check( !syntheticEffective->Find("domain_nm"),
+			"the frozen synthetic effective fixture carries no invented wavelength axis" );
 		const RISECBOR64::Value* syntheticHot = decodedSynthetic.Find("hot_soot");
 		const char* policySections[] = {
 			"effective_absorption", "hot_soot", "cool_carbon", "condensed_organics" };
@@ -797,6 +829,11 @@ int main()
 	RISECBOR64::Value decodedPredictive;
 	Check( RISECBOR64::DecodeCanonical(predictive.RecordBytes(),decodedPredictive,
 		&mutationError), "the predictive record decodes for policy mutation tests" );
+	Check( !decodedPredictive.Find("out_of_domain_policy") &&
+		RejectsWith(AddMember(decodedPredictive,"out_of_domain_policy",
+			RISECBOR64::Value::String("reject")),
+			"aggregate out_of_domain_policy is forbidden"),
+		"predictive aggregates reject a component policy at aggregate scope" );
 	const RISECBOR64::Value* provenanceSchema = decodedPredictive.Find("provenance_schema");
 	const RISECBOR64::Value* sourceRecords = decodedPredictive.Find("source_records");
 	const RISECBOR64::Value* aggregateVersion = decodedPredictive.Find("version");
@@ -936,7 +973,7 @@ int main()
 			const RISECBOR64::Value changedSources = ReplaceMember(*sourceRecords,
 				"effective_absorption",changedEffective);
 			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
-				changedSources),"source table metadata is incomplete"),
+				changedSources),"table metadata is incomplete"),
 				"load rejects a source table with an empty metadata envelope" );
 			if( sourceEffectiveMetadata && operationalEffective &&
 				operationalEffectiveMetadata ) {
@@ -1049,6 +1086,29 @@ int main()
 			const RISECBOR64::Value* operationalHotMetadata = operationalHot ?
 				operationalHot->Find("table_metadata") : 0;
 			if( sourceHotMetadata && operationalHot && operationalHotMetadata ) {
+				const RISECBOR64::Value rowMetadata = AddMember(
+					*operationalHotMetadata,"row_metadata",
+					RISECBOR64::Value::MapValue({}));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+					ReplaceMember(*operationalHot,"table_metadata",rowMetadata)),
+					"row/cell table metadata is unsupported in v1"),
+					"operational row-level table metadata is rejected" );
+				const RISECBOR64::Value malformedColumns = AddMember(
+					*sourceHotMetadata,"column_metadata",
+					RISECBOR64::Value::String("not a column metadata map"));
+				const RISECBOR64::Value malformedComputed = ReplaceMember(
+					*sourceHotComputed,"spectral_young_dp30_N50_metadata",
+					malformedColumns);
+				const RISECBOR64::Value malformedSource = ReplaceMember(
+					*sourceHot,"computed_outputs",malformedComputed);
+				const RISECBOR64::Value malformedRecord = ReplaceMember(
+					ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"hot_soot",malformedSource)),
+					"hot_soot",ReplaceMember(*operationalHot,"table_metadata",
+						malformedColumns));
+				Check( RejectsWith(malformedRecord,
+					"column_metadata must be a map"),
+					"coordinated malformed column metadata is rejected" );
 				const RISECBOR64::Value changedMetadata = ReplaceMember(
 					*operationalHotMetadata,"provenance",
 					RISECBOR64::Value::String("detached hot table provenance"));
@@ -1308,6 +1368,14 @@ int main()
 	const RISECBOR64::Value* predictiveCondensed =
 		decodedPredictive.Find("condensed_organics");
 	if( predictiveEffective && predictiveHot && cool && predictiveCondensed ) {
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+			ReplaceFloatArrayElement(*predictiveEffective,"domain_nm",0,381.0)),
+			"effective-absorption certified domain must be [380, 780] nm"),
+			"an effective-absorption certified-domain lower-bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+			ReplaceFloatArrayElement(*predictiveEffective,"domain_nm",1,779.0)),
+			"effective-absorption certified domain must be [380, 780] nm"),
+			"an effective-absorption certified-domain upper-bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
 			ReplaceFloatArrayElement(*predictiveHot,"domain_nm",0,381.0)),
 			"hot-soot certified domain differs"),

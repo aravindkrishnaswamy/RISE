@@ -756,7 +756,7 @@ namespace
 		encoder->WaitUntilEntered();
 		store->SetFireFidelityMetadata("preview",
 			{ "chem_none_unqualified", "producer_unqualified" },
-			{ "f5a6d4955ceecb0b8f243accb9a51d60634c88edf6813858160502001ff9ec1d" });
+			{ "ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb" });
 		encoder->Continue();
 		saver.join();
 

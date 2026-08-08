@@ -12,6 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "FireOptics.h"
+#include "Math3D/Math3D.h"
+#include "SpectralConfig.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -341,6 +343,15 @@ namespace RISE
 			std::string* error
 			)
 		{
+			if( metadata.Find("row_metadata") || metadata.Find("cell_metadata") ) {
+				return Fail(error,
+					"fire-optics row/cell table metadata is unsupported in v1");
+			}
+			const RISECBOR64::Value* columnMetadata = metadata.Find("column_metadata");
+			if( columnMetadata && columnMetadata->GetType() != RISECBOR64::Value::Map ) {
+				return Fail(error,
+					"fire-optics column_metadata must be a map");
+			}
 			std::string granularity;
 			const RISECBOR64::Value* uncertainty = Required(
 				metadata, "uncertainty", RISECBOR64::Value::Map, error );
@@ -1261,6 +1272,7 @@ namespace RISE
 		m_valid(false), m_recordClass(InvalidRecord), m_domainMinNM(0.0),
 		m_domainMaxNM(0.0), m_hotFractionMinK(0.0), m_hotFractionMaxK(0.0),
 		m_densityGCM3(0.0), m_constantEffectiveAbsorption(0.0),
+		m_hotFixtureOmega(0.0), m_hotFixtureG(0.0),
 		m_coolKm633(0.0), m_coolExponent(0.0), m_coolOmega(0.0), m_coolG(0.0),
 		m_coolDomainMinNM(0.0), m_coolDomainMaxNM(0.0),
 		m_condensedFixtureKm633(0.0), m_condensedFixtureExponent(0.0),
@@ -1323,6 +1335,10 @@ namespace RISE
 			aggregateVersion == "1.0.0-explicit-test";
 		if( !predictiveHeader && !syntheticHeader && !explicitSyntheticHeader ) {
 			return Fail(error,"unsupported fire-optics record name/class combination");
+		}
+		if( record.Find("out_of_domain_policy") ) {
+			return Fail(error,
+				"fire-optics aggregate out_of_domain_policy is forbidden");
 		}
 		const RISECBOR64::Value* sourceRecords = 0;
 		const RISECBOR64::Value* sourceEffective = 0;
@@ -1438,12 +1454,12 @@ namespace RISE
 				RISECBOR64::Value::Map, error ) : 0;
 			const RISECBOR64::Value* condensedMetadata = condensedComputed ? Required(
 				*condensedComputed, "table_metadata", RISECBOR64::Value::Map, error ) : 0;
-			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ||
-				!ValidateTableMetadata(*effectiveMetadata, error) ||
-				!ValidateTableMetadata(*hotMetadata, error) ||
-				!ValidateTableMetadata(*condensedMetadata, error) ) {
+			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ) {
 				return Fail(error, "fire-optics source table metadata is incomplete");
 			}
+			if( !ValidateTableMetadata(*effectiveMetadata,error) ||
+				!ValidateTableMetadata(*hotMetadata,error) ||
+				!ValidateTableMetadata(*condensedMetadata,error) ) return false;
 			if( m_recordName == "fire-optics-synthetic-regression-v1" ) {
 				sourceFixtures = Required(
 					*sourceRecords, "synthetic_fixtures", RISECBOR64::Value::Map, error );
@@ -1488,7 +1504,6 @@ namespace RISE
 			operationalCoolPhi->GetType() != RISECBOR64::Value::Map ||
 			!ReadPhiPartition(*hot, *cool, m_hotFractionMinK,
 				m_hotFractionMaxK, error) ||
-			!ReadDomain(*effective, m_domainMinNM, m_domainMaxNM, error) ||
 			!ReadFloat(*effective, "pinned_density_g_cm3", m_densityGCM3, error) ||
 			m_densityGCM3 <= 0.0 ) {
 			return false;
@@ -1496,10 +1511,15 @@ namespace RISE
 		if( recordClass == "predictive_optical_preset" ) {
 			double hotDomainMinNM = 0.0, hotDomainMaxNM = 0.0;
 			double condensedDomainMinNM = 0.0, condensedDomainMaxNM = 0.0;
-			if( !ReadDomain(*hot,hotDomainMinNM,hotDomainMaxNM,error) ||
+			if( !ReadDomain(*effective,m_domainMinNM,m_domainMaxNM,error) ||
+				!ReadDomain(*hot,hotDomainMinNM,hotDomainMaxNM,error) ||
 				!ReadDomain(*condensed,condensedDomainMinNM,
 					condensedDomainMaxNM,error) ) {
 				return false;
+			}
+			if( m_domainMinNM != 380.0 || m_domainMaxNM != 780.0 ) {
+				return Fail(error,
+					"fire-optics effective-absorption certified domain must be [380, 780] nm");
 			}
 			if( hotDomainMinNM != m_domainMinNM || hotDomainMaxNM != m_domainMaxNM ) {
 				return Fail(error,
@@ -1541,11 +1561,13 @@ namespace RISE
 				*hot, "table_metadata", RISECBOR64::Value::Map, error );
 			const RISECBOR64::Value* condensedMetadata = Required(
 				*condensed, "table_metadata", RISECBOR64::Value::Map, error );
-			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ||
-				!ValidateTableMetadata(*effectiveMetadata, error) ||
-				!ValidateTableMetadata(*hotMetadata, error) ||
-				!ValidateTableMetadata(*condensedMetadata, error) ||
-				!Required(*hotMetadata, "adopted_550nm", RISECBOR64::Value::Map, error) ||
+			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ) {
+				return Fail(error, "fire-optics operational table metadata is incomplete");
+			}
+			if( !ValidateTableMetadata(*effectiveMetadata,error) ||
+				!ValidateTableMetadata(*hotMetadata,error) ||
+				!ValidateTableMetadata(*condensedMetadata,error) ) return false;
+			if( !Required(*hotMetadata, "adopted_550nm", RISECBOR64::Value::Map, error) ||
 				!Required(*hotMetadata, "adoption_ruling", RISECBOR64::Value::Map, error) ) {
 				return Fail(error, "fire-optics operational table metadata is incomplete");
 			}
@@ -1944,24 +1966,11 @@ namespace RISE
 				m_condensedPredictiveReason, error) ) {
 				return false;
 			}
-			std::vector<double> fixtureWavelengths;
-			fixtureWavelengths.push_back(m_domainMinNM);
-			fixtureWavelengths.push_back(m_domainMaxNM);
-			std::vector<double> omegaValues(2, hotOmega);
-			std::vector<double> gValues(2, hotGValue);
-			std::vector<double> zeroSlopes(2, 0.0);
-			std::vector<SpectralDerivativeEnclosure> zeroEnclosures(1);
-			zeroEnclosures[0] = { m_domainMinNM, m_domainMaxNM, 0.0, 0.0 };
-			if( !m_hotOmega.Initialize(fixtureWavelengths, omegaValues, zeroSlopes,
-				zeroEnclosures, error) || !m_hotG.Initialize(fixtureWavelengths, gValues,
-				zeroSlopes, zeroEnclosures, error) ) {
-				return false;
-			}
+			m_hotFixtureOmega = hotOmega;
+			m_hotFixtureG = hotGValue;
 			m_condensedPreviewExponent = m_condensedFixtureExponent;
 			m_condensedIRClosureStatus = "blocked";
 			m_condensedApplicability = "explicitly synthetic regression fixture";
-			m_coolDomainMinNM = m_domainMinNM;
-			m_coolDomainMaxNM = m_domainMaxNM;
 			const bool validFixture =
 				m_hotFractionMinK == 700.0 && m_hotFractionMaxK == 900.0 &&
 				m_constantEffectiveAbsorption >= 0.0 && m_densityGCM3 > 0.0 &&
@@ -2098,7 +2107,6 @@ namespace RISE
 			condensedG,"CreateExplicitSyntheticFixture::condensedG");
 		const Value effective = Map({
 			{ "E_eff", effectiveEnvelope },
-			{ "domain_nm", FloatArray({380.0, 780.0}) },
 			{ "model", Value::String("constant_E_eff") },
 			{ "out_of_domain_policy", *fixturePolicy },
 			{ "pinned_density_g_cm3", Value::Float(sootDensityKgM3/1000.0) },
@@ -2229,12 +2237,14 @@ namespace RISE
 
 	double FireOpticsPreset::HotAlbedo( const double wavelengthNM ) const
 	{
-		return m_hotOmega.Evaluate(wavelengthNM);
+		return m_recordClass == PredictiveOpticalPreset ?
+			m_hotOmega.Evaluate(wavelengthNM) : m_hotFixtureOmega;
 	}
 
 	double FireOpticsPreset::HotG( const double wavelengthNM ) const
 	{
-		return m_hotG.Evaluate(wavelengthNM);
+		return m_recordClass == PredictiveOpticalPreset ?
+			m_hotG.Evaluate(wavelengthNM) : m_hotFixtureG;
 	}
 
 	double FireOpticsPreset::HotExtinctionMass( const double wavelengthNM ) const
@@ -2280,36 +2290,43 @@ namespace RISE
 
 	double FireOpticsPreset::MaximumExtinctionMassVisible() const
 	{
+		const SpectralConfig visibleBand;
+		const double minimumNM = visibleBand.nmBegin;
+		const double maximumNM = visibleBand.nmEnd;
 		const double maximumHot = MaximumHotAbsorptionMassVisible()/
-			(1.0-MaximumValue(m_hotOmega.Values()));
+			(1.0-(m_recordClass == PredictiveOpticalPreset ?
+				MaximumValue(m_hotOmega.Values()) : m_hotFixtureOmega));
 		const double maximumCool = std::max(
-			CoolExtinctionMass(m_domainMinNM), CoolExtinctionMass(m_domainMaxNM) );
+			CoolExtinctionMass(minimumNM), CoolExtinctionMass(maximumNM) );
 		const double maximumCondensed = m_recordClass == PredictiveOpticalPreset ?
 			MaximumValue(m_condensedKm.Values()) : std::max(
-				CondensedExtinctionMass(m_domainMinNM),
-				CondensedExtinctionMass(m_domainMaxNM) );
+				CondensedExtinctionMass(minimumNM),
+				CondensedExtinctionMass(maximumNM) );
 		return std::max(maximumHot, std::max(maximumCool, maximumCondensed));
 	}
 
 	double FireOpticsPreset::MaximumHotAbsorptionMassVisible() const
 	{
+		const SpectralConfig visibleBand;
 		return m_recordClass == PredictiveOpticalPreset ? MaximumValue(m_mac.Values()) :
-			std::max(HotAbsorptionMass(m_domainMinNM),
-				HotAbsorptionMass(m_domainMaxNM));
+			std::max(HotAbsorptionMass(visibleBand.nmBegin),
+				HotAbsorptionMass(visibleBand.nmEnd));
 	}
 
 	double FireOpticsPreset::MaximumCoolAbsorptionMassVisible() const
 	{
-		return std::max(CoolExtinctionMass(m_domainMinNM),
-			CoolExtinctionMass(m_domainMaxNM))*(1.0-m_coolOmega);
+		const SpectralConfig visibleBand;
+		return std::max(CoolExtinctionMass(visibleBand.nmBegin),
+			CoolExtinctionMass(visibleBand.nmEnd))*(1.0-m_coolOmega);
 	}
 
 	double FireOpticsPreset::MaximumCondensedAbsorptionMassVisible() const
 	{
+		const SpectralConfig visibleBand;
 		const double maximumExtinction = m_recordClass == PredictiveOpticalPreset ?
 			MaximumValue(m_condensedKm.Values()) : std::max(
-				CondensedExtinctionMass(m_domainMinNM),
-				CondensedExtinctionMass(m_domainMaxNM) );
+				CondensedExtinctionMass(visibleBand.nmBegin),
+				CondensedExtinctionMass(visibleBand.nmEnd) );
 		const double minimumAlbedo = m_recordClass == PredictiveOpticalPreset ?
 			MinimumValue(m_condensedOmega.Values()) : m_condensedFixtureOmega;
 		return maximumExtinction*(1.0-minimumAlbedo);
@@ -2374,8 +2391,9 @@ namespace RISE
 		) const
 	{
 		return m_valid && IsFinite(minimumNM) && IsFinite(maximumNM) &&
-			minimumNM <= maximumNM && minimumNM >= m_domainMinNM &&
+			minimumNM > 0.0 && minimumNM <= maximumNM &&
+			(IsSynthetic() || (minimumNM >= m_domainMinNM &&
 			maximumNM <= m_domainMaxNM && minimumNM >= m_coolDomainMinNM &&
-			maximumNM <= m_coolDomainMaxNM;
+			maximumNM <= m_coolDomainMaxNM));
 	}
 }

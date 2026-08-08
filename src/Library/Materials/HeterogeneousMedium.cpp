@@ -2798,8 +2798,7 @@ MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
 	c.sigma_t = 0.0;
 	c.sigma_s = 0.0;
 	c.emission = 0.0;
-	if( !m_valid || !RISE::IsFiniteDouble( nm ) ||
-		nm < m_optics.DomainMinNM() || nm > m_optics.DomainMaxNM() ) return c;
+	if( !m_valid || !m_optics.SupportsWavelengthRange(nm,nm) ) return c;
 
 	const Scalar carbon = LookupCarbon( pt );
 	const Scalar phi = HotOpticsFraction( pt );
@@ -2827,8 +2826,7 @@ const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
 	const Scalar nm
 	) const
 {
-	if( !m_valid || !RISE::IsFiniteDouble( nm ) ||
-		nm < m_optics.DomainMinNM() || nm > m_optics.DomainMaxNM() ) return 0;
+	if( !m_valid || !m_optics.SupportsWavelengthRange(nm,nm) ) return 0;
 
 	const Scalar carbon = LookupCarbon( pt );
 	const Scalar phi = HotOpticsFraction( pt );

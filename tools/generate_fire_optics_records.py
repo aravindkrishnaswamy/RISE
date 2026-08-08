@@ -565,7 +565,6 @@ def synthetic_payload(data_dir: Path) -> dict:
                 "pinned_density_g_cm3"
             ],
             "out_of_domain_policy": fixtures["out_of_domain_policy"],
-            "domain_nm": [380.0, 780.0],
         },
         "hot_soot": {
             "omega": canonical_value_envelope(fixture_hot["omega"]),
