@@ -318,6 +318,42 @@ namespace RISE
 			return aValue && bValue && CanonicallyEqual(*aValue, *bValue, error);
 		}
 
+		bool MemberCanonicallyEqual(
+			const RISECBOR64::Value& a,
+			const char* aKey,
+			const RISECBOR64::Value& b,
+			const char* bKey,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* aValue = a.Find(aKey);
+			const RISECBOR64::Value* bValue = b.Find(bKey);
+			if( !aValue || !bValue ) {
+				return Fail(error,"fire-optics bound metadata member is missing");
+			}
+			return CanonicallyEqual(*aValue,*bValue,error);
+		}
+
+		bool TableMetadataBaseMatches(
+			const RISECBOR64::Value& source,
+			const RISECBOR64::Value& operational,
+			std::string* error
+			)
+		{
+			const char* keys[] = {
+				"applicability", "granularity", "provenance", "uncertainty" };
+			for( const char* key : keys ) {
+				if( !MemberCanonicallyEqual(source,key,operational,key,error) ) {
+					return false;
+				}
+			}
+			const RISECBOR64::Value* sourceColumns = source.Find("column_metadata");
+			const RISECBOR64::Value* operationalColumns = operational.Find("column_metadata");
+			return (!sourceColumns && !operationalColumns) ||
+				(sourceColumns && operationalColumns &&
+					CanonicallyEqual(*sourceColumns,*operationalColumns,error));
+		}
+
 		bool ValidateSourceRecordHeader(
 			const RISECBOR64::Value& source,
 			std::string* error
@@ -624,6 +660,9 @@ namespace RISE
 			const std::string& condensedApplicability,
 			const std::string& condensedIRStatus,
 			const std::string& condensedReason,
+			const RISECBOR64::Value& operationalEffectiveMetadata,
+			const RISECBOR64::Value& operationalHotMetadata,
+			const RISECBOR64::Value& operationalCondensedMetadata,
 			std::string* error
 			)
 		{
@@ -633,11 +672,13 @@ namespace RISE
 				sourceEffective,"table",RISECBOR64::Value::Map,error );
 			const RISECBOR64::Value* effectiveDefinition = Required(
 				sourceEffective,"definition",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* sourceEffectiveMetadata = effectiveTable ? Required(
+				*effectiveTable,"table_metadata",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<std::vector<double> > sourceEffectiveRows;
 			double sourceDensity = 0.0;
 			if( effectiveTable && !ValidateColumns(*effectiveTable,effectiveColumns,3,
 				"source effective-absorption table",error) ) return false;
-			if( !effectiveTable || !effectiveDefinition ||
+			if( !effectiveTable || !effectiveDefinition || !sourceEffectiveMetadata ||
 				!ReadSourceRows(*effectiveTable,3,sourceEffectiveRows,error) ) {
 				return Fail(error,
 					"fire-optics operational effective absorption differs from its source record");
@@ -649,6 +690,11 @@ namespace RISE
 				return Fail(error,
 					"fire-optics operational effective absorption differs from its source record");
 			}
+			if( !CanonicallyEqual(*sourceEffectiveMetadata,
+				operationalEffectiveMetadata,error) ) {
+				return Fail(error,
+					"fire-optics operational effective-absorption table metadata differs from its source record");
+			}
 
 			const RISECBOR64::Value* computed = Required(
 				sourceHot,"computed_outputs",RISECBOR64::Value::Map,error );
@@ -656,12 +702,18 @@ namespace RISE
 				*computed,"spectral_young_dp30_N50",RISECBOR64::Value::Map,error ) : 0;
 			const RISECBOR64::Value* adopted = computed ? Required(
 				*computed,"young_in_flame_550nm",RISECBOR64::Value::Map,error ) : 0;
+			const RISECBOR64::Value* sourceHotMetadata = computed ? Required(
+				*computed,"spectral_young_dp30_N50_metadata",
+				RISECBOR64::Value::Map,error ) : 0;
+			const RISECBOR64::Value* sourceAdoptionRuling = Required(
+				sourceHot,"g_hot_adopted",RISECBOR64::Value::Map,error );
 			std::vector<std::vector<double> > sourceHotRows;
 			double adoptedOmega = 0.0, adoptedG = 0.0;
 			const char* hotColumns[] = { "lambda_nm", "omega", "g" };
 			if( sourceSpectrum && !ValidateColumns(*sourceSpectrum,hotColumns,3,
 				"source hot-soot table",error) ) return false;
-			if( !sourceSpectrum || !adopted ||
+			if( !sourceSpectrum || !adopted || !sourceHotMetadata ||
+				!sourceAdoptionRuling ||
 				!ReadSourceRows(*sourceSpectrum,3,sourceHotRows,error) ||
 				!ReadSourceNumber(*adopted,"omega_central",adoptedOmega,error) ||
 				!ReadSourceNumber(*adopted,"g_central",adoptedG,error) ) {
@@ -677,11 +729,21 @@ namespace RISE
 				return Fail(error,
 					"fire-optics operational hot-soot table differs from its source record");
 			}
+			if( !TableMetadataBaseMatches(*sourceHotMetadata,
+				operationalHotMetadata,error) ||
+				!MemberCanonicallyEqual(operationalHotMetadata,"adopted_550nm",
+					*computed,"young_in_flame_550nm",error) ||
+				!MemberCanonicallyEqual(operationalHotMetadata,"adoption_ruling",
+					sourceHot,"g_hot_adopted",error) ) {
+				return Fail(error,
+					"fire-optics operational hot-soot table metadata differs from its source record");
+			}
 
 			const RISECBOR64::Value* coolValues = Required(
 				sourceCool,"values",RISECBOR64::Value::Map,error );
 			double sourceCoolKm = 0.0, sourceCoolExponent = 0.0;
 			double sourceCoolOmega = 0.0, sourceCoolG = 0.0;
+			double sourceCoolMAC = 0.0, sourceCoolDensity = 0.0;
 			const RISECBOR64::Value* sourceExponent = coolValues ? Required(
 				*coolValues,"n_spectral_exponent",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<double> sourceRange, sourceDomain;
@@ -692,6 +754,10 @@ namespace RISE
 			}
 			if( !ReadSourceEnvelopeNumber(*coolValues,
 					"k_m_extinction_633nm_m2_per_g",sourceCoolKm,error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,
+					"MAC_absorption_550nm_m2_per_g",sourceCoolMAC,error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"density_g_cm3",
+					sourceCoolDensity,error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"omega_633nm",sourceCoolOmega,error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"g_asymmetry",sourceCoolG,error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"n_spectral_exponent",
@@ -718,14 +784,22 @@ namespace RISE
 				*condensedComputed,"table",RISECBOR64::Value::Map,error ) : 0;
 			const RISECBOR64::Value* irClosure = Required(
 				sourceCondensed,"ir_closure",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* condensedMieInputs = Required(
+				sourceCondensed,"mie_inputs",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* sourceCondensedMetadata = condensedComputed ? Required(
+				*condensedComputed,"table_metadata",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<std::vector<double> > sourceCondensedRows;
 			double sourceCondensedExponent = 0.0;
+			double sourceBrownCarbonAAE = 0.0;
 			std::string sourceApplicability, sourceIRStatus, sourceReason;
 			const char* condensedColumns[] = {
 				"lambda_nm", "k_ext_m2_per_g", "omega", "g" };
 			if( condensedTable && !ValidateColumns(*condensedTable,condensedColumns,4,
 				"source condensed-organics table",error) ) return false;
+			if( !condensedMieInputs || !ReadSourceEnvelopeNumber(*condensedMieInputs,
+				"brown_carbon_AAE",sourceBrownCarbonAAE,error) ) return false;
 			if( !condensedComputed || !condensedTable || !irClosure ||
+				!sourceCondensedMetadata ||
 				!ReadSourceRows(*condensedTable,4,sourceCondensedRows,error) ||
 				!ReadSourceNumber(*condensedComputed,
 					"extinction_angstrom_exponent_450_633",sourceCondensedExponent,error) ||
@@ -739,6 +813,11 @@ namespace RISE
 				sourceReason != condensedReason ) {
 				return Fail(error,
 					"fire-optics operational condensed-organics values differ from their source record");
+			}
+			if( !CanonicallyEqual(*sourceCondensedMetadata,
+				operationalCondensedMetadata,error) ) {
+				return Fail(error,
+					"fire-optics operational condensed-organics table metadata differs from its source record");
 			}
 			return true;
 		}
@@ -1415,7 +1494,8 @@ namespace RISE
 					m_coolOmega,m_coolG,supportedRange,certifiedDomain,
 					m_coolOutOfDomainPolicy,condensedRows,m_condensedPreviewExponent,
 					m_condensedApplicability,m_condensedIRClosureStatus,
-					m_condensedPredictiveReason,error) ) {
+					m_condensedPredictiveReason,*effectiveMetadata,*hotMetadata,
+					*condensedMetadata,error) ) {
 				return false;
 			}
 			return true;

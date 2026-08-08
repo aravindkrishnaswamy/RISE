@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -294,9 +295,14 @@ namespace
 		RISECBOR64::Bytes bytes;
 		std::string error;
 		FireOpticsPreset rejected;
-		return RISECBOR64::Encode(record,bytes,&error) &&
+		const bool matches = RISECBOR64::Encode(record,bytes,&error) &&
 			!rejected.LoadCanonicalRecord(bytes,&error) &&
 			error.find(expectedError) != std::string::npos;
+		if( !matches ) {
+			std::cerr << "Mutation expected '" << expectedError << "', got '"
+				<< error << "'\n";
+		}
+		return matches;
 	}
 
 	RISECBOR64::Value MemberOrNull(
@@ -698,6 +704,12 @@ int main()
 		const RISECBOR64::Value* sourceEffectiveTable = sourceEffective ?
 			sourceEffective->Find("table") : 0;
 		if( sourceEffective && sourceEffectiveTable ) {
+			const RISECBOR64::Value* sourceEffectiveMetadata =
+				sourceEffectiveTable->Find("table_metadata");
+			const RISECBOR64::Value* operationalEffective =
+				decodedPredictive.Find("effective_absorption");
+			const RISECBOR64::Value* operationalEffectiveMetadata =
+				operationalEffective ? operationalEffective->Find("table_metadata") : 0;
 			const RISECBOR64::Value changedTable = ReplaceMember(*sourceEffectiveTable,
 				"table_metadata",RISECBOR64::Value::MapValue({}));
 			const RISECBOR64::Value changedEffective = ReplaceMember(*sourceEffective,
@@ -707,6 +719,33 @@ int main()
 			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
 				changedSources),"source table metadata is incomplete"),
 				"load rejects a source table with an empty metadata envelope" );
+			if( sourceEffectiveMetadata && operationalEffective &&
+				operationalEffectiveMetadata ) {
+				const RISECBOR64::Value changedMetadata = ReplaceMember(
+					*operationalEffectiveMetadata,"provenance",
+					RISECBOR64::Value::String("coordinated metadata identity change"));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,
+					"effective_absorption",ReplaceMember(*operationalEffective,
+						"table_metadata",changedMetadata)),
+					"operational effective-absorption table metadata differs"),
+					"operational effective-absorption metadata cannot detach from its source" );
+				const RISECBOR64::Value changedSourceTable = ReplaceMember(
+					*sourceEffectiveTable,"table_metadata",changedMetadata);
+				const RISECBOR64::Value coordinated = ReplaceMember(
+					ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"effective_absorption",
+							ReplaceMember(*sourceEffective,"table",changedSourceTable))),
+					"effective_absorption",ReplaceMember(*operationalEffective,
+						"table_metadata",changedMetadata));
+				RISECBOR64::Bytes coordinatedBytes;
+				FireOpticsPreset coordinatedPreset;
+				Check( RISECBOR64::Encode(coordinated,coordinatedBytes,&mutationError) &&
+					coordinatedPreset.LoadCanonicalRecord(coordinatedBytes,&mutationError) &&
+					coordinatedPreset.RecordId() != predictive.RecordId(),
+					"a coordinated complete table-metadata change remains loadable with a new ID" );
+			} else {
+				Check(false,"effective table metadata is present on source and operation");
+			}
 			const RISECBOR64::Value changedColumns = ReplaceTextArrayElement(
 				*sourceEffectiveTable,"columns",1,"E_eff_unit_unspecified");
 			const RISECBOR64::Value changedColumnEffective = ReplaceMember(
@@ -758,6 +797,28 @@ int main()
 				ReplaceMember(*sourceRecords,"hot_soot",changedHot)),
 				"source hot-soot table columns do not match"),
 				"load rejects changed source hot-soot column semantics" );
+			const RISECBOR64::Value* sourceHotMetadata = sourceHotComputed->Find(
+				"spectral_young_dp30_N50_metadata");
+			const RISECBOR64::Value* operationalHot = decodedPredictive.Find("hot_soot");
+			const RISECBOR64::Value* operationalHotMetadata = operationalHot ?
+				operationalHot->Find("table_metadata") : 0;
+			if( sourceHotMetadata && operationalHot && operationalHotMetadata ) {
+				const RISECBOR64::Value changedMetadata = ReplaceMember(
+					*operationalHotMetadata,"provenance",
+					RISECBOR64::Value::String("detached hot table provenance"));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+					ReplaceMember(*operationalHot,"table_metadata",changedMetadata)),
+					"operational hot-soot table metadata differs"),
+					"operational hot-soot metadata cannot detach from its source" );
+				const RISECBOR64::Value changedAdoption = ReplaceMember(
+					*operationalHotMetadata,"adoption_ruling",RISECBOR64::Value::MapValue({}));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+					ReplaceMember(*operationalHot,"table_metadata",changedAdoption)),
+					"operational hot-soot table metadata differs"),
+					"hot-soot adopted-550 metadata remains source-bound" );
+			} else {
+				Check(false,"hot-soot table metadata is present on source and operation");
+			}
 		} else {
 			Check(false,"hot-soot source table is present");
 		}
@@ -785,7 +846,8 @@ int main()
 			sourceOmega->Find("provenance") : 0;
 		if( sourceCool && sourceValues ) {
 			const char* coolEnvelopeKeys[] = {
-				"k_m_extinction_633nm_m2_per_g", "omega_633nm",
+				"k_m_extinction_633nm_m2_per_g", "MAC_absorption_550nm_m2_per_g",
+				"density_g_cm3", "omega_633nm",
 				"g_asymmetry", "n_spectral_exponent" };
 			const char* envelopeMembers[] = { "provenance", "uncertainty" };
 			for( const char* key : coolEnvelopeKeys ) {
@@ -847,6 +909,42 @@ int main()
 				ReplaceMember(*sourceRecords,"condensed_organics",changedCondensed)),
 				"source condensed-organics table columns do not match"),
 				"load rejects changed source condensed-organics column semantics" );
+			const RISECBOR64::Value* sourceCondensedMetadata =
+				sourceCondensedComputed->Find("table_metadata");
+			const RISECBOR64::Value* operationalCondensed =
+				decodedPredictive.Find("condensed_organics");
+			const RISECBOR64::Value* operationalCondensedMetadata =
+				operationalCondensed ? operationalCondensed->Find("table_metadata") : 0;
+			if( sourceCondensedMetadata && operationalCondensed &&
+				operationalCondensedMetadata ) {
+				const RISECBOR64::Value changedMetadata = ReplaceMember(
+					*operationalCondensedMetadata,"provenance",
+					RISECBOR64::Value::String("detached condensed table provenance"));
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
+					ReplaceMember(*operationalCondensed,"table_metadata",changedMetadata)),
+					"operational condensed-organics table metadata differs"),
+					"operational condensed-organics metadata cannot detach from its source" );
+			} else {
+				Check(false,"condensed table metadata is present on source and operation");
+			}
+			const RISECBOR64::Value* mieInputs = sourceCondensed->Find("mie_inputs");
+			const RISECBOR64::Value* brownCarbonAAE = mieInputs ?
+				mieInputs->Find("brown_carbon_AAE") : 0;
+			if( mieInputs && brownCarbonAAE ) {
+				const char* envelopeMembers[] = { "provenance", "uncertainty" };
+				for( const char* member : envelopeMembers ) {
+					const RISECBOR64::Value changedInputs = ReplaceMember(*mieInputs,
+						"brown_carbon_AAE",RemoveMember(*brownCarbonAAE,member));
+					const RISECBOR64::Value changedSource = ReplaceMember(*sourceCondensed,
+						"mie_inputs",changedInputs);
+					Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"condensed_organics",changedSource)),
+						"source scalar metadata envelope is incomplete"),
+						"brown-carbon AAE requires provenance and uncertainty metadata" );
+				}
+			} else {
+				Check(false,"brown-carbon AAE source envelope is present");
+			}
 		} else {
 			Check(false,"condensed-organics source table is present");
 		}
