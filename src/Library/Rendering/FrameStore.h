@@ -260,13 +260,16 @@ namespace RISE
 			Metadata Meta() const
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				return meta_;
+				Metadata snapshot = meta_;
+				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				return snapshot;
 			}
 
 			void SetMetadata( const Metadata& metadata )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				meta_ = metadata;
+				completedFrame_.store(metadata.frame,std::memory_order_relaxed);
 			}
 
 			void SetCameraExposureEV( const double ev )
@@ -390,6 +393,7 @@ namespace RISE
 			mutable std::condition_variable   observerDispatchDone_;
 
 			mutable std::mutex metadataMutex_;
+			std::atomic<unsigned int> completedFrame_;
 			Metadata meta_;
 
 			//! IRasterImage shim view onto beauty_.  Constructed

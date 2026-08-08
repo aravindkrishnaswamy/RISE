@@ -9,6 +9,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -28,6 +29,8 @@
 
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/HenyeyGreensteinPhaseFunction.h"
@@ -519,19 +522,20 @@ namespace
 
 		bool IsFireMedium() const override { return true; }
 		const char* GetFireOpticsRecordId() const override { return ""; }
+		bool FirePredictiveAllowed() const override { return true; }
 		const char* GetFireRenderFidelityStatus( const bool ) const override
 		{
 			return "preview";
 		}
 		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
 		{
-			return 2u;
+			return 1u;
 		}
 		const char* GetFireRenderReasonCode(
 			const bool, const unsigned int index ) const override
 		{
 			++reasonQueries;
-			return index == 0u ? "requested_preview" : "invalid_reason_with_missing_id";
+			return index == 0u ? "requested_preview" : nullptr;
 		}
 		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
 		{
@@ -541,6 +545,46 @@ namespace
 
 	protected:
 		~MissingRecordIdFireMedium() override = default;
+	};
+
+	class FirePreflightProgress final : public IProgressCallback
+	{
+	public:
+		FirePreflightProgress() : titleCalls(0u), progressCalls(0u) {}
+		bool Progress( const double, const double ) override
+		{
+			progressCalls.fetch_add(1u);
+			return true;
+		}
+		void SetTitle( const char* ) override { titleCalls.fetch_add(1u); }
+
+		std::atomic<unsigned int> titleCalls;
+		std::atomic<unsigned int> progressCalls;
+	};
+
+	class FirePreflightLogCapture final :
+		public virtual ILogPrinter,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit FirePreflightLogCapture( const char* needle ) :
+			needle_(needle), matches_(0u)
+		{
+		}
+
+		void Print( const LogEvent& event ) override
+		{
+			if( std::strstr(event.szMessage,needle_) ) matches_.fetch_add(1u);
+		}
+		void Flush() override {}
+		unsigned int Matches() const { return matches_.load(); }
+
+	protected:
+		~FirePreflightLogCapture() override = default;
+
+	private:
+		const char* needle_;
+		std::atomic<unsigned int> matches_;
 	};
 
 	class PluginMedium final :
@@ -2419,6 +2463,9 @@ namespace
 			{ "mlt_spectral_rasterizer", true }
 		};
 		const char* const fidelityModes[] = { "preview", "predictive" };
+		FirePreflightLogCapture* unsupportedCapture =
+			new FirePreflightLogCapture("unsupported_integrator_for_fire_media");
+		GlobalLogPriv()->AddPrinter(unsupportedCapture);
 		for( const char* fidelityMode : fidelityModes ) {
 			for( const UnsupportedRoute& route : unsupported ) {
 				writeScene(route.rasterizer,380u,route.hwss,fidelityMode);
@@ -2432,10 +2479,15 @@ namespace
 				const uint64_t generationBefore = store ? store->Generation() : 0u;
 				const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
 					FrameStoreOutput::Metadata();
+				FirePreflightProgress progress;
+				job->SetProgress(&progress);
+				const unsigned int reasonMatchesBefore = unsupportedCapture->Matches();
 				const bool rejected = loadedUnsupported && !job->Rasterize();
 				const std::string routeLabel = std::string(route.rasterizer) +
 					(route.hwss ? " HWSS " : " ") + fidelityMode;
-				Check( rejected,
+				Check( rejected && progress.titleCalls.load() == 0u &&
+					progress.progressCalls.load() == 0u &&
+					unsupportedCapture->Matches() == reasonMatchesBefore+1u,
 					("unsupported fire route fails before workers: "+routeLabel).c_str() );
 				store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
 				Check( store && store->Generation() == generationBefore &&
@@ -2445,6 +2497,7 @@ namespace
 				safe_release(job);
 			}
 		}
+		safe_release(unsupportedCapture);
 
 		writeScene("pathtracing_spectral_rasterizer",380u);
 		RISE_CreateJobPriv(&job);
@@ -2480,12 +2533,12 @@ namespace
 				FrameStoreOutput::Metadata();
 			Check( !job->Rasterize() && store &&
 				store->Generation() == generationBefore &&
-				missing->reasonQueries == 2u &&
+				missing->reasonQueries == 1u &&
 				SameFrameMetadata(store->Meta(),metadataBefore),
 				"preview fire medium with no record ID fails before workers" );
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
 				store->Generation() == generationBefore &&
-				missing->reasonQueries == 4u &&
+				missing->reasonQueries == 2u &&
 				SameFrameMetadata(store->Meta(),metadataBefore),
 				"predictive fire medium with no record ID fails before workers" );
 			safe_release(missing);

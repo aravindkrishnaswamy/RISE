@@ -244,6 +244,7 @@ namespace RISE
 			, tileCountY_( ( spec.height + ( spec.tileEdge > 0 ? spec.tileEdge : 32 ) - 1 )
 			               / ( spec.tileEdge > 0 ? spec.tileEdge : 32 ) )
 			, presence_( static_cast<size_t>( ChannelId::COUNT ), false )
+			, completedFrame_( spec.meta.frame )
 			, meta_( spec.meta )
 		{
 			// Beauty + Alpha are always allocated.  Beauty holds the
@@ -439,7 +440,7 @@ namespace RISE
 		{
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				meta_.frame = frame;
+				completedFrame_.store(frame,std::memory_order_relaxed);
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
@@ -456,7 +457,7 @@ namespace RISE
 			// review MED-4.
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				meta_.frame = frame;
+				completedFrame_.store(frame,std::memory_order_relaxed);
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
@@ -469,7 +470,7 @@ namespace RISE
 		{
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				meta_.frame = frame;
+				completedFrame_.store(frame,std::memory_order_relaxed);
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 

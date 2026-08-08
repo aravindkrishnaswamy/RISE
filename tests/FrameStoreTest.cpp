@@ -619,9 +619,13 @@ namespace
 		});
 		std::thread reader([&]() {
 			start.store(true,std::memory_order_release);
+			unsigned int previous = 0u;
 			for( unsigned int sample=0; sample<iterations; ++sample ) {
 				const Metadata metadata = store->Meta();
-				if( metadata.frame > iterations ) valid.store(false);
+				if( metadata.frame < previous || metadata.frame > iterations ) {
+					valid.store(false);
+				}
+				previous = metadata.frame;
 			}
 		});
 		writer.join();
