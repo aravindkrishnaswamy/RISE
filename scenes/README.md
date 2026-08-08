@@ -4,6 +4,7 @@ This directory contains the authored scene assets used to exercise RISE. The top
 
 - [FeatureBased/README.md](FeatureBased/README.md): curated showcase and torture scenes that are visually coherent and exercise multiple subsystems together
 - [Tests/README.md](Tests/README.md): focused regression, baseline, comparison, and validation scenes
+- `Benchmarks/`: frontier-model qualitative benchmark scenes for agent scene-building comparisons; each carries a provenance header (verbatim prompt, authoring model, date) and is held as the bar a state-of-the-art model reaches on that prompt
 - `Internal/`: local or historical internal scenes that are not part of the curated public taxonomy
 
 The completed public-corpus deduplication and placement record is

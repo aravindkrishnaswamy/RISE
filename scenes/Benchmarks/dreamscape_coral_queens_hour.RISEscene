@@ -1,0 +1,1659 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   Dreamscape: "The Coral Queen's Hour"                                                                    #
+#   An underwater dreamscape -- a mermaid glides over her reef beneath god-rays and a shimmering            #
+#   surface; fish school in the blue distance, an eel rises from the coral, jellyfish drift like            #
+#   lanterns.  Authored for the Fable benchmark (second scene).                                             #
+#############################################################################################################
+
+#############################################################################################################
+#   BENCHMARK PROVENANCE                                                                                    #
+#   Prompt (verbatim): "Build me an underwater dreamscape with mermaids, corals and other exotic sea        #
+#   creatures.  Be creative, colorful, beautiful dramatic lighting that sparks the imagination.  The        #
+#   creatures and objects should be thorough, complex and have shapes and forms that are as lifelike        #
+#   as possible."                                                                                           #
+#   Model: Claude Fable 5 (claude-fable-5), subagent with full RISE context.                                #
+#   Date: 2026-08-07.  Held as the frontier-model qualitative bar for agent scene-building comparisons.     #
+#############################################################################################################
+
+##################################################
+# Environment: open-water gradient in the angular
+# map.  The light-probe mapping is
+#   s = 0.5 + vx*r,  t = 0.5 - vy*r,
+#   r = acos(-vz)/(2pi*sqrt(vx^2+vy^2))
+# so hypot(u-0.5, v-0.5) = theta/2pi (angle off the
+# forward -Z axis) and vy = sin(theta)*-(v-0.5)/rr.
+# Brightness climbs toward +Y (the surface) and
+# falls to abyssal indigo below.
+##################################################
+
+# Upward-ness of the ray direction, in [0,1].
+expression_function2d
+{
+	name	fn_env_upness
+	def		dx u - 0.5
+	def		dy v - 0.5
+	def		rr hypot( dx, dy )
+	def		th rr * tau
+	def		vy sin( th ) * ( 0.0 - dy ) / ( rr + 0.0001 )
+	expr	0.5 + 0.5 * vy
+}
+
+# Surface glow mask: strong near the zenith.
+expression_function2d
+{
+	name	fn_env_surface
+	def		dx u - 0.5
+	def		dy v - 0.5
+	def		rr hypot( dx, dy )
+	def		th rr * tau
+	def		vy sin( th ) * ( 0.0 - dy ) / ( rr + 0.0001 )
+	expr	pow( smoothstep( -0.08, 0.95, vy ), 1.6 )
+}
+
+# The sun ball seen through the surface: a tight glare spot on the
+# up-and-slightly-forward direction (map point ~(0.5, 0.30)).
+expression_function2d
+{
+	name	fn_env_sun
+	def		dx u - 0.5
+	def		dy v - 0.365
+	def		d2 dx * dx + dy * dy
+	expr	exp( -1200.0 * d2 )
+}
+
+uniformcolor_painter
+{
+	name	pnt_env_abyss
+	color	0.004 0.016 0.038
+}
+
+uniformcolor_painter
+{
+	name	pnt_env_mid
+	color	0.036 0.150 0.215
+}
+
+uniformcolor_painter
+{
+	name	pnt_env_shallow
+	color	0.36 0.75 0.85
+}
+
+uniformcolor_painter
+{
+	name	pnt_env_sun
+	color	6.0 5.2 3.6
+}
+
+# Deep-to-mid wash by upness.
+blend_painter
+{
+	name	pnt_env_base
+	colora	pnt_env_mid
+	colorb	pnt_env_abyss
+	mask	fn_env_upness
+}
+
+# Bright shallow glow toward the zenith.
+blend_painter
+{
+	name	pnt_env_lit
+	colora	pnt_env_shallow
+	colorb	pnt_env_base
+	mask	fn_env_surface
+}
+
+# Sun glare burning through.
+blend_painter
+{
+	name	pnt_env
+	colora	pnt_env_sun
+	colorb	pnt_env_lit
+	mask	fn_env_sun
+}
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					256
+	pixel_filter			box
+	oidn_denoise			TRUE
+	radiance_map			pnt_env
+	radiance_scale			1.0
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern		final
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+film
+{
+	width	800
+	height	600
+}
+
+pinhole_camera
+{
+	location	0.8 2.7 4.1
+	lookat		-0.2 3.3 0.6
+	up			0 1 0
+	fov			50.0
+}
+
+##################################################
+# Water body: heterogeneous blue-green murk.
+# Density from wispy perlin-worley noise so the key
+# light picks out drifting shafts and silt banks.
+# bbox is WORLD-SPACE and parse-time fixed -- it
+# spans the visible basin (camera at z=8.2 sits
+# inside it).
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_murk_hi
+	color	1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_murk_lo
+	color	0.10 0.10 0.10
+}
+
+perlinworley3d_painter
+{
+	name			pnt_murk_density
+	colora			pnt_murk_hi
+	colorb			pnt_murk_lo
+	octaves			3
+	persistence		0.55
+	worley_jitter	1.0
+	blend			0.5
+	scale			0.10 0.16 0.10
+}
+
+painter_heterogeneous_medium
+{
+	name			med_ocean
+	absorption		0.026 0.014 0.008
+	scattering		0.018 0.028 0.033
+	phase			hg 0.45
+	density_painter	pnt_murk_density
+	resolution		72
+	color_to_scalar	luminance
+	bbox_min		-20 0 -26
+	bbox_max		20 6.3 10
+}
+
+global_medium
+{
+	medium	med_ocean
+}
+
+##################################################
+# Seabed: rippled sand dunes
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_sand_pale
+	color	0.62 0.55 0.38
+}
+
+uniformcolor_painter
+{
+	name	pnt_sand_gold
+	color	0.42 0.33 0.18
+}
+
+uniformcolor_painter
+{
+	name	pnt_sand_shadow
+	color	0.20 0.17 0.11
+}
+
+# Fine speckle nested inside broad patchiness = real sand mottle.
+worley3d_painter
+{
+	name	pnt_sand_speckle
+	colora	pnt_sand_pale
+	colorb	pnt_sand_gold
+	jitter	1.0
+	output	f1
+	scale	9.0 9.0 9.0
+}
+
+perlin3d_painter
+{
+	name		pnt_sand
+	colora		pnt_sand_speckle
+	colorb		pnt_sand_shadow
+	octaves		3
+	persistence	0.55
+	scale		0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name		mat_sand
+	reflectance	pnt_sand
+}
+
+# Current-combed sand ripples with a broad dune swell underneath.
+expression_function2d
+{
+	name	fn_seabed
+	def		ripple sin( u * 260.0 + 2.5 * sin( v * 40.0 ) )
+	def		dune sin( u * 9.0 + 1.1 ) * sin( v * 7.0 - 0.4 )
+	expr	0.12 * ripple + 0.55 * dune
+}
+
+clippedplane_geometry
+{
+	name	seabed_base
+	pta		-24.0 0.0 -28.0
+	ptb		-24.0 0.0 11.0
+	ptc		24.0 0.0 11.0
+	ptd		24.0 0.0 -28.0
+}
+
+displaced_geometry
+{
+	name			seabed_dunes
+	base_geometry	seabed_base
+	detail			140
+	displacement	fn_seabed
+	disp_scale		0.6
+	uv_seam_fold	FALSE
+}
+
+standard_object
+{
+	name		obj_seabed
+	geometry	seabed_dunes
+	material	mat_sand
+	position	0 -0.3 0
+}
+
+##################################################
+# Water surface: Gerstner-displaced dielectric seen
+# from below.  casts_shadows FALSE so the key and
+# god-ray spot pass through unblocked.
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_wave_lo
+	color	0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_wave_hi
+	color	1.0 1.0 1.0
+}
+
+gerstnerwave_painter
+{
+	name				pnt_waves
+	colora				pnt_wave_lo
+	colorb				pnt_wave_hi
+	num_waves			18
+	median_wavelength	0.06
+	wavelength_range	2.5
+	median_amplitude	0.010
+	amplitude_power		0.8
+	wind_dir			1.0 0.35
+	directional_spread	1.6
+	dispersion_speed	1.0
+	seed				9
+	time				0.0
+}
+
+dielectric_material
+{
+	name		mat_sea_surface
+	tau			0.92 0.97 0.99
+	ior			1.33
+	scattering	100000.0
+}
+
+clippedplane_geometry
+{
+	name	surface_base
+	pta		-24.0 0.0 -28.0
+	ptb		-24.0 0.0 11.0
+	ptc		24.0 0.0 11.0
+	ptd		24.0 0.0 -28.0
+}
+
+displaced_geometry
+{
+	name			surface_waves
+	base_geometry	surface_base
+	detail			120
+	displacement	pnt_waves
+	disp_scale		0.5
+	uv_seam_fold	FALSE
+}
+
+standard_object
+{
+	name			obj_sea_surface
+	geometry		surface_waves
+	material		mat_sea_surface
+	position		0 6.2 0
+	casts_shadows	FALSE
+}
+
+##################################################
+# The mermaid -- tail (scaled hide) sdf
+# One continuous smin chain: fluke -> peduncle ->
+# tail -> hips -> waist.  Local frame: head toward
+# +X, up +Y.  Every joint satisfies
+# k >= 2*(spacing - r1 - r2).
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_scale_edge
+	color	0.02 0.10 0.14
+}
+
+uniformcolor_painter
+{
+	name	pnt_scale_face
+	color	0.18 0.78 0.68
+}
+
+# f2-f1 is ~0 on cell BOUNDARIES: dark scale outlines around bright
+# teal facets.
+worley3d_painter
+{
+	name	pnt_scales
+	colora	pnt_scale_edge
+	colorb	pnt_scale_face
+	output	f2-f1
+	jitter	1.0
+	scale	26.0 26.0 26.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_tail_magenta
+	color	0.78 0.16 0.58
+}
+
+# Magenta sheen at grazing angles over the scale facets.
+iridescent_painter
+{
+	name	pnt_tail
+	colora	pnt_tail_magenta
+	colorb	pnt_scales
+	bias	0.05
+}
+
+lambertian_material
+{
+	name		mat_tail
+	reflectance	pnt_tail
+}
+
+sdf_geometry
+{
+	name	mermaid_tail
+	# spine: fluke joint up through the waist
+	part	sphere union 0  -1.72 0.34 0  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.16  -1.56 0.22 0  0 0 0  1 1 1  0.075 0 0  0.0
+	part	sphere smin 0.13  -1.38 0.10 0  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.12  -1.16 0.01 0  0 0 0  1 1 1  0.11 0 0  0.0
+	part	sphere smin 0.12  -0.92 -0.04 0  0 0 0  1 1 1  0.13 0 0  0.0
+	part	sphere smin 0.12  -0.66 -0.03 0  0 0 0  1 1 1  0.15 0 0  0.0
+	part	sphere smin 0.12  -0.40 0.05 0  0 0 0  1 1 1  0.165 0 0  0.0
+	part	sphere smin 0.12  -0.16 0.16 0  0 0 0  1 1 1  0.175 0 0  0.0
+	part	sphere smin 0.12  0.05 0.28 0  0 0 0  1 1 1  0.165 0 0  0.0
+	# fluke: bridge bead + two broad flattened lobes fanning back-up/back-down
+	part	sphere smin 0.12  -1.85 0.34 0  0 0 0  1 1 1  0.06 0 0  0.0
+	part	sphere smin 0.20  -2.02 0.62 0  0 0 -42  1.8 1.0 0.22  0.20 0 0  0.0
+	part	sphere smin 0.20  -2.00 0.06 0  0 0 42  1.8 1.0 0.22  0.20 0 0  0.0
+	# pelvic drift fins at the hips, thin and swept back
+	part	sphere smin 0.08  -0.52 -0.02 0.20  0 25 -20  1.2 0.5 0.15  0.12 0 0  0.0
+	part	sphere smin 0.08  -0.52 -0.02 -0.20  0 -25 -20  1.2 0.5 0.15  0.12 0 0  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_mermaid_tail
+	geometry	mermaid_tail
+	material	mat_tail
+	position	-0.2 3.1 0.6
+	scale		1.2 1.2 1.2
+	orientation	0 -28 6
+}
+
+##################################################
+# The mermaid -- torso, arms, head (skin) sdf
+# Overlaps the tail chain at the waist sphere so
+# the two read as one being; the material seam
+# lands exactly where scales become skin.
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_skin_warm
+	color	0.80 0.58 0.44
+}
+
+uniformcolor_painter
+{
+	name	pnt_skin_deep
+	color	0.55 0.34 0.26
+}
+
+perlin3d_painter
+{
+	name		pnt_skin
+	colora		pnt_skin_warm
+	colorb		pnt_skin_deep
+	octaves		3
+	persistence	0.5
+	scale		3.0 3.0 3.0
+}
+
+lambertian_material
+{
+	name		mat_skin
+	reflectance	pnt_skin
+}
+
+sdf_geometry
+{
+	name	mermaid_torso
+	# waist (coincides with the tail's last sphere), belly, chest
+	part	sphere union 0  0.05 0.28 0  0 0 0  1 1 1  0.165 0 0  0.0
+	part	sphere smin 0.09  0.20 0.42 0  0 0 0  1 1 1  0.17 0 0  0.0
+	part	sphere smin 0.09  0.34 0.57 0  0 0 0  1 1 1  0.175 0 0  0.0
+	# shoulders
+	part	sphere smin 0.08  0.40 0.70 0.13  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.08  0.40 0.70 -0.13  0 0 0  1 1 1  0.085 0 0  0.0
+	# chest shaping
+	part	sphere smin 0.06  0.42 0.55 0.09  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.06  0.42 0.55 -0.09  0 0 0  1 1 1  0.095 0 0  0.0
+	# neck and head (slightly elongated skull)
+	part	sphere smin 0.07  0.48 0.80 0  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.06  0.55 0.95 0  0 0 0  1.12 1.05 0.95  0.12 0 0  0.0
+	# arm A: a smooth diagonal reach forward-up, clear of the head profile
+	part	sphere smin 0.06  0.51 0.74 0.17  0 0 0  1 1 1  0.068 0 0  0.0
+	part	sphere smin 0.07  0.62 0.79 0.21  0 0 0  1 1 1  0.062 0 0  0.0
+	part	sphere smin 0.08  0.72 0.85 0.24  0 0 0  1 1 1  0.056 0 0  0.0
+	part	sphere smin 0.09  0.81 0.92 0.26  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.06  0.88 0.98 0.27  0 0 0  1 1 1  0.055 0 0  0.0
+	# arm B: trailing down along the hip
+	part	sphere smin 0.06  0.36 0.60 -0.22  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.06  0.30 0.48 -0.28  0 0 0  1 1 1  0.06 0 0  0.0
+	part	sphere smin 0.06  0.26 0.36 -0.30  0 0 0  1 1 1  0.055 0 0  0.0
+	part	sphere smin 0.05  0.24 0.25 -0.29  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.05  0.24 0.16 -0.27  0 0 0  1 1 1  0.055 0 0  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_mermaid_torso
+	geometry	mermaid_torso
+	material	mat_skin
+	position	-0.2 3.1 0.6
+	scale		1.2 1.2 1.2
+	orientation	0 -28 6
+}
+
+##################################################
+# The mermaid -- hair, flowing back and drifting up
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_hair_dark
+	color	0.20 0.06 0.06
+}
+
+uniformcolor_painter
+{
+	name	pnt_hair_copper
+	color	0.62 0.24 0.10
+}
+
+turbulence3d_painter
+{
+	name		pnt_hair
+	colora		pnt_hair_dark
+	colorb		pnt_hair_copper
+	octaves		4
+	persistence	0.6
+	scale		6.0 6.0 6.0
+}
+
+lambertian_material
+{
+	name		mat_hair
+	reflectance	pnt_hair
+}
+
+sdf_geometry
+{
+	name	mermaid_hair
+	# scalp cap over the head sphere
+	part	sphere union 0  0.53 1.00 0  0 0 0  1 1 1  0.11 0 0  0.0
+	# main stream flowing back and DOWN along the spine
+	part	sphere smin 0.06  0.44 1.01 -0.02  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.07  0.33 0.97 -0.05  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.07  0.22 0.89 -0.08  0 0 0  1 1 1  0.075 0 0  0.0
+	part	sphere smin 0.08  0.13 0.79 -0.11  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.09  0.05 0.68 -0.13  0 0 0  1 1 1  0.055 0 0  0.0
+	part	sphere smin 0.10  -0.02 0.57 -0.14  0 0 0  1 1 1  0.045 0 0  0.0
+	# a small wisp lifting with the current
+	part	sphere smin 0.06  0.43 1.09 0.03  0 0 0  1 1 1  0.045 0 0  0.0
+	part	sphere smin 0.07  0.36 1.16 0.05  0 0 0  1 1 1  0.035 0 0  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_mermaid_hair
+	geometry	mermaid_hair
+	material	mat_hair
+	position	-0.2 3.1 0.6
+	scale		1.2 1.2 1.2
+	orientation	0 -28 6
+}
+
+##################################################
+# Reef rocks: craggy displaced spheres
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_rock_violet
+	color	0.14 0.11 0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_rock_grey
+	color	0.34 0.31 0.33
+}
+
+turbulence3d_painter
+{
+	name		pnt_rock
+	colora		pnt_rock_violet
+	colorb		pnt_rock_grey
+	octaves		4
+	persistence	0.6
+	scale		2.0 2.0 2.0
+}
+
+lambertian_material
+{
+	name		mat_rock
+	reflectance	pnt_rock
+}
+
+sphere_geometry
+{
+	name	rock_base
+	radius	0.7
+}
+
+expression_function2d
+{
+	name	fn_crag
+	def		a sin( u * 31.7 + 1.9 ) * sin( v * 26.3 + 1.0 )
+	def		b sin( u * 13.1 + 2.0 ) * sin( v * 9.7 )
+	def		c sin( u * 53.9 ) * sin( v * 61.3 + 0.5 )
+	expr	0.45 * abs( b ) + 0.35 * abs( a ) + 0.2 * abs( c )
+}
+
+displaced_geometry
+{
+	name			rock_crag
+	base_geometry	rock_base
+	detail			64
+	displacement	fn_crag
+	disp_scale		0.22
+}
+
+standard_object
+{
+	name		obj_rock_a
+	geometry	rock_crag
+	material	mat_rock
+	position	1.0 0.35 0.4
+	scale		1.4 1.1 1.4
+	orientation	10 30 0
+}
+
+standard_object
+{
+	name		obj_rock_b
+	geometry	rock_crag
+	material	mat_rock
+	position	-0.6 0.2 1.2
+	scale		0.9 0.7 0.9
+	orientation	-8 130 5
+}
+
+standard_object
+{
+	name		obj_rock_c
+	geometry	rock_crag
+	material	mat_rock
+	position	2.0 0.25 1.5
+	scale		1.0 0.8 1.0
+	orientation	5 250 -6
+}
+
+##################################################
+# Staghorn coral: branching smin chains
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_stag_orange
+	color	0.95 0.38 0.14
+}
+
+uniformcolor_painter
+{
+	name	pnt_stag_pink
+	color	0.95 0.55 0.45
+}
+
+worley3d_painter
+{
+	name	pnt_staghorn
+	colora	pnt_stag_orange
+	colorb	pnt_stag_pink
+	jitter	1.0
+	output	f1
+	scale	14.0 14.0 14.0
+}
+
+lambertian_material
+{
+	name		mat_staghorn
+	reflectance	pnt_staghorn
+}
+
+sdf_geometry
+{
+	name	staghorn
+	# trunk
+	part	sphere union 0  0 0 0  0 0 0  1 1 1  0.14 0 0  0.0
+	part	sphere smin 0.08  0.02 0.18 0  0 0 0  1 1 1  0.12 0 0  0.0
+	part	sphere smin 0.08  0.05 0.36 0  0 0 0  1 1 1  0.10 0 0  0.0
+	# branch A: up and out +X
+	part	sphere smin 0.08  0.15 0.52 0.05  0 0 0  1 1 1  0.08 0 0  0.0
+	part	sphere smin 0.08  0.26 0.66 0.10  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.12  0.36 0.80 0.13  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.12  0.44 0.92 0.15  0 0 0  1 1 1  0.04 0 0  0.0
+	# branch B: up and out -X
+	part	sphere smin 0.08  -0.08 0.52 -0.06  0 0 0  1 1 1  0.08 0 0  0.0
+	part	sphere smin 0.12  -0.18 0.68 -0.12  0 0 0  1 1 1  0.06 0 0  0.0
+	part	sphere smin 0.16  -0.26 0.84 -0.16  0 0 0  1 1 1  0.045 0 0  0.0
+	part	sphere smin 0.13  -0.32 0.97 -0.18  0 0 0  1 1 1  0.035 0 0  0.0
+	# branch C: shorter, toward +Z
+	part	sphere smin 0.08  0.02 0.50 0.12  0 0 0  1 1 1  0.075 0 0  0.0
+	part	sphere smin 0.08  0.00 0.62 0.24  0 0 0  1 1 1  0.055 0 0  0.0
+	part	sphere smin 0.10  -0.02 0.72 0.34  0 0 0  1 1 1  0.04 0 0  0.0
+	# branch D: low side shoot
+	part	sphere smin 0.06  0.16 0.22 -0.08  0 0 0  1 1 1  0.07 0 0  0.0
+	part	sphere smin 0.11  0.30 0.30 -0.14  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.13  0.40 0.40 -0.18  0 0 0  1 1 1  0.035 0 0  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_staghorn_a
+	geometry	staghorn
+	material	mat_staghorn
+	position	1.0 1.15 0.3
+	scale		1.1 1.1 1.1
+}
+
+standard_object
+{
+	name		obj_staghorn_b
+	geometry	staghorn
+	material	mat_staghorn
+	position	-0.7 0.55 1.5
+	scale		0.8 0.8 0.8
+	orientation	0 70 0
+}
+
+standard_object
+{
+	name		obj_staghorn_c
+	geometry	staghorn
+	material	mat_staghorn
+	position	-2.6 0.3 -2.5
+	scale		1.3 1.3 1.3
+	orientation	0 140 0
+}
+
+##################################################
+# Brain coral: displaced sphere with meander ridges
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_brain_lo
+	color	0.30 0.28 0.10
+}
+
+uniformcolor_painter
+{
+	name	pnt_brain_hi
+	color	0.65 0.60 0.30
+}
+
+# Labyrinthine ridge-and-valley colouring.
+reactiondiffusion3d_painter
+{
+	name		pnt_brain
+	colora		pnt_brain_hi
+	colorb		pnt_brain_lo
+	feed		0.037
+	kill		0.06
+	grid_size	48
+	iterations	3000
+	scale		2.5 2.5 2.5
+}
+
+lambertian_material
+{
+	name		mat_brain
+	reflectance	pnt_brain
+}
+
+expression_function2d
+{
+	name	fn_brain_ridges
+	def		m sin( u * 62.0 + 3.0 * sin( v * 21.0 ) )
+	expr	abs( m )
+}
+
+sphere_geometry
+{
+	name	brain_base
+	radius	0.55
+}
+
+displaced_geometry
+{
+	name			brain_coral
+	base_geometry	brain_base
+	detail			96
+	displacement	fn_brain_ridges
+	disp_scale		0.06
+}
+
+standard_object
+{
+	name		obj_brain_a
+	geometry	brain_coral
+	material	mat_brain
+	position	0.1 0.45 1.6
+	scale		0.9 0.55 0.9
+}
+
+standard_object
+{
+	name		obj_brain_b
+	geometry	brain_coral
+	material	mat_brain
+	position	2.6 0.35 0.2
+	scale		0.7 0.45 0.7
+	orientation	0 60 0
+}
+
+##################################################
+# Sea fans: thin lattice-textured blades
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_fan_violet
+	color	0.12 0.02 0.16
+}
+
+uniformcolor_painter
+{
+	name	pnt_fan_pink
+	color	1.0 0.35 0.60
+}
+
+worley3d_painter
+{
+	name	pnt_fan
+	colora	pnt_fan_violet
+	colorb	pnt_fan_pink
+	output	f2-f1
+	jitter	1.0
+	scale	18.0 18.0 18.0
+}
+
+lambertian_material
+{
+	name		mat_fan
+	reflectance	pnt_fan
+}
+
+sdf_geometry
+{
+	name	sea_fan
+	# short trunk, then five thin webbed lobes fanning in the X-Y plane
+	part	roundcone union 0  0 0 0  0 0 0  1 1 1  0.05 0.03 0.28  0.0
+	part	sphere smin 0.06  -0.40 0.60 0  0 0 55  0.32 1.2 0.06  0.28 0 0  0.0
+	part	sphere smin 0.06  -0.22 0.74 0  0 0 28  0.32 1.2 0.06  0.28 0 0  0.0
+	part	sphere smin 0.06  0.0 0.80 0  0 0 0  0.32 1.2 0.06  0.28 0 0  0.0
+	part	sphere smin 0.06  0.22 0.74 0  0 0 -28  0.32 1.2 0.06  0.28 0 0  0.0
+	part	sphere smin 0.06  0.40 0.60 0  0 0 -55  0.32 1.2 0.06  0.28 0 0  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_fan_a
+	geometry	sea_fan
+	material	mat_fan
+	position	-1.7 0.75 -0.3
+	orientation	0 55 6
+}
+
+standard_object
+{
+	name		obj_fan_b
+	geometry	sea_fan
+	material	mat_fan
+	position	2.2 0.85 -1.4
+	scale		1.1 1.1 1.1
+	orientation	0 -50 -4
+}
+
+##################################################
+# Tube coral: golden trumpet cluster
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_tube_gold
+	color	0.85 0.60 0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_tube_amber
+	color	0.55 0.30 0.06
+}
+
+worley3d_painter
+{
+	name	pnt_tube
+	colora	pnt_tube_amber
+	colorb	pnt_tube_gold
+	jitter	1.0
+	output	f1
+	scale	10.0 10.0 10.0
+}
+
+lambertian_material
+{
+	name		mat_tube
+	reflectance	pnt_tube
+}
+
+sdf_geometry
+{
+	name	tube_coral
+	part	roundcone union 0  0 0 0  0 0 12  1 1 1  0.09 0.13 0.55  0.0
+	part	roundcone smin 0.06  0.18 0 0.10  0 0 -18  1 1 1  0.08 0.11 0.42  0.0
+	part	roundcone smin 0.06  -0.14 0 0.14  10 0 20  1 1 1  0.07 0.10 0.35  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_tube_a
+	geometry	tube_coral
+	material	mat_tube
+	position	0.35 0.5 0.9
+}
+
+##################################################
+# Anemone: dome with a crown of tentacles
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_anem_magenta
+	color	0.80 0.15 0.60
+}
+
+uniformcolor_painter
+{
+	name	pnt_anem_cyan
+	color	0.20 0.80 0.85
+}
+
+iridescent_painter
+{
+	name	pnt_anemone
+	colora	pnt_anem_cyan
+	colorb	pnt_anem_magenta
+	bias	0.1
+}
+
+lambertian_material
+{
+	name		mat_anemone
+	reflectance	pnt_anemone
+}
+
+sdf_geometry
+{
+	name	anemone
+	part	sphere union 0  0 0 0  0 0 0  1 1 1  0.18 0 0  0.0
+	part	roundcone smin 0.04  0 0.10 0  18 0 0  1 1 1  0.035 0.012 0.30  0.0
+	part	roundcone smin 0.04  0.06 0.10 0  0 0 -28  1 1 1  0.035 0.012 0.28  0.0
+	part	roundcone smin 0.04  -0.06 0.10 0  0 0 28  1 1 1  0.035 0.012 0.28  0.0
+	part	roundcone smin 0.04  0 0.10 0.06  28 0 0  1 1 1  0.035 0.012 0.28  0.0
+	part	roundcone smin 0.04  0 0.10 -0.06  -28 0 0  1 1 1  0.035 0.012 0.28  0.0
+	part	roundcone smin 0.04  0.05 0.10 0.05  22 0 -22  1 1 1  0.03 0.012 0.26  0.0
+	part	roundcone smin 0.04  -0.05 0.10 0.05  22 0 22  1 1 1  0.03 0.012 0.26  0.0
+	part	roundcone smin 0.04  0.05 0.10 -0.05  -22 0 -22  1 1 1  0.03 0.012 0.26  0.0
+	part	roundcone smin 0.04  -0.05 0.10 -0.05  -22 0 22  1 1 1  0.03 0.012 0.26  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_anemone
+	geometry	anemone
+	material	mat_anemone
+	position	-0.15 0.55 1.9
+	scale		1.4 1.4 1.4
+}
+
+##################################################
+# Kelp: swaying ribbons rising from the reef edge
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_kelp_deep
+	color	0.03 0.14 0.05
+}
+
+uniformcolor_painter
+{
+	name	pnt_kelp_olive
+	color	0.24 0.52 0.16
+}
+
+perlin3d_painter
+{
+	name		pnt_kelp
+	colora		pnt_kelp_olive
+	colorb		pnt_kelp_deep
+	octaves		3
+	persistence	0.55
+	scale		1.0 4.0 1.0
+}
+
+lambertian_material
+{
+	name		mat_kelp
+	reflectance	pnt_kelp
+}
+
+sweep_geometry
+{
+	name			kelp_blade
+	profile_point	0.16 0.0
+	profile_point	0.11 0.014
+	profile_point	0.0 0.02
+	profile_point	-0.11 0.014
+	profile_point	-0.16 0.0
+	profile_point	-0.11 -0.014
+	profile_point	0.0 -0.02
+	profile_point	0.11 -0.014
+	point	0.0 0.0 0.0
+	point	0.25 1.2 0.15
+	point	-0.15 2.4 0.35
+	point	0.30 3.6 0.15
+	point	-0.05 4.8 -0.15
+	point	0.25 5.6 -0.35
+	n_len	64
+	end_scale_x	0.45
+	end_scale_y	0.6
+	cap_start	TRUE
+	cap_end		TRUE
+}
+
+standard_object
+{
+	name		obj_kelp_a
+	geometry	kelp_blade
+	material	mat_kelp
+	position	-3.9 0 -1.4
+}
+
+standard_object
+{
+	name		obj_kelp_b
+	geometry	kelp_blade
+	material	mat_kelp
+	position	-4.4 0 -2.4
+	scale		0.85 0.9 0.85
+	orientation	0 40 0
+}
+
+standard_object
+{
+	name		obj_kelp_c
+	geometry	kelp_blade
+	material	mat_kelp
+	position	3.6 0 -2.2
+	scale		1.1 1.05 1.1
+	orientation	0 160 0
+}
+
+##################################################
+# The eel: rising from the reef, jaws parted
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_eel_moss
+	color	0.05 0.11 0.05
+}
+
+uniformcolor_painter
+{
+	name	pnt_eel_bone
+	color	0.42 0.45 0.28
+}
+
+reactiondiffusion3d_painter
+{
+	name		pnt_eel
+	colora		pnt_eel_bone
+	colorb		pnt_eel_moss
+	feed		0.037
+	kill		0.06
+	grid_size	48
+	iterations	3000
+	scale		8.0 8.0 8.0
+}
+
+lambertian_material
+{
+	name		mat_eel
+	reflectance	pnt_eel
+}
+
+sdf_geometry
+{
+	name	eel_body
+	part	sphere union 0  -1.20 0.02 0.00  0 0 0  1 1 1  0.045 0 0  0.0
+	part	sphere smin 0.16  -1.05 0.06 0.10  0 0 0  1 1 1  0.06 0 0  0.0
+	part	sphere smin 0.12  -0.90 0.12 0.16  0 0 0  1 1 1  0.07 0 0  0.0
+	part	sphere smin 0.11  -0.74 0.20 0.18  0 0 0  1 1 1  0.08 0 0  0.0
+	part	sphere smin 0.10  -0.58 0.30 0.16  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.10  -0.44 0.42 0.10  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.32 0.55 0.02  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.22 0.68 -0.04  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.12 0.80 -0.06  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.10  0.00 0.90 -0.04  0 0 0  1 1 1  0.10 0 0  0.0
+	part	sphere smin 0.09  0.14 0.97 0.02  0 0 0  1 1 1  0.105 0 0  0.0
+	part	sphere smin 0.08  0.28 0.99 0.08  0 0 0  1 1 1  0.085 0 0  0.0
+	# parted lower jaw
+	part	roundcone smin 0.04  0.16 0.90 0.03  0 0 -75  1 1 1  0.05 0.02 0.22  0.0
+	maxsteps	256
+}
+
+standard_object
+{
+	name		obj_eel
+	geometry	eel_body
+	material	mat_eel
+	position	-1.3 0.5 1.3
+	scale		1.0 1.0 1.0
+	orientation	0 -10 0
+}
+
+##################################################
+# Fish school: one sdf fish, instanced
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_fish_silver
+	color	0.80 0.88 0.95
+}
+
+uniformcolor_painter
+{
+	name	pnt_fish_blue
+	color	0.06 0.14 0.30
+}
+
+iridescent_painter
+{
+	name	pnt_fish
+	colora	pnt_fish_silver
+	colorb	pnt_fish_blue
+	bias	0.05
+}
+
+lambertian_material
+{
+	name		mat_fish
+	reflectance	pnt_fish
+}
+
+sdf_geometry
+{
+	name	fish
+	# flattened body + nose
+	part	sphere union 0  0 0 0  0 0 0  1.6 0.8 0.40  0.13 0 0  0.0
+	part	sphere smin 0.06  0.18 -0.01 0  0 0 0  1.2 0.75 0.45  0.07 0 0  0.0
+	# peduncle and fanned tail lobes
+	part	sphere smin 0.06  -0.20 0 0  0 0 0  1.0 0.6 0.45  0.05 0 0  0.0
+	part	sphere smin 0.05  -0.36 0.08 0  0 0 40  1.5 0.55 0.10  0.11 0 0  0.0
+	part	sphere smin 0.05  -0.36 -0.08 0  0 0 -40  1.5 0.55 0.10  0.11 0 0  0.0
+	# dorsal fin
+	part	sphere smin 0.04  0.0 0.13 0  0 0 -20  1.2 0.65 0.08  0.08 0 0  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_fish_01
+	geometry	fish
+	material	mat_fish
+	position	-4.3 4.3 -3.4
+	scale		1.25 1.25 1.25
+	orientation	0 8 0
+}
+
+standard_object
+{
+	name		obj_fish_02
+	geometry	fish
+	material	mat_fish
+	position	-3.7 3.9 -2.7
+	scale		1.1 1.1 1.1
+	orientation	0 -6 0
+}
+
+standard_object
+{
+	name		obj_fish_03
+	geometry	fish
+	material	mat_fish
+	position	-3.1 4.2 -3.2
+	scale		0.9 0.9 0.9
+	orientation	0 4 0
+}
+
+standard_object
+{
+	name		obj_fish_04
+	geometry	fish
+	material	mat_fish
+	position	-2.7 4.6 -3.9
+	scale		1.25 1.25 1.25
+	orientation	0 12 0
+}
+
+standard_object
+{
+	name		obj_fish_05
+	geometry	fish
+	material	mat_fish
+	position	-4.0 4.8 -3.7
+	scale		0.8 0.8 0.8
+	orientation	0 -4 0
+}
+
+standard_object
+{
+	name		obj_fish_06
+	geometry	fish
+	material	mat_fish
+	position	-3.4 4.5 -4.3
+	scale		0.9 0.9 0.9
+}
+
+standard_object
+{
+	name		obj_fish_07
+	geometry	fish
+	material	mat_fish
+	position	-2.5 3.8 -2.4
+	scale		1.2 1.2 1.2
+	orientation	0 -10 0
+}
+
+standard_object
+{
+	name		obj_fish_08
+	geometry	fish
+	material	mat_fish
+	position	-4.7 3.8 -4.0
+	scale		0.85 0.85 0.85
+	orientation	0 6 0
+}
+
+standard_object
+{
+	name		obj_fish_09
+	geometry	fish
+	material	mat_fish
+	position	-2.2 4.4 -4.6
+	scale		0.8 0.8 0.8
+	orientation	0 8 0
+}
+
+standard_object
+{
+	name		obj_fish_10
+	geometry	fish
+	material	mat_fish
+	position	-1.8 3.6 -3.5
+	scale		1.25 1.25 1.25
+	orientation	0 -8 0
+}
+
+standard_object
+{
+	name		obj_fish_11
+	geometry	fish
+	material	mat_fish
+	position	-3.0 3.5 -3.1
+	scale		1.05 1.05 1.05
+	orientation	0 2 0
+}
+
+# near strays crossing the foreground
+standard_object
+{
+	name		obj_fish_near_a
+	geometry	fish
+	material	mat_fish
+	position	-2.6 2.3 0.2
+	scale		0.6 0.6 0.6
+	orientation	0 -15 6
+}
+
+standard_object
+{
+	name		obj_fish_near_b
+	geometry	fish
+	material	mat_fish
+	position	-2.0 1.8 0.6
+	scale		0.55 0.55 0.55
+	orientation	0 -5 0
+}
+
+standard_object
+{
+	name		obj_fish_near_c
+	geometry	fish
+	material	mat_fish
+	position	3.1 2.4 -0.6
+	scale		0.6 0.6 0.6
+	orientation	0 170 0
+}
+
+##################################################
+# Jellyfish: dielectric bell over a glowing core,
+# trailing tentacle chains
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_jelly_bell
+	color	0.90 0.45 0.80
+}
+
+lambertian_luminaire_material
+{
+	name		mat_jelly_bell
+	exitance	pnt_jelly_bell
+	scale		2.8
+	material	none
+}
+
+sdf_geometry
+{
+	name	jelly_bell
+	part	sphere union 0  0 0 0  0 0 0  1 1 1  0.42 0 0  0.0
+	part	sphere subtract 0  0 -0.10 0  0 0 0  1 1 1  0.40 0 0  0.0
+	part	box subtract 0  0 -0.55 0  0 0 0  1 1 1  0.6 0.45 0.6  0.0
+	maxsteps	192
+}
+
+uniformcolor_painter
+{
+	name	pnt_tentacle
+	color	0.85 0.55 0.80
+}
+
+lambertian_material
+{
+	name		mat_tentacle
+	reflectance	pnt_tentacle
+}
+
+sdf_geometry
+{
+	name	jelly_tentacles
+	# four trailing chains, drifting
+	part	sphere union 0  0.14 -0.08 0.10  0 0 0  1 1 1  0.035 0 0  0.0
+	part	sphere smin 0.14  0.17 -0.20 0.12  0 0 0  1 1 1  0.03 0 0  0.0
+	part	sphere smin 0.14  0.18 -0.32 0.11  0 0 0  1 1 1  0.028 0 0  0.0
+	part	sphere smin 0.14  0.16 -0.44 0.08  0 0 0  1 1 1  0.025 0 0  0.0
+	part	sphere smin 0.14  0.12 -0.56 0.04  0 0 0  1 1 1  0.022 0 0  0.0
+	part	sphere smin 0.14  0.08 -0.68 0.00  0 0 0  1 1 1  0.02 0 0  0.0
+	part	sphere smin 0.14  0.03 -0.80 -0.03  0 0 0  1 1 1  0.018 0 0  0.0
+	part	sphere smin 0.14  -0.02 -0.92 -0.05  0 0 0  1 1 1  0.016 0 0  0.0
+	part	sphere smin 0.14  -0.13 -0.08 0.09  0 0 0  1 1 1  0.035 0 0  0.0
+	part	sphere smin 0.14  -0.16 -0.20 0.06  0 0 0  1 1 1  0.03 0 0  0.0
+	part	sphere smin 0.14  -0.18 -0.32 0.02  0 0 0  1 1 1  0.028 0 0  0.0
+	part	sphere smin 0.14  -0.17 -0.44 -0.03  0 0 0  1 1 1  0.025 0 0  0.0
+	part	sphere smin 0.14  -0.14 -0.56 -0.07  0 0 0  1 1 1  0.022 0 0  0.0
+	part	sphere smin 0.14  -0.10 -0.68 -0.10  0 0 0  1 1 1  0.02 0 0  0.0
+	part	sphere smin 0.14  -0.06 -0.80 -0.11  0 0 0  1 1 1  0.018 0 0  0.0
+	part	sphere smin 0.14  0.02 -0.08 -0.13  0 0 0  1 1 1  0.035 0 0  0.0
+	part	sphere smin 0.14  0.05 -0.20 -0.16  0 0 0  1 1 1  0.03 0 0  0.0
+	part	sphere smin 0.14  0.08 -0.32 -0.17  0 0 0  1 1 1  0.028 0 0  0.0
+	part	sphere smin 0.14  0.10 -0.44 -0.15  0 0 0  1 1 1  0.025 0 0  0.0
+	part	sphere smin 0.14  0.11 -0.56 -0.12  0 0 0  1 1 1  0.022 0 0  0.0
+	part	sphere smin 0.14  -0.02 -0.08 0.02  0 0 0  1 1 1  0.035 0 0  0.0
+	part	sphere smin 0.14  -0.04 -0.20 0.00  0 0 0  1 1 1  0.03 0 0  0.0
+	part	sphere smin 0.14  -0.05 -0.32 -0.02  0 0 0  1 1 1  0.028 0 0  0.0
+	part	sphere smin 0.14  -0.05 -0.44 -0.05  0 0 0  1 1 1  0.025 0 0  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_jelly_a_bell
+	geometry	jelly_bell
+	material	mat_jelly_bell
+	position	3.1 3.9 -1.6
+}
+
+standard_object
+{
+	name		obj_jelly_a_tent
+	geometry	jelly_tentacles
+	material	mat_tentacle
+	position	3.1 3.9 -1.6
+}
+
+omni_light
+{
+	name		jelly_a_light
+	power		8
+	color		0.95 0.45 0.85
+	position	3.1 3.8 -1.6
+}
+
+standard_object
+{
+	name		obj_jelly_b_bell
+	geometry	jelly_bell
+	material	mat_jelly_bell
+	position	4.6 3.3 -6.5
+	scale		0.75 0.75 0.75
+}
+
+standard_object
+{
+	name		obj_jelly_b_tent
+	geometry	jelly_tentacles
+	material	mat_tentacle
+	position	4.6 3.3 -6.5
+	scale		0.75 0.75 0.75
+}
+
+omni_light
+{
+	name		jelly_b_light
+	power		5
+	color		0.95 0.45 0.85
+	position	4.6 3.22 -6.5
+}
+
+standard_object
+{
+	name		obj_jelly_c_bell
+	geometry	jelly_bell
+	material	mat_jelly_bell
+	position	-5.0 4.8 -2.5
+	scale		0.6 0.6 0.6
+}
+
+standard_object
+{
+	name		obj_jelly_c_tent
+	geometry	jelly_tentacles
+	material	mat_tentacle
+	position	-5.0 4.8 -2.5
+	scale		0.6 0.6 0.6
+}
+
+omni_light
+{
+	name		jelly_c_light
+	power		6
+	color		0.95 0.45 0.85
+	position	-5.0 4.73 -2.5
+}
+
+##################################################
+# Bioluminescent motes drifting near the reef
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_mote
+	color	0.35 0.95 1.0
+}
+
+lambertian_luminaire_material
+{
+	name		mat_mote
+	exitance	pnt_mote
+	scale		25.0
+	material	none
+}
+
+sphere_geometry
+{
+	name	mote
+	radius	0.035
+}
+
+standard_object
+{
+	name		obj_mote_a
+	geometry	mote
+	material	mat_mote
+	position	-2.8 2.2 -0.5
+}
+
+standard_object
+{
+	name		obj_mote_b
+	geometry	mote
+	material	mat_mote
+	position	-1.2 3.4 -1.8
+}
+
+standard_object
+{
+	name		obj_mote_c
+	geometry	mote
+	material	mat_mote
+	position	0.8 2.9 -1.0
+}
+
+standard_object
+{
+	name		obj_mote_d
+	geometry	mote
+	material	mat_mote
+	position	2.2 2.4 0.6
+}
+
+standard_object
+{
+	name		obj_mote_e
+	geometry	mote
+	material	mat_mote
+	position	-0.2 1.6 2.6
+}
+
+##################################################
+# Starfish resting on the foreground sand
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_star_red
+	color	0.80 0.16 0.10
+}
+
+uniformcolor_painter
+{
+	name	pnt_star_amber
+	color	0.95 0.50 0.20
+}
+
+worley3d_painter
+{
+	name	pnt_starfish
+	colora	pnt_star_red
+	colorb	pnt_star_amber
+	jitter	1.0
+	output	f1
+	scale	22.0 22.0 22.0
+}
+
+lambertian_material
+{
+	name		mat_starfish
+	reflectance	pnt_starfish
+}
+
+sdf_geometry
+{
+	name	starfish
+	# five flattened tapering arms around a low dome hub
+	part	sphere union 0  0 0.02 0  0 0 0  1 1 0.9  0.11 0 0  0.0
+	part	sphere smin 0.10  0.22 0.0 0.0  0 0 0  2.2 0.55 0.85  0.10 0 0  0.0
+	part	sphere smin 0.10  0.068 0.0 0.209  0 -72 0  2.2 0.55 0.85  0.10 0 0  0.0
+	part	sphere smin 0.10  -0.178 0.0 0.129  0 -144 0  2.2 0.55 0.85  0.10 0 0  0.0
+	part	sphere smin 0.10  -0.178 0.0 -0.129  0 -216 0  2.2 0.55 0.85  0.10 0 0  0.0
+	part	sphere smin 0.10  0.068 0.0 -0.209  0 -288 0  2.2 0.55 0.85  0.10 0 0  0.0
+	maxsteps	192
+}
+
+standard_object
+{
+	name		obj_starfish
+	geometry	starfish
+	material	mat_starfish
+	position	-2.1 0.46 0.8
+	scale		1.2 1.2 1.2
+	orientation	-8 20 0
+}
+
+##################################################
+# Lights
+##################################################
+
+# Key: the sun bleeding down through the surface.
+directional_light
+{
+	name		key
+	power		3.4
+	color		1.0 0.93 0.75
+	direction	-0.28 0.78 -0.55
+}
+
+# Fill: soft blue from the open water behind the camera.
+directional_light
+{
+	name		fill
+	power		1.6
+	color		0.50 0.68 0.80
+	direction	0.35 0.40 0.85
+}
+
+# Rim: cyan from behind to cut the mermaid out of the murk.
+directional_light
+{
+	name		rim
+	power		2.0
+	color		0.30 0.90 0.85
+	direction	0.50 0.35 -0.75
+}
+
+# God-ray spots: concentrated shafts from above the surface -- one on
+# the mermaid, a second over the reef; the heterogeneous murk makes
+# the cones visible.
+spot_light
+{
+	name		godray
+	power		2200
+	color		1.0 0.95 0.80
+	position	-1.5 14 -3.5
+	target		-0.2 3.1 0.6
+	inner		5
+	outer		11
+}
+
+spot_light
+{
+	name		godray_reef
+	power		1200
+	color		0.95 0.92 0.75
+	position	2.5 14 -6
+	target		1.5 1.2 0.5
+	inner		4
+	outer		9
+}
