@@ -63,6 +63,16 @@ namespace RISE
 
 	namespace FrameStoreOutput
 	{
+		struct ActiveFireMedium
+		{
+			std::string mediaKind;             ///< "static_authored" in Phase A
+			std::string managerName;
+			std::string bindingKind;
+			std::string bindingOwner;
+			std::string authoredConfigDigest;  ///< canonical resolved authoring digest
+			std::vector<std::string> opticalRecordIds;
+		};
+
 		//! Bookkeeping carried through the render pipeline.  Producers
 		//! (rasterizers) populate fields they know about; consumers
 		//! (encoders, UI) read what they need and ignore the rest.
@@ -79,6 +89,13 @@ namespace RISE
 			std::string renderFidelityStatus;  ///< empty for non-fire; otherwise derived status
 			std::vector<std::string> renderReasonCodes; ///< sorted unique schema-v1 fire reasons
 			std::vector<std::string> activeFireOpticsRecordIds; ///< sorted unique exact-byte IDs
+			std::vector<ActiveFireMedium> activeFireMedia; ///< binding-keyed tagged provenance
+			std::vector<unsigned char> resolvedRenderConfigCoreV1; ///< canonical schema-v1 core
+			std::vector<unsigned char> rendererBuildV1; ///< canonical renderer_build_v1 bytes
+			std::string rendererBuildId; ///< SHA-256(rendererBuildV1)
+			std::string primaryProvenanceId; ///< last finalized primary for derivative linkage
+			std::string primaryArtifactSha256;
+			std::string primaryArtifactFidelity;
 		};
 
 		//! Construction parameters for FrameStore.  Pass to the
@@ -281,13 +298,24 @@ namespace RISE
 			void SetFireFidelityMetadata(
 				const std::string& status,
 				const std::vector<std::string>& reasons,
-				const std::vector<std::string>& recordIds
+				const std::vector<std::string>& recordIds,
+				const std::vector<FrameStoreOutput::ActiveFireMedium>& media =
+					std::vector<FrameStoreOutput::ActiveFireMedium>(),
+				const std::vector<unsigned char>& renderConfig =
+					std::vector<unsigned char>(),
+				const std::vector<unsigned char>& rendererBuild =
+					std::vector<unsigned char>(),
+				const std::string& rendererBuildId = std::string()
 				)
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				meta_.renderFidelityStatus = status;
 				meta_.renderReasonCodes = reasons;
 				meta_.activeFireOpticsRecordIds = recordIds;
+				meta_.activeFireMedia = media;
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.rendererBuildV1 = rendererBuild;
+				meta_.rendererBuildId = rendererBuildId;
 			}
 
 			// ── back-compat shim (Phase 1 only) ───────────────────

@@ -2376,8 +2376,31 @@ namespace
 					metadata.renderReasonCodes.end() &&
 				metadata.activeFireOpticsRecordIds.size() == 1u &&
 				metadata.activeFireOpticsRecordIds[0] ==
-					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
-				"production FrameStore carries sorted preview reasons and record identity" );
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
+				metadata.activeFireMedia.size() == 1u &&
+				metadata.activeFireMedia[0].mediaKind == "static_authored" &&
+				metadata.activeFireMedia[0].managerName == "fire" &&
+				metadata.activeFireMedia[0].bindingKind == "global_medium" &&
+				metadata.activeFireMedia[0].bindingOwner == "scene" &&
+				metadata.activeFireMedia[0].authoredConfigDigest.size() == 64u &&
+				!metadata.resolvedRenderConfigCoreV1.empty() &&
+				!metadata.rendererBuildV1.empty() && metadata.rendererBuildId.size() == 64u,
+				"production FrameStore carries sorted preview reasons, static-medium binding, resolved config, and build identity" );
+			RISECBOR64::Value resolvedConfig;
+			RISECBOR64::Value rendererBuild;
+			std::string provenanceDecodeError;
+			const bool configDecoded = RISECBOR64::DecodeCanonical(
+				metadata.resolvedRenderConfigCoreV1,resolvedConfig,&provenanceDecodeError);
+			const bool buildDecoded = RISECBOR64::DecodeCanonical(
+				metadata.rendererBuildV1,rendererBuild,&provenanceDecodeError);
+			Check( configDecoded && resolvedConfig.Find("film") &&
+				resolvedConfig.Find("camera") && resolvedConfig.Find("integrator") &&
+				resolvedConfig.Find("sampler") && resolvedConfig.Find("depth") &&
+				resolvedConfig.Find("clamp") && resolvedConfig.Find("filter") &&
+				resolvedConfig.Find("aov") && buildDecoded &&
+				metadata.rendererBuildId ==
+					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
+				"resolved-config categories and exact renderer-build preimage are canonical" );
 
 			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
 			ThrowingFrameObserver throwingObserver;
@@ -2401,11 +2424,11 @@ namespace
 			unsigned int actualMs = 0x5A5A5A5Au;
 			const bool acceptedPrediction =
 				job->PredictRasterizationTime(1,&predictedMs,&actualMs);
-			Check( acceptedPrediction && predictedMs != 0xA5A5A5A5u &&
-				actualMs != 0x5A5A5A5Au &&
+			Check( !acceptedPrediction && predictedMs == 0xA5A5A5A5u &&
+				actualMs == 0x5A5A5A5Au &&
 				store->Generation() == predictionBaselineGeneration &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
-				"accepted prediction does not relabel the last completed frame" );
+				"unregistered custom fire prediction fails closed without relabeling the last completed frame" );
 			Check( job->SetGlobalMedium("fire"),
 				"prediction metadata fixture restores the authored fire medium" );
 			safe_release(predictedMedium);

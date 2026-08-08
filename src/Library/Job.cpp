@@ -30,6 +30,8 @@
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include "Utilities/FiniteMath.h"
+#include "Utilities/RISECBOR64.h"
+#include "Version.h"
 #include "Utilities/Transformable.h"
 #include <algorithm>
 #include <cmath>
@@ -100,6 +102,337 @@ static bool IsAllowedFireRenderReasonCode( const char* reason )
 		if( std::strcmp(reason,allowed[i]) == 0 ) return true;
 	}
 	return false;
+}
+
+namespace
+{
+	RISECBOR64::Value FireText( const char* value )
+	{
+		return RISECBOR64::Value::String(value ? value : "");
+	}
+
+	RISECBOR64::Value FireBool( const bool value )
+	{
+		return RISECBOR64::Value::Bool(value);
+	}
+
+	RISECBOR64::Value FireUnsigned( const unsigned int value )
+	{
+		return RISECBOR64::Value::Unsigned(value);
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, std::size_t count );
+
+	bool FireEncodeRecord(
+		const RISECBOR64::Value& value,
+		RISECBOR64::Bytes& bytes,
+		const char* recordName )
+	{
+		std::string error;
+		if( RISECBOR64::Encode(value,bytes,&error) ) return true;
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: could not encode %s: %s",recordName,error.c_str());
+		return false;
+	}
+
+	RISECBOR64::Value FireUnavailableIdentity()
+	{
+		return RISECBOR64::Value::MapValue({
+			{ "availability", RISECBOR64::Value::String("not_embedded") }
+		});
+	}
+
+	bool BuildRendererBuildIdentity(
+		RISECBOR64::Bytes& bytes,
+		std::string& identity )
+	{
+		const char* compiler =
+#if defined(__clang_version__)
+			__clang_version__;
+#elif defined(__VERSION__)
+			__VERSION__;
+#else
+			"unknown";
+#endif
+		const char* platform =
+#if defined(_WIN32)
+			"windows";
+#elif defined(__APPLE__)
+			"macos";
+#elif defined(__linux__)
+			"linux";
+#else
+			"unknown";
+#endif
+		const char* architecture =
+#if defined(__aarch64__) || defined(_M_ARM64)
+			"arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+			"x86_64";
+#else
+			"unknown";
+#endif
+		const bool fastMath =
+#if defined(__FAST_MATH__)
+			true;
+#else
+			false;
+#endif
+		const bool finiteMathOnly =
+#if defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+			true;
+#else
+			false;
+#endif
+		const bool contraction =
+#if defined(__FP_FAST_FMA) || defined(__FP_FAST_FMAF) || defined(__FP_FAST_FMAL)
+			true;
+#else
+			false;
+#endif
+		const std::string rendererVersion =
+			std::to_string(RISE_VER_MAJOR_VERSION)+"."+
+			std::to_string(RISE_VER_MINOR_VERSION)+"."+
+			std::to_string(RISE_VER_REVISION_VERSION)+"+"+
+			std::to_string(RISE_VER_BUILD_VERSION);
+		using RISECBOR64::Value;
+		const Value record = Value::MapValue({
+			{ "compiler", Value::MapValue({
+				{ "identity", Value::String(compiler) },
+				{ "language_standard", Value::String("c++17") } }) },
+			{ "dependency_builds", Value::MapValue({
+				{ "oidn", Value::MapValue({
+					{ "loaded_binary_sha256", FireUnavailableIdentity() },
+					{ "version", Value::String("2.4.1") } }) },
+				{ "openexr", Value::MapValue({
+					{ "loaded_binary_sha256", FireUnavailableIdentity() },
+					{ "version", Value::String("runtime_linked") } }) },
+				{ "openpgl", Value::MapValue({
+					{ "loaded_binary_sha256", FireUnavailableIdentity() },
+					{ "version", Value::String("runtime_linked") } }) } }) },
+			{ "dirty_state", FireUnavailableIdentity() },
+			{ "executable_sha256", FireUnavailableIdentity() },
+			{ "fp_settings", Value::MapValue({
+				{ "contraction_available", FireBool(contraction) },
+				{ "fast_math", FireBool(fastMath) },
+				{ "finite_math_only", FireBool(finiteMathOnly) } }) },
+			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
+			{ "record_kind", Value::String("renderer_build_v1") },
+			{ "renderer_version", Value::String(rendererVersion) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "solver_schema_versions", Value::ArrayValue({
+				Value::String("fire_optics_schema_v3"),
+				Value::String("fire_output_provenance_schema_v1") }) },
+			{ "source_revision", FireUnavailableIdentity() },
+			{ "target", Value::MapValue({
+				{ "architecture", Value::String(architecture) },
+				{ "platform", Value::String(platform) } }) }
+		});
+		if( !FireEncodeRecord(record,bytes,"renderer_build_v1") ) return false;
+		identity = RISECBOR64::SHA256Hex(bytes);
+		return true;
+	}
+
+	bool BuildResolvedRenderConfig(
+		const Job::RasterizerParams& p,
+		const char* rasterizerKind,
+		const IScene& scene,
+		const FrameStore* store,
+		RISECBOR64::Bytes& bytes )
+	{
+		using RISECBOR64::Value;
+		Value::Values aovs;
+		if( store ) {
+			static const char* const names[] = {
+				"beauty","alpha","albedo","normal","depth","object_id","primitive_id" };
+			for( unsigned int i=0; i<static_cast<unsigned int>(FrameStoreOutput::ChannelId::COUNT); ++i ) {
+				if( store->HasChannel(static_cast<FrameStoreOutput::ChannelId>(i)) ) {
+					aovs.push_back(Value::String(names[i]));
+				}
+			}
+		}
+		const IFilm* film = scene.GetFilm();
+		const ICamera* camera = scene.GetCamera();
+		const Value record = Value::MapValue({
+			{ "aov", Value::MapValue({ { "channels", Value::ArrayValue(aovs) } }) },
+			{ "camera", Value::MapValue({
+				{ "exposure_compensation_ev", Value::Float(camera ? camera->GetExposureCompensationEV() : 0.0) },
+				{ "exposure_time", Value::Float(camera ? camera->GetExposureTime() : 0.0) },
+				{ "pixel_rate", Value::Float(camera ? camera->GetPixelRate() : 0.0) },
+				{ "scanning_rate", Value::Float(camera ? camera->GetScanningRate() : 0.0) } }) },
+			{ "clamp", Value::MapValue({
+				{ "direct", Value::Float(p.stability.directClamp) },
+				{ "indirect", Value::Float(p.stability.indirectClamp) } }) },
+			{ "depth", Value::MapValue({
+				{ "max_diffuse_bounce", FireUnsigned(p.stability.maxDiffuseBounce) },
+				{ "max_eye_depth", FireUnsigned(p.maxEyeDepth) },
+				{ "max_glossy_bounce", FireUnsigned(p.stability.maxGlossyBounce) },
+				{ "max_light_depth", FireUnsigned(p.maxLightDepth) },
+				{ "max_recursion", FireUnsigned(p.maxRecursion) },
+				{ "max_translucent_bounce", FireUnsigned(p.stability.maxTranslucentBounce) },
+				{ "max_transmission_bounce", FireUnsigned(p.stability.maxTransmissionBounce) },
+				{ "max_volume_bounce", FireUnsigned(p.stability.maxVolumeBounce) } }) },
+			{ "film", Value::MapValue({
+				{ "height", Value::Unsigned(film ? film->GetHeight() : 0) },
+				{ "pixel_aspect_ratio", Value::Float(film ? film->GetPixelAR() : 1.0) },
+				{ "width", Value::Unsigned(film ? film->GetWidth() : 0) } }) },
+			{ "filter", Value::MapValue({
+				{ "height", Value::Float(p.pixelFilter.height) },
+				{ "name", Value::String(p.pixelFilter.filter.c_str()) },
+				{ "param_a", Value::Float(p.pixelFilter.paramA) },
+				{ "param_b", Value::Float(p.pixelFilter.paramB) },
+				{ "width", Value::Float(p.pixelFilter.width) } }) },
+			{ "integrator", Value::MapValue({
+				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
+				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },
+				{ "enable_vertex_connection", FireBool(p.enableVC) },
+				{ "enable_vertex_merging", FireBool(p.enableVM) },
+				{ "integrate_rgb", FireBool(p.integrateRGB) },
+				{ "kind", FireText(rasterizerKind) },
+				{ "merge_radius", Value::Float(p.mergeRadius) },
+				{ "path_guiding", Value::MapValue({
+					{ "alpha", Value::Float(p.pathGuiding.alpha) },
+					{ "combine_training_iterations", FireBool(p.pathGuiding.combineTrainingIterations) },
+					{ "complete_path_guiding", FireBool(p.pathGuiding.completePathGuiding) },
+					{ "complete_path_strategy_samples", FireUnsigned(p.pathGuiding.completePathStrategySamples) },
+					{ "complete_path_strategy_selection", FireBool(p.pathGuiding.completePathStrategySelection) },
+					{ "enabled", FireBool(p.pathGuiding.enabled) },
+					{ "learned_alpha", FireBool(p.pathGuiding.learnedAlpha) },
+					{ "max_guiding_depth", FireUnsigned(p.pathGuiding.maxGuidingDepth) },
+					{ "max_light_guiding_depth", FireUnsigned(p.pathGuiding.maxLightGuidingDepth) },
+					{ "online", FireBool(p.pathGuiding.online) },
+					{ "ris_candidates", FireUnsigned(p.pathGuiding.risCandidates) },
+					{ "sampling_type", Value::Unsigned(static_cast<unsigned int>(p.pathGuiding.samplingType)) },
+					{ "training_iterations", FireUnsigned(p.pathGuiding.trainingIterations) },
+					{ "training_spp", FireUnsigned(p.pathGuiding.trainingSPP) },
+					{ "warmup_iterations", FireUnsigned(p.pathGuiding.warmupIterations) } }) },
+				{ "show_luminaires", FireBool(p.showLuminaires) },
+				{ "sms", Value::MapValue({
+					{ "bernoulli_trials", FireUnsigned(p.sms.bernoulliTrials) },
+					{ "biased", FireBool(p.sms.biased) },
+					{ "enabled", FireBool(p.sms.enabled) },
+					{ "max_chain_depth", FireUnsigned(p.sms.maxChainDepth) },
+					{ "max_iterations", FireUnsigned(p.sms.maxIterations) },
+					{ "max_photon_seeds_per_shading_point", FireUnsigned(p.sms.maxPhotonSeedsPerShadingPoint) },
+					{ "multi_trials", FireUnsigned(p.sms.multiTrials) },
+					{ "photon_count", FireUnsigned(p.sms.photonCount) },
+					{ "seeding_mode", Value::Unsigned(static_cast<unsigned int>(p.sms.seedingMode)) },
+					{ "target_bounces", FireUnsigned(p.sms.targetBounces) },
+					{ "threshold", Value::Float(p.sms.threshold) },
+					{ "two_stage", FireBool(p.sms.twoStage) },
+					{ "use_levenberg_marquardt", FireBool(p.sms.useLevenbergMarquardt) } }) } }) },
+			{ "record_kind", Value::String("resolved_render_configuration_v1") },
+			{ "sampler", Value::MapValue({
+				{ "adaptive", Value::MapValue({
+					{ "max_samples", FireUnsigned(p.adaptive.maxSamples) },
+					{ "show_map", FireBool(p.adaptive.showMap) },
+					{ "threshold", Value::Float(p.adaptive.threshold) } }) },
+				{ "blue_noise", FireBool(p.pixelFilter.blueNoiseSampler) },
+				{ "large_step_probability", Value::Float(p.largeStepProb) },
+				{ "luminary_sampler", Value::String(p.luminarySampler) },
+				{ "luminary_sampler_param", Value::Float(p.luminarySamplerParam) },
+				{ "mlt_bootstrap_samples", FireUnsigned(p.nBootstrap) },
+				{ "mlt_chains", FireUnsigned(p.nChains) },
+				{ "mlt_mutations_per_pixel", FireUnsigned(p.nMutationsPerPixel) },
+				{ "num_luminary_samples", FireUnsigned(p.numLumSamples) },
+				{ "pixel_sampler", Value::String(p.pixelFilter.pixelSampler.c_str()) },
+				{ "pixel_sampler_param", Value::Float(p.pixelFilter.pixelSamplerParam) },
+				{ "pixel_samples", FireUnsigned(p.numPixelSamples) },
+				{ "progressive", Value::MapValue({
+					{ "enabled", FireBool(p.progressive.enabled) },
+					{ "samples_per_pass", FireUnsigned(p.progressive.samplesPerPass) } }) },
+				{ "spectral", Value::MapValue({
+					{ "hwss", FireBool(p.spectral.useHWSS) },
+					{ "nm_begin", Value::Float(p.spectral.nmBegin) },
+					{ "nm_end", Value::Float(p.spectral.nmEnd) },
+					{ "num_wavelengths", FireUnsigned(p.spectral.numWavelengths) },
+					{ "spectral_samples", FireUnsigned(p.spectral.spectralSamples) } }) } }) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "shader", Value::String(p.shader) },
+			{ "stability", Value::MapValue({
+				{ "filter_glossy", Value::Float(p.stability.filterGlossy) },
+				{ "optimal_mis", FireBool(p.stability.optimalMIS) },
+				{ "optimal_mis_tile_size", FireUnsigned(p.stability.optimalMISTileSize) },
+				{ "optimal_mis_training_iterations", FireUnsigned(p.stability.optimalMISTrainingIterations) },
+				{ "rr_min_depth", FireUnsigned(p.stability.rrMinDepth) },
+				{ "rr_threshold", Value::Float(p.stability.rrThreshold) },
+				{ "transparent_shadows", FireBool(p.stability.transparentShadows) },
+				{ "use_light_bvh", FireBool(p.stability.useLightBVH) } }) },
+			{ "transport", Value::MapValue({
+				{ "oidn", FireBool(p.oidnDenoise) },
+				{ "oidn_device", Value::Unsigned(static_cast<unsigned int>(p.oidnDevice)) },
+				{ "oidn_prefilter", Value::Unsigned(static_cast<unsigned int>(p.oidnPrefilter)) },
+				{ "oidn_quality", Value::Unsigned(static_cast<unsigned int>(p.oidnQuality)) },
+				{ "radiance_map", Value::MapValue({
+					{ "background", FireBool(p.radianceMap.isBackground) },
+					{ "name", Value::String(p.radianceMap.name.c_str()) },
+					{ "orientation", FireFloatArray(p.radianceMap.orientation,3) },
+					{ "scale", Value::Float(p.radianceMap.scale) } }) } }) }
+		});
+		return FireEncodeRecord(record,bytes,"resolved_render_configuration_v1");
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, const std::size_t count )
+	{
+		RISECBOR64::Value::Values encoded;
+		encoded.reserve(count);
+		for( std::size_t i=0; i<count; ++i ) {
+			encoded.push_back(RISECBOR64::Value::Float(values[i]));
+		}
+		return RISECBOR64::Value::ArrayValue(encoded);
+	}
+
+	RISECBOR64::Value FireUInt3(
+		const unsigned int x,
+		const unsigned int y,
+		const unsigned int z )
+	{
+		return RISECBOR64::Value::ArrayValue({
+			RISECBOR64::Value::Unsigned(x),
+			RISECBOR64::Value::Unsigned(y),
+			RISECBOR64::Value::Unsigned(z) });
+	}
+
+	std::string FireAuthoredConfigDigest( RISECBOR64::Value::Members members )
+	{
+		members.push_back(std::make_pair("record_kind",
+			RISECBOR64::Value::String("static_fire_medium_authoring")));
+		members.push_back(std::make_pair("schema_version",
+			RISECBOR64::Value::Unsigned(1)));
+		RISECBOR64::Bytes bytes;
+		std::string error;
+		if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue(members),bytes,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: could not canonically encode static fire-medium authoring: %s",
+				error.c_str());
+			return std::string();
+		}
+		return RISECBOR64::SHA256Hex(bytes);
+	}
+
+	RISECBOR64::Value FireCommonAuthoring(
+		const char* name,
+		const char* carbonPainter,
+		const char* temperaturePainter,
+		const char* condensedPainter,
+		const unsigned int bakeWidth,
+		const unsigned int bakeHeight,
+		const unsigned int bakeDepth,
+		const double bboxMin[3],
+		const double bboxMax[3],
+		const double sceneUnitMeters )
+	{
+		return RISECBOR64::Value::MapValue({
+			{ "bake_resolution", FireUInt3(bakeWidth,bakeHeight,bakeDepth) },
+			{ "bbox_max", FireFloatArray(bboxMax,3) },
+			{ "bbox_min", FireFloatArray(bboxMin,3) },
+			{ "channel_carbon_painter", FireText(carbonPainter) },
+			{ "channel_condensed_painter", FireText(condensedPainter) },
+			{ "channel_temperature_painter", FireText(temperaturePainter) },
+			{ "manager_name", FireText(name) },
+			{ "scene_unit_meters", RISECBOR64::Value::Float(sceneUnitMeters) }
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +963,7 @@ void Job::DestroyContainers()
 
 	// Release all named media
 	{
+		fireAuthoredConfigDigests.clear();
 		MediumMap::iterator it;
 		for( it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
 			safe_release( it->second );
@@ -6097,6 +6431,22 @@ bool Job::AddMultichannelHeterogeneousMedium(
 			"Job::AddMultichannelHeterogeneousMedium:: carbon and temperature require single-valued scalar painters" );
 		return false;
 	}
+	const std::string authoredDigest = FireAuthoredConfigDigest({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_two_channel") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,0,bake_width,bake_height,bake_depth,bboxMin,
+			bboxMax,scene_unit_meters) }
+	});
+	if( authoredDigest.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMedium(
@@ -6112,6 +6462,7 @@ bool Job::AddMultichannelHeterogeneousMedium(
 	}
 
 	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
 	if( g_cstProductionSink ) {
 		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
 	}
@@ -6164,6 +6515,26 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: physical channels require single-valued scalar painters" );
 		return false;
 	}
+	const std::string authoredDigest = FireAuthoredConfigDigest({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_condensed") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredDigest.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
@@ -6181,6 +6552,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
 	}
 
 	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
 	if( g_cstProductionSink ) {
 		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
 	}
@@ -6255,6 +6627,36 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 			return false;
 		}
 	}
+	const std::string authoredDigest = FireAuthoredConfigDigest({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_chem") },
+		{ "chemistry", RISECBOR64::Value::MapValue({
+			{ "c2_interval_nm", FireFloatArray(chem_interval_c2,2) },
+			{ "c2_painter", FireText(chem_c2_painter) },
+			{ "c2_spd", FireText(chem_spd_c2) },
+			{ "ch_interval_nm", FireFloatArray(chem_interval_ch,2) },
+			{ "ch_painter", FireText(chem_ch_painter) },
+			{ "ch_spd", FireText(chem_spd_ch) },
+			{ "co2_interval_nm", FireFloatArray(chem_interval_co2,2) },
+			{ "co2_painter", FireText(chem_co2_painter) },
+			{ "co2_spd", FireText(chem_spd_co2) } }) },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredDigest.empty() ) return false;
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
 		&medium, *painters[0], *painters[1], painters[2],
@@ -6273,6 +6675,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithChem(
 		Scalar(smoke_km_cond), Scalar(smoke_n_cond),
 		Scalar(smoke_albedo_cond), Scalar(smoke_g_cond)) || !medium ) return false;
 	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
 	if( g_cstProductionSink ) {
 		g_cstProductionSink->push_back(static_cast<const void*>(medium));
 	}
@@ -6353,6 +6756,30 @@ bool Job::AddMultichannelHeterogeneousMediumWithPreset(
 	for( unsigned int i=0; i<3u; ++i ) {
 		if( chemPainters[i] && chemPainters[i]->HasPerChannelVariation() ) return false;
 	}
+	RISECBOR64::Value chemistry = RISECBOR64::Value::MapValue({
+		{ "c2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_c2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "c2_painter", FireText(chem_c2_painter) },
+		{ "c2_spd", FireText(chem_spd_c2) },
+		{ "ch_interval_nm", hasAllChem ? FireFloatArray(chem_interval_ch,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "ch_painter", FireText(chem_ch_painter) },
+		{ "ch_spd", FireText(chem_spd_ch) },
+		{ "co2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_co2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "co2_painter", FireText(chem_co2_painter) },
+		{ "co2_spd", FireText(chem_spd_co2) },
+		{ "model", RISECBOR64::Value::String(hasAllChem ? "synthetic_fixture" : "none") }
+	});
+	const std::string authoredDigest = FireAuthoredConfigDigest({
+		{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
+		{ "chemistry", chemistry },
+		{ "optical_record", FireText(optical_record) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredDigest.empty() ) return false;
 
 	IMedium* medium = 0;
 	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
@@ -6370,6 +6797,7 @@ bool Job::AddMultichannelHeterogeneousMediumWithPreset(
 		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
 		Scalar(scene_unit_meters), optical_record ) || !medium ) return false;
 	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
 	if( g_cstProductionSink ) {
 		g_cstProductionSink->push_back(static_cast<const void*>(medium));
 	}
@@ -9678,9 +10106,11 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 	bool radianceClampEnabled = false;
 	bool pathRegularizationEnabled = false;
 	bool smsEnabled = false;
+	const RasterizerParams* resolvedParams = 0;
 	const RasterizerRegistry::const_iterator active =
 		rasterizerRegistry.find(activeRasterizerName);
 	if( active != rasterizerRegistry.end() ) {
+		resolvedParams = &active->second.params;
 		wavelengthMin = active->second.params.spectral.nmBegin;
 		wavelengthMax = active->second.params.spectral.nmEnd;
 		useHWSS = active->second.params.spectral.useHWSS;
@@ -9691,9 +10121,18 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 		pathRegularizationEnabled = active->second.params.stability.filterGlossy > Scalar(0);
 		smsEnabled = active->second.params.sms.enabled;
 	}
+	RISECBOR64::Bytes resolvedConfig;
+	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
+		*resolvedParams,activeRasterizerName.c_str(),*pScene,
+		pRasterizer->GetFrameStore(),resolvedConfig)) ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: fire render has no canonical resolved configuration");
+		return false;
+	}
 	return PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
 		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
-		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,publishMetadata);
+		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,resolvedConfig,
+		publishMetadata);
 }
 
 bool Job::PrepareFireRenderForExternalRasterizer(
@@ -9704,10 +10143,20 @@ bool Job::PrepareFireRenderForExternalRasterizer(
 	const bool pathRegularizationEnabled,
 	const bool smsEnabled )
 {
+	RasterizerParams external;
+	external.oidnDenoise = oidnDenoise;
+	external.stability.directClamp = radianceClampEnabled ? Scalar(1) : Scalar(0);
+	external.stability.filterGlossy = pathRegularizationEnabled ? Scalar(1) : Scalar(0);
+	external.sms.enabled = smsEnabled;
+	external.spectral.nmBegin = Scalar(380);
+	external.spectral.nmEnd = Scalar(780);
+	RISECBOR64::Bytes resolvedConfig;
+	if( !pScene || !BuildResolvedRenderConfig(external,rasterizerKind ? rasterizerKind : "",
+		*pScene,rasterizer ? rasterizer->GetFrameStore() : 0,resolvedConfig) ) return false;
 	return PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,oidnDenoise,radianceClampEnabled,
-		pathRegularizationEnabled,smsEnabled,true);
+		pathRegularizationEnabled,smsEnabled,resolvedConfig,true);
 }
 
 bool Job::PrepareFireRenderFidelityMetadata(
@@ -9721,32 +10170,52 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	const bool radianceClampEnabled,
 	const bool pathRegularizationEnabled,
 	const bool smsEnabled,
+	const std::vector<unsigned char>& resolvedConfig,
 	const bool publishMetadata )
 {
 	if( !pScene || !rasterizer ) {
 		return false;
 	}
 
+	struct ActiveMediumBinding
+	{
+		const IMedium* medium;
+		std::string bindingKind;
+		std::string bindingOwner;
+	};
+	std::vector<ActiveMediumBinding> activeBindings;
 	std::set<const IMedium*> activeMedia;
 	if( const IMedium* global = pScene->GetGlobalMedium() ) {
 		activeMedia.insert(global);
+		activeBindings.push_back(ActiveMediumBinding{
+			global,"global_medium","scene"});
 	}
-	struct InteriorMediumCollector : public IEnumCallback<IObject>
+	struct InteriorMediumCollector : public IEnumCallback<const char*>
 	{
+		const IObjectManager& objects;
 		std::set<const IMedium*>& media;
-		explicit InteriorMediumCollector( std::set<const IMedium*>& target )
-			: media(target) {}
-		bool operator()( const IObject& object ) override
+		std::vector<ActiveMediumBinding>& bindings;
+		InteriorMediumCollector(
+			const IObjectManager& objectManager,
+			std::set<const IMedium*>& target,
+			std::vector<ActiveMediumBinding>& targetBindings )
+			: objects(objectManager), media(target), bindings(targetBindings) {}
+		bool operator()( const char* const& name ) override
 		{
-			if( const IMedium* interior = object.GetInteriorMedium() ) {
+			const IObject* object = objects.GetItem(name);
+			if( object ) {
+				const IMedium* interior = object->GetInteriorMedium();
+				if( !interior ) return true;
 				media.insert(interior);
+				bindings.push_back(ActiveMediumBinding{
+					interior,"object_interior_medium",name ? name : ""});
 			}
 			return true;
 		}
 	};
 	if( const IObjectManager* objects = pScene->GetObjects() ) {
-		InteriorMediumCollector collector(activeMedia);
-		objects->EnumerateObjects(collector);
+		InteriorMediumCollector collector(*objects,activeMedia,activeBindings);
+		objects->EnumerateItemNames(collector);
 	}
 
 	std::set<std::string> recordIds;
@@ -9757,6 +10226,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	bool invalidFidelityMetadata = false;
 	bool missingOpticalRecord = false;
 	bool hasFireMedia = false;
+	std::vector<FrameStoreOutput::ActiveFireMedium> fireMediaMetadata;
 	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
 		medium != activeMedia.end(); ++medium ) {
 		if( !(*medium)->IsFireMedium() ) {
@@ -9799,6 +10269,41 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			reasons.insert(reason);
 		}
 	}
+	for( std::vector<ActiveMediumBinding>::const_iterator binding=activeBindings.begin();
+		binding!=activeBindings.end(); ++binding ) {
+		if( !binding->medium->IsFireMedium() ) continue;
+		std::string managerName;
+		for( MediumMap::const_iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
+			if( named->second == binding->medium ) {
+				managerName = named->first.c_str();
+				break;
+			}
+		}
+		const std::map<const IMedium*,std::string>::const_iterator digest =
+			fireAuthoredConfigDigests.find(binding->medium);
+		if( managerName.empty() || digest == fireAuthoredConfigDigests.end() ||
+			digest->second.empty() ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+			continue;
+		}
+		FrameStoreOutput::ActiveFireMedium item;
+		item.mediaKind = "static_authored";
+		item.managerName = managerName;
+		item.bindingKind = binding->bindingKind;
+		item.bindingOwner = binding->bindingOwner;
+		item.authoredConfigDigest = digest->second;
+		const char* recordId = binding->medium->GetFireOpticsRecordId();
+		if( recordId && recordId[0] ) item.opticalRecordIds.push_back(recordId);
+		fireMediaMetadata.push_back(item);
+	}
+	std::sort(fireMediaMetadata.begin(),fireMediaMetadata.end(),
+		[]( const FrameStoreOutput::ActiveFireMedium& lhs,
+			const FrameStoreOutput::ActiveFireMedium& rhs ) {
+			if( lhs.managerName != rhs.managerName ) return lhs.managerName < rhs.managerName;
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			return lhs.bindingOwner < rhs.bindingOwner;
+		});
 	bool unsupportedIntegrator = false;
 	bool transportPreview = false;
 	if( hasFireMedia ) {
@@ -9866,9 +10371,18 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	if( publishMetadata ) {
 		FrameStore* store = rasterizer->GetFrameStore();
 		if( !store ) return true;
+		RISECBOR64::Bytes rendererBuild;
+		std::string rendererBuildId;
+		if( resolvedConfig.empty() ||
+			!BuildRendererBuildIdentity(rendererBuild,rendererBuildId) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render output provenance metadata is unavailable");
+			return false;
+		}
 		store->SetFireFidelityMetadata(status,
 			std::vector<std::string>(reasons.begin(),reasons.end()),
-			std::vector<std::string>(recordIds.begin(),recordIds.end()));
+			std::vector<std::string>(recordIds.begin(),recordIds.end()),
+			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);
 	}
 	return true;
 }

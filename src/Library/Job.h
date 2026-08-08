@@ -198,6 +198,7 @@ namespace RISE
 			bool radianceClampEnabled,
 			bool pathRegularizationEnabled,
 			bool smsEnabled,
+			const std::vector<unsigned char>& resolvedConfig,
 			bool publishMetadata );
 
 	public:
@@ -307,6 +308,7 @@ namespace RISE
 
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
+		std::map<const IMedium*, std::string>		fireAuthoredConfigDigests;
 		bool										m_firePredictiveRequested = false;
 
 		// Materials registered via a composing factory
