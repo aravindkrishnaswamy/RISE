@@ -20,6 +20,7 @@
 #include "../Utilities/PlanckRadiance.h"
 #include "../Utilities/GaussLegendreQuadrature.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/RISECBOR64.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
@@ -2238,6 +2239,58 @@ bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(
 		return false;
 	}
 	m_effectiveAbsorptionAblation = ablation;
+	return true;
+}
+
+bool MultichannelHeterogeneousMedium::BuildBakedChannelDigest(
+	std::string& digest
+	) const
+{
+	digest.clear();
+	if( !m_valid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
+	using RISECBOR64::Value;
+	Value::Values channels;
+	const auto appendChannel = [this,&channels](
+		const char* name, const IVolumeAccessor* accessor ) {
+		if( !accessor ) return true;
+		Value::Values values;
+		values.reserve(static_cast<std::size_t>(m_volWidth)*m_volHeight*m_volDepth);
+		const int halfW = static_cast<int>(m_volWidth/2u);
+		const int halfH = static_cast<int>(m_volHeight/2u);
+		const int halfD = static_cast<int>(m_volDepth/2u);
+		for( int z=-halfD; z<static_cast<int>(m_volDepth)-halfD; ++z ) {
+			for( int y=-halfH; y<static_cast<int>(m_volHeight)-halfH; ++y ) {
+				for( int x=-halfW; x<static_cast<int>(m_volWidth)-halfW; ++x ) {
+					const Scalar sample = accessor->GetValue(x,y,z);
+					if( !RISE::IsFiniteDouble(sample) ) return false;
+					values.push_back(Value::Float(sample));
+				}
+			}
+		}
+		channels.push_back(Value::MapValue({
+			{ "name", Value::String(name) },
+			{ "values_z_y_x", Value::ArrayValue(values) }
+		}));
+		return true;
+	};
+	if( !appendChannel("carbon",m_pCarbonAccessor) ||
+		!appendChannel("temperature",m_pTemperatureAccessor) ||
+		!appendChannel("condensed",m_pCondensedAccessor) ||
+		!appendChannel("chem_ch",m_pChemAccessor[0]) ||
+		!appendChannel("chem_c2",m_pChemAccessor[1]) ||
+		!appendChannel("chem_co2",m_pChemAccessor[2]) ) return false;
+	const Value record = Value::MapValue({
+		{ "channels", Value::ArrayValue(channels) },
+		{ "dimensions", Value::ArrayValue({
+			Value::Unsigned(m_volWidth), Value::Unsigned(m_volHeight),
+			Value::Unsigned(m_volDepth) }) },
+		{ "record_kind", Value::String("static_fire_medium_bakes_v1") },
+		{ "schema_version", Value::Unsigned(1) }
+	});
+	RISECBOR64::Bytes bytes;
+	std::string error;
+	if( !RISECBOR64::Encode(record,bytes,&error) ) return false;
+	digest = RISECBOR64::SHA256Hex(bytes);
 	return true;
 }
 

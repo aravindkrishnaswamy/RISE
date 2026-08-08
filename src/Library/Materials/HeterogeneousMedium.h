@@ -58,6 +58,7 @@
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/MajorantGrid.h"
+#include <string>
 #include "../Utilities/AliasTable.h"
 #include "../Utilities/FireOptics.h"
 #include <vector>
@@ -589,6 +590,7 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
+		bool BuildBakedChannelDigest( std::string& digest ) const;
 		// Test-only controlled ablation; set before Rasterize launches workers.
 		bool ForTest_SetEffectiveAbsorptionAblation(
 			const EffectiveAbsorptionAblation ablation );

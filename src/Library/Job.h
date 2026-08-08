@@ -309,7 +309,12 @@ namespace RISE
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
 		std::map<const IMedium*, std::string>		fireAuthoredConfigDigests;
+		std::map<const IFunction1D*, std::string>		fireFunction1DDefinitionDigests;
 		bool										m_firePredictiveRequested = false;
+		std::string FinalizeFireAuthoredConfigDigest(
+			const IMedium& medium,
+			const std::string& authoredParameterDigest,
+			const IFunction1D* const chemSPDs[3] );
 
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)

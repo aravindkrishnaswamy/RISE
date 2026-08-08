@@ -2321,7 +2321,8 @@ namespace
 			const bool useHWSS = false,
 			const char* fidelityMode = "preview",
 			const bool unqualifiedConfig = false,
-			const bool includeFire = true ) {
+			const bool includeFire = true,
+			const double carbonValue = 1.0 ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2350,7 +2351,7 @@ namespace
 				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n";
 			if( includeFire ) {
 				output <<
-				"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
+				"scalar_painter\n{\nname carbon\nvalue " << carbonValue << "\n}\n\n"
 				"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
 				"multichannel_heterogeneous_medium\n{\nname fire\nchannel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\noptical_record fire_optics_v1\n}\n\n"
 				"global_medium\n{\nmedium fire\n}\n";
@@ -2406,6 +2407,28 @@ namespace
 				metadata.rendererBuildId ==
 					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
 				"resolved-config categories and exact renderer-build preimage are canonical" );
+
+			const std::string originalAuthoredDigest =
+				metadata.activeFireMedia.empty() ? std::string() :
+				metadata.activeFireMedia[0].authoredConfigDigest;
+			writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",false,true,2.0);
+			IJobPriv* changedBakeJob = nullptr;
+			RISE_CreateJobPriv(&changedBakeJob);
+			const bool changedBakeLoaded = changedBakeJob &&
+				changedBakeJob->LoadAsciiSceneViaCst(path.string().c_str());
+			const bool changedBakeRendered = changedBakeLoaded && changedBakeJob->Rasterize();
+			Implementation::FrameStore* changedBakeStore = changedBakeRendered ?
+				changedBakeJob->GetRasterizer()->GetFrameStore() : nullptr;
+			const FrameStoreOutput::Metadata changedBakeMetadata = changedBakeStore ?
+				changedBakeStore->Meta() : FrameStoreOutput::Metadata();
+			Check( !originalAuthoredDigest.empty() &&
+				changedBakeMetadata.activeFireMedia.size() == 1u &&
+				changedBakeMetadata.activeFireMedia[0].managerName == "fire" &&
+				changedBakeMetadata.activeFireMedia[0].authoredConfigDigest !=
+					originalAuthoredDigest,
+				"same-named static media with different frozen channel bakes have distinct identities" );
+			safe_release(changedBakeJob);
+			writeScene("pathtracing_spectral_rasterizer",380u);
 
 			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
 			ThrowingFrameObserver throwingObserver;
