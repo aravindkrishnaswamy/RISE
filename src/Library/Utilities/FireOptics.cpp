@@ -134,6 +134,7 @@ namespace RISE
 		bool ValidateSourceEnvelope(
 			const RISECBOR64::Value& envelope,
 			double& value,
+			const char* requiredKind,
 			std::string* error
 			);
 
@@ -141,12 +142,14 @@ namespace RISE
 			const RISECBOR64::Value& map,
 			const char* key,
 			double& result,
+			const char* requiredKind,
 			std::string* error
 			)
 		{
 			const RISECBOR64::Value* envelope = Required(
 				map,key,RISECBOR64::Value::Map,error );
-			return envelope && ValidateSourceEnvelope(*envelope,result,error);
+			return envelope && ValidateSourceEnvelope(
+				*envelope,result,requiredKind,error);
 		}
 
 		bool ReadText(
@@ -176,6 +179,7 @@ namespace RISE
 		bool ValidateUncertainty(
 			const RISECBOR64::Value& uncertainty,
 			const char* requiredKind,
+			const bool scalarEnvelope,
 			std::string* error
 			)
 		{
@@ -192,8 +196,12 @@ namespace RISE
 			for( std::size_t i=0; i<sizeof(allowedKinds)/sizeof(allowedKinds[0]); ++i ) {
 				allowed = allowed || kind == allowedKinds[i];
 			}
-			if( !allowed || (requiredKind && kind != requiredKind) ) {
+			if( !allowed ) {
 				return Fail(error, "fire-optics uncertainty kind is not schema draft-2");
+			}
+			if( requiredKind && kind != requiredKind ) {
+				return Fail(error,
+					"fire-optics source scalar uncertainty kind does not match the frozen record");
 			}
 			const RISECBOR64::Value* magnitude = uncertainty.Find("magnitude");
 			if( !magnitude || magnitude->GetType() == RISECBOR64::Value::Null ||
@@ -209,6 +217,52 @@ namespace RISE
 			if( kind == "assumption_bound" &&
 				!Required(uncertainty, "basis", RISECBOR64::Value::Text, error) ) {
 				return Fail(error, "fire-optics assumption bound is missing its basis");
+			}
+			if( scalarEnvelope ) {
+				auto orderedPair = [error]( const RISECBOR64::Value& candidate ) {
+					if( candidate.GetType() != RISECBOR64::Value::Array ||
+						candidate.GetArray().size() != 2 ) {
+						return Fail(error,
+							"fire-optics source scalar uncertainty magnitude is malformed");
+					}
+					for( const RISECBOR64::Value& endpoint : candidate.GetArray() ) {
+						if( endpoint.GetType() != RISECBOR64::Value::Float64 &&
+							endpoint.GetType() != RISECBOR64::Value::UnsignedInteger &&
+							endpoint.GetType() != RISECBOR64::Value::NegativeInteger ) {
+							return Fail(error,
+								"fire-optics source scalar uncertainty magnitude is malformed");
+						}
+					}
+					double lower = 0.0, upper = 0.0;
+					return ReadNumberValue(candidate.GetArray()[0],lower,error) &&
+						ReadNumberValue(candidate.GetArray()[1],upper,error) &&
+						(lower <= upper || Fail(error,
+							"fire-optics source scalar uncertainty range is not ordered"));
+				};
+				auto nonnegativeNumber = [error]( const RISECBOR64::Value& candidate ) {
+					if( candidate.GetType() != RISECBOR64::Value::Float64 &&
+						candidate.GetType() != RISECBOR64::Value::UnsignedInteger &&
+						candidate.GetType() != RISECBOR64::Value::NegativeInteger ) {
+						return Fail(error,
+							"fire-optics source scalar uncertainty magnitude is malformed");
+					}
+					double value = 0.0;
+					return ReadNumberValue(candidate,value,error) &&
+						(value >= 0.0 || Fail(error,
+							"fire-optics source scalar uncertainty magnitude is negative"));
+				};
+				if( kind == "range" ||
+					kind == "computed_range_from_input_sensitivity" ) {
+					if( !orderedPair(*magnitude) ) return false;
+				} else if( kind == "assumption_bound" ) {
+					if( magnitude->GetType() == RISECBOR64::Value::Array ) {
+						if( !orderedPair(*magnitude) ) return false;
+					} else if( !nonnegativeNumber(*magnitude) ) {
+						return false;
+					}
+				} else if( !nonnegativeNumber(*magnitude) ) {
+					return false;
+				}
 			}
 			return true;
 		}
@@ -231,7 +285,7 @@ namespace RISE
 				!Required(*provenance, "access", RISECBOR64::Value::Text, error) ||
 				!Required(*provenance, "secondary_source",
 					RISECBOR64::Value::Boolean, error) ||
-				!ValidateUncertainty(*uncertainty, "synthetic_exact", error) ) {
+				!ValidateUncertainty(*uncertainty, "synthetic_exact", true, error) ) {
 				return Fail(error, "fire-optics synthetic fixture metadata envelope is incomplete");
 			}
 			return true;
@@ -240,6 +294,7 @@ namespace RISE
 		bool ValidateSourceEnvelope(
 			const RISECBOR64::Value& envelope,
 			double& value,
+			const char* requiredKind,
 			std::string* error
 			)
 		{
@@ -254,12 +309,11 @@ namespace RISE
 				!Required(*provenance,"locator",RISECBOR64::Value::Text,error) ||
 				!Required(*provenance,"access",RISECBOR64::Value::Text,error) ||
 				!Required(*provenance,"secondary_source",
-					RISECBOR64::Value::Boolean,error) ||
-				!ValidateUncertainty(*uncertainty,0,error) ) {
+					RISECBOR64::Value::Boolean,error) ) {
 				return Fail(error,
 					"fire-optics source scalar metadata envelope is incomplete");
 			}
-			return true;
+			return ValidateUncertainty(*uncertainty,requiredKind,true,error);
 		}
 
 		bool ReadEnvelopedFixtureFloat(
@@ -286,7 +340,7 @@ namespace RISE
 				granularity != "per_table" ||
 				!Required(metadata, "applicability", RISECBOR64::Value::Text, error) ||
 				!Required(metadata, "provenance", RISECBOR64::Value::Text, error) ||
-				!uncertainty || !ValidateUncertainty(*uncertainty, 0, error) ) {
+				!uncertainty || !ValidateUncertainty(*uncertainty, 0, false, error) ) {
 				return Fail(error, "fire-optics table metadata is incomplete");
 			}
 			return true;
@@ -483,7 +537,7 @@ namespace RISE
 			std::string form, consistencyRequirement, provenance;
 			std::vector<double> band;
 			if( !uncertainty ||
-				!ValidateUncertainty(*uncertainty, "design_pinned_exact", error) ||
+				!ValidateUncertainty(*uncertainty, "design_pinned_exact", true, error) ||
 				!ReadText(*hotPhi, "form", form, error) ||
 				!ReadText(*hotPhi, "consistency_requirement", consistencyRequirement, error) ||
 				!ReadText(*hotPhi, "provenance", provenance, error) ||
@@ -684,7 +738,7 @@ namespace RISE
 					"fire-optics operational effective absorption differs from its source record");
 			}
 			if( !ReadSourceEnvelopeNumber(*effectiveDefinition,"pinned_density_g_cm3",
-				sourceDensity,error) ) return false;
+				sourceDensity,"range",error) ) return false;
 			if( sourceDensity != density ||
 				!RowsExactlyEqual(effectiveRows,sourceEffectiveRows) ) {
 				return Fail(error,
@@ -753,15 +807,17 @@ namespace RISE
 					"fire-optics operational cool-carbon values differ from their source record");
 			}
 			if( !ReadSourceEnvelopeNumber(*coolValues,
-					"k_m_extinction_633nm_m2_per_g",sourceCoolKm,error) ||
+					"k_m_extinction_633nm_m2_per_g",sourceCoolKm,"expanded_95",error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,
-					"MAC_absorption_550nm_m2_per_g",sourceCoolMAC,error) ||
+					"MAC_absorption_550nm_m2_per_g",sourceCoolMAC,"measured_1sigma",error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"density_g_cm3",
-					sourceCoolDensity,error) ||
-				!ReadSourceEnvelopeNumber(*coolValues,"omega_633nm",sourceCoolOmega,error) ||
-				!ReadSourceEnvelopeNumber(*coolValues,"g_asymmetry",sourceCoolG,error) ||
+					sourceCoolDensity,"range",error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"omega_633nm",sourceCoolOmega,
+					"range",error) ||
+				!ReadSourceEnvelopeNumber(*coolValues,"g_asymmetry",sourceCoolG,
+					"computed_range_from_input_sensitivity",error) ||
 				!ReadSourceEnvelopeNumber(*coolValues,"n_spectral_exponent",
-					sourceCoolExponent,error) ) return false;
+					sourceCoolExponent,"range",error) ) return false;
 			const RISECBOR64::Value* sourceExponentUncertainty = Required(
 				*sourceExponent,"uncertainty",RISECBOR64::Value::Map,error );
 			if( !sourceExponentUncertainty ) return false;
@@ -797,7 +853,7 @@ namespace RISE
 			if( condensedTable && !ValidateColumns(*condensedTable,condensedColumns,4,
 				"source condensed-organics table",error) ) return false;
 			if( !condensedMieInputs || !ReadSourceEnvelopeNumber(*condensedMieInputs,
-				"brown_carbon_AAE",sourceBrownCarbonAAE,error) ) return false;
+				"brown_carbon_AAE",sourceBrownCarbonAAE,"range",error) ) return false;
 			if( !condensedComputed || !condensedTable || !irClosure ||
 				!sourceCondensedMetadata ||
 				!ReadSourceRows(*condensedTable,4,sourceCondensedRows,error) ||
@@ -1205,6 +1261,14 @@ namespace RISE
 					*sourceCondensed, error) ) {
 				return Fail(error, "fire-optics canonical source record metadata is incomplete");
 			}
+			if( !Required(*sourceEffective, "quantity_semantics",
+					RISECBOR64::Value::Text, error) ||
+				!Required(*sourceHot, "applies_to", RISECBOR64::Value::Text, error) ||
+				!Required(*sourceCool, "applies_to", RISECBOR64::Value::Text, error) ||
+				!Required(*sourceCondensed, "applies_to", RISECBOR64::Value::Text, error) ) {
+				return Fail(error,
+					"fire-optics source record required quantity_semantics/applicability metadata is incomplete");
+			}
 			std::string effectiveVersion, hotVersion, coolVersion, condensedVersion;
 			std::string effectiveStatus;
 			if( !ReadText(*sourceEffective, "version", effectiveVersion, error) ||
@@ -1290,6 +1354,24 @@ namespace RISE
 			!ReadFloat(*effective, "pinned_density_g_cm3", m_densityGCM3, error) ||
 			m_densityGCM3 <= 0.0 ) {
 			return false;
+		}
+		if( recordClass == "predictive_optical_preset" ) {
+			double hotDomainMinNM = 0.0, hotDomainMaxNM = 0.0;
+			double condensedDomainMinNM = 0.0, condensedDomainMaxNM = 0.0;
+			if( !ReadDomain(*hot,hotDomainMinNM,hotDomainMaxNM,error) ||
+				!ReadDomain(*condensed,condensedDomainMinNM,
+					condensedDomainMaxNM,error) ) {
+				return false;
+			}
+			if( hotDomainMinNM != m_domainMinNM || hotDomainMaxNM != m_domainMaxNM ) {
+				return Fail(error,
+					"fire-optics hot-soot certified domain differs from the record domain");
+			}
+			if( condensedDomainMinNM != m_domainMinNM ||
+				condensedDomainMaxNM != m_domainMaxNM ) {
+				return Fail(error,
+					"fire-optics condensed-organics certified domain differs from the record domain");
+			}
 		}
 		if( sourceHot && sourceCool ) {
 			const RISECBOR64::Value* sourceHotPhi = Required(
@@ -1665,8 +1747,9 @@ namespace RISE
 					!CanonicallyEqual(*densityMetadata,*sourceDensityEnvelope,error) ||
 					!CanonicallyEqual(*coolKmMetadata,*sourceCoolKmEnvelope,error) ||
 					!CanonicallyEqual(*condensedKmMetadata,*sourceCondensedMetadata,error) ||
-					!ValidateSourceEnvelope(*sourceDensityEnvelope,sourceDensity,error) ||
-					!ValidateSourceEnvelope(*sourceCoolKmEnvelope,sourceCoolKm,error) ||
+					!ValidateSourceEnvelope(*sourceDensityEnvelope,sourceDensity,"range",error) ||
+					!ValidateSourceEnvelope(*sourceCoolKmEnvelope,sourceCoolKm,
+						"expanded_95",error) ||
 					!ValidateTableMetadata(*sourceCondensedMetadata,error) ||
 					!ReadSourceRows(*sourceCondensedTable,4,sourceCondensedRows,error) ) {
 					return Fail(error,
@@ -2101,7 +2184,8 @@ namespace RISE
 		if( !predictiveRequested ) {
 			result.reasonCodes.push_back("requested_preview");
 		}
-		if( IsSynthetic() ) {
+		if( IsSynthetic() || (m_recordClass == PredictiveOpticalPreset &&
+			m_recordId != PredictiveV1().RecordId()) ) {
 			result.reasonCodes.push_back("qualified_record_override");
 		}
 		std::sort(result.reasonCodes.begin(), result.reasonCodes.end());

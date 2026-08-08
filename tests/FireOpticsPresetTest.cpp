@@ -704,6 +704,11 @@ int main()
 		const RISECBOR64::Value* sourceEffectiveTable = sourceEffective ?
 			sourceEffective->Find("table") : 0;
 		if( sourceEffective && sourceEffectiveTable ) {
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				ReplaceMember(*sourceRecords,"effective_absorption",
+					RemoveMember(*sourceEffective,"quantity_semantics"))),
+				"quantity_semantics"),
+				"the effective source requires its record-level quantity semantics" );
 			const RISECBOR64::Value* sourceEffectiveMetadata =
 				sourceEffectiveTable->Find("table_metadata");
 			const RISECBOR64::Value* operationalEffective =
@@ -741,7 +746,9 @@ int main()
 				FireOpticsPreset coordinatedPreset;
 				Check( RISECBOR64::Encode(coordinated,coordinatedBytes,&mutationError) &&
 					coordinatedPreset.LoadCanonicalRecord(coordinatedBytes,&mutationError) &&
-					coordinatedPreset.RecordId() != predictive.RecordId(),
+					coordinatedPreset.RecordId() != predictive.RecordId() &&
+					HasReason(coordinatedPreset.EvaluateFidelity(false,false,false),
+						"qualified_record_override"),
 					"a coordinated complete table-metadata change remains loadable with a new ID" );
 			} else {
 				Check(false,"effective table metadata is present on source and operation");
@@ -772,6 +779,31 @@ int main()
 							changedEffectiveEnvelope)),
 						"source scalar metadata envelope is incomplete"),
 						"the pinned-density source requires provenance and uncertainty metadata" );
+				}
+				const RISECBOR64::Value* uncertainty = sourceDensity->Find("uncertainty");
+				if( uncertainty ) {
+					const RISECBOR64::Value wrongKind = ReplaceMember(*uncertainty,"kind",
+						RISECBOR64::Value::String("expanded_95"));
+					const RISECBOR64::Value malformedMagnitude = ReplaceMember(*uncertainty,
+						"magnitude",RISECBOR64::Value::String("unknown"));
+					for( const RISECBOR64::Value& changedUncertainty :
+						{ wrongKind, malformedMagnitude } ) {
+						const RISECBOR64::Value changedDefinition = ReplaceMember(
+							*sourceDefinition,"pinned_density_g_cm3",
+							ReplaceMember(*sourceDensity,"uncertainty",changedUncertainty));
+						const RISECBOR64::Value changedEffectiveEnvelope = ReplaceMember(
+							*sourceEffective,"definition",changedDefinition);
+						Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+							ReplaceMember(*sourceRecords,"effective_absorption",
+								changedEffectiveEnvelope)),
+							changedUncertainty.Find("kind") &&
+								changedUncertainty.Find("kind")->GetText() == "expanded_95" ?
+								"uncertainty kind does not match" :
+								"uncertainty magnitude is malformed"),
+							"the pinned-density uncertainty kind and shape are frozen" );
+					}
+				} else {
+					Check(false,"effective-absorption density uncertainty is present");
 				}
 			} else {
 				Check(false,"effective-absorption density envelope is present");
@@ -866,6 +898,27 @@ int main()
 						"source scalar metadata envelope is incomplete"),
 						"each cool-carbon source scalar requires provenance and uncertainty" );
 				}
+				const RISECBOR64::Value* uncertainty = envelope->Find("uncertainty");
+				if( !uncertainty ) {
+					Check(false,"cool-carbon scalar uncertainty is present");
+					continue;
+				}
+				const RISECBOR64::Value wrongKind = ReplaceMember(*uncertainty,"kind",
+					RISECBOR64::Value::String("synthetic_exact"));
+				const RISECBOR64::Value malformedMagnitude = ReplaceMember(*uncertainty,
+					"magnitude",RISECBOR64::Value::String("unknown"));
+				const RISECBOR64::Value mutations[] = { wrongKind, malformedMagnitude };
+				const char* errors[] = {
+					"uncertainty kind does not match", "uncertainty magnitude is malformed" };
+				for( std::size_t i=0; i<2; ++i ) {
+					const RISECBOR64::Value changedValues = ReplaceMember(*sourceValues,key,
+						ReplaceMember(*envelope,"uncertainty",mutations[i]));
+					const RISECBOR64::Value changedCool = ReplaceMember(*sourceCool,
+						"values",changedValues);
+					Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"cool_carbon",changedCool)),errors[i]),
+						"each cool-carbon uncertainty kind and magnitude shape are frozen" );
+				}
 			}
 		} else {
 			Check(false,"cool-carbon source scalar envelopes are present");
@@ -942,6 +995,29 @@ int main()
 						"source scalar metadata envelope is incomplete"),
 						"brown-carbon AAE requires provenance and uncertainty metadata" );
 				}
+				const RISECBOR64::Value* uncertainty = brownCarbonAAE->Find("uncertainty");
+				if( uncertainty ) {
+					const RISECBOR64::Value mutations[] = {
+						ReplaceMember(*uncertainty,"kind",
+							RISECBOR64::Value::String("measured_1sigma")),
+						ReplaceMember(*uncertainty,"magnitude",
+							RISECBOR64::Value::String("unknown")) };
+					const char* errors[] = {
+						"uncertainty kind does not match", "uncertainty magnitude is malformed" };
+					for( std::size_t i=0; i<2; ++i ) {
+						const RISECBOR64::Value changedInputs = ReplaceMember(*mieInputs,
+							"brown_carbon_AAE",ReplaceMember(*brownCarbonAAE,
+								"uncertainty",mutations[i]));
+						const RISECBOR64::Value changedSource = ReplaceMember(*sourceCondensed,
+							"mie_inputs",changedInputs);
+						Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+							ReplaceMember(*sourceRecords,"condensed_organics",changedSource)),
+							errors[i]),
+							"brown-carbon AAE uncertainty kind and shape are frozen" );
+					}
+				} else {
+					Check(false,"brown-carbon AAE uncertainty is present");
+				}
 			} else {
 				Check(false,"brown-carbon AAE source envelope is present");
 			}
@@ -968,6 +1044,22 @@ int main()
 	const RISECBOR64::Value* predictiveCondensed =
 		decodedPredictive.Find("condensed_organics");
 	if( predictiveEffective && predictiveHot && cool && predictiveCondensed ) {
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+			ReplaceFloatArrayElement(*predictiveHot,"domain_nm",0,381.0)),
+			"hot-soot certified domain differs"),
+			"a hot-soot certified-domain lower-bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"hot_soot",
+			ReplaceFloatArrayElement(*predictiveHot,"domain_nm",1,779.0)),
+			"hot-soot certified domain differs"),
+			"a hot-soot certified-domain upper-bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
+			ReplaceFloatArrayElement(*predictiveCondensed,"domain_nm",0,381.0)),
+			"condensed-organics certified domain differs"),
+			"a condensed-organics certified-domain lower-bound mutation is rejected" );
+		Check( RejectsWith(ReplaceMember(decodedPredictive,"condensed_organics",
+			ReplaceFloatArrayElement(*predictiveCondensed,"domain_nm",1,779.0)),
+			"condensed-organics certified domain differs"),
+			"a condensed-organics certified-domain upper-bound mutation is rejected" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
 			ReplaceTextArrayElement(*predictiveEffective,"columns",2,"MAC_kg_per_m2")),
 			"operational effective-absorption table columns do not match"),
@@ -1141,6 +1233,7 @@ int main()
 		HasReason(preview,"requested_preview") && HasReason(preview,"producer_unqualified") &&
 		HasReason(preview,"chem_none_unqualified") &&
 		HasReason(preview,"condensed_organics_ir_unclosed") &&
+		!HasReason(preview,"qualified_record_override") &&
 		!HasReason(preview,"table_domain_exceeded") &&
 		std::is_sorted(preview.reasonCodes.begin(),preview.reasonCodes.end()) &&
 		std::adjacent_find(preview.reasonCodes.begin(),preview.reasonCodes.end()) ==
