@@ -111,3 +111,5 @@ Ratification checklist for the design loop: adopt P-1's enum member,
 P-2's tagged variant, P-3's delegation rule + `renderer_build_v1`, and
 P-4's preimage; resolve P-4's mirroring choice if the implementation has
 not already reported which branch it took.
+
+Implementation chose P-4's attribute-stripped hashing branch.

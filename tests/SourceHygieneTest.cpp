@@ -55,6 +55,7 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <regex>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -538,6 +539,80 @@ int main()
 				!= std::string::npos,
 				std::string(guiNames[i])+
 				" GUI SaveAs requests linear FP32 from HDR encoders" );
+		}
+	}
+
+	// FIRE_OUTPUT_PROVENANCE_PIN_V1 P-3 parameter-surface ratchet.  The
+	// expected member names are derived from the structs themselves: a new
+	// render-affecting field fails until BuildResolvedRenderConfig consumes it.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& path ) {
+			std::ifstream input(path,std::ios::binary);
+			return std::string(std::istreambuf_iterator<char>(input),
+				std::istreambuf_iterator<char>());
+		};
+		auto braceBody = []( const std::string& source, const std::string& marker ) {
+			const std::string code = StripCommentsPreservingLayout(source);
+			const std::size_t markerAt = code.find(marker);
+			const std::size_t open = markerAt == std::string::npos ?
+				std::string::npos : code.find('{',markerAt);
+			if( open == std::string::npos ) return std::string();
+			unsigned int depth = 1u;
+			for( std::size_t i=open+1u; i<code.size(); ++i ) {
+				if( code[i] == '{' ) ++depth;
+				else if( code[i] == '}' && --depth == 0u ) {
+					return code.substr(open+1u,i-open-1u);
+				}
+			}
+			return std::string();
+		};
+		auto members = []( std::string body, const std::string& constructor ) {
+			const std::size_t constructorAt = body.find(constructor+"(");
+			if( constructorAt != std::string::npos ) body.resize(constructorAt);
+			const std::regex declaration(
+				R"(^\s*[A-Za-z_:][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_:][A-Za-z0-9_:<>]*)*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?;\s*$)" );
+			std::vector<std::string> result;
+			std::istringstream lines(body);
+			std::string line;
+			std::smatch match;
+			while( std::getline(lines,line) ) {
+				if( std::regex_match(line,match,declaration) ) result.push_back(match[1].str());
+			}
+			return result;
+		};
+		const std::string jobHeader = slurp(repoRoot/"src"/"Library"/"Job.h");
+		const std::string jobSource = slurp(repoRoot/"src"/"Library"/"Job.cpp");
+		const std::string configWriter = braceBody(jobSource,"bool BuildResolvedRenderConfig(");
+		Check( !configWriter.empty(),
+			"resolved render configuration encoder is present" );
+		const std::vector<std::string> topMembers = members(
+			braceBody(jobHeader,"struct RasterizerParams"),"RasterizerParams");
+		for( const std::string& member : topMembers ) {
+			Check( configWriter.find("p."+member) != std::string::npos,
+				"resolved-config schema consumes RasterizerParams::"+member );
+		}
+		struct NestedSurface { const char* file; const char* type; const char* prefix; };
+		const NestedSurface nested[] = {
+			{ "RadianceMapConfig.h", "RadianceMapConfig", "radianceMap" },
+			{ "PixelFilterConfig.h", "PixelFilterConfig", "pixelFilter" },
+			{ "SMSConfig.h", "SMSConfig", "sms" },
+			{ "SpectralConfig.h", "SpectralConfig", "spectral" },
+			{ "PathGuidingField.h", "PathGuidingConfig", "pathGuiding" },
+			{ "AdaptiveSamplingConfig.h", "AdaptiveSamplingConfig", "adaptive" },
+			{ "StabilityConfig.h", "StabilityConfig", "stability" },
+			{ "ProgressiveConfig.h", "ProgressiveConfig", "progressive" }
+		};
+		for( const NestedSurface& surface : nested ) {
+			const std::string source = slurp(repoRoot/"src"/"Library"/"Utilities"/surface.file);
+			const std::vector<std::string> fields = members(
+				braceBody(source,std::string("struct ")+surface.type),surface.type);
+			Check( !fields.empty(),std::string("located render config surface ")+surface.type );
+			for( const std::string& field : fields ) {
+				Check( configWriter.find(std::string("p.")+surface.prefix+"."+field) !=
+					std::string::npos,
+					std::string("resolved-config schema consumes ")+surface.type+"::"+field );
+			}
 		}
 	}
 

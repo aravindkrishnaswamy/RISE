@@ -10349,6 +10349,32 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		if( pathRegularizationEnabled ) reasons.insert("path_regularization_enabled");
 		if( smsEnabled ) reasons.insert("sms_unqualified");
 	}
+	if( hasFireMedia ) {
+		struct FireFileRouteCollector : public IEnumCallback<IRasterizerOutput>
+		{
+			bool sawFileOutput = false;
+			bool sawPrimary = false;
+			bool derivativeBeforePrimary = false;
+			bool operator()( const IRasterizerOutput& output ) override
+			{
+				const FileRasterizerOutput* file =
+					dynamic_cast<const FileRasterizerOutput*>(&output);
+				if( !file ) return true;
+				sawFileOutput = true;
+				if( file->IsFirePrimaryArtifactRoute() ) {
+					sawPrimary = true;
+				} else if( !sawPrimary ) {
+					derivativeBeforePrimary = true;
+				}
+				return true;
+			}
+		} routes;
+		rasterizer->EnumerateRasterizerOutputs(routes);
+		if( routes.sawFileOutput && (!routes.sawPrimary || routes.derivativeBeforePrimary) ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
+	}
 
 	const bool missingPreviewRequest = hasFireMedia && !m_firePredictiveRequested &&
 		reasons.find("requested_preview") == reasons.end();

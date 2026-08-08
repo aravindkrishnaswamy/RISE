@@ -26,6 +26,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -680,90 +681,155 @@ namespace
 			}
 		}
 		store->EndTile(0,0);
+		using RISECBOR64::Value;
+		RISECBOR64::Bytes configBytes;
+		RISECBOR64::Bytes buildBytes;
+		std::string encodeError;
+		RISECBOR64::Encode(Value::MapValue({
+			{ "aov", Value::MapValue({}) }, { "camera", Value::MapValue({}) },
+			{ "clamp", Value::MapValue({}) }, { "depth", Value::MapValue({}) },
+			{ "film", Value::MapValue({}) }, { "filter", Value::MapValue({}) },
+			{ "integrator", Value::MapValue({}) },
+			{ "record_kind", Value::String("resolved_render_configuration_v1") },
+			{ "sampler", Value::MapValue({}) }, { "schema_version", Value::Unsigned(1) }
+		}),configBytes,&encodeError);
+		RISECBOR64::Encode(Value::MapValue({
+			{ "record_kind", Value::String("renderer_build_v1") },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "source_revision", Value::String("test-build") }
+		}),buildBytes,&encodeError);
+		FrameStoreOutput::ActiveFireMedium medium;
+		medium.mediaKind = "static_authored";
+		medium.managerName = "fire";
+		medium.bindingKind = "global_medium";
+		medium.bindingOwner = "scene";
+		medium.authoredConfigDigest =
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		medium.opticalRecordIds = {
+			"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" };
 		store->SetFireFidelityMetadata("preview",
 			{ "pel_transport", "producer_unqualified", "requested_preview" },
-			{ "2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" });
+			medium.opticalRecordIds,{ medium },configBytes,buildBytes,
+			RISECBOR64::SHA256Hex(buildBytes));
 		return store;
 	}
 
 	void TestFireFidelityProvenanceOutput()
 	{
 		FrameStore* store = MakeFireFidelityStore();
-		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_provenance";
-		const std::string pngFile = pngBase+".png";
-		const std::string sidecarFile = pngFile+".provenance.cbor";
 		EncodeOpts opts;
-		opts.colorSpace = eColorSpace_sRGB;
-		opts.bpp = 8;
-		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName("PNG");
-		FileEncoderObserver* observer = new FileEncoderObserver(
-			store,png,opts,pngBase,false);
-		store->AddObserver(observer);
-		store->MarkFrameComplete(0);
-		store->RemoveObserver(observer);
-		safe_release(observer);
-
-		std::vector<unsigned char> artifactBytes, sidecarBytes;
-		Check( ReadFileAllBytes(pngFile,artifactBytes) && !artifactBytes.empty(),
-			"[fire provenance] preview artifact is written" );
-		Check( ReadFileAllBytes(sidecarFile,sidecarBytes) && !sidecarBytes.empty(),
-			"[fire provenance] sibling canonical sidecar is written" );
-		RISECBOR64::Value provenance;
-		std::string decodeError;
-		const bool decoded = RISECBOR64::DecodeCanonical(
-			sidecarBytes,provenance,&decodeError);
-		Check( decoded,"[fire provenance] sidecar is canonical RISE-CBOR64-v1" );
-		if( decoded ) {
-			const RISECBOR64::Value* status = provenance.Find("render_fidelity_status");
-			const RISECBOR64::Value* reasons = provenance.Find("render_reason_codes");
-			const RISECBOR64::Value* ids =
-				provenance.Find("active_fire_optics_record_ids");
-			const RISECBOR64::Value* digest = provenance.Find("artifact_sha256");
-			Check( status && status->GetText() == "preview" && reasons &&
-				reasons->GetArray().size() == 3u && ids && ids->GetArray().size() == 1u,
-				"[fire provenance] sidecar carries status, reasons, and record identity" );
-			Check( digest && digest->GetText() == RISECBOR64::SHA256Hex(artifactBytes),
-				"[fire provenance] sidecar hashes the exact artifact bytes" );
-		}
-
 #ifndef NO_EXR_SUPPORT
 		const std::string exrBase = MakeTempPathWithoutExt()+"_fire_provenance";
 		const std::string exrFile = exrBase+".exr";
+		const std::string exrSidecar = exrFile+".provenance.cbor";
 		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
 		opts.bpp = 32;
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName("EXR");
-		observer = new FileEncoderObserver(store,exr,opts,exrBase,false);
+		FileEncoderObserver* observer = new FileEncoderObserver(store,exr,opts,exrBase,false);
 		store->AddObserver(observer);
 		store->MarkFrameComplete(0);
 		store->RemoveObserver(observer);
 		safe_release(observer);
+		std::vector<unsigned char> exrBytes, strippedBytes, exrSidecarBytes;
+		RISECBOR64::Value exrEnvelope;
+		std::string decodeError;
+		const bool exrDecoded = ReadFileAllBytes(exrFile,exrBytes) &&
+			ReadFileAllBytes(exrSidecar,exrSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(exrSidecarBytes,exrEnvelope,&decodeError);
+		const RISECBOR64::Value* exrPayload = exrDecoded ? exrEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* exrProvenanceId = exrDecoded ?
+			exrEnvelope.Find("provenance_id") : nullptr;
+		RISECBOR64::Bytes exrPayloadBytes;
+		const bool payloadEncoded = exrPayload &&
+			RISECBOR64::Encode(*exrPayload,exrPayloadBytes,&decodeError);
+		const RISECBOR64::Value* exrFidelity = exrPayload ?
+			exrPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* exrArtifactReasons = exrPayload ?
+			exrPayload->Find("artifact_reason_codes") : nullptr;
+		const RISECBOR64::Value* exrDigest = exrPayload ?
+			exrPayload->Find("artifact_sha256") : nullptr;
+		const bool stripped = StripFireProvenanceEXRAttributes(
+			exrBytes,strippedBytes,decodeError);
+		Check( exrDecoded && payloadEncoded && exrProvenanceId &&
+			exrProvenanceId->GetText() == RISECBOR64::SHA256Hex(exrPayloadBytes) &&
+			exrFidelity && exrFidelity->GetText() == "preview_primary" &&
+			exrArtifactReasons && exrArtifactReasons->GetArray().empty(),
+			"[fire provenance] primary envelope uses the one-preimage ID and preview_primary" );
+		Check( stripped && exrDigest &&
+			exrDigest->GetText() == RISECBOR64::SHA256Hex(strippedBytes) &&
+			store->Meta().primaryProvenanceId == exrProvenanceId->GetText(),
+			"[fire provenance] EXR hash excludes mirrored attributes and binds the retained primary" );
+		std::string verifyError;
+		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
+			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );
+		std::vector<unsigned char> mismatchedEXR = exrBytes;
+		const std::string statusName = "riseFireProv_render_fidelity_status";
+		const std::string previewJSON = "\"preview\"";
+		auto statusPos = std::search(mismatchedEXR.begin(),mismatchedEXR.end(),
+			statusName.begin(),statusName.end());
+		auto statusValue = statusPos == mismatchedEXR.end() ? mismatchedEXR.end() :
+			std::search(statusPos,mismatchedEXR.end(),previewJSON.begin(),previewJSON.end());
+		if( statusValue != mismatchedEXR.end() ) *(statusValue+1) = 'q';
+		Check( statusValue != mismatchedEXR.end() &&
+			!VerifyFireProvenanceEXR(mismatchedEXR,exrSidecarBytes,verifyError) &&
+			verifyError.find("do not match") != std::string::npos,
+			"[fire provenance] verifier rejects an independently mismatched EXR mirror" );
 		bool attributesMatch = false;
 		try {
 			Imf::InputFile input(exrFile.c_str());
 			const Imf::StringAttribute* statusAttribute =
 				input.header().findTypedAttribute<Imf::StringAttribute>(
-					"rise.render_fidelity_status");
-			const Imf::StringAttribute* reasonAttribute =
+					"riseFireProv_render_fidelity_status");
+			const Imf::StringAttribute* digestAttribute =
 				input.header().findTypedAttribute<Imf::StringAttribute>(
-					"rise.render_reason_codes");
+					"riseFireProv_artifact_sha256");
 			const Imf::StringAttribute* idAttribute =
 				input.header().findTypedAttribute<Imf::StringAttribute>(
-					"rise.active_fire_optics_record_ids");
-			attributesMatch = statusAttribute && statusAttribute->value() == "preview" &&
-				reasonAttribute && reasonAttribute->value().find("pel_transport") !=
-					std::string::npos && idAttribute && idAttribute->value() ==
-					store->Meta().activeFireOpticsRecordIds.front();
+					"riseFireProv_provenance_id");
+			attributesMatch = statusAttribute && statusAttribute->value() == "\"preview\"" &&
+				digestAttribute && exrDigest && digestAttribute->value() ==
+					"\""+exrDigest->GetText()+"\"" && idAttribute && exrProvenanceId &&
+				idAttribute->value() == "\""+exrProvenanceId->GetText()+"\"";
 		} catch( ... ) {
 			attributesMatch = false;
 		}
 		Check( attributesMatch,
-			"[fire provenance] EXR repeats fidelity status, reasons, and record ID" );
-		std::remove(exrFile.c_str());
-		std::remove((exrFile+".provenance.cbor").c_str());
-#endif
+			"[fire provenance] EXR mirrors canonical JSON status, digest, and provenance ID" );
 
+		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_derivative";
+		const std::string pngFile = pngBase+".png";
+		const std::string pngSidecar = pngFile+".provenance.cbor";
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		opts.viewTransform.toneCurve = eDisplayTransform_ACES;
+		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName("PNG");
+		observer = new FileEncoderObserver(store,png,opts,pngBase,false);
+		store->AddObserver(observer);
+		store->MarkFrameComplete(0);
+		store->RemoveObserver(observer);
+		safe_release(observer);
+		std::vector<unsigned char> pngBytes, pngSidecarBytes;
+		RISECBOR64::Value pngEnvelope;
+		const bool pngDecoded = ReadFileAllBytes(pngFile,pngBytes) &&
+			ReadFileAllBytes(pngSidecar,pngSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(pngSidecarBytes,pngEnvelope,&decodeError);
+		const RISECBOR64::Value* pngPayload = pngDecoded ? pngEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* pngFidelity = pngPayload ?
+			pngPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* derived = pngPayload ?
+			pngPayload->Find("derived_from_primary") : nullptr;
+		const RISECBOR64::Value* pngDigest = pngPayload ?
+			pngPayload->Find("artifact_sha256") : nullptr;
+		Check( pngFidelity && pngFidelity->GetText() == "display_derivative" &&
+			derived && derived->Find("provenance_id") && exrProvenanceId &&
+			derived->Find("provenance_id")->GetText() == exrProvenanceId->GetText() &&
+			pngDigest && pngDigest->GetText() == RISECBOR64::SHA256Hex(pngBytes),
+			"[fire provenance] display derivative links to the finalized preview primary" );
 		std::remove(pngFile.c_str());
-		std::remove(sidecarFile.c_str());
+		std::remove(pngSidecar.c_str());
+		std::remove(exrFile.c_str());
+		std::remove(exrSidecar.c_str());
+#endif
 		safe_release(store);
 	}
 }

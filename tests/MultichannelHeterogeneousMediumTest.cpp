@@ -41,6 +41,7 @@
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
+#include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
@@ -2319,7 +2320,8 @@ namespace
 			const std::string& rasterizer, const unsigned int nmBegin,
 			const bool useHWSS = false,
 			const char* fidelityMode = "preview",
-			const bool unqualifiedConfig = false ) {
+			const bool unqualifiedConfig = false,
+			const bool includeFire = true ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2345,11 +2347,14 @@ namespace
 			output <<
 				"}\n\n"
 				"film\n{\nwidth 1\nheight 1\n}\n\n"
-				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n"
+				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n";
+			if( includeFire ) {
+				output <<
 				"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
 				"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
 				"multichannel_heterogeneous_medium\n{\nname fire\nchannel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\noptical_record fire_optics_v1\n}\n\n"
 				"global_medium\n{\nmedium fire\n}\n";
+			}
 		};
 		writeScene("pathtracing_spectral_rasterizer",380u);
 
@@ -2434,6 +2439,7 @@ namespace
 			safe_release(predictedMedium);
 			safe_release(predictionPhase);
 
+#ifndef NO_EXR_SUPPORT
 			const std::filesystem::path outputBase =
 				std::filesystem::temp_directory_path() /
 				("rise_fire_late_output_" + std::to_string(::getpid()));
@@ -2447,7 +2453,7 @@ namespace
 			setenv("RISE_MEDIA_PATH","",1);
 #endif
 			const bool outputAdded = job->AddFileRasterizerOutput(
-				outputBase.string().c_str(),false,2,8,1,0.0,0,2,true);
+				outputBase.string().c_str(),false,6,32,0,0.0,0,2,true);
 			if( hadMediaPath ) {
 #ifdef _WIN32
 				_putenv_s("RISE_MEDIA_PATH",savedMediaPathValue.c_str());
@@ -2463,7 +2469,7 @@ namespace
 			}
 			Check( outputAdded && job->Rasterize(),
 				"file output added after canonical FrameStore installation renders" );
-			const std::filesystem::path outputFile = outputBase.string()+".png";
+			const std::filesystem::path outputFile = outputBase.string()+".exr";
 			const std::filesystem::path sidecarFile =
 				outputFile.string()+".provenance.cbor";
 			RISECBOR64::Bytes artifactBytes, sidecarBytes;
@@ -2473,14 +2479,51 @@ namespace
 				ReadFileBytes(outputFile,artifactBytes) && !artifactBytes.empty() &&
 				ReadFileBytes(sidecarFile,sidecarBytes) &&
 				RISECBOR64::DecodeCanonical(sidecarBytes,sidecar,&sidecarError);
-			const RISECBOR64::Value* lateIds = lateOutputProvenance ?
-				sidecar.Find("active_fire_optics_record_ids") : nullptr;
+			const RISECBOR64::Value* payload = lateOutputProvenance ?
+				sidecar.Find("payload") : nullptr;
+			const RISECBOR64::Value* lateIds = payload ?
+				payload->Find("active_fire_optics_record_ids") : nullptr;
+			const RISECBOR64::Value* fidelity = payload ?
+				payload->Find("artifact_fidelity") : nullptr;
+			RISECBOR64::Bytes strippedArtifact;
 			Check( lateIds && lateIds->GetArray().size() == 1u &&
 				lateIds->GetArray()[0].GetText() ==
-					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
-				"late-added file output inherits canonical fire provenance" );
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
+				fidelity && fidelity->GetText() == "preview_primary" &&
+				Implementation::StripFireProvenanceEXRAttributes(
+					artifactBytes,strippedArtifact,sidecarError),
+				"late-added FP32 EXR output inherits canonical preview-primary provenance" );
 			std::filesystem::remove(outputFile);
 			std::filesystem::remove(sidecarFile);
+
+			const std::string priorArtifact = "previous-complete-artifact";
+			{
+				std::ofstream previous(outputFile,std::ios::binary);
+				previous.write(priorArtifact.data(),
+					static_cast<std::streamsize>(priorArtifact.size()));
+			}
+			const bool blockedSidecar = std::filesystem::create_directory(sidecarFile);
+			const FrameStoreOutput::Metadata transactionMetadata = store->Meta();
+			bool provenanceFailure = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& ex ) {
+				provenanceFailure = std::string(ex.what()).find(
+					"output_provenance_unavailable") != std::string::npos;
+			}
+			RISECBOR64::Bytes restoredArtifact;
+			const RISECBOR64::Bytes expectedArtifact(
+				priorArtifact.begin(),priorArtifact.end());
+			Check( blockedSidecar && provenanceFailure &&
+				ReadFileBytes(outputFile,restoredArtifact) &&
+				restoredArtifact == expectedArtifact &&
+				std::filesystem::is_directory(sidecarFile) &&
+				SameFrameMetadata(store->Meta(),transactionMetadata),
+				"production output failure preserves the prior artifact and frame provenance" );
+			std::filesystem::remove(outputFile);
+			std::filesystem::remove(sidecarFile);
+#endif
 
 			const FrameStoreOutput::Metadata acceptedMetadata = store->Meta();
 			const uint64_t acceptedGeneration = store->Generation();
@@ -2732,7 +2775,7 @@ namespace
 		}
 		safe_release(job);
 
-		writeScene("pathtracing_spectral_rasterizer",380u);
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",false,false);
 		RISE_CreateJobPriv(&job);
 		const bool unavailableEncoderLoaded = job &&
 			job->LoadAsciiSceneViaCst(path.string().c_str());

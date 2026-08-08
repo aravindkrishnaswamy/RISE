@@ -27,6 +27,7 @@
 #define FILEENCODEROBSERVER_H_
 
 #include <string>
+#include <vector>
 
 #include "../Interfaces/IRenderObserver.h"
 #include "../Interfaces/IFrameEncoder.h"
@@ -42,10 +43,27 @@ namespace RISE
 		//! required fire-provenance sidecar has been finalized.  On failure no
 		//! artifact remains without its matching sidecar.
 		bool EncodeFrameStoreFileTransaction(
-			const FrameStore& store,
+			FrameStore& store,
 			IFrameEncoder& encoder,
 			const EncodeOpts& opts,
 			const std::string& artifactFilename,
+			std::string& error
+			);
+
+		//! Deterministically removes all riseFireProv_ string attributes from
+		//! a single-part scanline EXR and rebases its chunk-offset table.
+		//! The resulting bytes are the artifact_sha256 preimage pinned by P-4.
+		bool StripFireProvenanceEXRAttributes(
+			const std::vector<unsigned char>& encoded,
+			std::vector<unsigned char>& stripped,
+			std::string& error
+			);
+
+		//! Verifies the authoritative envelope, its one-preimage ID, the
+		//! attribute-stripped artifact digest, and every mirrored EXR field.
+		bool VerifyFireProvenanceEXR(
+			const std::vector<unsigned char>& encodedArtifact,
+			const std::vector<unsigned char>& encodedSidecar,
 			std::string& error
 			);
 

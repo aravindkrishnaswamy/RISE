@@ -318,6 +318,17 @@ namespace RISE
 				meta_.rendererBuildId = rendererBuildId;
 			}
 
+			void SetPrimaryFireArtifact(
+				const std::string& provenanceId,
+				const std::string& artifactSha256,
+				const std::string& artifactFidelity )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.primaryProvenanceId = provenanceId;
+				meta_.primaryArtifactSha256 = artifactSha256;
+				meta_.primaryArtifactFidelity = artifactFidelity;
+			}
+
 			// ── back-compat shim (Phase 1 only) ───────────────────
 
 			//! Returns the Beauty channel as an IRasterImage view,
