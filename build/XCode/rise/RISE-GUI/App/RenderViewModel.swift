@@ -2860,8 +2860,7 @@ final class RenderViewModel: ObservableObject {
 
     /// L5a round-9 — gate for File > Save Rendered Image.  The
     /// production VFS's FrameStore exists once the rasterizer has
-    /// emitted at least one OutputImage; that happens any time we
-    /// transition through `.rendering`.  After completion or cancel
+    /// emitted a coherent OutputImage.  After completion or cancel
     /// the FrameStore retains its last contents (the bridge's
     /// `clearAll` does NOT free the VFS, per L4 §7.5), so saving
     /// from `.completed` or `.cancelled` produces the user's
@@ -2870,7 +2869,7 @@ final class RenderViewModel: ObservableObject {
     /// fresh output yet — disable until the next render starts.
     var canSaveImage: Bool {
         switch renderState {
-        case .rendering, .cancelling, .completed, .cancelled:
+        case .completed, .cancelled:
             return true
         default:
             return false

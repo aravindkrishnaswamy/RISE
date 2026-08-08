@@ -498,7 +498,7 @@ namespace RISE
 			snap->release();
 			if( !success ) {
 				GlobalLog()->PrintEx( eLog_Error,
-					"ViewportFrameStore::SaveAs: artifact transaction failed for '%s': %s",
+					"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': %s",
 					path.c_str(),error.c_str() );
 				return false;
 			}
