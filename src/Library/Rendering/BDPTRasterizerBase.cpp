@@ -887,10 +887,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
 		}
 
-		RasterizerOutputListType::const_iterator r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( *pImage, pRect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( *pImage, pRect );
+		});
 	}
 
 	// Compute tile size from image × threads so small-scene/high-core
@@ -1034,10 +1033,9 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 
 				// Convergence check runs with preview — keeps the two

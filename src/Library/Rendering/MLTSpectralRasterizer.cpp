@@ -966,10 +966,9 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			// never displays per-round previews.  No
 			// `MarkFrameComplete` — progressive, not final.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		if( pProgressFunc ) {

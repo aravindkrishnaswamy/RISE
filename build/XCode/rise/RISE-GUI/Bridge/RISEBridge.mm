@@ -1161,9 +1161,9 @@ private:
     // from the interactive (live-preview) VFS would dump the
     // low-quality preview, not the production result.
     if (!_productionVFS || !path || !formatName) return NO;
-    IFrameEncoder* enc =
-        Implementation::FrameEncoderRegistry::Get().ByFormatName(
-            [formatName UTF8String]);
+	IFrameEncoder* enc =
+		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
+			[formatName UTF8String]);
     if (!enc) {
         NSLog(@"RISEBridge::saveAs: unknown format '%@'", formatName);
         return NO;
@@ -1192,8 +1192,10 @@ private:
         opts.viewTransform = ViewTransform::ForLDRDisplay(
             static_cast<float>(ev), tc);
     }
-    return _productionVFS->SaveAs(
-        std::string([path UTF8String]), enc, opts) ? YES : NO;
+	const BOOL saved = _productionVFS->SaveAs(
+		std::string([path UTF8String]), enc, opts) ? YES : NO;
+	enc->release();
+	return saved;
 }
 
 // Allocate the PRODUCTION VFS once during bridge initialization and bind its frame-complete,

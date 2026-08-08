@@ -32,6 +32,60 @@ namespace RISE
 		{
 		protected:
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
+			class RetainedRasterizerOutputSnapshot
+			{
+			public:
+				RetainedRasterizerOutputSnapshot(
+					const RasterizerOutputListType& source,
+					std::mutex& sourceMutex
+					)
+				{
+					std::lock_guard<std::mutex> lock(sourceMutex);
+					try {
+						for( IRasterizerOutput* output : source ) {
+							output->addref();
+							try {
+								mOutputs.push_back(output);
+							}
+							catch( ... ) {
+								output->release();
+								throw;
+							}
+						}
+					}
+					catch( ... ) {
+						Release();
+						throw;
+					}
+				}
+
+				~RetainedRasterizerOutputSnapshot()
+				{
+					Release();
+				}
+
+				const RasterizerOutputListType& Outputs() const
+				{
+					return mOutputs;
+				}
+
+			private:
+				void Release()
+				{
+					for( IRasterizerOutput* output : mOutputs ) output->release();
+					mOutputs.clear();
+				}
+
+				RasterizerOutputListType mOutputs;
+			};
+
+			template< class Callback >
+			void ForEachRasterizerOutput( Callback callback ) const
+			{
+				RetainedRasterizerOutputSnapshot snapshot(outs,outsMutex);
+				for( IRasterizerOutput* output : snapshot.Outputs() ) callback(output);
+			}
+
 			RasterizerOutputListType				outs;
 
 			//! Registers one output under outsMutex and reports whether this call

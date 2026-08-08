@@ -22,6 +22,8 @@
 
 namespace RISE
 {
+	class IFrameEncoder;
+
 	namespace Implementation
 	{
 		static const char extensions[7][6] = { "tga", "ppm", "png", "hdr", "tiff", "rgbea", "exr" };
@@ -125,6 +127,7 @@ namespace RISE
 			FrameStore*           framestore_       = nullptr;
 			FrameSink*            framesink_        = nullptr;
 			FileEncoderObserver*  encoderObserver_  = nullptr;
+			IFrameEncoder*        encoder_          = nullptr;
 
 			//! L8 — true when `framestore_` is the canonical
 			//! FrameStore pushed via `OnRasterizerFrameStoreChanged`
@@ -175,6 +178,8 @@ namespace RISE
 				const EXR_COMPRESSION exr_compression_,
 				const bool exr_with_alpha_
 				);
+
+			bool HasEncoder() const { return encoder_ != nullptr; }
 
 			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
 			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;

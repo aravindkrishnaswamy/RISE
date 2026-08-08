@@ -700,9 +700,9 @@ bool RiseBridge::saveAs(const std::string& path,
                         const std::string& formatName,
                         double             ev) {
     if (!m_productionVFS) return false;
-    RISE::IFrameEncoder* enc =
-        RISE::Implementation::FrameEncoderRegistry::Get().ByFormatName(
-            formatName.c_str());
+	RISE::IFrameEncoder* enc =
+		RISE::Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
+			formatName.c_str());
     if (!enc) {
         LOGE("saveAs: unknown format '%s'", formatName.c_str());
         return false;
@@ -727,7 +727,9 @@ bool RiseBridge::saveAs(const std::string& path,
         opts.viewTransform = ViewTransform::ForLDRDisplay(
             static_cast<float>(ev), tc);
     }
-    return m_productionVFS->SaveAs(path, enc, opts);
+	const bool saved = m_productionVFS->SaveAs(path, enc, opts);
+	enc->release();
+	return saved;
 }
 
 bool RiseBridge::onProgressTick(double progress, double total) {

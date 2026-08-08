@@ -257,13 +257,35 @@ namespace RISE
 
 			// ── metadata ──────────────────────────────────────────
 
-			const Metadata& Meta() const { return meta_; }
+			Metadata Meta() const
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				return meta_;
+			}
 
-			//! Mutable accessor for producer-side metadata writes
-			//! (sample count updates, camera EV).  Note: this is
-			//! NOT tile-lock-protected; callers should write metadata
-			//! at frame boundaries (before MarkFrameComplete).
-			Metadata& MutableMeta() { return meta_; }
+			void SetMetadata( const Metadata& metadata )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_ = metadata;
+			}
+
+			void SetCameraExposureEV( const double ev )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.cameraExposureEV = ev;
+			}
+
+			void SetFireFidelityMetadata(
+				const std::string& status,
+				const std::vector<std::string>& reasons,
+				const std::vector<std::string>& recordIds
+				)
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.renderFidelityStatus = status;
+				meta_.renderReasonCodes = reasons;
+				meta_.activeFireOpticsRecordIds = recordIds;
+			}
 
 			// ── back-compat shim (Phase 1 only) ───────────────────
 
@@ -367,6 +389,7 @@ namespace RISE
 			int                               observerDispatchInFlight_{ 0 };
 			mutable std::condition_variable   observerDispatchDone_;
 
+			mutable std::mutex metadataMutex_;
 			Metadata meta_;
 
 			//! IRasterImage shim view onto beauty_.  Constructed

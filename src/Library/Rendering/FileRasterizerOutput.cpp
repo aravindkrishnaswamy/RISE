@@ -55,6 +55,9 @@ FileRasterizerOutput::FileRasterizerOutput(
   exr_compression( exr_compression_ ),
   exr_with_alpha( exr_with_alpha_ )
 {
+	encoder_ = FrameEncoderRegistry::Get().AcquireByFormatName(
+		FormatNameForType(type));
+
 	// Check the global options file to figuring out where to stick the rendered files
 	RISE::IOptions& options = GlobalOptions();
 
@@ -157,6 +160,7 @@ FileRasterizerOutput::~FileRasterizerOutput()
 	// The wait is bounded by the encoder's `Encode` runtime (one
 	// file write).  See impl below.
 	TeardownChain_();
+	safe_release(encoder_);
 }
 
 // L8 — Tear down whichever chain is currently active.  Used by both
@@ -229,8 +233,7 @@ void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 	rawCameraExposureEV = ev;
 
 	if ( framestore_ ) {
-		framestore_->MutableMeta().cameraExposureEV =
-			static_cast<double>( rawCameraExposureEV );
+		framestore_->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 	}
 }
 
@@ -243,9 +246,7 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 {
 	if ( !store ) return false;
 
-	IFrameEncoder* encoder =
-		FrameEncoderRegistry::Get().ByFormatName( FormatNameForType( type ) );
-	if ( !encoder ) {
+	if ( !encoder_ ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"FileRasterizerOutput:: No IFrameEncoder registered for format '%s' "
 			"(FRO_TYPE=%d) — output disabled", FormatNameForType( type ), (int)type );
@@ -267,7 +268,7 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 	opts.viewTransform.toneCurve  = display_transform;
 
 	encoderObserver_ = new FileEncoderObserver(
-		store, encoder, opts,
+		store, encoder_, opts,
 		std::string( szPattern ), bMultiple );
 	store->AddObserver( encoderObserver_ );
 	return true;
@@ -320,8 +321,7 @@ void FileRasterizerOutput::OnRasterizerFrameStoreChanged( FrameStore* framestore
 	// apply it.  This restores Meta as the single source of truth
 	// (the round-1 fix introducing per-observer EV double-applied
 	// when VFS ALSO wrote to Meta — see ViewportFrameStore.cpp:670).
-	framestore->MutableMeta().cameraExposureEV =
-		static_cast<double>( rawCameraExposureEV );
+	framestore->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 
 	if ( !BuildAndAttachObserver_( framestore ) ) {
 		// Encoder lookup failed.  Tear down to leave us in a clean
@@ -396,8 +396,7 @@ void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height 
 	// from Meta + gates on IsHDRFormat at write time.  This is
 	// LEGACY (internal-store) mode; bound mode handles the same
 	// in OnRasterizerFrameStoreChanged.
-	framestore_->MutableMeta().cameraExposureEV =
-		static_cast<double>( rawCameraExposureEV );
+	framestore_->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 
 	// L8 — extracted observer build.  In legacy mode we ALSO need
 	// the FrameSink to copy pixels into our internal FrameStore on

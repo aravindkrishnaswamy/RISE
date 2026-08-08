@@ -22,56 +22,6 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-namespace
-{
-	class RetainedRasterizerOutputSnapshot
-	{
-	public:
-		RetainedRasterizerOutputSnapshot(
-			const std::vector<IRasterizerOutput*>& source,
-			std::mutex& sourceMutex
-			)
-		{
-			std::lock_guard<std::mutex> lock( sourceMutex );
-			try {
-				for( IRasterizerOutput* output : source ) {
-					output->addref();
-					try {
-						mOutputs.push_back(output);
-					}
-					catch( ... ) {
-						output->release();
-						throw;
-					}
-				}
-			}
-			catch( ... ) {
-				Release();
-				throw;
-			}
-		}
-
-		~RetainedRasterizerOutputSnapshot()
-		{
-			Release();
-		}
-
-		const std::vector<IRasterizerOutput*>& Outputs() const
-		{
-			return mOutputs;
-		}
-
-	private:
-		void Release()
-		{
-			for( IRasterizerOutput* output : mOutputs ) output->release();
-			mOutputs.clear();
-		}
-
-		std::vector<IRasterizerOutput*> mOutputs;
-	};
-}
-
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
   ,mFrameStore( frameStore )

@@ -2263,17 +2263,19 @@ namespace
 			Implementation::Rasterizer* rasterizer =
 				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
 			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
-			Check( store && store->Meta().renderFidelityStatus == "preview" &&
-				std::is_sorted(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end()) &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"requested_preview") !=
-					store->Meta().renderReasonCodes.end() &&
-				std::find(store->Meta().renderReasonCodes.begin(),
-					store->Meta().renderReasonCodes.end(),"table_domain_exceeded") ==
-					store->Meta().renderReasonCodes.end() &&
-				store->Meta().activeFireOpticsRecordIds.size() == 1u &&
-				store->Meta().activeFireOpticsRecordIds[0] ==
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && metadata.renderFidelityStatus == "preview" &&
+				std::is_sorted(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end()) &&
+				std::find(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end(),"requested_preview") !=
+					metadata.renderReasonCodes.end() &&
+				std::find(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end(),"table_domain_exceeded") ==
+					metadata.renderReasonCodes.end() &&
+				metadata.activeFireOpticsRecordIds.size() == 1u &&
+				metadata.activeFireOpticsRecordIds[0] ==
 					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc",
 				"production FrameStore carries sorted preview reasons and record identity" );
 
@@ -2373,9 +2375,11 @@ namespace
 			Implementation::Rasterizer* rasterizer =
 				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
 			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
-			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
-				store->Meta().renderReasonCodes.end(),"pel_transport") !=
-				store->Meta().renderReasonCodes.end(),
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && std::find(metadata.renderReasonCodes.begin(),
+				metadata.renderReasonCodes.end(),"pel_transport") !=
+				metadata.renderReasonCodes.end(),
 				"Pel preflight emits pel_transport from the fixed reason enum" );
 		}
 		safe_release(job);
@@ -2389,9 +2393,11 @@ namespace
 			Implementation::Rasterizer* rasterizer =
 				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
 			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
-			Check( store && std::find(store->Meta().renderReasonCodes.begin(),
-				store->Meta().renderReasonCodes.end(),"hwss_transport") !=
-				store->Meta().renderReasonCodes.end(),
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && std::find(metadata.renderReasonCodes.begin(),
+				metadata.renderReasonCodes.end(),"hwss_transport") !=
+				metadata.renderReasonCodes.end(),
 				"HWSS preflight emits hwss_transport from the fixed reason enum" );
 		}
 		safe_release(job);
@@ -2495,15 +2501,19 @@ namespace
 			job->LoadAsciiSceneViaCst(path.string().c_str());
 		if( unavailableEncoderLoaded ) {
 			FrameEncoderRegistry& encoders = FrameEncoderRegistry::Get();
-			IFrameEncoder* png = encoders.ByFormatName("PNG");
-			bool removedPNG = false;
-			if( png ) {
-				png->addref();
-				removedPNG = encoders.Unregister("PNG");
-			}
 			const std::filesystem::path unavailableOutput =
 				std::filesystem::temp_directory_path() /
 				("rise_unavailable_encoder_" + std::to_string(::getpid()));
+			IFrameEncoder* png = encoders.AcquireByFormatName("PNG");
+			IRasterizerOutput* retainedOutput = nullptr;
+			const bool createdBeforeRemoval = RISE_API_CreateFileRasterizerOutput(
+				&retainedOutput,unavailableOutput.string().c_str(),false,2,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				retainedOutput;
+			bool removedPNG = false;
+			if( png ) {
+				removedPNG = encoders.Unregister("PNG");
+			}
 			const bool rejectedUnavailable = !job->AddFileRasterizerOutput(
 				unavailableOutput.string().c_str(),false,2,8,1,0.0,0,2,true);
 			IRasterizerOutput* directOutput = nullptr;
@@ -2512,6 +2522,13 @@ namespace
 				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
 				directOutput == nullptr;
 			safe_release(directOutput);
+			job->RemoveRasterizerOutputs();
+			if( retainedOutput ) {
+				job->GetRasterizer()->AddRasterizerOutput(retainedOutput);
+			}
+			safe_release(retainedOutput);
+			const bool retainedRendered = createdBeforeRemoval && job->Rasterize() &&
+				std::filesystem::exists(unavailableOutput.string()+".png");
 			if( removedPNG ) {
 				encoders.Register(png);
 				png = nullptr;
@@ -2519,8 +2536,9 @@ namespace
 			safe_release(png);
 			const bool encoderRestored = !removedPNG ||
 				encoders.ByFormatName("PNG") != nullptr;
-			Check( rejectedUnavailable && directRejected && encoderRestored,
-				"Job and public C APIs reject an unavailable encoder before attachment" );
+			Check( rejectedUnavailable && directRejected && retainedRendered && encoderRestored,
+				"file output atomically retains availability while later creates reject" );
+			std::filesystem::remove(unavailableOutput.string()+".png");
 		} else {
 			Check(false,"unavailable-encoder production fixture loads");
 		}

@@ -157,7 +157,7 @@ namespace
 
 		// L3 shim feeds cameraExposureEV through FrameStore::Meta().
 		// We mirror that wiring so the L2 path sees the same total EV.
-		store->MutableMeta().cameraExposureEV = cameraExposureEV;
+		store->SetCameraExposureEV(cameraExposureEV);
 
 		// Write to a temp file (parallel to the shim's path) so byte
 		// capture is symmetric: both paths produce on-disk byte
@@ -680,13 +680,9 @@ namespace
 			}
 		}
 		store->EndTile(0,0);
-		store->MutableMeta().renderFidelityStatus = "preview";
-		store->MutableMeta().renderReasonCodes = {
-			"pel_transport", "producer_unqualified", "requested_preview"
-		};
-		store->MutableMeta().activeFireOpticsRecordIds = {
-			"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc"
-		};
+		store->SetFireFidelityMetadata("preview",
+			{ "pel_transport", "producer_unqualified", "requested_preview" },
+			{ "c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" });
 		return store;
 	}
 

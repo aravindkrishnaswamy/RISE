@@ -180,18 +180,26 @@ public:
 		IRasterizer& rasterizer,
 		const bool clearOnEnumeration,
 		const bool clearOnReannounce,
+		const bool clearOnOutput,
 		int& frameStoreNotifications,
+		int& outputImages,
 		bool& destroyed
 		) :
 		rasterizer_(rasterizer),
 		clearOnEnumeration_(clearOnEnumeration),
 		clearOnReannounce_(clearOnReannounce),
+		clearOnOutput_(clearOnOutput),
 		frameStoreNotifications_(frameStoreNotifications),
+		outputImages_(outputImages),
 		destroyed_(destroyed)
 	{}
 
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
-	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		++outputImages_;
+		if( clearOnOutput_ ) rasterizer_.FreeRasterizerOutputs();
+	}
 	void OnRasterizerFrameStoreChanged( FrameStore* ) override
 	{
 		++frameStoreNotifications_;
@@ -208,7 +216,9 @@ private:
 	IRasterizer& rasterizer_;
 	bool clearOnEnumeration_;
 	bool clearOnReannounce_;
+	bool clearOnOutput_;
 	int& frameStoreNotifications_;
+	int& outputImages_;
 	bool& destroyed_;
 };
 
@@ -1408,11 +1418,12 @@ static void TestRetainedOutputSnapshots()
 	IRasterizer* rasterizer = job->GetRasterizer();
 	job->RemoveRasterizerOutputs();
 	int firstNotifications = 0, secondNotifications = 0;
+	int firstImages = 0, secondImages = 0;
 	bool firstDestroyed = false, secondDestroyed = false;
 	IRasterizerOutput* first = new LifetimeFrameStoreOutput(*rasterizer,
-		true,false,firstNotifications,firstDestroyed);
+		true,false,false,firstNotifications,firstImages,firstDestroyed);
 	IRasterizerOutput* second = new LifetimeFrameStoreOutput(*rasterizer,
-		false,false,secondNotifications,secondDestroyed);
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
 	rasterizer->AddRasterizerOutput(first);
 	rasterizer->AddRasterizerOutput(second);
 	safe_release(first);
@@ -1425,9 +1436,9 @@ static void TestRetainedOutputSnapshots()
 	firstNotifications = secondNotifications = 0;
 	firstDestroyed = secondDestroyed = false;
 	first = new LifetimeFrameStoreOutput(*rasterizer,
-		false,true,firstNotifications,firstDestroyed);
+		false,true,false,firstNotifications,firstImages,firstDestroyed);
 	second = new LifetimeFrameStoreOutput(*rasterizer,
-		false,false,secondNotifications,secondDestroyed);
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
 	rasterizer->AddRasterizerOutput(first);
 	rasterizer->AddRasterizerOutput(second);
 	safe_release(first);
@@ -1437,6 +1448,22 @@ static void TestRetainedOutputSnapshots()
 	Check(concrete && firstNotifications == 2 && secondNotifications == 2 &&
 		firstDestroyed && secondDestroyed,
 		"FrameStore reannouncement completes after a callback frees the live list: " + label);
+
+	firstNotifications = secondNotifications = 0;
+	firstImages = secondImages = 0;
+	firstDestroyed = secondDestroyed = false;
+	first = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,true,firstNotifications,firstImages,firstDestroyed);
+	second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	safe_release(first);
+	safe_release(second);
+	const bool rendered = job->Rasterize();
+	Check(rendered && firstImages == 1 && secondImages == 1 &&
+		firstDestroyed && secondDestroyed,
+		"render output dispatch completes after a callback frees the live list: " + label);
 
 	safe_release(job);
 	std::remove(path.c_str());

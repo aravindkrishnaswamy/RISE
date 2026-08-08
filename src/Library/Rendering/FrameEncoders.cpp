@@ -63,6 +63,8 @@ namespace RISE
 			IWriteBuffer&     dst,
 			const EncodeOpts& opts )
 		{
+			const FrameStore::Metadata metadata = opts.useMetadataSnapshot ?
+				opts.metadataSnapshot : store.Meta();
 			IRasterImageWriter* pWriter = CreateWriter( dst, opts );
 			if ( !pWriter ) {
 				GlobalLog()->PrintEx( eLog_Error,
@@ -71,7 +73,6 @@ namespace RISE
 				return;
 			}
 			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter) ) {
-				const FrameStore::Metadata& metadata = store.Meta();
 				std::vector<std::pair<std::string, std::string> > attributes;
 				if( !metadata.renderFidelityStatus.empty() ) {
 					attributes.push_back(std::make_pair(
@@ -103,7 +104,7 @@ namespace RISE
 				const Scalar staticEV =
 					static_cast<Scalar>( opts.viewTransform.exposureEV );
 				const Scalar cameraEV =
-					static_cast<Scalar>( store.Meta().cameraExposureEV );
+					static_cast<Scalar>( metadata.cameraExposureEV );
 				const Scalar totalEV = staticEV + cameraEV;
 				const bool useDt =
 					   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
@@ -481,6 +482,20 @@ namespace RISE
 			std::lock_guard<std::mutex> lock( mutex_ );
 			for ( IFrameEncoder* enc : encoders_ ) {
 				if ( IEqualsASCII( enc->FormatName(), name ) ) {
+					return enc;
+				}
+			}
+			return nullptr;
+		}
+
+		IFrameEncoder* FrameEncoderRegistry::AcquireByFormatName(
+			const std::string& name
+			) const
+		{
+			std::lock_guard<std::mutex> lock( mutex_ );
+			for( IFrameEncoder* enc : encoders_ ) {
+				if( IEqualsASCII(enc->FormatName(),name) ) {
+					enc->addref();
 					return enc;
 				}
 			}

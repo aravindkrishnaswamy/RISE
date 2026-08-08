@@ -1182,10 +1182,9 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			// progressive, not final — mirrors the post-block
 			// behaviour in `PixelBasedRasterizerHelper`.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		// Report progress using mutations-done (same reason as
@@ -1579,10 +1578,9 @@ bool MLTRasterizer::CopyToFrameStore_( const IRasterImage& src ) const
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputImage( img, rcRegion, frame );
+	});
 	// L6d-2b — gate Mark* on copy success.  Firing on a stale
 	// (dim-mismatched) canonical would mislead direct observers.
 	if( copied ) {
@@ -1593,10 +1591,9 @@ void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegio
 void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputPreDenoisedImage( img, rcRegion, frame );
+	});
 	if( copied ) {
 		mFrameStore->MarkPreDenoiseComplete( frame );
 	}
@@ -1605,10 +1602,9 @@ void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Re
 void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputDenoisedImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputDenoisedImage( img, rcRegion, frame );
+	});
 	if( copied ) {
 		mFrameStore->MarkDenoiseComplete( frame );
 	}

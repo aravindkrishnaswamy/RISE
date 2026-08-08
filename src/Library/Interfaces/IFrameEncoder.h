@@ -94,6 +94,11 @@ namespace RISE
 		//! Free-form metadata (EXR custom attrs, PNG iTXt, etc.).
 		//! Reserved for future use; current encoders ignore it.
 		std::vector<std::pair<std::string, std::string>> attrs;
+
+		//! A file transaction supplies one immutable metadata snapshot so
+		//! embedded attributes and its provenance sidecar cannot diverge.
+		bool useMetadataSnapshot = false;
+		FrameStoreOutput::Metadata metadataSnapshot;
 	};
 
 	//! Stateless format-aware byte encoder.  Wraps an existing

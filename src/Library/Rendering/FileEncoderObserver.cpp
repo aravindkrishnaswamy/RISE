@@ -58,13 +58,12 @@ namespace
 	}
 
 	bool BuildFireProvenanceSidecar(
-		const FrameStore& store,
+		const FrameStore::Metadata& metadata,
 		const char* artifactFilename,
 		RISECBOR64::Bytes& encoded,
 		std::string& error
 		)
 	{
-		const FrameStore::Metadata& metadata = store.Meta();
 		RISECBOR64::Bytes artifactBytes;
 		if( !ReadArtifact(artifactFilename,artifactBytes) ) {
 			error = "could not read the finalized artifact for hashing";
@@ -116,6 +115,9 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	)
 {
 	error.clear();
+	EncodeOpts transactionOpts = opts;
+	transactionOpts.metadataSnapshot = store.Meta();
+	transactionOpts.useMetadataSnapshot = true;
 	const std::string artifactTemporary = artifactFilename+".rise-tmp";
 	const std::string sidecarFilename = artifactFilename+".provenance.cbor";
 	const std::string sidecarTemporary = sidecarFilename+".rise-tmp";
@@ -130,7 +132,7 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	}
 	bool encoded = true;
 	try {
-		encoder.Encode(store,*artifact,opts);
+		encoder.Encode(store,*artifact,transactionOpts);
 	}
 	catch( ... ) {
 		encoded = false;
@@ -143,10 +145,12 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 		return false;
 	}
 
-	const bool needsProvenance = !store.Meta().renderFidelityStatus.empty();
+	const bool needsProvenance =
+		!transactionOpts.metadataSnapshot.renderFidelityStatus.empty();
 	if( needsProvenance ) {
 		RISECBOR64::Bytes sidecarBytes;
-		if( !BuildFireProvenanceSidecar(store,artifactTemporary.c_str(),
+		if( !BuildFireProvenanceSidecar(transactionOpts.metadataSnapshot,
+			artifactTemporary.c_str(),
 			sidecarBytes,error) ||
 			!WriteClosedFile(sidecarTemporary,sidecarBytes,error) ||
 			!RemoveIfPresent(artifactFilename,error) ||

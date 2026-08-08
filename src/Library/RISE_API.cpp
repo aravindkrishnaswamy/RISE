@@ -4923,7 +4923,6 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Rendering/FileRasterizerOutput.h"
-#include "Rendering/FrameEncoders.h"
 
 namespace RISE
 {
@@ -4968,17 +4967,17 @@ namespace RISE
 		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
 		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
 		}
-		const char* formatName = FileRasterizerOutput::FormatNameForType(fro_type);
-		if( !Implementation::FrameEncoderRegistry::Get().ByFormatName(formatName) ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"RISE_API_CreateFileRasterizerOutput:: encoder '%s' is unavailable in this build",
-				formatName );
-			return false;
-		}
-
-		(*ppi) = new FileRasterizerOutput(
+		FileRasterizerOutput* output = new FileRasterizerOutput(
 			szPattern, bMultiple, fro_type, bpp, color_space,
 			exposureEV, display_transform, exr_compression, exr_with_alpha );
+		if( !output->HasEncoder() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: encoder '%s' is unavailable in this build",
+				FileRasterizerOutput::FormatNameForType(fro_type) );
+			output->release();
+			return false;
+		}
+		(*ppi) = output;
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "file rasterizer output" );
 

@@ -360,8 +360,8 @@ namespace RISE
 
 				// Re-apply the camera EV snapshot (matches
 				// `EnsureChain` post-allocate / dormant-rehydrate).
-				external->MutableMeta().cameraExposureEV =
-					static_cast<double>( cameraExposureEV_ );
+				external->SetCameraExposureEV(
+					static_cast<double>(cameraExposureEV_));
 
 				// L8 round-18d — eLog_Info (was eLog_Event).  With the
 				// interactive preview-scale path firing this message on
@@ -716,8 +716,7 @@ namespace RISE
 			// can't race the meta write.
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( snap ) {
-				snap->MutableMeta().cameraExposureEV =
-					static_cast<double>( ev );
+				snap->SetCameraExposureEV(static_cast<double>(ev));
 				snap->release();
 			}
 		}
@@ -821,8 +820,8 @@ namespace RISE
 						// Camera EV may have changed while this chain
 						// was parked — re-apply the latest snapshot so
 						// encoders / RenderToBuffer see current state.
-						framestore_->MutableMeta().cameraExposureEV =
-							static_cast<double>( cameraExposureEV_ );
+						framestore_->SetCameraExposureEV(
+							static_cast<double>(cameraExposureEV_));
 						reactivated = true;
 						break;
 					}
@@ -843,8 +842,8 @@ namespace RISE
 					spec.height   = height;
 					spec.tileEdge = 32;  // match rasterizer tile size; not load-bearing
 					framestore_ = new FrameStore( spec );  // refcount = 1
-					framestore_->MutableMeta().cameraExposureEV =
-						static_cast<double>( cameraExposureEV_ );
+					framestore_->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
 
 					framesink_ = new FrameSink( framestore_ );
 

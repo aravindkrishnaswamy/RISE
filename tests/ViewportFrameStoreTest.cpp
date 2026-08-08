@@ -27,6 +27,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -123,6 +125,58 @@ namespace
 
 	private:
 		bool& destroyed_;
+	};
+
+	class BlockingMetadataEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		std::string FormatName() const override { return "BLOCKING_METADATA_TEST"; }
+		std::vector<std::string> Extensions() const override { return { "metadata" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore&, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			captured_ = opts.metadataSnapshot;
+			entered_ = true;
+			condition_.notify_all();
+			condition_.wait(lock,[this]() { return continue_; });
+			std::string payload = captured_.renderFidelityStatus;
+			for( const std::string& reason : captured_.renderReasonCodes ) {
+				payload += "|"+reason;
+			}
+			for( const std::string& id : captured_.activeFireOpticsRecordIds ) {
+				payload += "|"+id;
+			}
+			output.setBytes(reinterpret_cast<const unsigned char*>(payload.data()),
+				static_cast<unsigned int>(payload.size()));
+		}
+
+		void WaitUntilEntered()
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			condition_.wait(lock,[this]() { return entered_; });
+		}
+
+		void Continue()
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			continue_ = true;
+			condition_.notify_all();
+		}
+
+	protected:
+		~BlockingMetadataEncoder() override {}
+
+	private:
+		std::mutex mutex_;
+		std::condition_variable condition_;
+		bool entered_ = false;
+		bool continue_ = false;
+		FrameStore::Metadata captured_;
 	};
 
 	RISEColor PatternPixel( unsigned int x, unsigned int y )
@@ -522,13 +576,9 @@ namespace
 
 	void SetFireFidelityMetadata( FrameStore& store )
 	{
-		store.MutableMeta().renderFidelityStatus = "preview";
-		store.MutableMeta().renderReasonCodes = {
-			"pel_transport", "producer_unqualified", "requested_preview"
-		};
-		store.MutableMeta().activeFireOpticsRecordIds = {
-			"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc"
-		};
+		store.SetFireFidelityMetadata("preview",
+			{ "pel_transport", "producer_unqualified", "requested_preview" },
+			{ "c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" });
 	}
 
 	void TestSaveAsFireProvenanceAndTransaction()
@@ -656,6 +706,51 @@ namespace
 		safe_release( noWrite );
 
 		safe_release( img );
+		vfs->release();
+	}
+
+	void TestSaveAsUsesOneMetadataSnapshot()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		SetFireFidelityMetadata(*store);
+		BlockingMetadataEncoder* encoder = new BlockingMetadataEncoder();
+		const std::string path = MakeTempPath()+"_metadata_snapshot.metadata";
+		bool saved = false;
+		EncodeOpts opts;
+		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
+		encoder->WaitUntilEntered();
+		store->SetFireFidelityMetadata("preview",
+			{ "chem_none_unqualified", "producer_unqualified" },
+			{ "59a3fccbc868d985465522728648cc31f2bf82ba90f71ab48b9ba1be71ebf830" });
+		encoder->Continue();
+		saver.join();
+
+		std::vector<unsigned char> artifactBytes, sidecarBytes;
+		RISECBOR64::Value provenance;
+		std::string error;
+		const bool decoded = ReadFileAllBytes(path,artifactBytes) &&
+			ReadFileAllBytes(path+".provenance.cbor",sidecarBytes) &&
+			RISECBOR64::DecodeCanonical(sidecarBytes,provenance,&error);
+		const std::string artifact(artifactBytes.begin(),artifactBytes.end());
+		const RISECBOR64::Value* reasons = decoded ?
+			provenance.Find("render_reason_codes") : nullptr;
+		const RISECBOR64::Value* ids = decoded ?
+			provenance.Find("active_fire_optics_record_ids") : nullptr;
+		Check( saved && decoded && artifact.find("pel_transport") != std::string::npos &&
+			artifact.find("chem_none_unqualified") == std::string::npos && reasons &&
+			reasons->GetArray().size() == 3u &&
+			reasons->GetArray()[0].GetText() == "pel_transport" && ids &&
+			ids->GetArray().size() == 1u && ids->GetArray()[0].GetText() ==
+				"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc",
+			"SaveAs artifact and sidecar share one metadata snapshot across preflight updates" );
+
+		std::remove(path.c_str());
+		std::remove((path+".provenance.cbor").c_str());
+		encoder->release();
+		safe_release(img);
 		vfs->release();
 	}
 
@@ -1169,12 +1264,19 @@ namespace
 		RetainedFrameEncoder* encoder = new RetainedFrameEncoder(destroyed);
 		FrameEncoderRegistry& registry = FrameEncoderRegistry::Get();
 		registry.Register(encoder);
+		IFrameEncoder* acquired = registry.AcquireByFormatName("RETAINED_ENCODER_TEST");
 		const std::string pattern = MakeTempPath() + "_retained_encoder";
 		const std::string artifact = pattern + ".retained";
 		EncodeOpts opts;
-		FileEncoderObserver* observer = new FileEncoderObserver(
-			store,encoder,opts,pattern,false);
 		const bool removed = registry.Unregister("RETAINED_ENCODER_TEST");
+		FileEncoderObserver* observer = acquired ? new FileEncoderObserver(
+			store,acquired,opts,pattern,false) : nullptr;
+		safe_release(acquired);
+		if( !observer ) {
+			Check(false,"registry acquisition retains the encoder across removal");
+			store->release();
+			return;
+		}
 		observer->OnFrameComplete(0,store->Generation());
 		Check( removed && !destroyed && encoder->encodeCalls == 1 &&
 			std::filesystem::exists(artifact),
@@ -1198,6 +1300,7 @@ int main()
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();
 	TestSaveAsFireProvenanceAndTransaction();
+	TestSaveAsUsesOneMetadataSnapshot();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestMultiFrameReuse();

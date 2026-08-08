@@ -526,10 +526,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		//     multi-second render.
 		DimTileBorder( image, rect, 5, 0.4 );
 
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 
 	// L6e-3 follow-up — toggle visibility restoration.  Pre-L6e-2
@@ -699,10 +698,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		IRasterImage& outputImage = GetIntermediateOutputImage( image );
 
 		// Also iterate through outputs and get them to intermediate rasterize
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( outputImage, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( outputImage, &rect );
+		});
 	}
 }
 
@@ -768,10 +766,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	if( drewToggles ) {
 		DimTileBorder( image, rect, 5, 0.4 );
 
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 
 	// L6e-3 follow-up — split bracket so direct-FrameStore observers
@@ -866,10 +863,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	if( !skipBlockOutput ) {
 		// After every sequence block, iterate through outputs and get
 		// them to intermediate-rasterize.  Skipped for VCM etc.
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 }
 
@@ -1008,9 +1004,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// originally wired was a missed call site.
 	{
 		const Scalar camEV = pCam->GetExposureCompensationEV();
-		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-			(*r)->SetCameraExposureCompensationEV( camEV );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->SetCameraExposureCompensationEV( camEV );
+		});
 	}
 
 	// Profiling: reset all counters/phases at render entry so successive
@@ -1256,10 +1252,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 
 				// Convergence check runs alongside preview — user gets
@@ -1588,9 +1583,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// scenes render bit-identically.
 	{
 		const Scalar camEV = pCam->GetExposureCompensationEV();
-		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-			(*r)->SetCameraExposureCompensationEV( camEV );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->SetCameraExposureCompensationEV( camEV );
+		});
 	}
 
 	// NOTE: deliberately NO per-frame progress reset here.  The
@@ -1820,10 +1815,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 			}
 		}
@@ -2416,9 +2410,9 @@ void PixelBasedRasterizerHelper::PrepareImageForNewRender( IRasterImage& img, co
 			1.0 ), pRect );
 	}
 
-	for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-		(*r)->OutputIntermediateImage( img, pRect );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputIntermediateImage( img, pRect );
+	});
 }
 
 // Default tile-dispatch order: Morton (Z-curve), starting upper-left.
@@ -2468,10 +2462,9 @@ IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( uns
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	// Write to output objects (legacy IRasterizerOutput chain).
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputImage( img, rcRegion, frame );
+	});
 	// L6f — fire `OnFrameComplete` on canonical-FrameStore observers.
 	if( mFrameStore ) {
 		mFrameStore->MarkFrameComplete( frame );
@@ -2480,10 +2473,9 @@ void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const 
 
 void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputPreDenoisedImage( img, rcRegion, frame );
+	});
 	// L6f — fire `OnPreDenoiseComplete` on canonical-FrameStore observers.
 	if( mFrameStore ) {
 		mFrameStore->MarkPreDenoiseComplete( frame );
@@ -2492,10 +2484,9 @@ void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& 
 
 void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputDenoisedImage( img, rcRegion, frame );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputDenoisedImage( img, rcRegion, frame );
+	});
 	// L6f — fire `OnDenoiseComplete` on canonical-FrameStore observers.
 	if( mFrameStore ) {
 		mFrameStore->MarkDenoiseComplete( frame );

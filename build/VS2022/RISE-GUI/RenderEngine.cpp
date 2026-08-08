@@ -1398,9 +1398,9 @@ bool RenderEngine::saveAs(const QString& path,
                           double         ev)
 {
     if (!m_productionVFS) return false;
-    IFrameEncoder* enc =
-        Implementation::FrameEncoderRegistry::Get().ByFormatName(
-            formatName.toUtf8().constData());
+	IFrameEncoder* enc =
+		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
+			formatName.toUtf8().constData());
     if (!enc) return false;
     // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
     // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
@@ -1424,8 +1424,10 @@ bool RenderEngine::saveAs(const QString& path,
         opts.viewTransform = ViewTransform::ForLDRDisplay(
             static_cast<float>(ev), tc);
     }
-    return m_productionVFS->SaveAs(
-        std::string(path.toUtf8().constData()), enc, opts);
+	const bool saved = m_productionVFS->SaveAs(
+		std::string(path.toUtf8().constData()), enc, opts);
+	enc->release();
+	return saved;
 }
 
 void RenderEngine::onLogMessage(int level, const std::string& message)

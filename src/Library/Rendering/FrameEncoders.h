@@ -252,6 +252,10 @@ namespace RISE
 			//! should addref.
 			IFrameEncoder* ByFormatName( const std::string& name ) const;
 
+			//! Lookup by format name and addref the result while the registry
+			//! mutex is still held.  Caller must release the returned pointer.
+			IFrameEncoder* AcquireByFormatName( const std::string& name ) const;
+
 			//! Lookup by file extension (with or without leading dot).
 			IFrameEncoder* ByExtension( const std::string& ext ) const;
 

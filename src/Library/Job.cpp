@@ -44,7 +44,6 @@
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Rendering/FrameStore.h"
 #include "Rendering/FileRasterizerOutput.h"
-#include "Rendering/FrameEncoders.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
@@ -8686,16 +8685,6 @@ bool Job::AddFileRasterizerOutput(
 			szPattern ? szPattern : "(null)" );
 		return true;
 	}
-	const FileRasterizerOutput::FRO_TYPE outputType =
-		static_cast<FileRasterizerOutput::FRO_TYPE>(type);
-	const char* formatName = FileRasterizerOutput::FormatNameForType(outputType);
-	if( !FrameEncoderRegistry::Get().ByFormatName(formatName) ) {
-		GlobalLog()->PrintEx( eLog_Error,
-			"Job::AddFileRasterizerOutput:: encoder '%s' is unavailable in this build",
-			formatName );
-		return false;
-	}
-
 	COLOR_SPACE gc = eColorSpace_sRGB;
 	switch( color_space )
 	{
@@ -9801,10 +9790,9 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		return false;
 	}
 	if( FrameStore* store = pRasterizer->GetFrameStore() ) {
-		FrameStore::Metadata& metadata = store->MutableMeta();
-		metadata.renderFidelityStatus = status;
-		metadata.renderReasonCodes.assign(reasons.begin(),reasons.end());
-		metadata.activeFireOpticsRecordIds.assign(recordIds.begin(),recordIds.end());
+		store->SetFireFidelityMetadata(status,
+			std::vector<std::string>(reasons.begin(),reasons.end()),
+			std::vector<std::string>(recordIds.begin(),recordIds.end()));
 	}
 	return true;
 }
