@@ -40,6 +40,15 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 # Reusable paths
 set(RISE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(RISE_RENDERER_BUILD_IDENTITY_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+            "${RISE_ROOT}/tools/generate_renderer_build_identity_header.py"
+            --repo-root "${RISE_ROOT}"
+            --output "${RISE_RENDERER_BUILD_IDENTITY_DIR}/RendererBuildIdentity.generated.h"
+    COMMAND_ERROR_IS_FATAL ANY
+)
 
 # Pull in the source lists
 include("${CMAKE_CURRENT_LIST_DIR}/rise_sources.cmake")
@@ -55,6 +64,7 @@ target_include_directories(rise PUBLIC
     "${RISE_ROOT}/src/Library"
     "${RISE_ROOT}/src/Library/Interfaces"
 )
+target_include_directories(rise PRIVATE "${RISE_RENDERER_BUILD_IDENTITY_DIR}")
 
 target_compile_definitions(rise PUBLIC
     COLORS_RGB                  # match Config.common

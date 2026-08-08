@@ -2399,6 +2399,34 @@ namespace
 				metadata.resolvedRenderConfigCoreV1,resolvedConfig,&provenanceDecodeError);
 			const bool buildDecoded = RISECBOR64::DecodeCanonical(
 				metadata.rendererBuildV1,rendererBuild,&provenanceDecodeError);
+			const RISECBOR64::Value* sourceRevision = buildDecoded ?
+				rendererBuild.Find("source_revision") : nullptr;
+			const RISECBOR64::Value* dirtyState = buildDecoded ?
+				rendererBuild.Find("dirty_state") : nullptr;
+			const RISECBOR64::Value* executableIdentity = buildDecoded ?
+				rendererBuild.Find("executable_sha256") : nullptr;
+			const RISECBOR64::Value* dependencyBuilds = buildDecoded ?
+				rendererBuild.Find("dependency_builds") : nullptr;
+			bool dependenciesBound = dependencyBuilds != nullptr;
+			if( dependencyBuilds ) {
+				for( const char* name : { "oidn", "openexr", "openpgl" } ) {
+					const RISECBOR64::Value* dependency = dependencyBuilds->Find(name);
+					const RISECBOR64::Value* availability = dependency ?
+						dependency->Find("availability") : nullptr;
+					const RISECBOR64::Value* binaries = dependency ?
+						dependency->Find("loaded_binaries") : nullptr;
+					dependenciesBound = dependenciesBound && availability && binaries &&
+						((availability->GetText() == "not_linked" && binaries->GetArray().empty()) ||
+						 (availability->GetText() == "linked" && !binaries->GetArray().empty()));
+					if( binaries ) {
+						for( const RISECBOR64::Value& binary : binaries->GetArray() ) {
+							dependenciesBound = dependenciesBound && binary.Find("path") &&
+								binary.Find("sha256") &&
+								binary.Find("sha256")->GetText().size() == 64u;
+						}
+					}
+				}
+			}
 			Check( configDecoded && resolvedConfig.Find("film") &&
 				resolvedConfig.Find("camera") && resolvedConfig.Find("integrator") &&
 				resolvedConfig.Find("sampler") && resolvedConfig.Find("depth") &&
@@ -2407,6 +2435,15 @@ namespace
 				metadata.rendererBuildId ==
 					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
 				"resolved-config categories and exact renderer-build preimage are canonical" );
+			Check( sourceRevision && sourceRevision->GetText().size() == 40u &&
+				dirtyState && dirtyState->Find("state") &&
+				dirtyState->Find("diff_sha256") &&
+				dirtyState->Find("diff_sha256")->GetText().size() == 64u &&
+				executableIdentity && executableIdentity->Find("path") &&
+				executableIdentity->Find("sha256") &&
+				executableIdentity->Find("sha256")->GetText().size() == 64u &&
+				dependenciesBound,
+				"renderer build identity binds source state, executable bytes, and every linked dependency binary" );
 
 			const std::string originalAuthoredDigest =
 				metadata.activeFireMedia.empty() ? std::string() :

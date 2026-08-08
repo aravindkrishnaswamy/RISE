@@ -86,6 +86,18 @@ ALL_DEPS = $(ALL_OBJS:.o=.d)
 # or pre-3.0 g++ where -MP doesn't exist).
 CXXFLAGS_DEPS ?= -MMD -MP
 
+RENDERER_BUILD_HEADER = RendererBuildIdentity.generated.h
+CPPFLAGS += -I$(CURDIR)
+
+$(RENDERER_BUILD_HEADER) : FORCE_RENDERER_BUILD_IDENTITY
+	@python3 ../../../tools/generate_renderer_build_identity_header.py \
+		--repo-root ../../.. --output $@
+
+$(PATHLIBRARY)Job.o : $(RENDERER_BUILD_HEADER)
+
+FORCE_RENDERER_BUILD_IDENTITY :
+.PHONY: FORCE_RENDERER_BUILD_IDENTITY
+
 # Rules section
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
@@ -265,6 +277,7 @@ clean:
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
+	@rm -f $(RENDERER_BUILD_HEADER)
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files
 	@rm -rf $(PATHLIBRARY)Functions/ii_files

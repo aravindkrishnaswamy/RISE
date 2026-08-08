@@ -5009,6 +5009,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6DBFAA1809C4D18F0048A09D /* Build configuration list for PBXNativeTarget "rise" */;
 			buildPhases = (
+				B1D000010000000000000001 /* Generate Renderer Build Identity */,
 				8DD76F630486A84900D96B5E /* Headers */,
 				8DD76F640486A84900D96B5E /* Sources */,
 				8DD76F660486A84900D96B5E /* Frameworks */,
@@ -5028,6 +5029,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F24B71CE2F52A212008304C4 /* Build configuration list for PBXNativeTarget "RISE-GUI" */;
 			buildPhases = (
+				B1D000020000000000000002 /* Generate Renderer Build Identity */,
 				F24B71C22F52A211008304C4 /* Sources */,
 				F24B71C32F52A211008304C4 /* Frameworks */,
 				F24B71C42F52A211008304C4 /* Resources */,
@@ -5089,6 +5091,43 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B1D000010000000000000001 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\"";
+		};
+		B1D000020000000000000002 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		8DD76F640486A84900D96B5E /* Sources */ = {
@@ -6580,6 +6619,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -6621,6 +6661,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -6662,6 +6703,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
@@ -6764,6 +6806,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;

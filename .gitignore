@@ -10,6 +10,7 @@
 RISELog.txt
 build_log.txt
 Config.specific
+RendererBuildIdentity.generated.h
 Xcuserdata/
 RISE_Log.txt
 *.mov

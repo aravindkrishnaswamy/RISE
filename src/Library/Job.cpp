@@ -66,6 +66,34 @@
 #include <cctype>
 #include <cstdlib>
 #include <atomic>   // Facet 5 slice 1a: process-global CST head-uuid mint (NextCstHeadUuid)
+#include <filesystem>
+
+#if __has_include("RendererBuildIdentity.generated.h")
+#include "RendererBuildIdentity.generated.h"
+#else
+#define RISE_BUILD_SOURCE_REVISION ""
+#define RISE_BUILD_DIRTY_STATE "unavailable"
+#define RISE_BUILD_DIRTY_DIFF_SHA256 ""
+#endif
+
+#ifndef NO_EXR_SUPPORT
+#include <OpenEXR/OpenEXRConfig.h>
+#endif
+#ifdef RISE_ENABLE_OIDN
+#include <OpenImageDenoise/config.h>
+#endif
+#ifdef RISE_ENABLE_OPENPGL
+#include <openpgl/version.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <link.h>
+#include <unistd.h>
+#elif defined(_WIN32)
+#include <psapi.h>
+#endif
 
 using namespace RISE;
 
@@ -135,10 +163,116 @@ namespace
 		return false;
 	}
 
-	RISECBOR64::Value FireUnavailableIdentity()
+	bool ReadIdentityFile(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes )
 	{
-		return RISECBOR64::Value::MapValue({
-			{ "availability", RISECBOR64::Value::String("not_embedded") }
+		std::ifstream input(path,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		return input.good() || input.eof();
+	}
+
+	std::string CurrentExecutablePath()
+	{
+#if defined(__APPLE__)
+		std::uint32_t size = 0u;
+		_NSGetExecutablePath(nullptr,&size);
+		std::vector<char> path(size);
+		if( _NSGetExecutablePath(path.data(),&size) != 0 ) return std::string();
+		return std::filesystem::weakly_canonical(path.data()).string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		std::vector<char> path(4096u);
+		const ssize_t size = readlink("/proc/self/exe",path.data(),path.size()-1u);
+		if( size <= 0 ) return std::string();
+		path[static_cast<std::size_t>(size)] = '\0';
+		return std::string(path.data());
+#elif defined(_WIN32)
+		std::vector<char> path(32768u);
+		const DWORD size = GetModuleFileNameA(nullptr,path.data(),
+			static_cast<DWORD>(path.size()));
+		return size && size < path.size() ? std::string(path.data(),size) : std::string();
+#else
+		return std::string();
+#endif
+	}
+
+	std::vector<std::string> LoadedBinaryPaths()
+	{
+		std::vector<std::string> paths;
+#if defined(__APPLE__)
+		const std::uint32_t count = _dyld_image_count();
+		for( std::uint32_t i=0u; i<count; ++i ) {
+			const char* path = _dyld_get_image_name(i);
+			if( path && path[0] ) paths.push_back(path);
+		}
+#elif defined(__linux__) || defined(__ANDROID__)
+		struct Collector {
+			static int Append( dl_phdr_info* info, std::size_t, void* opaque )
+			{
+				std::vector<std::string>& output =
+					*static_cast<std::vector<std::string>*>(opaque);
+				if( info->dlpi_name && info->dlpi_name[0] ) output.push_back(info->dlpi_name);
+				return 0;
+			}
+		};
+		dl_iterate_phdr(&Collector::Append,&paths);
+#elif defined(_WIN32)
+		HMODULE modules[1024];
+		DWORD bytes = 0;
+		if( EnumProcessModules(GetCurrentProcess(),modules,sizeof(modules),&bytes) ) {
+			const DWORD count = std::min<DWORD>(bytes/sizeof(HMODULE),1024u);
+			for( DWORD i=0; i<count; ++i ) {
+				char path[32768];
+				const DWORD size = GetModuleFileNameA(modules[i],path,sizeof(path));
+				if( size ) paths.push_back(std::string(path,size));
+			}
+		}
+#endif
+		std::sort(paths.begin(),paths.end());
+		paths.erase(std::unique(paths.begin(),paths.end()),paths.end());
+		return paths;
+	}
+
+	RISECBOR64::Value DependencyBuildIdentity(
+		const char* name,
+		const char* version,
+		const bool enabled,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		if( enabled ) {
+			std::string needle(name);
+			std::transform(needle.begin(),needle.end(),needle.begin(),
+				[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+			for( const std::string& path : loadedPaths ) {
+				std::string lower(path);
+				std::transform(lower.begin(),lower.end(),lower.begin(),
+					[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+				if( lower.find(needle) == std::string::npos ) continue;
+				RISECBOR64::Bytes fileBytes;
+				if( !ReadIdentityFile(path,fileBytes) ) {
+					complete = false;
+					continue;
+				}
+				binaries.push_back(Value::MapValue({
+					{ "path", Value::String(path) },
+					{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
+				}));
+			}
+			if( binaries.empty() ) complete = false;
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(enabled ? "linked" : "not_linked") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(enabled ? version : "not_linked") }
 		});
 	}
 
@@ -146,6 +280,9 @@ namespace
 		RISECBOR64::Bytes& bytes,
 		std::string& identity )
 	{
+		if( !RISE_BUILD_SOURCE_REVISION[0] || !RISE_BUILD_DIRTY_DIFF_SHA256[0] ) {
+			return false;
+		}
 		const char* compiler =
 #if defined(__clang_version__)
 			__clang_version__;
@@ -195,23 +332,64 @@ namespace
 			std::to_string(RISE_VER_MINOR_VERSION)+"."+
 			std::to_string(RISE_VER_REVISION_VERSION)+"+"+
 			std::to_string(RISE_VER_BUILD_VERSION);
+		const std::string executablePath = CurrentExecutablePath();
+		RISECBOR64::Bytes executableBytes;
+		if( executablePath.empty() || !ReadIdentityFile(executablePath,executableBytes) ) {
+			return false;
+		}
+		const std::vector<std::string> loadedPaths = LoadedBinaryPaths();
+		bool dependenciesComplete = true;
+		const char* oidnVersion =
+#ifdef RISE_ENABLE_OIDN
+			OIDN_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openexrVersion =
+#ifndef NO_EXR_SUPPORT
+			OPENEXR_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openpglVersion =
+#ifdef RISE_ENABLE_OPENPGL
+			OPENPGL_VERSION;
+#else
+			"not_linked";
+#endif
 		using RISECBOR64::Value;
 		const Value record = Value::MapValue({
 			{ "compiler", Value::MapValue({
 				{ "identity", Value::String(compiler) },
 				{ "language_standard", Value::String("c++17") } }) },
 			{ "dependency_builds", Value::MapValue({
-				{ "oidn", Value::MapValue({
-					{ "loaded_binary_sha256", FireUnavailableIdentity() },
-					{ "version", Value::String("2.4.1") } }) },
-				{ "openexr", Value::MapValue({
-					{ "loaded_binary_sha256", FireUnavailableIdentity() },
-					{ "version", Value::String("runtime_linked") } }) },
-				{ "openpgl", Value::MapValue({
-					{ "loaded_binary_sha256", FireUnavailableIdentity() },
-					{ "version", Value::String("runtime_linked") } }) } }) },
-			{ "dirty_state", FireUnavailableIdentity() },
-			{ "executable_sha256", FireUnavailableIdentity() },
+				{ "oidn", DependencyBuildIdentity("openimagedenoise",oidnVersion,
+#ifdef RISE_ENABLE_OIDN
+					true,
+#else
+					false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openexr", DependencyBuildIdentity("openexr",openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,
+#else
+					false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openpgl", DependencyBuildIdentity("openpgl",openpglVersion,
+#ifdef RISE_ENABLE_OPENPGL
+					true,
+#else
+					false,
+#endif
+					loadedPaths,dependenciesComplete) } }) },
+			{ "dirty_state", Value::MapValue({
+				{ "diff_sha256", Value::String(RISE_BUILD_DIRTY_DIFF_SHA256) },
+				{ "state", Value::String(RISE_BUILD_DIRTY_STATE) } }) },
+			{ "executable_sha256", Value::MapValue({
+				{ "path", Value::String(executablePath) },
+				{ "sha256", Value::String(RISECBOR64::SHA256Hex(executableBytes)) } }) },
 			{ "fp_settings", Value::MapValue({
 				{ "contraction_available", FireBool(contraction) },
 				{ "fast_math", FireBool(fastMath) },
@@ -223,11 +401,12 @@ namespace
 			{ "solver_schema_versions", Value::ArrayValue({
 				Value::String("fire_optics_schema_v3"),
 				Value::String("fire_output_provenance_schema_v1") }) },
-			{ "source_revision", FireUnavailableIdentity() },
+			{ "source_revision", Value::String(RISE_BUILD_SOURCE_REVISION) },
 			{ "target", Value::MapValue({
 				{ "architecture", Value::String(architecture) },
 				{ "platform", Value::String(platform) } }) }
 		});
+		if( !dependenciesComplete ) return false;
 		if( !FireEncodeRecord(record,bytes,"renderer_build_v1") ) return false;
 		identity = RISECBOR64::SHA256Hex(bytes);
 		return true;
