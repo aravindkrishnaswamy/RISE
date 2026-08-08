@@ -1265,6 +1265,14 @@ namespace
 		FrameEncoderRegistry& registry = FrameEncoderRegistry::Get();
 		registry.Register(encoder);
 		IFrameEncoder* acquired = registry.AcquireByFormatName("RETAINED_ENCODER_TEST");
+		IFrameEncoder* acquiredByExtension = registry.AcquireByExtension(".retained");
+		std::vector<IFrameEncoder*> acquiredAll = registry.AcquireAll();
+		bool retainedInSnapshot = false;
+		for( IFrameEncoder* candidate : acquiredAll ) {
+			if( candidate->FormatName() == "RETAINED_ENCODER_TEST" ) {
+				retainedInSnapshot = true;
+			}
+		}
 		const std::string pattern = MakeTempPath() + "_retained_encoder";
 		const std::string artifact = pattern + ".retained";
 		EncodeOpts opts;
@@ -1272,15 +1280,21 @@ namespace
 		FileEncoderObserver* observer = acquired ? new FileEncoderObserver(
 			store,acquired,opts,pattern,false) : nullptr;
 		safe_release(acquired);
-		if( !observer ) {
+		if( !observer || !acquiredByExtension || !retainedInSnapshot ) {
 			Check(false,"registry acquisition retains the encoder across removal");
+			safe_release(acquiredByExtension);
+			for( IFrameEncoder* candidate : acquiredAll ) candidate->release();
 			store->release();
 			return;
 		}
 		observer->OnFrameComplete(0,store->Generation());
-		Check( removed && !destroyed && encoder->encodeCalls == 1 &&
+		Check( removed && !destroyed &&
+			acquiredByExtension->FormatName() == "RETAINED_ENCODER_TEST" &&
+			encoder->encodeCalls == 1 &&
 			std::filesystem::exists(artifact),
-			"file observer retains an encoder across registry removal" );
+			"name, extension, and all-encoder acquisitions survive registry removal" );
+		safe_release(acquiredByExtension);
+		for( IFrameEncoder* candidate : acquiredAll ) candidate->release();
 		observer->release();
 		Check( destroyed,
 			"retained encoder is released when the observer is destroyed" );

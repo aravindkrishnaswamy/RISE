@@ -246,21 +246,26 @@ namespace RISE
 			void Register( IFrameEncoder* encoder );
 			bool Unregister( const std::string& formatName );
 
-			//! Lookup by format name.  Returns nullptr if not found.
-			//! The returned pointer's lifetime is bounded by the
-			//! registry; callers wishing to outlive the registry
-			//! should addref.
+			//! Borrowed lookup for code that externally guarantees the
+			//! registry cannot mutate until use completes.  Lifetime-retaining
+			//! callers must use AcquireByFormatName instead.
 			IFrameEncoder* ByFormatName( const std::string& name ) const;
 
 			//! Lookup by format name and addref the result while the registry
 			//! mutex is still held.  Caller must release the returned pointer.
 			IFrameEncoder* AcquireByFormatName( const std::string& name ) const;
 
-			//! Lookup by file extension (with or without leading dot).
+			//! Borrowed extension lookup under the same external-stability
+			//! contract as ByFormatName.
 			IFrameEncoder* ByExtension( const std::string& ext ) const;
+			IFrameEncoder* AcquireByExtension( const std::string& ext ) const;
 
-			//! Returns all registered encoders, in registration order.
+			//! Borrowed snapshot for externally-stable registry inspection.
 			std::vector<IFrameEncoder*> All() const;
+
+			//! Retained snapshot in registration order.  Caller must release
+			//! every returned encoder.
+			std::vector<IFrameEncoder*> AcquireAll() const;
 
 			// Non-copyable, non-movable singleton.
 			FrameEncoderRegistry( const FrameEncoderRegistry& )            = delete;

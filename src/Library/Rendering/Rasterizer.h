@@ -80,10 +80,19 @@ namespace RISE
 			};
 
 			template< class Callback >
-			void ForEachRasterizerOutput( Callback callback ) const
+			void WithRetainedRasterizerOutputs( Callback callback ) const
 			{
 				RetainedRasterizerOutputSnapshot snapshot(outs,outsMutex);
-				for( IRasterizerOutput* output : snapshot.Outputs() ) callback(output);
+				callback(snapshot.Outputs());
+			}
+
+			template< class Callback >
+			void ForEachRasterizerOutput( Callback callback ) const
+			{
+				WithRetainedRasterizerOutputs(
+					[&]( const RasterizerOutputListType& outputs ) {
+						for( IRasterizerOutput* output : outputs ) callback(output);
+					});
 			}
 
 			RasterizerOutputListType				outs;

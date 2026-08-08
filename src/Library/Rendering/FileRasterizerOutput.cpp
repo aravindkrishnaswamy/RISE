@@ -228,7 +228,8 @@ void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 	// Local `cameraExposureEV` field still preserves the
 	// HDR-zeroed value for any FRO-internal logic that depends on
 	// it (today there's none; vestige kept for ABI ease).  The
-	// encoder reads `framestore_->Meta()` directly, NOT this field.
+	// FrameStore Meta is the source; each file transaction snapshots it
+	// once before the encoder and provenance sidecar consume it.
 	cameraExposureEV    = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
 	rawCameraExposureEV = ev;
 
@@ -257,8 +258,8 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 	// This is the legacy → new mapping that L2 byte-identical
 	// regression validates: same color_space + bpp + EXR knobs +
 	// (exposureEV, display_transform) → same EncodeOpts → same
-	// bytes.  cameraExposureEV is consumed via FrameStore.Meta()
-	// inside the encoder, NOT added here, so we don't double-count.
+	// bytes.  cameraExposureEV comes from the transaction's immutable
+	// FrameStore metadata snapshot, NOT these opts, so we don't double-count.
 	EncodeOpts opts;
 	opts.colorSpace     = color_space;
 	opts.bpp            = bpp;
@@ -316,8 +317,8 @@ void FileRasterizerOutput::OnRasterizerFrameStoreChanged( FrameStore* framestore
 	// L8 review round 2 — Write our cached RAW camera EV into the
 	// canonical's Meta.  All bound FROs (regardless of HDR/LDR)
 	// write the same raw value here, so multi-FRO scenes don't
-	// clobber.  HDR encoders skip Meta-EV at READ time via the
-	// `IsHDRFormat()` gate in FrameEncoders.cpp:75; LDR encoders
+	// clobber.  HDR encoders skip the snapshotted Meta EV via the
+	// `IsHDRFormat()` gate in FrameEncoders.cpp; LDR encoders
 	// apply it.  This restores Meta as the single source of truth
 	// (the round-1 fix introducing per-observer EV double-applied
 	// when VFS ALSO wrote to Meta — see ViewportFrameStore.cpp:670).
@@ -392,8 +393,8 @@ void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height 
 	framestore_ = new FrameStore( spec );  // refcount = 1
 
 	// L8 review round 2 — Write the cached RAW camera EV into the
-	// freshly-allocated internal FrameStore's Meta.  Encoder reads
-	// from Meta + gates on IsHDRFormat at write time.  This is
+	// freshly-allocated internal FrameStore's Meta.  The file transaction
+	// snapshots Meta once, then gates on IsHDRFormat.  This is
 	// LEGACY (internal-store) mode; bound mode handles the same
 	// in OnRasterizerFrameStoreChanged.
 	framestore_->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));

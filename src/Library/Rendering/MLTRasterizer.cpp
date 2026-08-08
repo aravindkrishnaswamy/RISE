@@ -1578,34 +1578,32 @@ bool MLTRasterizer::CopyToFrameStore_( const IRasterImage& src ) const
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkFrameComplete( frame );
 	});
-	// L6d-2b — gate Mark* on copy success.  Firing on a stale
-	// (dim-mismatched) canonical would mislead direct observers.
-	if( copied ) {
-		mFrameStore->MarkFrameComplete( frame );
-	}
 }
 
 void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputPreDenoisedImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputPreDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkPreDenoiseComplete( frame );
 	});
-	if( copied ) {
-		mFrameStore->MarkPreDenoiseComplete( frame );
-	}
 }
 
 void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputDenoisedImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkDenoiseComplete( frame );
 	});
-	if( copied ) {
-		mFrameStore->MarkDenoiseComplete( frame );
-	}
 }

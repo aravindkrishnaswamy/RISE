@@ -72,11 +72,12 @@ vfs->RenderToBuffer(
 
 // 5. On Save-As menu pick:
 IFrameEncoder* enc =
-    FrameEncoderRegistry::Get().ByExtension( pickedExtension );
+    FrameEncoderRegistry::Get().AcquireByExtension( pickedExtension );
 EncodeOpts opts;
 opts.colorSpace = pickedColorSpace;
 opts.viewTransform = ViewTransform::ForLDRDisplay( exposureSliderEV, ACES );
 vfs->SaveAs( pickedPath, enc, opts );
+safe_release( enc );
 
 // 6. On rasterizer swap (PT → BDPT in UI):
 //    Old rasterizer is destroyed (or its outputs freed); the
@@ -280,8 +281,10 @@ public:
     template <typename T> ConstChannelView<T> Snapshot(ChannelId) const;
 
     // Metadata.
-    const Metadata& Meta() const;
-    Metadata&       MutableMeta();      // for rasterizer to update sample counts etc.
+    Metadata Meta() const;              // synchronized immutable snapshot
+    void SetMetadata(const Metadata&);
+    void SetCameraExposureEV(double);
+    void SetFireFidelityMetadata(status, reasons, recordIds);
 
     // ── back-compat bridge ────────────────────────────────────────────
     // Returns the Beauty channel as an IRasterImage view, for code paths that
@@ -428,9 +431,9 @@ public:
     static FrameEncoderRegistry& Get();              // singleton, populated by RISE_API_Init
 
     void Register(std::unique_ptr<IFrameEncoder>);
-    IFrameEncoder* ByFormatName(std::string_view) const;   // "PNG"
-    IFrameEncoder* ByExtension (std::string_view) const;   // ".png"
-    std::vector<IFrameEncoder*> All() const;               // for UI menus
+    IFrameEncoder* AcquireByFormatName(std::string_view) const; // caller releases
+    IFrameEncoder* AcquireByExtension (std::string_view) const; // caller releases
+    std::vector<IFrameEncoder*> AcquireAll() const;              // release each entry
 };
 ```
 
@@ -553,7 +556,7 @@ Goal: ship the new model end-to-end without touching any rasterizer factory or `
 
 - CLI: `.RISEscene` files using `file_rasterizeroutput` produce byte-identical output (the encoders dispatch to the same writers as before; same `DisplayTransformWriter` math under the hood).
 - GUI: can attach `FrameSink` + a viewport-side `IRenderObserver` to any rasterizer, get a persistent HDR FrameStore, and call `frameStore->Render(RGBA8_sRGB, ForLDRDisplay(slider))` on every viewport repaint — live exposure scrubbing works without rasterizer involvement.
-- Save-As menu: `FrameEncoderRegistry::Get().All()` populates the format dropdown; selection → `IFrameEncoder::Encode(*frameStore, ofstream, opts)`.
+- Save-As menu: `FrameEncoderRegistry::Get().AcquireAll()` provides a retained snapshot for populating the format dropdown; the UI copies the labels then releases every entry. Selection acquires the chosen encoder through `AcquireByFormatName` or `AcquireByExtension`, calls the transactional `ViewportFrameStore::SaveAs`, then releases it.
 - HDR display (Mac EDR): viewport calls `frameStore->Render(RGBA16F_ExtendedLinearSRGB, ForHDRDisplay(slider))`.
 
 ### What's still suboptimal
@@ -776,14 +779,16 @@ User drags exposure slider:
     just kicks the next display refresh — no rasterizer involvement.
 
 User clicks "Save As PNG…":
-    enc = FrameEncoderRegistry::ByExtension(".png")
+    enc = FrameEncoderRegistry::AcquireByExtension(".png")
     EncodeOpts opts{ .viewTransform = ForLDRDisplay(currentSliderEV, ACES) }
-    enc->Encode(*store, ofstream(path), opts)
+    viewportFrameStore->SaveAs(path, enc, opts)
+    enc->release()
 
 User clicks "Save As EXR…":
-    enc = FrameEncoderRegistry::ByExtension(".exr")
+    enc = FrameEncoderRegistry::AcquireByExtension(".exr")
     EncodeOpts opts{ .viewTransform = Identity() }   // scene-referred linear
-    enc->Encode(*store, ofstream(path), opts)
+    viewportFrameStore->SaveAs(path, enc, opts)
+    enc->release()
 ```
 
 Phase 2 is identical at the GUI level — the GUI was already pulling from FrameStore.

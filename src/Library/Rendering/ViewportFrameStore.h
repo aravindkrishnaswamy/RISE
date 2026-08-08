@@ -280,8 +280,9 @@ namespace RISE
 				bool                 nonBlocking = false ) const;
 
 			// ── Save As ───────────────────────────────────────
-			//! Encode the current FrameStore via `encoder` (typically
-			//! from FrameEncoderRegistry::Get().ByFormatName(...))
+			//! Encode the current FrameStore via a retained `encoder` from
+			//! FrameEncoderRegistry::Get().AcquireByFormatName(...); caller
+			//! releases its acquired reference after SaveAs returns.
 			//! and transactionally write it with any required fire
 			//! provenance sidecar.  Returns true on success.  No-op if
 			//! the FrameStore hasn't been allocated yet (returns false).

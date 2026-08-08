@@ -151,6 +151,58 @@ namespace
 		});
 	}
 
+	RISECBOR64::Value WideFiniteInterpolationValue(
+		const std::vector<double>& wavelengths,
+		const std::vector<double>& values
+		)
+	{
+		using RISECBOR64::Value;
+		Value::Values slopes, enclosures;
+		const std::vector<double> computedSlopes = PCHIPSlopes(wavelengths,values);
+		for( std::size_t i=0; i<computedSlopes.size(); ++i ) {
+			slopes.push_back(Value::Float(computedSlopes[i]));
+			if( i+1 < wavelengths.size() ) {
+				enclosures.push_back(Value::ArrayValue({
+					Value::Float(wavelengths[i]), Value::Float(wavelengths[i+1]),
+					Value::Float(-1.0e308), Value::Float(1.0e308)
+				}));
+			}
+		}
+		return Value::MapValue({
+			{ "derivative_enclosures", Value::ArrayValue(enclosures) },
+			{ "slopes", Value::ArrayValue(slopes) }
+		});
+	}
+
+	RISECBOR64::Value ReplaceSpectrumColumnWithWideEnclosure(
+		const RISECBOR64::Value& record,
+		const char* sectionKey,
+		const std::size_t valueColumn,
+		const std::vector<double>& replacements,
+		const char* interpolationKey
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* section = record.Find(sectionKey);
+		const Value* rowsValue = section ? section->Find("rows") : 0;
+		if( !section || !rowsValue ||
+			replacements.size() != rowsValue->GetArray().size() ) return Value();
+		Value::Values rows = rowsValue->GetArray();
+		std::vector<double> wavelengths, values;
+		for( std::size_t i=0; i<rows.size(); ++i ) {
+			Value& row = rows[i];
+			Value::Values cells = row.GetArray();
+			wavelengths.push_back(cells[0].GetFloat());
+			values.push_back(replacements[i]);
+			cells[valueColumn] = Value::Float(replacements[i]);
+			row = Value::ArrayValue(cells);
+		}
+		Value changedSection = ReplaceMember(*section,"rows",Value::ArrayValue(rows));
+		changedSection = ReplaceMember(changedSection,interpolationKey,
+			WideFiniteInterpolationValue(wavelengths,values));
+		return ReplaceMember(record,sectionKey,changedSection);
+	}
+
 	RISECBOR64::Value ReplaceSpectrumCell(
 		const RISECBOR64::Value& record, const char* sectionKey,
 		const std::size_t rowIndex, const std::size_t valueColumn,
@@ -555,6 +607,14 @@ int main()
 		explicitDensity->Find("uncertainty") && explicitDensity->Find("provenance") &&
 		explicitDensity->Find("applicability"),
 		"explicit synthetic records carry the complete hashed metadata contract" );
+	if( explicitSources && explicitSource ) {
+		const RISECBOR64::Value changedSource = ReplaceMember(*explicitSource,
+			"schema_version",RISECBOR64::Value::String("unknown-version"));
+		Check( RejectsWith(ReplaceMember(decodedExplicit,"source_records",
+			ReplaceMember(*explicitSources,"explicit_synthetic_fixtures",changedSource)),
+			"source record header does not match its frozen component"),
+			"explicit synthetic source schema version is pinned" );
+	}
 	Check( !FireOpticsPreset::CreateExplicitSyntheticFixture(
 		0.26,1800.0,1.0,0.50,8.7,1.2,0.60,0.60,
 		3.298,0.50,0.90,0.70).IsValid(),
@@ -576,6 +636,14 @@ int main()
 		fixtureEffective->Find("uncertainty") && fixtureEffective->Find("provenance") &&
 		fixtureEffective->Find("applicability"),
 		"the synthetic source carries aggregate and per-value metadata envelopes" );
+	if( syntheticSources && fixtureSource ) {
+		const RISECBOR64::Value changedFixture = ReplaceMember(*fixtureSource,
+			"record_kind",RISECBOR64::Value::String("unknown-fixture-kind"));
+		Check( RejectsWith(ReplaceMember(decodedSynthetic,"source_records",
+			ReplaceMember(*syntheticSources,"synthetic_fixtures",changedFixture)),
+			"source record header does not match its frozen component"),
+			"frozen synthetic fixture source kind is pinned" );
+	}
 	struct FixtureScalarBinding
 	{
 		const char* group;
@@ -699,11 +767,38 @@ int main()
 		"source_records"),"unsupported fire-optics record name/class combination"),
 		"renaming a predictive record cannot bypass its provenance contract" );
 	if( sourceRecords ) {
+		const char* sourceKeys[] = {
+			"effective_absorption", "hot_soot", "cool_carbon", "condensed_organics" };
+		const char* headerKeys[] = { "schema_version", "record_kind", "record_name" };
+		for( const char* sourceKey : sourceKeys ) {
+			const RISECBOR64::Value* source = sourceRecords->Find(sourceKey);
+			if( !source ) {
+				Check(false,"predictive source record exists for header mutations");
+				continue;
+			}
+			for( const char* headerKey : headerKeys ) {
+				const RISECBOR64::Value changedSource = ReplaceMember(*source,headerKey,
+					RISECBOR64::Value::String("unknown-v1-header"));
+				const RISECBOR64::Value changedSources = ReplaceMember(
+					*sourceRecords,sourceKey,changedSource);
+				const std::string message = std::string("load pins ")+sourceKey+
+					" source "+headerKey;
+				Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+					changedSources),"source record header does not match its frozen component"),
+					message.c_str() );
+			}
+		}
 		const RISECBOR64::Value* sourceEffective =
 			sourceRecords->Find("effective_absorption");
 		const RISECBOR64::Value* sourceEffectiveTable = sourceEffective ?
 			sourceEffective->Find("table") : 0;
 		if( sourceEffective && sourceEffectiveTable ) {
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
+				ReplaceMember(*sourceRecords,"effective_absorption",
+					ReplaceMember(*sourceEffective,"normative_quantity",
+						RISECBOR64::Value::String("E_eff_lambda")))),
+				"operational effective absorption differs from its source record"),
+				"the effective source normative quantity remains bound to the operation" );
 			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
 				ReplaceMember(*sourceRecords,"effective_absorption",
 					RemoveMember(*sourceEffective,"quantity_semantics"))),
@@ -968,6 +1063,56 @@ int main()
 				decodedPredictive.Find("condensed_organics");
 			const RISECBOR64::Value* operationalCondensedMetadata =
 				operationalCondensed ? operationalCondensed->Find("table_metadata") : 0;
+			if( operationalCondensed ) {
+				const RISECBOR64::Value changedComputedExponent = ReplaceMember(
+					*sourceCondensedComputed,"extinction_angstrom_exponent_450_633",
+					RISECBOR64::Value::Float(1.79));
+				const RISECBOR64::Value changedSource = ReplaceMember(*sourceCondensed,
+					"computed_outputs_full_mie",changedComputedExponent);
+				const RISECBOR64::Value changedOperational = ReplaceMember(
+					*operationalCondensed,"extinction_angstrom_exponent_450_633",
+					RISECBOR64::Value::Float(1.79));
+				const RISECBOR64::Value changedRecord = ReplaceMember(
+					ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"condensed_organics",changedSource)),
+					"condensed_organics",changedOperational);
+				Check( RejectsWith(changedRecord,
+					"extinction exponent disagrees with its table"),
+					"coordinated condensed exponent mutation remains table-bound" );
+
+				const std::vector<double> hugeValues = {
+					1.0e308, 1.0e-308, 1.0e308, 1.0e-308, 1.0e308 };
+				RISECBOR64::Value hugeRecord = ReplaceSpectrumColumnWithWideEnclosure(
+					decodedPredictive,"condensed_organics",1,hugeValues,
+					"k_ext_interpolation");
+				const RISECBOR64::Value* hugeOperational =
+					hugeRecord.Find("condensed_organics");
+				const RISECBOR64::Value* hugeRows = hugeOperational ?
+					hugeOperational->Find("rows") : 0;
+				if( hugeOperational && hugeRows ) {
+					const RISECBOR64::Value hugeOperationalCopy = *hugeOperational;
+					const RISECBOR64::Value hugeSourceTable = ReplaceMember(
+						*sourceCondensedTable,"rows",*hugeRows);
+					RISECBOR64::Value hugeSourceComputed = ReplaceMember(
+						*sourceCondensedComputed,"table",hugeSourceTable);
+					hugeSourceComputed = ReplaceMember(hugeSourceComputed,
+						"extinction_angstrom_exponent_450_633",
+						RISECBOR64::Value::Float(0.0));
+					const RISECBOR64::Value hugeSource = ReplaceMember(*sourceCondensed,
+						"computed_outputs_full_mie",hugeSourceComputed);
+					hugeRecord = ReplaceMember(hugeRecord,"source_records",
+						ReplaceMember(*sourceRecords,"condensed_organics",hugeSource));
+					hugeRecord = ReplaceMember(hugeRecord,"condensed_organics",
+						ReplaceMember(hugeOperationalCopy,
+							"extinction_angstrom_exponent_450_633",
+							RISECBOR64::Value::Float(0.0)));
+					Check( RejectsWith(hugeRecord,
+						"derivative enclosure computation is non-finite"),
+						"finite huge knots cannot bypass derivative-enclosure validation" );
+				} else {
+					Check(false,"huge-knot derivative mutation fixture is constructible");
+				}
+			}
 			if( sourceCondensedMetadata && operationalCondensed &&
 				operationalCondensedMetadata ) {
 				const RISECBOR64::Value changedMetadata = ReplaceMember(

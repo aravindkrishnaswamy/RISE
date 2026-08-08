@@ -601,6 +601,36 @@ namespace
 	}
 
 	// ─── Section 5: Render readback identity & exposure ───────────
+	void TestConcurrentFrameMetadata()
+	{
+		FrameStore* store = MakeStore(2,2,2);
+		const unsigned int iterations = 20000;
+		std::atomic<bool> start{false};
+		std::atomic<bool> valid{true};
+		std::thread writer([&]() {
+			while( !start.load(std::memory_order_acquire) ) {}
+			for( unsigned int frame=1; frame<=iterations; ++frame ) {
+				switch( frame%3u ) {
+				case 0: store->MarkFrameComplete(frame); break;
+				case 1: store->MarkPreDenoiseComplete(frame); break;
+				default: store->MarkDenoiseComplete(frame); break;
+				}
+			}
+		});
+		std::thread reader([&]() {
+			start.store(true,std::memory_order_release);
+			for( unsigned int sample=0; sample<iterations; ++sample ) {
+				const Metadata metadata = store->Meta();
+				if( metadata.frame > iterations ) valid.store(false);
+			}
+		});
+		writer.join();
+		reader.join();
+		Check(valid.load() && store->Meta().frame == iterations,
+			"Mark*Complete and Meta snapshots are synchronized under concurrency");
+		store->release();
+	}
+
 	void TestRenderReadback()
 	{
 		FrameStore* store = MakeStore( 4, 4, 4 );
@@ -1156,6 +1186,7 @@ int main()
 	TestObserverCascadeRemovalNoUAF();
 	TestObserverRemoveWaitsForInFlight();
 	TestConcurrentSeqlock();
+	TestConcurrentFrameMetadata();
 	TestRenderReadback();
 	TestToneCurveGating();
 	TestReferenceLifetime();

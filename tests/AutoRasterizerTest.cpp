@@ -45,6 +45,7 @@
 #include <cctype>
 #include <string>
 #include <algorithm>
+#include <filesystem>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
 	#define getpid _getpid
@@ -68,7 +69,9 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice
 #include "../src/Library/Rendering/AutoRasterizer.h"        // ResolvedIntegrator()
+#include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/RISE_API.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -183,7 +186,8 @@ public:
 		const bool clearOnOutput,
 		int& frameStoreNotifications,
 		int& outputImages,
-		bool& destroyed
+		bool& destroyed,
+		const bool labelFireOnOutput = false
 		) :
 		rasterizer_(rasterizer),
 		clearOnEnumeration_(clearOnEnumeration),
@@ -191,17 +195,26 @@ public:
 		clearOnOutput_(clearOnOutput),
 		frameStoreNotifications_(frameStoreNotifications),
 		outputImages_(outputImages),
-		destroyed_(destroyed)
+		destroyed_(destroyed),
+		labelFireOnOutput_(labelFireOnOutput),
+		frameStore_(nullptr)
 	{}
 
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
 	{
 		++outputImages_;
+		if( labelFireOnOutput_ && frameStore_ ) {
+			frameStore_->SetFireFidelityMetadata("preview",
+				std::vector<std::string>{ "requested_preview" },
+				std::vector<std::string>{
+					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" });
+		}
 		if( clearOnOutput_ ) rasterizer_.FreeRasterizerOutputs();
 	}
-	void OnRasterizerFrameStoreChanged( FrameStore* ) override
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
 	{
+		frameStore_ = store;
 		++frameStoreNotifications_;
 		if( clearOnReannounce_ && frameStoreNotifications_ == 2 ) {
 			rasterizer_.FreeRasterizerOutputs();
@@ -220,6 +233,8 @@ private:
 	int& frameStoreNotifications_;
 	int& outputImages_;
 	bool& destroyed_;
+	bool labelFireOnOutput_;
+	FrameStore* frameStore_;
 };
 
 class ClearingOutputEnumerator : public IEnumCallback<IRasterizerOutput>
@@ -634,7 +649,8 @@ static void TestFirePelPreviewDivergence()
 
 	// Measured single-thread against preset-v1 record
 	// c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc
-	// (metadata-complete canonicalization 6d7f67b8; tripwire recorded by cdb1aad4)
+	// (metadata-complete canonicalization e3a3392b; tripwire recorded by cdb1aad4;
+	// operational projection 8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c)
 	// over the paired
 	// seeds above: red 0.56-1.26%, green
 	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The
@@ -1453,17 +1469,31 @@ static void TestRetainedOutputSnapshots()
 	firstImages = secondImages = 0;
 	firstDestroyed = secondDestroyed = false;
 	first = new LifetimeFrameStoreOutput(*rasterizer,
-		false,false,true,firstNotifications,firstImages,firstDestroyed);
+		false,false,true,firstNotifications,firstImages,firstDestroyed,true);
 	second = new LifetimeFrameStoreOutput(*rasterizer,
 		false,false,false,secondNotifications,secondImages,secondDestroyed);
 	rasterizer->AddRasterizerOutput(first);
 	rasterizer->AddRasterizerOutput(second);
+	const std::filesystem::path outputBase =
+		std::filesystem::temp_directory_path() /
+			("rise_retained_output_"+std::to_string(::getpid()));
+	IRasterizerOutput* fileOutput = nullptr;
+	const bool fileOutputCreated = RISE_API_CreateFileRasterizerOutput(
+		&fileOutput,outputBase.string().c_str(),false,2,8,eColorSpace_sRGB,
+		0.0,eDisplayTransform_None,eExrCompression_Zip,true) && fileOutput;
+	if( fileOutput ) rasterizer->AddRasterizerOutput(fileOutput);
 	safe_release(first);
 	safe_release(second);
+	safe_release(fileOutput);
 	const bool rendered = job->Rasterize();
+	const std::filesystem::path artifact = outputBase.string()+".png";
+	const std::filesystem::path sidecar = artifact.string()+".provenance.cbor";
 	Check(rendered && firstImages == 1 && secondImages == 1 &&
-		firstDestroyed && secondDestroyed,
+		firstDestroyed && secondDestroyed && fileOutputCreated &&
+		std::filesystem::exists(artifact) && std::filesystem::exists(sidecar),
 		"render output dispatch completes after a callback frees the live list: " + label);
+	std::filesystem::remove(artifact);
+	std::filesystem::remove(sidecar);
 
 	safe_release(job);
 	std::remove(path.c_str());

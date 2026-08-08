@@ -2461,36 +2461,32 @@ IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( uns
 
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	// Write to output objects (legacy IRasterizerOutput chain).
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputImage( img, rcRegion, frame );
+		}
+		if( mFrameStore ) mFrameStore->MarkFrameComplete( frame );
 	});
-	// L6f — fire `OnFrameComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkFrameComplete( frame );
-	}
 }
 
 void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputPreDenoisedImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputPreDenoisedImage( img, rcRegion, frame );
+		}
+		if( mFrameStore ) mFrameStore->MarkPreDenoiseComplete( frame );
 	});
-	// L6f — fire `OnPreDenoiseComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkPreDenoiseComplete( frame );
-	}
 }
 
 void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
-		output->OutputDenoisedImage( img, rcRegion, frame );
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputDenoisedImage( img, rcRegion, frame );
+		}
+		if( mFrameStore ) mFrameStore->MarkDenoiseComplete( frame );
 	});
-	// L6f — fire `OnDenoiseComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkDenoiseComplete( frame );
-	}
 }
 
 // Our own functions

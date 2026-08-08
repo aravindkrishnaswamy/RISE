@@ -325,6 +325,14 @@ namespace
 		Check( reg.ByExtension( "tif"  ) != nullptr, "ByExtension(\"tif\") (TIFF alias)" );
 		Check( reg.ByExtension( "tiff" ) != nullptr, "ByExtension(\"tiff\")" );
 		Check( reg.ByExtension( "miss" ) == nullptr, "ByExtension(\"miss\") returns null" );
+		IFrameEncoder* acquiredPng = reg.AcquireByExtension(".png");
+		Check( acquiredPng && acquiredPng->FormatName() == "PNG",
+			"AcquireByExtension returns a retained encoder" );
+		safe_release(acquiredPng);
+		std::vector<IFrameEncoder*> acquiredAll = reg.AcquireAll();
+		Check( acquiredAll.size() == all.size(),
+			"AcquireAll returns a retained registry snapshot" );
+		for( IFrameEncoder* encoder : acquiredAll ) encoder->release();
 
 		// HDR-format flags match the legacy IsHDRFormat gate.
 		Check( reg.ByFormatName( "EXR"   )->SupportsHDR() == true,  "EXR.SupportsHDR" );

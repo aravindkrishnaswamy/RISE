@@ -437,7 +437,10 @@ namespace RISE
 
 		void FrameStore::MarkFrameComplete( unsigned frame )
 		{
-			meta_.frame = frame;
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.frame = frame;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {
@@ -451,7 +454,10 @@ namespace RISE
 			// the callback see the current frame, not whatever the
 			// previous MarkFrameComplete left.  See L1 adversarial
 			// review MED-4.
-			meta_.frame = frame;
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.frame = frame;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {
@@ -461,7 +467,10 @@ namespace RISE
 
 		void FrameStore::MarkDenoiseComplete( unsigned frame )
 		{
-			meta_.frame = frame;
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.frame = frame;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {

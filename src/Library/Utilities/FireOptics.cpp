@@ -410,14 +410,21 @@ namespace RISE
 
 		bool ValidateSourceRecordHeader(
 			const RISECBOR64::Value& source,
+			const char* expectedSchemaVersion,
+			const char* expectedRecordKind,
+			const char* expectedRecordName,
 			std::string* error
 			)
 		{
-			return Required(source, "schema_version", RISECBOR64::Value::Text, error) &&
-				Required(source, "record_kind", RISECBOR64::Value::Text, error) &&
-				Required(source, "record_name", RISECBOR64::Value::Text, error) &&
-				Required(source, "version", RISECBOR64::Value::Text, error) &&
-				Required(source, "record_status", RISECBOR64::Value::Text, error);
+			std::string schemaVersion, recordKind, recordName;
+			return ReadText(source,"schema_version",schemaVersion,error) &&
+				ReadText(source,"record_kind",recordKind,error) &&
+				ReadText(source,"record_name",recordName,error) &&
+				Required(source,"version",RISECBOR64::Value::Text,error) &&
+				Required(source,"record_status",RISECBOR64::Value::Text,error) &&
+				((schemaVersion == expectedSchemaVersion &&
+					recordKind == expectedRecordKind && recordName == expectedRecordName) ||
+					Fail(error,"fire-optics source record header does not match its frozen component"));
 		}
 
 		bool ValidateProvenanceSchema(
@@ -701,6 +708,7 @@ namespace RISE
 			const RISECBOR64::Value& sourceCondensed,
 			const std::vector<std::vector<double> >& effectiveRows,
 			const double density,
+			const std::string& normativeQuantity,
 			const std::vector<std::vector<double> >& hotRows,
 			const double coolKm,
 			const double coolExponent,
@@ -730,16 +738,19 @@ namespace RISE
 				*effectiveTable,"table_metadata",RISECBOR64::Value::Map,error ) : 0;
 			std::vector<std::vector<double> > sourceEffectiveRows;
 			double sourceDensity = 0.0;
+			std::string sourceNormativeQuantity;
 			if( effectiveTable && !ValidateColumns(*effectiveTable,effectiveColumns,3,
 				"source effective-absorption table",error) ) return false;
 			if( !effectiveTable || !effectiveDefinition || !sourceEffectiveMetadata ||
+				!ReadText(sourceEffective,"normative_quantity",
+					sourceNormativeQuantity,error) ||
 				!ReadSourceRows(*effectiveTable,3,sourceEffectiveRows,error) ) {
 				return Fail(error,
 					"fire-optics operational effective absorption differs from its source record");
 			}
 			if( !ReadSourceEnvelopeNumber(*effectiveDefinition,"pinned_density_g_cm3",
 				sourceDensity,"range",error) ) return false;
-			if( sourceDensity != density ||
+			if( sourceDensity != density || sourceNormativeQuantity != normativeQuantity ||
 				!RowsExactlyEqual(effectiveRows,sourceEffectiveRows) ) {
 				return Fail(error,
 					"fire-optics operational effective absorption differs from its source record");
@@ -968,6 +979,9 @@ namespace RISE
 			}
 			const std::vector<double> expectedSlopes = PCHIPSlopes(wavelengths, values);
 			for( std::size_t i=0; i<slopes.size(); i++ ) {
+				if( !IsFinite(slopes[i]) || !IsFinite(expectedSlopes[i]) ) {
+					return Fail(error,"fire-optics interpolation slope is non-finite");
+				}
 				const double tolerance = 64.0*std::numeric_limits<double>::epsilon()*
 					std::max(1.0, std::fabs(expectedSlopes[i]));
 				if( !NearlyEqual(slopes[i], expectedSlopes[i], tolerance) ) {
@@ -1000,6 +1014,10 @@ namespace RISE
 				DerivativeExtrema(
 					wavelengths[i], wavelengths[i+1], values[i], values[i+1],
 					slopes[i], slopes[i+1], actualMinimum, actualMaximum );
+				if( !IsFinite(actualMinimum) || !IsFinite(actualMaximum) ) {
+					return Fail(error,
+						"fire-optics derivative enclosure computation is non-finite");
+				}
 				if( actualMinimum < fields[2] || actualMaximum > fields[3] ) {
 					return Fail(error, "fire-optics derivative is outside its enclosure at segment "+
 						std::to_string(i)+" actual ["+std::to_string(actualMinimum)+", "+
@@ -1227,8 +1245,13 @@ namespace RISE
 				sourceExplicitFixtures = Required(*sourceRecords,
 					"explicit_synthetic_fixtures",RISECBOR64::Value::Map,error );
 				std::string sourceVersion, sourceStatus, sourceName;
+				if( sourceExplicitFixtures &&
+					!ValidateSourceRecordHeader(*sourceExplicitFixtures,"draft-2",
+						"fire_optics_synthetic_fixture",
+						"fire-optics-explicit-synthetic-fixtures-v1",error) ) {
+					return false;
+				}
 				if( !sourceExplicitFixtures ||
-					!ValidateSourceRecordHeader(*sourceExplicitFixtures,error) ||
 					!ReadText(*sourceExplicitFixtures,"record_name",sourceName,error) ||
 					!ReadText(*sourceExplicitFixtures,"version",sourceVersion,error) ||
 					!ReadText(*sourceExplicitFixtures,"record_status",sourceStatus,error) ||
@@ -1248,11 +1271,18 @@ namespace RISE
 				RISECBOR64::Value::Map, error);
 			sourceCondensed = Required(*sourceRecords, "condensed_organics",
 				RISECBOR64::Value::Map, error);
+			if( sourceEffective && sourceHot && sourceCool && sourceCondensed &&
+				(!ValidateSourceRecordHeader(*sourceEffective,"draft-2",
+					"soot_effective_absorption_function","soot-mac-equivalent-e-v1",error) ||
+				 !ValidateSourceRecordHeader(*sourceHot,"draft-1","constituent_optics",
+					"hot-soot-v1",error) ||
+				 !ValidateSourceRecordHeader(*sourceCool,"draft-1","constituent_optics",
+					"cool-carbon-smoke-v1",error) ||
+				 !ValidateSourceRecordHeader(*sourceCondensed,"draft-1","constituent_optics",
+					"condensed-organics-smoke-v1",error)) ) {
+				return false;
+			}
 			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
-				!ValidateSourceRecordHeader(*sourceEffective, error) ||
-				!ValidateSourceRecordHeader(*sourceHot, error) ||
-				!ValidateSourceRecordHeader(*sourceCool, error) ||
-				!ValidateSourceRecordHeader(*sourceCondensed, error) ||
 				!SourceStatusMatches(*componentStatuses, "effective_absorption",
 					*sourceEffective, error) ||
 				!SourceStatusMatches(*componentStatuses, "hot_soot", *sourceHot, error) ||
@@ -1315,7 +1345,12 @@ namespace RISE
 				sourceFixtures = Required(
 					*sourceRecords, "synthetic_fixtures", RISECBOR64::Value::Map, error );
 				std::string fixtureName, fixtureStatus, fixtureVersion;
-				if( !sourceFixtures || !ValidateSourceRecordHeader(*sourceFixtures, error) ||
+				if( sourceFixtures && !ValidateSourceRecordHeader(*sourceFixtures,"draft-1",
+					"synthetic_regression_fixtures",
+					"fire-optics-synthetic-fixtures-v1",error) ) {
+					return false;
+				}
+				if( !sourceFixtures ||
 					!ReadText(*sourceFixtures, "record_name", fixtureName, error) ||
 					!ReadText(*sourceFixtures, "record_status", fixtureStatus, error) ||
 					!ReadText(*sourceFixtures, "version", fixtureVersion, error) ||
@@ -1529,6 +1564,19 @@ namespace RISE
 				!ReadText(*condensed, "predictive_reason_code", m_condensedPredictiveReason, error) ) {
 				return false;
 			}
+			double condensedKm450 = -1.0, condensedKm633 = -1.0;
+			for( const std::vector<double>& row : condensedRows ) {
+				if( row[0] == 450.0 ) condensedKm450 = row[1];
+				if( row[0] == 633.0 ) condensedKm633 = row[1];
+			}
+			const double derivedCondensedExponent =
+				-std::log(condensedKm450/condensedKm633)/std::log(450.0/633.0);
+			if( condensedKm450 <= 0.0 || condensedKm633 <= 0.0 ||
+				!IsFinite(derivedCondensedExponent) ||
+				!NearlyEqual(derivedCondensedExponent,m_condensedPreviewExponent,2.5e-3) ) {
+				return Fail(error,
+					"fire-optics condensed-organics extinction exponent disagrees with its table");
+			}
 			if( m_hotFractionMinK != 700.0 || m_hotFractionMaxK != 900.0 ) {
 				return Fail(error, "fire-optics predictive v1 phi(T) band gate failed");
 			}
@@ -1572,7 +1620,7 @@ namespace RISE
 			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
 				!ValidatePredictiveSourceBindings(
 					*sourceEffective,*sourceHot,*sourceCool,*sourceCondensed,
-					effectiveRows,m_densityGCM3,hotRows,m_coolKm633,m_coolExponent,
+					effectiveRows,m_densityGCM3,normative,hotRows,m_coolKm633,m_coolExponent,
 					m_coolOmega,m_coolG,supportedRange,certifiedDomain,
 					m_coolOutOfDomainPolicy,condensedRows,m_condensedPreviewExponent,
 					m_condensedApplicability,m_condensedIRClosureStatus,

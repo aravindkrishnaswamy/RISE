@@ -93,10 +93,9 @@ namespace RISE
 			// Total EV is the sum of the caller-supplied static
 			// exposure (from opts.viewTransform.exposureEV — UI
 			// slider, scene-declared exposure_compensation, etc.)
-			// and the per-frame camera-side EV (from
-			// store.Meta().cameraExposureEV — set by the rasterizer
-			// at frame start via SetCameraExposureCompensationEV).
-			// This matches FileRasterizerOutput.cpp:231.  See L2
+			// and the per-frame camera-side EV from the transaction's
+			// immutable FrameStore metadata snapshot (or a direct encoder
+			// call's snapshot taken above).  See L2
 			// adversarial review HIGH-2.
 			IRasterImageWriter* pEffective = pWriter;
 			DisplayTransformWriter* pDtw = nullptr;
@@ -516,10 +515,51 @@ namespace RISE
 			return nullptr;
 		}
 
+		IFrameEncoder* FrameEncoderRegistry::AcquireByExtension(
+			const std::string& ext
+			) const
+		{
+			const std::string needle = StripDot(ext);
+			std::lock_guard<std::mutex> lock(mutex_);
+			for( IFrameEncoder* enc : encoders_ ) {
+				for( const std::string& candidate : enc->Extensions() ) {
+					if( IEqualsASCII(candidate,needle) ) {
+						enc->addref();
+						return enc;
+					}
+				}
+			}
+			return nullptr;
+		}
+
 		std::vector<IFrameEncoder*> FrameEncoderRegistry::All() const
 		{
 			std::lock_guard<std::mutex> lock( mutex_ );
 			return encoders_;
+		}
+
+		std::vector<IFrameEncoder*> FrameEncoderRegistry::AcquireAll() const
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			std::vector<IFrameEncoder*> acquired;
+			try {
+				acquired.reserve(encoders_.size());
+				for( IFrameEncoder* encoder : encoders_ ) {
+					encoder->addref();
+					try {
+						acquired.push_back(encoder);
+					}
+					catch( ... ) {
+						encoder->release();
+						throw;
+					}
+				}
+			}
+			catch( ... ) {
+				for( IFrameEncoder* encoder : acquired ) encoder->release();
+				throw;
+			}
+			return acquired;
 		}
 
 	} // namespace Implementation
