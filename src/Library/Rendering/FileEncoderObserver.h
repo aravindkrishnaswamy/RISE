@@ -103,7 +103,8 @@ namespace RISE
 			virtual ~FileEncoderObserver();
 
 		private:
-			void WriteFile( unsigned int frame, const char* suffix );
+			void WriteFile( unsigned int frame, const char* suffix,
+				bool denoisedDerivative = false );
 
 			FrameStore*    store_;     // addref'd in ctor
 			IFrameEncoder* encoder_;   // addref'd in ctor

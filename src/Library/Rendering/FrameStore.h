@@ -316,6 +316,9 @@ namespace RISE
 				meta_.resolvedRenderConfigCoreV1 = renderConfig;
 				meta_.rendererBuildV1 = rendererBuild;
 				meta_.rendererBuildId = rendererBuildId;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
 			}
 
 			void SetPrimaryFireArtifact(

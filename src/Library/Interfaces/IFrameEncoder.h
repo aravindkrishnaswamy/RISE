@@ -81,6 +81,11 @@ namespace RISE
 		//! template filenames; the encoder itself doesn't use it.
 		unsigned frame = 0;
 
+		//! True when the encoded pixels have passed through a denoiser.
+		//! Denoised outputs are display derivatives even when their file
+		//! representation otherwise satisfies the primary EXR gates.
+		bool denoisedDerivative = false;
+
 		//! AOV inclusion for multi-channel formats (L7+).
 		//! Currently unused by all 7 base encoders; reserved.
 		bool                                    includeAOVs = false;

@@ -35,6 +35,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
@@ -796,6 +797,105 @@ namespace
 		Check( attributesMatch,
 			"[fire provenance] EXR mirrors canonical JSON status, digest, and provenance ID" );
 
+		const std::string signedZeroFile = MakeTempPathWithoutExt()+"_signed_zero.exr";
+		opts.viewTransform.whiteBalance._01 = -0.0;
+		std::string transactionError;
+		Check( EncodeFrameStoreFileTransaction(*store,*exr,opts,signedZeroFile,
+				transactionError),
+			"[fire provenance] signed-zero EXR transaction succeeds" );
+		std::vector<unsigned char> signedZeroBytes, signedZeroSidecar;
+		Check( ReadFileAllBytes(signedZeroFile,signedZeroBytes) &&
+			ReadFileAllBytes(signedZeroFile+".provenance.cbor",signedZeroSidecar) &&
+			VerifyFireProvenanceEXR(signedZeroBytes,signedZeroSidecar,transactionError),
+			"[fire provenance] EXR mirror canonicalizes negative zero exactly as CBOR" );
+
+		const std::string whiteBalanceFile = MakeTempPathWithoutExt()+"_white_balance.exr";
+		opts.viewTransform.whiteBalance._00 = 0.9;
+		Check( EncodeFrameStoreFileTransaction(*store,*exr,opts,whiteBalanceFile,
+				transactionError),
+			"[fire provenance] nonidentity white-balance EXR transaction succeeds" );
+		std::vector<unsigned char> whiteBalanceSidecar;
+		RISECBOR64::Value whiteBalanceEnvelope;
+		const bool whiteBalanceDecoded =
+			ReadFileAllBytes(whiteBalanceFile+".provenance.cbor",whiteBalanceSidecar) &&
+			RISECBOR64::DecodeCanonical(whiteBalanceSidecar,whiteBalanceEnvelope,
+				&transactionError);
+		const RISECBOR64::Value* whiteBalancePayload = whiteBalanceDecoded ?
+			whiteBalanceEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* whiteBalanceReasons = whiteBalancePayload ?
+			whiteBalancePayload->Find("artifact_reason_codes") : nullptr;
+		const RISECBOR64::Value* whiteBalanceFidelity = whiteBalancePayload ?
+			whiteBalancePayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* whiteBalanceConfig = whiteBalancePayload ?
+			whiteBalancePayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* whiteBalanceOutput = whiteBalanceConfig ?
+			whiteBalanceConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* whiteBalanceMatrix = whiteBalanceOutput ?
+			whiteBalanceOutput->Find("view_white_balance") : nullptr;
+		bool hasWhiteBalanceReason = false;
+		if( whiteBalanceReasons ) {
+			for( const auto& reason : whiteBalanceReasons->GetArray() ) {
+				hasWhiteBalanceReason = hasWhiteBalanceReason ||
+					reason.GetText() == "white_balance_enabled";
+			}
+		}
+		Check( whiteBalanceFidelity &&
+			whiteBalanceFidelity->GetText() == "display_derivative" &&
+			hasWhiteBalanceReason && whiteBalanceMatrix &&
+			whiteBalanceMatrix->GetArray().size() == 9u &&
+			whiteBalanceMatrix->GetArray()[0].GetFloat() == 0.9,
+			"[fire provenance] white balance forces and fully records a display derivative" );
+
+		opts.viewTransform.whiteBalance = Matrix3();
+		const std::string denoisedBase = MakeTempPathWithoutExt()+"_denoised_frame";
+		observer = new FileEncoderObserver(store,exr,opts,denoisedBase,true);
+		observer->OnDenoiseComplete(12u,0u);
+		safe_release(observer);
+		const std::string denoisedFile = denoisedBase+"_denoised0012.exr";
+		std::vector<unsigned char> denoisedSidecar;
+		RISECBOR64::Value denoisedEnvelope;
+		const bool denoisedDecoded =
+			ReadFileAllBytes(denoisedFile+".provenance.cbor",denoisedSidecar) &&
+			RISECBOR64::DecodeCanonical(denoisedSidecar,denoisedEnvelope,
+				&transactionError);
+		const RISECBOR64::Value* denoisedPayload = denoisedDecoded ?
+			denoisedEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* denoisedFidelity = denoisedPayload ?
+			denoisedPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* denoisedConfig = denoisedPayload ?
+			denoisedPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* denoisedOutput = denoisedConfig ?
+			denoisedConfig->Find("output") : nullptr;
+		Check( denoisedFidelity &&
+			denoisedFidelity->GetText() == "display_derivative" &&
+			denoisedOutput && denoisedOutput->Find("frame_index") &&
+			denoisedOutput->Find("frame_index")->GetIntegerArgument() == 12u &&
+			denoisedOutput->Find("denoised_derivative") &&
+			denoisedOutput->Find("denoised_derivative")->GetBoolean(),
+			"[fire provenance] denoised EXR is a frame-indexed display derivative" );
+
+		const std::string concurrentFile = MakeTempPathWithoutExt()+"_concurrent.exr";
+		bool concurrentA = false;
+		bool concurrentB = false;
+		std::string concurrentErrorA;
+		std::string concurrentErrorB;
+		std::thread writerA([&]() {
+			concurrentA = EncodeFrameStoreFileTransaction(*store,*exr,opts,
+				concurrentFile,concurrentErrorA);
+		});
+		std::thread writerB([&]() {
+			concurrentB = EncodeFrameStoreFileTransaction(*store,*exr,opts,
+				concurrentFile,concurrentErrorB);
+		});
+		writerA.join();
+		writerB.join();
+		std::vector<unsigned char> concurrentBytes, concurrentSidecar;
+		Check( concurrentA && concurrentB &&
+			ReadFileAllBytes(concurrentFile,concurrentBytes) &&
+			ReadFileAllBytes(concurrentFile+".provenance.cbor",concurrentSidecar) &&
+			VerifyFireProvenanceEXR(concurrentBytes,concurrentSidecar,transactionError),
+			"[fire provenance] concurrent same-destination transactions publish one matched pair" );
+
 		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_derivative";
 		const std::string pngFile = pngBase+".png";
 		const std::string pngSidecar = pngFile+".provenance.cbor";
@@ -827,9 +927,26 @@ namespace
 			"[fire provenance] display derivative links to the finalized preview primary" );
 		std::remove(pngFile.c_str());
 		std::remove(pngSidecar.c_str());
+		std::remove(signedZeroFile.c_str());
+		std::remove((signedZeroFile+".provenance.cbor").c_str());
+		std::remove(whiteBalanceFile.c_str());
+		std::remove((whiteBalanceFile+".provenance.cbor").c_str());
+		std::remove(denoisedFile.c_str());
+		std::remove((denoisedFile+".provenance.cbor").c_str());
+		std::remove(concurrentFile.c_str());
+		std::remove((concurrentFile+".provenance.cbor").c_str());
 		std::remove(exrFile.c_str());
 		std::remove(exrSidecar.c_str());
 #endif
+		const FrameStore::Metadata beforeReset = store->Meta();
+		store->SetFireFidelityMetadata("preview",beforeReset.renderReasonCodes,
+			beforeReset.activeFireOpticsRecordIds,beforeReset.activeFireMedia,
+			beforeReset.resolvedRenderConfigCoreV1,beforeReset.rendererBuildV1,
+			beforeReset.rendererBuildId);
+		Check( store->Meta().primaryProvenanceId.empty() &&
+			store->Meta().primaryArtifactSha256.empty() &&
+			store->Meta().primaryArtifactFidelity.empty(),
+			"[fire provenance] a new render metadata envelope clears stale primary linkage" );
 		safe_release(store);
 	}
 }

@@ -26,6 +26,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <system_error>
@@ -37,6 +38,7 @@ using namespace RISE::Implementation;
 namespace
 {
 	const char kFireAttributePrefix[] = "riseFireProv_";
+	std::mutex gFileTransactionMutex;
 
 	RISECBOR64::Value TextArray( const std::vector<std::string>& values )
 	{
@@ -177,6 +179,10 @@ namespace
 			return true;
 		case Value::Float64:
 		{
+			if( value.GetFloat() == 0.0 ) {
+				json.push_back('0');
+				return true;
+			}
 			char buffer[64];
 			const std::to_chars_result converted = std::to_chars(buffer,buffer+sizeof(buffer),
 				value.GetFloat(),std::chars_format::general,
@@ -256,13 +262,23 @@ namespace
 	bool IsPrimaryArtifact( const IFrameEncoder& encoder, const EncodeOpts& opts )
 	{
 		return encoder.FormatName() == "EXR" && opts.bpp >= 32u &&
+			!opts.denoisedDerivative &&
 			(opts.colorSpace == eColorSpace_Rec709RGB_Linear ||
 			 opts.colorSpace == eColorSpace_ROMMRGB_Linear) &&
 			(opts.exrCompression == eExrCompression_None ||
 			 opts.exrCompression == eExrCompression_Zip ||
 			 opts.exrCompression == eExrCompression_Piz) &&
 			opts.viewTransform.exposureEV == 0.0f &&
-			opts.viewTransform.toneCurve == eDisplayTransform_None;
+			opts.viewTransform.toneCurve == eDisplayTransform_None &&
+			opts.viewTransform.whiteBalance._00 == 1.0 &&
+			opts.viewTransform.whiteBalance._01 == 0.0 &&
+			opts.viewTransform.whiteBalance._02 == 0.0 &&
+			opts.viewTransform.whiteBalance._10 == 0.0 &&
+			opts.viewTransform.whiteBalance._11 == 1.0 &&
+			opts.viewTransform.whiteBalance._12 == 0.0 &&
+			opts.viewTransform.whiteBalance._20 == 0.0 &&
+			opts.viewTransform.whiteBalance._21 == 0.0 &&
+			opts.viewTransform.whiteBalance._22 == 1.0;
 	}
 
 	std::vector<std::string> ArtifactReasons(
@@ -281,6 +297,17 @@ namespace
 			opts.colorSpace == eColorSpace_sRGB ||
 			opts.colorSpace == eColorSpace_ProPhotoRGB ) {
 			reasons.insert("display_transform_enabled");
+		}
+		if( opts.viewTransform.whiteBalance._00 != 1.0 ||
+			opts.viewTransform.whiteBalance._01 != 0.0 ||
+			opts.viewTransform.whiteBalance._02 != 0.0 ||
+			opts.viewTransform.whiteBalance._10 != 0.0 ||
+			opts.viewTransform.whiteBalance._11 != 1.0 ||
+			opts.viewTransform.whiteBalance._12 != 0.0 ||
+			opts.viewTransform.whiteBalance._20 != 0.0 ||
+			opts.viewTransform.whiteBalance._21 != 0.0 ||
+			opts.viewTransform.whiteBalance._22 != 1.0 ) {
+			reasons.insert("white_balance_enabled");
 		}
 		return std::vector<std::string>(reasons.begin(),reasons.end());
 	}
@@ -322,6 +349,7 @@ namespace
 			{ "bits_per_channel", Value::Unsigned(opts.bpp) },
 			{ "color_space", Value::String(ColorSpaceName(opts.colorSpace)) },
 			{ "compression_level", Value::Signed(opts.compressionLevel) },
+			{ "denoised_derivative", Value::Bool(opts.denoisedDerivative) },
 			{ "exr_compression", Value::String(EXRCompressionName(opts.exrCompression)) },
 			{ "exr_with_alpha", Value::Bool(opts.exrWithAlpha) },
 			{ "format", Value::String(encoder.FormatName()) },
@@ -329,7 +357,18 @@ namespace
 			{ "include_aovs", Value::Bool(opts.includeAOVs) },
 			{ "view_exposure_ev", Value::Float(opts.viewTransform.exposureEV) },
 			{ "view_tone_curve", Value::Unsigned(static_cast<unsigned int>(opts.viewTransform.toneCurve)) },
-			{ "view_tone_curve_strength", Value::Float(opts.viewTransform.toneCurveStrength) }
+			{ "view_tone_curve_strength", Value::Float(opts.viewTransform.toneCurveStrength) },
+			{ "view_white_balance", Value::ArrayValue({
+				Value::Float(opts.viewTransform.whiteBalance._00),
+				Value::Float(opts.viewTransform.whiteBalance._01),
+				Value::Float(opts.viewTransform.whiteBalance._02),
+				Value::Float(opts.viewTransform.whiteBalance._10),
+				Value::Float(opts.viewTransform.whiteBalance._11),
+				Value::Float(opts.viewTransform.whiteBalance._12),
+				Value::Float(opts.viewTransform.whiteBalance._20),
+				Value::Float(opts.viewTransform.whiteBalance._21),
+				Value::Float(opts.viewTransform.whiteBalance._22)
+			}) }
 		})));
 		const Value finalizedConfig = Value::MapValue(resolvedMembers);
 		RISECBOR64::Bytes finalizedConfigBytes;
@@ -671,6 +710,7 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	std::string& error
 	)
 {
+	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
 	error.clear();
 	EncodeOpts transactionOpts = opts;
 	transactionOpts.metadataSnapshot = store.Meta();
@@ -840,10 +880,13 @@ void FileEncoderObserver::OnDenoiseComplete( unsigned int frame, uint64_t /*gene
 {
 	// Matches legacy
 	// FileRasterizerOutput::OutputDenoisedImage → WriteImageToFile(..., "_denoised").
-	WriteFile( frame, "_denoised" );
+	WriteFile( frame, "_denoised", true );
 }
 
-void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
+void FileEncoderObserver::WriteFile(
+	unsigned int frame,
+	const char* suffix,
+	const bool denoisedDerivative )
 {
 	if ( !store_ || !encoder_ ) return;
 
@@ -867,8 +910,11 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 			pattern_.c_str(), suffix, ext.c_str() );
 	}
 
+	EncodeOpts frameOpts = opts_;
+	frameOpts.frame = frame;
+	frameOpts.denoisedDerivative = denoisedDerivative;
 	std::string writeError;
-	if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,opts_,filename,
+	if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,filename,
 		writeError) ) {
 		if( !store_->Meta().renderFidelityStatus.empty() ) {
 			GlobalLog()->PrintEx( eLog_Error,
@@ -891,7 +937,7 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 		}
 
 		std::string emergencyError;
-		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,opts_,emergency,
+		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,emergency,
 			emergencyError) ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"FileEncoderObserver:: artifact transaction failed for '%s' (%s); "
