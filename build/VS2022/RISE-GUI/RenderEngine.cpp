@@ -1403,17 +1403,16 @@ bool RenderEngine::saveAs(const QString& path,
 			formatName.toUtf8().constData());
     if (!enc) return false;
     // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
-    // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
-    // their encoders explicitly ignore `viewTransform` and `bpp`,
-    // but pass an identity transform anyway so a future encoder
-    // change can't accidentally clip a save.  LDR formats (PNG /
+    // .hdr / RGBEA) preserve scene-referred linear values > 1.0.
+    // EXR consumes `bpp=32` to preserve bright fire values as FLOAT
+    // channels; the other HDR encoders ignore it.  LDR formats (PNG /
     // TIFF-8 / TGA / PPM) get the user's current display EV baked
     // in via `ForLDRDisplay(ev)`, matching the on-screen viewport
     // result the user is likely trying to preserve.
     EncodeOpts opts;
     opts.colorSpace = eColorSpace_sRGB;
     if (enc->SupportsHDR()) {
-        opts.bpp           = 0;
+        opts.bpp           = 32;
         opts.viewTransform = ViewTransform::Identity();
     } else {
         // L5e — bake the user's currently-active tone curve into

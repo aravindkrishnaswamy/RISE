@@ -160,6 +160,38 @@ int main()
 	AcceptCase( "> echo accepted", "/tmp/cst_loadvia_echo.RISEscene",
 		"RISE ASCII SCENE 6\n> echo loading the scene\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 
+	const auto encoderScene = []( const char* type ) {
+		const char* colorSpace = std::string(type) == "EXR" ?
+			"Rec709RGB_Linear" : "sRGB";
+		return std::string(
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+			"pixelpel_rasterizer\n{\nsamples 1\n}\n"
+			"file_rasterizeroutput\n{\npattern /tmp/cst_encoder_gate\ntype " ) +
+			type + "\nbpp 8\ncolor_space " + colorSpace + "\n}\n";
+	};
+#ifdef NO_PNG_SUPPORT
+	RefuseCase( "authored PNG rejects when encoder is unavailable",
+		"/tmp/cst_no_png_encoder.RISEscene", encoderScene("PNG") );
+#else
+	AcceptCase( "authored PNG loads when encoder is available",
+		"/tmp/cst_png_encoder.RISEscene", encoderScene("PNG") );
+#endif
+#ifdef NO_TIFF_SUPPORT
+	RefuseCase( "authored TIFF rejects when encoder is unavailable",
+		"/tmp/cst_no_tiff_encoder.RISEscene", encoderScene("TIFF") );
+#else
+	AcceptCase( "authored TIFF loads when encoder is available",
+		"/tmp/cst_tiff_encoder.RISEscene", encoderScene("TIFF") );
+#endif
+#ifdef NO_EXR_SUPPORT
+	RefuseCase( "authored EXR rejects when encoder is unavailable",
+		"/tmp/cst_no_exr_encoder.RISEscene", encoderScene("EXR") );
+#else
+	AcceptCase( "authored EXR loads when encoder is available",
+		"/tmp/cst_exr_encoder.RISEscene", encoderScene("EXR") );
+#endif
+
 	// Slice 6c-3a: LoadAsciiSceneAuto is now CST-ONLY.  A native-v7 scene loads via the CST path and RETAINS
 	// the canonical Document; a non-native (un-migrated) scene HARD-FAILS (returns false, NO Document) instead
 	// of falling back to the legacy loader.  RED-PROVE: before this change Auto fell back to legacy on the

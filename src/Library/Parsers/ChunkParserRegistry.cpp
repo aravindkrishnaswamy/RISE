@@ -9420,15 +9420,17 @@ namespace RISE
 					#ifndef NO_PNG_SUPPORT
 							type = 2;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: PNG output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else if( t == "TIFF" ) {
 					#ifndef NO_TIFF_SUPPORT
 							type = 4;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO TIFF SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: TIFF output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else if( t == "HDR" ) {
 							type = 3;
@@ -9438,8 +9440,9 @@ namespace RISE
 					#ifndef NO_EXR_SUPPORT
 							type = 6;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: EXR output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown output file type type `%s`", t.c_str() );

@@ -708,15 +708,15 @@ bool RiseBridge::saveAs(const std::string& path,
         return false;
     }
     // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
-    // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
-    // their encoders ignore `viewTransform` and `bpp`, but pass
-    // identity anyway so a future encoder change can't clip.  LDR
+    // .hdr / RGBEA) preserve scene-referred linear values > 1.0.
+    // EXR consumes `bpp=32` to preserve bright fire values as FLOAT
+    // channels; the other HDR encoders ignore it.  LDR
     // formats (PNG / TIFF-8 / TGA / PPM) get the user's current
     // display EV baked in via `ForLDRDisplay(ev)`.
     RISE::EncodeOpts opts;
     opts.colorSpace = RISE::eColorSpace_sRGB;
     if (enc->SupportsHDR()) {
-        opts.bpp           = 0;
+        opts.bpp           = 32;
         opts.viewTransform = ViewTransform::Identity();
     } else {
         // L5e — bake the user's currently-active tone curve into

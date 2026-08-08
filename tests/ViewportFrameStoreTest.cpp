@@ -29,6 +29,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -59,6 +60,8 @@
 #include "../src/Library/Interfaces/IFrameEncoder.h"
 
 #ifndef NO_EXR_SUPPORT
+	#include <ImfChannelList.h>
+	#include <ImfFrameBuffer.h>
 	#include <ImfInputFile.h>
 	#include <ImfStringAttribute.h>
 #endif
@@ -630,10 +633,17 @@ namespace
 		const std::string exrPath = MakeTempPath() + "_gui_fire.exr";
 		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
 		opts.bpp = 32;
+		FrameStore* fireStore = vfs->GetFrameStore();
+		fireStore->BeginTile(0,0);
+		fireStore->GetChannel<ChannelId::Beauty>()->At(0,0) =
+			RISEPel(70000.0,2.0,1.0);
+		fireStore->EndTile(0,0);
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
 		Check( vfs->SaveAs( exrPath, exr, opts ),
 			"GUI SaveAs writes transactional EXR fire provenance" );
 		bool attributesMatch = false;
+		bool floatChannels = false;
+		bool largeFiniteValuePreserved = false;
 		try {
 			Imf::InputFile input( exrPath.c_str() );
 			const Imf::StringAttribute* statusAttribute =
@@ -651,11 +661,33 @@ namespace
 					"pel_transport,producer_unqualified,requested_preview" &&
 				idAttribute && idAttribute->value() ==
 					vfs->GetFrameStore()->Meta().activeFireOpticsRecordIds.front();
+			const Imf::Channel* redChannel =
+				input.header().channels().findChannel("R");
+			floatChannels = redChannel && redChannel->type == Imf::FLOAT;
+			const auto& dataWindow = input.header().dataWindow();
+			const int width = dataWindow.max.x-dataWindow.min.x+1;
+			const int height = dataWindow.max.y-dataWindow.min.y+1;
+			if( dataWindow.min.x == 0 && dataWindow.min.y == 0 &&
+				width > 0 && height > 0 ) {
+				std::vector<float> red(static_cast<std::size_t>(width)*height);
+				Imf::FrameBuffer frameBuffer;
+				frameBuffer.insert("R",Imf::Slice(Imf::FLOAT,
+					reinterpret_cast<char*>(red.data()),sizeof(float),
+					sizeof(float)*static_cast<std::size_t>(width)));
+				input.setFrameBuffer(frameBuffer);
+				input.readPixels(dataWindow.min.y,dataWindow.max.y);
+				largeFiniteValuePreserved = std::isfinite(red[0]) &&
+					std::abs(red[0]-70000.0f) < 1.0f;
+			}
 		} catch( ... ) {
 			attributesMatch = false;
+			floatChannels = false;
+			largeFiniteValuePreserved = false;
 		}
 		Check( attributesMatch,
 			"GUI EXR embeds the same fire fidelity metadata as its sidecar" );
+		Check( floatChannels && largeFiniteValuePreserved,
+			"GUI EXR SaveAs writes FLOAT channels and preserves values above FP16 range" );
 		std::vector<unsigned char> exrBytes, exrSidecarBytes;
 		RISECBOR64::Value exrProvenance;
 		const bool exrSidecarDecoded = ReadFileAllBytes(exrPath,exrBytes) &&

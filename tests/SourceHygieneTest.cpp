@@ -475,6 +475,70 @@ int main()
 	       "poison or an explicit existence Check; see docs/skills/"
 	       "red-proof-and-test-integrity.md)" );
 
+	// File-output type selection is compiled under three independent optional
+	// encoder macros.  Every unavailable arm must reject at the authored-type
+	// boundary; substituting TGA changes both artifact fidelity and extension.
+	{
+		const fs::path parserPath = testsDir.parent_path() / "src" / "Library" /
+			"Parsers" / "ChunkParserRegistry.cpp";
+		std::ifstream parserFile(parserPath, std::ios::binary);
+		const std::string parser{
+			std::istreambuf_iterator<char>(parserFile),std::istreambuf_iterator<char>() };
+		struct EncoderMacroGate
+		{
+			const char* format;
+			const char* macro;
+		};
+		const EncoderMacroGate gates[] = {
+			{ "PNG", "NO_PNG_SUPPORT" },
+			{ "TIFF", "NO_TIFF_SUPPORT" },
+			{ "EXR", "NO_EXR_SUPPORT" }
+		};
+		for( const EncoderMacroGate& gate : gates ) {
+			const std::string formatMarker =
+				std::string("} else if( t == \"") + gate.format + "\" ) {";
+			const std::string macroMarker =
+				std::string("#ifndef ") + gate.macro;
+			const size_t formatBegin = parser.find(formatMarker);
+			const size_t macroBegin = parser.find(macroMarker,formatBegin);
+			const size_t elseBegin = parser.find("#else",macroBegin);
+			const size_t macroEnd = parser.find("#endif",elseBegin);
+			const std::string unavailableArm =
+				formatBegin != std::string::npos && macroBegin != std::string::npos &&
+				elseBegin != std::string::npos && macroEnd != std::string::npos ?
+				parser.substr(elseBegin,macroEnd-elseBegin) : std::string();
+			Check( !unavailableArm.empty() &&
+				unavailableArm.find("return false;") != std::string::npos &&
+				unavailableArm.find("type = 0") == std::string::npos,
+				std::string("authored ") + gate.format +
+				" rejects under its unavailable-encoder build macro" );
+		}
+		Check( parser.find("reverting to TGA") == std::string::npos,
+			"authored file encoders never silently substitute TGA" );
+
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path guiSaveAsSources[] = {
+			repoRoot / "build" / "XCode" / "rise" / "RISE-GUI" / "Bridge" /
+				"RISEBridge.mm",
+			repoRoot / "build" / "VS2022" / "RISE-GUI" / "RenderEngine.cpp",
+			repoRoot / "android" / "app" / "src" / "main" / "cpp" / "RiseBridge.cpp"
+		};
+		const char* guiNames[] = { "macOS", "Windows", "Android" };
+		for( std::size_t i=0; i<3; ++i ) {
+			std::ifstream sourceFile(guiSaveAsSources[i],std::ios::binary);
+			std::string source{
+				std::istreambuf_iterator<char>(sourceFile),std::istreambuf_iterator<char>() };
+			source.erase(std::remove_if(source.begin(),source.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),source.end());
+			Check( source.find(
+				"if(enc->SupportsHDR()){opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}")
+				!= std::string::npos,
+				std::string(guiNames[i])+
+				" GUI SaveAs requests FP32 from HDR encoders" );
+		}
+	}
+
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
 	// each GUI build's resources (Mac: build/XCode/rise/RISE-GUI/Resources/).
