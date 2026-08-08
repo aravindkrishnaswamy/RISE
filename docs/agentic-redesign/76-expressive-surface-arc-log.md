@@ -81,6 +81,27 @@
    BDPT's phantom term looked like 9.26-vs-29.5 on direct view; on
    indirect paths it was weight ≈ 4e-4.  *Characterize deferred defects
    at their WORST geometry before writing the severity word down.*
+7. **The yield law has a mirror failure: blocking dies too (post-arc,
+   benchmark #2).**  The count reached 13+ occurrences across every
+   model tier — including a Fable subagent — and the resume-gate's
+   demand to "wait in foreground" then hit the OTHER wall: a subagent
+   that blocks past ~10 minutes is killed by the 600s stream watchdog
+   (context lost, disk state intact).  Neither yield nor block works
+   for hour-scale jobs inside a subagent.  *Any job longer than ~8
+   minutes is SUPERVISOR-OWNED as harness-tracked background Bash;
+   the subagent's role ends at authoring the inputs — and a watchdog
+   kill is reconstructed from disk (outputs + logs), not by resuming
+   the dead context.*
+8. **A verification command that runs in the wrong cwd fails SILENTLY
+   as an empty grep.**  A compound `cd scratchpad && sed > repo-path
+   && export RISE_MEDIA_PATH="$(pwd)/" && ./bin/rise ...` verified
+   nothing: after the `cd`, the relative binary path pointed nowhere
+   and `$(pwd)` baked the WRONG media path — the pipeline emitted
+   nothing and empty grep output could read as "no errors".  *A
+   verification step must require a POSITIVE success marker (the
+   expected output line, an explicit exit echo); silence is never a
+   pass — and don't mix `cd`-relative and repo-relative paths in one
+   compound command.*
 
 ## 3. Domain facts worth not re-deriving
 
@@ -122,6 +143,19 @@
   never tool-list browsing); exposure necessary but not sufficient;
   scene-skeleton-and-conventions is the highest-reach carrier (read
   first in every observed run).
+- **`file_rasterizeroutput` relative patterns resolve against the
+  media path, not the process cwd** (observed on the benchmark-#2
+  re-render: cwd was the scratchpad, `RISE_MEDIA_PATH` the repo root,
+  and `final_v2.png` landed in the repo root as an absolute path;
+  earlier runs with media path = cwd wrote beside the scene).  When
+  scripting renders outside the repo, either run with cwd == media
+  path or expect outputs at the media root.
+- **Result-payload facts are acted on where ambient advice is not**
+  (post-E4 mermaid run): `volume_bank`'s bbox note in its tool RESULT
+  drove correct bbox updates on reposition.  A task-specific fact
+  arriving in the response to a call the model just made sits on the
+  blocking-fact side of the mechanism law — worth exploiting
+  deliberately when choosing where a fact should surface.
 
 ## 4. Working practices that earned their keep
 

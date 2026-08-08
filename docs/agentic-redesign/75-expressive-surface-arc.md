@@ -375,6 +375,55 @@ the gate makes it newly load-bearing).  The echo-turn text-pattern
 detector remains deliberately unbuilt (the echo was a synthesis;
 removing the in-band trigger was the fix).
 
+**POST-ARC E4 LIVE MEASUREMENT + BENCHMARK #2 (2026-08-07/08,
+`12ff5e08`): the gate's first live firing was textbook, and the
+remaining gap is now a LOOKING gap, not a building gap.**  The
+re-run of the exact prompt that died by echo-turn
+(20260807T175527Z-31c3007e.jsonl, 80 records) completed cleanly with
+ONE gate refusal: the model's very next turn was `render{draft}`, it
+`read_document`ed when the look came back empty (nothing placed yet
+— a sensible orientation), retried the refused scaffold verbatim,
+and finished on a clean STOP.  Second-order effect: post-gate the
+model switched from one-scaffold-per-call to batched multi-chunk
+inserts — the gate reshapes call granularity, not just cadence.  E3
+in live use: 7 `blended_chain` + 2 `volume_bank` calls, every chain
+endpoint attached, ZERO floating parts — the "amateurish
+disconnected shapes" defect class is closed.  Nuance datapoint for
+the mechanism law: `volume_bank`'s factual bbox note in its RESULT
+payload was acted on (bboxes updated on reposition) — task-specific
+facts in a just-requested tool result behave like blocking facts,
+not like ambient advice.  Battery: mermaid/organic-humanoid slot =
+borderline pass (figure reads at a glance; arms don't; half the
+coral census occluded); the artifact/structure subject remains
+unrun.  Honest weaknesses, unchanged by E1–E4: the render→judgment
+loop never fires (buried corals plainly visible in render 2, not
+fixed — model re-rendered bigger and declared victory), scalar pipe
+still zero, caustics unattempted, final summary oversells.  Named
+next lever (recorded, not scheduled): the objectmap pixel-coverage
+presence check ("E4-lite") — turns per-part visibility into a
+blocking fact, the only currency the law says works.  Also carried
+forward, still unbuilt: the reflectance>1 fake-glow diagnostic
+(models simulate emission by overdriving reflectance; a Warn-tier
+diagnostic would make the physical error a fact) and E3 family
+breadth.
+**Benchmark #2**: a Fable subagent authored "The Coral Queen's Hour"
+([scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene](../../scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene),
+committed `12ff5e08` with provenance header; CST golden 376→377;
+scenes/README.md gained the Benchmarks/ taxonomy entry).  The
+diagnostic behaviour, beyond the picture itself: the subagent
+rendered its own full frame (3h16m), zoomed in, judged the arm/hair
+inadequate, edited geometry, and preview-iterated three times before
+a final re-render — the looking-driven-revision loop harness models
+lack.  Supervisor verdict on the two full renders: v1 is the better
+PICTURE (full reef tableau), v2 the better MERMAID; committed scene
+= v2 state (the agent's final intent, only version on disk).  Render
+times not comparable (v1 3h16m; v2 7h39m overnight under contention).
+Process: the benchmark agent was watchdog-killed twice (yield, then
+a >10-min foreground block) — hour-scale jobs are supervisor-owned
+`run_in_background` Bash, and a watchdog kill is recoverable from
+disk state (outputs + logs) without the dead context; recorded in
+the process memory alongside the yield-law occurrences.
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
@@ -780,6 +829,7 @@ main checkout after any worktree agent.  Runs: gemini via
   wall-time than pp=0 (A longer in 6/8 contexts, up to 2.0×).
   Probe: scratchpad ppab_probe.py; data ppab_full_run1.jsonl (session
   scratch, regenerable).
+- **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
   (`AgentSession::InsertChunk` → `Job::ApplyCstInsertChunk` →
