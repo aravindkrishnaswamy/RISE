@@ -414,9 +414,15 @@ diagnostic behaviour, beyond the picture itself: the subagent
 rendered its own full frame (3h16m), zoomed in, judged the arm/hair
 inadequate, edited geometry, and preview-iterated three times before
 a final re-render — the looking-driven-revision loop harness models
-lack.  Supervisor verdict on the two full renders: v1 is the better
-PICTURE (full reef tableau), v2 the better MERMAID; committed scene
-= v2 state (the agent's final intent, only version on disk).  Render
+lack.  Verdict on the two full renders (user concurred 2026-08-08):
+v1 is the better PICTURE (full reef tableau), v2 the better MERMAID —
+so v1 HOLDS the benchmark and v2 is kept as the detail-pass variant
+(`_v2` file).  v1's scene state had been overwritten on disk by the
+agent's detail pass; it was reconstructed by inverting the agent's
+two recorded edit scripts from its transcript (17/17 substantive
+inversions; only the already-normalized preview-settings flips
+no-oped) and verified against the v1 full render by re-render —
+subagent transcripts double as an edit journal.  Render
 times not comparable (v1 3h16m; v2 7h39m overnight under contention).
 Process: the benchmark agent was watchdog-killed twice (yield, then
 a >10-min foreground block) — hour-scale jobs are supervisor-owned

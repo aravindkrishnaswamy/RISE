@@ -17,13 +17,11 @@ RISE ASCII SCENE 7
 #############################################################################################################
 
 ###############################################################################################################
-#   VERSION NOTE -- v1 (THE HELD BENCHMARK).  This is the scene state behind the authoring agent's first     #
-#   full render (2026-08-07 15:28, 800x600/256spp, 3h16m): the wide tableau -- mermaid mid-left over the     #
-#   full reef, eel at right, jellyfish flanking.  The agent then made a self-driven detail pass (camera      #
-#   push-in, arm/hair rework); that state is kept as dreamscape_coral_queens_hour_v2.RISEscene.  Verdict     #
-#   (user + supervisor, 2026-08-08): v1 is the better PICTURE and holds the benchmark; v2 has the better     #
-#   mermaid.  This v1 file was reconstructed by inverting the agent's two recorded edit scripts from its     #
-#   transcript (17/17 substantive inversions applied; verified against the v1 full render by re-render).     #
+#   VERSION NOTE -- v2 (DETAIL-PASS VARIANT, not the held benchmark).  The authoring agent rendered its      #
+#   own full frame, judged the arm/hair inadequate, and made this self-driven detail pass: camera pushed     #
+#   in, arm re-posed, hair reflowed, eel smoothed/darkened, stray fish recessed.  Kept alongside v1          #
+#   (dreamscape_coral_queens_hour.RISEscene, the held benchmark) as the record of the looking-driven         #
+#   revision loop.  Full render: 2026-08-08 00:00, 800x600/256spp.                                           #
 ###############################################################################################################
 
 ##################################################
@@ -159,10 +157,10 @@ film
 
 pinhole_camera
 {
-	location	0.3 1.5 6.6
-	lookat		-0.3 3.3 0.0
+	location	0.8 2.7 4.1
+	lookat		-0.2 3.3 0.6
 	up			0 1 0
-	fov			52.0
+	fov			50.0
 }
 
 ##################################################
@@ -455,7 +453,7 @@ standard_object
 	material	mat_tail
 	position	-0.2 3.1 0.6
 	scale		1.2 1.2 1.2
-	orientation	0 -15 8
+	orientation	0 -28 6
 }
 
 ##################################################
@@ -506,15 +504,15 @@ sdf_geometry
 	# chest shaping
 	part	sphere smin 0.06  0.42 0.55 0.09  0 0 0  1 1 1  0.095 0 0  0.0
 	part	sphere smin 0.06  0.42 0.55 -0.09  0 0 0  1 1 1  0.095 0 0  0.0
-	# neck and head
-	part	sphere smin 0.06  0.46 0.76 0  0 0 0  1 1 1  0.07 0 0  0.0
-	part	sphere smin 0.06  0.52 0.90 0  0 0 0  1 1 1  0.125 0 0  0.0
-	# arm A: reaching forward-up toward the light (+X +Z)
-	part	sphere smin 0.06  0.50 0.66 0.24  0 0 0  1 1 1  0.065 0 0  0.0
-	part	sphere smin 0.06  0.60 0.63 0.33  0 0 0  1 1 1  0.06 0 0  0.0
-	part	sphere smin 0.06  0.70 0.63 0.41  0 0 0  1 1 1  0.055 0 0  0.0
-	part	sphere smin 0.06  0.80 0.66 0.47  0 0 0  1 1 1  0.05 0 0  0.0
-	part	sphere smin 0.05  0.88 0.70 0.51  0 0 0  1 1 1  0.055 0 0  0.0
+	# neck and head (slightly elongated skull)
+	part	sphere smin 0.07  0.48 0.80 0  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.06  0.55 0.95 0  0 0 0  1.12 1.05 0.95  0.12 0 0  0.0
+	# arm A: a smooth diagonal reach forward-up, clear of the head profile
+	part	sphere smin 0.06  0.51 0.74 0.17  0 0 0  1 1 1  0.068 0 0  0.0
+	part	sphere smin 0.07  0.62 0.79 0.21  0 0 0  1 1 1  0.062 0 0  0.0
+	part	sphere smin 0.08  0.72 0.85 0.24  0 0 0  1 1 1  0.056 0 0  0.0
+	part	sphere smin 0.09  0.81 0.92 0.26  0 0 0  1 1 1  0.05 0 0  0.0
+	part	sphere smin 0.06  0.88 0.98 0.27  0 0 0  1 1 1  0.055 0 0  0.0
 	# arm B: trailing down along the hip
 	part	sphere smin 0.06  0.36 0.60 -0.22  0 0 0  1 1 1  0.065 0 0  0.0
 	part	sphere smin 0.06  0.30 0.48 -0.28  0 0 0  1 1 1  0.06 0 0  0.0
@@ -541,13 +539,13 @@ standard_object
 uniformcolor_painter
 {
 	name	pnt_hair_dark
-	color	0.14 0.03 0.05
+	color	0.20 0.06 0.06
 }
 
 uniformcolor_painter
 {
 	name	pnt_hair_copper
-	color	0.55 0.18 0.08
+	color	0.62 0.24 0.10
 }
 
 turbulence3d_painter
@@ -570,18 +568,17 @@ sdf_geometry
 {
 	name	mermaid_hair
 	# scalp cap over the head sphere
-	part	sphere union 0  0.50 0.945 0  0 0 0  1 1 1  0.115 0 0  0.0
-	# main stream flowing back along the spine, hugging the shoulders
-	part	sphere smin 0.06  0.40 0.97 -0.02  0 0 0  1 1 1  0.095 0 0  0.0
-	part	sphere smin 0.07  0.28 0.96 -0.05  0 0 0  1 1 1  0.085 0 0  0.0
-	part	sphere smin 0.07  0.16 0.90 -0.09  0 0 0  1 1 1  0.075 0 0  0.0
-	part	sphere smin 0.08  0.05 0.82 -0.12  0 0 0  1 1 1  0.065 0 0  0.0
-	part	sphere smin 0.09  -0.05 0.72 -0.13  0 0 0  1 1 1  0.055 0 0  0.0
-	part	sphere smin 0.10  -0.13 0.61 -0.13  0 0 0  1 1 1  0.045 0 0  0.0
+	part	sphere union 0  0.53 1.00 0  0 0 0  1 1 1  0.11 0 0  0.0
+	# main stream flowing back and DOWN along the spine
+	part	sphere smin 0.06  0.44 1.01 -0.02  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.07  0.33 0.97 -0.05  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.07  0.22 0.89 -0.08  0 0 0  1 1 1  0.075 0 0  0.0
+	part	sphere smin 0.08  0.13 0.79 -0.11  0 0 0  1 1 1  0.065 0 0  0.0
+	part	sphere smin 0.09  0.05 0.68 -0.13  0 0 0  1 1 1  0.055 0 0  0.0
+	part	sphere smin 0.10  -0.02 0.57 -0.14  0 0 0  1 1 1  0.045 0 0  0.0
 	# a small wisp lifting with the current
-	part	sphere smin 0.07  0.42 1.05 0.03  0 0 0  1 1 1  0.05 0 0  0.0
-	part	sphere smin 0.08  0.34 1.13 0.06  0 0 0  1 1 1  0.038 0 0  0.0
-	part	sphere smin 0.08  0.27 1.20 0.08  0 0 0  1 1 1  0.03 0 0  0.0
+	part	sphere smin 0.06  0.43 1.09 0.03  0 0 0  1 1 1  0.045 0 0  0.0
+	part	sphere smin 0.07  0.36 1.16 0.05  0 0 0  1 1 1  0.035 0 0  0.0
 	maxsteps	256
 }
 
@@ -1111,7 +1108,7 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name	pnt_eel_bone
-	color	0.78 0.78 0.52
+	color	0.42 0.45 0.28
 }
 
 reactiondiffusion3d_painter
@@ -1123,7 +1120,7 @@ reactiondiffusion3d_painter
 	kill		0.06
 	grid_size	48
 	iterations	3000
-	scale		4.0 4.0 4.0
+	scale		8.0 8.0 8.0
 }
 
 lambertian_material
@@ -1138,15 +1135,15 @@ sdf_geometry
 	part	sphere union 0  -1.20 0.02 0.00  0 0 0  1 1 1  0.045 0 0  0.0
 	part	sphere smin 0.16  -1.05 0.06 0.10  0 0 0  1 1 1  0.06 0 0  0.0
 	part	sphere smin 0.12  -0.90 0.12 0.16  0 0 0  1 1 1  0.07 0 0  0.0
-	part	sphere smin 0.10  -0.74 0.20 0.18  0 0 0  1 1 1  0.08 0 0  0.0
-	part	sphere smin 0.08  -0.58 0.30 0.16  0 0 0  1 1 1  0.085 0 0  0.0
-	part	sphere smin 0.07  -0.44 0.42 0.10  0 0 0  1 1 1  0.09 0 0  0.0
-	part	sphere smin 0.06  -0.32 0.55 0.02  0 0 0  1 1 1  0.09 0 0  0.0
-	part	sphere smin 0.06  -0.22 0.68 -0.04  0 0 0  1 1 1  0.09 0 0  0.0
-	part	sphere smin 0.06  -0.12 0.80 -0.06  0 0 0  1 1 1  0.095 0 0  0.0
-	part	sphere smin 0.06  0.00 0.90 -0.04  0 0 0  1 1 1  0.10 0 0  0.0
-	part	sphere smin 0.06  0.14 0.97 0.02  0 0 0  1 1 1  0.105 0 0  0.0
-	part	sphere smin 0.06  0.28 0.99 0.08  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.11  -0.74 0.20 0.18  0 0 0  1 1 1  0.08 0 0  0.0
+	part	sphere smin 0.10  -0.58 0.30 0.16  0 0 0  1 1 1  0.085 0 0  0.0
+	part	sphere smin 0.10  -0.44 0.42 0.10  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.32 0.55 0.02  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.22 0.68 -0.04  0 0 0  1 1 1  0.09 0 0  0.0
+	part	sphere smin 0.10  -0.12 0.80 -0.06  0 0 0  1 1 1  0.095 0 0  0.0
+	part	sphere smin 0.10  0.00 0.90 -0.04  0 0 0  1 1 1  0.10 0 0  0.0
+	part	sphere smin 0.09  0.14 0.97 0.02  0 0 0  1 1 1  0.105 0 0  0.0
+	part	sphere smin 0.08  0.28 0.99 0.08  0 0 0  1 1 1  0.085 0 0  0.0
 	# parted lower jaw
 	part	roundcone smin 0.04  0.16 0.90 0.03  0 0 -75  1 1 1  0.05 0.02 0.22  0.0
 	maxsteps	256
@@ -1157,9 +1154,9 @@ standard_object
 	name		obj_eel
 	geometry	eel_body
 	material	mat_eel
-	position	0.9 0.6 2.2
+	position	-1.3 0.5 1.3
 	scale		1.0 1.0 1.0
-	orientation	0 -30 0
+	orientation	0 -10 0
 }
 
 ##################################################
@@ -1169,13 +1166,13 @@ standard_object
 uniformcolor_painter
 {
 	name	pnt_fish_silver
-	color	0.90 0.96 1.0
+	color	0.80 0.88 0.95
 }
 
 uniformcolor_painter
 {
 	name	pnt_fish_blue
-	color	0.10 0.25 0.55
+	color	0.06 0.14 0.30
 }
 
 iridescent_painter
@@ -1322,8 +1319,8 @@ standard_object
 	name		obj_fish_near_a
 	geometry	fish
 	material	mat_fish
-	position	-2.4 2.1 1.2
-	scale		0.9 0.9 0.9
+	position	-2.6 2.3 0.2
+	scale		0.6 0.6 0.6
 	orientation	0 -15 6
 }
 
@@ -1332,8 +1329,8 @@ standard_object
 	name		obj_fish_near_b
 	geometry	fish
 	material	mat_fish
-	position	-1.9 1.7 1.8
-	scale		0.75 0.75 0.75
+	position	-2.0 1.8 0.6
+	scale		0.55 0.55 0.55
 	orientation	0 -5 0
 }
 
@@ -1342,8 +1339,8 @@ standard_object
 	name		obj_fish_near_c
 	geometry	fish
 	material	mat_fish
-	position	2.9 2.2 0.6
-	scale		0.85 0.85 0.85
+	position	3.1 2.4 -0.6
+	scale		0.6 0.6 0.6
 	orientation	0 170 0
 }
 
