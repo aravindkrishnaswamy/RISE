@@ -304,6 +304,7 @@ def predictive_operational_projection(record: dict) -> dict:
                 "ir_closure_status",
                 "k_ext_interpolation",
                 "omega_interpolation",
+                "out_of_domain_policy",
                 "predictive_reason_code",
                 "rows",
             )
@@ -327,6 +328,7 @@ def predictive_operational_projection(record: dict) -> dict:
                 "domain_nm",
                 "mac_interpolation",
                 "normative_quantity",
+                "out_of_domain_policy",
                 "pinned_density_g_cm3",
                 "rows",
             )
@@ -336,6 +338,7 @@ def predictive_operational_projection(record: dict) -> dict:
             "domain_nm": hot["domain_nm"],
             "g_interpolation": hot["g_interpolation"],
             "omega_interpolation": hot["omega_interpolation"],
+            "out_of_domain_policy": hot["out_of_domain_policy"],
             "phi_T_partition": phi_operations(hot),
             "rows": hot["rows"],
         },
@@ -430,6 +433,7 @@ def predictive_payload(data_dir: Path) -> dict:
             "record_name": effective["record_name"],
             "quantity_name": effective["quantity_name"],
             "normative_quantity": effective["normative_quantity"],
+            "out_of_domain_policy": effective["out_of_domain_policy"],
             "pinned_density_g_cm3": float(
                 effective["definition"]["pinned_density_g_cm3"]["value"]
             ),
@@ -447,6 +451,7 @@ def predictive_payload(data_dir: Path) -> dict:
             "rows": hot_rows,
             "table_metadata": hot_table_metadata,
             "omega_interpolation": tabulated_spectrum(hot_x, hot_omega),
+            "out_of_domain_policy": hot["out_of_domain_policy"],
             "g_interpolation": tabulated_spectrum(hot_x, hot_g),
         },
         "cool_carbon": {
@@ -485,6 +490,7 @@ def predictive_payload(data_dir: Path) -> dict:
             ],
             "k_ext_interpolation": tabulated_spectrum(condensed_x, condensed_k),
             "omega_interpolation": tabulated_spectrum(condensed_x, condensed_omega),
+            "out_of_domain_policy": condensed["out_of_domain_policy"],
             "g_interpolation": tabulated_spectrum(condensed_x, condensed_g),
             "ir_closure_status": condensed["ir_closure"]["status"].lower(),
             "predictive_reason_code": condensed["ir_closure"]["predictive_reason_code"],
@@ -558,10 +564,12 @@ def synthetic_payload(data_dir: Path) -> dict:
             "pinned_density_metadata": effective["definition"][
                 "pinned_density_g_cm3"
             ],
+            "out_of_domain_policy": fixtures["out_of_domain_policy"],
             "domain_nm": [380.0, 780.0],
         },
         "hot_soot": {
             "omega": canonical_value_envelope(fixture_hot["omega"]),
+            "out_of_domain_policy": fixtures["out_of_domain_policy"],
             "g": canonical_value_envelope(fixture_hot["g"]),
             "phi_T_partition": hot_phi,
         },
@@ -576,6 +584,7 @@ def synthetic_payload(data_dir: Path) -> dict:
                 fixture_cool["n_exponent"]
             ),
             "omega": canonical_value_envelope(fixture_cool["omega"]),
+            "out_of_domain_policy": fixtures["out_of_domain_policy"],
             "g": canonical_value_envelope(fixture_cool["g"]),
             "phi_T_partition": cool_phi,
         },
@@ -590,6 +599,7 @@ def synthetic_payload(data_dir: Path) -> dict:
                 fixture_condensed["n_exponent"]
             ),
             "omega": canonical_value_envelope(fixture_condensed["omega"]),
+            "out_of_domain_policy": fixtures["out_of_domain_policy"],
             "g": canonical_value_envelope(fixture_condensed["g"]),
             "predictive_reason_code": condensed["ir_closure"]["predictive_reason_code"],
         },
@@ -616,11 +626,26 @@ def main() -> None:
     args = parser.parse_args()
     validate_unicode17_authority()
     predictive_record = predictive_payload(args.data_dir)
+    operational_projection = predictive_operational_projection(predictive_record)
+    legacy_projection = predictive_operational_projection(predictive_record)
+    del legacy_projection["effective_absorption"]["out_of_domain_policy"]
+    del legacy_projection["hot_soot"]["out_of_domain_policy"]
+    del legacy_projection["condensed_organics"]["out_of_domain_policy"]
+    legacy_operational_sha256 = hashlib.sha256(
+        encode(legacy_projection)
+    ).hexdigest()
+    if legacy_operational_sha256 != (
+        "8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c"
+    ):
+        raise ValueError(
+            "schema-v3 policy rebaseline changed a pre-existing operational field: "
+            + legacy_operational_sha256
+        )
     operational_sha256 = hashlib.sha256(
-        encode(predictive_operational_projection(predictive_record))
+        encode(operational_projection)
     ).hexdigest()
     if operational_sha256 != (
-        "8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c"
+        "e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9"
     ):
         raise ValueError(
             "metadata regeneration changed the canonical operational payload: "

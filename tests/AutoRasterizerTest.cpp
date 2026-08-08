@@ -208,7 +208,7 @@ public:
 			frameStore_->SetFireFidelityMetadata("preview",
 				std::vector<std::string>{ "requested_preview" },
 				std::vector<std::string>{
-					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" });
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" });
 		}
 		if( clearOnOutput_ ) rasterizer_.FreeRasterizerOutputs();
 	}
@@ -622,7 +622,7 @@ static void TestFirePelPreviewDivergence()
 	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
 	// constituent, baked field, proposal, and seed is held fixed.  Measured on
-	// the operational values now hashed by record c3999bcb... at this test's five
+	// the operational values now hashed by record 2cdd0045... at this test's five
 	// seeds, the blue image-mean increase is
 	// +59.05%: +38.46 points (65.1%) from magnitude, +10.78 (18.3%) from tilt,
 	// and +9.81 (16.6%) from nonlinear coupling.  Per-seed blue ranges are
@@ -648,9 +648,9 @@ static void TestFirePelPreviewDivergence()
 		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
 
 	// Measured single-thread against preset-v1 record
-	// c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc
+	// 2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137
 	// (metadata-complete canonicalization e3a3392b; tripwire recorded by cdb1aad4;
-	// operational projection 8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c)
+	// schema-v3 operational projection e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9)
 	// over the paired
 	// seeds above: red 0.56-1.26%, green
 	// 0.13-2.74%, and blue 6.89-10.61% (five-seed blue mean 9.22%).  The

@@ -578,7 +578,7 @@ namespace
 	{
 		store.SetFireFidelityMetadata("preview",
 			{ "pel_transport", "producer_unqualified", "requested_preview" },
-			{ "c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" });
+			{ "2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" });
 	}
 
 	void TestSaveAsFireProvenanceAndTransaction()
@@ -621,7 +621,7 @@ namespace
 				reasons->GetArray()[2].GetText() == "requested_preview" && ids &&
 				ids->GetArray().size() == 1u &&
 				ids->GetArray()[0].GetText() ==
-					"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" && digest &&
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" && digest &&
 				digest->GetText() == RISECBOR64::SHA256Hex(artifactBytes),
 				"GUI sidecar carries exact fidelity metadata and artifact digest" );
 		}
@@ -724,7 +724,7 @@ namespace
 		encoder->WaitUntilEntered();
 		store->SetFireFidelityMetadata("preview",
 			{ "chem_none_unqualified", "producer_unqualified" },
-			{ "59a3fccbc868d985465522728648cc31f2bf82ba90f71ab48b9ba1be71ebf830" });
+			{ "f5a6d4955ceecb0b8f243accb9a51d60634c88edf6813858160502001ff9ec1d" });
 		encoder->Continue();
 		saver.join();
 
@@ -744,7 +744,7 @@ namespace
 			reasons->GetArray().size() == 3u &&
 			reasons->GetArray()[0].GetText() == "pel_transport" && ids &&
 			ids->GetArray().size() == 1u && ids->GetArray()[0].GetText() ==
-				"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc",
+				"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
 			"SaveAs artifact and sidecar share one metadata snapshot across preflight updates" );
 
 		std::remove(path.c_str());

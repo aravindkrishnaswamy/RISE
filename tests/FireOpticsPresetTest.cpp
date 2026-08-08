@@ -398,6 +398,7 @@ namespace
 				{ "ir_closure_status", MemberOrNull(*condensed,"ir_closure_status") },
 				{ "k_ext_interpolation", MemberOrNull(*condensed,"k_ext_interpolation") },
 				{ "omega_interpolation", MemberOrNull(*condensed,"omega_interpolation") },
+				{ "out_of_domain_policy", MemberOrNull(*condensed,"out_of_domain_policy") },
 				{ "predictive_reason_code", MemberOrNull(*condensed,"predictive_reason_code") },
 				{ "rows", MemberOrNull(*condensed,"rows") }
 			}) },
@@ -417,6 +418,7 @@ namespace
 				{ "domain_nm", MemberOrNull(*effective,"domain_nm") },
 				{ "mac_interpolation", MemberOrNull(*effective,"mac_interpolation") },
 				{ "normative_quantity", MemberOrNull(*effective,"normative_quantity") },
+				{ "out_of_domain_policy", MemberOrNull(*effective,"out_of_domain_policy") },
 				{ "pinned_density_g_cm3", MemberOrNull(*effective,"pinned_density_g_cm3") },
 				{ "rows", MemberOrNull(*effective,"rows") }
 			}) },
@@ -425,6 +427,7 @@ namespace
 				{ "domain_nm", MemberOrNull(*hot,"domain_nm") },
 				{ "g_interpolation", MemberOrNull(*hot,"g_interpolation") },
 				{ "omega_interpolation", MemberOrNull(*hot,"omega_interpolation") },
+				{ "out_of_domain_policy", MemberOrNull(*hot,"out_of_domain_policy") },
 				{ "phi_T_partition", PhiOperations(*hot) },
 				{ "rows", MemberOrNull(*hot,"rows") }
 			}) },
@@ -448,24 +451,41 @@ int main()
 		predictive.RecordId() != synthetic.RecordId(),
 		"predictive and synthetic records have distinct SHA-256 identities" );
 	Check( predictive.RecordId() ==
-		"c3999bcbaecf8a029fc57a9dd36e2c27c13801522531c60e950d03c8c61a5dfc" &&
+		"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
 		synthetic.RecordId() ==
-		"59a3fccbc868d985465522728648cc31f2bf82ba90f71ab48b9ba1be71ebf830",
+		"f5a6d4955ceecb0b8f243accb9a51d60634c88edf6813858160502001ff9ec1d",
 		"the frozen v1 record IDs are pinned" );
 	Check( RISECBOR64::SHA256Hex(predictive.RecordBytes()) == predictive.RecordId(),
 		"the record ID hashes the exact canonical record bytes" );
-	RISECBOR64::Value oldOperationalRecord;
+	RISECBOR64::Value operationalRecord;
 	std::string oldOperationalError;
-	RISECBOR64::Bytes oldOperationalBytes;
+	RISECBOR64::Bytes operationalBytes, oldOperationalBytes;
 	const bool oldOperationalDecoded = RISECBOR64::DecodeCanonical(
-		predictive.RecordBytes(),oldOperationalRecord,&oldOperationalError );
-	const bool oldOperationalEncoded = oldOperationalDecoded && RISECBOR64::Encode(
-		PredictiveOperationalProjection(oldOperationalRecord),oldOperationalBytes,
-		&oldOperationalError );
-	Check( oldOperationalEncoded &&
+		predictive.RecordBytes(),operationalRecord,&oldOperationalError );
+	const RISECBOR64::Value projection = oldOperationalDecoded ?
+		PredictiveOperationalProjection(operationalRecord) : RISECBOR64::Value();
+	const RISECBOR64::Value* projectedEffective = projection.Find("effective_absorption");
+	const RISECBOR64::Value* projectedHot = projection.Find("hot_soot");
+	const RISECBOR64::Value* projectedCondensed = projection.Find("condensed_organics");
+	RISECBOR64::Value legacyProjection = projection;
+	if( projectedEffective && projectedHot && projectedCondensed ) {
+		legacyProjection = ReplaceMember(legacyProjection,"effective_absorption",
+			RemoveMember(*projectedEffective,"out_of_domain_policy"));
+		legacyProjection = ReplaceMember(legacyProjection,"hot_soot",
+			RemoveMember(*projectedHot,"out_of_domain_policy"));
+		legacyProjection = ReplaceMember(legacyProjection,"condensed_organics",
+			RemoveMember(*projectedCondensed,"out_of_domain_policy"));
+	}
+	const bool operationalEncoded = oldOperationalDecoded && projectedEffective &&
+		projectedHot && projectedCondensed &&
+		RISECBOR64::Encode(projection,operationalBytes,&oldOperationalError) &&
+		RISECBOR64::Encode(legacyProjection,oldOperationalBytes,&oldOperationalError);
+	Check( operationalEncoded &&
+		RISECBOR64::SHA256Hex(operationalBytes) ==
+			"e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9" &&
 		RISECBOR64::SHA256Hex(oldOperationalBytes) ==
 			"8e68d6da455f0af89e2334d162aa05944a581753c56cf8a90f45c295dc7ad44c",
-		"metadata regeneration preserves the previous canonical operational payload" );
+		"schema-v3 rebaseline adds only the three new component policy fields" );
 
 	Check( predictive.SootDensityGCM3() == 1.8,
 		"the pinned density is part of the loaded predictive payload" );
@@ -614,6 +634,31 @@ int main()
 			ReplaceMember(*explicitSources,"explicit_synthetic_fixtures",changedSource)),
 			"source record header does not match its frozen component"),
 			"explicit synthetic source schema version is pinned" );
+		const RISECBOR64::Value changedVersionSource = ReplaceMember(*explicitSource,
+			"version",RISECBOR64::Value::String("2.0.0-explicit-test"));
+		Check( RejectsWith(ReplaceMember(decodedExplicit,"source_records",
+			ReplaceMember(*explicitSources,"explicit_synthetic_fixtures",
+				changedVersionSource)),
+			"source record header does not match its frozen component"),
+			"explicit synthetic source version is independently pinned" );
+		const RISECBOR64::Value coordinatedVersion = ReplaceMember(
+			ReplaceMember(decodedExplicit,"source_records",ReplaceMember(*explicitSources,
+				"explicit_synthetic_fixtures",changedVersionSource)),
+			"version",RISECBOR64::Value::String("2.0.0-explicit-test"));
+		Check( RejectsWith(coordinatedVersion,
+			"unsupported fire-optics record name/class combination"),
+			"coordinated explicit-synthetic version changes are rejected" );
+		const RISECBOR64::Value* explicitEffective =
+			decodedExplicit.Find("effective_absorption");
+		if( explicitEffective ) {
+			Check( RejectsWith(ReplaceMember(decodedExplicit,"effective_absorption",
+				ReplaceMember(*explicitEffective,"out_of_domain_policy",
+					RISECBOR64::Value::String("predictive allowed"))),
+				"synthetic out-of-domain policy differs from its source record"),
+				"explicit synthetic component policy remains source-bound" );
+		} else {
+			Check(false,"explicit synthetic effective component is present");
+		}
 	}
 	Check( !FireOpticsPreset::CreateExplicitSyntheticFixture(
 		0.26,1800.0,1.0,0.50,8.7,1.2,0.60,0.60,
@@ -643,6 +688,20 @@ int main()
 			ReplaceMember(*syntheticSources,"synthetic_fixtures",changedFixture)),
 			"source record header does not match its frozen component"),
 			"frozen synthetic fixture source kind is pinned" );
+		const RISECBOR64::Value changedVersionFixture = ReplaceMember(*fixtureSource,
+			"version",RISECBOR64::Value::String("2.0.0-draft"));
+		Check( RejectsWith(ReplaceMember(decodedSynthetic,"source_records",
+			ReplaceMember(*syntheticSources,"synthetic_fixtures",
+				changedVersionFixture)),
+			"source record header does not match its frozen component"),
+			"frozen synthetic source version is independently pinned" );
+		const RISECBOR64::Value coordinatedVersion = ReplaceMember(
+			ReplaceMember(decodedSynthetic,"source_records",ReplaceMember(*syntheticSources,
+				"synthetic_fixtures",changedVersionFixture)),
+			"version",RISECBOR64::Value::String("2.0.0-draft"));
+		Check( RejectsWith(coordinatedVersion,
+			"unsupported fire-optics record name/class combination"),
+			"coordinated frozen-synthetic version changes are rejected" );
 	}
 	struct FixtureScalarBinding
 	{
@@ -672,6 +731,22 @@ int main()
 	const RISECBOR64::Value* syntheticCondensed =
 		decodedSynthetic.Find("condensed_organics");
 	if( syntheticEffective && syntheticCool && syntheticCondensed ) {
+		const RISECBOR64::Value* syntheticHot = decodedSynthetic.Find("hot_soot");
+		const char* policySections[] = {
+			"effective_absorption", "hot_soot", "cool_carbon", "condensed_organics" };
+		const RISECBOR64::Value* policyValues[] = {
+			syntheticEffective, syntheticHot, syntheticCool, syntheticCondensed };
+		for( std::size_t i=0; i<4; ++i ) {
+			if( !policyValues[i] ) {
+				Check(false,"synthetic component exists for policy mutation");
+				continue;
+			}
+			Check( RejectsWith(ReplaceMember(decodedSynthetic,policySections[i],
+				ReplaceMember(*policyValues[i],"out_of_domain_policy",
+					RISECBOR64::Value::String("predictive allowed"))),
+				"synthetic out-of-domain policy differs from its source record"),
+				"each synthetic component policy remains usage-domain-bound" );
+		}
 		Check( RejectsWith(ReplaceMember(decodedSynthetic,"effective_absorption",
 			ReplaceMember(*syntheticEffective,"pinned_density_g_cm3",
 				RISECBOR64::Value::Float(1.81))),
@@ -734,21 +809,21 @@ int main()
 		provenanceSchema->Find("hashed_payload_required_fields") &&
 		sourceRecords->Find("effective_absorption") && sourceRecords->Find("hot_soot") &&
 		sourceRecords->Find("cool_carbon") && sourceRecords->Find("condensed_organics"),
-		"the canonical payload hashes aggregate metadata, schema draft-2, and every source" );
+		"the canonical payload hashes aggregate metadata, schema draft-3, and every source" );
 	if( provenanceSchema ) {
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
 			ReplaceMember(*provenanceSchema,"schema_version",
 				RISECBOR64::Value::String("draft-1"))),
-			"canonical provenance schema is not draft-2"),
+			"canonical provenance schema is not draft-3"),
 			"load rejects a pre-envelope provenance schema" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
 			RemoveMember(*provenanceSchema,"hashed_payload_required_fields")),
-			"does not match pinned draft-2"),
+			"does not match pinned draft-3"),
 			"load rejects a schema missing its hashed-payload field contract" );
 		Check( RejectsWith(ReplaceMember(decodedPredictive,"provenance_schema",
 			ReplaceMember(*provenanceSchema,"table_metadata_granularity",
 				RISECBOR64::Value::String("per-cell"))),
-			"does not match pinned draft-2"),
+			"does not match pinned draft-3"),
 			"load rejects a schema that claims per-cell metadata" );
 		const RISECBOR64::Value* uncertaintyKinds =
 			provenanceSchema->Find("uncertainty_kind_enum");
@@ -757,7 +832,7 @@ int main()
 				ReplaceMember(*provenanceSchema,"uncertainty_kind_enum",
 					ReplaceMember(*uncertaintyKinds,"synthetic_exact",
 						RISECBOR64::Value::String("changed definition")))),
-				"does not match pinned draft-2"),
+				"does not match pinned draft-3"),
 				"load rejects a changed pinned uncertainty-kind definition" );
 		}
 	}
@@ -769,7 +844,8 @@ int main()
 	if( sourceRecords ) {
 		const char* sourceKeys[] = {
 			"effective_absorption", "hot_soot", "cool_carbon", "condensed_organics" };
-		const char* headerKeys[] = { "schema_version", "record_kind", "record_name" };
+		const char* headerKeys[] = {
+			"schema_version", "record_kind", "record_name", "version" };
 		for( const char* sourceKey : sourceKeys ) {
 			const RISECBOR64::Value* source = sourceRecords->Find(sourceKey);
 			if( !source ) {
@@ -787,6 +863,49 @@ int main()
 					changedSources),"source record header does not match its frozen component"),
 					message.c_str() );
 			}
+		}
+		RISECBOR64::Value coordinatedSources = *sourceRecords;
+		for( const char* sourceKey : sourceKeys ) {
+			const RISECBOR64::Value* source = coordinatedSources.Find(sourceKey);
+			if( source ) {
+				coordinatedSources = ReplaceMember(coordinatedSources,sourceKey,
+					ReplaceMember(*source,"version",
+						RISECBOR64::Value::String("v2-draft")));
+			}
+		}
+		Check( RejectsWith(ReplaceMember(
+			ReplaceMember(decodedPredictive,"source_records",coordinatedSources),
+			"version",RISECBOR64::Value::String("v2-draft")),
+			"unsupported fire-optics record name/class combination"),
+			"coordinated predictive aggregate/component version changes are rejected" );
+
+		const char* operationalKeys[] = {
+			"effective_absorption", "hot_soot", "cool_carbon", "condensed_organics" };
+		for( const char* operationalKey : operationalKeys ) {
+			const RISECBOR64::Value* operation = decodedPredictive.Find(operationalKey);
+			if( !operation ) {
+				Check(false,"predictive operational component exists for identity mutations");
+				continue;
+			}
+			Check( RejectsWith(ReplaceMember(decodedPredictive,operationalKey,
+				ReplaceMember(*operation,"record_name",
+					RISECBOR64::Value::String("detached-operational-name"))),
+				"operational component identity differs from its source record"),
+				"each predictive operational component name remains source-bound" );
+			Check( RejectsWith(ReplaceMember(decodedPredictive,operationalKey,
+				ReplaceMember(*operation,"out_of_domain_policy",
+					RISECBOR64::Value::String("extrapolate"))),
+				"operational out-of-domain policy differs from its source record"),
+				"each predictive operational component policy remains source-bound" );
+		}
+		const RISECBOR64::Value* operationalEffectiveIdentity =
+			decodedPredictive.Find("effective_absorption");
+		if( operationalEffectiveIdentity ) {
+			Check( RejectsWith(ReplaceMember(decodedPredictive,"effective_absorption",
+				ReplaceMember(*operationalEffectiveIdentity,"quantity_name",
+					RISECBOR64::Value::String("detached-effective-quantity"))),
+				"operational component identity differs from its source record"),
+				"the effective operational quantity name remains source-bound" );
 		}
 		const RISECBOR64::Value* sourceEffective =
 			sourceRecords->Find("effective_absorption");

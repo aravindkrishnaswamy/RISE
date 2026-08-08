@@ -31,8 +31,16 @@ namespace RISE
 			"FIRE_SMOKE_DESIGN.md SS3.4 (r45+; lines ~807-808): design-owned closure parameter of the derived hot/cool carbon partition c_hot = phi(T)*c_carbon. NOT a literature constant - its authority is the design decision itself. SS8 requires the phi(T) band in the versioned optical record; this field closes that gap in the draft layer (added 2026-08-06 at the implementation agent's provenance stop).";
 		const char kCoolOutOfDomainPolicy[] =
 			"NO preview extrapolation rule is named for this record. Per SS8, out-of-domain lookups therefore REJECT in both predictive and preview modes. The certified [380,780] matches the renderer's NM band exactly, so no in-band lookup can be out-of-domain; IR (Kirchhoff/SS3.5) use remains separately blocked per the existing gaps entry.";
+		const char kEffectiveOutOfDomainPolicy[] =
+			"NO preview extrapolation rule is named for this record. The tabulated certified domain is [380, 780] nm, matching the renderer's NM band exactly; per SS8, out-of-domain lookups REJECT in both predictive and preview modes. The long-wave (>780nm) extension for SS3.5 Planck means is NOT carried by this table: it is a separate future record axis (C&C dispersion to 30um with the explicit long-wave model-form uncertainty per the 2026-08-05 freeze), and consuming this record outside [380, 780] nm is an error, never an extrapolation.";
+		const char kHotOutOfDomainPolicy[] =
+			"NO preview extrapolation rule is named for this record. The spectral tables' certified domain is [380, 780] nm; out-of-domain lookups REJECT in both predictive and preview modes. Temperature applicability is governed by the phi_T_partition (hot optics weight phi(T)), not by this policy.";
+		const char kCondensedOutOfDomainPolicy[] =
+			"NO preview extrapolation rule is named for this record. The computed table's certified domain is [380, 780] nm; out-of-domain lookups REJECT in both predictive and preview modes. The IR gap is governed by the ir_closure block (predictive reason code condensed_organics_ir_unclosed), which is a closure requirement on SS3.5 use - NOT an extrapolation permission; nothing in this policy softens it.";
+		const char kSyntheticOutOfDomainPolicy[] =
+			"Not axis-based by construction: the fixtures are wavelength-independent analytic constants with no tabulated axes, so no extrapolation concept applies. Their domain is USAGE-based: consumption by any predictive path is a hard error regardless of wavelength; synthetic regression contexts only.";
 		const char kProvenanceSchemaSHA256[] =
-			"6ec2e55262c519904625764c65f5d6934d942276301c15cde30eaafe376db159";
+			"e8a2a1c311946298dd521b0b66aecdf2c2f9e566f3ef868a125ac45f931d9103";
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -197,7 +205,7 @@ namespace RISE
 				allowed = allowed || kind == allowedKinds[i];
 			}
 			if( !allowed ) {
-				return Fail(error, "fire-optics uncertainty kind is not schema draft-2");
+				return Fail(error, "fire-optics uncertainty kind is not schema draft-3");
 			}
 			if( requiredKind && kind != requiredKind ) {
 				return Fail(error,
@@ -413,17 +421,19 @@ namespace RISE
 			const char* expectedSchemaVersion,
 			const char* expectedRecordKind,
 			const char* expectedRecordName,
+			const char* expectedVersion,
 			std::string* error
 			)
 		{
-			std::string schemaVersion, recordKind, recordName;
+			std::string schemaVersion, recordKind, recordName, version;
 			return ReadText(source,"schema_version",schemaVersion,error) &&
 				ReadText(source,"record_kind",recordKind,error) &&
 				ReadText(source,"record_name",recordName,error) &&
-				Required(source,"version",RISECBOR64::Value::Text,error) &&
+				ReadText(source,"version",version,error) &&
 				Required(source,"record_status",RISECBOR64::Value::Text,error) &&
 				((schemaVersion == expectedSchemaVersion &&
-					recordKind == expectedRecordKind && recordName == expectedRecordName) ||
+					recordKind == expectedRecordKind && recordName == expectedRecordName &&
+					version == expectedVersion) ||
 					Fail(error,"fire-optics source record header does not match its frozen component"));
 		}
 
@@ -438,11 +448,11 @@ namespace RISE
 			if( !ReadText(schema, "record_name", name, error) ||
 				name != "fire-optics-canonical-provenance-schema-v1" ||
 				!ReadText(schema, "schema_version", version, error) ||
-				version != "draft-2" ||
+				version != "draft-3" ||
 				!ReadText(schema, "table_metadata_granularity", granularity, error) ||
 				!Required(schema, "aggregate_required", RISECBOR64::Value::Text, error) ||
 				!kinds ) {
-				return Fail(error, "fire-optics canonical provenance schema is not draft-2");
+				return Fail(error, "fire-optics canonical provenance schema is not draft-3");
 			}
 			const char* requiredKinds[] = {
 				"assumption_bound", "computed_range_from_input_sensitivity",
@@ -458,7 +468,7 @@ namespace RISE
 			if( !RISECBOR64::Encode(schema,encoded,error) ||
 				RISECBOR64::SHA256Hex(encoded) != kProvenanceSchemaSHA256 ) {
 				return Fail(error,
-					"fire-optics canonical provenance schema does not match pinned draft-2");
+					"fire-optics canonical provenance schema does not match pinned draft-3");
 			}
 			return true;
 		}
@@ -475,6 +485,94 @@ namespace RISE
 				ReadText(source, "record_status", actual, error) &&
 				(declared == actual ||
 					Fail(error, "fire-optics component record status does not match its source"));
+		}
+
+		bool ValidatePredictiveIdentityAndPolicies(
+			const RISECBOR64::Value& sourceEffective,
+			const RISECBOR64::Value& sourceHot,
+			const RISECBOR64::Value& sourceCool,
+			const RISECBOR64::Value& sourceCondensed,
+			const RISECBOR64::Value& effective,
+			const RISECBOR64::Value& hot,
+			const RISECBOR64::Value& cool,
+			const RISECBOR64::Value& condensed,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* coolValues = Required(
+				sourceCool,"values",RISECBOR64::Value::Map,error );
+			const RISECBOR64::Value* coolExponent = coolValues ? Required(
+				*coolValues,"n_spectral_exponent",RISECBOR64::Value::Map,error ) : 0;
+			std::string sourceEffectiveName, sourceQuantityName, sourceEffectivePolicy;
+			std::string sourceHotName, sourceHotPolicy, sourceCoolName, sourceCoolPolicy;
+			std::string sourceCondensedName, sourceCondensedPolicy;
+			std::string effectiveName, quantityName, effectivePolicy;
+			std::string hotName, hotPolicy, coolName, coolPolicy;
+			std::string condensedName, condensedPolicy;
+			if( !coolExponent ||
+				!ReadText(sourceEffective,"record_name",sourceEffectiveName,error) ||
+				!ReadText(sourceEffective,"quantity_name",sourceQuantityName,error) ||
+				!ReadText(sourceEffective,"out_of_domain_policy",sourceEffectivePolicy,error) ||
+				!ReadText(sourceHot,"record_name",sourceHotName,error) ||
+				!ReadText(sourceHot,"out_of_domain_policy",sourceHotPolicy,error) ||
+				!ReadText(sourceCool,"record_name",sourceCoolName,error) ||
+				!ReadText(*coolExponent,"out_of_domain_policy",sourceCoolPolicy,error) ||
+				!ReadText(sourceCondensed,"record_name",sourceCondensedName,error) ||
+				!ReadText(sourceCondensed,"out_of_domain_policy",sourceCondensedPolicy,error) ||
+				!ReadText(effective,"record_name",effectiveName,error) ||
+				!ReadText(effective,"quantity_name",quantityName,error) ||
+				!ReadText(effective,"out_of_domain_policy",effectivePolicy,error) ||
+				!ReadText(hot,"record_name",hotName,error) ||
+				!ReadText(hot,"out_of_domain_policy",hotPolicy,error) ||
+				!ReadText(cool,"record_name",coolName,error) ||
+				!ReadText(cool,"out_of_domain_policy",coolPolicy,error) ||
+				!ReadText(condensed,"record_name",condensedName,error) ||
+				!ReadText(condensed,"out_of_domain_policy",condensedPolicy,error) ) {
+				return false;
+			}
+			if( sourceEffectiveName != effectiveName ||
+				sourceEffectiveName != "soot-mac-equivalent-e-v1" ||
+				sourceQuantityName != quantityName ||
+				sourceQuantityName != "mac_equivalent_E (effective_absorption_function)" ||
+				sourceHotName != hotName || sourceHotName != "hot-soot-v1" ||
+				sourceCoolName != coolName || sourceCoolName != "cool-carbon-smoke-v1" ||
+				sourceCondensedName != condensedName ||
+				sourceCondensedName != "condensed-organics-smoke-v1" ) {
+				return Fail(error,
+					"fire-optics operational component identity differs from its source record");
+			}
+			if( sourceEffectivePolicy != effectivePolicy ||
+				sourceEffectivePolicy != kEffectiveOutOfDomainPolicy ||
+				sourceHotPolicy != hotPolicy || sourceHotPolicy != kHotOutOfDomainPolicy ||
+				sourceCoolPolicy != coolPolicy || sourceCoolPolicy != kCoolOutOfDomainPolicy ||
+				sourceCondensedPolicy != condensedPolicy ||
+				sourceCondensedPolicy != kCondensedOutOfDomainPolicy ) {
+				return Fail(error,
+					"fire-optics operational out-of-domain policy differs from its source record");
+			}
+			return true;
+		}
+
+		bool ValidateSyntheticPolicies(
+			const RISECBOR64::Value& source,
+			const RISECBOR64::Value& effective,
+			const RISECBOR64::Value& hot,
+			const RISECBOR64::Value& cool,
+			const RISECBOR64::Value& condensed,
+			std::string* error
+			)
+		{
+			std::string sourcePolicy, effectivePolicy, hotPolicy, coolPolicy, condensedPolicy;
+			return ReadText(source,"out_of_domain_policy",sourcePolicy,error) &&
+				ReadText(effective,"out_of_domain_policy",effectivePolicy,error) &&
+				ReadText(hot,"out_of_domain_policy",hotPolicy,error) &&
+				ReadText(cool,"out_of_domain_policy",coolPolicy,error) &&
+				ReadText(condensed,"out_of_domain_policy",condensedPolicy,error) &&
+				((sourcePolicy == kSyntheticOutOfDomainPolicy &&
+					effectivePolicy == sourcePolicy && hotPolicy == sourcePolicy &&
+					coolPolicy == sourcePolicy && condensedPolicy == sourcePolicy) ||
+					Fail(error,
+						"fire-optics synthetic out-of-domain policy differs from its source record"));
 		}
 
 		bool ReadFloatArray(
@@ -1211,15 +1309,18 @@ namespace RISE
 		const bool predictiveHeader =
 			m_recordName == "fire-optics-predictive-v1" &&
 			recordClass == "predictive_optical_preset" &&
-			interpolation == "pchip_monotone_c1_v1";
+			interpolation == "pchip_monotone_c1_v1" &&
+			aggregateVersion == "v1-draft";
 		const bool syntheticHeader =
 			m_recordName == "fire-optics-synthetic-regression-v1" &&
 			recordClass == "synthetic_regression_fixture" &&
-			interpolation == "analytic_fixture_v1";
+			interpolation == "analytic_fixture_v1" &&
+			aggregateVersion == "1.0.0-draft";
 		const bool explicitSyntheticHeader =
 			m_recordName == "fire-optics-explicit-synthetic-fixture" &&
 			recordClass == "synthetic_regression_fixture" &&
-			interpolation == "analytic_fixture_v1";
+			interpolation == "analytic_fixture_v1" &&
+			aggregateVersion == "1.0.0-explicit-test";
 		if( !predictiveHeader && !syntheticHeader && !explicitSyntheticHeader ) {
 			return Fail(error,"unsupported fire-optics record name/class combination");
 		}
@@ -1248,7 +1349,8 @@ namespace RISE
 				if( sourceExplicitFixtures &&
 					!ValidateSourceRecordHeader(*sourceExplicitFixtures,"draft-2",
 						"fire_optics_synthetic_fixture",
-						"fire-optics-explicit-synthetic-fixtures-v1",error) ) {
+						"fire-optics-explicit-synthetic-fixtures-v1",
+						"1.0.0-explicit-test",error) ) {
 					return false;
 				}
 				if( !sourceExplicitFixtures ||
@@ -1273,13 +1375,14 @@ namespace RISE
 				RISECBOR64::Value::Map, error);
 			if( sourceEffective && sourceHot && sourceCool && sourceCondensed &&
 				(!ValidateSourceRecordHeader(*sourceEffective,"draft-2",
-					"soot_effective_absorption_function","soot-mac-equivalent-e-v1",error) ||
+					"soot_effective_absorption_function","soot-mac-equivalent-e-v1",
+					"v1-draft",error) ||
 				 !ValidateSourceRecordHeader(*sourceHot,"draft-1","constituent_optics",
-					"hot-soot-v1",error) ||
+					"hot-soot-v1","v1-draft",error) ||
 				 !ValidateSourceRecordHeader(*sourceCool,"draft-1","constituent_optics",
-					"cool-carbon-smoke-v1",error) ||
+					"cool-carbon-smoke-v1","v1-draft",error) ||
 				 !ValidateSourceRecordHeader(*sourceCondensed,"draft-1","constituent_optics",
-					"condensed-organics-smoke-v1",error)) ) {
+					"condensed-organics-smoke-v1","v1-draft",error)) ) {
 				return false;
 			}
 			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
@@ -1347,7 +1450,7 @@ namespace RISE
 				std::string fixtureName, fixtureStatus, fixtureVersion;
 				if( sourceFixtures && !ValidateSourceRecordHeader(*sourceFixtures,"draft-1",
 					"synthetic_regression_fixtures",
-					"fire-optics-synthetic-fixtures-v1",error) ) {
+					"fire-optics-synthetic-fixtures-v1","1.0.0-draft",error) ) {
 					return false;
 				}
 				if( !sourceFixtures ||
@@ -1422,6 +1525,11 @@ namespace RISE
 		if( recordClass == "predictive_optical_preset" &&
 			interpolation == "pchip_monotone_c1_v1" ) {
 			m_recordClass = PredictiveOpticalPreset;
+			if( !sourceEffective || !sourceHot || !sourceCool || !sourceCondensed ||
+				!ValidatePredictiveIdentityAndPolicies(*sourceEffective,*sourceHot,
+					*sourceCool,*sourceCondensed,*effective,*hot,*cool,*condensed,error) ) {
+				return false;
+			}
 			std::string normative;
 			if( !ReadText(*effective, "normative_quantity", normative, error) ||
 				normative != "MAC_lambda_m2_per_g" ) {
@@ -1634,6 +1742,12 @@ namespace RISE
 		if( recordClass == "synthetic_regression_fixture" &&
 			interpolation == "analytic_fixture_v1" ) {
 			m_recordClass = SyntheticRegressionFixture;
+			const RISECBOR64::Value* syntheticPolicySource = sourceExplicitFixtures ?
+				sourceExplicitFixtures : sourceFixtures;
+			if( !syntheticPolicySource || !ValidateSyntheticPolicies(
+				*syntheticPolicySource,*effective,*hot,*cool,*condensed,error) ) {
+				return false;
+			}
 			double hotOmega, hotGValue;
 			if( sourceExplicitFixtures ) {
 				const RISECBOR64::Value* fixtureValues = Required(
@@ -1929,7 +2043,13 @@ namespace RISE
 			return FireOpticsPreset();
 		}
 		const Value* provenanceSchema = frozen.Find("provenance_schema");
-		if( !provenanceSchema ) {
+		const Value* frozenSources = frozen.Find("source_records");
+		const Value* frozenFixtureSource = frozenSources ?
+			frozenSources->Find("synthetic_fixtures") : 0;
+		const Value* fixturePolicy = frozenFixtureSource ?
+			frozenFixtureSource->Find("out_of_domain_policy") : 0;
+		if( !provenanceSchema || !fixturePolicy ||
+			fixturePolicy->GetType() != Value::Text ) {
 			Fail(error,"canonical synthetic metadata template has no provenance schema");
 			return FireOpticsPreset();
 		}
@@ -1980,12 +2100,14 @@ namespace RISE
 			{ "E_eff", effectiveEnvelope },
 			{ "domain_nm", FloatArray({380.0, 780.0}) },
 			{ "model", Value::String("constant_E_eff") },
+			{ "out_of_domain_policy", *fixturePolicy },
 			{ "pinned_density_g_cm3", Value::Float(sootDensityKgM3/1000.0) },
 			{ "pinned_density_metadata", densityEnvelope }
 		});
 		const Value hot = Map({
 			{ "g", hotGEnvelope },
 			{ "omega", hotOmegaEnvelope },
+			{ "out_of_domain_policy", *fixturePolicy },
 			{ "phi_T_partition", phiPartition }
 		});
 		const Value cool = Map({
@@ -1994,6 +2116,7 @@ namespace RISE
 			{ "k_m_extinction_metadata", coolKmEnvelope },
 			{ "n_spectral_exponent", coolExponentEnvelope },
 			{ "omega", coolOmegaEnvelope },
+			{ "out_of_domain_policy", *fixturePolicy },
 			{ "phi_T_partition", phiPartition }
 		});
 		const Value condensed = Map({
@@ -2002,6 +2125,7 @@ namespace RISE
 			{ "k_m_extinction_metadata", condensedKmEnvelope },
 			{ "n_spectral_exponent", condensedExponentEnvelope },
 			{ "omega", condensedOmegaEnvelope },
+			{ "out_of_domain_policy", *fixturePolicy },
 			{ "predictive_reason_code", Value::String("condensed_organics_ir_unclosed") }
 		});
 		const char explicitStatus[] =
@@ -2009,6 +2133,7 @@ namespace RISE
 		const Value explicitSource = Map({
 			{ "cool_phi_T_partition", phiPartition },
 			{ "hot_phi_T_partition", phiPartition },
+			{ "out_of_domain_policy", *fixturePolicy },
 			{ "record_kind", Value::String("fire_optics_synthetic_fixture") },
 			{ "record_name", Value::String(
 				"fire-optics-explicit-synthetic-fixtures-v1") },
