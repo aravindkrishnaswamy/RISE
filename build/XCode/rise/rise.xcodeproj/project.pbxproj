@@ -5108,7 +5108,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\"";
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
 		};
 		B1D000020000000000000002 /* Generate Renderer Build Identity */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -5125,7 +5125,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\"";
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -6403,6 +6403,9 @@
 		6DBFAA1909C4D18F0048A09D /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6466,6 +6469,9 @@
 		6DBFAA1A09C4D18F0048A09D /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6527,6 +6533,9 @@
 		6DBFAA1B09C4D18F0048A09D /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6712,6 +6721,9 @@
 		6DBFAA2009C4D18F0048A09D /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6816,6 +6828,9 @@
 		F24B71CF2F52A212008304C4 /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -6937,6 +6952,9 @@
 		F24B71D02F52A212008304C4 /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7057,6 +7075,9 @@
 		F24B71D12F52A212008304C4 /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7177,6 +7198,9 @@
 		F24B71D52F52A212008304C4 /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;

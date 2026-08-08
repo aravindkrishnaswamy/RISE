@@ -92,7 +92,7 @@
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Lib>
     <PreBuildEvent>
-      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h"</Command>
+      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h" --fp-contraction compiler_default --optimization-mode O2 --lto-mode off</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -127,7 +127,7 @@
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Lib>
     <PreBuildEvent>
-      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h"</Command>
+      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h" --fp-contraction compiler_default --optimization-mode disabled --lto-mode off</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -87,11 +87,17 @@ ALL_DEPS = $(ALL_OBJS:.o=.d)
 CXXFLAGS_DEPS ?= -MMD -MP
 
 RENDERER_BUILD_HEADER = RendererBuildIdentity.generated.h
+RENDERER_FP_CONTRACTION = $(if $(findstring -ffast-math,$(CXXFLAGS)),fast,compiler_default)
+RENDERER_OPTIMIZATION = $(if $(findstring -O3,$(CXXFLAGS)),O3,$(if $(findstring -O2,$(CXXFLAGS)),O2,$(if $(findstring -O1,$(CXXFLAGS)),O1,$(if $(findstring -Os,$(CXXFLAGS)),Os,$(if $(findstring -Oz,$(CXXFLAGS)),Oz,compiler_default)))))
+RENDERER_LTO = $(if $(findstring -flto=thin,$(CXXFLAGS)),thin,$(if $(findstring -flto,$(CXXFLAGS)),full,off))
 CPPFLAGS += -I$(CURDIR)
 
 $(RENDERER_BUILD_HEADER) : FORCE_RENDERER_BUILD_IDENTITY
 	@python3 ../../../tools/generate_renderer_build_identity_header.py \
-		--repo-root ../../.. --output $@
+		--repo-root ../../.. --output $@ \
+		--fp-contraction $(RENDERER_FP_CONTRACTION) \
+		--optimization-mode $(RENDERER_OPTIMIZATION) \
+		--lto-mode $(RENDERER_LTO)
 
 $(PATHLIBRARY)Job.o : $(RENDERER_BUILD_HEADER)
 

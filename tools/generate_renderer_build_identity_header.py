@@ -23,6 +23,21 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument(
+        "--fp-contraction",
+        required=True,
+        choices=("off", "on", "fast", "compiler_default"),
+    )
+    parser.add_argument(
+        "--optimization-mode",
+        required=True,
+        choices=("disabled", "O1", "O2", "O3", "Os", "Oz", "compiler_default"),
+    )
+    parser.add_argument(
+        "--lto-mode",
+        required=True,
+        choices=("off", "thin", "full", "compiler_default"),
+    )
     args = parser.parse_args()
     repo = args.repo_root.resolve()
     revision = git(repo, "rev-parse", "HEAD").decode("ascii").strip()
@@ -46,6 +61,9 @@ def main() -> int:
         f"#define RISE_BUILD_SOURCE_REVISION {c_string(revision)}\n"
         f"#define RISE_BUILD_DIRTY_STATE {c_string('dirty' if status else 'clean')}\n"
         f"#define RISE_BUILD_DIRTY_DIFF_SHA256 {c_string(dirty_hash)}\n"
+        f"#define RISE_BUILD_FP_CONTRACTION_MODE {c_string(args.fp_contraction)}\n"
+        f"#define RISE_BUILD_OPTIMIZATION_MODE {c_string(args.optimization_mode)}\n"
+        f"#define RISE_BUILD_LTO_MODE {c_string(args.lto_mode)}\n"
         "#endif\n"
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

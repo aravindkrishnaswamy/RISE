@@ -42,12 +42,18 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(RISE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(RISE_RENDERER_BUILD_IDENTITY_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-execute_process(
+set(RISE_RENDERER_BUILD_IDENTITY_HEADER
+    "${RISE_RENDERER_BUILD_IDENTITY_DIR}/RendererBuildIdentity.generated.h")
+add_custom_target(rise_renderer_build_identity
     COMMAND "${Python3_EXECUTABLE}"
             "${RISE_ROOT}/tools/generate_renderer_build_identity_header.py"
             --repo-root "${RISE_ROOT}"
-            --output "${RISE_RENDERER_BUILD_IDENTITY_DIR}/RendererBuildIdentity.generated.h"
-    COMMAND_ERROR_IS_FATAL ANY
+            --output "${RISE_RENDERER_BUILD_IDENTITY_HEADER}"
+            --fp-contraction fast
+            --optimization-mode O3
+            --lto-mode off
+    BYPRODUCTS "${RISE_RENDERER_BUILD_IDENTITY_HEADER}"
+    VERBATIM
 )
 
 # Pull in the source lists
@@ -59,6 +65,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/extlib_png.cmake")
 # -----------------------------------------------------------------------------
 
 add_library(rise STATIC ${RISE_LIB_SOURCES})
+add_dependencies(rise rise_renderer_build_identity)
 
 target_include_directories(rise PUBLIC
     "${RISE_ROOT}/src/Library"

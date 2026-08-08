@@ -626,6 +626,39 @@ int main()
 				externalWriter.find("config."+member) != std::string::npos,
 				"resolved-config schema consumes FireExternalRenderConfig::"+member );
 		}
+
+		const std::string generator = slurp(
+			repoRoot/"tools"/"generate_renderer_build_identity_header.py");
+		const std::string makefile = slurp(repoRoot/"build"/"make"/"rise"/"Makefile");
+		const std::string android = slurp(
+			repoRoot/"build"/"cmake"/"rise-android"/"CMakeLists.txt");
+		const std::string visualStudio = slurp(
+			repoRoot/"build"/"VS2022"/"Library"/"Library.vcxproj");
+		const std::string xcode = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"rise.xcodeproj"/"project.pbxproj");
+		for( const char* option : { "--fp-contraction", "--optimization-mode", "--lto-mode" } ) {
+			Check( generator.find(option) != std::string::npos &&
+				makefile.find(option) != std::string::npos && android.find(option) != std::string::npos &&
+				visualStudio.find(option) != std::string::npos && xcode.find(option) != std::string::npos,
+				std::string("every build system pins renderer identity option ")+option );
+		}
+		Check( android.find("add_custom_target(rise_renderer_build_identity") != std::string::npos &&
+			android.find("add_dependencies(rise rise_renderer_build_identity)") != std::string::npos &&
+			jobSource.find("dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath)") !=
+				std::string::npos && jobSource.find("\"android\"") != std::string::npos,
+			"Android regenerates build identity per build and hashes the renderer-containing module" );
+		for( const char* dependency : { "iex", "ilmthread", "imath", "oidn", "openexr",
+			"openpgl", "png", "tiff", "zlib" } ) {
+			Check( jobSource.find(std::string("{ \"")+dependency+"\", DependencyBuildIdentity") !=
+				std::string::npos,
+				std::string("renderer identity binds dependency ")+dependency );
+		}
+		Check( configWriter.find("typeid(*camera) == typeid(Implementation::PinholeCamera)") !=
+				std::string::npos &&
+			configWriter.find("camera && cameraKind.empty()") != std::string::npos &&
+			configWriter.find("return false;") != std::string::npos &&
+			configWriter.find("camera ? \"external\" : \"none\"") == std::string::npos,
+			"unknown external cameras fail closed instead of sharing an empty projection identity" );
 	}
 
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)

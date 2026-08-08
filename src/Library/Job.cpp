@@ -21,6 +21,7 @@
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #include <cstdint>
+#include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
@@ -78,10 +79,21 @@
 #define RISE_BUILD_SOURCE_REVISION ""
 #define RISE_BUILD_DIRTY_STATE "unavailable"
 #define RISE_BUILD_DIRTY_DIFF_SHA256 ""
+#define RISE_BUILD_FP_CONTRACTION_MODE ""
+#define RISE_BUILD_OPTIMIZATION_MODE ""
+#define RISE_BUILD_LTO_MODE ""
 #endif
 
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#include <zlib.h>
+#endif
+#ifndef NO_TIFF_SUPPORT
+#include <tiffvers.h>
+#endif
 #ifndef NO_EXR_SUPPORT
 #include <OpenEXR/OpenEXRConfig.h>
+#include <Imath/ImathConfig.h>
 #endif
 #ifdef RISE_ENABLE_OIDN
 #include <OpenImageDenoise/config.h>
@@ -92,7 +104,9 @@
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #elif defined(__linux__) || defined(__ANDROID__)
+#include <dlfcn.h>
 #include <link.h>
 #include <unistd.h>
 #elif defined(_WIN32)
@@ -182,9 +196,66 @@ namespace
 		return input.good() || input.eof();
 	}
 
-	std::string CurrentExecutablePath()
+	bool ReadLoadedBinaryIdentity(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes,
+		std::string& hashBasis )
 	{
+		if( ReadIdentityFile(path,bytes) ) {
+			hashBasis = "file_bytes";
+			return true;
+		}
 #if defined(__APPLE__)
+		const std::uint32_t count = _dyld_image_count();
+		for( std::uint32_t i=0u; i<count; ++i ) {
+			const char* imagePath = _dyld_get_image_name(i);
+			if( !imagePath || path != imagePath ) continue;
+			const mach_header* header = _dyld_get_image_header(i);
+			if( !header || header->magic != MH_MAGIC_64 ) return false;
+			const mach_header_64* header64 =
+				reinterpret_cast<const mach_header_64*>(header);
+			const std::size_t commandBytes = sizeof(mach_header_64)+header64->sizeofcmds;
+			const unsigned char* headerData =
+				reinterpret_cast<const unsigned char*>(header64);
+			bytes.assign(headerData,headerData+commandBytes);
+			const std::int64_t slide = _dyld_get_image_vmaddr_slide(i);
+			const load_command* command = reinterpret_cast<const load_command*>(
+				headerData+sizeof(mach_header_64));
+			bool sawExecutableSegment = false;
+			for( std::uint32_t j=0u; j<header64->ncmds; ++j ) {
+				if( command->cmd == LC_SEGMENT_64 ) {
+					const segment_command_64* segment =
+						reinterpret_cast<const segment_command_64*>(command);
+					if( (segment->initprot & VM_PROT_EXECUTE) && segment->filesize ) {
+						const unsigned char* segmentData = reinterpret_cast<const unsigned char*>(
+							slide+segment->vmaddr);
+						bytes.insert(bytes.end(),segmentData,
+							segmentData+static_cast<std::size_t>(segment->filesize));
+						sawExecutableSegment = true;
+					}
+				}
+				command = reinterpret_cast<const load_command*>(
+					reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+			}
+			if( !sawExecutableSegment ) return false;
+			hashBasis = "loaded_mach_header_and_executable_segments";
+			return true;
+		}
+#endif
+		return false;
+	}
+
+	std::string CurrentRendererBinaryPath()
+	{
+#if defined(__ANDROID__)
+		Dl_info info = {};
+		if( dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath),&info) == 0 ||
+			!info.dli_fname || !info.dli_fname[0] ) return std::string();
+		std::error_code error;
+		const std::filesystem::path canonical =
+			std::filesystem::weakly_canonical(info.dli_fname,error);
+		return error ? std::string(info.dli_fname) : canonical.string();
+#elif defined(__APPLE__)
 		std::uint32_t size = 0u;
 		_NSGetExecutablePath(nullptr,&size);
 		std::vector<char> path(size);
@@ -244,16 +315,17 @@ namespace
 	}
 
 	RISECBOR64::Value DependencyBuildIdentity(
-		const char* name,
+		const char* binaryNeedle,
 		const char* version,
 		const bool enabled,
+		const bool embedded,
 		const std::vector<std::string>& loadedPaths,
 		bool& complete )
 	{
 		using RISECBOR64::Value;
 		Value::Values binaries;
-		if( enabled ) {
-			std::string needle(name);
+		if( enabled && !embedded ) {
+			std::string needle(binaryNeedle);
 			std::transform(needle.begin(),needle.end(),needle.begin(),
 				[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
 			for( const std::string& path : loadedPaths ) {
@@ -262,11 +334,13 @@ namespace
 					[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
 				if( lower.find(needle) == std::string::npos ) continue;
 				RISECBOR64::Bytes fileBytes;
-				if( !ReadIdentityFile(path,fileBytes) ) {
+				std::string hashBasis;
+				if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
 					complete = false;
 					continue;
 				}
 				binaries.push_back(Value::MapValue({
+					{ "hash_basis", Value::String(hashBasis) },
 					{ "path", Value::String(path) },
 					{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
 				}));
@@ -275,6 +349,7 @@ namespace
 		}
 		return Value::MapValue({
 			{ "availability", Value::String(enabled ? "linked" : "not_linked") },
+			{ "linkage", Value::String(enabled ? (embedded ? "embedded" : "dynamic") : "not_linked") },
 			{ "loaded_binaries", Value::ArrayValue(binaries) },
 			{ "version", Value::String(enabled ? version : "not_linked") }
 		});
@@ -284,9 +359,24 @@ namespace
 		RISECBOR64::Bytes& bytes,
 		std::string& identity )
 	{
-		if( !RISE_BUILD_SOURCE_REVISION[0] || !RISE_BUILD_DIRTY_DIFF_SHA256[0] ) {
+		if( !RISE_BUILD_SOURCE_REVISION[0] || !RISE_BUILD_DIRTY_DIFF_SHA256[0] ||
+			!RISE_BUILD_FP_CONTRACTION_MODE[0] || !RISE_BUILD_OPTIMIZATION_MODE[0] ||
+			!RISE_BUILD_LTO_MODE[0] ) {
 			return false;
 		}
+		const std::string contractionMode = RISE_BUILD_FP_CONTRACTION_MODE;
+		const std::string optimizationMode = RISE_BUILD_OPTIMIZATION_MODE;
+		const std::string ltoMode = RISE_BUILD_LTO_MODE;
+		if( contractionMode != "off" && contractionMode != "on" &&
+			contractionMode != "fast" && contractionMode != "compiler_default" ) {
+			return false;
+		}
+		if( optimizationMode != "disabled" && optimizationMode != "O1" &&
+			optimizationMode != "O2" && optimizationMode != "O3" &&
+			optimizationMode != "Os" && optimizationMode != "Oz" &&
+			optimizationMode != "compiler_default" ) return false;
+		if( ltoMode != "off" && ltoMode != "thin" && ltoMode != "full" &&
+			ltoMode != "compiler_default" ) return false;
 		const char* compiler =
 #if defined(__clang_version__)
 			__clang_version__;
@@ -298,6 +388,8 @@ namespace
 		const char* platform =
 #if defined(_WIN32)
 			"windows";
+#elif defined(__ANDROID__)
+			"android";
 #elif defined(__APPLE__)
 			"macos";
 #elif defined(__linux__)
@@ -325,20 +417,15 @@ namespace
 #else
 			false;
 #endif
-		const bool contraction =
-#if defined(__FP_FAST_FMA) || defined(__FP_FAST_FMAF) || defined(__FP_FAST_FMAL)
-			true;
-#else
-			false;
-#endif
 		const std::string rendererVersion =
 			std::to_string(RISE_VER_MAJOR_VERSION)+"."+
 			std::to_string(RISE_VER_MINOR_VERSION)+"."+
 			std::to_string(RISE_VER_REVISION_VERSION)+"+"+
 			std::to_string(RISE_VER_BUILD_VERSION);
-		const std::string executablePath = CurrentExecutablePath();
-		RISECBOR64::Bytes executableBytes;
-		if( executablePath.empty() || !ReadIdentityFile(executablePath,executableBytes) ) {
+		const std::string rendererBinaryPath = CurrentRendererBinaryPath();
+		RISECBOR64::Bytes rendererBinaryBytes;
+		if( rendererBinaryPath.empty() ||
+			!ReadIdentityFile(rendererBinaryPath,rendererBinaryBytes) ) {
 			return false;
 		}
 		const std::vector<std::string> loadedPaths = LoadedBinaryPaths();
@@ -361,41 +448,120 @@ namespace
 #else
 			"not_linked";
 #endif
+		const char* pngVersion =
+#ifndef NO_PNG_SUPPORT
+			PNG_LIBPNG_VER_STRING;
+#else
+			"not_linked";
+#endif
+		const char* zlibVersion =
+#ifndef NO_PNG_SUPPORT
+			ZLIB_VERSION;
+#else
+			"not_linked";
+#endif
+		const char* tiffVersion =
+#ifndef NO_TIFF_SUPPORT
+			TIFFLIB_VERSION_STR;
+#else
+			"not_linked";
+#endif
+		const char* imathVersion =
+#ifndef NO_EXR_SUPPORT
+			IMATH_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const bool embeddedPngZlib =
+#if defined(__ANDROID__)
+			true;
+#else
+			false;
+#endif
 		using RISECBOR64::Value;
 		const Value record = Value::MapValue({
 			{ "compiler", Value::MapValue({
 				{ "identity", Value::String(compiler) },
-				{ "language_standard", Value::String("c++17") } }) },
+				{ "language_standard", Value::String("c++17") },
+				{ "lto_mode", Value::String(ltoMode) },
+				{ "optimization_mode", Value::String(optimizationMode) } }) },
 			{ "dependency_builds", Value::MapValue({
+				{ "iex", DependencyBuildIdentity("libiex",openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "ilmthread", DependencyBuildIdentity("libilmthread",openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "imath", DependencyBuildIdentity("libimath",imathVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
 				{ "oidn", DependencyBuildIdentity("openimagedenoise",oidnVersion,
 #ifdef RISE_ENABLE_OIDN
-					true,
+					true,false,
 #else
-					false,
+					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
 				{ "openexr", DependencyBuildIdentity("openexr",openexrVersion,
 #ifndef NO_EXR_SUPPORT
-					true,
+					true,false,
 #else
-					false,
+					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
 				{ "openpgl", DependencyBuildIdentity("openpgl",openpglVersion,
 #ifdef RISE_ENABLE_OPENPGL
-					true,
+					true,false,
 #else
-					false,
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "png", DependencyBuildIdentity("libpng",pngVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "tiff", DependencyBuildIdentity("libtiff",tiffVersion,
+#ifndef NO_TIFF_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "zlib", DependencyBuildIdentity("libz.",zlibVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
 #endif
 					loadedPaths,dependenciesComplete) } }) },
 			{ "dirty_state", Value::MapValue({
 				{ "diff_sha256", Value::String(RISE_BUILD_DIRTY_DIFF_SHA256) },
 				{ "state", Value::String(RISE_BUILD_DIRTY_STATE) } }) },
-			{ "executable_sha256", Value::MapValue({
-				{ "path", Value::String(executablePath) },
-				{ "sha256", Value::String(RISECBOR64::SHA256Hex(executableBytes)) } }) },
+			{ "renderer_binary", Value::MapValue({
+#if defined(__ANDROID__)
+				{ "kind", Value::String("module") },
+#else
+				{ "kind", Value::String("executable") },
+#endif
+				{ "path", Value::String(rendererBinaryPath) },
+				{ "sha256", Value::String(RISECBOR64::SHA256Hex(rendererBinaryBytes)) } }) },
 			{ "fp_settings", Value::MapValue({
-				{ "contraction_available", FireBool(contraction) },
+				{ "contraction_mode", Value::String(contractionMode) },
 				{ "fast_math", FireBool(fastMath) },
 				{ "finite_math_only", FireBool(finiteMathOnly) } }) },
 			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
@@ -457,18 +623,20 @@ namespace
 				matrix._30,matrix._31,matrix._32,matrix._33 };
 			for( unsigned int i=0; i<16u; ++i ) cameraMatrix.push_back(Value::Float(values[i]));
 		}
-		std::string cameraKind = camera ? "external" : "none";
+		std::string cameraKind = camera ? "" : "none";
 		Value projection = Value::MapValue({});
-		if( const Implementation::PinholeCamera* pinhole =
-			dynamic_cast<const Implementation::PinholeCamera*>(camera) ) {
+		if( camera && typeid(*camera) == typeid(Implementation::PinholeCamera) ) {
+			const Implementation::PinholeCamera* pinhole =
+				dynamic_cast<const Implementation::PinholeCamera*>(camera);
 			cameraKind = "pinhole";
 			projection = Value::MapValue({
 				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
 				{ "fstop", Value::Float(pinhole->GetFstop()) },
 				{ "iso", Value::Float(pinhole->GetIsoStored()) }
 			});
-		} else if( const Implementation::ThinLensCamera* thin =
-			dynamic_cast<const Implementation::ThinLensCamera*>(camera) ) {
+		} else if( camera && typeid(*camera) == typeid(Implementation::ThinLensCamera) ) {
+			const Implementation::ThinLensCamera* thin =
+				dynamic_cast<const Implementation::ThinLensCamera*>(camera);
 			cameraKind = "thin_lens";
 			projection = Value::MapValue({
 				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
@@ -485,20 +653,27 @@ namespace
 				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
 				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
 			});
-		} else if( const Implementation::FisheyeCamera* fisheye =
-			dynamic_cast<const Implementation::FisheyeCamera*>(camera) ) {
+		} else if( camera && typeid(*camera) == typeid(Implementation::FisheyeCamera) ) {
+			const Implementation::FisheyeCamera* fisheye =
+				dynamic_cast<const Implementation::FisheyeCamera*>(camera);
 			cameraKind = "fisheye";
 			projection = Value::MapValue({
 				{ "scale", Value::Float(fisheye->GetScaleStored()) }
 			});
-		} else if( const Implementation::OrthographicCamera* orthographic =
-			dynamic_cast<const Implementation::OrthographicCamera*>(camera) ) {
+		} else if( camera && typeid(*camera) == typeid(Implementation::OrthographicCamera) ) {
+			const Implementation::OrthographicCamera* orthographic =
+				dynamic_cast<const Implementation::OrthographicCamera*>(camera);
 			cameraKind = "orthographic";
 			const Vector2 scale = orthographic->GetViewportScaleStored();
 			projection = Value::MapValue({
 				{ "viewport_scale", Value::ArrayValue({
 					Value::Float(scale.x),Value::Float(scale.y) }) }
 			});
+		}
+		if( camera && cameraKind.empty() ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render camera parameters are not canonically introspectable");
+			return false;
 		}
 		Value externalRuntime;
 		if( external ) {

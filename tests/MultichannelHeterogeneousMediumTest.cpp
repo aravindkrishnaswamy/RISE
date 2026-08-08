@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -2403,8 +2404,14 @@ namespace
 				rendererBuild.Find("source_revision") : nullptr;
 			const RISECBOR64::Value* dirtyState = buildDecoded ?
 				rendererBuild.Find("dirty_state") : nullptr;
-			const RISECBOR64::Value* executableIdentity = buildDecoded ?
-				rendererBuild.Find("executable_sha256") : nullptr;
+			const RISECBOR64::Value* rendererBinary = buildDecoded ?
+				rendererBuild.Find("renderer_binary") : nullptr;
+			const RISECBOR64::Value* compilerSettings = buildDecoded ?
+				rendererBuild.Find("compiler") : nullptr;
+			const RISECBOR64::Value* fpSettings = buildDecoded ?
+				rendererBuild.Find("fp_settings") : nullptr;
+			const RISECBOR64::Value* target = buildDecoded ?
+				rendererBuild.Find("target") : nullptr;
 			const RISECBOR64::Value* dependencyBuilds = buildDecoded ?
 				rendererBuild.Find("dependency_builds") : nullptr;
 			const RISECBOR64::Value* resolvedCamera = configDecoded ?
@@ -2415,18 +2422,24 @@ namespace
 				resolvedConfig.Find("raster_sequence") : nullptr;
 			bool dependenciesBound = dependencyBuilds != nullptr;
 			if( dependencyBuilds ) {
-				for( const char* name : { "oidn", "openexr", "openpgl" } ) {
+				for( const char* name : { "iex", "ilmthread", "imath", "oidn",
+					"openexr", "openpgl", "png", "tiff", "zlib" } ) {
 					const RISECBOR64::Value* dependency = dependencyBuilds->Find(name);
 					const RISECBOR64::Value* availability = dependency ?
 						dependency->Find("availability") : nullptr;
+					const RISECBOR64::Value* linkage = dependency ?
+						dependency->Find("linkage") : nullptr;
 					const RISECBOR64::Value* binaries = dependency ?
 						dependency->Find("loaded_binaries") : nullptr;
-					dependenciesBound = dependenciesBound && availability && binaries &&
+					dependenciesBound = dependenciesBound && availability && linkage && binaries &&
 						((availability->GetText() == "not_linked" && binaries->GetArray().empty()) ||
-						 (availability->GetText() == "linked" && !binaries->GetArray().empty()));
+						 (availability->GetText() == "linked" &&
+							((linkage->GetText() == "embedded" && binaries->GetArray().empty()) ||
+							 (linkage->GetText() == "dynamic" && !binaries->GetArray().empty()))));
 					if( binaries ) {
 						for( const RISECBOR64::Value& binary : binaries->GetArray() ) {
-							dependenciesBound = dependenciesBound && binary.Find("path") &&
+							dependenciesBound = dependenciesBound && binary.Find("hash_basis") &&
+								binary.Find("path") &&
 								binary.Find("sha256") &&
 								binary.Find("sha256")->GetText().size() == 64u;
 						}
@@ -2453,15 +2466,24 @@ namespace
 				resolvedRasterSequence && resolvedRasterSequence->Find("type") &&
 				resolvedRasterSequence->Find("options"),
 				"resolved config binds camera pose/projection, animation timing, and raster sequence" );
-			Check( sourceRevision && sourceRevision->GetText().size() == 40u &&
+			const bool revisionIsHex = sourceRevision && !sourceRevision->GetText().empty() &&
+				std::all_of(sourceRevision->GetText().begin(),sourceRevision->GetText().end(),
+					[]( unsigned char c ) { return std::isxdigit(c) != 0; });
+			Check( revisionIsHex &&
 				dirtyState && dirtyState->Find("state") &&
 				dirtyState->Find("diff_sha256") &&
 				dirtyState->Find("diff_sha256")->GetText().size() == 64u &&
-				executableIdentity && executableIdentity->Find("path") &&
-				executableIdentity->Find("sha256") &&
-				executableIdentity->Find("sha256")->GetText().size() == 64u &&
+				rendererBinary && rendererBinary->Find("kind") &&
+				rendererBinary->Find("path") && rendererBinary->Find("sha256") &&
+				rendererBinary->Find("sha256")->GetText().size() == 64u &&
+				compilerSettings && compilerSettings->Find("identity") &&
+				compilerSettings->Find("optimization_mode") &&
+				compilerSettings->Find("lto_mode") && fpSettings &&
+				fpSettings->Find("contraction_mode") && fpSettings->Find("fast_math") &&
+				fpSettings->Find("finite_math_only") && target &&
+				target->Find("platform") && target->Find("architecture") &&
 				dependenciesBound,
-				"renderer build identity binds source state, executable bytes, and every linked dependency binary" );
+				"renderer build identity binds source, target, compiler/FP modes, renderer bytes, and every dependency" );
 
 			const std::string originalAuthoredDigest =
 				metadata.activeFireMedia.empty() ? std::string() :
