@@ -1616,12 +1616,19 @@ static void TestResolvedAutoFirePreflight()
 	IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
 	HomogeneousFireTestMedium* fire = new HomogeneousFireTestMedium(*phase);
 	job->GetScene()->SetGlobalMedium(fire);
+	unsigned int predictedMs = 0xA5A5A5A5u;
+	unsigned int actualMs = 0x5A5A5A5Au;
+	const bool predictionRejected =
+		!job->PredictRasterizationTime(1,&predictedMs,&actualMs);
 	const bool rejected = !job->Rasterize();
 	Check(firstRendered && rasterizer &&
 		rasterizer->ResolvedIntegrator() == AutoIntegratorChoice::VCM,
 		"unpinned Auto first resolves to VCM on the caustic fixture: " + label);
+	Check(predictionRejected && predictedMs == 0xA5A5A5A5u &&
+		actualMs == 0x5A5A5A5Au,
+		"prediction preflight rejects the already-resolved unsupported delegate: " + label);
 	Check(rejected,
-		"preflight rejects the already-resolved unsupported delegate: " + label);
+		"render preflight rejects the already-resolved unsupported delegate: " + label);
 	safe_release(fire);
 	safe_release(phase);
 	safe_release(job);

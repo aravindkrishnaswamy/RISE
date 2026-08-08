@@ -547,6 +547,47 @@ namespace
 		~MissingRecordIdFireMedium() override = default;
 	};
 
+	class InconsistentPredictiveFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit InconsistentPredictiveFireMedium(
+			const IPhaseFunction& phase, const bool includePreviewRequest ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase ),
+		  includePreviewRequest_(includePreviewRequest)
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override
+		{
+			return "custom-fire-record";
+		}
+		bool FirePredictiveAllowed() const override { return true; }
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return includePreviewRequest_ ? 1u : 0u;
+		}
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
+		{
+			return includePreviewRequest_ && index == 0u ? "requested_preview" : nullptr;
+		}
+		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{
+			return true;
+		}
+
+	protected:
+		~InconsistentPredictiveFireMedium() override = default;
+
+	private:
+		const bool includePreviewRequest_;
+	};
+
 	class FirePreflightProgress final : public IProgressCallback
 	{
 	public:
@@ -2531,20 +2572,69 @@ namespace
 			const uint64_t generationBefore = store ? store->Generation() : 0u;
 			const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
 				FrameStoreOutput::Metadata();
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			Check( !job->PredictRasterizationTime(1,&predictedMs,&actualMs) && store &&
+				store->Generation() == generationBefore &&
+				predictedMs == 0xA5A5A5A5u && actualMs == 0x5A5A5A5Au &&
+				missing->reasonQueries == 1u &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"prediction rejects a fire medium with no record ID before tracing rays" );
 			Check( !job->Rasterize() && store &&
 				store->Generation() == generationBefore &&
-				missing->reasonQueries == 1u &&
+				missing->reasonQueries == 2u &&
 				SameFrameMetadata(store->Meta(),metadataBefore),
 				"preview fire medium with no record ID fails before workers" );
 			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
 				store->Generation() == generationBefore &&
-				missing->reasonQueries == 2u &&
+				missing->reasonQueries == 3u &&
 				SameFrameMetadata(store->Meta(),metadataBefore),
 				"predictive fire medium with no record ID fails before workers" );
 			safe_release(missing);
 			safe_release(phase);
 		} else {
 			Check( false,"missing-record preflight fixture loads" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool inconsistentPredictiveLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( inconsistentPredictiveLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InconsistentPredictiveFireMedium* inconsistent =
+				new InconsistentPredictiveFireMedium(*phase,true);
+			job->GetScene()->SetGlobalMedium(inconsistent);
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			Check( job->SetFireFidelityMode("predictive") &&
+				!job->PredictRasterizationTime(1,&predictedMs,&actualMs) &&
+				!job->Rasterize() && predictedMs == 0xA5A5A5A5u &&
+				actualMs == 0x5A5A5A5Au,
+				"predictive mode rejects a custom preview-status fire claim with reasons" );
+			safe_release(inconsistent);
+			safe_release(phase);
+		} else {
+			Check(false,"inconsistent-predictive fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool missingPreviewRequestLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( missingPreviewRequestLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InconsistentPredictiveFireMedium* missingPreviewRequest =
+				new InconsistentPredictiveFireMedium(*phase,false);
+			job->GetScene()->SetGlobalMedium(missingPreviewRequest);
+			Check( !job->Rasterize(),
+				"preview mode rejects a custom fire medium without requested_preview" );
+			safe_release(missingPreviewRequest);
+			safe_release(phase);
+		} else {
+			Check(false,"missing-preview-request fire fixture loads");
 		}
 		safe_release(job);
 

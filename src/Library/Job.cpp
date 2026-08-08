@@ -9568,7 +9568,7 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
 
@@ -9773,10 +9773,12 @@ bool Job::PrepareFireRenderFidelityMetadata()
 		}
 	}
 
-	const bool predictiveRejected = m_firePredictiveRequested &&
-		hasFireMedia && (!predictiveAllowed || transportPreview);
+	const bool missingPreviewRequest = hasFireMedia && !m_firePredictiveRequested &&
+		reasons.find("requested_preview") == reasons.end();
+	const bool predictiveRejected = m_firePredictiveRequested && hasFireMedia &&
+		(status == "preview" || !predictiveAllowed || transportPreview || !reasons.empty());
 	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
-		invalidFidelityMetadata || missingOpticalRecord ) {
+		invalidFidelityMetadata || missingOpticalRecord || missingPreviewRequest ) {
 		std::ostringstream joined;
 		for( std::set<std::string>::const_iterator reason = reasons.begin();
 			reason != reasons.end(); ++reason ) {
