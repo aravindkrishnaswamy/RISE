@@ -2407,6 +2407,12 @@ namespace
 				rendererBuild.Find("executable_sha256") : nullptr;
 			const RISECBOR64::Value* dependencyBuilds = buildDecoded ?
 				rendererBuild.Find("dependency_builds") : nullptr;
+			const RISECBOR64::Value* resolvedCamera = configDecoded ?
+				resolvedConfig.Find("camera") : nullptr;
+			const RISECBOR64::Value* resolvedAnimation = configDecoded ?
+				resolvedConfig.Find("animation") : nullptr;
+			const RISECBOR64::Value* resolvedRasterSequence = configDecoded ?
+				resolvedConfig.Find("raster_sequence") : nullptr;
 			bool dependenciesBound = dependencyBuilds != nullptr;
 			if( dependencyBuilds ) {
 				for( const char* name : { "oidn", "openexr", "openpgl" } ) {
@@ -2435,6 +2441,18 @@ namespace
 				metadata.rendererBuildId ==
 					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
 				"resolved-config categories and exact renderer-build preimage are canonical" );
+			Check( resolvedCamera && resolvedCamera->Find("kind") &&
+				resolvedCamera->Find("kind")->GetText() == "pinhole" &&
+				resolvedCamera->Find("location") &&
+				resolvedCamera->Find("location")->GetArray().size() == 3u &&
+				resolvedCamera->Find("matrix") &&
+				resolvedCamera->Find("matrix")->GetArray().size() == 16u &&
+				resolvedCamera->Find("projection") &&
+				resolvedCamera->Find("projection")->Find("fov_radians") &&
+				resolvedAnimation && resolvedAnimation->Find("num_frames") &&
+				resolvedRasterSequence && resolvedRasterSequence->Find("type") &&
+				resolvedRasterSequence->Find("options"),
+				"resolved config binds camera pose/projection, animation timing, and raster sequence" );
 			Check( sourceRevision && sourceRevision->GetText().size() == 40u &&
 				dirtyState && dirtyState->Find("state") &&
 				dirtyState->Find("diff_sha256") &&

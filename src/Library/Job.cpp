@@ -49,6 +49,10 @@
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
+#include "Cameras/PinholeCamera.h"
+#include "Cameras/ThinLensCamera.h"
+#include "Cameras/FisheyeCamera.h"
+#include "Cameras/OrthographicCamera.h"
 #include "Utilities/RString.h"
 #include "Utilities/Math3D/Constants.h"   // DEG_TO_RAD / RAD_TO_DEG for radiance_orient round-trip
 #include "Utilities/RasterizerDefaults.h"
@@ -417,6 +421,12 @@ namespace
 		const char* rasterizerKind,
 		const IScene& scene,
 		const FrameStore* store,
+		const FireExternalRenderConfig* external,
+		const double animationTimeStart,
+		const double animationTimeEnd,
+		const unsigned int animationFrames,
+		const bool animationFields,
+		const bool animationInvertFields,
 		RISECBOR64::Bytes& bytes )
 	{
 		using RISECBOR64::Value;
@@ -431,13 +441,107 @@ namespace
 			}
 		}
 		const IFilm* film = scene.GetFilm();
-		const ICamera* camera = scene.GetCamera();
+		const ICamera* camera = external && external->cameraOverride ?
+			external->cameraOverride : scene.GetCamera();
+		Value::Values cameraLocation;
+		Value::Values cameraMatrix;
+		if( camera ) {
+			const Point3 location = camera->GetLocation();
+			cameraLocation = { Value::Float(location.x), Value::Float(location.y),
+				Value::Float(location.z) };
+			const Matrix4 matrix = camera->GetMatrix();
+			const Scalar values[16] = {
+				matrix._00,matrix._01,matrix._02,matrix._03,
+				matrix._10,matrix._11,matrix._12,matrix._13,
+				matrix._20,matrix._21,matrix._22,matrix._23,
+				matrix._30,matrix._31,matrix._32,matrix._33 };
+			for( unsigned int i=0; i<16u; ++i ) cameraMatrix.push_back(Value::Float(values[i]));
+		}
+		std::string cameraKind = camera ? "external" : "none";
+		Value projection = Value::MapValue({});
+		if( const Implementation::PinholeCamera* pinhole =
+			dynamic_cast<const Implementation::PinholeCamera*>(camera) ) {
+			cameraKind = "pinhole";
+			projection = Value::MapValue({
+				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
+				{ "fstop", Value::Float(pinhole->GetFstop()) },
+				{ "iso", Value::Float(pinhole->GetIsoStored()) }
+			});
+		} else if( const Implementation::ThinLensCamera* thin =
+			dynamic_cast<const Implementation::ThinLensCamera*>(camera) ) {
+			cameraKind = "thin_lens";
+			projection = Value::MapValue({
+				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
+				{ "aperture_blades", Value::Unsigned(thin->GetApertureBlades()) },
+				{ "aperture_rotation", Value::Float(thin->GetApertureRotation()) },
+				{ "focal_length_mm", Value::Float(thin->GetFocalLengthStored()) },
+				{ "focus_distance_scene_units", Value::Float(thin->GetFocusDistanceStored()) },
+				{ "fstop", Value::Float(thin->GetFstop()) },
+				{ "iso", Value::Float(thin->GetIsoStored()) },
+				{ "scene_unit_meters", Value::Float(thin->GetSceneUnitMeters()) },
+				{ "sensor_size_mm", Value::Float(thin->GetSensorSize()) },
+				{ "shift_x_mm", Value::Float(thin->GetShiftX()) },
+				{ "shift_y_mm", Value::Float(thin->GetShiftY()) },
+				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
+				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
+			});
+		} else if( const Implementation::FisheyeCamera* fisheye =
+			dynamic_cast<const Implementation::FisheyeCamera*>(camera) ) {
+			cameraKind = "fisheye";
+			projection = Value::MapValue({
+				{ "scale", Value::Float(fisheye->GetScaleStored()) }
+			});
+		} else if( const Implementation::OrthographicCamera* orthographic =
+			dynamic_cast<const Implementation::OrthographicCamera*>(camera) ) {
+			cameraKind = "orthographic";
+			const Vector2 scale = orthographic->GetViewportScaleStored();
+			projection = Value::MapValue({
+				{ "viewport_scale", Value::ArrayValue({
+					Value::Float(scale.x),Value::Float(scale.y) }) }
+			});
+		}
+		Value externalRuntime;
+		if( external ) {
+			externalRuntime = Value::MapValue({
+				{ "camera_override", FireBool(external->cameraOverride != nullptr) },
+				{ "clay_override", FireBool(external->clayOverride) },
+				{ "idle_max_passes", FireUnsigned(external->idleMaxPasses) },
+				{ "idle_mode", FireBool(external->idleMode) },
+				{ "indirect_only", FireBool(external->indirectOnly) },
+				{ "live_samples_per_pass", FireUnsigned(external->liveSamplesPerPass) },
+				{ "max_path_depth", FireUnsigned(external->maxPathDepth) },
+				{ "preview_scale", FireUnsigned(external->previewScale) },
+				{ "progressive_on_idle", FireBool(external->progressiveOnIdle) },
+				{ "region", Value::MapValue({
+					{ "active", FireBool(external->regionActive) },
+					{ "bottom", FireUnsigned(external->regionBottom) },
+					{ "left", FireUnsigned(external->regionLeft) },
+					{ "right", FireUnsigned(external->regionRight) },
+					{ "top", FireUnsigned(external->regionTop) } }) },
+				{ "tile_order", FireUnsigned(external->tileOrder) },
+				{ "variant_pipeline", FireBool(external->variantPipeline) },
+				{ "view_mode", Value::String(external->viewportMode) },
+				{ "view_mode_caster_installed", FireBool(external->viewModeCasterInstalled) },
+				{ "xray", FireBool(external->xray) }
+			});
+		}
+		IOptions& globalOptions = GlobalOptions();
 		const Value record = Value::MapValue({
+			{ "animation", Value::MapValue({
+				{ "do_fields", FireBool(animationFields) },
+				{ "invert_fields", FireBool(animationInvertFields) },
+				{ "num_frames", FireUnsigned(animationFrames) },
+				{ "time_end", Value::Float(animationTimeEnd) },
+				{ "time_start", Value::Float(animationTimeStart) } }) },
 			{ "aov", Value::MapValue({ { "channels", Value::ArrayValue(aovs) } }) },
 			{ "camera", Value::MapValue({
 				{ "exposure_compensation_ev", Value::Float(camera ? camera->GetExposureCompensationEV() : 0.0) },
 				{ "exposure_time", Value::Float(camera ? camera->GetExposureTime() : 0.0) },
+				{ "kind", Value::String(cameraKind) },
+				{ "location", Value::ArrayValue(cameraLocation) },
+				{ "matrix", Value::ArrayValue(cameraMatrix) },
 				{ "pixel_rate", Value::Float(camera ? camera->GetPixelRate() : 0.0) },
+				{ "projection", projection },
 				{ "scanning_rate", Value::Float(camera ? camera->GetScanningRate() : 0.0) } }) },
 			{ "clamp", Value::MapValue({
 				{ "direct", Value::Float(p.stability.directClamp) },
@@ -461,6 +565,7 @@ namespace
 				{ "param_a", Value::Float(p.pixelFilter.paramA) },
 				{ "param_b", Value::Float(p.pixelFilter.paramB) },
 				{ "width", Value::Float(p.pixelFilter.width) } }) },
+			{ "external_runtime", externalRuntime },
 			{ "integrator", Value::MapValue({
 				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
 				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },
@@ -501,6 +606,11 @@ namespace
 					{ "two_stage", FireBool(p.sms.twoStage) },
 					{ "use_levenberg_marquardt", FireBool(p.sms.useLevenbergMarquardt) } }) } }) },
 			{ "record_kind", Value::String("resolved_render_configuration_v1") },
+			{ "raster_sequence", Value::MapValue({
+				{ "options", Value::String(globalOptions.ReadString(
+					"raster_sequence_options","").c_str()) },
+				{ "type", Value::Signed(globalOptions.ReadInt("raster_sequence_type",4)) }
+			}) },
 			{ "sampler", Value::MapValue({
 				{ "adaptive", Value::MapValue({
 					{ "max_samples", FireUnsigned(p.adaptive.maxSamples) },
@@ -10412,7 +10522,9 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 	RISECBOR64::Bytes resolvedConfig;
 	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
 		*resolvedParams,activeRasterizerName.c_str(),*pScene,
-		pRasterizer->GetFrameStore(),resolvedConfig)) ) {
+		pRasterizer->GetFrameStore(),nullptr,animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,resolvedConfig)) ) {
 		GlobalLog()->PrintEx(eLog_Error,
 			"Job:: fire render has no canonical resolved configuration");
 		return false;
@@ -10431,20 +10543,42 @@ bool Job::PrepareFireRenderForExternalRasterizer(
 	const bool pathRegularizationEnabled,
 	const bool smsEnabled )
 {
+	FireExternalRenderConfig config;
+	config.oidnDenoise = oidnDenoise;
+	config.radianceClampEnabled = radianceClampEnabled;
+	config.pathRegularizationEnabled = pathRegularizationEnabled;
+	config.smsEnabled = smsEnabled;
+	return PrepareFireRenderForExternalRasterizerResolved(
+		rasterizer,rasterizerKind,config);
+}
+
+bool Job::PrepareFireRenderForExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config )
+{
 	RasterizerParams external;
-	external.oidnDenoise = oidnDenoise;
-	external.stability.directClamp = radianceClampEnabled ? Scalar(1) : Scalar(0);
-	external.stability.filterGlossy = pathRegularizationEnabled ? Scalar(1) : Scalar(0);
-	external.sms.enabled = smsEnabled;
+	external.numPixelSamples = config.samplesPerPixel;
+	external.oidnDenoise = config.oidnDenoise;
+	external.integrateRGB = true;
+	external.stability.directClamp = config.radianceClampEnabled ? Scalar(1) : Scalar(0);
+	external.stability.filterGlossy =
+		config.pathRegularizationEnabled ? Scalar(1) : Scalar(0);
+	external.sms.enabled = config.smsEnabled;
 	external.spectral.nmBegin = Scalar(380);
 	external.spectral.nmEnd = Scalar(780);
+	if( config.variantPipeline ) external.pixelFilter.filter = "box";
 	RISECBOR64::Bytes resolvedConfig;
-	if( !pScene || !BuildResolvedRenderConfig(external,rasterizerKind ? rasterizerKind : "",
-		*pScene,rasterizer ? rasterizer->GetFrameStore() : 0,resolvedConfig) ) return false;
+	if( !pScene || !BuildResolvedRenderConfig(external,
+		rasterizerKind ? rasterizerKind : "",*pScene,
+		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,resolvedConfig) ) return false;
 	return PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
-		false,AutoIntegratorChoice::PT,oidnDenoise,radianceClampEnabled,
-		pathRegularizationEnabled,smsEnabled,resolvedConfig,true);
+		false,AutoIntegratorChoice::PT,config.oidnDenoise,
+		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
+		resolvedConfig,true);
 }
 
 bool Job::PrepareFireRenderFidelityMetadata(

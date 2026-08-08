@@ -412,6 +412,10 @@ namespace RISE
 			bool radianceClampEnabled,
 			bool pathRegularizationEnabled,
 			bool smsEnabled );
+		bool PrepareFireRenderForExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

@@ -614,6 +614,18 @@ int main()
 					std::string("resolved-config schema consumes ")+surface.type+"::"+field );
 			}
 		}
+		const std::string jobPrivHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IJobPriv.h");
+		const std::vector<std::string> externalMembers = members(
+			braceBody(jobPrivHeader,"struct FireExternalRenderConfig"),
+			"FireExternalRenderConfig");
+		const std::string externalWriter = braceBody(jobSource,
+			"bool Job::PrepareFireRenderForExternalRasterizerResolved(");
+		for( const std::string& member : externalMembers ) {
+			Check( configWriter.find("external->"+member) != std::string::npos ||
+				externalWriter.find("config."+member) != std::string::npos,
+				"resolved-config schema consumes FireExternalRenderConfig::"+member );
+		}
 	}
 
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)

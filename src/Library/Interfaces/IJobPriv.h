@@ -34,6 +34,34 @@
 
 namespace RISE
 {
+	struct FireExternalRenderConfig
+	{
+		const ICamera* cameraOverride = nullptr;
+		std::string viewportMode;
+		unsigned int samplesPerPixel = 1;
+		unsigned int previewScale = 1;
+		bool oidnDenoise = false;
+		bool radianceClampEnabled = false;
+		bool pathRegularizationEnabled = false;
+		bool smsEnabled = false;
+		bool regionActive = false;
+		unsigned int regionLeft = 0;
+		unsigned int regionTop = 0;
+		unsigned int regionRight = 0;
+		unsigned int regionBottom = 0;
+		bool xray = false;
+		bool variantPipeline = false;
+		unsigned int maxPathDepth = 0;
+		bool indirectOnly = false;
+		bool clayOverride = false;
+		unsigned int liveSamplesPerPass = 0;
+		unsigned int idleMaxPasses = 0;
+		unsigned int tileOrder = 0;
+		bool progressiveOnIdle = false;
+		bool idleMode = false;
+		bool viewModeCasterInstalled = false;
+	};
+
 	// Forward declarations — these types live in
 	// `src/Library/SceneEditor/` so we keep the include light.  The
 	// getters return raw pointers so this header doesn't have to
@@ -114,6 +142,11 @@ namespace RISE
 			bool radianceClampEnabled,
 			bool pathRegularizationEnabled,
 			bool smsEnabled ) = 0;
+
+		virtual bool PrepareFireRenderForExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config ) = 0;
 	};
 
 

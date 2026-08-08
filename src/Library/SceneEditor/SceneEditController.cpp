@@ -14052,10 +14052,12 @@ void SceneEditController::DoOneRenderPass()
 	// mViewportOverrideCamera only while parked, and we set the helper here.  We
 	// UNCONDITIONALLY set it every pass (override or nullptr), so a stale override
 	// can never leak into a non-free-fly pass.
+	const ICamera* effectiveOverrideCamera = nullptr;
 	if( Implementation::PixelBasedRasterizerHelper* helper =
 			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( activeRast ) )
 	{
 		const ICamera* overrideCam = ( mViewportPoseActive ? mViewportOverrideCamera : nullptr );
+		effectiveOverrideCamera = overrideCam;
 		if( overrideCam )
 		{
 			// Keep the override's raster dims in lock-step with THIS pass's film:
@@ -14078,9 +14080,46 @@ void SceneEditController::DoOneRenderPass()
 	Implementation::FrameStore* fireStore = activeRast->GetFrameStore();
 	const FrameStoreOutput::Metadata priorMetadata = fireStore
 		? fireStore->Meta() : FrameStoreOutput::Metadata();
-	if( !mJob.PrepareFireRenderForExternalRasterizer(activeRast,
+	const Implementation::ViewportRenderMode renderMode =
+		( mCurrentPane == 0 ) ? mViewportRenderMode : mPaneConfigs[mCurrentPane].mode;
+	const Implementation::ViewportRenderModeInfo* renderModeInfo =
+		Implementation::FindViewportRenderModeInfo(renderMode);
+	FireExternalRenderConfig fireConfig;
+	fireConfig.cameraOverride = effectiveOverrideCamera;
+	fireConfig.viewportMode = renderModeInfo ? renderModeInfo->name : "unknown";
+	fireConfig.previewScale = scale;
+	fireConfig.regionActive = pRegion != nullptr;
+	if( pRegion ) {
+		fireConfig.regionLeft = regionRect.left;
+		fireConfig.regionTop = regionRect.top;
+		fireConfig.regionRight = regionRect.right;
+		fireConfig.regionBottom = regionRect.bottom;
+	}
+	fireConfig.variantPipeline = mVariantRasterizer != nullptr;
+	const int effectiveSamples = activeRast->GetSampleCountOverride();
+	if( effectiveSamples > 0 ) {
+		fireConfig.samplesPerPixel = static_cast<unsigned int>(effectiveSamples);
+	}
+	fireConfig.oidnDenoise = mCurrentPassUsesOidn;
+	if( renderModeInfo && fireConfig.variantPipeline ) {
+		fireConfig.maxPathDepth = renderModeInfo->variantMaxBounces;
+		fireConfig.indirectOnly = renderModeInfo->variantIndirectOnly;
+		fireConfig.clayOverride = renderModeInfo->variantClayOverride;
+	}
+	if( mInteractiveImpl && !fireConfig.variantPipeline ) {
+		const Implementation::InteractivePelRasterizer::Config& cfg =
+			mInteractiveImpl->GetConfig();
+		fireConfig.liveSamplesPerPass = cfg.liveSamplesPerPass;
+		fireConfig.idleMaxPasses = cfg.idleMaxPasses;
+		fireConfig.tileOrder = static_cast<unsigned int>(cfg.tileOrder);
+		fireConfig.progressiveOnIdle = cfg.progressiveOnIdle;
+		fireConfig.idleMode = mInteractiveImpl->IsIdleMode();
+		fireConfig.viewModeCasterInstalled = mInteractiveImpl->HasViewModeCaster();
+		fireConfig.xray = mInteractiveImpl->GetXrayView();
+	}
+	if( !mJob.PrepareFireRenderForExternalRasterizerResolved(activeRast,
 		mVariantRasterizer ? "pathtracing_pel_rasterizer" : "interactive_pel_rasterizer",
-		mCurrentPassUsesOidn,false,false,false) ) {
+		fireConfig) ) {
 		if( fireStore ) fireStore->SetMetadata(priorMetadata);
 		return;
 	}
