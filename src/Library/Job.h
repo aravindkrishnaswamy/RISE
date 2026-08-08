@@ -187,6 +187,18 @@ namespace RISE
 		// (typical scene files declare rasterizer BEFORE camera).
 		void PushJobFrameStoreToRasterizers();
 		bool PrepareFireRenderFidelityMetadata( bool publishMetadata = true );
+		bool PrepareFireRenderFidelityMetadata(
+			IRasterizer* rasterizer,
+			const std::string& rasterizerKind,
+			Scalar wavelengthMin,
+			Scalar wavelengthMax,
+			bool useHWSS,
+			AutoIntegratorChoice autoIntegrator,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled,
+			bool publishMetadata );
 
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
@@ -385,6 +397,13 @@ namespace RISE
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
 		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
 		IProgressCallback*			GetProgress() const					{ return pGlobalProgress.load( std::memory_order_acquire ); }
+		bool PrepareFireRenderForExternalRasterizer(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

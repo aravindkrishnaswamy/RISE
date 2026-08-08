@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #ifdef _WIN32
@@ -31,6 +32,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
+#include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/HenyeyGreensteinPhaseFunction.h"
@@ -83,6 +85,15 @@ namespace
 			a.renderReasonCodes == b.renderReasonCodes &&
 			a.activeFireOpticsRecordIds == b.activeFireOpticsRecordIds;
 	}
+
+	class ThrowingFrameObserver : public IRenderObserver
+	{
+	public:
+		void OnFrameComplete( unsigned int, uint64_t ) override
+		{
+			throw std::runtime_error("intentional frame callback failure");
+		}
+	};
 
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
@@ -2307,7 +2318,8 @@ namespace
 		const auto writeScene = [&path](
 			const std::string& rasterizer, const unsigned int nmBegin,
 			const bool useHWSS = false,
-			const char* fidelityMode = "preview" ) {
+			const char* fidelityMode = "preview",
+			const bool unqualifiedConfig = false ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2327,8 +2339,11 @@ namespace
 			if( rasterizer.find("pathtracing_") == 0u ) {
 				output << "max_volume_bounce 1\nprogressive_rendering false\n";
 			}
+			output << (unqualifiedConfig ?
+				"oidn_denoise true\ndirect_clamp 2\nfilter_glossy 0.1\nsms_enabled true\n" :
+				"oidn_denoise false\n");
 			output <<
-				"oidn_denoise false\n}\n\n"
+				"}\n\n"
 				"film\n{\nwidth 1\nheight 1\n}\n\n"
 				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n"
 				"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
@@ -2365,7 +2380,19 @@ namespace
 				"production FrameStore carries sorted preview reasons and record identity" );
 
 			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
-			const uint64_t renderedGeneration = store->Generation();
+			ThrowingFrameObserver throwingObserver;
+			store->AddObserver(&throwingObserver);
+			bool renderThrew = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& ) {
+				renderThrew = true;
+			}
+			store->RemoveObserver(&throwingObserver);
+			Check( renderThrew && SameFrameMetadata(store->Meta(),renderedMetadata),
+				"a throwing render restores the last completed frame metadata" );
+			const uint64_t predictionBaselineGeneration = store->Generation();
 			PluginPhase* predictionPhase = new PluginPhase();
 			InconsistentPredictiveFireMedium* predictedMedium =
 				new InconsistentPredictiveFireMedium(*predictionPhase,true);
@@ -2375,7 +2402,8 @@ namespace
 			const bool acceptedPrediction =
 				job->PredictRasterizationTime(1,&predictedMs,&actualMs);
 			Check( acceptedPrediction && predictedMs != 0xA5A5A5A5u &&
-				actualMs != 0x5A5A5A5Au && store->Generation() == renderedGeneration &&
+				actualMs != 0x5A5A5A5Au &&
+				store->Generation() == predictionBaselineGeneration &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
 				"accepted prediction does not relabel the last completed frame" );
 			Check( job->SetGlobalMedium("fire"),
@@ -2442,6 +2470,30 @@ namespace
 				"a rejected preflight preserves the last completed frame metadata" );
 			Check( !job->SetFireFidelityMode("invented"),
 				"the job rejects an unknown fire fidelity mode" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",true);
+		RISE_CreateJobPriv(&job);
+		const bool configPreviewLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( configPreviewLoaded && job->Rasterize(),
+			"unqualified render controls remain available in preview mode" );
+		if( configPreviewLoaded ) {
+			Implementation::FrameStore* store = job->GetRasterizer()->GetFrameStore();
+			const std::vector<std::string> reasons = store ?
+				store->Meta().renderReasonCodes : std::vector<std::string>();
+			const char* expectedReasons[] = { "oidn_unqualified",
+				"path_regularization_enabled", "radiance_clamp_enabled", "sms_unqualified" };
+			bool hasAll = store != nullptr;
+			for( const char* reason : expectedReasons ) {
+				hasAll = hasAll && std::find(reasons.begin(),reasons.end(),reason) !=
+					reasons.end();
+			}
+			Check( hasAll,
+				"preflight records every active unqualified render control" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
+				"predictive mode rejects every unqualified render control" );
 		}
 		safe_release(job);
 

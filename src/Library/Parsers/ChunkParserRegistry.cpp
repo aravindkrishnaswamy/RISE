@@ -750,6 +750,7 @@ namespace RISE
 				StabilityConfig d;
 				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution (0 disables)"; p.defaultValueHint = to_hint(d.directClamp); }
 				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution (0 disables)";         p.defaultValueHint = to_hint(d.indirectClamp); }
+				{ auto& p = P(); p.name = "filter_glossy";                          p.kind = ValueKind::Double; p.description = "Per-bounce glossy roughness increase (0 disables)";    p.defaultValueHint = to_hint(d.filterGlossy); }
 				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = to_hint(d.rrMinDepth); }
 				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = to_hint(d.rrThreshold); }
 				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth (UINT_MAX = unlimited)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
@@ -8288,6 +8289,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -8421,6 +8423,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -8537,6 +8540,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
@@ -8643,6 +8647,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
@@ -8780,6 +8785,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -8904,6 +8910,7 @@ namespace RISE
 						StabilityConfig stabilityConfig;
 						if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 						if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+						if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 						if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 						if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 						if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -9033,6 +9040,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -9163,6 +9171,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");

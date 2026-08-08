@@ -1412,6 +1412,7 @@ bool RenderEngine::saveAs(const QString& path,
     EncodeOpts opts;
     opts.colorSpace = eColorSpace_sRGB;
     if (enc->SupportsHDR()) {
+		opts.colorSpace    = eColorSpace_Rec709RGB_Linear;
         opts.bpp           = 32;
         opts.viewTransform = ViewTransform::Identity();
     } else {

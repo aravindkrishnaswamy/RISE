@@ -4275,6 +4275,9 @@ namespace RISE
 		// during-motion adaptation: the refinement loop is already
 		// the authority on scale during refinement.
 		bool                        mInRefinementPass;
+		// Render-thread register populated alongside the per-pass denoise
+		// configuration and consumed by fire-fidelity preflight.
+		bool                        mCurrentPassUsesOidn{ false };
 
 		// Polish-pass state machine.  After OnPointerUp, we run the
 		// regular 1-SPP scale=1 final pass, then chain a 4-SPP polish

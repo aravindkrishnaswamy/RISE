@@ -3500,17 +3500,15 @@ bool SceneEditController::RequestProductionRender()
 			mJob, this, String( "legacy_production_render" ),
 			/*guiProgress=*/nullptr,
 			[&]() -> bool {
-				IRasterizer* prod = mJob.GetRasterizer();
 				const IScene* scene = mJob.GetScene();
-				if( !prod || !scene ) return false;
+				if( !mJob.GetRasterizer() || !scene ) return false;
 
 				// Run a FULL SetSceneTime(t) at the most recently scrubbed
 				// time before invoking the production rasterizer. The preview
 				// path deliberately skips photon-map regeneration.
 				scene->SetSceneTime( mEditor.LastSceneTime() );
 				scene->GetObjects()->PrepareForRendering();
-				prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
-				return true;
+				return mJob.Rasterize();
 			} );
 	}
 	catch( const std::exception& e )
@@ -8274,6 +8272,10 @@ void SceneEditController::RenderLoop()
 					|| mVariantInteractionAdmissionPending;
 				thisPassVariantConfigured = Implementation::ConfigureBeautyVariantPass(
 					*mVariantRasterizer, mode, liveGesture );
+				const Implementation::ViewportRenderModeInfo* variantInfo =
+					Implementation::FindViewportRenderModeInfo(mode);
+				mCurrentPassUsesOidn = thisPassVariantConfigured && !liveGesture &&
+					variantInfo && variantInfo->wantsDenoise;
 				thisPassVariantMode = mode;
 				thisPassVariantLiveGesture = liveGesture;
 			} else {
@@ -8291,6 +8293,8 @@ void SceneEditController::RenderLoop()
 				}
 				mInteractiveImpl->SetPreviewDenoiseMode( denoiseMode );
 				mInteractiveImpl->SetSampleCount( isPolishPass ? kPolishSampleCount : 1 );
+				mCurrentPassUsesOidn = denoiseMode !=
+					Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
 			}
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
@@ -14071,8 +14075,23 @@ void SceneEditController::DoOneRenderPass()
 		helper->SetViewportCameraOverride( overrideCam );
 	}
 
+	Implementation::FrameStore* fireStore = activeRast->GetFrameStore();
+	const FrameStoreOutput::Metadata priorMetadata = fireStore
+		? fireStore->Meta() : FrameStoreOutput::Metadata();
+	if( !mJob.PrepareFireRenderForExternalRasterizer(activeRast,
+		mVariantRasterizer ? "pathtracing_pel_rasterizer" : "interactive_pel_rasterizer",
+		mCurrentPassUsesOidn,false,false,false) ) {
+		if( fireStore ) fireStore->SetMetadata(priorMetadata);
+		return;
+	}
 	const auto t0 = std::chrono::steady_clock::now();
-	activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
+	try {
+		activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
+	}
+	catch( ... ) {
+		if( fireStore ) fireStore->SetMetadata(priorMetadata);
+		throw;
+	}
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 
 	// A completed indirect-only quantum may carry a camera-vertex Direct

@@ -531,11 +531,13 @@ int main()
 			source.erase(std::remove_if(source.begin(),source.end(),[]( const char c ) {
 				return std::isspace(static_cast<unsigned char>(c)) != 0;
 			}),source.end());
-			Check( source.find(
-				"if(enc->SupportsHDR()){opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}")
+			const std::string hdrBranch = i == 2 ?
+				"if(enc->SupportsHDR()){opts.colorSpace=RISE::eColorSpace_Rec709RGB_Linear;opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}" :
+				"if(enc->SupportsHDR()){opts.colorSpace=eColorSpace_Rec709RGB_Linear;opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}";
+			Check( source.find(hdrBranch)
 				!= std::string::npos,
 				std::string(guiNames[i])+
-				" GUI SaveAs requests FP32 from HDR encoders" );
+				" GUI SaveAs requests linear FP32 from HDR encoders" );
 		}
 	}
 

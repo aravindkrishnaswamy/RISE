@@ -100,6 +100,20 @@ namespace RISE
 		// ExchangeProgress instead for their capture).  Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
 		virtual IProgressCallback*			GetProgress() const = 0;
+
+		//! Apply the same fire-fidelity preflight used by Job::Rasterize to a
+		//! controller-owned rasterizer before it launches workers.  The scene
+		//! editor owns interactive and BeautyVariant rasterizers outside Job's
+		//! registry, so their resolved config is supplied explicitly.
+		//!
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual bool PrepareFireRenderForExternalRasterizer(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled ) = 0;
 	};
 
 

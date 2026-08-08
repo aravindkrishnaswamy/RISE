@@ -9643,6 +9643,27 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 	return pSeq;
 }
 
+namespace
+{
+	class FrameMetadataRollback
+	{
+	public:
+		explicit FrameMetadataRollback( RISE::Implementation::FrameStore* store )
+			: store_(store), original_(store ? store->Meta() : RISE::FrameStoreOutput::Metadata()),
+			  committed_(false) {}
+		~FrameMetadataRollback()
+		{
+			if( store_ && !committed_ ) store_->SetMetadata(original_);
+		}
+		void Commit() { committed_ = true; }
+
+	private:
+		RISE::Implementation::FrameStore* store_;
+		RISE::FrameStoreOutput::Metadata original_;
+		bool committed_;
+	};
+}
+
 bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 {
 	if( !pScene || !pRasterizer ) {
@@ -9651,11 +9672,59 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 
 	Scalar wavelengthMin = 380.0;
 	Scalar wavelengthMax = 780.0;
+	bool useHWSS = false;
+	AutoIntegratorChoice autoIntegrator = AutoIntegratorChoice::Auto;
+	bool oidnDenoise = false;
+	bool radianceClampEnabled = false;
+	bool pathRegularizationEnabled = false;
+	bool smsEnabled = false;
 	const RasterizerRegistry::const_iterator active =
 		rasterizerRegistry.find(activeRasterizerName);
 	if( active != rasterizerRegistry.end() ) {
 		wavelengthMin = active->second.params.spectral.nmBegin;
 		wavelengthMax = active->second.params.spectral.nmEnd;
+		useHWSS = active->second.params.spectral.useHWSS;
+		autoIntegrator = active->second.params.autoIntegrator;
+		oidnDenoise = active->second.params.oidnDenoise;
+		radianceClampEnabled = active->second.params.stability.directClamp > Scalar(0) ||
+			active->second.params.stability.indirectClamp > Scalar(0);
+		pathRegularizationEnabled = active->second.params.stability.filterGlossy > Scalar(0);
+		smsEnabled = active->second.params.sms.enabled;
+	}
+	return PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
+		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
+		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,publishMetadata);
+}
+
+bool Job::PrepareFireRenderForExternalRasterizer(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled )
+{
+	return PrepareFireRenderFidelityMetadata(rasterizer,
+		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
+		false,AutoIntegratorChoice::PT,oidnDenoise,radianceClampEnabled,
+		pathRegularizationEnabled,smsEnabled,true);
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	IRasterizer* rasterizer,
+	const std::string& rasterizerKind,
+	const Scalar wavelengthMin,
+	const Scalar wavelengthMax,
+	const bool useHWSS,
+	const AutoIntegratorChoice autoIntegrator,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled,
+	const bool publishMetadata )
+{
+	if( !pScene || !rasterizer ) {
+		return false;
 	}
 
 	std::set<const IMedium*> activeMedia;
@@ -9733,19 +9802,18 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 	bool unsupportedIntegrator = false;
 	bool transportPreview = false;
 	if( hasFireMedia ) {
-		const std::string& kind = activeRasterizerName;
+		const std::string& kind = rasterizerKind;
 		unsupportedIntegrator =
 			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||
 			kind == "vcm_pel_rasterizer" || kind == "vcm_spectral_rasterizer" ||
 			kind == "mlt_rasterizer" || kind == "mlt_spectral_rasterizer";
-		if( active != rasterizerRegistry.end() &&
-			(kind == "auto_rasterizer" || kind == "auto_spectral_rasterizer") &&
-			(active->second.params.autoIntegrator == AutoIntegratorChoice::BDPT ||
-			 active->second.params.autoIntegrator == AutoIntegratorChoice::VCM) ) {
+		if( (kind == "auto_rasterizer" || kind == "auto_spectral_rasterizer") &&
+			(autoIntegrator == AutoIntegratorChoice::BDPT ||
+			 autoIntegrator == AutoIntegratorChoice::VCM) ) {
 			unsupportedIntegrator = true;
 		}
-		if( pRasterizer->IsAutoDispatcher() ) {
-			const char* resolved = pRasterizer->ResolvedIntegratorName();
+		if( rasterizer->IsAutoDispatcher() ) {
+			const char* resolved = rasterizer->ResolvedIntegratorName();
 			unsupportedIntegrator = unsupportedIntegrator || (resolved &&
 				(std::strcmp(resolved,"bdpt") == 0 || std::strcmp(resolved,"vcm") == 0));
 		}
@@ -9753,6 +9821,7 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 			reasons.insert("unsupported_integrator_for_fire_media");
 		}
 		const bool pelTransport =
+			kind == "interactive_pel_rasterizer" ||
 			kind == "pixelpel_rasterizer" || kind == "pathtracing_pel_rasterizer" ||
 			kind == "auto_rasterizer" || kind == "bdpt_pel_rasterizer" ||
 			kind == "vcm_pel_rasterizer" || kind == "mlt_rasterizer";
@@ -9766,11 +9835,14 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 			kind == "auto_spectral_rasterizer" ||
 			kind == "bdpt_spectral_rasterizer" ||
 			kind == "vcm_spectral_rasterizer" || kind == "mlt_spectral_rasterizer";
-		if( spectralTransport && active != rasterizerRegistry.end() &&
-			active->second.params.spectral.useHWSS ) {
+		if( spectralTransport && useHWSS ) {
 			reasons.insert("hwss_transport");
 			transportPreview = true;
 		}
+		if( oidnDenoise ) reasons.insert("oidn_unqualified");
+		if( radianceClampEnabled ) reasons.insert("radiance_clamp_enabled");
+		if( pathRegularizationEnabled ) reasons.insert("path_regularization_enabled");
+		if( smsEnabled ) reasons.insert("sms_unqualified");
 	}
 
 	const bool missingPreviewRequest = hasFireMedia && !m_firePredictiveRequested &&
@@ -9792,7 +9864,7 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 		return false;
 	}
 	if( publishMetadata ) {
-		FrameStore* store = pRasterizer->GetFrameStore();
+		FrameStore* store = rasterizer->GetFrameStore();
 		if( !store ) return true;
 		store->SetFireFidelityMetadata(status,
 			std::vector<std::string>(reasons.begin(),reasons.end()),
@@ -9806,6 +9878,7 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 bool Job::Rasterize(
 	)
 {
+	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
@@ -9847,6 +9920,7 @@ bool Job::Rasterize(
 		throw;
 	}
 	safe_release( pSeq );
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -9861,6 +9935,7 @@ bool Job::RasterizeAnimation(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
+	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
@@ -9882,7 +9957,16 @@ bool Job::RasterizeAnimation(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end,
+			num_frames, do_fields, invert_fields, 0, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	safe_release( pSeq );
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -9896,6 +9980,7 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
+	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
 	}
@@ -9946,6 +10031,7 @@ bool Job::RasterizeRegion(
 		throw;
 	}
 	safe_release( pSeq );
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -12402,6 +12488,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
+	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
@@ -12426,8 +12513,16 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
-	pRasterizer->RasterizeSceneAnimation( *pScene,
-		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene,
+			aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	safe_release( pSeq );
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -12438,6 +12533,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
+	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
@@ -12462,8 +12558,16 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
-	pRasterizer->RasterizeSceneAnimation( *pScene,
-		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene,
+			aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	safe_release( pSeq );
+	metadataRollback.Commit();
 
 	return true;
 }
