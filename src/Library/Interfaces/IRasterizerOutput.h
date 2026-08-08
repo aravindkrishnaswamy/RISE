@@ -108,6 +108,12 @@ namespace RISE
 		//! must be thread-safe internally; the rasterizer holds no
 		//! lock during this dispatch.
 		virtual void OnRasterizerFrameStoreChanged( Implementation::FrameStore* /*framestore*/ ) {}
+
+		//! Fire-output preflight surface. Outputs that author artifacts opt in;
+		//! the Job rejects an unavailable route before render workers launch.
+		virtual bool DeclaresFireArtifactRoute() const { return false; }
+		virtual bool ProvidesFirePrimaryArtifactRoute() const { return false; }
+		virtual bool IsFireArtifactRouteAvailable() const { return true; }
 	};
 }
 

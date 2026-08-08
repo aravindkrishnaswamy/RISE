@@ -11,6 +11,9 @@
 
 #include "Interfaces/IRasterizerOutput.h"
 #include "Utilities/Reference.h"
+#include "Rendering/FileEncoderObserver.h"
+
+#include <mutex>
 
 #ifdef __OBJC__
 @class AVAssetWriter;
@@ -36,9 +39,14 @@ public:
     void OutputImage(const RISE::IRasterImage& pImage,
                      const RISE::Rect* pRegion,
                      const unsigned int frame) override;
+    void OnRasterizerFrameStoreChanged(
+        RISE::Implementation::FrameStore* framestore) override;
+    bool DeclaresFireArtifactRoute() const override { return true; }
+    bool ProvidesFirePrimaryArtifactRoute() const override { return true; }
+    bool IsFireArtifactRouteAvailable() const override { return _routeAvailable; }
 
     /// Flush remaining frames and close the movie file.
-    void finalize();
+    bool finalize(bool publish = true);
 
 private:
 #ifdef __OBJC__
@@ -46,15 +54,29 @@ private:
     AVAssetWriterInput* _input;
     AVAssetWriterInputPixelBufferAdaptor* _adaptor;
     NSString* _outputPath;
+    NSString* _writerPath;
+    NSString* _primaryPattern;
 #else
     void* _writer;
     void* _input;
     void* _adaptor;
     void* _outputPath;
+    void* _writerPath;
+    void* _primaryPattern;
 #endif
+    RISE::Implementation::FrameStore* _frameStore;
+    mutable std::mutex _frameStoreMutex;
+    RISE::IFrameEncoder* _primaryEncoder;
+    RISE::FrameStoreOutput::Metadata _fireMetadata;
+    std::vector<RISE::Implementation::FireFramePrimary> _framePrimaries;
     int _fps;
     bool _started;
     bool _finalized;
+    bool _failed;
+    bool _succeeded;
+    bool _routeAvailable;
+    bool _fireRender;
+    bool _metadataCaptured;
     int _width;
     int _height;
     unsigned int _framesReceived;

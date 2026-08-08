@@ -430,6 +430,118 @@ namespace
 		return true;
 	}
 
+	bool IsSHA256Hex( const std::string& value )
+	{
+		if( value.size() != 64u ) return false;
+		for( std::size_t i=0; i<value.size(); ++i ) {
+			if( !((value[i] >= '0' && value[i] <= '9') ||
+				(value[i] >= 'a' && value[i] <= 'f')) ) return false;
+		}
+		return true;
+	}
+
+	bool BuildFireFrameSequenceProvenance(
+		const FrameStoreOutput::Metadata& metadata,
+		const std::string& artifactSha256,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int framesPerSecond,
+		const std::vector<FireFramePrimary>& frames,
+		RISECBOR64::Bytes& sidecar,
+		std::string& error )
+	{
+		using RISECBOR64::Value;
+		if( metadata.renderFidelityStatus != "predictive" &&
+			metadata.renderFidelityStatus != "preview" ) {
+			error = "movie has no predictive or preview fire-render status";
+			return false;
+		}
+		if( frames.empty() || framesPerSecond == 0u || width == 0u || height == 0u ) {
+			error = "movie frame-sequence dimensions, rate, or links are empty";
+			return false;
+		}
+		Value::Values links;
+		links.reserve(frames.size());
+		for( std::size_t i=0; i<frames.size(); ++i ) {
+			if( (i && frames[i].frameIndex != frames[i-1u].frameIndex+1u) ||
+				!IsSHA256Hex(frames[i].provenanceId) ||
+				!IsSHA256Hex(frames[i].artifactSha256) ) {
+				error = "movie primary links are not contiguous or complete SHA-256 identities";
+				return false;
+			}
+			links.push_back(Value::MapValue({
+				{ "artifact_sha256", Value::String(frames[i].artifactSha256) },
+				{ "frame_index", Value::Unsigned(frames[i].frameIndex) },
+				{ "provenance_id", Value::String(frames[i].provenanceId) }
+			}));
+		}
+
+		Value resolvedConfig;
+		Value rendererBuild;
+		if( metadata.resolvedRenderConfigCoreV1.empty() ||
+			!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
+				resolvedConfig,&error) || resolvedConfig.GetType() != Value::Map ) {
+			error = "resolved render configuration is unavailable or noncanonical: "+error;
+			return false;
+		}
+		if( resolvedConfig.Find("output") ) {
+			error = "resolved render configuration core already contains output settings";
+			return false;
+		}
+		if( metadata.rendererBuildV1.empty() ||
+			!RISECBOR64::DecodeCanonical(metadata.rendererBuildV1,rendererBuild,&error) ||
+			rendererBuild.GetType() != Value::Map ||
+			!IsSHA256Hex(metadata.rendererBuildId) ||
+			metadata.rendererBuildId != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
+			error = "renderer build identity is unavailable or noncanonical";
+			return false;
+		}
+		Value::Members resolvedMembers = resolvedConfig.GetMap();
+		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
+			{ "bits_per_channel", Value::Unsigned(12u) },
+			{ "codec", Value::String("apple_prores_4444") },
+			{ "color_space", Value::String("rec2020_pq") },
+			{ "display_transform", Value::String("rec709_linear_to_rec2020_pq") },
+			{ "first_frame_index", Value::Unsigned(frames.front().frameIndex) },
+			{ "format", Value::String("MOV") },
+			{ "frame_count", Value::Unsigned(frames.size()) },
+			{ "frames_per_second", Value::Unsigned(framesPerSecond) },
+			{ "height", Value::Unsigned(height) },
+			{ "width", Value::Unsigned(width) }
+		})));
+		const Value finalizedConfig = Value::MapValue(resolvedMembers);
+		RISECBOR64::Bytes finalizedConfigBytes;
+		if( !RISECBOR64::Encode(finalizedConfig,finalizedConfigBytes,&error) ) return false;
+
+		const Value payload = Value::MapValue({
+			{ "active_fire_media", ActiveFireMediaArray(metadata.activeFireMedia) },
+			{ "active_fire_optics_record_ids", TextArray(metadata.activeFireOpticsRecordIds) },
+			{ "artifact_fidelity", Value::String("display_derivative") },
+			{ "artifact_reason_codes", TextArray({
+				"display_transform_enabled","integer_output","lossy_output" }) },
+			{ "artifact_sha256", Value::String(artifactSha256) },
+			{ "derivation_kind", Value::String("frame_sequence") },
+			{ "derived_from_frames", Value::ArrayValue(links) },
+			{ "derived_from_primary", Value() },
+			{ "record_kind", Value::String("fire_output_provenance") },
+			{ "render_fidelity_status", Value::String(metadata.renderFidelityStatus) },
+			{ "render_reason_codes", TextArray(metadata.renderReasonCodes) },
+			{ "renderer_build_id", Value::String(metadata.rendererBuildId) },
+			{ "renderer_build_v1", rendererBuild },
+			{ "resolved_render_configuration_id", Value::String(
+				RISECBOR64::SHA256Hex(finalizedConfigBytes)) },
+			{ "resolved_render_configuration_v1", finalizedConfig },
+			{ "schema_version", Value::Unsigned(1u) }
+		});
+		RISECBOR64::Bytes payloadBytes;
+		if( !RISECBOR64::Encode(payload,payloadBytes,&error) ) return false;
+		const Value envelope = Value::MapValue({
+			{ "payload", payload },
+			{ "provenance_id", Value::String(RISECBOR64::SHA256Hex(payloadBytes)) }
+		});
+		return RISECBOR64::Encode(envelope,sidecar,&error);
+	}
+
 	bool WriteClosedFile(
 		const std::string& filename,
 		const RISECBOR64::Bytes& bytes,
@@ -699,6 +811,79 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 		error = "EXR fire-provenance attributes do not match the authoritative sidecar";
 		return false;
 	}
+	return true;
+}
+
+bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
+	const FrameStoreOutput::Metadata& metadata,
+	const std::string& closedTemporaryArtifactFilename,
+	const std::string& artifactFilename,
+	const unsigned int width,
+	const unsigned int height,
+	const unsigned int framesPerSecond,
+	const unsigned int encodedFrameCount,
+	const std::vector<FireFramePrimary>& frames,
+	std::string& error )
+{
+	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
+	error.clear();
+	if( encodedFrameCount != frames.size() ) {
+		error = "encoded movie frame count does not match the primary-link array";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	RISECBOR64::Bytes artifactBytes;
+	if( !ReadArtifact(closedTemporaryArtifactFilename.c_str(),artifactBytes) ||
+		artifactBytes.empty() ) {
+		error = "closed temporary movie is missing or empty";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	RISECBOR64::Bytes sidecarBytes;
+	if( !BuildFireFrameSequenceProvenance(metadata,
+		RISECBOR64::SHA256Hex(artifactBytes),width,height,framesPerSecond,
+		frames,sidecarBytes,error) ) {
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+
+	const std::string sidecarFilename = artifactFilename+".provenance.cbor";
+	const std::string sidecarTemporary = UniqueSibling(sidecarFilename,"sidecar");
+	if( !WriteClosedFile(sidecarTemporary,sidecarBytes,error) ) {
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		std::remove(sidecarTemporary.c_str());
+		return false;
+	}
+	const std::string artifactBackup = UniqueSibling(artifactFilename,"artifact-backup");
+	const std::string sidecarBackup = UniqueSibling(sidecarFilename,"sidecar-backup");
+	bool movedArtifact = false;
+	bool movedSidecar = false;
+	if( !MoveExistingToBackup(artifactFilename,artifactBackup,movedArtifact,error) ||
+		!MoveExistingToBackup(sidecarFilename,sidecarBackup,movedSidecar,error) ) {
+		RestoreBackup(artifactFilename,artifactBackup,movedArtifact);
+		RestoreBackup(sidecarFilename,sidecarBackup,movedSidecar);
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		std::remove(sidecarTemporary.c_str());
+		return false;
+	}
+	if( std::rename(sidecarTemporary.c_str(),sidecarFilename.c_str()) != 0 ) {
+		RestoreBackup(artifactFilename,artifactBackup,movedArtifact);
+		RestoreBackup(sidecarFilename,sidecarBackup,movedSidecar);
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		std::remove(sidecarTemporary.c_str());
+		error = "could not commit the movie provenance sidecar";
+		return false;
+	}
+	if( std::rename(closedTemporaryArtifactFilename.c_str(),artifactFilename.c_str()) != 0 ) {
+		std::remove(sidecarFilename.c_str());
+		RestoreBackup(artifactFilename,artifactBackup,movedArtifact);
+		RestoreBackup(sidecarFilename,sidecarBackup,movedSidecar);
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		error = "could not commit the movie artifact";
+		return false;
+	}
+	std::remove(artifactBackup.c_str());
+	std::remove(sidecarBackup.c_str());
 	return true;
 }
 

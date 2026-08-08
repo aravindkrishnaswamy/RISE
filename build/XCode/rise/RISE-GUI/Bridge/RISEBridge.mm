@@ -1472,10 +1472,10 @@ private:
             BOOL result = NO;
             try {
                 result = job->RasterizeAnimationUsingOptions() ? YES : NO;
-                if (movieOutput) movieOutput->finalize();
+                if (movieOutput && !movieOutput->finalize(result == YES)) result = NO;
             } catch (...) {
                 if (movieOutput) {
-                    try { movieOutput->finalize(); } catch (...) {}
+                    try { movieOutput->finalize(false); } catch (...) {}
                 }
                 rasterizer->FreeRasterizerOutputs();
                 self->_productionVFSAttachedToRasterizer = NO;

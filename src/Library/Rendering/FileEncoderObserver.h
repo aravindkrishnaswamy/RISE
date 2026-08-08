@@ -39,6 +39,13 @@ namespace RISE
 	{
 		class FrameStore;
 
+		struct FireFramePrimary
+		{
+			unsigned int frameIndex = 0;
+			std::string provenanceId;
+			std::string artifactSha256;
+		};
+
 		//! Encode to temporary files and publish the artifact only after its
 		//! required fire-provenance sidecar has been finalized.  On failure no
 		//! artifact remains without its matching sidecar.
@@ -47,6 +54,21 @@ namespace RISE
 			IFrameEncoder& encoder,
 			const EncodeOpts& opts,
 			const std::string& artifactFilename,
+			std::string& error
+			);
+
+		//! Publish an already-closed display movie and its authoritative
+		//! frame-sequence provenance sidecar as one artifact transaction.
+		//! The temporary movie is consumed on success and removed on failure.
+		bool PublishFireFrameSequenceFileTransaction(
+			const FrameStoreOutput::Metadata& metadata,
+			const std::string& closedTemporaryArtifactFilename,
+			const std::string& artifactFilename,
+			unsigned int width,
+			unsigned int height,
+			unsigned int framesPerSecond,
+			unsigned int encodedFrameCount,
+			const std::vector<FireFramePrimary>& frames,
 			std::string& error
 			);
 

@@ -10777,13 +10777,14 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			bool sawFileOutput = false;
 			bool sawPrimary = false;
 			bool derivativeBeforePrimary = false;
+			bool unavailableRoute = false;
 			bool operator()( const IRasterizerOutput& output ) override
 			{
-				const FileRasterizerOutput* file =
-					dynamic_cast<const FileRasterizerOutput*>(&output);
-				if( !file ) return true;
+				if( !output.DeclaresFireArtifactRoute() ) return true;
 				sawFileOutput = true;
-				if( file->IsFirePrimaryArtifactRoute() ) {
+				unavailableRoute = unavailableRoute ||
+					!output.IsFireArtifactRouteAvailable();
+				if( output.ProvidesFirePrimaryArtifactRoute() ) {
 					sawPrimary = true;
 				} else if( !sawPrimary ) {
 					derivativeBeforePrimary = true;
@@ -10792,7 +10793,8 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			}
 		} routes;
 		rasterizer->EnumerateRasterizerOutputs(routes);
-		if( routes.sawFileOutput && (!routes.sawPrimary || routes.derivativeBeforePrimary) ) {
+		if( routes.sawFileOutput && (routes.unavailableRoute || !routes.sawPrimary ||
+			routes.derivativeBeforePrimary) ) {
 			invalidFidelityMetadata = true;
 			reasons.insert("output_provenance_unavailable");
 		}

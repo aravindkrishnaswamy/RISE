@@ -15,6 +15,10 @@
 
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/ILog.h"
+#include "Rendering/FrameEncoders.h"
+
+#include <memory>
+#include <stdexcept>
 
 // Note: do NOT use "using namespace RISE;" here — RISE::Rect conflicts
 // with the macOS Carbon Rect type pulled in by AVFoundation headers.
@@ -57,26 +61,97 @@ MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
     , _input(nil)
     , _adaptor(nil)
     , _outputPath([outputPath copy])
+    , _writerPath(nil)
+    , _primaryPattern(nil)
+    , _frameStore(nullptr)
+    , _primaryEncoder(RISE::Implementation::FrameEncoderRegistry::Get()
+        .AcquireByFormatName("EXR"))
     , _fps(fps)
     , _started(false)
     , _finalized(false)
+    , _failed(false)
+    , _succeeded(false)
+    , _routeAvailable(false)
+    , _fireRender(false)
+    , _metadataCaptured(false)
     , _width(0)
     , _height(0)
     , _framesReceived(0)
 {
+    NSString* token = [[NSUUID UUID] UUIDString];
+    _writerPath = [[NSString stringWithFormat:@"%@.rise-tmp.movie.%@",
+        _outputPath, token] copy];
+    _primaryPattern = [[NSString stringWithFormat:@"%@.fire-primary-%@.frame",
+        [_outputPath stringByDeletingPathExtension], token] copy];
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL parentIsDirectory = NO;
+    BOOL artifactIsDirectory = NO;
+    BOOL sidecarIsDirectory = NO;
+    NSString* parent = [_outputPath stringByDeletingLastPathComponent];
+    NSString* sidecar = [_outputPath stringByAppendingString:@".provenance.cbor"];
+    const BOOL parentExists = [fm fileExistsAtPath:parent isDirectory:&parentIsDirectory];
+    [fm fileExistsAtPath:_outputPath isDirectory:&artifactIsDirectory];
+    [fm fileExistsAtPath:sidecar isDirectory:&sidecarIsDirectory];
+    const BOOL probeCreated = parentExists && parentIsDirectory &&
+        !artifactIsDirectory && !sidecarIsDirectory && _fps > 0 &&
+        [fm createFileAtPath:_writerPath contents:[NSData data] attributes:nil];
+    if (probeCreated) [fm removeItemAtPath:_writerPath error:nil];
+    _routeAvailable = _primaryEncoder != nullptr && probeCreated;
 }
 
 MovieRasterizerOutput::~MovieRasterizerOutput()
 {
     if (!_finalized) {
-        finalize();
+        finalize(false);
     }
+    if (_primaryEncoder) _primaryEncoder->release();
+    std::lock_guard<std::mutex> lock(_frameStoreMutex);
+    if (_frameStore) _frameStore->release();
 }
 
 void MovieRasterizerOutput::OutputIntermediateImage(
     const RISE::IRasterImage& /*pImage*/, const RISE::Rect* /*pRegion*/)
 {
     // No-op: we only want complete frames.
+}
+
+void MovieRasterizerOutput::OnRasterizerFrameStoreChanged(
+    RISE::Implementation::FrameStore* framestore)
+{
+    if (framestore) framestore->addref();
+    std::lock_guard<std::mutex> lock(_frameStoreMutex);
+    if (_frameStore) _frameStore->release();
+    _frameStore = framestore;
+}
+
+static bool SameFireMedium(
+    const RISE::FrameStoreOutput::ActiveFireMedium& lhs,
+    const RISE::FrameStoreOutput::ActiveFireMedium& rhs)
+{
+    return lhs.mediaKind == rhs.mediaKind &&
+        lhs.managerName == rhs.managerName &&
+        lhs.bindingKind == rhs.bindingKind &&
+        lhs.bindingOwner == rhs.bindingOwner &&
+        lhs.authoredConfigDigest == rhs.authoredConfigDigest &&
+        lhs.opticalRecordIds == rhs.opticalRecordIds;
+}
+
+static bool SameFireRenderIdentity(
+    const RISE::FrameStoreOutput::Metadata& lhs,
+    const RISE::FrameStoreOutput::Metadata& rhs)
+{
+    if (lhs.renderFidelityStatus != rhs.renderFidelityStatus ||
+        lhs.renderReasonCodes != rhs.renderReasonCodes ||
+        lhs.activeFireOpticsRecordIds != rhs.activeFireOpticsRecordIds ||
+        lhs.resolvedRenderConfigCoreV1 != rhs.resolvedRenderConfigCoreV1 ||
+        lhs.rendererBuildV1 != rhs.rendererBuildV1 ||
+        lhs.rendererBuildId != rhs.rendererBuildId ||
+        lhs.activeFireMedia.size() != rhs.activeFireMedia.size()) return false;
+    for (std::size_t i = 0; i < lhs.activeFireMedia.size(); ++i) {
+        if (!SameFireMedium(lhs.activeFireMedia[i], rhs.activeFireMedia[i])) return false;
+    }
+    return true;
 }
 
 bool MovieRasterizerOutput::setupWriter(int width, int height)
@@ -91,8 +166,9 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
             width, height, _width, _height);
     }
 
-    // Remove existing file if present
-    NSURL* fileURL = [NSURL fileURLWithPath:_outputPath];
+    // The writer targets a unique sibling. The public MOV path is published
+    // only after AVFoundation closes it and the sidecar is ready.
+    NSURL* fileURL = [NSURL fileURLWithPath:_writerPath];
     [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
 
     NSError* error = nil;
@@ -161,7 +237,7 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
 
     RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
         "MovieRasterizerOutput:: Writing %dx%d ProRes 4444 (HDR10, PQ, Rec.2020) video to '%s'",
-        width, height, [_outputPath UTF8String]);
+        width, height, [_writerPath UTF8String]);
 
     return true;
 }
@@ -178,11 +254,98 @@ void MovieRasterizerOutput::OutputImage(
     int imgW = (int)pImage.GetWidth();
     int imgH = (int)pImage.GetHeight();
 
+    RISE::Implementation::FrameStore* frameStore = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(_frameStoreMutex);
+        frameStore = _frameStore;
+        if (frameStore) frameStore->addref();
+    }
+    struct StoreRelease
+    {
+        void operator()(RISE::Implementation::FrameStore* store) const
+        {
+            if (store) store->release();
+        }
+    };
+    std::unique_ptr<RISE::Implementation::FrameStore,StoreRelease>
+        frameStoreSnapshot(frameStore);
+    RISE::FrameStoreOutput::Metadata metadata;
+    if (frameStore) metadata = frameStore->Meta();
+    const bool isFireFrame = !metadata.renderFidelityStatus.empty();
+    if (_framesReceived == 0u) {
+        _fireRender = isFireFrame;
+    } else if (_fireRender != isFireFrame) {
+        _failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: fire fidelity changed within movie");
+    }
+
+    if (_fireRender) {
+        if (!frameStore || !_primaryEncoder) {
+            _failed = true;
+            RISE::GlobalLog()->PrintEasyError(
+                "MovieRasterizerOutput:: output_provenance_unavailable: "
+                "canonical FrameStore or FP32 EXR encoder is unavailable");
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary encoder unavailable");
+        }
+        if (_metadataCaptured && !SameFireRenderIdentity(_fireMetadata, metadata)) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: fire render identity changed within movie");
+        }
+        if (!_framePrimaries.empty() &&
+            frame != _framePrimaries.back().frameIndex + 1u) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: movie frame indices are not contiguous");
+        }
+        if (!_metadataCaptured) {
+            _fireMetadata = metadata;
+            _metadataCaptured = true;
+        }
+
+        RISE::EncodeOpts primaryOpts;
+        primaryOpts.colorSpace = RISE::eColorSpace_Rec709RGB_Linear;
+        primaryOpts.bpp = 32u;
+        primaryOpts.exrCompression = RISE::eExrCompression_Piz;
+        primaryOpts.exrWithAlpha = true;
+        primaryOpts.viewTransform = RISE::FrameStoreOutput::ViewTransform::Identity();
+        primaryOpts.frame = frame;
+        NSString* primaryPath = [NSString stringWithFormat:@"%@%04u.exr",
+            _primaryPattern, frame];
+        std::string primaryError;
+        if (!RISE::Implementation::EncodeFrameStoreFileTransaction(
+            *frameStore, *_primaryEncoder, primaryOpts,
+            [primaryPath UTF8String], primaryError)) {
+            _failed = true;
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                "MovieRasterizerOutput:: output_provenance_unavailable for frame %u: %s",
+                frame, primaryError.c_str());
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation frame primary failed");
+        }
+        const RISE::FrameStoreOutput::Metadata linked = frameStore->Meta();
+        if (linked.primaryProvenanceId.empty() ||
+            linked.primaryArtifactSha256.empty() ||
+            (linked.primaryArtifactFidelity != "predictive_primary" &&
+             linked.primaryArtifactFidelity != "preview_primary")) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary linkage is incomplete");
+        }
+        RISE::Implementation::FireFramePrimary link;
+        link.frameIndex = frame;
+        link.provenanceId = linked.primaryProvenanceId;
+        link.artifactSha256 = linked.primaryArtifactSha256;
+        _framePrimaries.push_back(link);
+    }
+
     // Lazy initialization on first frame
     if (!_started) {
         if (!setupWriter(imgW, imgH)) {
-            _finalized = true;
-            return;
+            _failed = true;
+            throw std::runtime_error("movie writer initialization failed");
         }
         _started = true;
     }
@@ -193,12 +356,16 @@ void MovieRasterizerOutput::OutputImage(
             "MovieRasterizerOutput:: Writer is in failed state at frame %u: %s",
             frame,
             [[_writer.error localizedDescription] UTF8String]);
-        _finalized = true;
-        return;
+        _failed = true;
+        throw std::runtime_error("movie writer entered a failed state");
     }
 
     // Wait until the input is ready for more data
     while (!_input.isReadyForMoreMediaData) {
+        if (_writer.status != AVAssetWriterStatusWriting) {
+            _failed = true;
+            throw std::runtime_error("movie writer failed while awaiting frame input");
+        }
         [NSThread sleepForTimeInterval:0.01];
     }
 
@@ -222,7 +389,8 @@ void MovieRasterizerOutput::OutputImage(
         RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
             "MovieRasterizerOutput:: Failed to create pixel buffer at frame %u (status=%d)",
             frame, (int)status);
-        return;
+        _failed = true;
+        throw std::runtime_error("movie pixel-buffer allocation failed");
     }
 
     // Attach a Rec.2020 PQ color space matching the now-PQ-encoded buffer
@@ -286,6 +454,9 @@ void MovieRasterizerOutput::OutputImage(
             "MovieRasterizerOutput:: Failed to append frame %u: %s",
             frame,
             [[_writer.error localizedDescription] UTF8String]);
+        CVPixelBufferRelease(pixelBuffer);
+        _failed = true;
+        throw std::runtime_error("movie writer rejected a frame");
     }
 
     CVPixelBufferRelease(pixelBuffer);
@@ -294,16 +465,26 @@ void MovieRasterizerOutput::OutputImage(
     } // @autoreleasepool
 }
 
-void MovieRasterizerOutput::finalize()
+bool MovieRasterizerOutput::finalize(bool publish)
 {
-    if (_finalized) return;
+    if (_finalized) return _succeeded;
     _finalized = true;
 
     if (!_started || !_writer) {
         RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
             "MovieRasterizerOutput:: finalize called but no frames were written (received %u frames)",
             _framesReceived);
-        return;
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+        return false;
+    }
+
+    if (!publish || _failed) {
+        [_writer cancelWriting];
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+        _writer = nil;
+        _input = nil;
+        _adaptor = nil;
+        return false;
     }
 
     RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
@@ -319,17 +500,54 @@ void MovieRasterizerOutput::finalize()
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 
     if (_writer.status == AVAssetWriterStatusCompleted) {
-        RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
-            "MovieRasterizerOutput:: Video written successfully (%u frames) to '%s'",
-            _framesReceived, [_outputPath UTF8String]);
+        if (_fireRender) {
+            std::string publishError;
+            _succeeded = RISE::Implementation::PublishFireFrameSequenceFileTransaction(
+                _fireMetadata, [_writerPath UTF8String], [_outputPath UTF8String],
+                static_cast<unsigned int>(_width), static_cast<unsigned int>(_height),
+                static_cast<unsigned int>(_fps), _framesReceived, _framePrimaries,
+                publishError);
+            if (!_succeeded) {
+                RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                    "MovieRasterizerOutput:: output_provenance_unavailable for '%s': %s",
+                    [_outputPath UTF8String], publishError.c_str());
+            }
+        } else {
+            NSFileManager* fm = [NSFileManager defaultManager];
+            NSURL* finalURL = [NSURL fileURLWithPath:_outputPath];
+            NSURL* temporaryURL = [NSURL fileURLWithPath:_writerPath];
+            NSError* publicationError = nil;
+            if ([fm fileExistsAtPath:_outputPath]) {
+                _succeeded = [fm replaceItemAtURL:finalURL
+                    withItemAtURL:temporaryURL backupItemName:nil
+                    options:0 resultingItemURL:nil error:&publicationError];
+            } else {
+                _succeeded = [fm moveItemAtURL:temporaryURL
+                    toURL:finalURL error:&publicationError];
+            }
+            if (!_succeeded) {
+                RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                    "MovieRasterizerOutput:: failed to publish '%s': %s",
+                    [_outputPath UTF8String],
+                    [[publicationError localizedDescription] UTF8String]);
+                [fm removeItemAtURL:temporaryURL error:nil];
+            }
+        }
+        if (_succeeded) {
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
+                "MovieRasterizerOutput:: Video written successfully (%u frames) to '%s'",
+                _framesReceived, [_outputPath UTF8String]);
+        }
     } else {
         RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
             "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
             _framesReceived,
             [[_writer.error localizedDescription] UTF8String]);
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
     }
 
     _writer = nil;
     _input = nil;
     _adaptor = nil;
+    return _succeeded;
 }

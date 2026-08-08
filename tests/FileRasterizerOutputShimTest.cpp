@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -938,6 +939,104 @@ namespace
 		std::remove(exrFile.c_str());
 		std::remove(exrSidecar.c_str());
 #endif
+		const std::string movieTemporary = MakeTempPathWithoutExt()+"_movie.closed";
+		const std::string movieFile = MakeTempPathWithoutExt()+"_movie.mov";
+		{
+			std::ofstream movie(movieTemporary,std::ios::binary);
+			movie.write("test-movie-bytes",16);
+		}
+		std::vector<FireFramePrimary> movieFrames(2u);
+		movieFrames[0].frameIndex = 4u;
+		movieFrames[0].provenanceId = std::string(64u,'1');
+		movieFrames[0].artifactSha256 = std::string(64u,'2');
+		movieFrames[1].frameIndex = 5u;
+		movieFrames[1].provenanceId = std::string(64u,'3');
+		movieFrames[1].artifactSha256 = std::string(64u,'4');
+		std::string movieError;
+		const FrameStore::Metadata movieMetadata = store->Meta();
+		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
+			movieMetadata,movieTemporary,movieFile,16u,16u,30u,2u,
+			movieFrames,movieError);
+		std::vector<unsigned char> movieBytes, movieSidecar;
+		RISECBOR64::Value movieEnvelope;
+		const bool movieDecoded = moviePublished &&
+			ReadFileAllBytes(movieFile,movieBytes) &&
+			ReadFileAllBytes(movieFile+".provenance.cbor",movieSidecar) &&
+			RISECBOR64::DecodeCanonical(movieSidecar,movieEnvelope,&movieError);
+		const RISECBOR64::Value* moviePayload = movieDecoded ?
+			movieEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* movieLinks = moviePayload ?
+			moviePayload->Find("derived_from_frames") : nullptr;
+		const RISECBOR64::Value* moviePrimary = moviePayload ?
+			moviePayload->Find("derived_from_primary") : nullptr;
+		const RISECBOR64::Value* movieFidelity = moviePayload ?
+			moviePayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* movieReasons = moviePayload ?
+			moviePayload->Find("artifact_reason_codes") : nullptr;
+		const RISECBOR64::Value* movieDigest = moviePayload ?
+			moviePayload->Find("artifact_sha256") : nullptr;
+		const RISECBOR64::Value* movieConfig = moviePayload ?
+			moviePayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* movieOutput = movieConfig ?
+			movieConfig->Find("output") : nullptr;
+		RISECBOR64::Bytes moviePayloadBytes;
+		const RISECBOR64::Value* movieId = movieDecoded ?
+			movieEnvelope.Find("provenance_id") : nullptr;
+		const bool moviePayloadEncoded = moviePayload &&
+			RISECBOR64::Encode(*moviePayload,moviePayloadBytes,&movieError);
+		Check( moviePayloadEncoded && movieId &&
+			movieId->GetText() == RISECBOR64::SHA256Hex(moviePayloadBytes) &&
+			movieFidelity && movieFidelity->GetText() == "display_derivative" &&
+			moviePrimary && moviePrimary->GetType() == RISECBOR64::Value::Null &&
+			movieLinks && movieLinks->GetArray().size() == 2u &&
+			movieLinks->GetArray()[0].Find("frame_index")->GetIntegerArgument() == 4u &&
+			movieLinks->GetArray()[1].Find("frame_index")->GetIntegerArgument() == 5u,
+			"[fire provenance] movie envelope hashes its contiguous ordered frame-link array" );
+		Check( movieReasons && movieReasons->GetArray().size() == 3u &&
+			movieReasons->GetArray()[0].GetText() == "display_transform_enabled" &&
+			movieReasons->GetArray()[1].GetText() == "integer_output" &&
+			movieReasons->GetArray()[2].GetText() == "lossy_output" &&
+			movieDigest && movieDigest->GetText() == RISECBOR64::SHA256Hex(movieBytes) &&
+			movieOutput && movieOutput->Find("format") &&
+			movieOutput->Find("format")->GetText() == "MOV" &&
+			movieOutput->Find("frame_count") &&
+			movieOutput->Find("frame_count")->GetIntegerArgument() == 2u,
+			"[fire provenance] movie records display/integer/lossy reasons and exact bytes" );
+
+		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";
+		const std::string badMovieFile = MakeTempPathWithoutExt()+"_bad_movie.mov";
+		{
+			std::ofstream movie(badMovieTemporary,std::ios::binary);
+			movie.write("bad",3);
+		}
+		movieFrames[1].frameIndex = 7u;
+		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				badMovieTemporary,badMovieFile,16u,16u,30u,2u,movieFrames,movieError) &&
+			!std::filesystem::exists(badMovieFile),
+			"[fire provenance] movie transaction rejects a noncontiguous frame-link mutation" );
+
+		const std::string blockedMovieTemporary =
+			MakeTempPathWithoutExt()+"_blocked_movie.closed";
+		const std::string blockedMovieFile =
+			MakeTempPathWithoutExt()+"_blocked_movie.mov";
+		{
+			std::ofstream movie(blockedMovieTemporary,std::ios::binary);
+			movie.write("blocked",7);
+		}
+		movieFrames[1].frameIndex = 5u;
+		std::filesystem::create_directory(blockedMovieFile+".provenance.cbor");
+		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				blockedMovieTemporary,blockedMovieFile,16u,16u,30u,2u,
+				movieFrames,movieError) && !std::filesystem::exists(blockedMovieFile),
+			"[fire provenance] movie sidecar failure leaves no unlabeled MOV artifact" );
+		std::remove(movieFile.c_str());
+		std::remove((movieFile+".provenance.cbor").c_str());
+		std::remove(badMovieTemporary.c_str());
+		std::remove(badMovieFile.c_str());
+		std::remove((badMovieFile+".provenance.cbor").c_str());
+		std::remove(blockedMovieTemporary.c_str());
+		std::remove(blockedMovieFile.c_str());
+		std::filesystem::remove(blockedMovieFile+".provenance.cbor");
 		const FrameStore::Metadata beforeReset = store->Meta();
 		store->SetFireFidelityMetadata("preview",beforeReset.renderReasonCodes,
 			beforeReset.activeFireOpticsRecordIds,beforeReset.activeFireMedia,

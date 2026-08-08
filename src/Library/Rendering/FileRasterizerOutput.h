@@ -180,7 +180,8 @@ namespace RISE
 				);
 
 			bool HasEncoder() const { return encoder_ != nullptr; }
-			bool IsFirePrimaryArtifactRoute() const
+			bool DeclaresFireArtifactRoute() const override { return true; }
+			bool ProvidesFirePrimaryArtifactRoute() const override
 			{
 				return type == EXR && bpp >= 32u &&
 					(color_space == eColorSpace_Rec709RGB_Linear ||
@@ -189,6 +190,10 @@ namespace RISE
 					 exr_compression == eExrCompression_Zip ||
 					 exr_compression == eExrCompression_Piz) &&
 					exposureEV == Scalar(0) && display_transform == eDisplayTransform_None;
+			}
+			bool IsFireArtifactRouteAvailable() const override
+			{
+				return encoder_ != nullptr;
 			}
 
 			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
