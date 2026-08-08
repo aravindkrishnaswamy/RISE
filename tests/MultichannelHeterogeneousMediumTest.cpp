@@ -2420,6 +2420,8 @@ namespace
 				resolvedConfig.Find("animation") : nullptr;
 			const RISECBOR64::Value* resolvedRasterSequence = configDecoded ?
 				resolvedConfig.Find("raster_sequence") : nullptr;
+			const RISECBOR64::Value* resolvedGlobalOptions = configDecoded ?
+				resolvedConfig.Find("global_render_options") : nullptr;
 			bool dependenciesBound = dependencyBuilds != nullptr;
 			if( dependencyBuilds ) {
 				for( const char* name : { "iex", "ilmthread", "imath", "oidn",
@@ -2464,8 +2466,10 @@ namespace
 				resolvedCamera->Find("projection")->Find("fov_radians") &&
 				resolvedAnimation && resolvedAnimation->Find("num_frames") &&
 				resolvedRasterSequence && resolvedRasterSequence->Find("type") &&
-				resolvedRasterSequence->Find("options"),
-				"resolved config binds camera pose/projection, animation timing, and raster sequence" );
+				resolvedRasterSequence->Find("options") && resolvedGlobalOptions &&
+				resolvedGlobalOptions->Find("auto_probe") &&
+				resolvedGlobalOptions->Find("vcm"),
+				"resolved config binds camera, animation, raster sequence, and global render controls" );
 			const bool revisionIsHex = sourceRevision && !sourceRevision->GetText().empty() &&
 				std::all_of(sourceRevision->GetText().begin(),sourceRevision->GetText().end(),
 					[]( unsigned char c ) { return std::isxdigit(c) != 0; });

@@ -55,13 +55,16 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 
 namespace fs = std::filesystem;
 
@@ -625,6 +628,159 @@ int main()
 			Check( configWriter.find("external->"+member) != std::string::npos ||
 				externalWriter.find("config."+member) != std::string::npos,
 				"resolved-config schema consumes FireExternalRenderConfig::"+member );
+		}
+		const std::map<std::string,std::string> filmEvidence = {
+			{ "width", "GetWidth()" }, { "height", "GetHeight()" },
+			{ "pixelAR", "GetPixelAR()" }
+		};
+		const RISE::ChunkDescriptor* filmDescriptor =
+			RISE::DescriptorForKeyword(RISE::String("film"));
+		Check( filmDescriptor != nullptr,"film descriptor is available to the provenance ratchet" );
+		if( filmDescriptor ) {
+			for( const RISE::ParameterDescriptor& parameter : filmDescriptor->parameters ) {
+				const auto evidence = filmEvidence.find(parameter.name);
+				Check( evidence != filmEvidence.end() &&
+					configWriter.find(evidence == filmEvidence.end() ? "" : evidence->second) !=
+						std::string::npos,
+					"resolved-config schema consumes film parameter "+parameter.name );
+			}
+		}
+		const std::map<std::string,std::string> cameraEvidence = {
+			{ "name", "cameraKind" }, { "location", "GetLocation()" },
+			{ "lookat", "GetMatrix()" }, { "up", "GetMatrix()" },
+			{ "exposure", "GetExposureTime()" },
+			{ "scanning_rate", "GetScanningRate()" }, { "pixel_rate", "GetPixelRate()" },
+			{ "pitch", "GetMatrix()" }, { "roll", "GetMatrix()" },
+			{ "yaw", "GetMatrix()" }, { "orientation", "GetMatrix()" },
+			{ "theta", "GetMatrix()" }, { "phi", "GetMatrix()" },
+			{ "target_orientation", "GetMatrix()" }, { "va", "GetMatrix()" },
+			{ "vb", "GetMatrix()" }, { "components", "GetMatrix()" },
+			{ "fov", "GetFovStored()" }, { "iso", "GetIsoStored()" },
+			{ "fstop", "GetFstop()" }, { "sensor_size", "GetSensorSize()" },
+			{ "focal_length", "GetFocalLengthStored()" },
+			{ "focus_distance", "GetFocusDistanceStored()" },
+			{ "aperture_blades", "GetApertureBlades()" },
+			{ "aperture_rotation", "GetApertureRotation()" },
+			{ "anamorphic_squeeze", "GetAnamorphicSqueeze()" },
+			{ "tilt_x", "GetTiltX()" }, { "tilt_y", "GetTiltY()" },
+			{ "shift_x", "GetShiftX()" }, { "shift_y", "GetShiftY()" },
+			{ "scale", "GetScaleStored()" },
+			{ "viewport_scale", "GetViewportScaleStored()" }
+		};
+		for( const char* keyword : { "pinhole_camera", "onb_pinhole_camera",
+			"thinlens_camera", "fisheye_camera", "orthographic_camera" } ) {
+			const RISE::ChunkDescriptor* descriptor =
+				RISE::DescriptorForKeyword(RISE::String(keyword));
+			Check( descriptor != nullptr,std::string("camera descriptor is available: ")+keyword );
+			if( !descriptor ) continue;
+			for( const RISE::ParameterDescriptor& parameter : descriptor->parameters ) {
+				const auto evidence = cameraEvidence.find(parameter.name);
+				Check( evidence != cameraEvidence.end() &&
+					configWriter.find(evidence == cameraEvidence.end() ? "" : evidence->second) !=
+						std::string::npos,
+					std::string("resolved-config schema consumes ")+keyword+" parameter "+
+						parameter.name );
+			}
+		}
+		const std::map<std::string,std::string> animationEvidence = {
+			{ "time_start", "animationTimeStart" }, { "time_end", "animationTimeEnd" },
+			{ "num_frames", "animationFrames" }, { "do_fields", "animationFields" },
+			{ "invert_fields", "animationInvertFields" }
+		};
+		const std::vector<std::string> animationMembers = members(
+			braceBody(jobHeader,"struct ANIMATION_OPTIONS"),"ANIMATION_OPTIONS");
+		for( const std::string& member : animationMembers ) {
+			const auto evidence = animationEvidence.find(member);
+			Check( evidence != animationEvidence.end() &&
+				configWriter.find(evidence == animationEvidence.end() ? "" : evidence->second) !=
+					std::string::npos,
+				"resolved-config schema consumes ANIMATION_OPTIONS::"+member );
+		}
+
+		auto allDataMembers = [&braceBody]( const std::string& source,
+			const std::string& marker, const std::string& constructor ) {
+			std::string body = braceBody(source,marker);
+			const std::size_t constructorAt = body.find(constructor+"(");
+			if( constructorAt != std::string::npos ) body.resize(constructorAt);
+			const std::regex declaration(
+				R"(([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?;\s*$)" );
+			std::vector<std::string> result;
+			std::istringstream lines(body);
+			std::string line;
+			std::smatch match;
+			while( std::getline(lines,line) ) {
+				if( line.find('(') == std::string::npos &&
+					std::regex_search(line,match,declaration) ) result.push_back(match[1].str());
+			}
+			return result;
+		};
+		const std::string encoderHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IFrameEncoder.h");
+		const std::string encoderSource = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.cpp");
+		const std::string encoderConfigWriter = braceBody(encoderSource,"bool BuildFireProvenance(");
+		const std::string frameEncoders = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FrameEncoders.cpp");
+		for( const std::string& member : allDataMembers(
+			encoderHeader,"struct EncodeOpts","EncodeOpts") ) {
+			const bool transactionInternal = member == "useMetadataSnapshot" ||
+				member == "metadataSnapshot";
+			Check( transactionInternal ? frameEncoders.find("opts."+member) != std::string::npos :
+				encoderConfigWriter.find("opts."+member) != std::string::npos,
+				std::string(transactionInternal ? "encoder transaction consumes " :
+					"output provenance consumes EncodeOpts::")+member );
+		}
+		const std::string viewTransformHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ViewTransform.h");
+		for( const std::string& member : allDataMembers(
+			viewTransformHeader,"struct ViewTransform","ViewTransform") ) {
+			Check( encoderConfigWriter.find("opts.viewTransform."+member) != std::string::npos,
+				"output provenance consumes ViewTransform::"+member );
+		}
+		const std::map<std::string,std::string> fileOutputEvidence = {
+			{ "pattern", "pattern_" }, { "multiple", "bMultiple_" },
+			{ "type", "encoder.FormatName()" }, { "bpp", "opts.bpp" },
+			{ "color_space", "opts.colorSpace" },
+			{ "exposure", "opts.viewTransform.exposureEV" },
+			{ "display_transform", "opts.viewTransform.toneCurve" },
+			{ "exr_compression", "opts.exrCompression" },
+			{ "exr_with_alpha", "opts.exrWithAlpha" }
+		};
+		const RISE::ChunkDescriptor* outputDescriptor =
+			RISE::DescriptorForKeyword(RISE::String("file_rasterizeroutput"));
+		Check( outputDescriptor != nullptr,"file-output descriptor is available to the provenance ratchet" );
+		if( outputDescriptor ) {
+			for( const RISE::ParameterDescriptor& parameter : outputDescriptor->parameters ) {
+				const auto evidence = fileOutputEvidence.find(parameter.name);
+				Check( evidence != fileOutputEvidence.end() &&
+					(encoderConfigWriter.find(evidence == fileOutputEvidence.end() ? "" :
+						evidence->second) != std::string::npos ||
+					 encoderSource.find(evidence == fileOutputEvidence.end() ? "" :
+						evidence->second) != std::string::npos),
+					"output route consumes file_rasterizeroutput parameter "+parameter.name );
+			}
+		}
+
+		std::set<std::string> globalOptionNames;
+		const std::regex optionRead(
+			R"OPTION(Read(?:Int|Double|Bool|String)\s*\(\s*"([^"]+)")OPTION" );
+		for( const fs::directory_entry& entry :
+			fs::recursive_directory_iterator(repoRoot/"src"/"Library") ) {
+			if( !entry.is_regular_file() || entry.path().extension() != ".cpp" ) continue;
+			const std::string source = StripCommentsPreservingLayout(slurp(entry.path()));
+			for( std::sregex_iterator it(source.begin(),source.end(),optionRead), end;
+				it != end; ++it ) globalOptionNames.insert((*it)[1].str());
+		}
+		const std::set<std::string> nonRenderGlobalOptions = {
+			"force_all_threads_low_priority", "force_number_of_threads",
+			"maximum_thread_count", "render_thread_reserve_count",
+			"rendered_output_folder", "rendered_output_in_rise_media_folder",
+			"thread_apply_qos"
+		};
+		for( const std::string& option : globalOptionNames ) {
+			Check( configWriter.find("\""+option+"\"") != std::string::npos ||
+				nonRenderGlobalOptions.find(option) != nonRenderGlobalOptions.end(),
+				"global option is represented in resolved config or explicitly execution/path-only: "+option );
 		}
 
 		const std::string generator = slurp(

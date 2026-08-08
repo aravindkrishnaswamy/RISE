@@ -701,6 +701,14 @@ namespace
 			});
 		}
 		IOptions& globalOptions = GlobalOptions();
+		const unsigned int autoProbeSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_spp",4)));
+		const unsigned int autoProbeScale = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_scale",4)));
+		const unsigned int autoProbeVarianceRenders = static_cast<unsigned int>(std::max(
+			2,globalOptions.ReadInt("auto_probe_variance_renders",2)));
+		const unsigned int autoProbeActivationSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
 		const Value record = Value::MapValue({
 			{ "animation", Value::MapValue({
 				{ "do_fields", FireBool(animationFields) },
@@ -741,6 +749,27 @@ namespace
 				{ "param_b", Value::Float(p.pixelFilter.paramB) },
 				{ "width", Value::Float(p.pixelFilter.width) } }) },
 			{ "external_runtime", externalRuntime },
+			{ "global_render_options", Value::MapValue({
+				{ "auto_probe", Value::MapValue({
+					{ "activation_spp", FireUnsigned(autoProbeActivationSPP) },
+					{ "reach_winsor_percentile", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_reach_winsor_pct",0.99)) },
+					{ "scale", FireUnsigned(autoProbeScale) },
+					{ "spp", FireUnsigned(autoProbeSPP) },
+					{ "tau_bdpt", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_bdpt",1.35)) },
+					{ "tau_caustic", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_caustic",1.30)) },
+					{ "tau_reach", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_reach",1.50)) },
+					{ "variance_renders", FireUnsigned(autoProbeVarianceRenders) } }) },
+				{ "vcm", Value::MapValue({
+					{ "progressive_radius_enabled", FireBool(!globalOptions.ReadBool(
+						"vcm_disable_progressive_radius",false)) },
+					{ "throughput_clamp_multiplier", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_multiplier",20.0)) },
+					{ "throughput_clamp_percentile", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_percentile",0.99)) } }) } }) },
 			{ "integrator", Value::MapValue({
 				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
 				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },

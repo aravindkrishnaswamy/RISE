@@ -726,6 +726,9 @@ namespace
 		const std::string exrSidecar = exrFile+".provenance.cbor";
 		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
 		opts.bpp = 32;
+		opts.includeAOVs = true;
+		opts.aovChannels = { FrameStoreOutput::ChannelId::Albedo };
+		opts.attrs.push_back(std::make_pair("authoringNote","ratchet"));
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName("EXR");
 		FileEncoderObserver* observer = new FileEncoderObserver(store,exr,opts,exrBase,false);
 		store->AddObserver(observer);
@@ -750,6 +753,13 @@ namespace
 			exrPayload->Find("artifact_reason_codes") : nullptr;
 		const RISECBOR64::Value* exrDigest = exrPayload ?
 			exrPayload->Find("artifact_sha256") : nullptr;
+		const RISECBOR64::Value* exrConfig = exrPayload ?
+			exrPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* exrOutput = exrConfig ? exrConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* exrAOVChannels = exrOutput ?
+			exrOutput->Find("aov_channels") : nullptr;
+		const RISECBOR64::Value* exrAttributes = exrOutput ?
+			exrOutput->Find("attributes") : nullptr;
 		const bool stripped = StripFireProvenanceEXRAttributes(
 			exrBytes,strippedBytes,decodeError);
 		Check( exrDecoded && payloadEncoded && exrProvenanceId &&
@@ -761,6 +771,15 @@ namespace
 			exrDigest->GetText() == RISECBOR64::SHA256Hex(strippedBytes) &&
 			store->Meta().primaryProvenanceId == exrProvenanceId->GetText(),
 			"[fire provenance] EXR hash excludes mirrored attributes and binds the retained primary" );
+		Check( exrOutput && exrOutput->Find("include_aovs") &&
+			exrOutput->Find("include_aovs")->GetBoolean() && exrAOVChannels &&
+			exrAOVChannels->GetArray().size() == 1u && exrAttributes &&
+			exrAttributes->GetArray().size() == 1u &&
+			exrAttributes->GetArray()[0].Find("name") &&
+			exrAttributes->GetArray()[0].Find("name")->GetText() == "authoringNote" &&
+			exrAttributes->GetArray()[0].Find("value") &&
+			exrAttributes->GetArray()[0].Find("value")->GetText() == "ratchet",
+			"[fire provenance] output config binds AOV selection and caller-authored attributes" );
 		std::string verifyError;
 		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
 			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );

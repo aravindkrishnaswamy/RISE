@@ -345,7 +345,21 @@ namespace
 			error = "resolved render configuration core already contains output settings";
 			return false;
 		}
+		Value::Values aovChannels;
+		for( std::size_t i=0; i<opts.aovChannels.size(); ++i ) {
+			aovChannels.push_back(Value::Unsigned(
+				static_cast<unsigned int>(opts.aovChannels[i])));
+		}
+		Value::Values authoredAttributes;
+		for( std::size_t i=0; i<opts.attrs.size(); ++i ) {
+			authoredAttributes.push_back(Value::MapValue({
+				{ "name", Value::String(opts.attrs[i].first) },
+				{ "value", Value::String(opts.attrs[i].second) }
+			}));
+		}
 		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
+			{ "aov_channels", Value::ArrayValue(aovChannels) },
+			{ "attributes", Value::ArrayValue(authoredAttributes) },
 			{ "bits_per_channel", Value::Unsigned(opts.bpp) },
 			{ "color_space", Value::String(ColorSpaceName(opts.colorSpace)) },
 			{ "compression_level", Value::Signed(opts.compressionLevel) },
