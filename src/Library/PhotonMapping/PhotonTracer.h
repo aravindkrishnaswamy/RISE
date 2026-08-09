@@ -335,7 +335,8 @@ namespace RISE
 
 				const Scalar exposure = pScene->GetCamera()->GetExposureTime();
 
-				if( bAtTime && exposure > 0 && nNumTemporalSamples>1 ) {
+				if( bAtTime && exposure > 0 && nNumTemporalSamples>1 &&
+					!pScene->FireTemporalHold() ) {
 					const Scalar time_step = exposure/Scalar(nNumTemporalSamples);
 					Scalar base_cur_time = (time-(exposure*0.5));
 
@@ -390,4 +391,3 @@ namespace RISE
 }
 
 #endif
-

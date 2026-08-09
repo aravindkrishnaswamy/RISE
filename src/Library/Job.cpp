@@ -11063,6 +11063,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	if( !pScene || !rasterizer ) {
 		return false;
 	}
+	pScene->SetFireTemporalHold(false);
 
 	struct ActiveMediumBinding
 	{
@@ -11194,6 +11195,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	bool unsupportedIntegrator = false;
 	bool transportPreview = false;
 	if( hasFireMedia ) {
+		pScene->SetFireTemporalHold(true);
+		if( pScene->GetAnimator() &&
+			pScene->GetAnimator()->AreThereAnyKeyframedObjects() ) {
+			reasons.insert("keyframed_temporal_sampling_unsupported");
+		}
 		const std::string& kind = rasterizerKind;
 		unsupportedIntegrator =
 			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||

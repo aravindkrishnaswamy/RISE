@@ -2550,7 +2550,8 @@ namespace
 			output <<
 				"}\n\n"
 				"film\n{\nwidth 1\nheight 1\n}\n\n"
-				"pinhole_camera\n{\nname fire_camera\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n";
+				"pinhole_camera\n{\nname fire_camera\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n" <<
+				(keyframedCamera ? "exposure 0.1\n" : "") << "}\n\n";
 			if( keyframedCamera ) {
 				output <<
 					"timeline\n{\nelement_type camera\nelement fire_camera\nparam location\n"
@@ -3226,6 +3227,13 @@ namespace
 				multiFirstCamera->Find("location")->GetArray()[0].GetFloat() == 0.0 &&
 				multiLastCamera->Find("location")->GetArray()[0].GetFloat() == 1.0,
 				"multi-frame fire provenance records each evaluated keyframed camera state" );
+			const Point3 multiFinalLocation = job->GetScene()->GetCamera()->GetLocation();
+			const std::vector<std::string> multiReasons = animatedStore ?
+				animatedStore->Meta().renderReasonCodes : std::vector<std::string>();
+			Check( multiCameraRendered && multiFinalLocation.x == 1.0 &&
+				std::find(multiReasons.begin(),multiReasons.end(),
+					"keyframed_temporal_sampling_unsupported") != multiReasons.end(),
+				"preview fire holds keyframed motion blur at nominal time and records the reason" );
 
 			const bool selectedCameraRendered = job->RasterizeAnimationUsingOptions(1u);
 			RISECBOR64::Value selectedCameraConfig;
@@ -3250,6 +3258,15 @@ namespace
 				fieldCameraStates->GetArray()[1].Find("camera")->Find("location")->
 					GetArray()[0].GetFloat() == 0.5,
 				"interlaced fire provenance records both effective keyframed camera fields" );
+
+			const FrameStoreOutput::Metadata previewAnimationMetadata =
+				animatedStore->Meta();
+			const uint64_t previewAnimationGeneration = animatedStore->Generation();
+			Check( job->SetFireFidelityMode("predictive") &&
+				!job->RasterizeAnimation(0.0,1.0,2u,false,false) &&
+				animatedStore->Generation() == previewAnimationGeneration &&
+				SameFrameMetadata(animatedStore->Meta(),previewAnimationMetadata),
+				"predictive fire rejects keyframed temporal sampling before workers and preserves the frame" );
 		} else {
 			Check(false,"animated-camera provenance fixture loads");
 		}
