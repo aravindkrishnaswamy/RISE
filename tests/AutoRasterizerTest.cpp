@@ -101,6 +101,7 @@ static void Check( bool condition, const std::string& testName )
 //////////////////////////////////////////////////////////////////////
 class CapturingRasterizerOutput
 	: public virtual IRasterizerOutput
+	, public virtual IFireRasterizerOutputRoute
 	, public virtual Reference
 {
 public:
@@ -115,6 +116,8 @@ protected:
 
 public:
 	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
 
 	virtual void OutputImage( const IRasterImage& pImage, const Rect*, const unsigned int ) override
 	{
