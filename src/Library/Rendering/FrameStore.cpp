@@ -347,7 +347,7 @@ namespace
 			if( !ExactMapKeys(state,{"camera","field","frame_index","time"},
 				"evaluated camera state",error) ||
 				!ValidateCameraSchema(*state.Find("camera"),error) ||
-				!FieldType(state,"field",RISECBOR64::Value::Text,
+				!TextFieldIn(state,"field",{"upper","lower","both"},
 					"evaluated camera state",error) ||
 				!FieldType(state,"frame_index",RISECBOR64::Value::UnsignedInteger,
 					"evaluated camera state",error) ||
@@ -488,6 +488,15 @@ namespace
 			"resolved integrator",error) ) return false;
 		if( !FieldType(*integrator,"merge_radius",RISECBOR64::Value::Float64,
 			"resolved integrator",error) ) return false;
+		const std::string& integratorKind = integrator->Find("kind")->GetText();
+		const std::string& effectiveKind = integrator->Find("effective_kind")->GetText();
+		const bool autoKind = integratorKind == "auto_rasterizer" ||
+			integratorKind == "auto_spectral_rasterizer";
+		if( (autoKind && effectiveKind != "pt" && effectiveKind != "bdpt" &&
+			effectiveKind != "vcm") || (!autoKind && effectiveKind != integratorKind) ) {
+			error = "resolved integrator kind/effective_kind pairing is outside schema-v1";
+			return false;
+		}
 		for( const auto& member : guiding->GetMap() ) {
 			const std::set<std::string> floatFields = {"alpha"};
 			const std::set<std::string> boolFields = { "combine_training_iterations",
@@ -538,6 +547,20 @@ namespace
 					"resolved raster sequence",error) ) return false;
 			if( !FieldType(*sequence,"shuffle_seed_active",RISECBOR64::Value::Boolean,
 				"resolved raster sequence",error) ) return false;
+			if( !UnsignedFieldAtMost(*sequence,"order",8u,
+				"resolved raster sequence",error) ||
+				!UnsignedFieldAtMost(*sequence,"shuffle_seed",0xffffffffu,
+					"resolved raster sequence",error) ) return false;
+			const std::uint64_t order = sequence->Find("order")->GetIntegerArgument();
+			const std::uint64_t shuffleSeed =
+				sequence->Find("shuffle_seed")->GetIntegerArgument();
+			const bool shuffleSeedActive =
+				sequence->Find("shuffle_seed_active")->GetBoolean();
+			if( shuffleSeedActive != (order == 1u) ||
+				(!shuffleSeedActive && shuffleSeed != 0u) ) {
+				error = "resolved block raster sequence has inconsistent shuffle state";
+				return false;
+			}
 		} else if( sequenceName == "hilbert" ) {
 			if( !ExactMapKeys(*sequence,{"depth","kind"},"resolved raster sequence",error) ||
 				!FieldType(*sequence,"depth",RISECBOR64::Value::UnsignedInteger,

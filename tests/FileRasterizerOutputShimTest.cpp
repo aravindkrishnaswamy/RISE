@@ -804,7 +804,7 @@ namespace
 			{ "integrator", Value::MapValue({
 				{ "auto_choice", Value::Unsigned(0) },
 				{ "auto_probe_enabled", Value::Bool(false) },
-				{ "effective_kind", Value::String("pt") },
+				{ "effective_kind", Value::String("pathtracing_spectral_rasterizer") },
 				{ "enable_vertex_connection", Value::Bool(false) },
 				{ "enable_vertex_merging", Value::Bool(false) },
 				{ "integrate_rgb", Value::Bool(false) },
@@ -1427,6 +1427,13 @@ namespace
 			const char* label;
 		};
 		const ConfigSemanticMutation configSemanticMutations[] = {
+			{ { "evaluated_camera_states" }, RISECBOR64::Value::ArrayValue({
+				RISECBOR64::Value::MapValue({
+					{ "camera", *baseConfig.Find("camera") },
+					{ "field", RISECBOR64::Value::String("middle") },
+					{ "frame_index", RISECBOR64::Value::Unsigned(0) },
+					{ "time", RISECBOR64::Value::Float(0.0) }
+				}) }), "unknown evaluated-camera field" },
 			{ { "execution", "random_stream_policy" }, RISECBOR64::Value::String("test"),
 				"unknown random-stream policy" },
 			{ { "integrator", "auto_choice" }, RISECBOR64::Value::Unsigned(4),
@@ -1435,12 +1442,30 @@ namespace
 				"unknown integrator kind" },
 			{ { "integrator", "effective_kind" }, RISECBOR64::Value::String("unknown"),
 				"unknown effective integrator" },
+			{ { "integrator", "effective_kind" }, RISECBOR64::Value::String("bdpt"),
+				"incompatible integrator kind/effective-kind pairing" },
 			{ { "integrator", "path_guiding", "sampling_type" },
 				RISECBOR64::Value::Unsigned(2), "out-of-range path-guiding sampler" },
 			{ { "integrator", "sms", "seeding_mode" }, RISECBOR64::Value::Unsigned(2),
 				"out-of-range SMS seeding mode" },
 			{ { "raster_sequence", "kind" }, RISECBOR64::Value::String("spiral"),
 				"unknown raster sequence" },
+			{ { "raster_sequence" }, RISECBOR64::Value::MapValue({
+				{ "height", RISECBOR64::Value::Unsigned(8) },
+				{ "kind", RISECBOR64::Value::String("block") },
+				{ "order", RISECBOR64::Value::Unsigned(9) },
+				{ "shuffle_seed", RISECBOR64::Value::Unsigned(0) },
+				{ "shuffle_seed_active", RISECBOR64::Value::Bool(false) },
+				{ "width", RISECBOR64::Value::Unsigned(8) }
+			}), "out-of-range block raster order" },
+			{ { "raster_sequence" }, RISECBOR64::Value::MapValue({
+				{ "height", RISECBOR64::Value::Unsigned(8) },
+				{ "kind", RISECBOR64::Value::String("block") },
+				{ "order", RISECBOR64::Value::Unsigned(1) },
+				{ "shuffle_seed", RISECBOR64::Value::Unsigned(0) },
+				{ "shuffle_seed_active", RISECBOR64::Value::Bool(false) },
+				{ "width", RISECBOR64::Value::Unsigned(8) }
+			}), "inconsistent block raster shuffle activation" },
 			{ { "transport", "oidn_device" }, RISECBOR64::Value::Unsigned(3),
 				"out-of-range OIDN device" },
 			{ { "transport", "oidn_prefilter" }, RISECBOR64::Value::Unsigned(2),

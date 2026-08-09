@@ -113,7 +113,7 @@ namespace FireOutputMetadataTestFixture
 					{ "throughput_clamp_percentile", Value::Float(0.99) } }) } }) },
 			{ "integrator", Value::MapValue({ { "auto_choice", Value::Unsigned(0) },
 				{ "auto_probe_enabled", Value::Bool(false) },
-				{ "effective_kind", Value::String("pt") },
+				{ "effective_kind", Value::String("pathtracing_spectral_rasterizer") },
 				{ "enable_vertex_connection", Value::Bool(false) },
 				{ "enable_vertex_merging", Value::Bool(false) },
 				{ "integrate_rgb", Value::Bool(false) },
