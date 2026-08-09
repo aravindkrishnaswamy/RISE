@@ -601,18 +601,33 @@ int main()
 		Check( windowsVideoSource.find("avcodec_find_encoder(AV_CODEC_ID_PRORES)") ==
 				std::string::npos &&
 			windowsVideoSource.find(
-				"authoredCodecNegotiationAvailable(availableCodec,codec,fps)") !=
+				"authoredCodecNegotiationAvailable(availableCodec,codec,fps,m_writerPath)") !=
 				std::string::npos &&
-			windowsVideoSource.find("avcodec_open2(probe,codec,nullptr)") !=
+			windowsVideoSource.find("avcodec_open2(context,codec,nullptr)") !=
+				std::string::npos &&
+			windowsVideoSource.find("avformat_write_header(format,&muxOptions)") !=
+				std::string::npos &&
+			windowsVideoSource.find("av_write_trailer(format)") !=
 				std::string::npos &&
 			windowsVideoSource.find("FireFrameSequenceEncoding::AppleProRes4444_10Bit") !=
 				std::string::npos &&
 			windowsVideoSource.find("FireFrameSequenceEncoding::HevcMain10_10Bit") !=
 				std::string::npos,
-			"Windows movie routes require exact encoders and attest the negotiated format" );
+			"Windows movie routes probe a closed sample through exact encoder and mux settings" );
+		Check( windowsVideoSource.find("descriptor.codecImplementation.c_str()") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionBrightness") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionContrast") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionSaturation") !=
+				std::string::npos,
+			"Windows movie writer consumes the shared encoding descriptor" );
 		Check( windowsVideoHeader.find("m_primaryRouteAvailable") != std::string::npos &&
 			windowsVideoHeader.find("m_derivativeAvailable") != std::string::npos &&
 			windowsEngine.find("hevcEncoder->DerivativeAvailable()") != std::string::npos &&
+			windowsEngine.find("if(!hevcEncoder||!hevcEncoder->wroteOutput())") !=
+				std::string::npos &&
 			windowsVideoSource.find("authoredencoderunavailableatpreflight") !=
 				std::string::npos,
 			"Windows fire movies separate raw-primary viability from optional negotiated derivatives" );
@@ -648,11 +663,20 @@ int main()
 			movieSource.find("canApplyOutputSettings") != std::string::npos &&
 			movieSource.find("startWriting") != std::string::npos &&
 			movieSource.find("CVPixelBufferPoolCreatePixelBuffer") != std::string::npos &&
+			movieSource.find("appendPixelBuffer:buffer") != std::string::npos &&
+			movieSource.find("finishWritingWithCompletionHandler") != std::string::npos &&
+			movieSource.find("AVAssetWriterStatusCompleted") != std::string::npos &&
 			movieSource.find("_routeAvailable = _primaryEncoder != nullptr && probeCreated") !=
 				std::string::npos &&
 			movieSource.find("_derivativeAvailable = probeCreated &&") !=
 				std::string::npos,
-			"macOS fire movies negotiate the exact derivative while preserving the FP32 primary route" );
+			"macOS fire movies probe a closed sample while preserving the FP32 primary route" );
+		Check( movieSource.find("MovieEncodingDescriptorSupported") != std::string::npos &&
+			movieSource.find("_encodingDescriptor.expectsMediaDataInRealTime") !=
+				std::string::npos &&
+			movieSource.find("MovieVideoSettings(_encodingDescriptor") !=
+				std::string::npos,
+			"macOS movie writer consumes the shared encoding descriptor" );
 		const std::string compactBridge = withoutWhitespace(bridgeSource);
 		Check( compactBridge.find(
 			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=
@@ -988,6 +1012,12 @@ int main()
 			Check( jobSource.find(std::string("{ \"")+dependency+"\", DependencyBuildIdentity") !=
 				std::string::npos,
 				std::string("renderer identity binds dependency ")+dependency );
+		}
+		for( const char* dependency : { "avcodec", "avfoundation", "avformat", "avutil",
+			"swscale", "videotoolbox", "x265" } ) {
+			Check( jobSource.find(std::string("{ \"")+dependency+
+				"\", RuntimeDependencyBuildIdentity") != std::string::npos,
+				std::string("renderer identity binds movie dependency ")+dependency );
 		}
 		Check( configWriter.find("typeid(*camera) == typeid(Implementation::PinholeCamera)") !=
 				std::string::npos &&

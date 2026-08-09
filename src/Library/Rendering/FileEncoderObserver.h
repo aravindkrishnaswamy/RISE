@@ -85,6 +85,9 @@ namespace RISE
 			std::string conversionMatrix;
 			std::string conversionSourceRange;
 			std::string conversionDestinationRange;
+			int conversionBrightness = 0;
+			int conversionContrast = 0;
+			int conversionSaturation = 0;
 			bool expectsMediaDataInRealTime = false;
 		};
 

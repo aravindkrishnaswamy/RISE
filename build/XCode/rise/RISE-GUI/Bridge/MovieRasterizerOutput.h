@@ -80,6 +80,7 @@ private:
     RISE::IFrameEncoder* _primaryEncoder;
     RISE::FrameStoreOutput::Metadata _fireMetadata;
     std::vector<RISE::Implementation::FireFramePrimary> _framePrimaries;
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor _encodingDescriptor;
     int _fps;
     bool _started;
     bool _finalized;

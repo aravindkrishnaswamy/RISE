@@ -68,6 +68,9 @@ bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 	descriptor.pqPeakNits = 10000u;
 	descriptor.dimensionRounding = "round_up_to_even";
 	descriptor.maxBFrames = 0u;
+	descriptor.conversionBrightness = 0;
+	descriptor.conversionContrast = 1 << 16;
+	descriptor.conversionSaturation = 1 << 16;
 	switch( encoding ) {
 	case FireFrameSequenceEncoding::AppleProRes4444_12Bit:
 		descriptor.backend = "avfoundation";
@@ -80,17 +83,17 @@ bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 		descriptor.outputPixelFormat = "prores_4444_12bit";
 		descriptor.chromaSubsampling = "4:4:4";
 		descriptor.alphaMode = "encoded";
-		descriptor.colorRange = "backend_default";
+		descriptor.colorRange = "avfoundation_codec_owned";
 		descriptor.gopFrames = 1u;
 		descriptor.rateControl = "constant_quality_intra";
-		descriptor.encoderPreset = "backend_default";
+		descriptor.encoderPreset = "not_configurable_by_avfoundation";
 		descriptor.codecOptions = "no_compression_properties";
-		descriptor.codecTag = "backend_default";
+		descriptor.codecTag = "ap4h";
 		descriptor.muxerFlags = "none";
 		descriptor.conversionFilter = "avfoundation_managed";
 		descriptor.conversionMatrix = "rec709_to_rec2020_d65";
 		descriptor.conversionSourceRange = "full";
-		descriptor.conversionDestinationRange = "backend_default";
+		descriptor.conversionDestinationRange = "avfoundation_codec_owned";
 		descriptor.expectsMediaDataInRealTime = false;
 		break;
 	case FireFrameSequenceEncoding::AppleProRes4444_10Bit:
@@ -644,8 +647,11 @@ namespace
 			{ "container_format", Value::String(descriptor.containerFormat) },
 			{ "conversion_destination_range", Value::String(
 				descriptor.conversionDestinationRange) },
+			{ "conversion_brightness", Value::Signed(descriptor.conversionBrightness) },
+			{ "conversion_contrast", Value::Signed(descriptor.conversionContrast) },
 			{ "conversion_filter", Value::String(descriptor.conversionFilter) },
 			{ "conversion_matrix", Value::String(descriptor.conversionMatrix) },
+			{ "conversion_saturation", Value::Signed(descriptor.conversionSaturation) },
 			{ "conversion_source_range", Value::String(
 				descriptor.conversionSourceRange) },
 			{ "dimension_rounding", Value::String(descriptor.dimensionRounding) },

@@ -482,6 +482,50 @@ namespace
 		});
 	}
 
+	RISECBOR64::Value RuntimeDependencyBuildIdentity(
+		const std::vector<std::string>& acceptedBinaryNames,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		std::vector<std::string> binaryVersions;
+		for( const std::string& path : loadedPaths ) {
+			if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+				path,acceptedBinaryNames) ) continue;
+			RISECBOR64::Bytes fileBytes;
+			std::string hashBasis;
+			if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
+				complete = false;
+				continue;
+			}
+			const std::size_t slash = path.find_last_of("/\\");
+			binaryVersions.push_back(path.substr(
+				slash == std::string::npos ? 0u : slash+1u));
+			binaries.push_back(Value::MapValue({
+				{ "hash_basis", Value::String(hashBasis) },
+				{ "path", Value::String(path) },
+				{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
+			}));
+		}
+		std::string version = "not_loaded";
+		if( !binaryVersions.empty() ) {
+			version = "loaded_binary:";
+			for( std::size_t i=0u; i<binaryVersions.size(); ++i ) {
+				if( i ) version += ',';
+				version += binaryVersions[i];
+			}
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(
+				binaries.empty() ? "not_loaded" : "loaded") },
+			{ "linkage", Value::String(
+				binaries.empty() ? "runtime_optional" : "runtime_loaded") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(version) }
+		});
+	}
+
 	bool BuildRendererBuildIdentity(
 		RISECBOR64::Bytes& bytes,
 		std::string& identity )
@@ -615,6 +659,14 @@ namespace
 				{ "lto_mode", Value::String(ltoMode) },
 				{ "optimization_mode", Value::String(optimizationMode) } }) },
 			{ "dependency_builds", Value::MapValue({
+				{ "avcodec", RuntimeDependencyBuildIdentity(
+					{"avcodec"},loadedPaths,dependenciesComplete) },
+				{ "avfoundation", RuntimeDependencyBuildIdentity(
+					{"avfoundation"},loadedPaths,dependenciesComplete) },
+				{ "avformat", RuntimeDependencyBuildIdentity(
+					{"avformat"},loadedPaths,dependenciesComplete) },
+				{ "avutil", RuntimeDependencyBuildIdentity(
+					{"avutil"},loadedPaths,dependenciesComplete) },
 				{ "iex", DependencyBuildIdentity({"iex"},openexrVersion,
 #ifndef NO_EXR_SUPPORT
 					true,false,
@@ -671,6 +723,12 @@ namespace
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
+				{ "swscale", RuntimeDependencyBuildIdentity(
+					{"swscale"},loadedPaths,dependenciesComplete) },
+				{ "videotoolbox", RuntimeDependencyBuildIdentity(
+					{"videotoolbox"},loadedPaths,dependenciesComplete) },
+				{ "x265", RuntimeDependencyBuildIdentity(
+					{"x265"},loadedPaths,dependenciesComplete) },
 				{ "zlib", DependencyBuildIdentity({"z","zlib"},zlibVersion,
 #ifndef NO_PNG_SUPPORT
 					true,embeddedPngZlib,

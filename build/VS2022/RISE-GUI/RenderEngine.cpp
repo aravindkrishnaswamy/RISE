@@ -937,7 +937,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                 if (!writtenParts.isEmpty()) {
                     animationSummary =
                         QStringLiteral("Wrote ") + writtenParts.join(QStringLiteral(" + "));
-                    if (!hevcEncoder->wroteOutput()) {
+                    if (!hevcEncoder || !hevcEncoder->wroteOutput()) {
                         animationSummary +=
                             QStringLiteral(" (HEVC .mp4 not written - see log)");
                     }

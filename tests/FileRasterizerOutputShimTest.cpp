@@ -723,6 +723,18 @@ namespace
 		RISECBOR64::Bytes configBytes;
 		RISECBOR64::Bytes buildBytes;
 		std::string encodeError;
+		const Value testLinkedDependency = Value::MapValue({
+			{ "availability", Value::String("not_linked") },
+			{ "linkage", Value::String("not_linked") },
+			{ "loaded_binaries", Value::ArrayValue({}) },
+			{ "version", Value::String("not_linked") }
+		});
+		const Value testRuntimeDependency = Value::MapValue({
+			{ "availability", Value::String("not_loaded") },
+			{ "linkage", Value::String("runtime_optional") },
+			{ "loaded_binaries", Value::ArrayValue({}) },
+			{ "version", Value::String("not_loaded") }
+		});
 		RISECBOR64::Encode(Value::MapValue({
 			{ "animation", Value::MapValue({
 				{ "do_fields", Value::Bool(false) },
@@ -894,11 +906,22 @@ namespace
 				{ "lto_mode", Value::String("off") },
 				{ "optimization_mode", Value::String("disabled") } }) },
 			{ "dependency_builds", Value::MapValue({
-				{ "test", Value::MapValue({
-					{ "availability", Value::String("not_linked") },
-					{ "linkage", Value::String("none") },
-					{ "loaded_binaries", Value::ArrayValue({}) },
-					{ "version", Value::String("not_linked") } }) } }) },
+				{ "avcodec", testRuntimeDependency },
+				{ "avfoundation", testRuntimeDependency },
+				{ "avformat", testRuntimeDependency },
+				{ "avutil", testRuntimeDependency },
+				{ "iex", testLinkedDependency },
+				{ "ilmthread", testLinkedDependency },
+				{ "imath", testLinkedDependency },
+				{ "oidn", testLinkedDependency },
+				{ "openexr", testLinkedDependency },
+				{ "openpgl", testLinkedDependency },
+				{ "png", testLinkedDependency },
+				{ "swscale", testRuntimeDependency },
+				{ "tiff", testLinkedDependency },
+				{ "videotoolbox", testRuntimeDependency },
+				{ "x265", testRuntimeDependency },
+				{ "zlib", testLinkedDependency } }) },
 			{ "dirty_state", Value::MapValue({
 				{ "diff_sha256", Value::String(std::string(64,'0')) },
 				{ "state", Value::String("clean") } }) },
@@ -1370,7 +1393,7 @@ namespace
 		const std::vector<std::vector<std::string> > buildNestedPaths = {
 			{ "compiler", "identity" }, { "dirty_state", "state" },
 			{ "fp_settings", "fast_math" }, { "renderer_binary", "sha256" },
-			{ "target", "platform" }, { "dependency_builds", "test", "version" }
+			{ "target", "platform" }, { "dependency_builds", "avcodec", "version" }
 		};
 		for( const auto& path : buildNestedPaths ) {
 			invalidMetadata = movieMetadata;
@@ -1436,7 +1459,7 @@ namespace
 			movieOutput->Find("frame_count")->GetIntegerArgument() == 2u,
 			"[fire provenance] movie records display/integer/lossy reasons and exact bytes" );
 		Check( movieEncoding && movieEncoding->GetType() == RISECBOR64::Value::Map &&
-			movieEncoding->GetMap().size() == 31u &&
+			movieEncoding->GetMap().size() == 34u &&
 			movieEncoding->Find("schema_version")->GetIntegerArgument() == 1u &&
 			movieEncoding->Find("backend")->GetText() == "avfoundation" &&
 			movieEncoding->Find("codec_implementation")->GetText() ==
@@ -1448,7 +1471,8 @@ namespace
 				"prores_4444_12bit" &&
 			movieEncoding->Find("chroma_subsampling")->GetText() == "4:4:4" &&
 			movieEncoding->Find("alpha_mode")->GetText() == "encoded" &&
-			movieEncoding->Find("color_range")->GetText() == "backend_default" &&
+			movieEncoding->Find("color_range")->GetText() ==
+				"avfoundation_codec_owned" &&
 			movieEncoding->Find("color_primaries")->GetText() == "bt2020" &&
 			movieEncoding->Find("transfer_function")->GetText() == "smpte_st_2084_pq" &&
 			movieEncoding->Find("ycbcr_matrix")->GetText() ==
@@ -1461,10 +1485,11 @@ namespace
 			movieEncoding->Find("max_b_frames")->GetIntegerArgument() == 0u &&
 			movieEncoding->Find("gop_frames")->GetIntegerArgument() == 1u &&
 			movieEncoding->Find("rate_control")->GetText() == "constant_quality_intra" &&
-			movieEncoding->Find("encoder_preset")->GetText() == "backend_default" &&
+			movieEncoding->Find("encoder_preset")->GetText() ==
+				"not_configurable_by_avfoundation" &&
 			movieEncoding->Find("codec_options")->GetText() ==
 				"no_compression_properties" &&
-			movieEncoding->Find("codec_tag")->GetText() == "backend_default" &&
+			movieEncoding->Find("codec_tag")->GetText() == "ap4h" &&
 			movieEncoding->Find("muxer_flags")->GetText() == "none" &&
 			movieEncoding->Find("conversion_filter")->GetText() ==
 				"avfoundation_managed" &&
@@ -1472,7 +1497,10 @@ namespace
 				"rec709_to_rec2020_d65" &&
 			movieEncoding->Find("conversion_source_range")->GetText() == "full" &&
 			movieEncoding->Find("conversion_destination_range")->GetText() ==
-				"backend_default" &&
+				"avfoundation_codec_owned" &&
+			movieEncoding->Find("conversion_brightness")->GetIntegerArgument() == 0u &&
+			movieEncoding->Find("conversion_contrast")->GetIntegerArgument() == 65536u &&
+			movieEncoding->Find("conversion_saturation")->GetIntegerArgument() == 65536u &&
 			!movieEncoding->Find("expects_media_data_in_real_time")->GetBoolean(),
 			"[fire provenance] macOS movie encoding-v1 ratchets its full parameter surface" );
 
@@ -1493,7 +1521,10 @@ namespace
 			windowsProRes.conversionFilter == "sws_bilinear" &&
 			windowsProRes.conversionMatrix == "sws_cs_bt2020" &&
 			windowsProRes.conversionSourceRange == "full" &&
-			windowsProRes.conversionDestinationRange == "full",
+			windowsProRes.conversionDestinationRange == "full" &&
+			windowsProRes.conversionBrightness == 0 &&
+			windowsProRes.conversionContrast == 65536 &&
+			windowsProRes.conversionSaturation == 65536,
 			"[fire provenance] Windows ProRes encoding-v1 ratchets its full parameter surface" );
 
 		const std::string hevcTemporary = MakeTempPathWithoutExt()+"_hevc.closed";
@@ -1525,7 +1556,7 @@ namespace
 			hevcOutput->Find("bits_per_channel") &&
 			hevcOutput->Find("bits_per_channel")->GetIntegerArgument() == 10u,
 			"[fire provenance] HEVC derivative records its actual MP4/Main10/10-bit encoding" );
-		Check( hevcEncoding && hevcEncoding->GetMap().size() == 31u &&
+		Check( hevcEncoding && hevcEncoding->GetMap().size() == 34u &&
 			hevcEncoding->Find("backend")->GetText() ==
 				"ffmpeg_libavcodec_libavformat_libswscale" &&
 			hevcEncoding->Find("codec_implementation")->GetText() == "libx265" &&
@@ -1542,7 +1573,10 @@ namespace
 				"master-display=G(8500,39850)") != std::string::npos &&
 			hevcEncoding->Find("codec_tag")->GetText() == "hvc1" &&
 			hevcEncoding->Find("muxer_flags")->GetText() == "+faststart" &&
-			hevcEncoding->Find("conversion_destination_range")->GetText() == "limited",
+			hevcEncoding->Find("conversion_destination_range")->GetText() == "limited" &&
+			hevcEncoding->Find("conversion_brightness")->GetIntegerArgument() == 0u &&
+			hevcEncoding->Find("conversion_contrast")->GetIntegerArgument() == 65536u &&
+			hevcEncoding->Find("conversion_saturation")->GetIntegerArgument() == 65536u,
 			"[fire provenance] HEVC encoding-v1 ratchets rate control, HDR, mux, and conversion settings" );
 
 		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";

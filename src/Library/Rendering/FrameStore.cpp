@@ -621,8 +621,10 @@ namespace
 		if( !ArrayElementsAre(record,"solver_schema_versions",RISECBOR64::Value::Text,
 			static_cast<std::size_t>(-1),"renderer build identity",error) ) return false;
 		const RISECBOR64::Value* dependencies = record.Find("dependency_builds");
-		if( !dependencies || dependencies->GetType() != RISECBOR64::Value::Map ||
-			dependencies->GetMap().empty() ) {
+		if( !dependencies || !ExactMapKeys(*dependencies,{ "avcodec", "avfoundation",
+			"avformat", "avutil", "iex", "ilmthread", "imath", "oidn", "openexr",
+			"openpgl", "png", "swscale", "tiff", "videotoolbox", "x265", "zlib" },
+			"renderer dependency builds",error) ) {
 			error = "renderer dependency builds are unavailable";
 			return false;
 		}
@@ -640,6 +642,24 @@ namespace
 				error = "renderer dependency binaries are not an array";
 				return false;
 			}
+			const std::string& availability = dependency.second.Find("availability")->GetText();
+			const std::string& linkage = dependency.second.Find("linkage")->GetText();
+			const std::string& version = dependency.second.Find("version")->GetText();
+			const bool dependencyStateValid =
+				(availability == "not_linked" && linkage == "not_linked" &&
+					binaries->GetArray().empty() && version == "not_linked") ||
+				(availability == "linked" && linkage == "embedded" &&
+					binaries->GetArray().empty() && !version.empty()) ||
+				(availability == "linked" && linkage == "dynamic" &&
+					!binaries->GetArray().empty() && !version.empty()) ||
+				(availability == "not_loaded" && linkage == "runtime_optional" &&
+					binaries->GetArray().empty() && version == "not_loaded") ||
+				(availability == "loaded" && linkage == "runtime_loaded" &&
+					!binaries->GetArray().empty() && !version.empty());
+			if( !dependencyStateValid ) {
+				error = "renderer dependency availability and linkage are inconsistent";
+				return false;
+			}
 			for( const RISECBOR64::Value& loaded : binaries->GetArray() ) {
 				if( !ExactMapKeys(loaded,{"hash_basis","path","sha256"},
 					"renderer dependency binary",error) ) return false;
@@ -648,6 +668,11 @@ namespace
 						"renderer dependency binary",error) ) return false;
 				if( !IsSHA256Hex(loaded.Find("sha256")->GetText()) ) {
 					error = "renderer dependency binary SHA-256 is malformed";
+					return false;
+				}
+				if( loaded.Find("hash_basis")->GetText().empty() ||
+					loaded.Find("path")->GetText().empty() ) {
+					error = "renderer dependency binary identity is incomplete";
 					return false;
 				}
 			}

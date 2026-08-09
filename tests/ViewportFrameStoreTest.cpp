@@ -57,6 +57,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
+#include "FireOutputMetadataTestFixture.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
 
 #ifndef NO_EXR_SUPPORT
@@ -579,23 +580,10 @@ namespace
 
 	void SetFireFidelityMetadata( FrameStore& store )
 	{
-		using RISECBOR64::Value;
-		RISECBOR64::Bytes configBytes;
-		RISECBOR64::Bytes buildBytes;
-		std::string error;
-		RISECBOR64::Encode(Value::MapValue({
-			{ "aov", Value::MapValue({}) }, { "camera", Value::MapValue({}) },
-			{ "clamp", Value::MapValue({}) }, { "depth", Value::MapValue({}) },
-			{ "film", Value::MapValue({}) }, { "filter", Value::MapValue({}) },
-			{ "integrator", Value::MapValue({}) },
-			{ "record_kind", Value::String("resolved_render_configuration_v1") },
-			{ "sampler", Value::MapValue({}) }, { "schema_version", Value::Unsigned(1) }
-		}),configBytes,&error);
-		RISECBOR64::Encode(Value::MapValue({
-			{ "record_kind", Value::String("renderer_build_v1") },
-			{ "schema_version", Value::Unsigned(1) },
-			{ "source_revision", Value::String("test-build") }
-		}),buildBytes,&error);
+		const RISECBOR64::Bytes configBytes =
+			FireOutputMetadataTestFixture::ResolvedConfig(2u,2u);
+		const RISECBOR64::Bytes buildBytes =
+			FireOutputMetadataTestFixture::RendererBuild();
 		FrameStoreOutput::ActiveFireMedium medium;
 		medium.mediaKind = "static_authored";
 		medium.managerName = "fire";

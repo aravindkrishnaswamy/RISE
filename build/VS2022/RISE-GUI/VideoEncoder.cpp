@@ -39,10 +39,12 @@
 
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/ILog.h"
+#include "Rendering/FileEncoderObserver.h"
 #include "Rendering/FrameEncoders.h"
 #include "Utilities/RISECBOR64.h"
 
 #include <cstdint>
+#include <climits>
 #include <cstring>
 #include <vector>
 #include <algorithm>
@@ -104,14 +106,36 @@ static void ensureFFmpegLogRouted()
     }
 }
 
-static const char* const kX265HDR10Parameters =
-    "crf=20:hdr10-opt=1:"
-    "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):"
-    "max-cll=0,0";
+static RISE::Implementation::FireFrameSequenceEncoding descriptorEncoding(
+    const VideoEncoder::Codec encoding)
+{
+    return encoding == VideoEncoder::Codec::ProRes4444 ?
+        RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_10Bit :
+        RISE::Implementation::FireFrameSequenceEncoding::HevcMain10_10Bit;
+}
+
+static bool authoredEncodingDescriptor(
+    const VideoEncoder::Codec encoding,
+    const int fps,
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    std::string error;
+    return fps > 0 && RISE::Implementation::DescribeFireFrameSequenceEncoding(
+        descriptorEncoding(encoding),static_cast<unsigned int>(fps),descriptor,error);
+}
+
+static AVPixelFormat descriptorPixelFormat(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    if (descriptor.outputPixelFormat == "yuva444p10le") return AV_PIX_FMT_YUVA444P10LE;
+    if (descriptor.outputPixelFormat == "yuv420p10le") return AV_PIX_FMT_YUV420P10LE;
+    return AV_PIX_FMT_NONE;
+}
 
 static bool configureAuthoredCodecContext(
     AVCodecContext* context,
     const VideoEncoder::Codec encoding,
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor,
     const int fps,
     const int width,
     const int height)
@@ -120,45 +144,178 @@ static bool configureAuthoredCodecContext(
         return false;
     }
     const bool isProRes = encoding == VideoEncoder::Codec::ProRes4444;
+    const AVPixelFormat pixelFormat = descriptorPixelFormat(descriptor);
+    if (pixelFormat == AV_PIX_FMT_NONE || descriptor.maxBFrames > INT_MAX ||
+        descriptor.gopFrames > INT_MAX || descriptor.colorPrimaries != "bt2020" ||
+        descriptor.transferFunction != "smpte_st_2084_pq" ||
+        descriptor.ycbcrMatrix != "bt2020_nonconstant_luminance" ||
+        descriptor.conversionFilter != "sws_bilinear" ||
+        descriptor.conversionMatrix != "sws_cs_bt2020" ||
+        descriptor.conversionSourceRange != "full") return false;
     context->width = width;
     context->height = height;
     context->time_base = {1, fps};
     context->framerate = {fps, 1};
-    context->max_b_frames = 0;
-    context->gop_size = isProRes ? 1 : 2 * fps;
-    context->pix_fmt = isProRes ? AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV420P10LE;
+    context->max_b_frames = static_cast<int>(descriptor.maxBFrames);
+    context->gop_size = static_cast<int>(descriptor.gopFrames);
+    context->pix_fmt = pixelFormat;
     context->color_primaries = AVCOL_PRI_BT2020;
     context->color_trc = AVCOL_TRC_SMPTE2084;
     context->colorspace = AVCOL_SPC_BT2020_NCL;
-    context->color_range = isProRes ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    context->color_range = descriptor.colorRange == "full" ?
+        AVCOL_RANGE_JPEG : descriptor.colorRange == "limited" ?
+        AVCOL_RANGE_MPEG : AVCOL_RANGE_UNSPECIFIED;
+    if (context->color_range == AVCOL_RANGE_UNSPECIFIED) return false;
     if (isProRes) {
-        if (av_opt_set(context->priv_data, "profile", "4444", 0) < 0) return false;
+        if (descriptor.codecImplementation != "prores_ks" ||
+            descriptor.codecProfile != "4444" ||
+            descriptor.codecOptions != "profile=4444;global_quality=FF_QP2LAMBDA*5" ||
+            av_opt_set(context->priv_data,"profile",descriptor.codecProfile.c_str(),0) < 0)
+            return false;
         context->profile = AV_PROFILE_PRORES_4444;
         context->flags |= AV_CODEC_FLAG_QSCALE;
         context->global_quality = FF_QP2LAMBDA * 5;
         return true;
     }
-    return av_opt_set(context->priv_data, "preset", "medium", 0) >= 0 &&
-        av_opt_set(context->priv_data, "x265-params",kX265HDR10Parameters,0) >= 0;
+    if (descriptor.codecImplementation != "libx265" ||
+        descriptor.codecProfile != "main10") return false;
+    return av_opt_set(context->priv_data,"preset",descriptor.encoderPreset.c_str(),0) >= 0 &&
+        av_opt_set(context->priv_data,"x265-params",descriptor.codecOptions.c_str(),0) >= 0;
 }
 
 static bool authoredCodecNegotiationAvailable(
     const AVCodec* codec,
     const VideoEncoder::Codec encoding,
-    const int fps)
+    const int fps,
+    const std::string& probePath)
 {
-    if (!codec || fps <= 0) return false;
-    AVCodecContext* probe = avcodec_alloc_context3(codec);
-    if (!probe) return false;
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor descriptor;
+    if (!codec || !authoredEncodingDescriptor(encoding,fps,descriptor)) return false;
     const bool isProRes = encoding == VideoEncoder::Codec::ProRes4444;
-    bool available = configureAuthoredCodecContext(probe,encoding,fps,16,16);
+    const char* muxerName = descriptor.containerFormat == "MOV" ? "mov" :
+        descriptor.containerFormat == "MP4" ? "mp4" : nullptr;
+    if (!muxerName) return false;
+
+    AVFormatContext* format = nullptr;
+    AVCodecContext* context = nullptr;
+    AVFrame* frame = nullptr;
+    AVPacket* packet = nullptr;
+    SwsContext* scale = nullptr;
+    std::error_code fsError;
+    std::filesystem::remove(probePath,fsError);
+    bool available = avformat_alloc_output_context2(
+        &format,nullptr,muxerName,probePath.c_str()) >= 0 && format;
+    AVStream* stream = available ? avformat_new_stream(format,nullptr) : nullptr;
+    available = available && stream;
     if (available) {
-        available = avcodec_open2(probe, codec, nullptr) >= 0 &&
-            probe->pix_fmt == (isProRes ? AV_PIX_FMT_YUVA444P10LE :
-                AV_PIX_FMT_YUV420P10LE) &&
-            (!isProRes || probe->profile == AV_PROFILE_PRORES_4444);
+        context = avcodec_alloc_context3(codec);
+        available = context && configureAuthoredCodecContext(
+            context,encoding,descriptor,fps,16,16);
     }
-    avcodec_free_context(&probe);
+    if (available && (format->oformat->flags & AVFMT_GLOBALHEADER)) {
+        context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    if (available) {
+        available = avcodec_open2(context,codec,nullptr) >= 0 &&
+            context->pix_fmt == descriptorPixelFormat(descriptor) &&
+            (!isProRes || context->profile == AV_PROFILE_PRORES_4444) &&
+            avcodec_parameters_from_context(stream->codecpar,context) >= 0;
+    }
+    if (available) {
+        if (descriptor.codecTag == "hvc1") {
+            stream->codecpar->codec_tag = MKTAG('h','v','c','1');
+        } else if (descriptor.codecTag != "backend_default") {
+            available = false;
+        }
+        stream->time_base = context->time_base;
+    }
+    if (available && !(format->oformat->flags & AVFMT_NOFILE)) {
+        available = avio_open(&format->pb,probePath.c_str(),AVIO_FLAG_WRITE) >= 0;
+    }
+    AVDictionary* muxOptions = nullptr;
+    if (available && descriptor.muxerFlags != "none") {
+        available = descriptor.muxerFlags == "+faststart" &&
+            av_dict_set(&muxOptions,"movflags",descriptor.muxerFlags.c_str(),0) >= 0;
+    }
+    bool headerWritten = false;
+    if (available) {
+        headerWritten = avformat_write_header(format,&muxOptions) >= 0;
+        available = headerWritten;
+    }
+    av_dict_free(&muxOptions);
+    if (available) {
+        frame = av_frame_alloc();
+        packet = av_packet_alloc();
+        available = frame && packet;
+    }
+    if (available) {
+        frame->format = context->pix_fmt;
+        frame->width = 16;
+        frame->height = 16;
+        frame->color_primaries = context->color_primaries;
+        frame->color_trc = context->color_trc;
+        frame->colorspace = context->colorspace;
+        frame->color_range = context->color_range;
+        available = av_frame_get_buffer(frame,0) >= 0 &&
+            av_frame_make_writable(frame) >= 0;
+    }
+    if (available) {
+        const int swsFlags = descriptor.conversionFilter == "sws_bilinear" ?
+            SWS_BILINEAR : 0;
+        scale = swsFlags ? sws_getContext(16,16,AV_PIX_FMT_RGBA64LE,
+            16,16,context->pix_fmt,swsFlags,nullptr,nullptr,nullptr) : nullptr;
+        const int destinationRange = descriptor.conversionDestinationRange == "full" ?
+            1 : descriptor.conversionDestinationRange == "limited" ? 0 : -1;
+        const int* coefficients = descriptor.conversionMatrix == "sws_cs_bt2020" ?
+            sws_getCoefficients(SWS_CS_BT2020) : nullptr;
+        available = scale && coefficients && destinationRange >= 0 &&
+            sws_setColorspaceDetails(scale,coefficients,1,coefficients,destinationRange,
+                descriptor.conversionBrightness,descriptor.conversionContrast,
+                descriptor.conversionSaturation) >= 0;
+    }
+    if (available) {
+        std::vector<std::uint16_t> source(16u*16u*4u,0u);
+        const std::uint8_t* sourcePlanes[1] = {
+            reinterpret_cast<const std::uint8_t*>(source.data()) };
+        int sourceStrides[1] = { 16*4*static_cast<int>(sizeof(std::uint16_t)) };
+        available = sws_scale(scale,sourcePlanes,sourceStrides,0,16,
+            frame->data,frame->linesize) == 16;
+    }
+    if (available) {
+        frame->pts = 0;
+        available = avcodec_send_frame(context,frame) >= 0;
+    }
+    unsigned int packetsWritten = 0u;
+    auto drainPackets = [&]() {
+        for (;;) {
+            const int receive = avcodec_receive_packet(context,packet);
+            if (receive == AVERROR(EAGAIN) || receive == AVERROR_EOF) return true;
+            if (receive < 0) return false;
+            av_packet_rescale_ts(packet,context->time_base,stream->time_base);
+            packet->stream_index = stream->index;
+            const bool written = av_interleaved_write_frame(format,packet) >= 0;
+            av_packet_unref(packet);
+            if (!written) return false;
+            ++packetsWritten;
+        }
+    };
+    if (available) available = drainPackets();
+    if (available) available = avcodec_send_frame(context,nullptr) >= 0 && drainPackets();
+    if (headerWritten) available = av_write_trailer(format) >= 0 && available;
+    available = available && packetsWritten != 0u;
+
+    if (packet) av_packet_free(&packet);
+    if (frame) av_frame_free(&frame);
+    if (scale) sws_freeContext(scale);
+    if (context) avcodec_free_context(&context);
+    if (format) {
+        if (format->pb) avio_closep(&format->pb);
+        avformat_free_context(format);
+    }
+    const bool fileClosed = available && std::filesystem::is_regular_file(probePath,fsError) &&
+        std::filesystem::file_size(probePath,fsError) > 0u;
+    std::filesystem::remove(probePath,fsError);
+    available = available && fileClosed;
     return available;
 }
 
@@ -335,9 +492,11 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
         "VideoEncoder:: Created for output: %s (codec=%s, fps=%d)",
         m_outputPath.c_str(), codecName, fps);
 
-    const AVCodec* availableCodec = codec == Codec::ProRes4444 ?
-        avcodec_find_encoder_by_name("prores_ks") :
-        avcodec_find_encoder_by_name("libx265");
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor authoredDescriptor;
+    const bool descriptorAvailable = authoredEncodingDescriptor(
+        codec,fps,authoredDescriptor);
+    const AVCodec* availableCodec = descriptorAvailable ?
+        avcodec_find_encoder_by_name(authoredDescriptor.codecImplementation.c_str()) : nullptr;
     std::error_code fsError;
     std::filesystem::path parent = std::filesystem::path(m_outputPath).parent_path();
     if (parent.empty()) parent = ".";
@@ -353,8 +512,8 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
     }
     m_primaryRouteAvailable = codec == Codec::ProRes4444 &&
         m_primaryEncoder != nullptr && probeCreated;
-    m_derivativeAvailable = probeCreated && authoredCodecNegotiationAvailable(
-        availableCodec,codec,fps);
+    m_derivativeAvailable = probeCreated && descriptorAvailable &&
+        authoredCodecNegotiationAvailable(availableCodec,codec,fps,m_writerPath);
     if (!m_derivativeAvailable) {
         GlobalLog()->PrintEx(eLog_Warning,
             "VideoEncoder:: authored %s display derivative is unavailable at preflight",
@@ -599,6 +758,9 @@ void VideoEncoder::outputFrame(
 
 bool VideoEncoder::setupEncoder(int width, int height)
 {
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor descriptor;
+    if (!authoredEncodingDescriptor(m_codec,m_fps,descriptor) ||
+        descriptor.dimensionRounding != "round_up_to_even") return false;
     // Round to even dimensions (matching Mac app)
     m_width = (width + 1) & ~1;
     m_height = (height + 1) & ~1;
@@ -608,7 +770,9 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // ProRes -> QuickTime (.mov); HEVC HDR10 -> MP4 (.mp4).  Force the
     // muxer explicitly rather than guessing from the path extension (the
     // ctor has already forced the path to match the chosen muxer).
-    const char* muxerName = isProRes ? "mov" : "mp4";
+    const char* muxerName = descriptor.containerFormat == "MOV" ? "mov" :
+        descriptor.containerFormat == "MP4" ? "mp4" : nullptr;
+    if (!muxerName) return false;
 
     GlobalLog()->PrintEx(eLog_Event,
         "VideoEncoder:: Setting up %s encoder: %dx%d -> %dx%d",
@@ -622,12 +786,12 @@ bool VideoEncoder::setupEncoder(int width, int height)
     }
 
     // Find the encoder.
-    const AVCodec* codec = nullptr;
+    const AVCodec* codec = avcodec_find_encoder_by_name(
+        descriptor.codecImplementation.c_str());
     if (isProRes) {
         // prores_ks is the authored encoder: it supports the 4444 profile,
         // alpha, the requested 10-bit pixel format, and the private options
         // validated below.  A generic ProRes substitution is not equivalent.
-        codec = avcodec_find_encoder_by_name("prores_ks");
         if (codec) {
             GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using prores_ks encoder");
         }
@@ -637,7 +801,6 @@ bool VideoEncoder::setupEncoder(int width, int height)
         // ffmpeg "x265" + "gpl" features (see build/VS2022/vcpkg.json); if
         // ffmpeg has not yet been rebuilt with them, the lookup returns null
         // and only the ProRes master is written.
-        codec = avcodec_find_encoder_by_name("libx265");
         if (codec) {
             GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using libx265 encoder");
         }
@@ -663,7 +826,7 @@ bool VideoEncoder::setupEncoder(int width, int height)
     }
 
     if (!configureAuthoredCodecContext(
-            m_codecCtx,m_codec,m_fps,m_width,m_height)) {
+            m_codecCtx,m_codec,descriptor,m_fps,m_width,m_height)) {
         GlobalLog()->PrintEasyError(
             "VideoEncoder:: exact authored codec settings are unavailable");
         return false;
@@ -683,8 +846,7 @@ bool VideoEncoder::setupEncoder(int width, int height)
             isProRes ? "ProRes" : "libx265", errbuf);
         return false;
     }
-    const AVPixelFormat requiredPixelFormat = isProRes ?
-        AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV420P10LE;
+    const AVPixelFormat requiredPixelFormat = descriptorPixelFormat(descriptor);
     if (m_codecCtx->pix_fmt != requiredPixelFormat ||
         (isProRes && m_codecCtx->profile != AV_PROFILE_PRORES_4444)) {
         GlobalLog()->PrintEasyError(
@@ -702,8 +864,10 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // HEVC-in-MP4 must use the 'hvc1' sample entry (parameter sets carried
     // in the sample description via the global header above) — Windows'
     // built-in player and QuickTime reject the muxer-default 'hev1'.
-    if (!isProRes) {
+    if (descriptor.codecTag == "hvc1") {
         m_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+    } else if (descriptor.codecTag != "backend_default") {
+        return false;
     }
 
     m_stream->time_base = m_codecCtx->time_base;
@@ -720,8 +884,12 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // Write header.  For the MP4 delivery, relocate the moov atom to the
     // front (+faststart) for progressive playback; no-op for the .mov.
     AVDictionary* muxOpts = nullptr;
-    if (!isProRes) {
-        av_dict_set(&muxOpts, "movflags", "+faststart", 0);
+    if (descriptor.muxerFlags != "none") {
+        if (descriptor.muxerFlags != "+faststart" ||
+            av_dict_set(&muxOpts,"movflags",descriptor.muxerFlags.c_str(),0) < 0) {
+            av_dict_free(&muxOpts);
+            return false;
+        }
     }
     ret = avformat_write_header(m_formatCtx, &muxOpts);
     av_dict_free(&muxOpts);
@@ -761,10 +929,13 @@ bool VideoEncoder::setupEncoder(int width, int height)
 
     // Create SWS context: 16-bit RGBA (our PQ-encoded RGBA64LE buffer) ->
     // the encoder's pixel format (4:4:4+alpha for ProRes, 4:2:0 for HEVC).
+    const int swsFlags = descriptor.conversionFilter == "sws_bilinear" ?
+        SWS_BILINEAR : 0;
+    if (!swsFlags) return false;
     m_swsCtx = sws_getContext(
         m_width, m_height, AV_PIX_FMT_RGBA64LE,
         m_width, m_height, m_codecCtx->pix_fmt,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+        swsFlags, nullptr, nullptr, nullptr);
 
     if (!m_swsCtx) {
         GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not create SWS context");
@@ -774,12 +945,17 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // Drive the RGB<->YUV matrix with BT.2020 coefficients.  Our RGBA64
     // input is always full range; the destination range matches the encoder
     // tag (full for ProRes, limited for HDR10).
+    if (descriptor.conversionMatrix != "sws_cs_bt2020" ||
+        descriptor.conversionSourceRange != "full") return false;
     const int* bt2020 = sws_getCoefficients(SWS_CS_BT2020);
-    const int dstRange = isProRes ? 1 : 0;
+    const int dstRange = descriptor.conversionDestinationRange == "full" ? 1 :
+        descriptor.conversionDestinationRange == "limited" ? 0 : -1;
+    if (dstRange < 0) return false;
     if (sws_setColorspaceDetails(m_swsCtx,
             bt2020, 1 /*srcRange full*/,
             bt2020, dstRange,
-            0 /*brightness*/, 1 << 16 /*contrast*/, 1 << 16 /*saturation*/) < 0) {
+            descriptor.conversionBrightness,descriptor.conversionContrast,
+            descriptor.conversionSaturation) < 0) {
         GlobalLog()->PrintEx(eLog_Error,
             "VideoEncoder:: Could not set BT.2020 colorspace details");
         return false;

@@ -2913,8 +2913,9 @@ namespace
 				resolvedConfig.Find("execution") : nullptr;
 			bool dependenciesBound = dependencyBuilds != nullptr;
 			if( dependencyBuilds ) {
-				for( const char* name : { "iex", "ilmthread", "imath", "oidn",
-					"openexr", "openpgl", "png", "tiff", "zlib" } ) {
+				for( const char* name : { "avcodec", "avfoundation", "avformat", "avutil",
+					"iex", "ilmthread", "imath", "oidn", "openexr", "openpgl", "png",
+					"swscale", "tiff", "videotoolbox", "x265", "zlib" } ) {
 					const RISECBOR64::Value* dependency = dependencyBuilds->Find(name);
 					const RISECBOR64::Value* availability = dependency ?
 						dependency->Find("availability") : nullptr;
@@ -2923,10 +2924,15 @@ namespace
 					const RISECBOR64::Value* binaries = dependency ?
 						dependency->Find("loaded_binaries") : nullptr;
 					dependenciesBound = dependenciesBound && availability && linkage && binaries &&
-						((availability->GetText() == "not_linked" && binaries->GetArray().empty()) ||
+						((availability->GetText() == "not_linked" &&
+							linkage->GetText() == "not_linked" && binaries->GetArray().empty()) ||
 						 (availability->GetText() == "linked" &&
 							((linkage->GetText() == "embedded" && binaries->GetArray().empty()) ||
-							 (linkage->GetText() == "dynamic" && !binaries->GetArray().empty()))));
+							 (linkage->GetText() == "dynamic" && !binaries->GetArray().empty()))) ||
+						 (availability->GetText() == "not_loaded" &&
+							linkage->GetText() == "runtime_optional" && binaries->GetArray().empty()) ||
+						 (availability->GetText() == "loaded" &&
+							linkage->GetText() == "runtime_loaded" && !binaries->GetArray().empty()));
 					if( binaries ) {
 						for( const RISECBOR64::Value& binary : binaries->GetArray() ) {
 							dependenciesBound = dependenciesBound && binary.Find("hash_basis") &&

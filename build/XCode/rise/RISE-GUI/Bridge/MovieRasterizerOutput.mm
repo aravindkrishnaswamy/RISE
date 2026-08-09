@@ -57,8 +57,45 @@ static inline float linearToPQ(double lin)
     return (float)pow((c1 + c2 * Lm) / (1.0 + c3 * Lm), m2);
 }
 
-static NSDictionary* MovieVideoSettings(const int width, const int height)
+static bool MovieEncodingDescriptorSupported(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
 {
+    return descriptor.schemaVersion == 1u && descriptor.backend == "avfoundation" &&
+        descriptor.containerFormat == "MOV" &&
+        descriptor.codec == "apple_prores_4444" &&
+        descriptor.codecImplementation == "AVVideoCodecTypeAppleProRes4444" &&
+        descriptor.codecProfile == "4444" && descriptor.bitsPerChannel == 12u &&
+        descriptor.inputPixelFormat == "kCVPixelFormatType_64RGBAHalf" &&
+        descriptor.outputPixelFormat == "prores_4444_12bit" &&
+        descriptor.chromaSubsampling == "4:4:4" && descriptor.alphaMode == "encoded" &&
+        descriptor.colorRange == "avfoundation_codec_owned" &&
+        descriptor.colorPrimaries == "bt2020" &&
+        descriptor.transferFunction == "smpte_st_2084_pq" &&
+        descriptor.ycbcrMatrix == "bt2020_nonconstant_luminance" &&
+        descriptor.displayTransform == "rec709_linear_to_rec2020_pq" &&
+        descriptor.referenceWhiteNits == 100u && descriptor.pqPeakNits == 10000u &&
+        descriptor.dimensionRounding == "round_up_to_even" &&
+        descriptor.maxBFrames == 0u && descriptor.gopFrames == 1u &&
+        descriptor.rateControl == "constant_quality_intra" &&
+        descriptor.encoderPreset == "not_configurable_by_avfoundation" &&
+        descriptor.codecOptions == "no_compression_properties" &&
+        descriptor.codecTag == "ap4h" && descriptor.muxerFlags == "none" &&
+        descriptor.conversionFilter == "avfoundation_managed" &&
+        descriptor.conversionMatrix == "rec709_to_rec2020_d65" &&
+        descriptor.conversionSourceRange == "full" &&
+        descriptor.conversionDestinationRange == "avfoundation_codec_owned" &&
+        descriptor.conversionBrightness == 0 &&
+        descriptor.conversionContrast == (1 << 16) &&
+        descriptor.conversionSaturation == (1 << 16) &&
+        !descriptor.expectsMediaDataInRealTime;
+}
+
+static NSDictionary* MovieVideoSettings(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor,
+    const int width,
+    const int height)
+{
+    if (!MovieEncodingDescriptorSupported(descriptor)) return nil;
     return @{
         AVVideoCodecKey: AVVideoCodecTypeAppleProRes4444,
         AVVideoWidthKey: @(width),
@@ -71,8 +108,12 @@ static NSDictionary* MovieVideoSettings(const int width, const int height)
     };
 }
 
-static NSDictionary* MovieBufferAttributes(const int width, const int height)
+static NSDictionary* MovieBufferAttributes(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor,
+    const int width,
+    const int height)
 {
+    if (!MovieEncodingDescriptorSupported(descriptor)) return nil;
     return @{
         (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_64RGBAHalf),
         (NSString*)kCVPixelBufferWidthKey: @(width),
@@ -80,14 +121,18 @@ static NSDictionary* MovieBufferAttributes(const int width, const int height)
     };
 }
 
-static bool ProbeMovieDerivativeAvailability(NSString* writerPath)
+static bool ProbeMovieDerivativeAvailability(
+    NSString* writerPath,
+    const int fps,
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
 {
+    if (fps <= 0 || !MovieEncodingDescriptorSupported(descriptor)) return false;
     NSURL* url = [NSURL fileURLWithPath:writerPath];
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     NSError* error = nil;
     AVAssetWriter* writer = [AVAssetWriter assetWriterWithURL:url
         fileType:AVFileTypeQuickTimeMovie error:&error];
-    NSDictionary* settings = MovieVideoSettings(16,16);
+    NSDictionary* settings = MovieVideoSettings(descriptor,16,16);
     if (!writer || error ||
         ![writer canApplyOutputSettings:settings forMediaType:AVMediaTypeVideo]) {
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
@@ -95,11 +140,11 @@ static bool ProbeMovieDerivativeAvailability(NSString* writerPath)
     }
     AVAssetWriterInput* input = [AVAssetWriterInput
         assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
-    input.expectsMediaDataInRealTime = NO;
+    input.expectsMediaDataInRealTime = descriptor.expectsMediaDataInRealTime ? YES : NO;
     AVAssetWriterInputPixelBufferAdaptor* adaptor =
         [AVAssetWriterInputPixelBufferAdaptor
             assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
-            sourcePixelBufferAttributes:MovieBufferAttributes(16,16)];
+            sourcePixelBufferAttributes:MovieBufferAttributes(descriptor,16,16)];
     if (![writer canAddInput:input]) {
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
         return false;
@@ -112,9 +157,30 @@ static bool ProbeMovieDerivativeAvailability(NSString* writerPath)
         available = adaptor.pixelBufferPool != nullptr &&
             CVPixelBufferPoolCreatePixelBuffer(
                 kCFAllocatorDefault,adaptor.pixelBufferPool,&buffer) == kCVReturnSuccess;
+        if (available && buffer) {
+            CVPixelBufferLockBaseAddress(buffer,0);
+            std::memset(CVPixelBufferGetBaseAddress(buffer),0,
+                CVPixelBufferGetBytesPerRow(buffer)*16u);
+            CVPixelBufferUnlockBaseAddress(buffer,0);
+            available = [adaptor appendPixelBuffer:buffer
+                withPresentationTime:CMTimeMake(0,fps)];
+        }
         if (buffer) CVPixelBufferRelease(buffer);
     }
-    [writer cancelWriting];
+    if (available) {
+        [input markAsFinished];
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        [writer finishWritingWithCompletionHandler:^{
+            dispatch_semaphore_signal(semaphore);
+        }];
+        dispatch_semaphore_wait(semaphore,DISPATCH_TIME_FOREVER);
+        NSNumber* fileSize = [[[NSFileManager defaultManager]
+            attributesOfItemAtPath:writerPath error:nil] objectForKey:NSFileSize];
+        available = writer.status == AVAssetWriterStatusCompleted &&
+            fileSize != nil && [fileSize unsignedLongLongValue] != 0u;
+    } else {
+        [writer cancelWriting];
+    }
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     return available;
 }
@@ -162,8 +228,15 @@ MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
         !artifactIsDirectory && !sidecarIsDirectory && _fps > 0 &&
         [fm createFileAtPath:_writerPath contents:[NSData data] attributes:nil];
     if (probeCreated) [fm removeItemAtPath:_writerPath error:nil];
+    std::string descriptorError;
+    const bool descriptorAvailable = _fps > 0 &&
+        RISE::Implementation::DescribeFireFrameSequenceEncoding(
+            RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+            static_cast<unsigned int>(_fps),_encodingDescriptor,descriptorError) &&
+        MovieEncodingDescriptorSupported(_encodingDescriptor);
     _routeAvailable = _primaryEncoder != nullptr && probeCreated;
-    _derivativeAvailable = probeCreated && ProbeMovieDerivativeAvailability(_writerPath);
+    _derivativeAvailable = probeCreated && descriptorAvailable &&
+        ProbeMovieDerivativeAvailability(_writerPath,_fps,_encodingDescriptor);
     if (!_derivativeAvailable) {
         RISE::GlobalLog()->PrintEasyWarning(
             "MovieRasterizerOutput:: authored ProRes 4444 display derivative "
@@ -251,6 +324,7 @@ static bool SameFireRenderIdentity(
 
 bool MovieRasterizerOutput::setupWriter(int width, int height)
 {
+    if (!MovieEncodingDescriptorSupported(_encodingDescriptor)) return false;
     // Round up to next multiple of 2 (harmless even-dimension safeguard)
     _width = (width + 1) & ~1;
     _height = (height + 1) & ~1;
@@ -289,16 +363,18 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
     //   Y'CbCr matrix    Rec.2020 (paired with the Rec.2020 primaries)
     // The source buffers are tagged with a matching Rec.2020 PQ color space
     // below, so AVFoundation tags the output without an implicit conversion.
-    NSDictionary* videoSettings = MovieVideoSettings(_width,_height);
+    NSDictionary* videoSettings = MovieVideoSettings(_encodingDescriptor,_width,_height);
 
     _input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
                                                 outputSettings:videoSettings];
-    _input.expectsMediaDataInRealTime = NO;
+    _input.expectsMediaDataInRealTime =
+        _encodingDescriptor.expectsMediaDataInRealTime ? YES : NO;
 
     // Pixel buffer adaptor for efficient pixel buffer pool access.
     // 64-bit RGBA, 16-bit IEEE half per channel (8 bytes/pixel) so values
     // outside [0,1] survive into the encoder.
-    NSDictionary* bufferAttributes = MovieBufferAttributes(_width,_height);
+    NSDictionary* bufferAttributes = MovieBufferAttributes(
+        _encodingDescriptor,_width,_height);
 
     _adaptor = [AVAssetWriterInputPixelBufferAdaptor
         assetWriterInputPixelBufferAdaptorWithAssetWriterInput:_input
@@ -314,7 +390,12 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
     }
 
     [_writer addInput:_input];
-    [_writer startWriting];
+    if (![_writer startWriting]) {
+        _writer = nil;
+        _input = nil;
+        _adaptor = nil;
+        return false;
+    }
     [_writer startSessionAtSourceTime:kCMTimeZero];
 
     RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
