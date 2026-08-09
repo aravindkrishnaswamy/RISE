@@ -23,6 +23,7 @@
 #include "AdaptiveTileSizer.h"
 #include "PreviewScheduler.h"
 #include <chrono>
+#include <exception>
 
 #include "ScanlineRasterizeSequence.h"
 #include "BlockRasterizeSequence.h"
@@ -41,6 +42,131 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	class FrameStoreTileWriteGuard
+	{
+	public:
+		FrameStoreTileWriteGuard( FrameStore* store, const size_t tx0,
+			const size_t ty0, const size_t tx1, const size_t ty1 )
+			: store_(store), tx0_(tx0), ty0_(ty0), tx1_(tx1), ty1_(ty1)
+		{
+			try { Acquire(); }
+			catch( ... ) { ReleaseNoThrow(); throw; }
+		}
+		~FrameStoreTileWriteGuard() { ReleaseNoThrow(); }
+
+		void PublishAndReacquire()
+		{
+			Release();
+			Acquire();
+		}
+
+		void Release()
+		{
+			std::vector<std::pair<size_t,size_t> > locked;
+			locked.swap(locked_);
+			std::exception_ptr firstFailure;
+			for( const auto& tile : locked ) {
+				try { store_->EndTile(tile.first,tile.second); }
+				catch( ... ) {
+					if( !firstFailure ) firstFailure = std::current_exception();
+				}
+			}
+			if( firstFailure ) std::rethrow_exception(firstFailure);
+		}
+
+	private:
+		void Acquire()
+		{
+			if( !store_ ) return;
+			locked_.reserve((tx1_-tx0_)*(ty1_-ty0_));
+			for( size_t ty=ty0_; ty<ty1_; ++ty ) {
+				for( size_t tx=tx0_; tx<tx1_; ++tx ) {
+					store_->BeginTile(tx,ty);
+					locked_.push_back(std::make_pair(tx,ty));
+				}
+			}
+		}
+		void ReleaseNoThrow() noexcept
+		{
+			try { Release(); }
+			catch( ... ) {}
+		}
+
+		FrameStore* store_;
+		size_t tx0_, ty0_, tx1_, ty1_;
+		std::vector<std::pair<size_t,size_t> > locked_;
+	};
+
+	class ProgressiveStateGuard
+	{
+	public:
+		ProgressiveStateGuard( ISampling2D*& sampling, ProgressiveFilm*& film,
+			unsigned int& totalSPP, double& progressBase, double& progressWeight,
+			double& progressTotal )
+			: sampling_(sampling), film_(film), totalSPP_(totalSPP),
+			  progressBase_(progressBase), progressWeight_(progressWeight),
+			  progressTotal_(progressTotal), savedSampling_(sampling),
+			  savedFilm_(film), savedTotalSPP_(totalSPP),
+			  savedProgressBase_(progressBase), savedProgressWeight_(progressWeight),
+			  savedProgressTotal_(progressTotal) {}
+		~ProgressiveStateGuard()
+		{
+			sampling_ = savedSampling_;
+			film_ = savedFilm_;
+			totalSPP_ = savedTotalSPP_;
+			progressBase_ = savedProgressBase_;
+			progressWeight_ = savedProgressWeight_;
+			progressTotal_ = savedProgressTotal_;
+		}
+
+	private:
+		ISampling2D*& sampling_;
+		ProgressiveFilm*& film_;
+		unsigned int& totalSPP_;
+		double& progressBase_;
+		double& progressWeight_;
+		double& progressTotal_;
+		ISampling2D* savedSampling_;
+		ProgressiveFilm* savedFilm_;
+		unsigned int savedTotalSPP_;
+		double savedProgressBase_, savedProgressWeight_, savedProgressTotal_;
+	};
+
+	class SamplingOverrideGuard
+	{
+	public:
+		SamplingOverrideGuard( ISampling2D*& slot, ISampling2D* replacement )
+			: slot_(slot), saved_(slot), replacement_(replacement)
+		{
+			slot_ = replacement_;
+		}
+		~SamplingOverrideGuard()
+		{
+			slot_ = saved_;
+			if( replacement_ ) replacement_->release();
+		}
+		ISampling2D* Get() const { return replacement_; }
+
+	private:
+		ISampling2D*& slot_;
+		ISampling2D* saved_;
+		ISampling2D* replacement_;
+	};
+
+	template<typename T>
+	class ReferenceReleaseGuard
+	{
+	public:
+		explicit ReferenceReleaseGuard( T* value ) : value_(value) {}
+		~ReferenceReleaseGuard() { if( value_ ) value_->release(); }
+		T* Get() const { return value_; }
+	private:
+		T* value_;
+	};
+}
 
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	IRayCaster* pCaster_,
@@ -482,12 +608,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+	FrameStoreTileWriteGuard tileGuard(
+		fsBracket ? mFrameStore : nullptr,fsTx0,fsTy0,fsTx1,fsTy1);
 
 	// L6e-1.1 — Draw toggles + dispatch in-progress observer fire
 	// INSIDE the bracket so toggle writes are lock-protected, and
@@ -565,16 +688,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	// frame-complete cadence; per-tile toggles are noise rather
 	// than useful progress.
 	if( fsBracket && !skipBlockOutput && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileGuard.PublishAndReacquire();
 	}
 
 	// L8 round 11 — time-based intra-block tile-bracket flush.
@@ -633,16 +747,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClock::now();
 			if( now - lastFlush >= kFlushInterval ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileGuard.PublishAndReacquire();
 				lastFlush = now;
 
 				// L8 round 12+15 — intra-block cancellation check.
@@ -683,14 +788,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	                   // GetNextBlock call.
 
 	if( fsBracket ) {
-		// EndTile fires per-tile observers (OnTileComplete) and bumps
-		// the global generation.  Order doesn't matter — each tile's
-		// observer fire is independent.
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileGuard.Release();
 	}
 
 	if( !skipBlockOutput ) {
@@ -750,12 +848,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+	FrameStoreTileWriteGuard tileGuard(
+		fsBracket ? mFrameStore : nullptr,fsTx0,fsTy0,fsTx1,fsTy1);
 
 	// L6e-1.1 — block-border dim + in-progress observer dispatch
 	// inside the bracket; see SPRasterizeSingleBlock for rationale.
@@ -778,16 +873,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	// for the rationale; this is the animation-path twin.
 	// L8 round 6 — same per-rasterizer gate as the static path.
 	if( fsBracket && drewToggles && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileGuard.PublishAndReacquire();
 	}
 
 	// L8 round 11 — time-based intra-block flush; see
@@ -829,16 +915,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClockAnim::now();
 			if( now - lastFlushAnim >= kFlushIntervalAnim ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileGuard.PublishAndReacquire();
 				lastFlushAnim = now;
 
 				// L8 round 12+15 — intra-block cancellation check
@@ -854,11 +931,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	(void)earlyAbortAnim;
 
 	if( fsBracket ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileGuard.Release();
 	}
 
 	if( !skipBlockOutput ) {
@@ -1172,6 +1245,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		PixelBasedRasterizerHelper* mutableThis =
+			const_cast<PixelBasedRasterizerHelper*>(this);
+		ProgressiveStateGuard progressiveState(mutableThis->pSampling,
+			mProgressiveFilm,mTotalProgressiveSPP,mProgressBase,
+			mProgressWeight,mProgressTotal);
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -1207,9 +1285,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
-			ISampling2D* pPassSampling = pSavedSampling->Clone();
-			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			SamplingOverrideGuard passSampling(
+				mutableThis->pSampling,pSavedSampling->Clone());
+			passSampling.Get()->SetNumSamples( passSPP );
 
 			OnProgressivePassBegin( pScene, passIdx );
 
@@ -1224,15 +1302,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			mProgressWeight = static_cast<double>( passSPP );
 			mProgressTotal  = totalProgressUnits;
 
-			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdge );
-			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
-			safe_release( pPassSeq );
+			ReferenceReleaseGuard<MortonRasterizeSequence> passSeq(
+				new MortonRasterizeSequence(tileEdge));
+			const bool passCompleted = RasterizeScenePass(
+				RuntimeContext::PASS_NORMAL,pScene,*pImage,pRect,*passSeq.Get());
 
 			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
 			                       static_cast<double>( passSPP );
-
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
-			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -1289,9 +1365,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			}
 		}
 
-		mProgressiveFilm = 0;
-		mTotalProgressiveSPP = 0;
-		mProgressBase = mProgressWeight = mProgressTotal = 0;
 	}
 	else
 	{
@@ -1738,6 +1811,11 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		PixelBasedRasterizerHelper* mutableThis =
+			const_cast<PixelBasedRasterizerHelper*>(this);
+		ProgressiveStateGuard progressiveState(mutableThis->pSampling,
+			mProgressiveFilm,mTotalProgressiveSPP,mProgressBase,
+			mProgressWeight,mProgressTotal);
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -1770,9 +1848,9 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
-			ISampling2D* pPassSampling = pSavedSampling->Clone();
-			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			SamplingOverrideGuard passSampling(
+				mutableThis->pSampling,pSavedSampling->Clone());
+			passSampling.Get()->SetNumSamples( passSPP );
 
 			OnProgressivePassBegin( pScene, passIdx );
 
@@ -1792,14 +1870,11 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			                * static_cast<double>( passSPP );
 			mProgressWeight = static_cast<double>( passSPP );
 
-			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
+			ReferenceReleaseGuard<MortonRasterizeSequence> passSeq(
+				new MortonRasterizeSequence(tileEdgeAnim));
 			const bool passCompleted = RenderFrameOfAnimationPass(
 				RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time,
-				*pPassSeq, framedata );
-			safe_release( pPassSeq );
-
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
-			safe_release( pPassSampling );
+				*passSeq.Get(), framedata );
 			if( !passCompleted ) {
 				frameCompleted = false;
 				break;
@@ -1877,12 +1952,6 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			}
 		}
 
-		mProgressiveFilm = 0;
-		mTotalProgressiveSPP = 0;
-
-		// Leave mProgressBase at frameStartBase — caller advances by a
-		// full frame's units after we return.
-		mProgressBase = frameStartBase;
 	}
 	else
 	{
@@ -1938,6 +2007,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	) const
 {
 	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( num_frames == 0u ) {
+		GlobalLog()->PrintSourceError(
+			"PixelBasedRasterizerHelper::RasterizeSceneAnimation:: zero-frame animations are invalid",
+			__FILE__,__LINE__);
+		return;
+	}
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.
 	const ICamera* pCam = pScene.GetCamera();
 	if( !pCam ) {

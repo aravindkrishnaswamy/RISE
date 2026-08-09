@@ -129,6 +129,20 @@ namespace
 		}
 	};
 
+	class ThrowingIntermediateOutput final :
+		public virtual IRasterizerOutput,
+		public virtual Implementation::Reference
+	{
+	public:
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override
+		{
+			throw std::runtime_error("intentional intermediate output failure");
+		}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+	protected:
+		~ThrowingIntermediateOutput() override = default;
+	};
+
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
 	{
@@ -2408,7 +2422,8 @@ namespace
 			const bool unqualifiedConfig = false,
 			const bool includeFire = true,
 			const double carbonValue = 1.0,
-			const bool includeIrradianceCache = false ) {
+			const bool includeIrradianceCache = false,
+			const bool progressiveRendering = false ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2418,7 +2433,7 @@ namespace
 			if( rasterizer.find("mlt_") == 0u ) {
 				output << "bootstrap_samples 8\nchains 1\nmutations_per_pixel 1\n";
 			} else {
-				output << "samples 1\n";
+				output << "samples " << (progressiveRendering ? 2 : 1) << "\n";
 			}
 			if( rasterizer.find("spectral") != std::string::npos ) {
 				output << "nmbegin " << nmBegin <<
@@ -2426,7 +2441,9 @@ namespace
 					"hwss " << (useHWSS ? "true" : "false") << "\n";
 			}
 			if( rasterizer.find("pathtracing_") == 0u ) {
-				output << "max_volume_bounce 1\nprogressive_rendering false\n";
+				output << "max_volume_bounce 1\nprogressive_rendering " <<
+					(progressiveRendering ? "true" : "false") <<
+					"\nprogressive_samples_per_pass 1\n";
 			}
 			output << (unqualifiedConfig ?
 				"oidn_denoise true\ndirect_clamp 2\nfilter_glossy 0.1\nsms_enabled true\n" :
@@ -2683,6 +2700,16 @@ namespace
 
 			CompletionCountingOutput* completionOutput = new CompletionCountingOutput(store);
 			rasterizer->AddRasterizerOutput(completionOutput);
+			const Implementation::FrameStore::Snapshot zeroFrameSnapshot =
+				store->CaptureSnapshot();
+			const FrameStoreOutput::Metadata zeroFrameMetadata = store->Meta();
+			const uint64_t zeroFrameGeneration = store->Generation();
+			Check( !job->RasterizeAnimation(2.0,3.0,0u,false,false) &&
+				store->Generation() == zeroFrameGeneration &&
+				SameFrameMetadata(store->Meta(),zeroFrameMetadata) &&
+				SameSnapshotPixels(store->CaptureSnapshot(),zeroFrameSnapshot) &&
+				completionOutput->finalCount.load() == 0u,
+				"zero-frame animation rejects before mutating pixels, metadata, or generation" );
 			const bool explicitAnimationRendered =
 				job->RasterizeAnimation(2.0,3.0,1u,true,true);
 			RISECBOR64::Value explicitAnimationConfig;
@@ -2764,8 +2791,8 @@ namespace
 				"Job light-sampling RR threshold changes resolved provenance" );
 			safe_release(lightRRJob);
 
-			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
-			const RISEColor renderedPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
+			FrameStoreOutput::Metadata renderedMetadata = store->Meta();
+			RISEColor renderedPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
 			ThrowingFrameObserver throwingObserver;
 			store->AddObserver(&throwingObserver);
 			bool renderThrew = false;
@@ -2831,6 +2858,26 @@ namespace
 			Check( fireRegionRejected && store->Generation() == regionBaselineGeneration &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
 				"fire region render fails closed before workers can publish a hybrid primary" );
+			job->GetScene()->SetGlobalMedium(nullptr);
+			CancelledFireProgress nonfireCancelledProgress;
+			job->SetProgress(&nonfireCancelledProgress);
+			const bool fireToNonfireCancelled = !job->Rasterize();
+			job->SetProgress(nullptr);
+			const RISEColor fireToNonfirePixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( fireToNonfireCancelled && SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				fireToNonfirePixel.base[0] == renderedPixel.base[0] &&
+				fireToNonfirePixel.base[1] == renderedPixel.base[1] &&
+				fireToNonfirePixel.base[2] == renderedPixel.base[2] &&
+				fireToNonfirePixel.a == renderedPixel.a,
+				"failed fire-to-nonfire render restores the prior fire pixels and metadata" );
+			const uint64_t nonfireRegionGeneration = store->Generation();
+			Check( !job->RasterizeRegion(0u,0u,0u,0u) &&
+				store->Generation() == nonfireRegionGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"fire-to-nonfire region render rejects before producing an unlabeled hybrid" );
+			Check( job->SetGlobalMedium("fire"),
+				"fire-to-nonfire rollback fixture restores the authored fire medium" );
 			rasterizer->FreeRasterizerOutputs();
 			safe_release(completionOutput);
 			const uint64_t predictionBaselineGeneration = store->Generation();
@@ -2949,6 +2996,39 @@ namespace
 				"a rejected preflight preserves the last completed frame metadata" );
 			Check( !job->SetFireFidelityMode("invented"),
 				"the job rejects an unknown fire fidelity mode" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,false,true);
+		RISE_CreateJobPriv(&job);
+		const bool progressiveExceptionLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( progressiveExceptionLoaded ) {
+			IRasterizer* progressiveRasterizer = job->GetRasterizer();
+			ThrowingIntermediateOutput* throwingOutput = new ThrowingIntermediateOutput();
+			progressiveRasterizer->AddRasterizerOutput(throwingOutput);
+			bool progressiveStillThrew = false;
+			try { job->Rasterize(); }
+			catch( const std::runtime_error& ) { progressiveStillThrew = true; }
+			progressiveRasterizer->FreeRasterizerOutputs();
+			safe_release(throwingOutput);
+			const bool progressiveStillRecovered = job->Rasterize();
+
+			throwingOutput = new ThrowingIntermediateOutput();
+			progressiveRasterizer->AddRasterizerOutput(throwingOutput);
+			bool progressiveAnimationThrew = false;
+			try { job->RasterizeAnimation(0.0,0.0,1u,false,false); }
+			catch( const std::runtime_error& ) { progressiveAnimationThrew = true; }
+			progressiveRasterizer->FreeRasterizerOutputs();
+			safe_release(throwingOutput);
+			const bool progressiveAnimationRecovered =
+				job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			Check( progressiveStillThrew && progressiveStillRecovered &&
+				progressiveAnimationThrew && progressiveAnimationRecovered,
+				"progressive still and animation restore sampling, film, progress, and tile locks after exceptions" );
+		} else {
+			Check(false,"progressive exception-safety fixture loads");
 		}
 		safe_release(job);
 

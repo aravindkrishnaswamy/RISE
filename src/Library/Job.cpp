@@ -10738,7 +10738,8 @@ namespace
 		}
 		bool ArmPixelStateForFire()
 		{
-			if( !store_ || store_->Meta().renderFidelityStatus.empty() ) return false;
+			if( !store_ || (original_.renderFidelityStatus.empty() &&
+				store_->Meta().renderFidelityStatus.empty()) ) return false;
 			snapshot_.reset(new RISE::Implementation::FrameStore::Snapshot(
 				store_->CaptureSnapshot()));
 			snapshot_->metadata = original_;
@@ -10746,7 +10747,8 @@ namespace
 		}
 		bool PreparedFire() const
 		{
-			return store_ && !store_->Meta().renderFidelityStatus.empty();
+			return store_ && (!original_.renderFidelityStatus.empty() ||
+				!store_->Meta().renderFidelityStatus.empty());
 		}
 		void Commit() { committed_ = true; }
 
@@ -11189,6 +11191,11 @@ bool Job::RasterizeAnimation(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
+	if( num_frames == 0u ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeAnimation: zero-frame animations are invalid");
+		return false;
+	}
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
