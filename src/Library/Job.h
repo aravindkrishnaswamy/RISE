@@ -54,10 +54,18 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		bool BuildIdentityModuleNameMatches(
+			const std::string& path,
+			const std::vector<std::string>& acceptedNames );
+	}
+
 	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
 
 	//! Job - This is used to simplify the creation of a job, all things can be

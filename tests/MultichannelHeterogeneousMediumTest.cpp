@@ -31,6 +31,7 @@
 #endif
 
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
@@ -2411,6 +2412,20 @@ namespace
 	void TestProductionFireFidelityPreflight()
 	{
 		std::cout << "TestProductionFireFidelityPreflight" << std::endl;
+		Check( Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\Iex-3_4.dll",{"iex"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\IlmThread-3_4.dll",{"ilmthread"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\Imath-3_2.dll",{"imath"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\zlib1.dll",{"z","zlib"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"/base.apk!/lib/arm64-v8a/libOpenImageDenoise.so",
+				{"openimagedenoise"}) &&
+			!Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\OpenEXR-3_4.dll",{"iex"}),
+			"build identity matches versioned Windows and APK module basenames without collisions" );
 		char filename[128];
 		std::snprintf( filename, sizeof(filename),
 			"rise_fire_fidelity_%d.RISEscene", static_cast<int>( ::getpid() ) );
@@ -2615,6 +2630,7 @@ namespace
 				dirtyState->Find("diff_sha256") &&
 				dirtyState->Find("diff_sha256")->GetText().size() == 64u &&
 				rendererBinary && rendererBinary->Find("kind") &&
+				rendererBinary->Find("hash_basis") &&
 				rendererBinary->Find("path") && rendererBinary->Find("sha256") &&
 				rendererBinary->Find("sha256")->GetText().size() == 64u &&
 				compilerSettings && compilerSettings->Find("identity") &&

@@ -118,6 +118,28 @@
 
 using namespace RISE;
 
+bool RISE::Implementation::BuildIdentityModuleNameMatches(
+	const std::string& path,
+	const std::vector<std::string>& acceptedNames )
+{
+	const std::size_t slash = path.find_last_of("/\\");
+	std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+	std::transform(name.begin(),name.end(),name.begin(),
+		[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+	if( name.compare(0u,3u,"lib") == 0 ) name.erase(0u,3u);
+	for( std::string accepted : acceptedNames ) {
+		std::transform(accepted.begin(),accepted.end(),accepted.begin(),
+			[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+		if( name.compare(0u,accepted.size(),accepted) != 0 ) continue;
+		if( name.size() == accepted.size() ) return true;
+		const unsigned char boundary =
+			static_cast<unsigned char>(name[accepted.size()]);
+		if( boundary == '.' || boundary == '-' || boundary == '_' ||
+			std::isdigit(boundary) ) return true;
+	}
+	return false;
+}
+
 // P2a: a Job-level edit that changes the emitter or environment set must
 // bump the Scene's light-topology generation, so a REUSED RayCaster rebuilds
 // its LightSampler/EnvironmentSampler on the next AttachScene (mirrors the
@@ -245,6 +267,48 @@ namespace
 			return true;
 		}
 #endif
+#if defined(__linux__) || defined(__ANDROID__)
+		struct LoadedELFRequest
+		{
+			const std::string& path;
+			RISECBOR64::Bytes& bytes;
+			bool found;
+		};
+		struct LoadedELFCollector
+		{
+			static int Append( dl_phdr_info* info, std::size_t, void* opaque )
+			{
+				LoadedELFRequest& request = *static_cast<LoadedELFRequest*>(opaque);
+				const std::string candidate = info->dlpi_name ? info->dlpi_name : "";
+				const std::size_t targetSlash = request.path.find_last_of('/');
+				const std::size_t candidateSlash = candidate.find_last_of('/');
+				const std::string targetName = request.path.substr(
+					targetSlash == std::string::npos ? 0u : targetSlash+1u);
+				const std::string candidateName = candidate.substr(
+					candidateSlash == std::string::npos ? 0u : candidateSlash+1u);
+				if( candidate != request.path &&
+					(targetName.empty() || targetName != candidateName) ) return 0;
+				for( std::size_t i=0u; i<info->dlpi_phnum; ++i ) {
+					const ElfW(Phdr)& header = info->dlpi_phdr[i];
+					if( header.p_type != PT_LOAD || !(header.p_flags & PF_X) ||
+						header.p_filesz == 0u ) continue;
+					const unsigned char* begin = reinterpret_cast<const unsigned char*>(
+						info->dlpi_addr+header.p_vaddr);
+					request.bytes.insert(request.bytes.end(),begin,
+						begin+static_cast<std::size_t>(header.p_filesz));
+					request.found = true;
+				}
+				return request.found ? 1 : 0;
+			}
+		};
+		bytes.clear();
+		LoadedELFRequest request = { path,bytes,false };
+		dl_iterate_phdr(&LoadedELFCollector::Append,&request);
+		if( request.found ) {
+			hashBasis = "loaded_elf_executable_segments";
+			return true;
+		}
+#endif
 		return false;
 	}
 
@@ -318,7 +382,7 @@ namespace
 	}
 
 	RISECBOR64::Value DependencyBuildIdentity(
-		const char* binaryNeedle,
+		const std::vector<std::string>& acceptedBinaryNames,
 		const char* version,
 		const bool enabled,
 		const bool embedded,
@@ -328,14 +392,9 @@ namespace
 		using RISECBOR64::Value;
 		Value::Values binaries;
 		if( enabled && !embedded ) {
-			std::string needle(binaryNeedle);
-			std::transform(needle.begin(),needle.end(),needle.begin(),
-				[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
 			for( const std::string& path : loadedPaths ) {
-				std::string lower(path);
-				std::transform(lower.begin(),lower.end(),lower.begin(),
-					[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
-				if( lower.find(needle) == std::string::npos ) continue;
+				if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+					path,acceptedBinaryNames) ) continue;
 				RISECBOR64::Bytes fileBytes;
 				std::string hashBasis;
 				if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
@@ -427,8 +486,10 @@ namespace
 			std::to_string(RISE_VER_BUILD_VERSION);
 		const std::string rendererBinaryPath = CurrentRendererBinaryPath();
 		RISECBOR64::Bytes rendererBinaryBytes;
+		std::string rendererBinaryHashBasis;
 		if( rendererBinaryPath.empty() ||
-			!ReadIdentityFile(rendererBinaryPath,rendererBinaryBytes) ) {
+			!ReadLoadedBinaryIdentity(rendererBinaryPath,rendererBinaryBytes,
+				rendererBinaryHashBasis) ) {
 			return false;
 		}
 		const std::vector<std::string> loadedPaths = LoadedBinaryPaths();
@@ -489,63 +550,63 @@ namespace
 				{ "lto_mode", Value::String(ltoMode) },
 				{ "optimization_mode", Value::String(optimizationMode) } }) },
 			{ "dependency_builds", Value::MapValue({
-				{ "iex", DependencyBuildIdentity("libiex",openexrVersion,
+				{ "iex", DependencyBuildIdentity({"iex"},openexrVersion,
 #ifndef NO_EXR_SUPPORT
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "ilmthread", DependencyBuildIdentity("libilmthread",openexrVersion,
+				{ "ilmthread", DependencyBuildIdentity({"ilmthread"},openexrVersion,
 #ifndef NO_EXR_SUPPORT
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "imath", DependencyBuildIdentity("libimath",imathVersion,
+				{ "imath", DependencyBuildIdentity({"imath"},imathVersion,
 #ifndef NO_EXR_SUPPORT
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "oidn", DependencyBuildIdentity("openimagedenoise",oidnVersion,
+				{ "oidn", DependencyBuildIdentity({"openimagedenoise"},oidnVersion,
 #ifdef RISE_ENABLE_OIDN
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "openexr", DependencyBuildIdentity("openexr",openexrVersion,
+				{ "openexr", DependencyBuildIdentity({"openexr"},openexrVersion,
 #ifndef NO_EXR_SUPPORT
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "openpgl", DependencyBuildIdentity("openpgl",openpglVersion,
+				{ "openpgl", DependencyBuildIdentity({"openpgl"},openpglVersion,
 #ifdef RISE_ENABLE_OPENPGL
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "png", DependencyBuildIdentity("libpng",pngVersion,
+				{ "png", DependencyBuildIdentity({"png"},pngVersion,
 #ifndef NO_PNG_SUPPORT
 					true,embeddedPngZlib,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "tiff", DependencyBuildIdentity("libtiff",tiffVersion,
+				{ "tiff", DependencyBuildIdentity({"tiff"},tiffVersion,
 #ifndef NO_TIFF_SUPPORT
 					true,false,
 #else
 					false,false,
 #endif
 					loadedPaths,dependenciesComplete) },
-				{ "zlib", DependencyBuildIdentity("libz.",zlibVersion,
+				{ "zlib", DependencyBuildIdentity({"z","zlib"},zlibVersion,
 #ifndef NO_PNG_SUPPORT
 					true,embeddedPngZlib,
 #else
@@ -561,6 +622,7 @@ namespace
 #else
 				{ "kind", Value::String("executable") },
 #endif
+				{ "hash_basis", Value::String(rendererBinaryHashBasis) },
 				{ "path", Value::String(rendererBinaryPath) },
 				{ "sha256", Value::String(RISECBOR64::SHA256Hex(rendererBinaryBytes)) } }) },
 			{ "fp_settings", Value::MapValue({
@@ -11137,7 +11199,8 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		RISECBOR64::Bytes rendererBuild;
 		std::string rendererBuildId;
 		if( resolvedConfig.empty() ||
-			!BuildRendererBuildIdentity(rendererBuild,rendererBuildId) ) {
+			(hasFireMedia &&
+			 !BuildRendererBuildIdentity(rendererBuild,rendererBuildId)) ) {
 			GlobalLog()->PrintEx(eLog_Error,
 				"Job:: fire render output provenance metadata is unavailable");
 			return false;
