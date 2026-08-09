@@ -4960,12 +4960,16 @@ namespace RISE
 		{
 		case 0:  fro_type = FileRasterizerOutput::TGA;   break;
 		case 1:  fro_type = FileRasterizerOutput::PPM;   break;
-		default:
 		case 2:  fro_type = FileRasterizerOutput::PNG;   break;
 		case 3:  fro_type = FileRasterizerOutput::HDR;   break;
 		case 4:  fro_type = FileRasterizerOutput::TIFF;  break;
 		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
 		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
+		default:
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: unknown file type code %d",
+				static_cast<int>(type) );
+			return false;
 		}
 		FileRasterizerOutput* output = new FileRasterizerOutput(
 			szPattern, bMultiple, fro_type, bpp, color_space,

@@ -4169,7 +4169,17 @@ namespace
 			FrameEncoderRegistry& encoders = FrameEncoderRegistry::Get();
 			const std::filesystem::path unavailableOutput =
 				std::filesystem::temp_directory_path() /
-				("rise_unavailable_encoder_" + std::to_string(::getpid()));
+					("rise_unavailable_encoder_" + std::to_string(::getpid()));
+			IRasterizerOutput* unknownOutput = nullptr;
+			const bool directUnknownRejected = !RISE_API_CreateFileRasterizerOutput(
+				&unknownOutput,unavailableOutput.string().c_str(),false,7,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				unknownOutput == nullptr;
+			const bool jobUnknownRejected = !job->AddFileRasterizerOutput(
+				unavailableOutput.string().c_str(),false,7,8,1,0.0,0,2,true);
+			safe_release(unknownOutput);
+			Check( directUnknownRejected && jobUnknownRejected,
+				"unknown file encoder type rejects at both API and Job authoring boundaries" );
 			IFrameEncoder* png = encoders.AcquireByFormatName("PNG");
 			IRasterizerOutput* retainedOutput = nullptr;
 			const bool createdBeforeRemoval = RISE_API_CreateFileRasterizerOutput(
