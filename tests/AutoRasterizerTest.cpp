@@ -323,6 +323,36 @@ private:
 	const IScene& scene_;
 };
 
+class ReentrantRemoveOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantRemoveOutput(
+		Rasterizer& rasterizer,
+		IRasterizerOutput& removed,
+		const unsigned int triggerNotification ) :
+		rasterizer_(rasterizer), removed_(removed),
+		triggerNotification_(triggerNotification) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == triggerNotification_ ) {
+			removed = true;
+			rasterizer_.RemoveRasterizerOutput(&removed_);
+		}
+	}
+
+	bool removed = false;
+
+protected:
+	~ReentrantRemoveOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	IRasterizerOutput& removed_;
+	unsigned int triggerNotification_;
+};
+
 class LifetimeFrameStoreOutput
 	: public virtual IRasterizerOutput
 	, public virtual Reference
@@ -2026,6 +2056,127 @@ static void TestResolutionCallbackReentryFailsClosed()
 	std::remove(path.c_str());
 }
 
+static void TestResolutionCallbackCycleFailsClosed()
+{
+	const std::string label =
+		"two Auto delegate resolution callbacks reject an A-to-B-to-A cycle";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* firstJob = nullptr;
+	IJobPriv* secondJob = nullptr;
+	std::string firstPath, secondPath;
+	if( !LoadAutoLifecycleJob(firstJob,firstPath,"resolution_cycle_a") ||
+		!LoadAutoLifecycleJob(secondJob,secondPath,"resolution_cycle_b") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		if( !firstPath.empty() ) std::remove(firstPath.c_str());
+		if( !secondPath.empty() ) std::remove(secondPath.c_str());
+		return;
+	}
+	AutoRasterizer* first = dynamic_cast<AutoRasterizer*>(firstJob->GetRasterizer());
+	AutoRasterizer* second = dynamic_cast<AutoRasterizer*>(secondJob->GetRasterizer());
+	firstJob->RemoveRasterizerOutputs();
+	secondJob->RemoveRasterizerOutputs();
+	ReentrantResolveOutput* firstOutput = first && second ?
+		new ReentrantResolveOutput(*second,*secondJob->GetScene()) : nullptr;
+	ReentrantResolveOutput* secondOutput = first && second ?
+		new ReentrantResolveOutput(*first,*firstJob->GetScene()) : nullptr;
+	if( !firstOutput || !secondOutput ) {
+		Check(false,"two Auto rasterizers available: "+label);
+		safe_release(firstOutput);
+		safe_release(secondOutput);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		std::remove(firstPath.c_str());
+		std::remove(secondPath.c_str());
+		return;
+	}
+	first->AddRasterizerOutput(firstOutput);
+	second->AddRasterizerOutput(secondOutput);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = first->ResolveForFirePreflight(*firstJob->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: two-Auto resolution cycle exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && firstOutput->attempted && secondOutput->attempted &&
+		secondOutput->rejected && first->ResolvedIntegrator() != AutoIntegratorChoice::Auto &&
+		second->ResolvedIntegrator() != AutoIntegratorChoice::Auto,
+		"the active-resolution stack rejects the cycle and both outer resolutions complete: "+
+		label);
+	first->FreeRasterizerOutputs();
+	second->FreeRasterizerOutputs();
+	safe_release(firstOutput);
+	safe_release(secondOutput);
+	safe_release(firstJob);
+	safe_release(secondJob);
+	std::remove(firstPath.c_str());
+	std::remove(secondPath.c_str());
+}
+
+static void TestSyncReplayTracksReentrantRemoval()
+{
+	const std::string label =
+		"Auto sync replay retries after a callback removes a later snapshot output";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_reentrant_removal") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	CapturingRasterizerOutput* removed = new CapturingRasterizerOutput();
+	ReentrantRemoveOutput* mutator = rasterizer ?
+		new ReentrantRemoveOutput(*rasterizer,*removed,3u) : nullptr;
+	if( !rasterizer || !mutator ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(mutator);
+		safe_release(removed);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(mutator);
+	rasterizer->AddRasterizerOutput(removed);
+	rasterizer->ForTest_FreeDelegateRasterizerOutputs();
+	bool synchronized = false;
+	try { synchronized = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( ... ) { synchronized = false; }
+	Check(initiallyResolved && synchronized && mutator->removed &&
+		rasterizer->ForTest_WrapperContainsOutput(mutator) &&
+		rasterizer->ForTest_DelegateContainsOutput(mutator) &&
+		!rasterizer->ForTest_WrapperContainsOutput(removed) &&
+		!rasterizer->ForTest_DelegateContainsOutput(removed),
+		"revision-aware replay removes the stale delegate-only output: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(mutator);
+	safe_release(removed);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestPersistentRollbackDetachesBothTopologies()
 {
 	const std::string label = "persistent FrameStore rollback failure detaches both Auto topologies";
@@ -2443,6 +2594,8 @@ int main()
 	TestSyncAndFrameStoreSwapAreSerialized();
 	TestSyncFailureReplaysWrapperTopology();
 	TestResolutionCallbackReentryFailsClosed();
+	TestResolutionCallbackCycleFailsClosed();
+	TestSyncReplayTracksReentrantRemoval();
 	TestPersistentRollbackDetachesBothTopologies();
 	TestResolutionPublicationTracksConcurrentFrameStoreSwap();
 	TestPostResolutionAddReentrancy();

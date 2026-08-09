@@ -186,6 +186,7 @@ namespace RISE
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;
 			void ForTest_SetDelegateFrameStore( FrameStore* frameStore );
+			void ForTest_FreeDelegateRasterizerOutputs();
 			bool ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const;
 			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
 

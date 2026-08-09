@@ -46,7 +46,7 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	thread_local const AutoRasterizer* gResolvingAutoRasterizer = nullptr;
+	thread_local std::vector<const AutoRasterizer*> gResolvingAutoRasterizers;
 
 	//! Lowercase scene-language spelling of an integrator choice; used
 	//! only for the diagnostic log line that surfaces the runtime pick.
@@ -945,19 +945,20 @@ IRasterizer* AutoRasterizer::BuildDelegate(
 
 void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 {
-	if( gResolvingAutoRasterizer == this ) {
+	if( std::find(gResolvingAutoRasterizers.begin(),gResolvingAutoRasterizers.end(),this) !=
+		gResolvingAutoRasterizers.end() ) {
 		throw std::runtime_error(
 			"output_provenance_unavailable: Auto delegate resolution is reentrant");
 	}
 	std::call_once( mResolveOnce, [this, scene]() {
 		struct ResolutionActivity
 		{
-			const AutoRasterizer*& active;
-			const AutoRasterizer* previous;
-			ResolutionActivity( const AutoRasterizer*& slot, const AutoRasterizer* current ) :
-				active(slot), previous(slot) { active = current; }
-			~ResolutionActivity() { active = previous; }
-		} resolutionActivity(gResolvingAutoRasterizer,this);
+			std::vector<const AutoRasterizer*>& active;
+			ResolutionActivity(
+				std::vector<const AutoRasterizer*>& stack,
+				const AutoRasterizer* current ) : active(stack) { active.push_back(current); }
+			~ResolutionActivity() { active.pop_back(); }
+		} resolutionActivity(gResolvingAutoRasterizers,this);
 		const AutoIntegratorChoice choice = SelectIntegrator( scene );
 		IRasterizer* candidate = BuildDelegate( choice );
 
@@ -1220,6 +1221,14 @@ void AutoRasterizer::ForTest_SetDelegateFrameStore( FrameStore* frameStore )
 	safe_release(retained);
 }
 
+void AutoRasterizer::ForTest_FreeDelegateRasterizerOutputs()
+{
+	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	IRasterizer* retained = RetainDelegate();
+	if( retained ) retained->FreeRasterizerOutputs();
+	safe_release(retained);
+}
+
 bool AutoRasterizer::ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const
 {
 	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
@@ -1276,28 +1285,61 @@ bool AutoRasterizer::ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegat
 {
 	Rasterizer* concrete = dynamic_cast<Rasterizer*>(delegate);
 	if( !concrete ) return false;
-	std::vector<IRasterizerOutput*> wrapperOutputs;
-	std::vector<IRasterizerOutput*> delegateOutputs;
-	try {
-		wrapperOutputs = RetainRasterizerOutputs();
-		delegateOutputs = concrete->RetainRasterizerOutputs();
-		for( IRasterizerOutput* output : delegateOutputs ) {
-			if( std::find(wrapperOutputs.begin(),wrapperOutputs.end(),output) ==
-				wrapperOutputs.end() ) concrete->RemoveRasterizerOutput(output);
+	for( ;; ) {
+		std::vector<IRasterizerOutput*> wrapperOutputs;
+		std::vector<IRasterizerOutput*> delegateOutputs;
+		unsigned long long revision = 0u;
+		try {
+			{
+				std::lock_guard<std::mutex> lock(outsMutex);
+				revision = mReplayRevision;
+				for( IRasterizerOutput* output : outs ) {
+					output->addref();
+					try { wrapperOutputs.push_back(output); }
+					catch( ... ) { output->release(); throw; }
+				}
+			}
+			delegateOutputs = concrete->RetainRasterizerOutputs();
+			for( IRasterizerOutput* output : delegateOutputs ) {
+				if( std::find(wrapperOutputs.begin(),wrapperOutputs.end(),output) ==
+					wrapperOutputs.end() ) concrete->RemoveRasterizerOutput(output);
+			}
+			for( IRasterizerOutput* output : wrapperOutputs ) {
+				if( std::find(delegateOutputs.begin(),delegateOutputs.end(),output) ==
+					delegateOutputs.end() ) concrete->AddRasterizerOutput(output);
+			}
 		}
-		for( IRasterizerOutput* output : wrapperOutputs ) {
-			if( std::find(delegateOutputs.begin(),delegateOutputs.end(),output) ==
-				delegateOutputs.end() ) concrete->AddRasterizerOutput(output);
+		catch( ... ) {
+			for( IRasterizerOutput* output : wrapperOutputs ) output->release();
+			for( IRasterizerOutput* output : delegateOutputs ) output->release();
+			return false;
 		}
-	}
-	catch( ... ) {
 		for( IRasterizerOutput* output : wrapperOutputs ) output->release();
 		for( IRasterizerOutput* output : delegateOutputs ) output->release();
-		return false;
+		{
+			std::lock_guard<std::mutex> lock(outsMutex);
+			if( revision != mReplayRevision ) continue;
+		}
+
+		try {
+			wrapperOutputs = RetainRasterizerOutputs();
+			delegateOutputs = concrete->RetainRasterizerOutputs();
+		}
+		catch( ... ) {
+			for( IRasterizerOutput* output : wrapperOutputs ) output->release();
+			for( IRasterizerOutput* output : delegateOutputs ) output->release();
+			return false;
+		}
+		const bool equal = wrapperOutputs.size() == delegateOutputs.size() &&
+			std::all_of(wrapperOutputs.begin(),wrapperOutputs.end(),
+				[&]( IRasterizerOutput* output ) {
+					return std::find(delegateOutputs.begin(),delegateOutputs.end(),output) !=
+						delegateOutputs.end();
+				});
+		for( IRasterizerOutput* output : wrapperOutputs ) output->release();
+		for( IRasterizerOutput* output : delegateOutputs ) output->release();
+		if( equal ) return true;
 	}
-	for( IRasterizerOutput* output : wrapperOutputs ) output->release();
-	for( IRasterizerOutput* output : delegateOutputs ) output->release();
-	return true;
 }
 
 void AutoRasterizer::AttachToScene( const IScene* pScene )
