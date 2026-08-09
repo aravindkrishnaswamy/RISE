@@ -48,6 +48,106 @@ std::string RISE::Implementation::BuildFrameArtifactFilename(
 	return pattern+suffix+frameText+"."+extension;
 }
 
+bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
+	const FireFrameSequenceEncoding encoding,
+	const unsigned int framesPerSecond,
+	FireFrameSequenceEncodingDescriptor& descriptor,
+	std::string& error )
+{
+	descriptor = FireFrameSequenceEncodingDescriptor();
+	error.clear();
+	if( framesPerSecond == 0u ) {
+		error = "movie frame rate is zero";
+		return false;
+	}
+	descriptor.colorPrimaries = "bt2020";
+	descriptor.transferFunction = "smpte_st_2084_pq";
+	descriptor.ycbcrMatrix = "bt2020_nonconstant_luminance";
+	descriptor.displayTransform = "rec709_linear_to_rec2020_pq";
+	descriptor.referenceWhiteNits = 100u;
+	descriptor.pqPeakNits = 10000u;
+	descriptor.dimensionRounding = "round_up_to_even";
+	descriptor.maxBFrames = 0u;
+	switch( encoding ) {
+	case FireFrameSequenceEncoding::AppleProRes4444_12Bit:
+		descriptor.backend = "avfoundation";
+		descriptor.containerFormat = "MOV";
+		descriptor.codec = "apple_prores_4444";
+		descriptor.codecImplementation = "AVVideoCodecTypeAppleProRes4444";
+		descriptor.codecProfile = "4444";
+		descriptor.bitsPerChannel = 12u;
+		descriptor.inputPixelFormat = "kCVPixelFormatType_64RGBAHalf";
+		descriptor.outputPixelFormat = "prores_4444_12bit";
+		descriptor.chromaSubsampling = "4:4:4";
+		descriptor.alphaMode = "encoded";
+		descriptor.colorRange = "backend_default";
+		descriptor.gopFrames = 1u;
+		descriptor.rateControl = "constant_quality_intra";
+		descriptor.encoderPreset = "backend_default";
+		descriptor.codecOptions = "no_compression_properties";
+		descriptor.codecTag = "backend_default";
+		descriptor.muxerFlags = "none";
+		descriptor.conversionFilter = "avfoundation_managed";
+		descriptor.conversionMatrix = "rec709_to_rec2020_d65";
+		descriptor.conversionSourceRange = "full";
+		descriptor.conversionDestinationRange = "backend_default";
+		descriptor.expectsMediaDataInRealTime = false;
+		break;
+	case FireFrameSequenceEncoding::AppleProRes4444_10Bit:
+		descriptor.backend = "ffmpeg_libavcodec_libavformat_libswscale";
+		descriptor.containerFormat = "MOV";
+		descriptor.codec = "apple_prores_4444";
+		descriptor.codecImplementation = "prores_ks";
+		descriptor.codecProfile = "4444";
+		descriptor.bitsPerChannel = 10u;
+		descriptor.inputPixelFormat = "rgba64le";
+		descriptor.outputPixelFormat = "yuva444p10le";
+		descriptor.chromaSubsampling = "4:4:4";
+		descriptor.alphaMode = "encoded";
+		descriptor.colorRange = "full";
+		descriptor.gopFrames = 1u;
+		descriptor.rateControl = "qscale_global_quality";
+		descriptor.encoderPreset = "none";
+		descriptor.codecOptions = "profile=4444;global_quality=FF_QP2LAMBDA*5";
+		descriptor.codecTag = "backend_default";
+		descriptor.muxerFlags = "none";
+		descriptor.conversionFilter = "sws_bilinear";
+		descriptor.conversionMatrix = "sws_cs_bt2020";
+		descriptor.conversionSourceRange = "full";
+		descriptor.conversionDestinationRange = "full";
+		descriptor.expectsMediaDataInRealTime = false;
+		break;
+	case FireFrameSequenceEncoding::HevcMain10_10Bit:
+		descriptor.backend = "ffmpeg_libavcodec_libavformat_libswscale";
+		descriptor.containerFormat = "MP4";
+		descriptor.codec = "hevc_main10";
+		descriptor.codecImplementation = "libx265";
+		descriptor.codecProfile = "main10";
+		descriptor.bitsPerChannel = 10u;
+		descriptor.inputPixelFormat = "rgba64le";
+		descriptor.outputPixelFormat = "yuv420p10le";
+		descriptor.chromaSubsampling = "4:2:0";
+		descriptor.alphaMode = "dropped";
+		descriptor.colorRange = "limited";
+		descriptor.gopFrames = 2u*framesPerSecond;
+		descriptor.rateControl = "crf_20";
+		descriptor.encoderPreset = "medium";
+		descriptor.codecOptions = "crf=20:hdr10-opt=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):max-cll=0,0";
+		descriptor.codecTag = "hvc1";
+		descriptor.muxerFlags = "+faststart";
+		descriptor.conversionFilter = "sws_bilinear";
+		descriptor.conversionMatrix = "sws_cs_bt2020";
+		descriptor.conversionSourceRange = "full";
+		descriptor.conversionDestinationRange = "limited";
+		descriptor.expectsMediaDataInRealTime = false;
+		break;
+	default:
+		error = "movie output encoding is unavailable";
+		return false;
+	}
+	return true;
+}
+
 namespace
 {
 	const char kFireAttributePrefix[] = "riseFireProv_";
@@ -524,38 +624,54 @@ namespace
 			error = "renderer build identity is unavailable or noncanonical";
 			return false;
 		}
-		const char* format = nullptr;
-		const char* codec = nullptr;
-		unsigned int bitsPerChannel = 0u;
-		switch( encoding ) {
-		case FireFrameSequenceEncoding::AppleProRes4444_12Bit:
-			format = "MOV";
-			codec = "apple_prores_4444";
-			bitsPerChannel = 12u;
-			break;
-		case FireFrameSequenceEncoding::AppleProRes4444_10Bit:
-			format = "MOV";
-			codec = "apple_prores_4444";
-			bitsPerChannel = 10u;
-			break;
-		case FireFrameSequenceEncoding::HevcMain10_10Bit:
-			format = "MP4";
-			codec = "hevc_main10";
-			bitsPerChannel = 10u;
-			break;
-		}
-		if( !format || !codec || !bitsPerChannel ) {
-			error = "movie output encoding is unavailable";
-			return false;
-		}
+		FireFrameSequenceEncodingDescriptor descriptor;
+		if( !DescribeFireFrameSequenceEncoding(
+			encoding,framesPerSecond,descriptor,error) ) return false;
+		const Value encodingDescriptor = Value::MapValue({
+			{ "alpha_mode", Value::String(descriptor.alphaMode) },
+			{ "backend", Value::String(descriptor.backend) },
+			{ "bits_per_channel", Value::Unsigned(descriptor.bitsPerChannel) },
+			{ "chroma_subsampling", Value::String(descriptor.chromaSubsampling) },
+			{ "codec", Value::String(descriptor.codec) },
+			{ "codec_implementation", Value::String(descriptor.codecImplementation) },
+			{ "codec_options", Value::String(descriptor.codecOptions) },
+			{ "codec_profile", Value::String(descriptor.codecProfile) },
+			{ "codec_tag", Value::String(descriptor.codecTag) },
+			{ "color_primaries", Value::String(descriptor.colorPrimaries) },
+			{ "color_range", Value::String(descriptor.colorRange) },
+			{ "container_format", Value::String(descriptor.containerFormat) },
+			{ "conversion_destination_range", Value::String(
+				descriptor.conversionDestinationRange) },
+			{ "conversion_filter", Value::String(descriptor.conversionFilter) },
+			{ "conversion_matrix", Value::String(descriptor.conversionMatrix) },
+			{ "conversion_source_range", Value::String(
+				descriptor.conversionSourceRange) },
+			{ "dimension_rounding", Value::String(descriptor.dimensionRounding) },
+			{ "display_transform", Value::String(descriptor.displayTransform) },
+			{ "encoder_preset", Value::String(descriptor.encoderPreset) },
+			{ "expects_media_data_in_real_time", Value::Bool(
+				descriptor.expectsMediaDataInRealTime) },
+			{ "gop_frames", Value::Unsigned(descriptor.gopFrames) },
+			{ "input_pixel_format", Value::String(descriptor.inputPixelFormat) },
+			{ "max_b_frames", Value::Unsigned(descriptor.maxBFrames) },
+			{ "muxer_flags", Value::String(descriptor.muxerFlags) },
+			{ "output_pixel_format", Value::String(descriptor.outputPixelFormat) },
+			{ "pq_peak_nits", Value::Unsigned(descriptor.pqPeakNits) },
+			{ "rate_control", Value::String(descriptor.rateControl) },
+			{ "reference_white_nits", Value::Unsigned(descriptor.referenceWhiteNits) },
+			{ "schema_version", Value::Unsigned(descriptor.schemaVersion) },
+			{ "transfer_function", Value::String(descriptor.transferFunction) },
+			{ "ycbcr_matrix", Value::String(descriptor.ycbcrMatrix) }
+		});
 		Value::Members resolvedMembers = resolvedConfig.GetMap();
 		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
-			{ "bits_per_channel", Value::Unsigned(bitsPerChannel) },
-			{ "codec", Value::String(codec) },
+			{ "bits_per_channel", Value::Unsigned(descriptor.bitsPerChannel) },
+			{ "codec", Value::String(descriptor.codec) },
 			{ "color_space", Value::String("rec2020_pq") },
 			{ "display_transform", Value::String("rec709_linear_to_rec2020_pq") },
+			{ "encoding", encodingDescriptor },
 			{ "first_frame_index", Value::Unsigned(frames.front().frameIndex) },
-			{ "format", Value::String(format) },
+			{ "format", Value::String(descriptor.containerFormat) },
 			{ "frame_count", Value::Unsigned(frames.size()) },
 			{ "frames_per_second", Value::Unsigned(framesPerSecond) },
 			{ "height", Value::Unsigned(height) },

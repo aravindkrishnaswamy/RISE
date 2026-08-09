@@ -53,6 +53,51 @@ namespace RISE
 			HevcMain10_10Bit
 		};
 
+		struct FireFrameSequenceEncodingDescriptor
+		{
+			unsigned int schemaVersion = 1u;
+			std::string backend;
+			std::string containerFormat;
+			std::string codec;
+			std::string codecImplementation;
+			std::string codecProfile;
+			unsigned int bitsPerChannel = 0u;
+			std::string inputPixelFormat;
+			std::string outputPixelFormat;
+			std::string chromaSubsampling;
+			std::string alphaMode;
+			std::string colorRange;
+			std::string colorPrimaries;
+			std::string transferFunction;
+			std::string ycbcrMatrix;
+			std::string displayTransform;
+			unsigned int referenceWhiteNits = 0u;
+			unsigned int pqPeakNits = 0u;
+			std::string dimensionRounding;
+			unsigned int maxBFrames = 0u;
+			unsigned int gopFrames = 0u;
+			std::string rateControl;
+			std::string encoderPreset;
+			std::string codecOptions;
+			std::string codecTag;
+			std::string muxerFlags;
+			std::string conversionFilter;
+			std::string conversionMatrix;
+			std::string conversionSourceRange;
+			std::string conversionDestinationRange;
+			bool expectsMediaDataInRealTime = false;
+		};
+
+		//! Returns the versioned, complete render-affecting parameter surface
+		//! for a movie encoding.  This descriptor is shared by preflight and
+		//! provenance so an encoder-setting change cannot remain unattested.
+		bool DescribeFireFrameSequenceEncoding(
+			FireFrameSequenceEncoding encoding,
+			unsigned int framesPerSecond,
+			FireFrameSequenceEncodingDescriptor& descriptor,
+			std::string& error
+			);
+
 		//! Encode to temporary files and publish the artifact only after its
 		//! required fire-provenance sidecar has been finalized.  On failure no
 		//! artifact remains without its matching sidecar.

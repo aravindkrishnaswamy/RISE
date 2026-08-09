@@ -1061,6 +1061,8 @@ namespace
 			moviePayload->Find("resolved_render_configuration_v1") : nullptr;
 		const RISECBOR64::Value* movieOutput = movieConfig ?
 			movieConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* movieEncoding = movieOutput ?
+			movieOutput->Find("encoding") : nullptr;
 		RISECBOR64::Bytes moviePayloadBytes;
 		const RISECBOR64::Value* movieId = movieDecoded ?
 			movieEnvelope.Find("provenance_id") : nullptr;
@@ -1088,6 +1090,66 @@ namespace
 			movieOutput->Find("frame_count") &&
 			movieOutput->Find("frame_count")->GetIntegerArgument() == 2u,
 			"[fire provenance] movie records display/integer/lossy reasons and exact bytes" );
+		Check( movieEncoding && movieEncoding->GetType() == RISECBOR64::Value::Map &&
+			movieEncoding->GetMap().size() == 31u &&
+			movieEncoding->Find("schema_version")->GetIntegerArgument() == 1u &&
+			movieEncoding->Find("backend")->GetText() == "avfoundation" &&
+			movieEncoding->Find("codec_implementation")->GetText() ==
+				"AVVideoCodecTypeAppleProRes4444" &&
+			movieEncoding->Find("codec_profile")->GetText() == "4444" &&
+			movieEncoding->Find("input_pixel_format")->GetText() ==
+				"kCVPixelFormatType_64RGBAHalf" &&
+			movieEncoding->Find("output_pixel_format")->GetText() ==
+				"prores_4444_12bit" &&
+			movieEncoding->Find("chroma_subsampling")->GetText() == "4:4:4" &&
+			movieEncoding->Find("alpha_mode")->GetText() == "encoded" &&
+			movieEncoding->Find("color_range")->GetText() == "backend_default" &&
+			movieEncoding->Find("color_primaries")->GetText() == "bt2020" &&
+			movieEncoding->Find("transfer_function")->GetText() == "smpte_st_2084_pq" &&
+			movieEncoding->Find("ycbcr_matrix")->GetText() ==
+				"bt2020_nonconstant_luminance" &&
+			movieEncoding->Find("display_transform")->GetText() ==
+				"rec709_linear_to_rec2020_pq" &&
+			movieEncoding->Find("reference_white_nits")->GetIntegerArgument() == 100u &&
+			movieEncoding->Find("pq_peak_nits")->GetIntegerArgument() == 10000u &&
+			movieEncoding->Find("dimension_rounding")->GetText() == "round_up_to_even" &&
+			movieEncoding->Find("max_b_frames")->GetIntegerArgument() == 0u &&
+			movieEncoding->Find("gop_frames")->GetIntegerArgument() == 1u &&
+			movieEncoding->Find("rate_control")->GetText() == "constant_quality_intra" &&
+			movieEncoding->Find("encoder_preset")->GetText() == "backend_default" &&
+			movieEncoding->Find("codec_options")->GetText() ==
+				"no_compression_properties" &&
+			movieEncoding->Find("codec_tag")->GetText() == "backend_default" &&
+			movieEncoding->Find("muxer_flags")->GetText() == "none" &&
+			movieEncoding->Find("conversion_filter")->GetText() ==
+				"avfoundation_managed" &&
+			movieEncoding->Find("conversion_matrix")->GetText() ==
+				"rec709_to_rec2020_d65" &&
+			movieEncoding->Find("conversion_source_range")->GetText() == "full" &&
+			movieEncoding->Find("conversion_destination_range")->GetText() ==
+				"backend_default" &&
+			!movieEncoding->Find("expects_media_data_in_real_time")->GetBoolean(),
+			"[fire provenance] macOS movie encoding-v1 ratchets its full parameter surface" );
+
+		FireFrameSequenceEncodingDescriptor windowsProRes;
+		std::string descriptorError;
+		Check( DescribeFireFrameSequenceEncoding(
+				FireFrameSequenceEncoding::AppleProRes4444_10Bit,30u,
+				windowsProRes,descriptorError) &&
+			windowsProRes.backend == "ffmpeg_libavcodec_libavformat_libswscale" &&
+			windowsProRes.containerFormat == "MOV" &&
+			windowsProRes.codecImplementation == "prores_ks" &&
+			windowsProRes.bitsPerChannel == 10u &&
+			windowsProRes.outputPixelFormat == "yuva444p10le" &&
+			windowsProRes.colorRange == "full" && windowsProRes.gopFrames == 1u &&
+			windowsProRes.rateControl == "qscale_global_quality" &&
+			windowsProRes.codecOptions ==
+				"profile=4444;global_quality=FF_QP2LAMBDA*5" &&
+			windowsProRes.conversionFilter == "sws_bilinear" &&
+			windowsProRes.conversionMatrix == "sws_cs_bt2020" &&
+			windowsProRes.conversionSourceRange == "full" &&
+			windowsProRes.conversionDestinationRange == "full",
+			"[fire provenance] Windows ProRes encoding-v1 ratchets its full parameter surface" );
 
 		const std::string hevcTemporary = MakeTempPathWithoutExt()+"_hevc.closed";
 		const std::string hevcFile = MakeTempPathWithoutExt()+"_hevc.mp4";
@@ -1109,6 +1171,8 @@ namespace
 			hevcPayload->Find("resolved_render_configuration_v1") : nullptr;
 		const RISECBOR64::Value* hevcOutput = hevcConfig ?
 			hevcConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* hevcEncoding = hevcOutput ?
+			hevcOutput->Find("encoding") : nullptr;
 		Check( hevcOutput && hevcOutput->Find("format") &&
 			hevcOutput->Find("format")->GetText() == "MP4" &&
 			hevcOutput->Find("codec") &&
@@ -1116,6 +1180,25 @@ namespace
 			hevcOutput->Find("bits_per_channel") &&
 			hevcOutput->Find("bits_per_channel")->GetIntegerArgument() == 10u,
 			"[fire provenance] HEVC derivative records its actual MP4/Main10/10-bit encoding" );
+		Check( hevcEncoding && hevcEncoding->GetMap().size() == 31u &&
+			hevcEncoding->Find("backend")->GetText() ==
+				"ffmpeg_libavcodec_libavformat_libswscale" &&
+			hevcEncoding->Find("codec_implementation")->GetText() == "libx265" &&
+			hevcEncoding->Find("codec_profile")->GetText() == "main10" &&
+			hevcEncoding->Find("input_pixel_format")->GetText() == "rgba64le" &&
+			hevcEncoding->Find("output_pixel_format")->GetText() == "yuv420p10le" &&
+			hevcEncoding->Find("chroma_subsampling")->GetText() == "4:2:0" &&
+			hevcEncoding->Find("alpha_mode")->GetText() == "dropped" &&
+			hevcEncoding->Find("color_range")->GetText() == "limited" &&
+			hevcEncoding->Find("gop_frames")->GetIntegerArgument() == 60u &&
+			hevcEncoding->Find("rate_control")->GetText() == "crf_20" &&
+			hevcEncoding->Find("encoder_preset")->GetText() == "medium" &&
+			hevcEncoding->Find("codec_options")->GetText().find(
+				"master-display=G(8500,39850)") != std::string::npos &&
+			hevcEncoding->Find("codec_tag")->GetText() == "hvc1" &&
+			hevcEncoding->Find("muxer_flags")->GetText() == "+faststart" &&
+			hevcEncoding->Find("conversion_destination_range")->GetText() == "limited",
+			"[fire provenance] HEVC encoding-v1 ratchets rate control, HDR, mux, and conversion settings" );
 
 		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";
 		const std::string badMovieFile = MakeTempPathWithoutExt()+"_bad_movie.mov";

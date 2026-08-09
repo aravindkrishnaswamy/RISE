@@ -859,6 +859,10 @@ int main()
 		const std::string encoderSource = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.cpp");
 		const std::string encoderConfigWriter = braceBody(encoderSource,"bool BuildFireProvenance(");
+		const std::string sequenceConfigWriter = braceBody(
+			encoderSource,"bool BuildFireFrameSequenceProvenance(");
+		const std::string sequenceHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.h");
 		const std::string frameEncoders = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"FrameEncoders.cpp");
 		for( const std::string& member : allDataMembers(
@@ -876,6 +880,12 @@ int main()
 			viewTransformHeader,"struct ViewTransform","ViewTransform") ) {
 			Check( encoderConfigWriter.find("opts.viewTransform."+member) != std::string::npos,
 				"output provenance consumes ViewTransform::"+member );
+		}
+		for( const std::string& member : allDataMembers(sequenceHeader,
+			"struct FireFrameSequenceEncodingDescriptor",
+			"FireFrameSequenceEncodingDescriptor") ) {
+			Check( sequenceConfigWriter.find("descriptor."+member) != std::string::npos,
+				"movie provenance consumes FireFrameSequenceEncodingDescriptor::"+member );
 		}
 		const std::map<std::string,std::string> fileOutputEvidence = {
 			{ "pattern", "pattern_" }, { "multiple", "bMultiple_" },
