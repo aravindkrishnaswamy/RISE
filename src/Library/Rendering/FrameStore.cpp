@@ -114,6 +114,20 @@ namespace
 		return true;
 	}
 
+	bool NonemptyTextField(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::Text,context,error) ) return false;
+		if( map.Find(key)->GetText().empty() ) {
+			error = std::string(context)+" field '"+key+"' is empty";
+			return false;
+		}
+		return true;
+	}
+
 	bool IntegerField(
 		const RISECBOR64::Value& map,
 		const char* key,
@@ -599,27 +613,38 @@ namespace
 			!ExactMapKeys(*target,{"architecture","platform"},"renderer target",error) )
 			return false;
 		for( const char* key : {"identity","language_standard","lto_mode","optimization_mode"} )
-			if( !FieldType(*compiler,key,RISECBOR64::Value::Text,"renderer compiler",error) )
+			if( !NonemptyTextField(*compiler,key,"renderer compiler",error) )
 				return false;
 		for( const char* key : {"diff_sha256","state"} ) if( !FieldType(*dirty,key,
 			RISECBOR64::Value::Text,"renderer dirty state",error) ) return false;
 		for( const char* key : {"hash_basis","kind","path","sha256"} )
-			if( !FieldType(*binary,key,RISECBOR64::Value::Text,"renderer binary",error) )
+			if( !NonemptyTextField(*binary,key,"renderer binary",error) )
 				return false;
-		if( !IsSHA256Hex(binary->Find("sha256")->GetText()) ||
-			!FieldType(*fp,"contraction_mode",RISECBOR64::Value::Text,
+		const std::string& dirtyState = dirty->Find("state")->GetText();
+		if( (dirtyState != "clean" && dirtyState != "dirty") ||
+			!IsSHA256Hex(dirty->Find("diff_sha256")->GetText()) ||
+			!IsSHA256Hex(binary->Find("sha256")->GetText()) ||
+			!NonemptyTextField(*fp,"contraction_mode",
 				"renderer FP settings",error) ||
 			!FieldType(*fp,"fast_math",RISECBOR64::Value::Boolean,
 				"renderer FP settings",error) ||
 			!FieldType(*fp,"finite_math_only",RISECBOR64::Value::Boolean,
 				"renderer FP settings",error) ) return false;
-		for( const char* key : {"architecture","platform"} ) if( !FieldType(*target,key,
-			RISECBOR64::Value::Text,"renderer target",error) ) return false;
+		for( const char* key : {"architecture","platform"} ) if( !NonemptyTextField(*target,key,
+			"renderer target",error) ) return false;
 		for( const char* key : { "gate_harness_version", "renderer_version",
-			"source_revision" } ) if( !FieldType(record,key,RISECBOR64::Value::Text,
+			"source_revision" } ) if( !NonemptyTextField(record,key,
 				"renderer build identity",error) ) return false;
 		if( !ArrayElementsAre(record,"solver_schema_versions",RISECBOR64::Value::Text,
 			static_cast<std::size_t>(-1),"renderer build identity",error) ) return false;
+		const RISECBOR64::Value* solverVersions = record.Find("solver_schema_versions");
+		if( solverVersions->GetArray().empty() || std::find_if(
+			solverVersions->GetArray().begin(),solverVersions->GetArray().end(),
+			[]( const RISECBOR64::Value& value ) { return value.GetText().empty(); }) !=
+			solverVersions->GetArray().end() ) {
+			error = "renderer solver schema versions are empty";
+			return false;
+		}
 		const RISECBOR64::Value* dependencies = record.Find("dependency_builds");
 		if( !dependencies || !ExactMapKeys(*dependencies,{ "avcodec", "avfoundation",
 			"avformat", "avutil", "iex", "ilmthread", "imath", "oidn", "openexr",

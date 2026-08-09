@@ -1331,6 +1331,16 @@ namespace
 			const RISECBOR64::Value* child = map.Find(path[index]);
 			return child ? replaceMember(map,path[index],withoutPath(*child,path,index+1u)) : map;
 		};
+		std::function<RISECBOR64::Value(const RISECBOR64::Value&,
+			const std::vector<std::string>&,std::size_t,const RISECBOR64::Value&)> replacePath;
+		replacePath = [&]( const RISECBOR64::Value& map,
+			const std::vector<std::string>& path, const std::size_t index,
+			const RISECBOR64::Value& replacement ) {
+			if( index+1u == path.size() ) return replaceMember(map,path[index],replacement);
+			const RISECBOR64::Value* child = map.Find(path[index]);
+			return child ? replaceMember(map,path[index],
+				replacePath(*child,path,index+1u,replacement)) : map;
+		};
 		auto encode = []( const RISECBOR64::Value& value ) {
 			RISECBOR64::Bytes bytes;
 			std::string error;
@@ -1402,6 +1412,37 @@ namespace
 				RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
 			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
 				"[fire provenance] renderer-build schema rejects missing nested "+path.back() );
+		}
+		struct BuildSemanticMutation {
+			std::vector<std::string> path;
+			RISECBOR64::Value replacement;
+			const char* label;
+		};
+		const BuildSemanticMutation buildSemanticMutations[] = {
+			{ { "dirty_state", "diff_sha256" }, RISECBOR64::Value::String("not-a-digest"),
+				"malformed dirty diff digest" },
+			{ { "dirty_state", "state" }, RISECBOR64::Value::String("unknown"),
+				"invalid dirty-state enum" },
+			{ { "source_revision" }, RISECBOR64::Value::String(""),
+				"empty source revision" },
+			{ { "compiler", "identity" }, RISECBOR64::Value::String(""),
+				"empty compiler identity" },
+			{ { "renderer_binary", "path" }, RISECBOR64::Value::String(""),
+				"empty renderer-binary path" },
+			{ { "target", "platform" }, RISECBOR64::Value::String(""),
+				"empty target platform" },
+			{ { "solver_schema_versions" }, RISECBOR64::Value::ArrayValue({
+				RISECBOR64::Value::String("") }), "empty solver-schema identity" }
+		};
+		for( const BuildSemanticMutation& mutation : buildSemanticMutations ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.rendererBuildV1 = encode(replacePath(
+				baseBuild,mutation.path,0u,mutation.replacement));
+			invalidMetadata.rendererBuildId =
+				RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				std::string("[fire provenance] renderer-build schema rejects ")+
+				mutation.label );
 		}
 		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
 			movieMetadata,FireFrameSequenceEncoding::AppleProRes4444_12Bit,
