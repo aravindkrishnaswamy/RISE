@@ -648,7 +648,7 @@ namespace
 	void SetFireFidelityMetadata( FrameStore& store )
 	{
 		const RISECBOR64::Bytes configBytes =
-			FireOutputMetadataTestFixture::ResolvedConfig(2u,2u);
+			FireOutputMetadataTestFixture::ResolvedConfig(store.Width(),store.Height());
 		const RISECBOR64::Bytes buildBytes =
 			FireOutputMetadataTestFixture::RendererBuild();
 		FrameStoreOutput::ActiveFireMedium medium;
@@ -1439,6 +1439,108 @@ namespace
 		second->release();
 	}
 
+	void TestDelayedOlderBindCannotClearNewerBinding()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* first = new FrameStore(spec);
+		auto* second = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool firstEntered = false;
+		bool firstMayContinue = false;
+		std::atomic<unsigned int> hookCalls(0u);
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) { ++callbacks; });
+		vfs->ForTest_SetBindPhaseOneHook([&]( uint64_t ) {
+			if( hookCalls.fetch_add(1u) != 0u ) return;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			firstEntered = true;
+			gateCondition.notify_all();
+			gateCondition.wait(lock,[&]() { return firstMayContinue; });
+		});
+		std::thread older([&]() { vfs->BindFrameStore(first); });
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			gateCondition.wait(lock,[&]() { return firstEntered; });
+		}
+		vfs->BindFrameStore(second);
+		const bool newerInstalled = vfs->GetFrameStore() == second;
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			firstMayContinue = true;
+		}
+		gateCondition.notify_all();
+		older.join();
+		vfs->ForTest_SetBindPhaseOneHook({});
+		first->BeginTile(0u,0u);
+		first->EndTile(0u,0u);
+		second->BeginTile(0u,0u);
+		second->EndTile(0u,0u);
+		Check(newerInstalled && vfs->GetFrameStore() == second &&
+			hookCalls.load() == 2u && callbacks.load() == 1u,
+			"a delayed pre-phase-one bind cannot clear the newer committed binding" );
+		vfs->release();
+		first->release();
+		second->release();
+	}
+
+	void TestBindTeardownGapRejectsInternalChainCreation()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		auto* image = MakeTestImage();
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		bool callbackEntered = false;
+		bool callbackMayReturn = false;
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackEntered = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return callbackMayReturn; });
+		});
+		vfs->BindFrameStore(source);
+		std::thread dispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return callbackEntered; });
+		}
+		std::thread binder([&]() { vfs->BindFrameStore(replacement); });
+		const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(2);
+		while( vfs->IsExternallyBound() && std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::yield();
+		}
+		const bool enteredGap = !vfs->IsExternallyBound();
+		if( enteredGap ) vfs->OutputImage(*image,nullptr,0u);
+		const bool noInternalChainPublished = vfs->GetFrameStore() == nullptr;
+		{
+			std::lock_guard<std::mutex> lock(callbackMutex);
+			callbackMayReturn = true;
+		}
+		callbackCondition.notify_all();
+		dispatcher.join();
+		binder.join();
+		Check(enteredGap && noInternalChainPublished &&
+			vfs->GetFrameStore() == replacement && vfs->IsExternallyBound(),
+			"EnsureChain cannot publish a dormant internal chain during bind teardown" );
+		vfs->release();
+		image->release();
+		source->release();
+		replacement->release();
+	}
+
 	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
 	//
 	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
@@ -1610,6 +1712,8 @@ int main()
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
 	TestConcurrentExternalBindsPublishNewestOnly();
+	TestDelayedOlderBindCannotClearNewerBinding();
+	TestBindTeardownGapRejectsInternalChainCreation();
 	TestSetFrameStoreNotification_L6e2b();
 	TestObserverRetainsUnregisteredEncoder();
 

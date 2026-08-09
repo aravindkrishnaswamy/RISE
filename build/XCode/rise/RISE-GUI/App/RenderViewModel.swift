@@ -2881,7 +2881,7 @@ final class RenderViewModel: ObservableObject {
     /// (EXR default, then PNG / TIFF), looks up the encoder by
     /// extension, and dispatches through the bridge's format-aware
     /// `saveAs`.  HDR formats (EXR) write scene-referred linear
-    /// half/float values; LDR formats (PNG, TIFF-8) bake in the
+    /// FP32 FLOAT values; LDR formats (PNG, TIFF-8) bake in the
     /// current view exposure (today: 0 EV — no slider exposed yet).
     /// No-op if `canSaveImage` is false (e.g. no render yet).
     func saveRenderedImage() {

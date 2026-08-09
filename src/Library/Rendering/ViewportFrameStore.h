@@ -207,6 +207,8 @@ namespace RISE
 			//! Idempotent: re-binding the same external pointer is
 			//! a no-op (avoids spurious observer remove/re-add).
 			void BindFrameStore( FrameStore* external );
+			void ForTest_SetBindPhaseOneHook(
+				std::function<void(uint64_t)> hook );
 
 			//! Whether this VFS is currently bound to an external
 			//! FrameStore via `BindFrameStore`.  Diagnostic — most
@@ -422,6 +424,8 @@ namespace RISE
 			//! See L4 round-2 review P1-2.
 			mutable std::shared_mutex chainMutex_;
 			std::atomic<uint64_t> bindRevision_{ 0u };
+			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
+			std::function<void(uint64_t)> bindPhaseOneTestHook_;
 
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;

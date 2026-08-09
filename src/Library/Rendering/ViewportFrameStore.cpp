@@ -275,6 +275,14 @@ namespace RISE
 		{
 			const uint64_t bindRevision =
 				bindRevision_.fetch_add(1u,std::memory_order_acq_rel)+1u;
+			struct BindActivity
+			{
+				std::atomic<unsigned int>& active;
+				explicit BindActivity( std::atomic<unsigned int>& count ) : active(count)
+					{ active.fetch_add(1u,std::memory_order_acq_rel); }
+				~BindActivity() { active.fetch_sub(1u,std::memory_order_acq_rel); }
+			} bindActivity(bindTransactionsInFlight_);
+			if( bindPhaseOneTestHook_ ) bindPhaseOneTestHook_(bindRevision);
 			// L8 review round 3 — DEADLOCK FIX.
 			//
 			// Pre-fix: this method held `chainMutex_` unique_lock the
@@ -314,6 +322,9 @@ namespace RISE
 			std::vector<DormantChain> oldDormant;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+					return;
+				}
 
 				// Idempotent — re-binding the same pointer is a no-op,
 				// avoids tearing down + re-registering an observer that
@@ -421,6 +432,12 @@ namespace RISE
 		{
 			std::shared_lock<std::shared_mutex> lock( chainMutex_ );
 			return externalFrameStore_ != nullptr;
+		}
+
+		void ViewportFrameStore::ForTest_SetBindPhaseOneHook(
+			std::function<void(uint64_t)> hook )
+		{
+			bindPhaseOneTestHook_ = std::move(hook);
 		}
 
 		// L6e-2b — Notification override.  `Rasterizer::SetFrameStore`
@@ -815,7 +832,8 @@ namespace RISE
 			// rebinding hook) — the VFS just observes.
 			{
 				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
-				if ( externalFrameStore_ ) {
+				if ( bindTransactionsInFlight_.load(std::memory_order_acquire) != 0u ||
+					externalFrameStore_ ) {
 					return;
 				}
 			}
@@ -825,6 +843,9 @@ namespace RISE
 			// RenderToBuffer / SaveAs / Generation concurrently).
 			{
 				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if( bindTransactionsInFlight_.load(std::memory_order_acquire) != 0u ) {
+					return;
+				}
 				if ( framestore_ &&
 				     framestore_->Width()  == width &&
 				     framestore_->Height() == height )
@@ -850,6 +871,10 @@ namespace RISE
 			DormantChain evicted;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+				if( bindTransactionsInFlight_.load(std::memory_order_acquire) != 0u ||
+					externalFrameStore_ ) {
+					return;
+				}
 
 				// Re-check under unique_lock (a concurrent rasterizer
 				// thread shouldn't be possible per the contract above,
