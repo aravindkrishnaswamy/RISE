@@ -628,21 +628,24 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	       "observe-modes states the draft samples cap as 4 (matches AgentSession.cpp's kDraftMaxSamples)" );
 	// Round-10 finding 4: the skill used to name only two of
 	// read_viewport's unavailability reasons and this assertion said
-	// "both".  There are SEVEN (see AgentSession.h's ReadViewport doc
-	// and the switch in AgentSession.cpp that emits them).  Assert ALL
-	// seven verbatim, so the skill cannot silently fall behind the wire
+	// "both".  See AgentSession.h's ReadViewport doc and the switch in
+	// AgentSession.cpp that emits them.  Assert every value verbatim, so
+	// the skill cannot silently fall behind the wire
 	// values again -- a model-facing doc that enumerates a closed set
 	// incompletely is worse than one that does not enumerate it.
 	static const char* const kViewportReasons[] = {
 		"no_controller", "no_frame_yet", "editor_transaction_in_progress",
 		"render_in_progress", "editor_shutting_down",
-		"editor_interaction_finalize_failed", "editor_interaction_unrecoverable"
+		"editor_interaction_finalize_failed", "editor_interaction_unrecoverable",
+		"output_provenance_unavailable"
 	};
 	for( size_t ri = 0; ri < sizeof( kViewportReasons ) / sizeof( kViewportReasons[0] ); ++ri ) {
 		Check( md.find( kViewportReasons[ri] ) != std::string::npos,
 		       ( std::string( "observe-modes names read_viewport reason \"" )
 		         + kViewportReasons[ri] + "\" verbatim" ).c_str() );
 	}
+	Check( md.find( "provenance-capable file-output render" ) != std::string::npos,
+	       "observe-modes gives a non-retry action for output_provenance_unavailable" );
 	// Round-10 finding 4: the skill's OLD guidance told the model to
 	// "fall back to a `render` call instead of retrying" on ANY
 	// available:false.  That is wrong for the editor/admission reasons --

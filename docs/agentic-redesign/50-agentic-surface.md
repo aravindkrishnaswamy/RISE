@@ -138,7 +138,10 @@
 >   `"editor_interaction_finalize_failed"` (retriable) and
 >   `"editor_interaction_unrecoverable"` (the controller's sticky interaction-persistence
 >   failure: PERMANENT, never clears, and `render` is refused by the same gate, so neither
->   retrying nor falling back helps). Seven reasons total — three RETRIABLE
+>   retrying nor falling back helps). Fire-output provenance adds
+>   `"output_provenance_unavailable"`: an active fire medium requires a primary-plus-sidecar
+>   chain this viewport and the agent `render` route cannot emit, so retrying cannot help;
+>   use a provenance-capable file output or tell the user. The remaining groups are three RETRIABLE
 >   (`"editor_transaction_in_progress"`, `"render_in_progress"`,
 >   `"editor_interaction_finalize_failed"`), one that resolves on its own but not because you
 >   retried (`"no_frame_yet"`), three PERMANENT (`"no_controller"`, `"editor_shutting_down"`,

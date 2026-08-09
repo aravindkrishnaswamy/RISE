@@ -2134,7 +2134,7 @@ namespace RISE
 				//   returns THIS session's last headless render).  NEVER
 				//   triggers a render -- it copies whatever the interactive
 				//   render loop has most recently produced (the cheapest
-				//   observe).  `available` is false with one of SEVEN reasons:
+				//   observe).  `available` is false with a reason from this set:
 				//   "no_controller" (headless session -- no viewport at all;
 				//   PERMANENT), "no_frame_yet" (controller attached but no
 				//   interactive frame produced yet -- it resolves once the
@@ -2143,7 +2143,10 @@ namespace RISE
 				//   "editor_transaction_in_progress" / "render_in_progress" /
 				//   "editor_interaction_finalize_failed" (all three RETRIABLE) /
 				//   "editor_shutting_down" / "editor_interaction_unrecoverable"
-				//   (both PERMANENT -- retrying can never succeed; round-10).
+				//   (both PERMANENT -- retrying can never succeed; round-10), or
+				//   "output_provenance_unavailable" (active fire media require a
+				//   primary-plus-sidecar output route; this viewport and the agent
+				//   render route cannot provide one, so retrying cannot help).
 				//   See AgentSession::ReadViewport's doc for the authoritative
 				//   list, the retriability of each, and when a `render`
 				//   fallback actually helps.  Round-14: for
