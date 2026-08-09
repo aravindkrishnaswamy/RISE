@@ -998,10 +998,50 @@ int main()
 			const RISECBOR64::Value changedSources = ReplaceMember(*sourceRecords,
 				"effective_absorption",changedEffective);
 			Check( RejectsWith(ReplaceMember(decodedPredictive,"source_records",
-				changedSources),"table metadata is incomplete"),
+				changedSources),"record is missing 'granularity'"),
 				"load rejects a source table with an empty metadata envelope" );
 			if( sourceEffectiveMetadata && operationalEffective &&
 				operationalEffectiveMetadata ) {
+				const auto coordinatedEffectiveMetadata = [&](
+					const RISECBOR64::Value& metadata ) {
+					const RISECBOR64::Value changedSourceTable = ReplaceMember(
+						*sourceEffectiveTable,"table_metadata",metadata);
+					return ReplaceMember(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"effective_absorption",
+							ReplaceMember(*sourceEffective,"table",changedSourceTable))),
+						"effective_absorption",ReplaceMember(*operationalEffective,
+							"table_metadata",metadata));
+				};
+				const RISECBOR64::Value emptyApplicability = ReplaceMember(
+					*sourceEffectiveMetadata,"applicability",RISECBOR64::Value::String(" "));
+				const RISECBOR64::Value emptyProvenance = ReplaceMember(
+					*sourceEffectiveMetadata,"provenance",RISECBOR64::Value::String(""));
+				Check( RejectsWith(coordinatedEffectiveMetadata(emptyApplicability),
+					"text field 'applicability' is empty"),
+					"coordinated empty table applicability is rejected semantically" );
+				Check( RejectsWith(coordinatedEffectiveMetadata(emptyProvenance),
+					"text field 'provenance' is empty"),
+					"coordinated empty table provenance is rejected semantically" );
+				const RISECBOR64::Value* rangeUncertainty =
+					sourceEffectiveMetadata->Find("uncertainty");
+				if( rangeUncertainty ) {
+					for( const char* malformed : { "", "arbitrary text" } ) {
+						const RISECBOR64::Value changedUncertainty = ReplaceMember(
+							*rangeUncertainty,"magnitude",RISECBOR64::Value::String(malformed));
+						Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+							*sourceEffectiveMetadata,"uncertainty",changedUncertainty)),
+							"table uncertainty magnitude is not a recorded numeric span"),
+							"each malformed table-range magnitude is rejected independently" );
+					}
+					const RISECBOR64::Value changedComponents = ReplaceMember(
+						*rangeUncertainty,"components",RISECBOR64::Value::String(""));
+					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+						*sourceEffectiveMetadata,"uncertainty",changedComponents)),
+						"symmetric table range is missing its recorded components"),
+						"a symmetric table range requires its recorded components" );
+				} else {
+					Check(false,"effective table range uncertainty is present");
+				}
 				const RISECBOR64::Value changedMetadata = ReplaceMember(
 					*operationalEffectiveMetadata,"provenance",
 					RISECBOR64::Value::String("coordinated metadata identity change"));
@@ -1111,6 +1151,35 @@ int main()
 			const RISECBOR64::Value* operationalHotMetadata = operationalHot ?
 				operationalHot->Find("table_metadata") : 0;
 			if( sourceHotMetadata && operationalHot && operationalHotMetadata ) {
+				const auto coordinatedHotMetadata = [&](
+					const RISECBOR64::Value& metadata ) {
+					const RISECBOR64::Value changedComputed = ReplaceMember(
+						*sourceHotComputed,"spectral_young_dp30_N50_metadata",metadata);
+					return ReplaceMember(ReplaceMember(decodedPredictive,"source_records",
+						ReplaceMember(*sourceRecords,"hot_soot",ReplaceMember(*sourceHot,
+							"computed_outputs",changedComputed))),"hot_soot",
+						ReplaceMember(*operationalHot,"table_metadata",metadata));
+				};
+				const RISECBOR64::Value* computedUncertainty =
+					sourceHotMetadata->Find("uncertainty");
+				if( computedUncertainty ) {
+					const RISECBOR64::Value emptyBasis = ReplaceMember(*computedUncertainty,
+						"basis",RISECBOR64::Value::String(""));
+					Check( RejectsWith(coordinatedHotMetadata(ReplaceMember(
+						*sourceHotMetadata,"uncertainty",emptyBasis)),
+						"uncertainty kind is missing its basis"),
+						"computed table uncertainty requires a nonempty sensitivity basis" );
+					for( const char* malformed : { "", "arbitrary text" } ) {
+						const RISECBOR64::Value changedMagnitude = ReplaceMember(
+							*computedUncertainty,"magnitude",RISECBOR64::Value::String(malformed));
+						Check( RejectsWith(coordinatedHotMetadata(ReplaceMember(
+							*sourceHotMetadata,"uncertainty",changedMagnitude)),
+							"table uncertainty magnitude is not a recorded numeric span"),
+							"each malformed computed table magnitude is rejected independently" );
+					}
+				} else {
+					Check(false,"hot table computed uncertainty is present");
+				}
 				const RISECBOR64::Value rowMetadata = AddMember(
 					*operationalHotMetadata,"row_metadata",
 					RISECBOR64::Value::MapValue({}));

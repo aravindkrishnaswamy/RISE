@@ -15,6 +15,7 @@
 #include "Math3D/Math3D.h"
 #include "SpectralConfig.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 
@@ -178,6 +179,20 @@ namespace RISE
 			return true;
 		}
 
+		bool ReadNonemptyText(
+			const RISECBOR64::Value& map,
+			const char* key,
+			std::string& result,
+			std::string* error
+			)
+		{
+			if( !ReadText(map,key,result,error) ) return false;
+			return std::find_if(result.begin(),result.end(),[]( const unsigned char c ) {
+				return std::isspace(c) == 0;
+			}) != result.end() || Fail(error,
+				std::string("fire-optics text field '")+key+"' is empty");
+		}
+
 		bool IsExactZero( const RISECBOR64::Value& value )
 		{
 			return (value.GetType() == RISECBOR64::Value::UnsignedInteger &&
@@ -194,7 +209,7 @@ namespace RISE
 			)
 		{
 			std::string kind;
-			if( !ReadText(uncertainty, "kind", kind, error) ) {
+			if( !ReadNonemptyText(uncertainty, "kind", kind, error) ) {
 				return false;
 			}
 			const char* allowedKinds[] = {
@@ -224,12 +239,13 @@ namespace RISE
 				!IsExactZero(*magnitude) ) {
 				return Fail(error, "fire-optics exact uncertainty magnitude is not zero");
 			}
-			if( kind == "assumption_bound" &&
-				!Required(uncertainty, "basis", RISECBOR64::Value::Text, error) ) {
-				return Fail(error, "fire-optics assumption bound is missing its basis");
+			std::string basis;
+			if( (kind == "assumption_bound" ||
+				kind == "computed_range_from_input_sensitivity") &&
+				!ReadNonemptyText(uncertainty,"basis",basis,error) ) {
+				return Fail(error, "fire-optics uncertainty kind is missing its basis");
 			}
-			if( scalarEnvelope ) {
-				auto orderedPair = [error]( const RISECBOR64::Value& candidate ) {
+			auto orderedPair = [error]( const RISECBOR64::Value& candidate ) {
 					if( candidate.GetType() != RISECBOR64::Value::Array ||
 						candidate.GetArray().size() != 2 ) {
 						return Fail(error,
@@ -248,8 +264,8 @@ namespace RISE
 						ReadNumberValue(candidate.GetArray()[1],upper,error) &&
 						(lower <= upper || Fail(error,
 							"fire-optics source scalar uncertainty range is not ordered"));
-				};
-				auto nonnegativeNumber = [error]( const RISECBOR64::Value& candidate ) {
+			};
+			auto nonnegativeNumber = [error]( const RISECBOR64::Value& candidate ) {
 					if( candidate.GetType() != RISECBOR64::Value::Float64 &&
 						candidate.GetType() != RISECBOR64::Value::UnsignedInteger &&
 						candidate.GetType() != RISECBOR64::Value::NegativeInteger ) {
@@ -260,7 +276,8 @@ namespace RISE
 					return ReadNumberValue(candidate,value,error) &&
 						(value >= 0.0 || Fail(error,
 							"fire-optics source scalar uncertainty magnitude is negative"));
-				};
+			};
+			if( scalarEnvelope ) {
 				if( kind == "range" ||
 					kind == "computed_range_from_input_sensitivity" ) {
 					if( !orderedPair(*magnitude) ) return false;
@@ -273,6 +290,39 @@ namespace RISE
 				} else if( !nonnegativeNumber(*magnitude) ) {
 					return false;
 				}
+			} else if( magnitude->GetType() == RISECBOR64::Value::Text ) {
+				const std::string& text = magnitude->GetText();
+				const bool nonempty = std::find_if(text.begin(),text.end(),
+					[]( const unsigned char c ) { return std::isspace(c) == 0; }) != text.end();
+				const bool hasDigit = std::find_if(text.begin(),text.end(),
+					[]( const unsigned char c ) { return std::isdigit(c) != 0; }) != text.end();
+				bool hasNumericSpan = false;
+				for( std::size_t i=1; i+1<text.size(); ++i ) {
+					hasNumericSpan = hasNumericSpan ||
+						(text[i] == '-' && std::isdigit(static_cast<unsigned char>(text[i-1])) &&
+						 std::isdigit(static_cast<unsigned char>(text[i+1])));
+				}
+				const bool symmetricSpan = text.find("+/-") != std::string::npos ||
+					text.find("±") != std::string::npos;
+				if( !nonempty || !hasDigit ||
+					((kind == "range" || kind == "computed_range_from_input_sensitivity") &&
+					 !hasNumericSpan && !symmetricSpan) ) {
+					return Fail(error,
+						"fire-optics table uncertainty magnitude is not a recorded numeric span");
+				}
+				if( kind == "range" && symmetricSpan ) {
+					std::string components;
+					if( !ReadNonemptyText(uncertainty,"components",components,error) ) {
+						return Fail(error,
+							"fire-optics symmetric table range is missing its recorded components");
+					}
+				}
+			} else if( kind == "range" ||
+				kind == "computed_range_from_input_sensitivity" ) {
+				if( !orderedPair(*magnitude) ) return false;
+			} else if( magnitude->GetType() != RISECBOR64::Value::Array &&
+				!nonnegativeNumber(*magnitude) ) {
+				return false;
 			}
 			return true;
 		}
@@ -287,12 +337,13 @@ namespace RISE
 				envelope, "uncertainty", RISECBOR64::Value::Map, error );
 			const RISECBOR64::Value* provenance = Required(
 				envelope, "provenance", RISECBOR64::Value::Map, error );
+			std::string applicability, citation, locator, access;
 			if( !uncertainty || !provenance ||
 				!ReadFloat(envelope, "value", value, error) ||
-				!Required(envelope, "applicability", RISECBOR64::Value::Text, error) ||
-				!Required(*provenance, "citation", RISECBOR64::Value::Text, error) ||
-				!Required(*provenance, "locator", RISECBOR64::Value::Text, error) ||
-				!Required(*provenance, "access", RISECBOR64::Value::Text, error) ||
+				!ReadNonemptyText(envelope,"applicability",applicability,error) ||
+				!ReadNonemptyText(*provenance,"citation",citation,error) ||
+				!ReadNonemptyText(*provenance,"locator",locator,error) ||
+				!ReadNonemptyText(*provenance,"access",access,error) ||
 				!Required(*provenance, "secondary_source",
 					RISECBOR64::Value::Boolean, error) ||
 				!ValidateUncertainty(*uncertainty, "synthetic_exact", true, error) ) {
@@ -312,12 +363,13 @@ namespace RISE
 				envelope,"uncertainty",RISECBOR64::Value::Map,error );
 			const RISECBOR64::Value* provenance = Required(
 				envelope,"provenance",RISECBOR64::Value::Map,error );
+			std::string applicability, citation, locator, access;
 			if( !uncertainty || !provenance ||
 				!ReadSourceNumber(envelope,"value",value,error) ||
-				!Required(envelope,"applicability",RISECBOR64::Value::Text,error) ||
-				!Required(*provenance,"citation",RISECBOR64::Value::Text,error) ||
-				!Required(*provenance,"locator",RISECBOR64::Value::Text,error) ||
-				!Required(*provenance,"access",RISECBOR64::Value::Text,error) ||
+				!ReadNonemptyText(envelope,"applicability",applicability,error) ||
+				!ReadNonemptyText(*provenance,"citation",citation,error) ||
+				!ReadNonemptyText(*provenance,"locator",locator,error) ||
+				!ReadNonemptyText(*provenance,"access",access,error) ||
 				!Required(*provenance,"secondary_source",
 					RISECBOR64::Value::Boolean,error) ) {
 				return Fail(error,
@@ -378,12 +430,12 @@ namespace RISE
 						member.second,"provenance",RISECBOR64::Value::Map,error );
 					const RISECBOR64::Value* uncertainty = Required(
 						member.second,"uncertainty",RISECBOR64::Value::Map,error );
+					std::string applicability, citation, locator, access;
 					if( !provenance || !uncertainty ||
-						!Required(member.second,"applicability",
-							RISECBOR64::Value::Text,error) ||
-						!Required(*provenance,"citation",RISECBOR64::Value::Text,error) ||
-						!Required(*provenance,"locator",RISECBOR64::Value::Text,error) ||
-						!Required(*provenance,"access",RISECBOR64::Value::Text,error) ||
+						!ReadNonemptyText(member.second,"applicability",applicability,error) ||
+						!ReadNonemptyText(*provenance,"citation",citation,error) ||
+						!ReadNonemptyText(*provenance,"locator",locator,error) ||
+						!ReadNonemptyText(*provenance,"access",access,error) ||
 						!Required(*provenance,"secondary_source",
 							RISECBOR64::Value::Boolean,error) ||
 						!ValidateUncertainty(*uncertainty,0,false,error) ) {
@@ -392,17 +444,16 @@ namespace RISE
 					}
 				}
 			}
-			std::string granularity;
+			std::string granularity, applicability, provenance;
 			const RISECBOR64::Value* uncertainty = Required(
 				metadata, "uncertainty", RISECBOR64::Value::Map, error );
-			if( !ReadText(metadata, "granularity", granularity, error) ||
-				granularity != "per_table" ||
-				!Required(metadata, "applicability", RISECBOR64::Value::Text, error) ||
-				!Required(metadata, "provenance", RISECBOR64::Value::Text, error) ||
-				!uncertainty || !ValidateUncertainty(*uncertainty, 0, false, error) ) {
-				return Fail(error, "fire-optics table metadata is incomplete");
+			if( !ReadText(metadata,"granularity",granularity,error) ) return false;
+			if( granularity != "per_table" ) {
+				return Fail(error,"fire-optics table metadata granularity is not per_table");
 			}
-			return true;
+			return ReadNonemptyText(metadata,"applicability",applicability,error) &&
+				ReadNonemptyText(metadata,"provenance",provenance,error) && uncertainty &&
+				ValidateUncertainty(*uncertainty,0,false,error);
 		}
 
 		bool CanonicallyEqual(
