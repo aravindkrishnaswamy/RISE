@@ -771,12 +771,13 @@ private:
     NSString* _videoOutputPath;
     RenderETAEstimator _eta;  // fed from worker thread, sampled from UI thread
     std::mutex _etaMutex;
-    std::atomic<bool> _productionRenderActive { false };
+    std::atomic<bool> _productionRenderActive;
 }
 
 - (instancetype)init {
     self = [super init];
     if (self) {
+        _productionRenderActive.store(false, std::memory_order_relaxed);
         srand(GetMilliseconds());
 
         // Write log file to user's home directory since GUI app working directory may not be writable
