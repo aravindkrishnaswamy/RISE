@@ -354,6 +354,62 @@ namespace
 		mutable bool mutated_ = false;
 	};
 
+	class RuntimeSceneMediumSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		RuntimeSceneMediumSwappingFireOutput(
+			IScenePriv& scene, const IMedium& replacement ) :
+			scene_(scene), replacement_(replacement) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				scene_.SetGlobalMedium(&replacement_);
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Mutated() const { return mutated_; }
+	protected:
+		~RuntimeSceneMediumSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		const IMedium& replacement_;
+		bool mutated_ = false;
+	};
+
+	class RuntimeCameraSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		RuntimeCameraSwappingFireOutput( IScenePriv& scene, const char* cameraName ) :
+			scene_(scene), cameraName_(cameraName ? cameraName : "") {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			if( !mutated_ ) {
+				mutated_ = scene_.SetActiveCamera(cameraName_.c_str());
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Mutated() const { return mutated_; }
+	protected:
+		~RuntimeCameraSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		std::string cameraName_;
+		bool mutated_ = false;
+	};
+
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
 	{
@@ -3608,6 +3664,80 @@ namespace
 			}
 			safe_release(job);
 		}
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool runtimeSceneMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( runtimeSceneMutationLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			DerivedHomogeneousMedium* replacement =
+				new DerivedHomogeneousMedium(*phase);
+			IRasterizer* rasterizer = job->GetRasterizer();
+			Implementation::FrameStore* store = rasterizer->GetFrameStore();
+			const FrameStoreOutput::Metadata before = store->Meta();
+			RuntimeSceneMediumSwappingFireOutput* output =
+				new RuntimeSceneMediumSwappingFireOutput(*job->GetScene(),*replacement);
+			rasterizer->AddRasterizerOutput(output);
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"fire render state changed after preflight") != std::string::npos;
+			}
+			Check( rejected && output->Mutated() && SameFrameMetadata(store->Meta(),before),
+				"fire-to-nonfire mutation in an output callback fails before frame publication" );
+			rasterizer->FreeRasterizerOutputs();
+			Check( job->SetGlobalMedium("fire"),
+				"runtime fire-medium mutation fixture restores the authored medium" );
+			safe_release(output);
+			safe_release(replacement);
+			safe_release(phase);
+		} else {
+			Check(false,"runtime scene mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool runtimeConfigMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( runtimeConfigMutationLoaded ) {
+			const double location[3] = { 1.0, 0.0, -2.0 };
+			const double lookAt[3] = { 0.0, 0.0, 0.0 };
+			const double up[3] = { 0.0, 1.0, 0.0 };
+			const double orientation[3] = { 0.0, 0.0, 0.0 };
+			const double targetOrientation[2] = { 0.0, 0.0 };
+			const bool cameraAdded = job->AddPinholeCamera("runtime_camera",
+				location,lookAt,up,0.6,0.0,0.0,0.0,orientation,targetOrientation) &&
+				job->SetActiveCamera("fire_camera");
+			IRasterizer* rasterizer = job->GetRasterizer();
+			Implementation::FrameStore* store = rasterizer->GetFrameStore();
+			const FrameStoreOutput::Metadata before = store->Meta();
+			RuntimeCameraSwappingFireOutput* output =
+				new RuntimeCameraSwappingFireOutput(*job->GetScene(),"runtime_camera");
+			rasterizer->AddRasterizerOutput(output);
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"fire render state changed after preflight") != std::string::npos;
+			}
+			Check( cameraAdded && rejected && output->Mutated() &&
+				SameFrameMetadata(store->Meta(),before),
+				"camera mutation in an output callback invalidates resolved fire config" );
+			rasterizer->FreeRasterizerOutputs();
+			Check( job->SetActiveCamera("fire_camera"),
+				"runtime resolved-config mutation fixture restores the authored camera" );
+			safe_release(output);
+		} else {
+			Check(false,"runtime resolved-config mutation fire fixture loads");
+		}
+		safe_release(job);
 
 		writeScene("auto_spectral_rasterizer",380u);
 		RISE_CreateJobPriv(&job);

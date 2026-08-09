@@ -19,6 +19,7 @@
 #include "../Interfaces/IRasterizer.h"
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -110,7 +111,10 @@ namespace RISE
 			{
 				WithRetainedRasterizerOutputs(
 					[&]( const RasterizerOutputListType& outputs ) {
-						for( IRasterizerOutput* output : outputs ) callback(output);
+						for( IRasterizerOutput* output : outputs ) {
+							callback(output);
+							ValidateFireOutputLeaseState();
+						}
 					});
 			}
 
@@ -135,6 +139,9 @@ namespace RISE
 			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
 			std::atomic<unsigned int> mFireOutputBindingInProgress { 0u };
 			mutable unsigned int mFireOutputTopologyLeaseCount = 0u;
+			mutable const IScene* mFireOutputLeasedScene = nullptr;
+			mutable std::string mFireOutputLeasedSceneMediaBinding;
+			mutable std::function<bool()> mFireOutputLeasedStateValidator;
 
 			IProgressCallback*						pProgressFunc;
 
@@ -152,6 +159,7 @@ namespace RISE
 			mutable uint64_t mFireRenderPreflightOutputTopologyGeneration;
 			mutable std::string mFireRenderPreflightMetadataBinding;
 			mutable std::string mFireRenderPreflightSceneMediaBinding;
+			mutable std::function<bool()> mFireRenderStateValidator;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
@@ -190,6 +198,7 @@ namespace RISE
 			bool RequireFireRenderPreflight(
 				const IScene& scene,
 				FireRenderPreflightAuthorization authorization ) const;
+			void ValidateFireOutputLeaseState() const;
 			void AuthorizeInternalFireReentry(
 				const IScene& scene,
 				FireRenderPreflightAuthorization authorization ) const;
@@ -208,6 +217,8 @@ namespace RISE
 		private:
 			friend class ::RISE::Job;
 			void NotifyFrameStoreChanged( FrameStore* frameStore );
+			void SetFireRenderStateValidator(
+				const std::function<bool()>& validator ) const;
 			void ReleaseFireOutputTopologyLease() const;
 			void ClearFireRenderPreflightAuthorization() const;
 			bool AuthorizeFireRenderPreflight(

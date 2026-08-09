@@ -1179,6 +1179,7 @@ void AutoRasterizer::RasterizeScene(
 	if( mDelegate ) {
 		mDelegate->RasterizeScene( pScene, pRect, pRasterSequence );
 	}
+	ValidateFireOutputLeaseState();
 }
 
 void AutoRasterizer::RasterizeSceneAnimation(
@@ -1201,6 +1202,7 @@ void AutoRasterizer::RasterizeSceneAnimation(
 		mDelegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
 			do_fields, invert_fields, pRect, specificFrame, pRasterSequence );
 	}
+	ValidateFireOutputLeaseState();
 }
 
 bool AutoRasterizer::AuthorizeFireDelegatePreflight(

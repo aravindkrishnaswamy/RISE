@@ -2735,7 +2735,9 @@ void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const 
 	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
 		for( IRasterizerOutput* output : outputs ) {
 			output->OutputImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
 		}
+		ValidateFireOutputLeaseState();
 		if( mFrameStore ) mFrameStore->MarkFrameComplete( frame );
 	});
 }
@@ -2745,7 +2747,9 @@ void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& 
 	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
 		for( IRasterizerOutput* output : outputs ) {
 			output->OutputPreDenoisedImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
 		}
+		ValidateFireOutputLeaseState();
 		if( mFrameStore ) mFrameStore->MarkPreDenoiseComplete( frame );
 	});
 }
@@ -2755,7 +2759,9 @@ void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img
 	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
 		for( IRasterizerOutput* output : outputs ) {
 			output->OutputDenoisedImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
 		}
+		ValidateFireOutputLeaseState();
 		if( mFrameStore ) mFrameStore->MarkDenoiseComplete( frame );
 	});
 }

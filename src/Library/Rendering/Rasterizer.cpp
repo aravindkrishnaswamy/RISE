@@ -197,6 +197,7 @@ bool Rasterizer::RequireFireRenderPreflight(
 	uint64_t authorizedOutputTopologyGeneration = 0u;
 	std::string authorizedMetadataBinding;
 	std::string authorizedSceneMediaBinding;
+	std::function<bool()> authorizedStateValidator;
 	{
 		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
 		authorized = mFireRenderPreflightAuthorization;
@@ -207,6 +208,7 @@ bool Rasterizer::RequireFireRenderPreflight(
 			mFireRenderPreflightOutputTopologyGeneration;
 		authorizedMetadataBinding = mFireRenderPreflightMetadataBinding;
 		authorizedSceneMediaBinding = mFireRenderPreflightSceneMediaBinding;
+		authorizedStateValidator = mFireRenderStateValidator;
 		mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
 		mFireRenderPreflightScene = nullptr;
 		mFireRenderPreflightStore = nullptr;
@@ -265,8 +267,19 @@ bool Rasterizer::RequireFireRenderPreflight(
 				authorizedGeneration == currentStore->Generation() &&
 				FrameStoreOutput::ValidateFireOutputMetadata(metadata,metadataError) &&
 				!authorizedMetadataBinding.empty() &&
-				authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
-			if( valid ) ++mFireOutputTopologyLeaseCount;
+				authorizedMetadataBinding == FireOutputMetadataBinding(metadata) &&
+				static_cast<bool>(authorizedStateValidator);
+			if( valid ) {
+				if( mFireOutputTopologyLeaseCount == 0u ) {
+					mFireOutputLeasedScene = &scene;
+					mFireOutputLeasedSceneMediaBinding = currentSceneMediaBinding;
+					mFireOutputLeasedStateValidator = authorizedStateValidator;
+				} else {
+					valid = mFireOutputLeasedScene == &scene &&
+						mFireOutputLeasedSceneMediaBinding == currentSceneMediaBinding;
+				}
+				if( valid ) ++mFireOutputTopologyLeaseCount;
+			}
 		}
 	}
 	if( metadataLeased && !valid ) currentStore->ReleaseFireMetadataLease();
@@ -300,6 +313,32 @@ void Rasterizer::ReleaseFireOutputTopologyLease() const
 	if( mFireOutputTopologyLeaseCount ) {
 		if( mFrameStore ) mFrameStore->ReleaseFireMetadataLease();
 		--mFireOutputTopologyLeaseCount;
+		if( mFireOutputTopologyLeaseCount == 0u ) {
+			mFireOutputLeasedScene = nullptr;
+			mFireOutputLeasedSceneMediaBinding.clear();
+			mFireOutputLeasedStateValidator = std::function<bool()>();
+		}
+	}
+}
+
+void Rasterizer::ValidateFireOutputLeaseState() const
+{
+	const IScene* scene = nullptr;
+	std::string sceneMediaBinding;
+	std::function<bool()> stateValidator;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		if( mFireOutputTopologyLeaseCount == 0u ) return;
+		scene = mFireOutputLeasedScene;
+		sceneMediaBinding = mFireOutputLeasedSceneMediaBinding;
+		stateValidator = mFireOutputLeasedStateValidator;
+	}
+	if( !scene || sceneMediaBinding != SceneFireMediaBinding(*scene) ||
+		!stateValidator || !stateValidator() ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire render state changed after preflight");
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire render state changed after preflight");
 	}
 }
 
@@ -314,15 +353,33 @@ void Rasterizer::ClearFireRenderPreflightAuthorization() const
 		mFireRenderPreflightOutputTopologyGeneration = 0u;
 		mFireRenderPreflightMetadataBinding.clear();
 		mFireRenderPreflightSceneMediaBinding.clear();
+		mFireRenderStateValidator = std::function<bool()>();
 	}
 	ClearFireDelegatePreflight();
+}
+
+void Rasterizer::SetFireRenderStateValidator(
+	const std::function<bool()>& validator ) const
+{
+	std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+	mFireRenderStateValidator = validator;
 }
 
 bool Rasterizer::AuthorizeFireRenderPreflight(
 	const IScene& scene,
 	const FireRenderPreflightAuthorization authorization ) const
 {
-	ClearFireRenderPreflightAuthorization();
+	{
+		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+		mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
+		mFireRenderPreflightScene = nullptr;
+		mFireRenderPreflightStore = nullptr;
+		mFireRenderPreflightGeneration = 0u;
+		mFireRenderPreflightOutputTopologyGeneration = 0u;
+		mFireRenderPreflightMetadataBinding.clear();
+		mFireRenderPreflightSceneMediaBinding.clear();
+	}
+	ClearFireDelegatePreflight();
 	if( authorization == FireRenderPreflightAuthorization::None ) return true;
 	struct FireRouteCollector : public IEnumCallback<IRasterizerOutput>
 	{
@@ -456,6 +513,12 @@ void Rasterizer::AuthorizeInternalFireDelegate(
 	const FireRenderPreflightAuthorization authorization ) const
 {
 	Rasterizer* concrete = dynamic_cast<Rasterizer*>(&delegate);
+	std::function<bool()> validator;
+	{
+		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+		validator = mFireRenderStateValidator;
+	}
+	if( concrete ) concrete->SetFireRenderStateValidator(validator);
 	if( !concrete || !concrete->AuthorizeFireRenderPreflight(scene,authorization) ) {
 		throw std::runtime_error(
 			"output_provenance_unavailable: fire delegate authorization failed");

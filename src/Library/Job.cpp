@@ -875,6 +875,7 @@ namespace
 		const unsigned int* animationFrame,
 		const Rect* renderRegion,
 		ResolvedRasterSequence* resolvedSequence,
+		const ResolvedRasterSequence* fixedSequence,
 		RISECBOR64::Bytes& bytes )
 	{
 		using RISECBOR64::Value;
@@ -1034,6 +1035,9 @@ namespace
 					sequence.shuffleSeed = 0u;
 				}
 			}
+		} else if( fixedSequence ) {
+			sequence = *fixedSequence;
+			if( resolvedSequence ) *resolvedSequence = sequence;
 		} else {
 			const RISE::String options = globalOptions.ReadString(
 				"raster_sequence_options","");
@@ -1241,6 +1245,33 @@ namespace
 					{ "scale", Value::Float(p.radianceMap.scale) } }) } }) }
 		});
 		return FireEncodeRecord(record,bytes,"resolved_render_configuration_v1");
+	}
+
+	bool ResolvedConfigMatchesLeasedMetadata(
+		const RISECBOR64::Bytes& currentBytes,
+		const RISECBOR64::Bytes& leasedBytes )
+	{
+		using RISECBOR64::Value;
+		Value current;
+		Value leased;
+		std::string error;
+		if( !RISECBOR64::DecodeCanonical(currentBytes,current,&error) ||
+			!RISECBOR64::DecodeCanonical(leasedBytes,leased,&error) ||
+			current.GetType() != Value::Map || leased.GetType() != Value::Map ) return false;
+		const Value* evaluated = leased.Find("evaluated_camera_states");
+		if( !evaluated || evaluated->GetType() != Value::Array ) return false;
+		Value::Members adjusted = current.GetMap();
+		bool replaced = false;
+		for( Value::Members::value_type& member : adjusted ) {
+			if( member.first == "evaluated_camera_states" ) {
+				member.second = *evaluated;
+				replaced = true;
+				break;
+			}
+		}
+		RISECBOR64::Bytes adjustedBytes;
+		return replaced && RISECBOR64::Encode(
+			Value::MapValue(adjusted),adjustedBytes,&error) && adjustedBytes == leasedBytes;
 	}
 
 	RISECBOR64::Value FireFloatArray( const double* values, const std::size_t count )
@@ -11212,6 +11243,9 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		pathRegularizationEnabled = active->second.params.stability.filterGlossy > Scalar(0);
 		smsEnabled = active->second.params.sms.enabled;
 	}
+	ResolvedRasterSequence localResolvedSequence;
+	ResolvedRasterSequence* const effectiveResolvedSequence = resolvedSequence ?
+		resolvedSequence : &localResolvedSequence;
 	RISECBOR64::Bytes resolvedConfig;
 	const char* resolvedIntegrator = pRasterizer->ResolvedIntegratorName();
 	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
@@ -11220,16 +11254,52 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			activeRasterizerName.c_str(),*pScene,
 		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
 		animationTimeEnd,animationFrames,animationFields,
-		animationInvertFields,animationFrame,renderRegion,resolvedSequence,
-		resolvedConfig)) ) {
+		animationInvertFields,animationFrame,renderRegion,effectiveResolvedSequence,
+		nullptr,resolvedConfig)) ) {
 		GlobalLog()->PrintEx(eLog_Error,
 			"Job:: fire render has no canonical resolved configuration");
 		return false;
 	}
-	return PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
+	const bool prepared = PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
 		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
 		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,resolvedConfig,
 		publishMetadata);
+	if( prepared && publishMetadata ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(pRasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = pRasterizer;
+		const std::string expectedRasterizerName = activeRasterizerName;
+		const std::string expectedIntegrator = resolvedIntegrator && resolvedIntegrator[0] ?
+			resolvedIntegrator : activeRasterizerName;
+		const bool hasAnimationFrame = animationFrame != nullptr;
+		const unsigned int selectedAnimationFrame = animationFrame ? *animationFrame : 0u;
+		const bool hasRenderRegion = renderRegion != nullptr;
+		const Rect selectedRenderRegion = renderRegion ? *renderRegion : Rect(0,0,0,0);
+		const ResolvedRasterSequence selectedSequence = *effectiveResolvedSequence;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerName,expectedIntegrator,
+			animationTimeStart,animationTimeEnd,animationFrames,animationFields,
+			animationInvertFields,hasAnimationFrame,selectedAnimationFrame,
+			hasRenderRegion,selectedRenderRegion,selectedSequence]() {
+			if( !pScene || pRasterizer != expectedRasterizer ||
+				activeRasterizerName != expectedRasterizerName ) return false;
+			const RasterizerRegistry::const_iterator current =
+				rasterizerRegistry.find(expectedRasterizerName);
+			if( current == rasterizerRegistry.end() ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(current->second.params,
+				expectedRasterizerName.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,nullptr,animationTimeStart,
+				animationTimeEnd,animationFrames,animationFields,animationInvertFields,
+				hasAnimationFrame ? &selectedAnimationFrame : nullptr,
+				hasRenderRegion ? &selectedRenderRegion : nullptr,nullptr,
+				&selectedSequence,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
+	return prepared;
 }
 
 bool Job::PrepareFireRenderForExternalRasterizer(
@@ -11282,12 +11352,37 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 			(rasterizerKind ? rasterizerKind : ""),*pScene,
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
+		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
 	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
 		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
 		resolvedConfig,true);
+	if( prepared ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = rasterizer;
+		const std::string expectedRasterizerKind = rasterizerKind ? rasterizerKind : "";
+		const std::string expectedIntegrator =
+			resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			expectedRasterizerKind;
+		const RasterizerParams expectedParams = external;
+		const FireExternalRenderConfig expectedExternal = config;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerKind,expectedIntegrator,expectedParams,expectedExternal]() {
+			if( !pScene ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(expectedParams,
+				expectedRasterizerKind.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,&expectedExternal,
+				animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+				animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+				nullptr,nullptr,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
 	return prepared;
 }
 
