@@ -266,6 +266,7 @@ namespace RISE
 			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
 			virtual void FreeRasterizerOutputs( ) override;
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
+			std::vector<IRasterizerOutput*> RetainRasterizerOutputs() const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc ) override;
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job

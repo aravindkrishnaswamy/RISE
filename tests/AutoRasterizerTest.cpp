@@ -45,6 +45,8 @@
 #include <cctype>
 #include <string>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <condition_variable>
 #include <mutex>
@@ -137,6 +139,7 @@ public:
 
 class FrameStoreNotificationOutput
 	: public virtual IRasterizerOutput
+	, public virtual IFireRasterizerOutputRoute
 	, public virtual Reference
 {
 public:
@@ -145,6 +148,8 @@ public:
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
 		{ ++images; }
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
 	void OnRasterizerFrameStoreChanged( FrameStore* ) override { ++notifications; }
 
 protected:
@@ -1795,6 +1800,140 @@ static void TestConcurrentOutputRegistrationRejectsFrameStoreSwap()
 	std::remove(path.c_str());
 }
 
+static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
+{
+	const std::string label = "Auto output Add/Remove is one wrapper-delegate transaction";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"concurrent_add_remove") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	std::atomic<bool> addFailed(false);
+	std::atomic<bool> removeFinished(false);
+	std::thread adder([&]() {
+		try { rasterizer->AddRasterizerOutput(blocking); }
+		catch( ... ) { addFailed.store(true); }
+	});
+	blocking->WaitUntilEntered();
+	std::thread remover([&]() {
+		rasterizer->RemoveRasterizerOutput(blocking);
+		removeFinished.store(true);
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	const bool removeWaitedForTransaction = !removeFinished.load();
+	blocking->Continue();
+	adder.join();
+	remover.join();
+	Check(resolved && !addFailed.load() && removeWaitedForTransaction &&
+		removeFinished.load() &&
+		!rasterizer->ForTest_WrapperContainsOutput(blocking) &&
+		!rasterizer->ForTest_DelegateContainsOutput(blocking),
+		"concurrent inverse mutation leaves neither topology split: "+label);
+	safe_release(blocking);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestSyncAndFrameStoreSwapAreSerialized()
+{
+	const std::string label = "Auto delegate sync serializes with FrameStore swaps";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_frame_store_swap") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	FrameStore* original = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* delegateOnly = new FrameStore(spec);
+	FrameStore* replacement = new FrameStore(spec);
+	rasterizer->ForTest_SetDelegateFrameStore(delegateOnly);
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	blocking->ArmOnNotification(3u);
+	rasterizer->AddRasterizerOutput(blocking);
+	bool synchronized = false;
+	std::thread synchronizer([&]() {
+		synchronized = rasterizer->ResolveForFirePreflight(*job->GetScene());
+	});
+	blocking->WaitUntilEntered();
+	std::atomic<bool> swapFinished(false);
+	std::thread swapper([&]() {
+		rasterizer->SetFrameStore(replacement);
+		swapFinished.store(true);
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	const bool swapWaitedForSync = !swapFinished.load();
+	blocking->Continue();
+	synchronizer.join();
+	swapper.join();
+	Check(initiallyResolved && synchronized && swapWaitedForSync && swapFinished.load() &&
+		rasterizer->GetFrameStore() == replacement &&
+		rasterizer->ForTest_GetDelegateFrameStore() == replacement,
+		"stale sync cannot overwrite a newer wrapper FrameStore: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(delegateOnly);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestPersistentRollbackDetachesBothTopologies()
+{
+	const std::string label = "persistent FrameStore rollback failure detaches both Auto topologies";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"persistent_rollback") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	failing->ArmFailuresAfter(1u,20u);
+	bool rejected = false;
+	try { rasterizer->SetFrameStore(replacement); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	Check(resolved && rejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == original &&
+		!rasterizer->ForTest_WrapperContainsOutput(failing) &&
+		!rasterizer->ForTest_DelegateContainsOutput(failing),
+		"unrecoverable output is removed from wrapper and delegate: "+label);
+	safe_release(failing);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestResolutionPublicationTracksConcurrentFrameStoreSwap()
 {
 	const std::string label =
@@ -2170,6 +2309,9 @@ int main()
 	TestTransactionalDelegateReplay();
 	TestTransactionalFrameStoreReplay();
 	TestConcurrentOutputRegistrationRejectsFrameStoreSwap();
+	TestConcurrentAddRemoveIsAtomicAcrossDelegate();
+	TestSyncAndFrameStoreSwapAreSerialized();
+	TestPersistentRollbackDetachesBothTopologies();
 	TestResolutionPublicationTracksConcurrentFrameStoreSwap();
 	TestPostResolutionAddReentrancy();
 	TestDelegateOutputReplayReentrancy();

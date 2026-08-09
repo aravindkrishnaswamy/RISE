@@ -678,6 +678,24 @@ void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& p
 	}
 }
 
+std::vector<IRasterizerOutput*> Rasterizer::RetainRasterizerOutputs() const
+{
+	std::vector<IRasterizerOutput*> retained;
+	std::lock_guard<std::mutex> lock(outsMutex);
+	try {
+		for( IRasterizerOutput* output : outs ) {
+			output->addref();
+			try { retained.push_back(output); }
+			catch( ... ) { output->release(); throw; }
+		}
+	}
+	catch( ... ) {
+		for( IRasterizerOutput* output : retained ) output->release();
+		throw;
+	}
+	return retained;
+}
+
 void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 {
 	pProgressFunc = pFunc;

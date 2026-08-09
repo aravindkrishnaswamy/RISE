@@ -185,6 +185,9 @@ namespace RISE
 			//! Test-only visibility for the delegated FrameStore identity.  Agent
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;
+			void ForTest_SetDelegateFrameStore( FrameStore* frameStore );
+			bool ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const;
+			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
 
 		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
@@ -291,6 +294,7 @@ namespace RISE
 			void SyncDelegateFrameStore() const;
 			IRasterizer* RetainDelegate() const;
 			void SetResolveReason( const std::string& reason ) const;
+			bool ReconcileDelegateOutputTopology( IRasterizer* delegate );
 
 			// Integrator-agnostic build inputs (addref'd; released in dtor).
 			IRayCaster*					mCaster;
@@ -333,6 +337,7 @@ namespace RISE
 			// reached from those const methods).
 			mutable IRasterizer*			mDelegate;
 			mutable unsigned long long	mReplayRevision;
+			mutable std::recursive_mutex	mDelegateMutationMutex;
 			std::atomic<bool>			mFrameStoreReplayInProgress { false };
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
