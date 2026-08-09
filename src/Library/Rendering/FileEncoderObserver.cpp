@@ -901,6 +901,44 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	return true;
 }
 
+bool RISE::Implementation::PublishUnprovenancedFileTransaction(
+	const std::string& closedTemporaryArtifactFilename,
+	const std::string& artifactFilename,
+	std::string& error )
+{
+	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
+	error.clear();
+	RISECBOR64::Bytes artifactBytes;
+	if( !ReadArtifact(closedTemporaryArtifactFilename.c_str(),artifactBytes) ||
+		artifactBytes.empty() ) {
+		error = "closed temporary artifact is missing or empty";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	const std::string sidecarFilename = artifactFilename+".provenance.cbor";
+	const std::string artifactBackup = UniqueSibling(artifactFilename,"artifact-backup");
+	const std::string sidecarBackup = UniqueSibling(sidecarFilename,"sidecar-backup");
+	bool movedArtifact = false;
+	bool movedSidecar = false;
+	if( !MoveExistingToBackup(artifactFilename,artifactBackup,movedArtifact,error) ||
+		!MoveExistingToBackup(sidecarFilename,sidecarBackup,movedSidecar,error) ) {
+		RestoreBackup(artifactFilename,artifactBackup,movedArtifact);
+		RestoreBackup(sidecarFilename,sidecarBackup,movedSidecar);
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	if( std::rename(closedTemporaryArtifactFilename.c_str(),artifactFilename.c_str()) != 0 ) {
+		RestoreBackup(artifactFilename,artifactBackup,movedArtifact);
+		RestoreBackup(sidecarFilename,sidecarBackup,movedSidecar);
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		error = "could not commit the unprovenanced artifact";
+		return false;
+	}
+	std::remove(artifactBackup.c_str());
+	std::remove(sidecarBackup.c_str());
+	return true;
+}
+
 bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	FrameStore& store,
 	IFrameEncoder& encoder,

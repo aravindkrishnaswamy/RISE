@@ -72,6 +72,15 @@ namespace RISE
 			std::string& error
 			);
 
+		//! Publish an artifact that carries no fire provenance while
+		//! transactionally retiring any sidecar left by the prior artifact.
+		//! The previous artifact/sidecar pair is restored if publication fails.
+		bool PublishUnprovenancedFileTransaction(
+			const std::string& closedTemporaryArtifactFilename,
+			const std::string& artifactFilename,
+			std::string& error
+			);
+
 		//! Deterministically removes all riseFireProv_ string attributes from
 		//! a single-part scanline EXR and rebases its chunk-offset table.
 		//! The resulting bytes are the artifact_sha256 preimage pinned by P-4.

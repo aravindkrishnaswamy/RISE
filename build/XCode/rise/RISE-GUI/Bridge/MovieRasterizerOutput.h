@@ -39,6 +39,12 @@ public:
     void OutputImage(const RISE::IRasterImage& pImage,
                      const RISE::Rect* pRegion,
                      const unsigned int frame) override;
+    void OutputPreDenoisedImage(const RISE::IRasterImage& pImage,
+                               const RISE::Rect* pRegion,
+                               const unsigned int frame) override;
+    void OutputDenoisedImage(const RISE::IRasterImage& pImage,
+                            const RISE::Rect* pRegion,
+                            const unsigned int frame) override;
     void OnRasterizerFrameStoreChanged(
         RISE::Implementation::FrameStore* framestore) override;
     bool DeclaresFireArtifactRoute() const override { return true; }
@@ -87,6 +93,10 @@ private:
     /// Lazily configure the AVAssetWriter on first frame (when we know the dimensions).
     bool setupWriter(int width, int height);
     bool failMovieDerivative(const char* reason);
+    void outputFrame(const RISE::IRasterImage& pImage,
+                     unsigned int frame,
+                     bool writePrimary,
+                     bool writeDerivative);
 };
 
 #endif

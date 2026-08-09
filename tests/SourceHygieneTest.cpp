@@ -557,6 +557,18 @@ int main()
 				std::string::npos &&
 			bridgeSource.find("HasFinalizedFirePrimaries") != std::string::npos,
 			"macOS movie derivative failure preserves finalized fire frame primaries" );
+		Check( movieSource.find("OutputPreDenoisedImage") != std::string::npos &&
+			movieSource.find("outputFrame(pImage, frame, true, false)") !=
+				std::string::npos &&
+			movieSource.find("OutputDenoisedImage") != std::string::npos &&
+			movieSource.find("outputFrame(pImage, frame, false, true)") !=
+				std::string::npos &&
+			movieSource.find("movie derivative has no matching raw primary") !=
+				std::string::npos,
+			"OIDN movie output archives raw fire primaries and uses denoised display derivatives" );
+		Check( movieSource.find("PublishUnprovenancedFileTransaction") !=
+				std::string::npos,
+			"nonfire movie publication transactionally retires stale fire sidecars" );
 	}
 
 	// FIRE_OUTPUT_PROVENANCE_PIN_V1 P-3 parameter-surface ratchet.  The

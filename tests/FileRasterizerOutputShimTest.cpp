@@ -1076,6 +1076,44 @@ namespace
 				blockedMovieTemporary,blockedMovieFile,16u,16u,30u,2u,
 				movieFrames,movieError) && !std::filesystem::exists(blockedMovieFile),
 			"[fire provenance] movie sidecar failure leaves no unlabeled MOV artifact" );
+
+		const std::string plainMovieTemporary =
+			MakeTempPathWithoutExt()+"_plain_movie.closed";
+		const std::string plainMovieFile =
+			MakeTempPathWithoutExt()+"_plain_movie.mov";
+		{
+			std::ofstream priorArtifact(plainMovieFile,std::ios::binary);
+			priorArtifact.write("prior-fire-movie",16);
+			std::ofstream priorSidecar(plainMovieFile+".provenance.cbor",std::ios::binary);
+			priorSidecar.write("prior-fire-sidecar",18);
+			std::ofstream replacement(plainMovieTemporary,std::ios::binary);
+			replacement.write("new-nonfire-movie",17);
+		}
+		Check( PublishUnprovenancedFileTransaction(plainMovieTemporary,
+				plainMovieFile,movieError),
+			"[fire provenance] nonfire movie replacement publishes transactionally" );
+		std::vector<unsigned char> plainMovieBytes;
+		Check( ReadFileAllBytes(plainMovieFile,plainMovieBytes) &&
+			std::string(plainMovieBytes.begin(),plainMovieBytes.end()) ==
+				"new-nonfire-movie" &&
+			!std::filesystem::exists(plainMovieFile+".provenance.cbor"),
+			"[fire provenance] nonfire movie replacement retires a stale fire sidecar" );
+		{
+			std::ofstream restoredSidecar(plainMovieFile+".provenance.cbor",std::ios::binary);
+			restoredSidecar.write("restored-sidecar",16);
+		}
+		const std::string missingMovieTemporary =
+			MakeTempPathWithoutExt()+"_missing_movie.closed";
+		Check( !PublishUnprovenancedFileTransaction(missingMovieTemporary,
+				plainMovieFile,movieError),
+			"[fire provenance] missing nonfire movie is rejected before publication" );
+		std::vector<unsigned char> preservedMovieBytes, preservedSidecarBytes;
+		Check( ReadFileAllBytes(plainMovieFile,preservedMovieBytes) &&
+			ReadFileAllBytes(plainMovieFile+".provenance.cbor",preservedSidecarBytes) &&
+			preservedMovieBytes == plainMovieBytes &&
+			std::string(preservedSidecarBytes.begin(),preservedSidecarBytes.end()) ==
+				"restored-sidecar",
+			"[fire provenance] failed nonfire publication preserves the prior pair" );
 		std::remove(movieFile.c_str());
 		std::remove((movieFile+".provenance.cbor").c_str());
 		std::remove(badMovieTemporary.c_str());
@@ -1084,6 +1122,8 @@ namespace
 		std::remove(blockedMovieTemporary.c_str());
 		std::remove(blockedMovieFile.c_str());
 		std::filesystem::remove(blockedMovieFile+".provenance.cbor");
+		std::remove(plainMovieFile.c_str());
+		std::remove((plainMovieFile+".provenance.cbor").c_str());
 		const FrameStore::Metadata beforeReset = store->Meta();
 		store->SetFireFidelityMetadata("preview",beforeReset.renderReasonCodes,
 			beforeReset.activeFireOpticsRecordIds,beforeReset.activeFireMedia,

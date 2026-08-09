@@ -263,6 +263,31 @@ void MovieRasterizerOutput::OutputImage(
     const RISE::Rect* /*pRegion*/,
     const unsigned int frame)
 {
+    outputFrame(pImage, frame, true, true);
+}
+
+void MovieRasterizerOutput::OutputPreDenoisedImage(
+    const RISE::IRasterImage& pImage,
+    const RISE::Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, true, false);
+}
+
+void MovieRasterizerOutput::OutputDenoisedImage(
+    const RISE::IRasterImage& pImage,
+    const RISE::Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, false, true);
+}
+
+void MovieRasterizerOutput::outputFrame(
+    const RISE::IRasterImage& pImage,
+    const unsigned int frame,
+    const bool writePrimary,
+    const bool writeDerivative)
+{
     if (_finalized) return;
 
     @autoreleasepool {
@@ -296,7 +321,7 @@ void MovieRasterizerOutput::OutputImage(
             "output_provenance_unavailable: fire fidelity changed within movie");
     }
 
-    if (_fireRender) {
+    if (_fireRender && writePrimary) {
         if (!frameStore || !_primaryEncoder) {
             _failed = true;
             RISE::GlobalLog()->PrintEasyError(
@@ -355,6 +380,15 @@ void MovieRasterizerOutput::OutputImage(
         link.provenanceId = linked.primaryProvenanceId;
         link.artifactSha256 = linked.primaryArtifactSha256;
         _framePrimaries.push_back(link);
+    }
+    if (!writeDerivative) return;
+    if (_fireRender &&
+        (_framePrimaries.empty() ||
+         _framePrimaries.back().frameIndex != frame ||
+         _framesReceived + 1u != _framePrimaries.size())) {
+        _failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: movie derivative has no matching raw primary");
     }
     if (_derivativeFailed) return;
 
@@ -541,24 +575,14 @@ bool MovieRasterizerOutput::finalize(bool publish)
                     [_outputPath UTF8String], publishError.c_str());
             }
         } else {
-            NSFileManager* fm = [NSFileManager defaultManager];
-            NSURL* finalURL = [NSURL fileURLWithPath:_outputPath];
-            NSURL* temporaryURL = [NSURL fileURLWithPath:_writerPath];
-            NSError* publicationError = nil;
-            if ([fm fileExistsAtPath:_outputPath]) {
-                _succeeded = [fm replaceItemAtURL:finalURL
-                    withItemAtURL:temporaryURL backupItemName:nil
-                    options:0 resultingItemURL:nil error:&publicationError];
-            } else {
-                _succeeded = [fm moveItemAtURL:temporaryURL
-                    toURL:finalURL error:&publicationError];
-            }
+            std::string publicationError;
+            _succeeded = RISE::Implementation::PublishUnprovenancedFileTransaction(
+                [_writerPath UTF8String], [_outputPath UTF8String], publicationError);
             if (!_succeeded) {
                 RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
                     "MovieRasterizerOutput:: failed to publish '%s': %s",
                     [_outputPath UTF8String],
-                    [[publicationError localizedDescription] UTF8String]);
-                [fm removeItemAtURL:temporaryURL error:nil];
+                    publicationError.c_str());
             }
         }
         if (_succeeded) {
