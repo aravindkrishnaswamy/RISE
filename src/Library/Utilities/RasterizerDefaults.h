@@ -60,6 +60,10 @@
 #define RASTERIZER_DEFAULTS_
 
 #include "OidnConfig.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdint>
+#include <limits>
 #include <string>
 
 namespace RISE
@@ -85,6 +89,97 @@ namespace RISE
 		BDPT,       ///< Author pin: bidirectional path tracing.
 		VCM         ///< Author pin: vertex connection and merging.
 	};
+
+	enum class RasterSequenceKind
+	{
+		Morton,
+		Block,
+		Hilbert,
+		Scanline,
+		RasterizerDefault
+	};
+
+	struct ResolvedRasterSequence
+	{
+		RasterSequenceKind kind = RasterSequenceKind::Morton;
+		unsigned int tileSize = 32;
+		unsigned int blockWidth = 0;
+		unsigned int blockHeight = 0;
+		unsigned int blockOrder = 0;
+		unsigned int hilbertDepth = 0;
+		std::uint32_t shuffleSeed = 0;
+		bool hasShuffleSeed = false;
+	};
+
+	template <typename NextRandom>
+	ResolvedRasterSequence ResolveRasterSequence(
+		const int authoredType,
+		const std::string& authoredOptions,
+		NextRandom nextRandom )
+	{
+		ResolvedRasterSequence resolved;
+		const auto bindShuffleSeed = [&]( ResolvedRasterSequence& sequence ) {
+			if( sequence.blockOrder != 1u ) return;
+			const double unit = nextRandom();
+			const double span = static_cast<double>(
+				std::numeric_limits<std::uint32_t>::max()) + 1.0;
+			sequence.shuffleSeed = static_cast<std::uint32_t>(unit * span);
+			sequence.hasShuffleSeed = true;
+		};
+
+		switch( authoredType ) {
+		case 0:
+			resolved.kind = RasterSequenceKind::Scanline;
+			return resolved;
+		case 1: {
+			unsigned int width = 0, height = 0, order = 0;
+			if( std::sscanf(authoredOptions.c_str(),"%u %u %u",
+				&width,&height,&order) != 3 || width == 0u || height == 0u || order > 8u ) {
+				return resolved;
+			}
+			resolved.kind = RasterSequenceKind::Block;
+			resolved.blockWidth = width;
+			resolved.blockHeight = height;
+			resolved.blockOrder = order;
+			bindShuffleSeed(resolved);
+			return resolved;
+		}
+		case 2: {
+			unsigned int depth = 0;
+			if( std::sscanf(authoredOptions.c_str(),"%u",&depth) != 1 || depth == 0u ) {
+				return resolved;
+			}
+			resolved.kind = RasterSequenceKind::Hilbert;
+			resolved.hilbertDepth = depth;
+			return resolved;
+		}
+		case 3:
+			if( nextRandom() < 0.1 ) {
+				resolved.kind = RasterSequenceKind::Hilbert;
+				resolved.hilbertDepth = 4u;
+			} else {
+				resolved.kind = RasterSequenceKind::Block;
+				resolved.blockWidth = 64u;
+				resolved.blockHeight = 64u;
+				resolved.blockOrder = static_cast<unsigned int>(
+					std::floor(nextRandom()*8.999999));
+				bindShuffleSeed(resolved);
+			}
+			return resolved;
+		case 4:
+		default: {
+			unsigned int tileSize = 32u;
+			if( !authoredOptions.empty() ) {
+				unsigned int parsed = 0;
+				if( std::sscanf(authoredOptions.c_str(),"%u",&parsed) == 1 && parsed > 0u ) {
+					tileSize = parsed;
+				}
+			}
+			resolved.tileSize = tileSize;
+			return resolved;
+		}
+		}
+	}
 
 	//
 	// Common base — every production rasterizer accepts these.  The

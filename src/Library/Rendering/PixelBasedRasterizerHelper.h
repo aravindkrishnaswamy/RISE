@@ -87,7 +87,7 @@ namespace RISE
 				) const;
 
 			// Used only by the RasterizeAnimation
-			void RenderFrameOfAnimation( 
+			bool RenderFrameOfAnimation(
 				const IScene& pScene,
 				const Rect* pRect,
 				const FIELD field,

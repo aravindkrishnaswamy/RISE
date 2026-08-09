@@ -19,6 +19,7 @@
 #include "../Utilities/Reference.h"
 #include <vector>
 #include <algorithm>
+#include <cstdint>
 #include <random>
 
 namespace RISE
@@ -140,17 +141,29 @@ namespace RISE
 			const unsigned int bwidth;
 			const unsigned int bheight;
 			const char type;
+			const std::uint32_t shuffleSeed;
 
 		public:
 			BlockRasterizeSequence( 
 				const unsigned int block_width,
 				const unsigned int block_height,
 				const char type_
-				) : 
+				) : BlockRasterizeSequence(
+					block_width,block_height,type_,std::random_device{}())
+			{
+			}
+
+			BlockRasterizeSequence(
+				const unsigned int block_width,
+				const unsigned int block_height,
+				const char type_,
+				const std::uint32_t shuffle_seed
+				) :
 			cur( 0 ),
 			bwidth( block_width ),
 			bheight( block_height ),
-			type( type_ )
+			type( type_ ),
+			shuffleSeed( shuffle_seed )
 			{
 			}
 
@@ -207,7 +220,7 @@ namespace RISE
 					std::sort( blocks.begin(), blocks.end(), CompDistanceCenter );
 					break;
 				case 1:
-					{ std::mt19937 rng{std::random_device{}()}; std::shuffle( blocks.begin(), blocks.end(), rng ); }
+					{ std::mt19937 rng{shuffleSeed}; std::shuffle( blocks.begin(), blocks.end(), rng ); }
 					break;
 				case 2:
 					std::sort( blocks.begin(), blocks.end(), CompDistanceTopLeft );
@@ -253,4 +266,3 @@ namespace RISE
 }
 
 #endif
-

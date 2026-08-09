@@ -1552,7 +1552,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 	}
 }
 
-void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
+bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const IScene& pScene,
 	const Rect* pRect,
 	const FIELD field,
@@ -1581,7 +1581,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const ICamera* pCam = pScene.GetCamera();
 	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RenderFrameOfAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
-		return;
+		return false;
 	}
 
 	// Exposure time can change from frame to frame
@@ -1714,7 +1714,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Rasterizing Animation: " );
 		}
+		if( !cacheCompleted ) {
+			PostRenderCleanup();
+			if( pFilteredFilm ) pFilteredFilm->Clear();
+			return false;
+		}
 	}
+	bool frameCompleted = true;
 
 	// Main render — progressive loop (VCM SPPM-style) or single pass.
 	// Mirrors RasterizeScene's progressive path: split total SPP into
@@ -1787,11 +1793,17 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			mProgressWeight = static_cast<double>( passSPP );
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
-			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, framedata );
+			const bool passCompleted = RenderFrameOfAnimationPass(
+				RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time,
+				*pPassSeq, framedata );
 			safe_release( pPassSeq );
 
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
+			if( !passCompleted ) {
+				frameCompleted = false;
+				break;
+			}
 
 			// Cancellation between passes — break before the remaining
 			// iterations so the outer animation loop can flush this
@@ -1807,10 +1819,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 					num   = static_cast<double>(passIdx+1);
 					denom = static_cast<double>(numPasses);
 				}
-				if( !pProgressFunc->Progress( num, denom ) ) {
+				if( !pProgressFunc->Progress( num, denom ) || pProgressFunc->IsCancelled() ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"RenderFrameOfAnimation:: cancelled after pass %u/%u",
 						passIdx+1, numPasses );
+					frameCompleted = false;
 					break;
 				}
 			}
@@ -1876,7 +1889,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// Single-pass: PT/BDPT/MLT without explicit progressive config.
 		// mProgressBase/Weight/Total were set by the caller (they may be
 		// zero for legacy per-frame progress).
-		RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+		frameCompleted = RenderFrameOfAnimationPass(
+			RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq,
+			framedata );
 	}
 
 	// Post-render hook (symmetric with RasterizeScene).
@@ -1907,6 +1922,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		}
 		pFilteredFilm->Clear();
 	}
+	return frameCompleted;
 }
 
 void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
@@ -2077,13 +2093,18 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence, true );
+			const bool upperCompleted = RenderFrameOfAnimation(
+				pScene, pRect,
+				do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH,
+				*pImage, curtime_upper, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 
 			// If the user cancelled during the upper field, don't
 			// render the lower field — the partial image here never
 			// gets flushed.
-			if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
+			if( !upperCompleted || ( pProgressFunc &&
+				( !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ||
+				  pProgressFunc->IsCancelled() ) ) ) {
 				GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 				cancelled = true;
 				break;
@@ -2121,8 +2142,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
+			const bool lowerCompleted = RenderFrameOfAnimation(
+				pScene, pRect,
+				do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH,
+				*pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
+			if( !lowerCompleted ) {
+				cancelled = true;
+				break;
+			}
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
@@ -2152,8 +2180,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
+			const bool frameCompleted = RenderFrameOfAnimation(
+				pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
+			if( !frameCompleted ) {
+				cancelled = true;
+				break;
+			}
 		}
 
 		// If the user cancelled during this frame, skip the flush so
@@ -2166,7 +2199,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		// than no frame at all.  The caller (e.g. RISEBridge) finalizes
 		// the MOV writer after we return so the prior completed frames
 		// play back correctly.
-		if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
+		if( pProgressFunc &&
+			( !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ||
+			  pProgressFunc->IsCancelled() ) ) {
 			GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 			cancelled = true;
 			break;
@@ -2224,23 +2259,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #else
 		FlushToOutputs( *pImage, pRect, frameIdx );
 #endif
-		{
-			// L6e-1.1 — bracket the inter-frame Clear via RAII.
-			//
-			// L6f known-limitation — `FlushToOutputs` (above) fired
-			// `MarkFrameComplete(frameIdx)` synchronously on
-			// `mFrameStore`.  Synchronous observers
-			// (FileEncoderObserver) finished writing before this
-			// Clear executes.  ASYNC observers (e.g. UI repaint
-			// patterns that signal a UI thread and return) may
-			// wake AFTER the Clear and read black for a beat.
-			// Pre-L6f (legacy VFS-internal FrameStore mode) had the
-			// same race window: VFS-internal store also got cleared
-			// between frames.  No regression vs pre-L6f, just
-			// surfaced by the rasterizer-driven Mark* rendering
-			// the per-frame timing more obvious.  L6e-3 (interactive
-			// VFS migration) will need to address this for
-			// animation-in-GUI workflows.
+		if( i+1u < total_frames ) {
+			// Clear only between frames. The terminal frame is the canonical
+			// FrameStore snapshot used by the GUI and later Save As operations.
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 			pImage->Clear( RISEColor(0,0,0,0), pRect );
 		}

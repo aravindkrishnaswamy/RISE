@@ -195,6 +195,7 @@ namespace RISE
 			bool animationInvertFields,
 			const unsigned int* animationFrame,
 			const Rect* renderRegion,
+			ResolvedRasterSequence* resolvedSequence,
 			bool publishMetadata = true );
 		bool PrepareFireRenderFidelityMetadata(
 			IRasterizer* rasterizer,

@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -52,6 +53,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
+#include "../src/Library/Utilities/RasterizerDefaults.h"
 
 using namespace RISE;
 
@@ -101,6 +103,21 @@ namespace
 			a.primaryProvenanceId == b.primaryProvenanceId &&
 			a.primaryArtifactSha256 == b.primaryArtifactSha256 &&
 			a.primaryArtifactFidelity == b.primaryArtifactFidelity;
+	}
+
+	bool SameSnapshotPixels(
+		const Implementation::FrameStore::Snapshot& a,
+		const Implementation::FrameStore::Snapshot& b )
+	{
+		const auto sameBytes = []( const auto& lhs, const auto& rhs ) {
+			return lhs.size() == rhs.size() &&
+				( lhs.empty() || std::memcmp(lhs.data(),rhs.data(),
+					lhs.size()*sizeof(lhs[0])) == 0 );
+		};
+		return sameBytes(a.beauty,b.beauty) && sameBytes(a.alpha,b.alpha) &&
+			sameBytes(a.albedo,b.albedo) && sameBytes(a.normal,b.normal) &&
+			sameBytes(a.depth,b.depth) && sameBytes(a.objectId,b.objectId) &&
+			sameBytes(a.primitiveId,b.primitiveId);
 	}
 
 	class ThrowingFrameObserver : public IRenderObserver
@@ -639,24 +656,45 @@ namespace
 		bool IsCancelled() const override { return true; }
 	};
 
+	class CancelSignalOnlyFireProgress final : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return true; }
+		void SetTitle( const char* ) override {}
+		bool IsCancelled() const override { return true; }
+	};
+
 	class CompletionCountingOutput final :
 		public virtual IRasterizerOutput,
 		public virtual Implementation::Reference
 	{
 	public:
-		CompletionCountingOutput() : intermediateCount(0u), finalCount(0u) {}
+		explicit CompletionCountingOutput( Implementation::FrameStore* store = nullptr ) :
+			store_(store), intermediateCount(0u), finalCount(0u), lastFrame(0u) {}
 		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override
 			{ intermediateCount.fetch_add(1u); }
-		void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
-			{ finalCount.fetch_add(1u); }
+		void OutputImage( const IRasterImage& image, const Rect*,
+			const unsigned int frame ) override
+		{
+			lastPixel = image.GetPEL(0u,0u);
+			lastFrame = frame;
+			if( store_ ) lastSnapshot.reset(
+				new Implementation::FrameStore::Snapshot(store_->CaptureSnapshot()));
+			finalCount.fetch_add(1u);
+		}
 		void Reset()
 		{
 			intermediateCount.store(0u);
 			finalCount.store(0u);
+			lastSnapshot.reset();
 		}
 
+		Implementation::FrameStore* store_;
 		std::atomic<unsigned int> intermediateCount;
 		std::atomic<unsigned int> finalCount;
+		RISEColor lastPixel;
+		unsigned int lastFrame;
+		std::unique_ptr<Implementation::FrameStore::Snapshot> lastSnapshot;
 
 	protected:
 		~CompletionCountingOutput() override = default;
@@ -2517,11 +2555,24 @@ namespace
 				resolvedCamera->Find("projection") &&
 				resolvedCamera->Find("projection")->Find("fov_radians") &&
 				resolvedAnimation && resolvedAnimation->Find("num_frames") &&
-				resolvedRasterSequence && resolvedRasterSequence->Find("type") &&
-				resolvedRasterSequence->Find("options") && resolvedGlobalOptions &&
+				resolvedRasterSequence && resolvedRasterSequence->Find("kind") &&
+				resolvedRasterSequence->Find("kind")->GetText() == "morton" &&
+				resolvedRasterSequence->Find("tile_size") &&
+				resolvedRasterSequence->Find("tile_size")->GetIntegerArgument() == 32u &&
+				resolvedGlobalOptions &&
 				resolvedGlobalOptions->Find("auto_probe") &&
 				resolvedGlobalOptions->Find("vcm"),
-				"resolved config binds camera, animation, raster sequence, and global render controls" );
+				"resolved config binds the effective raster sequence, camera, animation, and global controls" );
+			FirePreflightProgress sequenceProgress;
+			job->SetProgress(&sequenceProgress);
+			const bool callbackRender = job->Rasterize();
+			const std::vector<unsigned char> callbackConfig = store->Meta().resolvedRenderConfigCoreV1;
+			job->SetProgress(nullptr);
+			const bool noCallbackRender = job->Rasterize();
+			Check( callbackRender && noCallbackRender &&
+				callbackConfig == store->Meta().resolvedRenderConfigCoreV1 &&
+				callbackConfig == metadata.resolvedRenderConfigCoreV1,
+				"progress callback presence cannot change the effective raster sequence or config ID" );
 			const bool revisionIsHex = sourceRevision && !sourceRevision->GetText().empty() &&
 				std::all_of(sourceRevision->GetText().begin(),sourceRevision->GetText().end(),
 					[]( unsigned char c ) { return std::isxdigit(c) != 0; });
@@ -2630,6 +2681,8 @@ namespace
 			safe_release(changedBakeJob);
 			writeScene("pathtracing_spectral_rasterizer",380u);
 
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput(store);
+			rasterizer->AddRasterizerOutput(completionOutput);
 			const bool explicitAnimationRendered =
 				job->RasterizeAnimation(2.0,3.0,1u,true,true);
 			RISECBOR64::Value explicitAnimationConfig;
@@ -2651,7 +2704,28 @@ namespace
 				explicitAnimation->Find("invert_fields") &&
 				explicitAnimation->Find("invert_fields")->GetBoolean(),
 				"explicit animation arguments, not preset defaults, enter resolved provenance" );
-			const bool selectedFrameRendered = job->RasterizeAnimationUsingOptions(0u);
+			const Implementation::FrameStore::Snapshot explicitAnimationSnapshot =
+				store->CaptureSnapshot();
+			const RISEColor explicitRetainedPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( explicitAnimationRendered && completionOutput->finalCount.load() == 1u &&
+				completionOutput->lastFrame == 0u && completionOutput->lastSnapshot &&
+				SameSnapshotPixels(explicitAnimationSnapshot,*completionOutput->lastSnapshot) &&
+				completionOutput->lastPixel.base[0] == explicitRetainedPixel.base[0] &&
+				completionOutput->lastPixel.base[1] == explicitRetainedPixel.base[1] &&
+				completionOutput->lastPixel.base[2] == explicitRetainedPixel.base[2] &&
+				completionOutput->lastPixel.a == explicitRetainedPixel.a,
+				"a successful one-frame animation retains its emitted terminal beauty and AOV snapshot" );
+			completionOutput->Reset();
+			const bool multiFrameRendered = job->RasterizeAnimation(2.0,3.0,2u,false,false);
+			const Implementation::FrameStore::Snapshot multiFrameSnapshot =
+				store->CaptureSnapshot();
+			Check( multiFrameRendered && completionOutput->finalCount.load() == 2u &&
+				completionOutput->lastFrame == 1u && completionOutput->lastSnapshot &&
+				SameSnapshotPixels(multiFrameSnapshot,*completionOutput->lastSnapshot),
+				"a successful multi-frame animation retains the last emitted beauty and AOV snapshot" );
+			completionOutput->Reset();
+			const bool selectedFrameRendered = job->RasterizeAnimationUsingOptions(1u);
 			RISECBOR64::Value selectedFrameConfig;
 			const FrameStoreOutput::Metadata selectedFrameMetadata = store->Meta();
 			const bool selectedFrameDecoded = selectedFrameRendered &&
@@ -2664,7 +2738,7 @@ namespace
 			Check( frameSelection && frameSelection->Find("active") &&
 				frameSelection->Find("active")->GetBoolean() &&
 				frameSelection->Find("index") &&
-				frameSelection->Find("index")->GetIntegerArgument() == 0u,
+				frameSelection->Find("index")->GetIntegerArgument() == 1u,
 				"single-frame animation selection enters resolved provenance" );
 
 			IJobPriv* lightRRJob = nullptr;
@@ -2710,9 +2784,8 @@ namespace
 				throwRestoredPixel.a == renderedPixel.a,
 				"a throwing fire render restores the last completed pixels and metadata" );
 
-			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
 			CancelledFireProgress cancelledProgress;
-			rasterizer->AddRasterizerOutput(completionOutput);
+			completionOutput->Reset();
 			job->SetProgress(&cancelledProgress);
 			const bool cancelledStillRejected = !job->Rasterize();
 			job->SetProgress(nullptr);
@@ -2737,6 +2810,22 @@ namespace
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
 				"cancelled fire animation publishes no partial tail frame" );
+			completionOutput->Reset();
+			CancelSignalOnlyFireProgress cancelSignalOnly;
+			job->SetProgress(&cancelSignalOnly);
+			const bool signalOnlyAnimationRejected =
+				!job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			job->SetProgress(nullptr);
+			const RISEColor signalOnlyRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( signalOnlyAnimationRejected && !rasterizer->LastRenderCompleted() &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				signalOnlyRestoredPixel.base[0] == renderedPixel.base[0] &&
+				signalOnlyRestoredPixel.base[1] == renderedPixel.base[1] &&
+				signalOnlyRestoredPixel.base[2] == renderedPixel.base[2] &&
+				signalOnlyRestoredPixel.a == renderedPixel.a,
+				"IsCancelled alone rejects a partial fire animation and restores its prior frame" );
 			const uint64_t regionBaselineGeneration = store->Generation();
 			const bool fireRegionRejected = !job->RasterizeRegion(0u,0u,0u,0u);
 			Check( fireRegionRejected && store->Generation() == regionBaselineGeneration &&
@@ -3195,10 +3284,47 @@ namespace
 		safe_release(job);
 		std::filesystem::remove(path);
 	}
+
+	void TestResolvedRasterSequenceNormalization()
+	{
+		unsigned int randomCalls = 0u;
+		const ResolvedRasterSequence invalid = ResolveRasterSequence(
+			1,"not a block",[&randomCalls]() { ++randomCalls; return 0.5; });
+		Check( invalid.kind == RasterSequenceKind::Morton && invalid.tileSize == 32u &&
+			randomCalls == 0u,
+			"invalid raster-sequence options normalize to the effective Morton default" );
+
+		const double blockRandoms[] = { 0.5, 0.12, 0.25 };
+		std::size_t blockRandomIndex = 0u;
+		const ResolvedRasterSequence randomBlock = ResolveRasterSequence(
+			3,"ignored",[&]() { return blockRandoms[blockRandomIndex++]; });
+		Check( randomBlock.kind == RasterSequenceKind::Block &&
+			randomBlock.blockWidth == 64u && randomBlock.blockHeight == 64u &&
+			randomBlock.blockOrder == 1u && randomBlock.hasShuffleSeed &&
+			randomBlock.shuffleSeed == 1073741824u && blockRandomIndex == 3u,
+			"legacy random block resolution freezes its order and exact shuffle seed" );
+
+		std::size_t hilbertRandomCalls = 0u;
+		const ResolvedRasterSequence randomHilbert = ResolveRasterSequence(
+			3,"ignored",[&]() { ++hilbertRandomCalls; return 0.05; });
+		Check( randomHilbert.kind == RasterSequenceKind::Hilbert &&
+			randomHilbert.hilbertDepth == 4u && hilbertRandomCalls == 1u,
+			"legacy random Hilbert resolution freezes the selected effective sequence" );
+
+		std::size_t explicitShuffleCalls = 0u;
+		const ResolvedRasterSequence explicitShuffle = ResolveRasterSequence(
+			1,"16 24 1",[&]() { ++explicitShuffleCalls; return 0.75; });
+		Check( explicitShuffle.kind == RasterSequenceKind::Block &&
+			explicitShuffle.blockWidth == 16u && explicitShuffle.blockHeight == 24u &&
+			explicitShuffle.blockOrder == 1u && explicitShuffle.hasShuffleSeed &&
+			explicitShuffle.shuffleSeed == 3221225472u && explicitShuffleCalls == 1u,
+			"authored shuffle resolution binds the seed used by the block sequence" );
+	}
 }
 
 int main()
 {
+	TestResolvedRasterSequenceNormalization();
 	TestMatrixOnlyFilmResponse();
 	TestPredictivePresetSpectralConsumptionAndFidelity();
 	TestBakedTrilinearChannelsAndOptics();

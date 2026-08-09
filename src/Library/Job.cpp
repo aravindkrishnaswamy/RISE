@@ -50,6 +50,7 @@
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
+#include "Rendering/BlockRasterizeSequence.h"
 #include "Cameras/PinholeCamera.h"
 #include "Cameras/ThinLensCamera.h"
 #include "Cameras/FisheyeCamera.h"
@@ -595,6 +596,7 @@ namespace
 		const bool animationInvertFields,
 		const unsigned int* animationFrame,
 		const Rect* renderRegion,
+		ResolvedRasterSequence* resolvedSequence,
 		RISECBOR64::Bytes& bytes )
 	{
 		using RISECBOR64::Value;
@@ -711,6 +713,49 @@ namespace
 			2,globalOptions.ReadInt("auto_probe_variance_renders",2)));
 		const unsigned int autoProbeActivationSPP = static_cast<unsigned int>(std::max(
 			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
+		ResolvedRasterSequence sequence;
+		if( external ) {
+			sequence.kind = RasterSequenceKind::RasterizerDefault;
+			sequence.blockOrder = external->tileOrder;
+		} else {
+			const RISE::String options = globalOptions.ReadString(
+				"raster_sequence_options","");
+			sequence = ResolveRasterSequence(
+				globalOptions.ReadInt("raster_sequence_type",4),options.c_str(),
+				[]() { return GlobalRNG().CanonicalRandom(); });
+			if( resolvedSequence ) *resolvedSequence = sequence;
+		}
+		Value rasterSequence;
+		switch( sequence.kind ) {
+		case RasterSequenceKind::Morton:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("morton") },
+				{ "tile_size", FireUnsigned(sequence.tileSize) } });
+			break;
+		case RasterSequenceKind::Block:
+			rasterSequence = Value::MapValue({
+				{ "height", FireUnsigned(sequence.blockHeight) },
+				{ "kind", Value::String("block") },
+				{ "order", FireUnsigned(sequence.blockOrder) },
+				{ "shuffle_seed", FireUnsigned(sequence.shuffleSeed) },
+				{ "shuffle_seed_active", FireBool(sequence.hasShuffleSeed) },
+				{ "width", FireUnsigned(sequence.blockWidth) } });
+			break;
+		case RasterSequenceKind::Hilbert:
+			rasterSequence = Value::MapValue({
+				{ "depth", FireUnsigned(sequence.hilbertDepth) },
+				{ "kind", Value::String("hilbert") } });
+			break;
+		case RasterSequenceKind::Scanline:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("scanline") } });
+			break;
+		case RasterSequenceKind::RasterizerDefault:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("rasterizer_default") },
+				{ "tile_order", FireUnsigned(sequence.blockOrder) } });
+			break;
+		}
 		const Value record = Value::MapValue({
 			{ "animation", Value::MapValue({
 				{ "do_fields", FireBool(animationFields) },
@@ -817,11 +862,7 @@ namespace
 			{ "light_sampling", Value::MapValue({
 				{ "rr_threshold", Value::Float(p.lightSampleRRThreshold) } }) },
 			{ "record_kind", Value::String("resolved_render_configuration_v1") },
-			{ "raster_sequence", Value::MapValue({
-				{ "options", Value::String(globalOptions.ReadString(
-					"raster_sequence_options","").c_str()) },
-				{ "type", Value::Signed(globalOptions.ReadInt("raster_sequence_type",4)) }
-			}) },
+			{ "raster_sequence", rasterSequence },
 			{ "render_region", Value::MapValue({
 				{ "active", FireBool(renderRegion != nullptr) },
 				{ "bottom", FireUnsigned(renderRegion ? renderRegion->bottom : 0u) },
@@ -10629,60 +10670,29 @@ bool Job::PredictRasterizationTime(
 	return true;
 }
 
-static IRasterizeSequence* RasterizeSequenceFromOptions()
+static IRasterizeSequence* RasterizeSequenceFromResolution(
+	const ResolvedRasterSequence& resolved )
 {
-	// Read the raster sequence options from the options file
-	IOptions& options = GlobalOptions();
-
-	const int raster_sequence_type = options.ReadInt( "raster_sequence_type", 4 );
-	RISE::String raster_sequence = options.ReadString( "raster_sequence_options", "" );
-
 	IRasterizeSequence* pSeq = 0;
-	// parse the options
-	// Get the raster sequence type
-	switch( raster_sequence_type )
-	{
-	default:
-	case 4:
-		// Morton Z-order curve (default) - optimal cache locality
-		{
-			unsigned int tileSize = 32;
-			if( !raster_sequence.empty() ) {
-				sscanf( raster_sequence.c_str(), "%u", &tileSize );
-			}
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, tileSize );
-		}
+	switch( resolved.kind ) {
+	case RasterSequenceKind::Morton:
+		RISE_API_CreateMortonRasterizeSequence( &pSeq, resolved.tileSize );
 		break;
-
-	case 3:
-		// Legacy random (deprecated)
-		if( GlobalRNG().CanonicalRandom() < 0.1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, 4 );
-		} else {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 64, 64, (char)floor(GlobalRNG().CanonicalRandom()*8.999999) );
-		}
+	case RasterSequenceKind::Block:
+		pSeq = new RISE::Implementation::BlockRasterizeSequence(
+			resolved.blockWidth,resolved.blockHeight,
+			static_cast<char>(resolved.blockOrder),resolved.shuffleSeed);
+		GlobalLog()->PrintNew( pSeq, __FILE__, __LINE__, "resolved block raster sequence" );
 		break;
-
-	case 0:
-		// Scanline (deprecated)
+	case RasterSequenceKind::Scanline:
 		RISE_API_CreateScanlineRasterizeSequence( &pSeq );
 		break;
-	case 1:
-		// Block (deprecated)
-		unsigned int width, height, type;
-		if( sscanf( raster_sequence.c_str(), "%u %u %u", &width, &height, &type ) == 3 ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, width, height, (char)type );
-		}
+	case RasterSequenceKind::Hilbert:
+		RISE_API_CreateHilbertRasterizeSequence( &pSeq, resolved.hilbertDepth );
 		break;
-	case 2:
-		// Hilbert (deprecated)
-		unsigned int depth;
-		if( sscanf( raster_sequence.c_str(), "%u", &depth ) == 1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, depth );
-		}
+	case RasterSequenceKind::RasterizerDefault:
 		break;
 	}
-
 	return pSeq;
 }
 
@@ -10730,7 +10740,7 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 {
 	return PrepareFireRenderFidelityMetadata(animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,nullptr,nullptr,publishMetadata);
+		animOptions.invert_fields,nullptr,nullptr,nullptr,publishMetadata);
 }
 
 bool Job::PrepareFireRenderFidelityMetadata(
@@ -10741,6 +10751,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	const bool animationInvertFields,
 	const unsigned int* animationFrame,
 	const Rect* renderRegion,
+	ResolvedRasterSequence* resolvedSequence,
 	const bool publishMetadata )
 {
 	if( !pScene || !pRasterizer ) {
@@ -10775,7 +10786,8 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		*resolvedParams,activeRasterizerName.c_str(),*pScene,
 		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
 		animationTimeEnd,animationFrames,animationFields,
-		animationInvertFields,animationFrame,renderRegion,resolvedConfig)) ) {
+		animationInvertFields,animationFrame,renderRegion,resolvedSequence,
+		resolvedConfig)) ) {
 		GlobalLog()->PrintEx(eLog_Error,
 			"Job:: fire render has no canonical resolved configuration");
 		return false;
@@ -10825,7 +10837,7 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		rasterizerKind ? rasterizerKind : "",*pScene,
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,nullptr,nullptr,resolvedConfig) ) return false;
+		animOptions.invert_fields,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
 	return PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
@@ -11095,23 +11107,23 @@ bool Job::Rasterize(
 	)
 {
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
-	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(
+		animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+		animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+		&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// One acquire read serves both the check and the uses below -- the slot is atomic (written
 	// from the GUI thread vs the coordinator worker), so a check-then-reread would be a TOCTOU.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: DETACH the rasterizer's persistently-retained callback (Rasterizer::
 		// SetProgressCallback stores the raw pointer until the next call) rather than skipping the
@@ -11155,23 +11167,20 @@ bool Job::RasterizeAnimation(
 	)
 {
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
-		num_frames,do_fields,invert_fields,nullptr,nullptr) ) {
+		num_frames,do_fields,invert_fields,nullptr,nullptr,&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
@@ -11220,9 +11229,10 @@ bool Job::RasterizeRegion(
 	const unsigned int clippedRight = r_min( right, width-1 );
 	const unsigned int clippedBottom = r_min( bottom, height-1 );
 	Rect rc( top, left, clippedBottom, clippedRight );
+	ResolvedRasterSequence resolvedSequence;
 	if( !PrepareFireRenderFidelityMetadata(animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,nullptr,&rc) ) {
+		animOptions.invert_fields,nullptr,&rc,&resolvedSequence) ) {
 		return false;
 	}
 	if( metadataRollback.PreparedFire() ) {
@@ -11232,17 +11242,13 @@ bool Job::RasterizeRegion(
 		return false;
 	}
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
@@ -13723,23 +13729,20 @@ bool Job::RasterizeAnimationUsingOptions(
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
-		nullptr,nullptr) ) {
+		nullptr,nullptr,&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions( );
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
@@ -13771,23 +13774,20 @@ bool Job::RasterizeAnimationUsingOptions(
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
-		&frame,nullptr) ) {
+		&frame,nullptr,&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
