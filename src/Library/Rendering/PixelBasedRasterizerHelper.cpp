@@ -61,7 +61,8 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   mProgressBase( 0 ),
   mProgressWeight( 0 ),
   mProgressTotal( 0 ),
-  pAOVBuffers( 0 )
+  pAOVBuffers( 0 ),
+  mLastRenderCompleted( true )
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -981,6 +982,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
 	// a free-fly ViewportPose supplies a viewport-private override camera the
 	// interactive still-frame renders THROUGH; the real scene still flows to the
@@ -1089,6 +1091,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = CreateDefaultRasterSequence( tileEdge );
 		pRasterSequence = blocks;
 	}
+	bool mainPassCompleted = true;
 
 	// We should do the irradiance pass to populate the cache
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
@@ -1132,6 +1135,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		pFilteredScratch = pSavedFilteredScratch;
 		if( cacheCompleted ) {
 			pIrradianceCache->FinishedPrecomputation();
+		} else {
+			mainPassCompleted = false;
 		}
 		safe_release( pIrradScratch );
 		safe_release( irrad_seq );
@@ -1140,7 +1145,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		// The regional path used a scratch image and intentionally publishes
 		// nothing until its requested beauty pixels have been rendered.
 		if( !pRect ) {
-			FlushToOutputs( *pImage, 0, 0 );
+			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( outputImage, 0 );
+			});
 		}
 
 		if( pProgressFunc ) {
@@ -1148,9 +1156,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		}
 	}
 
-	PrepareAOVBuffers_( width, height );
-
-	bool mainPassCompleted = true;
+	if( mainPassCompleted ) {
+		PrepareAOVBuffers_( width, height );
 
 	if( progressiveConfig.enabled && pSampling )
 	{
@@ -1290,6 +1297,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	{
 		mainPassCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 	}
+	}
 
 	// Resolve filtered film: overwrites per-pixel inline estimates with
 	// properly filter-reconstructed values.
@@ -1331,11 +1339,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = 0;
 	}
 
-	// `mainPassCompleted` is intentionally NOT passed: cancelled
-	// renders still get OIDN'd on whatever was accumulated up to the
-	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
-	// log (2026-04-29).
-	(void)mainPassCompleted;
+	const bool fireProvenanceActive = mFrameStore &&
+		!mFrameStore->Meta().renderFidelityStatus.empty();
+	if( !mainPassCompleted && fireProvenanceActive ) {
+		IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( outputImage, pRect );
+		});
+	} else {
 #ifdef RISE_ENABLE_OIDN
 	// Skip OIDN entirely when show_adaptive_map is on — the
 	// authoritative output is the heatmap from the progressive
@@ -1415,6 +1426,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #else
 	FlushToOutputs( *pImage, pRect, 0 );
 #endif
+	}
 
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
@@ -1435,6 +1447,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	mLastRenderCompleted.store(mainPassCompleted,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
 }
 
@@ -1908,6 +1921,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.
 	const ICamera* pCam = pScene.GetCamera();
 	if( !pCam ) {
@@ -2258,6 +2272,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	mLastRenderCompleted.store(!cancelled,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
 }
 

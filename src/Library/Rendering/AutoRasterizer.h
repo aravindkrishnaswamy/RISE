@@ -165,6 +165,8 @@ namespace RISE
 			//! future-proofing: if a non-region-honoring integrator ever
 			//! joins the candidate set, the query stays truthful).
 			bool HonorsRegion() const override { return mDelegate ? mDelegate->HonorsRegion() : true; }
+			bool LastRenderCompleted() const override
+				{ return mDelegate ? mDelegate->LastRenderCompleted() : true; }
 
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed

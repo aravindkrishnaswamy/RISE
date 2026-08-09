@@ -198,6 +198,12 @@ namespace RISE
 		//! query those UIs consult.  Defaulted + declared last ->
 		//! ABI-stable (same convention as the overrides above).
 		virtual bool HonorsRegion() const { return true; }
+
+		//! Reports whether the most recent rasterization reached a complete
+		//! final frame. Job render entry points consult this before committing
+		//! fire metadata; the default preserves out-of-tree rasterizers that do
+		//! not expose cancellation state.
+		virtual bool LastRenderCompleted() const { return true; }
 	};
 }
 

@@ -24,6 +24,7 @@
 #include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include <atomic>
 #include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
@@ -231,6 +232,7 @@ namespace RISE
 			mutable double				mProgressTotal;		///< Total work units across all passes
 
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
+			mutable std::atomic<bool>	mLastRenderCompleted;
 
 			//! Allocate/reset only the float planes required by the current
 			//! FrameStore, unioned with OIDN's albedo+normal pair when denoising.
@@ -581,6 +583,8 @@ namespace RISE
 			virtual unsigned int PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const override;
 			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
 			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const override;
+			virtual bool LastRenderCompleted() const override
+				{ return mLastRenderCompleted.load(std::memory_order_acquire); }
 
 			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
 			void SetProgressiveConfig( const ProgressiveConfig& config );

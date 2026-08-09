@@ -616,6 +616,37 @@ namespace
 		std::atomic<unsigned int> progressCalls;
 	};
 
+	class CancelledFireProgress final : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return false; }
+		void SetTitle( const char* ) override {}
+		bool IsCancelled() const override { return true; }
+	};
+
+	class CompletionCountingOutput final :
+		public virtual IRasterizerOutput,
+		public virtual Implementation::Reference
+	{
+	public:
+		CompletionCountingOutput() : intermediateCount(0u), finalCount(0u) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override
+			{ intermediateCount.fetch_add(1u); }
+		void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+			{ finalCount.fetch_add(1u); }
+		void Reset()
+		{
+			intermediateCount.store(0u);
+			finalCount.store(0u);
+		}
+
+		std::atomic<unsigned int> intermediateCount;
+		std::atomic<unsigned int> finalCount;
+
+	protected:
+		~CompletionCountingOutput() override = default;
+	};
+
 	class FirePreflightLogCapture final :
 		public virtual ILogPrinter,
 		public virtual Implementation::Reference
@@ -2323,7 +2354,8 @@ namespace
 			const char* fidelityMode = "preview",
 			const bool unqualifiedConfig = false,
 			const bool includeFire = true,
-			const double carbonValue = 1.0 ) {
+			const double carbonValue = 1.0,
+			const bool includeIrradianceCache = false ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2356,6 +2388,11 @@ namespace
 				"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
 				"multichannel_heterogeneous_medium\n{\nname fire\nchannel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\noptical_record fire_optics_v1\n}\n\n"
 				"global_medium\n{\nmedium fire\n}\n";
+			}
+			if( includeIrradianceCache ) {
+				output <<
+					"\nirradiance_cache\n{\nsize 4\ntolerance 0.08\n"
+					"min_spacing 0.02\n}\n";
 			}
 		};
 		writeScene("pathtracing_spectral_rasterizer",380u);
@@ -2591,6 +2628,30 @@ namespace
 			store->RemoveObserver(&throwingObserver);
 			Check( renderThrew && SameFrameMetadata(store->Meta(),renderedMetadata),
 				"a throwing render restores the last completed frame metadata" );
+
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
+			CancelledFireProgress cancelledProgress;
+			rasterizer->AddRasterizerOutput(completionOutput);
+			job->SetProgress(&cancelledProgress);
+			const bool cancelledStillRejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			Check( cancelledStillRejected && !rasterizer->LastRenderCompleted() &&
+				completionOutput->intermediateCount.load() > 0u &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				store->Meta().primaryProvenanceId == renderedMetadata.primaryProvenanceId,
+				"cancelled fire still render publishes no primary and restores prior metadata" );
+			completionOutput->Reset();
+			job->SetProgress(&cancelledProgress);
+			const bool cancelledAnimationRejected =
+				!job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			job->SetProgress(nullptr);
+			Check( cancelledAnimationRejected && !rasterizer->LastRenderCompleted() &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"cancelled fire animation publishes no partial tail frame" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
 			const uint64_t predictionBaselineGeneration = store->Generation();
 			PluginPhase* predictionPhase = new PluginPhase();
 			InconsistentPredictiveFireMedium* predictedMedium =
@@ -2774,6 +2835,52 @@ namespace
 				metadata.renderReasonCodes.end(),"pel_transport") !=
 				metadata.renderReasonCodes.end(),
 				"Pel preflight emits pel_transport from the fixed reason enum" );
+		}
+		safe_release(job);
+
+		writeScene("auto_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool autoCancellationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( autoCancellationLoaded ) {
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
+			CancelledFireProgress cancelledProgress;
+			IRasterizer* rasterizer = job->GetRasterizer();
+			rasterizer->AddRasterizerOutput(completionOutput);
+			job->SetProgress(&cancelledProgress);
+			const bool rejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			Check( rejected && !rasterizer->LastRenderCompleted() &&
+				completionOutput->finalCount.load() == 0u,
+				"Auto delegate propagates cancelled fire completion state transactionally" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
+		} else {
+			Check(false,"Auto fire cancellation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,true);
+		RISE_CreateJobPriv(&job);
+		const bool irradianceCancellationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( irradianceCancellationLoaded ) {
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
+			CancelledFireProgress cancelledProgress;
+			IRasterizer* rasterizer = job->GetRasterizer();
+			rasterizer->AddRasterizerOutput(completionOutput);
+			job->SetProgress(&cancelledProgress);
+			const bool rejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			Check( rejected && completionOutput->intermediateCount.load() > 0u &&
+				completionOutput->finalCount.load() == 0u &&
+				!job->GetScene()->GetIrradianceCache()->Precomputed(),
+				"cancelled fire irradiance prepass remains preview-only and unfinalized" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
+		} else {
+			Check(false,"fire irradiance-cancellation fixture loads");
 		}
 		safe_release(job);
 

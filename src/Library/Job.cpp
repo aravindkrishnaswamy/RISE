@@ -11087,7 +11087,9 @@ bool Job::Rasterize(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = pRasterizer->LastRenderCompleted();
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
 
 	return true;
@@ -11133,7 +11135,9 @@ bool Job::RasterizeAnimation(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = pRasterizer->LastRenderCompleted();
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
 
 	return true;
@@ -11198,7 +11202,9 @@ bool Job::RasterizeRegion(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = pRasterizer->LastRenderCompleted();
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
 
 	return true;
@@ -13689,7 +13695,9 @@ bool Job::RasterizeAnimationUsingOptions(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = pRasterizer->LastRenderCompleted();
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
 
 	return true;
@@ -13734,7 +13742,9 @@ bool Job::RasterizeAnimationUsingOptions(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = pRasterizer->LastRenderCompleted();
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
 
 	return true;
