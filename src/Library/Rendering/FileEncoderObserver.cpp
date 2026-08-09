@@ -15,6 +15,7 @@
 #include "../Interfaces/ILog.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
@@ -902,6 +903,18 @@ namespace
 				return false;
 			}
 		}
+		const std::string& colorSpace = output->Find("color_space")->GetText();
+		const std::string& exrCompression = output->Find("exr_compression")->GetText();
+		if( colorSpace != "srgb" && colorSpace != "rec709_linear" &&
+			colorSpace != "romm_linear" && colorSpace != "prophoto_rgb" ) {
+			error = "fire provenance output color space is outside schema-v1";
+			return false;
+		}
+		if( exrCompression != "none" && exrCompression != "zip" &&
+			exrCompression != "piz" && exrCompression != "dwaa" ) {
+			error = "fire provenance EXR compression is outside schema-v1";
+			return false;
+		}
 		for( const char* key : { "view_exposure_ev", "view_tone_curve_strength" } ) {
 			if( output->Find(key)->GetType() != Value::Float64 ) {
 				error = "fire provenance output scalar has the wrong type";
@@ -914,10 +927,37 @@ namespace
 				return false;
 			}
 		}
+		if( output->Find("view_tone_curve")->GetIntegerArgument() >
+			static_cast<std::uint64_t>(eDisplayTransform_Hable) ) {
+			error = "fire provenance output tone curve is outside schema-v1";
+			return false;
+		}
 		if( output->Find("compression_level")->GetType() != Value::NegativeInteger ||
 			output->Find("compression_level")->GetIntegerArgument() != 0u ) {
 			error = "fire provenance output compression level is outside schema-v1";
 			return false;
+		}
+		if( !derivative ) {
+			const Value::Values& balance = whiteBalance->GetArray();
+			const bool identityBalance = balance[0].GetFloat() == 1.0 &&
+				balance[1].GetFloat() == 0.0 && balance[2].GetFloat() == 0.0 &&
+				balance[3].GetFloat() == 0.0 && balance[4].GetFloat() == 1.0 &&
+				balance[5].GetFloat() == 0.0 && balance[6].GetFloat() == 0.0 &&
+				balance[7].GetFloat() == 0.0 && balance[8].GetFloat() == 1.0;
+			const bool losslessCompression = exrCompression == "none" ||
+				exrCompression == "zip" || exrCompression == "piz";
+			const bool linearColor = colorSpace == "rec709_linear" ||
+				colorSpace == "romm_linear";
+			if( bits->GetIntegerArgument() != 32u || !linearColor ||
+				!losslessCompression || output->Find("denoised_derivative")->GetBoolean() ||
+				output->Find("view_exposure_ev")->GetFloat() != 0.0 ||
+				output->Find("view_tone_curve")->GetIntegerArgument() !=
+					static_cast<std::uint64_t>(eDisplayTransform_None) ||
+				output->Find("view_tone_curve_strength")->GetFloat() != 1.0 ||
+				!identityBalance ) {
+				error = "fire provenance primary output is not raw lossless FP32";
+				return false;
+			}
 		}
 
 		Value::Members coreMembers;
@@ -1194,17 +1234,50 @@ namespace
 		std::rename(backup.c_str(),filename.c_str());
 	}
 
-	bool ReadFireEXRAttributes(
+	struct EXRHeaderFacts
+	{
+		std::map<std::string,std::string> fireAttributes;
+		std::map<std::string,std::string> stringAttributes;
+		std::map<std::string,std::uint32_t> channelTypes;
+		int compression = -1;
+		std::array<float,8u> chromaticities{};
+		bool hasChromaticities = false;
+	};
+
+	float ReadLEFloat( const RISECBOR64::Bytes& bytes, const std::size_t offset )
+	{
+		const std::uint32_t bits = ReadLE32(bytes,offset);
+		float value = 0.0f;
+		std::memcpy(&value,&bits,sizeof(value));
+		return value;
+	}
+
+	bool ReadCStringWithin(
+		const RISECBOR64::Bytes& bytes,
+		std::size_t& cursor,
+		const std::size_t end,
+		std::string& value )
+	{
+		const std::size_t begin = cursor;
+		while( cursor < end && bytes[cursor] != 0u ) ++cursor;
+		if( cursor >= end ) return false;
+		value.assign(reinterpret_cast<const char*>(&bytes[begin]),cursor-begin);
+		++cursor;
+		return true;
+	}
+
+	bool ReadEXRHeaderFacts(
 		const RISECBOR64::Bytes& encoded,
-		std::map<std::string,std::string>& attributes,
+		EXRHeaderFacts& facts,
 		std::string& error )
 	{
-		attributes.clear();
+		facts = EXRHeaderFacts();
 		if( encoded.size() < 17u || ReadLE32(encoded,0u) != 20000630u ) {
 			error = "artifact is not a supported OpenEXR byte stream";
 			return false;
 		}
 		std::size_t cursor = 8u;
+		std::set<std::string> names;
 		while( cursor < encoded.size() ) {
 			std::string name;
 			if( !ReadCString(encoded,cursor,name) ) {
@@ -1212,6 +1285,10 @@ namespace
 				return false;
 			}
 			if( name.empty() ) return true;
+			if( !names.insert(name).second ) {
+				error = "OpenEXR header attribute is duplicated";
+				return false;
+			}
 			std::string type;
 			if( !ReadCString(encoded,cursor,type) || cursor+4u > encoded.size() ) {
 				error = "truncated OpenEXR attribute header";
@@ -1223,17 +1300,130 @@ namespace
 				error = "truncated OpenEXR attribute value";
 				return false;
 			}
-			if( name.compare(0u,std::strlen(kFireAttributePrefix),kFireAttributePrefix) == 0 ) {
-				if( type != "string" || !attributes.emplace(name,std::string(
-					reinterpret_cast<const char*>(&encoded[cursor]),size)).second ) {
+			const std::size_t valueEnd = cursor+size;
+			if( type == "string" ) {
+				const std::string value(reinterpret_cast<const char*>(&encoded[cursor]),size);
+				facts.stringAttributes.emplace(name,value);
+				if( name.compare(0u,std::strlen(kFireAttributePrefix),kFireAttributePrefix) == 0 &&
+					!facts.fireAttributes.emplace(name,value).second ) {
 					error = "fire provenance EXR attribute is not a unique string";
 					return false;
 				}
+			} else if( name.compare(0u,std::strlen(kFireAttributePrefix),
+				kFireAttributePrefix) == 0 ) {
+				error = "fire provenance EXR attribute is not a unique string";
+				return false;
+			}
+			if( name == "compression" ) {
+				if( type != "compression" || size != 1u ) {
+					error = "OpenEXR compression attribute is malformed";
+					return false;
+				}
+				facts.compression = encoded[cursor];
+			} else if( name == "channels" ) {
+				if( type != "chlist" ) {
+					error = "OpenEXR channels attribute is malformed";
+					return false;
+				}
+				std::size_t channelCursor = cursor;
+				bool terminated = false;
+				while( channelCursor < valueEnd ) {
+					std::string channel;
+					if( !ReadCStringWithin(encoded,channelCursor,valueEnd,channel) ) break;
+					if( channel.empty() ) {
+						terminated = channelCursor == valueEnd;
+						break;
+					}
+					if( channelCursor+16u > valueEnd ) break;
+					const std::uint32_t pixelType = ReadLE32(encoded,channelCursor);
+					if( pixelType > 2u || !facts.channelTypes.emplace(channel,pixelType).second ) {
+						error = "OpenEXR channel list is invalid";
+						return false;
+					}
+					channelCursor += 16u;
+				}
+				if( !terminated || facts.channelTypes.empty() ) {
+					error = "OpenEXR channel list is truncated";
+					return false;
+				}
+			} else if( name == "chromaticities" ) {
+				if( type != "chromaticities" || size != 32u ) {
+					error = "OpenEXR chromaticities attribute is malformed";
+					return false;
+				}
+				for( std::size_t i=0; i<facts.chromaticities.size(); ++i ) {
+					facts.chromaticities[i] = ReadLEFloat(encoded,cursor+i*4u);
+				}
+				facts.hasChromaticities = true;
 			}
 			cursor += size;
 		}
 		error = "OpenEXR header terminator is missing";
 		return false;
+	}
+
+	bool ValidateEXRHeaderAgainstPayload(
+		const EXRHeaderFacts& facts,
+		const RISECBOR64::Value& payload,
+		std::string& error )
+	{
+		using RISECBOR64::Value;
+		const Value* config = payload.Find("resolved_render_configuration_v1");
+		const Value* output = config ? config->Find("output") : nullptr;
+		if( !output ) {
+			error = "fire provenance EXR output claim is unavailable";
+			return false;
+		}
+		const std::uint64_t bits = output->Find("bits_per_channel")->GetIntegerArgument();
+		const std::uint32_t expectedPixelType = bits == 32u ? 2u : 1u;
+		for( const char* channel : { "R", "G", "B" } ) {
+			const auto found = facts.channelTypes.find(channel);
+			if( found == facts.channelTypes.end() || found->second != expectedPixelType ) {
+				error = "OpenEXR channel precision does not match the resolved output claim";
+				return false;
+			}
+		}
+		const auto alpha = facts.channelTypes.find("A");
+		const bool claimedAlpha = output->Find("exr_with_alpha")->GetBoolean();
+		if( (alpha != facts.channelTypes.end()) != claimedAlpha ||
+			(alpha != facts.channelTypes.end() && alpha->second != expectedPixelType) ) {
+			error = "OpenEXR alpha channels do not match the resolved output claim";
+			return false;
+		}
+		if( output->Find("include_aovs")->GetBoolean() ||
+			!output->Find("aov_channels")->GetArray().empty() ||
+			facts.channelTypes.size() != (claimedAlpha ? 4u : 3u) ) {
+			error = "OpenEXR channel set does not match the resolved output claim";
+			return false;
+		}
+		const std::string& compression = output->Find("exr_compression")->GetText();
+		const int expectedCompression = compression == "none" ? 0 :
+			(compression == "zip" ? 3 : (compression == "piz" ? 4 : 8));
+		if( facts.compression != expectedCompression ) {
+			error = "OpenEXR compression does not match the resolved output claim";
+			return false;
+		}
+		const std::string& colorSpace = output->Find("color_space")->GetText();
+		const std::array<float,8u> expectedChromaticities =
+			(colorSpace == "romm_linear" || colorSpace == "prophoto_rgb") ?
+			std::array<float,8u>{ 0.7347f,0.2653f,0.1596f,0.8404f,
+				0.0366f,0.0001f,0.3457f,0.3585f } :
+			std::array<float,8u>{ 0.6400f,0.3300f,0.3000f,0.6000f,
+				0.1500f,0.0600f,0.3127f,0.3290f };
+		if( !facts.hasChromaticities || facts.chromaticities != expectedChromaticities ) {
+			error = "OpenEXR chromaticities do not match the resolved output claim";
+			return false;
+		}
+		for( const Value& attribute : output->Find("attributes")->GetArray() ) {
+			const std::string& name = attribute.Find("name")->GetText();
+			const std::string& value = attribute.Find("value")->GetText();
+			const auto actual = facts.stringAttributes.find(name);
+			if( actual == facts.stringAttributes.end() || actual->second != value ) {
+				error = "OpenEXR authored attributes do not match the resolved output claim";
+				return false;
+			}
+		}
+		return true;
 	}
 }
 
@@ -1358,8 +1548,9 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 		if( error.empty() ) error = "fire artifact_sha256 does not hash the stripped EXR";
 		return false;
 	}
-	std::map<std::string,std::string> actual;
-	if( !ReadFireEXRAttributes(encodedArtifact,actual,error) ) return false;
+	EXRHeaderFacts facts;
+	if( !ReadEXRHeaderFacts(encodedArtifact,facts,error) ||
+		!ValidateEXRHeaderAgainstPayload(facts,*payload,error) ) return false;
 	std::map<std::string,std::string> expected;
 	for( std::size_t i=0; i<payload->GetMap().size(); ++i ) {
 		std::string json;
@@ -1368,7 +1559,7 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 	}
 	expected[std::string(kFireAttributePrefix)+"provenance_id"] =
 		EscapeJSONString(provenanceId->GetText());
-	if( actual != expected ) {
+	if( facts.fireAttributes != expected ) {
 		error = "EXR fire-provenance attributes do not match the authoritative sidecar";
 		return false;
 	}
@@ -1568,6 +1759,11 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 				std::remove(artifactBase.c_str());
 				std::remove(artifactTemporary.c_str());
 				if( error.empty() ) error = "could not read or strip the EXR provenance attributes";
+				return false;
+			}
+			if( !VerifyFireProvenanceEXR(finalBytes,sidecarBytes,error) ) {
+				std::remove(artifactBase.c_str());
+				std::remove(artifactTemporary.c_str());
 				return false;
 			}
 		} else if( std::rename(artifactBase.c_str(),artifactTemporary.c_str()) != 0 ) {

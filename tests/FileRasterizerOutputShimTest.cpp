@@ -27,6 +27,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +36,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -131,15 +133,57 @@ namespace
 		return RISECBOR64::Value::MapValue(members);
 	}
 
+	std::string EscapeTestJSONString( const std::string& value )
+	{
+		static const char hex[] = "0123456789abcdef";
+		std::string escaped = "\"";
+		for( const unsigned char c : value ) {
+			switch( c ) {
+			case '"': escaped += "\\\""; break;
+			case '\\': escaped += "\\\\"; break;
+			case '\b': escaped += "\\b"; break;
+			case '\f': escaped += "\\f"; break;
+			case '\n': escaped += "\\n"; break;
+			case '\r': escaped += "\\r"; break;
+			case '\t': escaped += "\\t"; break;
+			default:
+				if( c < 0x20u ) {
+					escaped += "\\u00";
+					escaped.push_back(hex[c >> 4u]);
+					escaped.push_back(hex[c & 0x0fu]);
+				} else {
+					escaped.push_back(static_cast<char>(c));
+				}
+				break;
+			}
+		}
+		return escaped+'"';
+	}
+
 	std::string SimpleCanonicalJSON( const RISECBOR64::Value& value )
 	{
-		if( value.GetType() == RISECBOR64::Value::UnsignedInteger ) {
+		using RISECBOR64::Value;
+		if( value.GetType() == Value::Null ) return "null";
+		if( value.GetType() == Value::Boolean ) return value.GetBoolean() ? "true" : "false";
+		if( value.GetType() == Value::UnsignedInteger ) {
 			return std::to_string(value.GetIntegerArgument());
 		}
-		if( value.GetType() == RISECBOR64::Value::Text ) {
-			return "\""+value.GetText()+"\"";
+		if( value.GetType() == Value::NegativeInteger ) {
+			return value.GetIntegerArgument() == std::numeric_limits<std::uint64_t>::max() ?
+				"-18446744073709551616" : "-"+std::to_string(value.GetIntegerArgument()+1u);
 		}
-		if( value.GetType() == RISECBOR64::Value::Array ) {
+		if( value.GetType() == Value::Float64 ) {
+			if( value.GetFloat() == 0.0 ) return "0";
+			char buffer[64];
+			const auto converted = std::to_chars(buffer,buffer+sizeof(buffer),value.GetFloat(),
+				std::chars_format::general,std::numeric_limits<double>::max_digits10);
+			return converted.ec == std::errc() ?
+				std::string(buffer,converted.ptr) : std::string();
+		}
+		if( value.GetType() == Value::Text ) {
+			return EscapeTestJSONString(value.GetText());
+		}
+		if( value.GetType() == Value::Array ) {
 			std::string json = "[";
 			for( std::size_t i=0; i<value.GetArray().size(); ++i ) {
 				if( i ) json += ',';
@@ -147,8 +191,63 @@ namespace
 			}
 			return json+"]";
 		}
+		if( value.GetType() == Value::Map ) {
+			std::vector<const std::pair<std::string,Value>*> members;
+			for( const auto& member : value.GetMap() ) members.push_back(&member);
+			std::sort(members.begin(),members.end(),[]( const auto* lhs, const auto* rhs ) {
+				return lhs->first < rhs->first;
+			});
+			std::string json = "{";
+			for( std::size_t i=0; i<members.size(); ++i ) {
+				if( i ) json += ',';
+				json += EscapeTestJSONString(members[i]->first)+":"+
+					SimpleCanonicalJSON(members[i]->second);
+			}
+			return json+"}";
+		}
 		return std::string();
 	}
+
+#ifndef NO_EXR_SUPPORT
+	class DivergentEXREncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		enum class Mode { DropFireAttributes, ForceHalf, ForceDWAA };
+
+		DivergentEXREncoder( IFrameEncoder& delegate, const Mode mode ) :
+			delegate_(delegate), mode_(mode) { delegate_.addref(); }
+
+		std::string FormatName() const override { return "EXR"; }
+		std::vector<std::string> Extensions() const override { return { "exr" }; }
+		bool SupportsHDR() const override { return true; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore& store, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
+		{
+			EncodeOpts altered = opts;
+			if( mode_ == Mode::DropFireAttributes ) {
+				altered.attrs.erase(std::remove_if(altered.attrs.begin(),altered.attrs.end(),
+					[]( const auto& attribute ) {
+						return attribute.first.compare(0u,13u,"riseFireProv_") == 0;
+					}),altered.attrs.end());
+			} else if( mode_ == Mode::ForceHalf ) {
+				altered.bpp = 16u;
+			} else {
+				altered.exrCompression = eExrCompression_Dwaa;
+			}
+			delegate_.Encode(store,output,altered);
+		}
+
+	protected:
+		~DivergentEXREncoder() override { delegate_.release(); }
+
+	private:
+		IFrameEncoder& delegate_;
+		Mode mode_;
+	};
+#endif
 
 	bool ReplaceBytesAfter( std::vector<unsigned char>& bytes,
 		const std::string& marker, const std::string& from, const std::string& to )
@@ -1083,6 +1182,150 @@ namespace
 		std::string verifyError;
 		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
 			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );
+		auto encodeSelfConsistentEXR = [&]( const RISECBOR64::Value& seedPayload,
+			const EncodeOpts& actualOpts, std::vector<unsigned char>& artifact,
+			RISECBOR64::Bytes& sidecar ) {
+			const std::string basePath = MakeTempPathWithoutExt()+"_adversarial_base.exr";
+			const std::string finalPath = MakeTempPathWithoutExt()+"_adversarial_final.exr";
+			EncodeOpts baseOpts = actualOpts;
+			baseOpts.attrs.erase(std::remove_if(baseOpts.attrs.begin(),baseOpts.attrs.end(),
+				[]( const auto& attribute ) {
+					return attribute.first.compare(0u,13u,"riseFireProv_") == 0;
+				}),baseOpts.attrs.end());
+			{
+				DiskFileWriteBuffer* output = new DiskFileWriteBuffer(basePath.c_str());
+				if( !output->ReadyToWrite() ) {
+					output->release();
+					return false;
+				}
+				exr->Encode(*store,*output,baseOpts);
+				output->release();
+			}
+			std::vector<unsigned char> baseBytes;
+			if( !ReadFileAllBytes(basePath,baseBytes) ) return false;
+			RISECBOR64::Value payload = ReplaceMapMember(seedPayload,"artifact_sha256",
+				RISECBOR64::Value::String(RISECBOR64::SHA256Hex(baseBytes)));
+			RISECBOR64::Bytes payloadBytes;
+			std::string localError;
+			if( !RISECBOR64::Encode(payload,payloadBytes,&localError) ) return false;
+			const std::string id = RISECBOR64::SHA256Hex(payloadBytes);
+			if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+					{ "payload", payload },
+					{ "provenance_id", RISECBOR64::Value::String(id) }
+				}),sidecar,&localError) ) return false;
+			EncodeOpts mirroredOpts = actualOpts;
+			mirroredOpts.attrs.erase(std::remove_if(mirroredOpts.attrs.begin(),
+				mirroredOpts.attrs.end(),[]( const auto& attribute ) {
+					return attribute.first.compare(0u,13u,"riseFireProv_") == 0;
+				}),mirroredOpts.attrs.end());
+			for( const auto& member : payload.GetMap() ) {
+				mirroredOpts.attrs.push_back({ "riseFireProv_"+member.first,
+					SimpleCanonicalJSON(member.second) });
+			}
+			mirroredOpts.attrs.push_back({ "riseFireProv_provenance_id",
+				EscapeTestJSONString(id) });
+			{
+				DiskFileWriteBuffer* output = new DiskFileWriteBuffer(finalPath.c_str());
+				if( !output->ReadyToWrite() ) {
+					output->release();
+					return false;
+				}
+				exr->Encode(*store,*output,mirroredOpts);
+				output->release();
+			}
+			const bool read = ReadFileAllBytes(finalPath,artifact);
+			std::remove(basePath.c_str());
+			std::remove(finalPath.c_str());
+			return read;
+		};
+		auto rejectsOutputMutation = [&]( const std::string& key,
+			const RISECBOR64::Value& replacement, const std::string& expectedError,
+			const std::string& label ) {
+			const RISECBOR64::Value mutatedOutput =
+				ReplaceMapMember(*exrOutput,key,replacement);
+			const RISECBOR64::Value mutatedConfig =
+				ReplaceMapMember(*exrConfig,"output",mutatedOutput);
+			RISECBOR64::Bytes configBytes;
+			std::string mutationError;
+			const bool configOK = RISECBOR64::Encode(
+				mutatedConfig,configBytes,&mutationError);
+			RISECBOR64::Value mutatedPayload = ReplaceMapMember(*exrPayload,
+				"resolved_render_configuration_v1",mutatedConfig);
+			mutatedPayload = ReplaceMapMember(mutatedPayload,
+				"resolved_render_configuration_id",RISECBOR64::Value::String(
+					configOK ? RISECBOR64::SHA256Hex(configBytes) : std::string()));
+			std::vector<unsigned char> mutatedArtifact;
+			RISECBOR64::Bytes mutatedSidecar;
+			const bool encoded = configOK && encodeSelfConsistentEXR(
+				mutatedPayload,opts,mutatedArtifact,mutatedSidecar);
+			Check( encoded && !VerifyFireProvenanceEXR(
+				mutatedArtifact,mutatedSidecar,mutationError) &&
+				mutationError.find(expectedError) != std::string::npos,label );
+		};
+		rejectsOutputMutation("bits_per_channel",RISECBOR64::Value::Unsigned(16u),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects an FP16 preview-primary claim" );
+		rejectsOutputMutation("exr_compression",RISECBOR64::Value::String("dwaa"),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects a lossy preview-primary claim" );
+		rejectsOutputMutation("color_space",RISECBOR64::Value::String("srgb"),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects a transformed preview-primary color space" );
+		rejectsOutputMutation("denoised_derivative",RISECBOR64::Value::Bool(true),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects a denoised preview-primary claim" );
+		rejectsOutputMutation("view_exposure_ev",RISECBOR64::Value::Float(1.0),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects an exposed preview-primary claim" );
+		rejectsOutputMutation("view_tone_curve",RISECBOR64::Value::Unsigned(2u),
+			"raw lossless FP32",
+			"[fire provenance] verifier rejects a tone-mapped preview-primary claim" );
+		RISECBOR64::Value::Values changedBalance =
+			exrOutput->Find("view_white_balance")->GetArray();
+		changedBalance[0] = RISECBOR64::Value::Float(0.9);
+		rejectsOutputMutation("view_white_balance",
+			RISECBOR64::Value::ArrayValue(changedBalance),"raw lossless FP32",
+			"[fire provenance] verifier rejects a white-balanced preview-primary claim" );
+		rejectsOutputMutation("color_space",RISECBOR64::Value::String("invalid_space"),
+			"color space is outside",
+			"[fire provenance] verifier rejects an unknown output color-space enum" );
+		rejectsOutputMutation("exr_compression",RISECBOR64::Value::String("invalid_zip"),
+			"compression is outside",
+			"[fire provenance] verifier rejects an unknown EXR compression enum" );
+		rejectsOutputMutation("view_tone_curve",RISECBOR64::Value::Unsigned(5u),
+			"tone curve is outside",
+			"[fire provenance] verifier rejects an unknown tone-curve enum" );
+		auto rejectsActualHeaderMismatch = [&]( const EncodeOpts& actualOpts,
+			const std::string& expectedError, const std::string& label ) {
+			std::vector<unsigned char> mismatchedArtifact;
+			RISECBOR64::Bytes matchedSidecar;
+			std::string mismatchError;
+			const bool encoded = encodeSelfConsistentEXR(*exrPayload,actualOpts,
+				mismatchedArtifact,matchedSidecar);
+			Check( encoded && !VerifyFireProvenanceEXR(mismatchedArtifact,
+				matchedSidecar,mismatchError) &&
+				mismatchError.find(expectedError) != std::string::npos,label );
+		};
+		EncodeOpts mismatchedOpts = opts;
+		mismatchedOpts.bpp = 16u;
+		rejectsActualHeaderMismatch(mismatchedOpts,"channel precision",
+			"[fire provenance] verifier binds the FP32 claim to actual EXR channels" );
+		mismatchedOpts = opts;
+		mismatchedOpts.exrCompression = eExrCompression_Dwaa;
+		rejectsActualHeaderMismatch(mismatchedOpts,"compression does not match",
+			"[fire provenance] verifier binds lossless compression to the EXR header" );
+		mismatchedOpts = opts;
+		mismatchedOpts.exrWithAlpha = false;
+		rejectsActualHeaderMismatch(mismatchedOpts,"alpha channels",
+			"[fire provenance] verifier binds alpha presence to the EXR header" );
+		mismatchedOpts = opts;
+		mismatchedOpts.colorSpace = eColorSpace_ROMMRGB_Linear;
+		rejectsActualHeaderMismatch(mismatchedOpts,"chromaticities",
+			"[fire provenance] verifier binds color space to EXR chromaticities" );
+		mismatchedOpts = opts;
+		mismatchedOpts.attrs.clear();
+		rejectsActualHeaderMismatch(mismatchedOpts,"authored attributes",
+			"[fire provenance] verifier binds authored strings to the EXR header" );
 		auto rejectsSelfConsistentSemanticMutation = [&]( const std::string& key,
 			const RISECBOR64::Value& replacement, const std::string& expectedError,
 			const std::string& label ) {
@@ -1186,6 +1429,29 @@ namespace
 		Check( channelsMatch && exrOutput && exrOutput->Find("bits_per_channel") &&
 			exrOutput->Find("bits_per_channel")->GetIntegerArgument() == 32u,
 			"[fire provenance] emitted EXR channel types equal the effective precision claim" );
+		auto rejectsDivergentPublication = [&]( const DivergentEXREncoder::Mode mode,
+			const std::string& expectedError, const std::string& label ) {
+			DivergentEXREncoder* divergent = new DivergentEXREncoder(*exr,mode);
+			std::string divergentError;
+			const bool rejected = !EncodeFrameStoreFileTransaction(
+				*store,*divergent,opts,exrFile,divergentError);
+			divergent->release();
+			std::vector<unsigned char> retainedArtifact;
+			std::vector<unsigned char> retainedSidecar;
+			Check( rejected && divergentError.find(expectedError) != std::string::npos &&
+				ReadFileAllBytes(exrFile,retainedArtifact) && retainedArtifact == exrBytes &&
+				ReadFileAllBytes(exrSidecar,retainedSidecar) &&
+				retainedSidecar == exrSidecarBytes,label );
+		};
+		rejectsDivergentPublication(DivergentEXREncoder::Mode::DropFireAttributes,
+			"do not match",
+			"[fire provenance] publication rejects dropped mirrors and preserves the prior pair" );
+		rejectsDivergentPublication(DivergentEXREncoder::Mode::ForceHalf,
+			"channel precision",
+			"[fire provenance] publication rejects an encoder that substitutes FP16" );
+		rejectsDivergentPublication(DivergentEXREncoder::Mode::ForceDWAA,
+			"compression does not match",
+			"[fire provenance] publication rejects an encoder that substitutes lossy DWAA" );
 
 		const std::string signedZeroFile = MakeTempPathWithoutExt()+"_signed_zero.exr";
 		opts.viewTransform.whiteBalance._01 = -0.0;
