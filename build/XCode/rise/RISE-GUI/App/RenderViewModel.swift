@@ -2935,9 +2935,12 @@ final class RenderViewModel: ObservableObject {
         case "tga":           formatName = "TGA"
         case "ppm":           formatName = "PPM"
         default:
-            // Unknown extension — fall back to EXR so we don't
-            // silently produce an unwritable file.
-            formatName = "EXR"
+            let alert = NSAlert()
+            alert.messageText = "Unsupported Image Format"
+            alert.informativeText = "No image encoder is available for \(url.lastPathComponent)."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
         }
 
         let ok = bridge.save(as: url.path, format: formatName, exposureEV: 0.0)

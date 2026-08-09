@@ -1109,7 +1109,11 @@ void MainWindow::onSaveRenderedImage()
         else if (selectedFilter.contains("*.png"))  path += ".png";
         else if (selectedFilter.contains("*.tif"))  path += ".tiff";
         else if (selectedFilter.contains("*.hdr"))  path += ".hdr";
-        else                                        path += ".exr";
+        else {
+            QMessageBox::warning(this, "Unsupported Image Format",
+                "Choose a registered image format before saving.");
+            return;
+        }
     }
 
     // Map the final extension → bridge format name (case-insensitive).
@@ -1122,7 +1126,11 @@ void MainWindow::onSaveRenderedImage()
     else if (ext == "rgbea")              formatName = "RGBEA";
     else if (ext == "tga")                formatName = "TGA";
     else if (ext == "ppm")                formatName = "PPM";
-    else                                  formatName = "EXR";  // safe default
+    else {
+        QMessageBox::warning(this, "Unsupported Image Format",
+            QString("No image encoder is available for .%1 files.").arg(ext));
+        return;
+    }
 
     const bool ok = m_engine->saveAs(path, formatName, /*ev=*/0.0);
     if (ok) {

@@ -94,11 +94,17 @@ namespace
 		public virtual Reference
 	{
 	public:
+		NoWritePNGEncoder() : encodeCalls(0) {}
 		std::string FormatName() const override { return "PNG"; }
 		std::vector<std::string> Extensions() const override { return { "png" }; }
 		bool SupportsHDR() const override { return false; }
 		bool SupportsAOVs() const override { return false; }
-		void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override {}
+		void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override
+		{
+			++encodeCalls;
+		}
+
+		unsigned int encodeCalls;
 
 	protected:
 		~NoWritePNGEncoder() override {}
@@ -605,6 +611,13 @@ namespace
 
 		const bool savedOk = vfs->SaveAs( vfsPath, enc, opts );
 		Check( savedOk, "SaveAs returns true on success" );
+		NoWritePNGEncoder* unknownEncoder = new NoWritePNGEncoder();
+		const std::string unknownPath = MakeTempPath()+".unknown";
+		Check( !vfs->SaveAs(unknownPath,unknownEncoder,opts) &&
+			unknownEncoder->encodeCalls == 0u &&
+			!std::filesystem::exists(unknownPath),
+			"SaveAs rejects an unavailable authored extension before encoding" );
+		unknownEncoder->release();
 
 		auto* l2Buf = new DiskFileWriteBuffer( l2Path.c_str() );
 		enc->Encode( *l2Store, *l2Buf, opts );

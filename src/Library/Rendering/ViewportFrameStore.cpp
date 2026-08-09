@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <mutex>
 #include <shared_mutex>
 
@@ -33,6 +34,30 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		namespace
+		{
+			bool EncoderAcceptsPath( const IFrameEncoder& encoder,
+				const std::string& path )
+			{
+				const std::string::size_type separator = path.find_last_of("/\\");
+				const std::string::size_type dot = path.find_last_of('.');
+				if( dot == std::string::npos || dot+1u == path.size() ||
+					(separator != std::string::npos && dot < separator) ) return false;
+				std::string extension = path.substr(dot+1u);
+				std::transform(extension.begin(),extension.end(),extension.begin(),
+					[]( const unsigned char c ) {
+						return static_cast<char>(std::tolower(c));
+					});
+				for( std::string candidate : encoder.Extensions() ) {
+					std::transform(candidate.begin(),candidate.end(),candidate.begin(),
+						[]( const unsigned char c ) {
+							return static_cast<char>(std::tolower(c));
+						});
+					if( candidate == extension ) return true;
+				}
+				return false;
+			}
+		}
 
 		// ─────────────────────────────────────────────────────────────
 		// BridgeObserver — internal IRenderObserver registered on the
@@ -489,6 +514,12 @@ namespace RISE
 			const EncodeOpts&  opts ) const
 		{
 			if ( !encoder ) return false;
+			if( !EncoderAcceptsPath(*encoder,path) ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"ViewportFrameStore::SaveAs: unavailable encoder for authored path '%s'",
+					path.c_str() );
+				return false;
+			}
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
 

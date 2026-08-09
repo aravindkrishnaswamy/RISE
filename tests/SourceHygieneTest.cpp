@@ -566,6 +566,17 @@ int main()
 				"if(m_state!=Completed&&m_state!=Cancelled)returnfalse;") !=
 				std::string::npos,
 			"Windows GUI and API SaveAs reject in-progress frame publication" );
+		std::ifstream macViewModelFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "App" / "RenderViewModel.swift",std::ios::binary);
+		const std::string macViewModel = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(macViewModelFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsMain.find("else{QMessageBox::warning(this,\"UnsupportedImageFormat\"") !=
+				std::string::npos &&
+			windowsMain.find("elseformatName=\"EXR\"") == std::string::npos &&
+			macViewModel.find("default:letalert=NSAlert()") != std::string::npos &&
+			macViewModel.find("formatName=\"EXR\"}") == std::string::npos,
+			"GUI authored image formats reject unknown extensions without substitution" );
 		std::ifstream windowsLibraryProjectFile(repoRoot / "build" / "VS2022" /
 			"Library" / "Library.vcxproj",std::ios::binary);
 		const std::string windowsLibraryProject{
