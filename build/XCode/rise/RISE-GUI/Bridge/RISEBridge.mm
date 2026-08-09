@@ -1472,7 +1472,8 @@ private:
             BOOL result = NO;
             try {
                 result = job->RasterizeAnimationUsingOptions() ? YES : NO;
-                if (movieOutput && !movieOutput->finalize(result == YES)) result = NO;
+                if (movieOutput && !movieOutput->finalize(result == YES) &&
+                    !(result == YES && movieOutput->HasFinalizedFirePrimaries())) result = NO;
             } catch (...) {
                 if (movieOutput) {
                     try { movieOutput->finalize(false); } catch (...) {}

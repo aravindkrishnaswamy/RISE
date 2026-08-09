@@ -1112,14 +1112,22 @@ void FileEncoderObserver::WriteFile(
 	EncodeOpts frameOpts = opts_;
 	frameOpts.frame = frame;
 	frameOpts.denoisedDerivative = denoisedDerivative;
+	const bool primaryArtifact = IsPrimaryArtifact(*encoder_,frameOpts);
 	std::string writeError;
 	if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,filename,
 		writeError) ) {
 		if( !store_->Meta().renderFidelityStatus.empty() ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"FileEncoderObserver:: output_provenance_unavailable for '%s': %s",
+			if( primaryArtifact ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"FileEncoderObserver:: output_provenance_unavailable for '%s': %s",
+					filename,writeError.c_str() );
+				throw std::runtime_error("output_provenance_unavailable: "+writeError);
+			}
+			GlobalLog()->PrintEx( eLog_Warning,
+				"FileEncoderObserver:: display derivative transaction failed for '%s' "
+				"(%s); the finalized fire primary remains valid",
 				filename,writeError.c_str() );
-			throw std::runtime_error("output_provenance_unavailable: "+writeError);
+			return;
 		}
 		const FileEncoderObserver* pMe = this;
 		char emergency[MAX_BUFFER_SIZE];

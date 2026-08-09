@@ -70,6 +70,7 @@ MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
     , _started(false)
     , _finalized(false)
     , _failed(false)
+    , _derivativeFailed(false)
     , _succeeded(false)
     , _routeAvailable(false)
     , _fireRender(false)
@@ -242,6 +243,21 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
     return true;
 }
 
+bool MovieRasterizerOutput::failMovieDerivative(const char* reason)
+{
+    if (!_fireRender) return false;
+    _derivativeFailed = true;
+    RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+        "MovieRasterizerOutput:: display derivative failed (%s); finalized "
+        "fire frame primaries remain valid", reason);
+    if (_writer) [_writer cancelWriting];
+    [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+    _writer = nil;
+    _input = nil;
+    _adaptor = nil;
+    return true;
+}
+
 void MovieRasterizerOutput::OutputImage(
     const RISE::IRasterImage& pImage,
     const RISE::Rect* /*pRegion*/,
@@ -272,7 +288,7 @@ void MovieRasterizerOutput::OutputImage(
     RISE::FrameStoreOutput::Metadata metadata;
     if (frameStore) metadata = frameStore->Meta();
     const bool isFireFrame = !metadata.renderFidelityStatus.empty();
-    if (_framesReceived == 0u) {
+    if (_framesReceived == 0u && _framePrimaries.empty()) {
         _fireRender = isFireFrame;
     } else if (_fireRender != isFireFrame) {
         _failed = true;
@@ -340,10 +356,12 @@ void MovieRasterizerOutput::OutputImage(
         link.artifactSha256 = linked.primaryArtifactSha256;
         _framePrimaries.push_back(link);
     }
+    if (_derivativeFailed) return;
 
     // Lazy initialization on first frame
     if (!_started) {
         if (!setupWriter(imgW, imgH)) {
+            if (failMovieDerivative("writer initialization")) return;
             _failed = true;
             throw std::runtime_error("movie writer initialization failed");
         }
@@ -356,6 +374,7 @@ void MovieRasterizerOutput::OutputImage(
             "MovieRasterizerOutput:: Writer is in failed state at frame %u: %s",
             frame,
             [[_writer.error localizedDescription] UTF8String]);
+        if (failMovieDerivative("writer entered a failed state")) return;
         _failed = true;
         throw std::runtime_error("movie writer entered a failed state");
     }
@@ -363,6 +382,7 @@ void MovieRasterizerOutput::OutputImage(
     // Wait until the input is ready for more data
     while (!_input.isReadyForMoreMediaData) {
         if (_writer.status != AVAssetWriterStatusWriting) {
+            if (failMovieDerivative("writer failed while awaiting frame input")) return;
             _failed = true;
             throw std::runtime_error("movie writer failed while awaiting frame input");
         }
@@ -389,6 +409,7 @@ void MovieRasterizerOutput::OutputImage(
         RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
             "MovieRasterizerOutput:: Failed to create pixel buffer at frame %u (status=%d)",
             frame, (int)status);
+        if (failMovieDerivative("pixel-buffer allocation")) return;
         _failed = true;
         throw std::runtime_error("movie pixel-buffer allocation failed");
     }
@@ -455,6 +476,7 @@ void MovieRasterizerOutput::OutputImage(
             frame,
             [[_writer.error localizedDescription] UTF8String]);
         CVPixelBufferRelease(pixelBuffer);
+        if (failMovieDerivative("writer rejected a frame")) return;
         _failed = true;
         throw std::runtime_error("movie writer rejected a frame");
     }
@@ -471,6 +493,10 @@ bool MovieRasterizerOutput::finalize(bool publish)
     _finalized = true;
 
     if (!_started || !_writer) {
+        if (_derivativeFailed) {
+            [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+            return false;
+        }
         RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
             "MovieRasterizerOutput:: finalize called but no frames were written (received %u frames)",
             _framesReceived);
@@ -508,8 +534,10 @@ bool MovieRasterizerOutput::finalize(bool publish)
                 static_cast<unsigned int>(_fps), _framesReceived, _framePrimaries,
                 publishError);
             if (!_succeeded) {
-                RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
-                    "MovieRasterizerOutput:: output_provenance_unavailable for '%s': %s",
+                _derivativeFailed = true;
+                RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+                    "MovieRasterizerOutput:: display derivative transaction failed for '%s' "
+                    "(%s); finalized fire frame primaries remain valid",
                     [_outputPath UTF8String], publishError.c_str());
             }
         } else {
@@ -539,10 +567,19 @@ bool MovieRasterizerOutput::finalize(bool publish)
                 _framesReceived, [_outputPath UTF8String]);
         }
     } else {
-        RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
-            "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
-            _framesReceived,
-            [[_writer.error localizedDescription] UTF8String]);
+        if (_fireRender) {
+            _derivativeFailed = true;
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+                "MovieRasterizerOutput:: display derivative finalization failed after %u "
+                "frames (%s); finalized fire frame primaries remain valid",
+                _framesReceived,
+                [[_writer.error localizedDescription] UTF8String]);
+        } else {
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
+                _framesReceived,
+                [[_writer.error localizedDescription] UTF8String]);
+        }
         [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
     }
 

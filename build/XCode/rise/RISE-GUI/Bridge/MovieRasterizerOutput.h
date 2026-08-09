@@ -47,6 +47,8 @@ public:
 
     /// Flush remaining frames and close the movie file.
     bool finalize(bool publish = true);
+    bool HasFinalizedFirePrimaries() const
+        { return _fireRender && !_failed && !_framePrimaries.empty(); }
 
 private:
 #ifdef __OBJC__
@@ -73,6 +75,7 @@ private:
     bool _started;
     bool _finalized;
     bool _failed;
+    bool _derivativeFailed;
     bool _succeeded;
     bool _routeAvailable;
     bool _fireRender;
@@ -83,6 +86,7 @@ private:
 
     /// Lazily configure the AVAssetWriter on first frame (when we know the dimensions).
     bool setupWriter(int width, int height);
+    bool failMovieDerivative(const char* reason);
 };
 
 #endif

@@ -543,6 +543,20 @@ int main()
 				std::string(guiNames[i])+
 				" GUI SaveAs requests linear FP32 from HDR encoders" );
 		}
+
+		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
+		std::string movieSource{
+			std::istreambuf_iterator<char>(movieFile),std::istreambuf_iterator<char>() };
+		std::ifstream bridgeFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "Bridge" / "RISEBridge.mm",std::ios::binary);
+		std::string bridgeSource{
+			std::istreambuf_iterator<char>(bridgeFile),std::istreambuf_iterator<char>() };
+		Check( movieSource.find("failMovieDerivative") != std::string::npos &&
+			movieSource.find("finalized fire frame primaries remain valid") !=
+				std::string::npos &&
+			bridgeSource.find("HasFinalizedFirePrimaries") != std::string::npos,
+			"macOS movie derivative failure preserves finalized fire frame primaries" );
 	}
 
 	// FIRE_OUTPUT_PROVENANCE_PIN_V1 P-3 parameter-surface ratchet.  The

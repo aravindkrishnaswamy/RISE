@@ -945,6 +945,34 @@ namespace
 			derived->Find("provenance_id")->GetText() == exrProvenanceId->GetText() &&
 			pngDigest && pngDigest->GetText() == RISECBOR64::SHA256Hex(pngBytes),
 			"[fire provenance] display derivative links to the finalized preview primary" );
+
+		const FrameStoreOutput::Metadata primaryBeforeDerivativeFailure = store->Meta();
+		const std::string failedDerivativeBase =
+			MakeTempPathWithoutExt()+"_failed_derivative";
+		const std::string failedDerivativeFile = failedDerivativeBase+".ppm";
+		const std::string failedDerivativeSidecar =
+			failedDerivativeFile+".provenance.cbor";
+		std::filesystem::create_directory(failedDerivativeSidecar);
+		IFrameEncoder* ppm = FrameEncoderRegistry::Get().ByFormatName("PPM");
+		observer = new FileEncoderObserver(store,ppm,opts,failedDerivativeBase,false);
+		bool derivativeFailureThrew = false;
+		try {
+			observer->OnFrameComplete(0u,0u);
+		} catch( ... ) {
+			derivativeFailureThrew = true;
+		}
+		safe_release(observer);
+		const FrameStoreOutput::Metadata primaryAfterDerivativeFailure = store->Meta();
+		Check( !derivativeFailureThrew && !std::filesystem::exists(failedDerivativeFile) &&
+			std::filesystem::is_directory(failedDerivativeSidecar) &&
+			primaryAfterDerivativeFailure.primaryProvenanceId ==
+				primaryBeforeDerivativeFailure.primaryProvenanceId &&
+			primaryAfterDerivativeFailure.primaryArtifactSha256 ==
+				primaryBeforeDerivativeFailure.primaryArtifactSha256 &&
+			primaryAfterDerivativeFailure.primaryArtifactFidelity ==
+				primaryBeforeDerivativeFailure.primaryArtifactFidelity,
+			"[fire provenance] failed display derivative preserves the finalized primary" );
+		std::filesystem::remove(failedDerivativeSidecar);
 		std::remove(pngFile.c_str());
 		std::remove(pngSidecar.c_str());
 		std::remove(signedZeroFile.c_str());
