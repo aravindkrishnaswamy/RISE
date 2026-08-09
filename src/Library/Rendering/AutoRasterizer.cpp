@@ -1120,11 +1120,9 @@ unsigned int AutoRasterizer::PredictTimeToRasterizeScene(
 {
 	EnsureResolved( &pScene );
 	SyncDelegateFrameStore();
-	const bool fire = RequireFireRenderPreflight(
+	RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Prediction);
 	if( mDelegate ) {
-		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
-			FireRenderPreflightAuthorization::Prediction);
 		return mDelegate->PredictTimeToRasterizeScene( pScene, pSampling, pActualTime );
 	}
 	if( pActualTime ) {
@@ -1141,11 +1139,9 @@ void AutoRasterizer::RasterizeScene(
 {
 	EnsureResolved( &pScene );
 	SyncDelegateFrameStore();
-	const bool fire = RequireFireRenderPreflight(
+	RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
-		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
-			FireRenderPreflightAuthorization::Render);
 		mDelegate->RasterizeScene( pScene, pRect, pRasterSequence );
 	}
 }
@@ -1164,12 +1160,44 @@ void AutoRasterizer::RasterizeSceneAnimation(
 {
 	EnsureResolved( &pScene );
 	SyncDelegateFrameStore();
-	const bool fire = RequireFireRenderPreflight(
+	RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
-		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
-			FireRenderPreflightAuthorization::Render);
 		mDelegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
 			do_fields, invert_fields, pRect, specificFrame, pRasterSequence );
 	}
+}
+
+bool AutoRasterizer::AuthorizeFireDelegatePreflight(
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
+	}
+	if( !delegate ) return false;
+	bool authorized = true;
+	try {
+		AuthorizeInternalFireDelegate(*delegate,scene,authorization);
+	}
+	catch( ... ) {
+		authorized = false;
+	}
+	safe_release(delegate);
+	return authorized;
+}
+
+void AutoRasterizer::ClearFireDelegatePreflight() const
+{
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
+	}
+	if( delegate ) ClearInternalFireDelegateAuthorization(*delegate);
+	safe_release(delegate);
 }

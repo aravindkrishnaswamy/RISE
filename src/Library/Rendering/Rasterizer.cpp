@@ -28,6 +28,22 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	class FireOutputBindingActivity
+	{
+	public:
+		explicit FireOutputBindingActivity( std::atomic<unsigned int>& active )
+			: active_(active)
+		{
+			active_.fetch_add(1u,std::memory_order_acq_rel);
+		}
+		~FireOutputBindingActivity()
+		{
+			active_.fetch_sub(1u,std::memory_order_release);
+		}
+	private:
+		std::atomic<unsigned int>& active_;
+	};
+
 	bool SceneHasActiveFireMedium( const IScene& scene )
 	{
 		const IMedium* global = scene.GetGlobalMedium();
@@ -175,14 +191,31 @@ bool Rasterizer::RequireFireRenderPreflight(
 		throw std::runtime_error(
 			"output_provenance_unavailable: fire rasterizer entry requires Job preflight");
 	}
-	if( authorization == FireRenderPreflightAuthorization::Render &&
-		(!mFrameStore || authorizedStore != mFrameStore ||
-		 authorizedGeneration != mFrameStore->Generation() ||
-		 authorizedOutputTopologyGeneration !=
-			mFireOutputTopologyGeneration.load(std::memory_order_acquire) ||
-		 !HasCompleteFireOutputMetadata(mFrameStore->Meta()) ||
-		 authorizedMetadataBinding.empty() ||
-		 authorizedMetadataBinding != FireOutputMetadataBinding(mFrameStore->Meta())) ) {
+	FrameStore* currentStore = nullptr;
+	uint64_t currentTopology = 0u;
+	unsigned int bindingInProgress = 0u;
+	{
+		std::lock_guard<std::mutex> outputsLock(outsMutex);
+		currentStore = mFrameStore;
+		if( currentStore ) currentStore->addref();
+		currentTopology =
+			mFireOutputTopologyGeneration.load(std::memory_order_relaxed);
+		bindingInProgress =
+			mFireOutputBindingInProgress.load(std::memory_order_relaxed);
+	}
+	bool valid = authorizedOutputTopologyGeneration == currentTopology &&
+		bindingInProgress == 0u;
+	if( valid && authorization == FireRenderPreflightAuthorization::Render ) {
+		const FrameStoreOutput::Metadata metadata = currentStore ?
+			currentStore->Meta() : FrameStoreOutput::Metadata();
+		valid = currentStore && authorizedStore == currentStore &&
+			authorizedGeneration == currentStore->Generation() &&
+			HasCompleteFireOutputMetadata(metadata) &&
+			!authorizedMetadataBinding.empty() &&
+			authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
+	}
+	safe_release(currentStore);
+	if( !valid ) {
 		GlobalLog()->PrintEasyError(
 			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
 		throw std::runtime_error(
@@ -193,39 +226,129 @@ bool Rasterizer::RequireFireRenderPreflight(
 
 void Rasterizer::ClearFireRenderPreflightAuthorization() const
 {
-	std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
-	mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
-	mFireRenderPreflightScene = nullptr;
-	mFireRenderPreflightStore = nullptr;
-	mFireRenderPreflightGeneration = 0u;
-	mFireRenderPreflightOutputTopologyGeneration = 0u;
-	mFireRenderPreflightMetadataBinding.clear();
+	{
+		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+		mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
+		mFireRenderPreflightScene = nullptr;
+		mFireRenderPreflightStore = nullptr;
+		mFireRenderPreflightGeneration = 0u;
+		mFireRenderPreflightOutputTopologyGeneration = 0u;
+		mFireRenderPreflightMetadataBinding.clear();
+	}
+	ClearFireDelegatePreflight();
 }
 
 bool Rasterizer::AuthorizeFireRenderPreflight(
 	const IScene& scene,
 	const FireRenderPreflightAuthorization authorization ) const
 {
-	std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
-	mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
-	mFireRenderPreflightScene = nullptr;
-	mFireRenderPreflightStore = nullptr;
-	mFireRenderPreflightGeneration = 0u;
-	mFireRenderPreflightOutputTopologyGeneration = 0u;
-	mFireRenderPreflightMetadataBinding.clear();
+	ClearFireRenderPreflightAuthorization();
 	if( authorization == FireRenderPreflightAuthorization::None ) return true;
-	mFireRenderPreflightAuthorization = authorization;
-	mFireRenderPreflightScene = &scene;
-	mFireRenderPreflightStore = mFrameStore;
-	mFireRenderPreflightGeneration = mFrameStore ? mFrameStore->Generation() : 0u;
-	mFireRenderPreflightOutputTopologyGeneration =
+	struct FireRouteCollector : public IEnumCallback<IRasterizerOutput>
+	{
+		bool sawArtifact = false;
+		bool sawPrimary = false;
+		bool invalid = false;
+		bool operator()( const IRasterizerOutput& output ) override
+		{
+			const IFireRasterizerOutputRoute* route =
+				dynamic_cast<const IFireRasterizerOutputRoute*>(&output);
+			if( !route ) {
+				invalid = true;
+				return true;
+			}
+			switch( route->FireArtifactRoute() ) {
+			case FireArtifactRouteKind::DisplayOnly:
+				return true;
+			case FireArtifactRouteKind::UnavailableArtifact:
+				sawArtifact = true;
+				invalid = true;
+				return true;
+			case FireArtifactRouteKind::PrimaryArtifact:
+				sawArtifact = true;
+				sawPrimary = true;
+				return true;
+			case FireArtifactRouteKind::DerivativeArtifact:
+				sawArtifact = true;
+				if( !sawPrimary ) invalid = true;
+				return true;
+			}
+			invalid = true;
+			return true;
+		}
+	};
+	if( mFireOutputBindingInProgress.load(std::memory_order_acquire) != 0u ) {
+		return false;
+	}
+	const uint64_t observedTopology =
 		mFireOutputTopologyGeneration.load(std::memory_order_acquire);
+	FireRouteCollector routes;
+	EnumerateRasterizerOutputs(routes);
+	if( routes.invalid || (routes.sawArtifact && !routes.sawPrimary) ||
+		mFireOutputBindingInProgress.load(std::memory_order_acquire) != 0u ||
+		observedTopology !=
+			mFireOutputTopologyGeneration.load(std::memory_order_acquire) ) {
+		return false;
+	}
+	FrameStore* store = nullptr;
+	{
+		std::lock_guard<std::mutex> outputsLock(outsMutex);
+		if( observedTopology !=
+				mFireOutputTopologyGeneration.load(std::memory_order_relaxed) ||
+			mFireOutputBindingInProgress.load(std::memory_order_relaxed) != 0u ) {
+			return false;
+		}
+		store = mFrameStore;
+		if( store ) store->addref();
+	}
+	uint64_t storeGeneration = store ? store->Generation() : 0u;
+	std::string metadataBinding;
 	if( authorization == FireRenderPreflightAuthorization::Render ) {
-		if( !mFrameStore ) return false;
-		const FrameStoreOutput::Metadata metadata = mFrameStore->Meta();
-		if( !HasCompleteFireOutputMetadata(metadata) ) return false;
-		mFireRenderPreflightMetadataBinding = FireOutputMetadataBinding(metadata);
-		if( mFireRenderPreflightMetadataBinding.empty() ) return false;
+		if( !store ) return false;
+		const FrameStoreOutput::Metadata metadata = store->Meta();
+		if( storeGeneration != store->Generation() ||
+			!HasCompleteFireOutputMetadata(metadata) ) {
+			safe_release(store);
+			return false;
+		}
+		metadataBinding = FireOutputMetadataBinding(metadata);
+		if( metadataBinding.empty() ) {
+			safe_release(store);
+			return false;
+		}
+	}
+	if( observedTopology !=
+			mFireOutputTopologyGeneration.load(std::memory_order_acquire) ||
+		mFireOutputBindingInProgress.load(std::memory_order_acquire) != 0u ) {
+		safe_release(store);
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+		mFireRenderPreflightAuthorization = authorization;
+		mFireRenderPreflightScene = &scene;
+		mFireRenderPreflightStore = store;
+		mFireRenderPreflightGeneration = storeGeneration;
+		mFireRenderPreflightOutputTopologyGeneration = observedTopology;
+		mFireRenderPreflightMetadataBinding = metadataBinding;
+	}
+	if( !AuthorizeFireDelegatePreflight(scene,authorization) ) {
+		safe_release(store);
+		ClearFireRenderPreflightAuthorization();
+		return false;
+	}
+	bool unchanged = observedTopology ==
+		mFireOutputTopologyGeneration.load(std::memory_order_acquire) &&
+		mFireOutputBindingInProgress.load(std::memory_order_acquire) == 0u;
+	if( unchanged && authorization == FireRenderPreflightAuthorization::Render ) {
+		const FrameStoreOutput::Metadata metadata = store->Meta();
+		unchanged = storeGeneration == store->Generation() &&
+			metadataBinding == FireOutputMetadataBinding(metadata);
+	}
+	safe_release(store);
+	if( !unchanged ) {
+		ClearFireRenderPreflightAuthorization();
+		return false;
 	}
 	return true;
 }
@@ -252,6 +375,13 @@ void Rasterizer::AuthorizeInternalFireDelegate(
 		throw std::runtime_error(
 			"output_provenance_unavailable: fire delegate authorization failed");
 	}
+}
+
+void Rasterizer::ClearInternalFireDelegateAuthorization(
+	IRasterizer& delegate ) const
+{
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(&delegate);
+	if( concrete ) concrete->ClearFireRenderPreflightAuthorization();
 }
 
 Rasterizer::~Rasterizer( )
@@ -288,6 +418,7 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 {
 	if( !ro ) return false;
+	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
 	FrameStore* frameStoreSnapshot = 0;
 
 	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
@@ -401,6 +532,7 @@ void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 // legacy callback sinks are unaffected.
 void Rasterizer::SetFrameStore( FrameStore* frameStore )
 {
+	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
 	FrameStore* previous = 0;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
@@ -413,6 +545,7 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 		if( frameStore ) frameStore->addref();
 		previous = mFrameStore;
 		mFrameStore = frameStore;
+		mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 	}
 	safe_release(previous);
 
@@ -425,6 +558,7 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 
 void Rasterizer::ReannounceFrameStore()
 {
+	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
 	// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 	// on every attached output.  Caller has either just swapped
 	// `mFrameStore` (called from `SetFrameStore`) or wants the

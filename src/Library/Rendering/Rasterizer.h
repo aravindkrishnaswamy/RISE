@@ -144,6 +144,7 @@ namespace RISE
 			//! re-entries.
 			mutable std::mutex						outsMutex;
 			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
+			std::atomic<unsigned int> mFireOutputBindingInProgress { 0u };
 
 			IProgressCallback*						pProgressFunc;
 
@@ -214,6 +215,12 @@ namespace RISE
 				IRasterizer& delegate,
 				const IScene& scene,
 				FireRenderPreflightAuthorization authorization ) const;
+			void ClearInternalFireDelegateAuthorization(
+				IRasterizer& delegate ) const;
+			virtual bool AuthorizeFireDelegatePreflight(
+				const IScene&,
+				FireRenderPreflightAuthorization ) const { return true; }
+			virtual void ClearFireDelegatePreflight() const {}
 			virtual bool SupportsFireMediaTransport() const { return true; }
 
 		private:

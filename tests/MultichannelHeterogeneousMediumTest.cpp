@@ -162,6 +162,36 @@ namespace
 		~UnclassifiedFireOutput() override = default;
 	};
 
+	class TopologyMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		TopologyMutatingFireOutput( IRasterizer& rasterizer,
+			const unsigned int mutationCall ) :
+			rasterizer_(rasterizer), mutationCall_(mutationCall) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			++routeCalls_;
+			if( routeCalls_ == mutationCall_ ) {
+				UnclassifiedFireOutput* injected = new UnclassifiedFireOutput();
+				rasterizer_.AddRasterizerOutput(injected);
+				injected->release();
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		unsigned int RouteCalls() const { return routeCalls_; }
+	protected:
+		~TopologyMutatingFireOutput() override = default;
+	private:
+		IRasterizer& rasterizer_;
+		const unsigned int mutationCall_;
+		mutable unsigned int routeCalls_ = 0u;
+	};
+
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
 	{
@@ -3242,6 +3272,40 @@ namespace
 				"a rejected preflight preserves the last completed frame metadata" );
 			Check( !job->SetFireFidelityMode("invented"),
 				"the job rejects an unknown fire fidelity mode" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool topologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( topologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			TopologyMutatingFireOutput* output =
+				new TopologyMutatingFireOutput(*rasterizer,2u);
+			rasterizer->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->RouteCalls() == 2u,
+				"fire authorization rejects an output topology changed after route preflight" );
+			safe_release(output);
+		} else {
+			Check(false,"output-topology mutation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("auto_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool autoTopologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( autoTopologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			TopologyMutatingFireOutput* output =
+				new TopologyMutatingFireOutput(*rasterizer,3u);
+			rasterizer->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->RouteCalls() >= 3u,
+				"Auto fire authorization binds wrapper and delegate to one inspected output epoch" );
+			safe_release(output);
+		} else {
+			Check(false,"Auto output-topology mutation fixture loads");
 		}
 		safe_release(job);
 

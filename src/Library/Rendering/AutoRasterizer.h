@@ -98,6 +98,10 @@ namespace RISE
 
 		protected:
 			~AutoRasterizer() override;
+			bool AuthorizeFireDelegatePreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const override;
+			void ClearFireDelegatePreflight() const override;
 
 		public:
 			//
