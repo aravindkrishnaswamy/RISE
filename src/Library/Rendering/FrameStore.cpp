@@ -128,6 +128,36 @@ namespace
 		return true;
 	}
 
+	bool TextFieldIn(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::initializer_list<const char*> values,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::Text,context,error) ) return false;
+		const std::string& actual = map.Find(key)->GetText();
+		for( const char* value : values ) {
+			if( actual == value ) return true;
+		}
+		error = std::string(context)+" field '"+key+"' is outside schema-v1";
+		return false;
+	}
+
+	bool UnsignedFieldAtMost(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::uint64_t maximum,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::UnsignedInteger,context,error) )
+			return false;
+		if( map.Find(key)->GetIntegerArgument() <= maximum ) return true;
+		error = std::string(context)+" field '"+key+"' is outside schema-v1";
+		return false;
+	}
+
 	bool IntegerField(
 		const RISECBOR64::Value& map,
 		const char* key,
@@ -275,6 +305,16 @@ namespace
 			!ArrayElementsAre(*aov,"channels",RISECBOR64::Value::Text,
 				static_cast<std::size_t>(-1),"resolved AOV",error) ||
 			!ValidateCameraSchema(*record.Find("camera"),error) ) return false;
+		std::set<std::string> aovChannels;
+		for( const RISECBOR64::Value& channel : aov->Find("channels")->GetArray() ) {
+			const std::string& name = channel.GetText();
+			if( (name != "beauty" && name != "alpha" && name != "albedo" &&
+				name != "normal" && name != "depth" && name != "object_id" &&
+				name != "primitive_id") || !aovChannels.insert(name).second ) {
+				error = "resolved AOV channel is duplicated or outside schema-v1";
+				return false;
+			}
+		}
 
 		const auto exactFloatMap = [&error]( const RISECBOR64::Value* value,
 			const std::initializer_list<const char*> keys, const char* context ) {
@@ -324,7 +364,10 @@ namespace
 			!IntegerField(*execution,"force_number_of_threads","resolved execution",error) ||
 			!IntegerField(*execution,"maximum_thread_count","resolved execution",error) ||
 			!IntegerField(*execution,"render_thread_reserve_count","resolved execution",error) ||
-			!FieldType(*execution,"random_stream_policy",RISECBOR64::Value::Text,
+			!TextFieldIn(*execution,"random_stream_policy",{
+				"per_dispatch_task_mersenne53_seeded_from_c_rand",
+				"per_dispatch_task_mersenne_seeded_from_c_rand",
+				"process_shared_drand48", "process_shared_c_rand" },
 				"resolved execution",error) ) return false;
 
 		const RISECBOR64::Value* external = record.Find("external_runtime");
@@ -349,7 +392,9 @@ namespace
 				if( !FieldType(*external,key,RISECBOR64::Value::UnsignedInteger,
 					"resolved external runtime",error) ) return false;
 			}
-			if( !FieldType(*external,"view_mode",RISECBOR64::Value::Text,
+			if( !UnsignedFieldAtMost(*external,"tile_order",2u,
+				"resolved external runtime",error) ||
+				!NonemptyTextField(*external,"view_mode",
 				"resolved external runtime",error) ||
 				!FieldType(*region,"active",RISECBOR64::Value::Boolean,
 					"resolved external region",error) ) return false;
@@ -419,14 +464,28 @@ namespace
 				"max_iterations", "max_photon_seeds_per_shading_point", "multi_trials",
 				"photon_count", "seeding_mode", "target_bounces", "threshold", "two_stage",
 				"use_levenberg_marquardt" },"resolved SMS",error) ) return false;
-		for( const char* key : {"auto_choice"} ) if( !FieldType(*integrator,key,
-			RISECBOR64::Value::UnsignedInteger,"resolved integrator",error) ) return false;
+		if( !UnsignedFieldAtMost(*integrator,"auto_choice",3u,
+			"resolved integrator",error) ) return false;
 		for( const char* key : { "auto_probe_enabled", "enable_vertex_connection",
 			"enable_vertex_merging", "integrate_rgb", "show_luminaires" } )
 			if( !FieldType(*integrator,key,RISECBOR64::Value::Boolean,
 				"resolved integrator",error) ) return false;
-		for( const char* key : {"effective_kind","kind"} ) if( !FieldType(*integrator,key,
-			RISECBOR64::Value::Text,"resolved integrator",error) ) return false;
+		if( !TextFieldIn(*integrator,"kind",{
+			"interactive_pel_rasterizer", "pixelpel_rasterizer",
+			"pixelintegratingspectral_rasterizer", "pathtracing_pel_rasterizer",
+			"pathtracing_spectral_rasterizer", "auto_rasterizer",
+			"auto_spectral_rasterizer", "bdpt_pel_rasterizer",
+			"bdpt_spectral_rasterizer", "vcm_pel_rasterizer",
+			"vcm_spectral_rasterizer", "mlt_rasterizer",
+			"mlt_spectral_rasterizer" },"resolved integrator",error) ||
+			!TextFieldIn(*integrator,"effective_kind",{
+			"pt", "bdpt", "vcm", "interactive_pel_rasterizer",
+			"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+			"pathtracing_pel_rasterizer", "pathtracing_spectral_rasterizer",
+			"bdpt_pel_rasterizer", "bdpt_spectral_rasterizer",
+			"vcm_pel_rasterizer", "vcm_spectral_rasterizer",
+			"mlt_rasterizer", "mlt_spectral_rasterizer" },
+			"resolved integrator",error) ) return false;
 		if( !FieldType(*integrator,"merge_radius",RISECBOR64::Value::Float64,
 			"resolved integrator",error) ) return false;
 		for( const auto& member : guiding->GetMap() ) {
@@ -442,6 +501,8 @@ namespace
 				return false;
 			}
 		}
+		if( !UnsignedFieldAtMost(*guiding,"sampling_type",1u,
+			"resolved path guiding",error) ) return false;
 		for( const auto& member : sms->GetMap() ) {
 			const std::set<std::string> boolFields = {
 				"biased","enabled","two_stage","use_levenberg_marquardt"};
@@ -453,6 +514,8 @@ namespace
 				return false;
 			}
 		}
+		if( !UnsignedFieldAtMost(*sms,"seeding_mode",1u,
+			"resolved SMS",error) ) return false;
 
 		if( !exactFloatMap(record.Find("light_sampling"),{"rr_threshold"},
 			"resolved light sampling") ) return false;
@@ -585,6 +648,12 @@ namespace
 				"resolved radiance map",error) ||
 			!FieldType(*radiance,"scale",RISECBOR64::Value::Float64,
 				"resolved radiance map",error) ) return false;
+		if( !UnsignedFieldAtMost(*transport,"oidn_device",2u,
+			"resolved transport",error) ||
+			!UnsignedFieldAtMost(*transport,"oidn_prefilter",1u,
+				"resolved transport",error) ||
+			!UnsignedFieldAtMost(*transport,"oidn_quality",3u,
+				"resolved transport",error) ) return false;
 		return true;
 	}
 
@@ -612,37 +681,49 @@ namespace
 				"renderer FP settings",error) ||
 			!ExactMapKeys(*target,{"architecture","platform"},"renderer target",error) )
 			return false;
-		for( const char* key : {"identity","language_standard","lto_mode","optimization_mode"} )
-			if( !NonemptyTextField(*compiler,key,"renderer compiler",error) )
-				return false;
+		if( !NonemptyTextField(*compiler,"identity","renderer compiler",error) ||
+			!TextFieldIn(*compiler,"language_standard",{"c++17"},
+				"renderer compiler",error) ||
+			!TextFieldIn(*compiler,"lto_mode",{"off","thin","full","compiler_default"},
+				"renderer compiler",error) ||
+			!TextFieldIn(*compiler,"optimization_mode",{
+				"disabled","O1","O2","O3","Os","Oz","compiler_default"},
+				"renderer compiler",error) ) return false;
 		for( const char* key : {"diff_sha256","state"} ) if( !FieldType(*dirty,key,
 			RISECBOR64::Value::Text,"renderer dirty state",error) ) return false;
-		for( const char* key : {"hash_basis","kind","path","sha256"} )
-			if( !NonemptyTextField(*binary,key,"renderer binary",error) )
-				return false;
+		if( !TextFieldIn(*binary,"hash_basis",{
+			"file_bytes","dyld_shared_cache_and_image_uuids","apk_stored_entry_bytes"},
+			"renderer binary",error) ||
+			!TextFieldIn(*binary,"kind",{"executable","module"},
+				"renderer binary",error) ||
+			!NonemptyTextField(*binary,"path","renderer binary",error) ||
+			!NonemptyTextField(*binary,"sha256","renderer binary",error) ) return false;
 		const std::string& dirtyState = dirty->Find("state")->GetText();
 		if( (dirtyState != "clean" && dirtyState != "dirty") ||
 			!IsSHA256Hex(dirty->Find("diff_sha256")->GetText()) ||
 			!IsSHA256Hex(binary->Find("sha256")->GetText()) ||
-			!NonemptyTextField(*fp,"contraction_mode",
+			!TextFieldIn(*fp,"contraction_mode",{
+				"off","on","fast","compiler_default"},
 				"renderer FP settings",error) ||
 			!FieldType(*fp,"fast_math",RISECBOR64::Value::Boolean,
 				"renderer FP settings",error) ||
 			!FieldType(*fp,"finite_math_only",RISECBOR64::Value::Boolean,
 				"renderer FP settings",error) ) return false;
-		for( const char* key : {"architecture","platform"} ) if( !NonemptyTextField(*target,key,
-			"renderer target",error) ) return false;
-		for( const char* key : { "gate_harness_version", "renderer_version",
-			"source_revision" } ) if( !NonemptyTextField(record,key,
+		if( !TextFieldIn(*target,"architecture",{"arm64","x86_64"},
+			"renderer target",error) ||
+			!TextFieldIn(*target,"platform",{"windows","android","macos","linux"},
+				"renderer target",error) ||
+			!TextFieldIn(record,"gate_harness_version",{"phase_a_gate_harness_v1"},
 				"renderer build identity",error) ) return false;
+		for( const char* key : { "renderer_version", "source_revision" } )
+			if( !NonemptyTextField(record,key,"renderer build identity",error) ) return false;
 		if( !ArrayElementsAre(record,"solver_schema_versions",RISECBOR64::Value::Text,
 			static_cast<std::size_t>(-1),"renderer build identity",error) ) return false;
 		const RISECBOR64::Value* solverVersions = record.Find("solver_schema_versions");
-		if( solverVersions->GetArray().empty() || std::find_if(
-			solverVersions->GetArray().begin(),solverVersions->GetArray().end(),
-			[]( const RISECBOR64::Value& value ) { return value.GetText().empty(); }) !=
-			solverVersions->GetArray().end() ) {
-			error = "renderer solver schema versions are empty";
+		if( solverVersions->GetArray().size() != 2u ||
+			solverVersions->GetArray()[0].GetText() != "fire_optics_schema_v3" ||
+			solverVersions->GetArray()[1].GetText() != "fire_output_provenance_schema_v1" ) {
+			error = "renderer solver schema versions are outside schema-v1";
 			return false;
 		}
 		const RISECBOR64::Value* dependencies = record.Find("dependency_builds");
@@ -696,7 +777,10 @@ namespace
 					error = "renderer dependency binary SHA-256 is malformed";
 					return false;
 				}
-				if( loaded.Find("hash_basis")->GetText().empty() ||
+				const std::string& hashBasis = loaded.Find("hash_basis")->GetText();
+				if( (hashBasis != "file_bytes" &&
+					hashBasis != "dyld_shared_cache_and_image_uuids" &&
+					hashBasis != "apk_stored_entry_bytes") ||
 					loaded.Find("path")->GetText().empty() ) {
 					error = "renderer dependency binary identity is incomplete";
 					return false;

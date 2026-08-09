@@ -774,7 +774,7 @@ namespace
 				{ "effective_worker_task_count", Value::Unsigned(1) },
 				{ "force_number_of_threads", Value::Signed(0) },
 				{ "maximum_thread_count", Value::Signed(1) },
-				{ "random_stream_policy", Value::String("test") },
+				{ "random_stream_policy", Value::String("process_shared_c_rand") },
 				{ "render_thread_reserve_count", Value::Signed(0) } }) },
 			{ "external_runtime", Value() },
 			{ "film", Value::MapValue({
@@ -808,7 +808,7 @@ namespace
 				{ "enable_vertex_connection", Value::Bool(false) },
 				{ "enable_vertex_merging", Value::Bool(false) },
 				{ "integrate_rgb", Value::Bool(false) },
-				{ "kind", Value::String("pathtracing_spectral") },
+				{ "kind", Value::String("pathtracing_spectral_rasterizer") },
 				{ "merge_radius", Value::Float(0.0) },
 				{ "path_guiding", Value::MapValue({
 					{ "alpha", Value::Float(0.0) },
@@ -930,7 +930,7 @@ namespace
 				{ "contraction_mode", Value::String("off") },
 				{ "fast_math", Value::Bool(false) },
 				{ "finite_math_only", Value::Bool(false) } }) },
-			{ "gate_harness_version", Value::String("test") },
+			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
 			{ "record_kind", Value::String("renderer_build_v1") },
 			{ "renderer_binary", Value::MapValue({
 				{ "hash_basis", Value::String("file_bytes") },
@@ -940,11 +940,12 @@ namespace
 			{ "renderer_version", Value::String("test") },
 			{ "schema_version", Value::Unsigned(1) },
 			{ "solver_schema_versions", Value::ArrayValue({
-				Value::String("test") }) },
+				Value::String("fire_optics_schema_v3"),
+				Value::String("fire_output_provenance_schema_v1") }) },
 			{ "source_revision", Value::String("test-build") },
 			{ "target", Value::MapValue({
-				{ "architecture", Value::String("test") },
-				{ "platform", Value::String("test") } }) }
+				{ "architecture", Value::String("arm64") },
+				{ "platform", Value::String("macos") } }) }
 		}),buildBytes,&encodeError);
 		FrameStoreOutput::ActiveFireMedium medium;
 		medium.mediaKind = "static_authored";
@@ -1420,6 +1421,43 @@ namespace
 			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
 				"[fire provenance] resolved-config schema rejects missing nested "+path.back() );
 		}
+		struct ConfigSemanticMutation {
+			std::vector<std::string> path;
+			RISECBOR64::Value replacement;
+			const char* label;
+		};
+		const ConfigSemanticMutation configSemanticMutations[] = {
+			{ { "execution", "random_stream_policy" }, RISECBOR64::Value::String("test"),
+				"unknown random-stream policy" },
+			{ { "integrator", "auto_choice" }, RISECBOR64::Value::Unsigned(4),
+				"out-of-range auto-integrator choice" },
+			{ { "integrator", "kind" }, RISECBOR64::Value::String("pathtracing_spectral"),
+				"unknown integrator kind" },
+			{ { "integrator", "effective_kind" }, RISECBOR64::Value::String("unknown"),
+				"unknown effective integrator" },
+			{ { "integrator", "path_guiding", "sampling_type" },
+				RISECBOR64::Value::Unsigned(2), "out-of-range path-guiding sampler" },
+			{ { "integrator", "sms", "seeding_mode" }, RISECBOR64::Value::Unsigned(2),
+				"out-of-range SMS seeding mode" },
+			{ { "raster_sequence", "kind" }, RISECBOR64::Value::String("spiral"),
+				"unknown raster sequence" },
+			{ { "transport", "oidn_device" }, RISECBOR64::Value::Unsigned(3),
+				"out-of-range OIDN device" },
+			{ { "transport", "oidn_prefilter" }, RISECBOR64::Value::Unsigned(2),
+				"out-of-range OIDN prefilter" },
+			{ { "transport", "oidn_quality" }, RISECBOR64::Value::Unsigned(4),
+				"out-of-range OIDN quality" },
+			{ { "aov", "channels" }, RISECBOR64::Value::ArrayValue({
+				RISECBOR64::Value::String("unknown") }), "unknown AOV channel" }
+		};
+		for( const ConfigSemanticMutation& mutation : configSemanticMutations ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.resolvedRenderConfigCoreV1 = encode(replacePath(
+				baseConfig,mutation.path,0u,mutation.replacement));
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				std::string("[fire provenance] resolved-config schema rejects ")+
+				mutation.label );
+		}
 		for( const auto& member : baseBuild.GetMap() ) {
 			invalidMetadata = movieMetadata;
 			invalidMetadata.rendererBuildV1 = encode(withoutMember(baseBuild,member.first));
@@ -1487,10 +1525,28 @@ namespace
 				"empty source revision" },
 			{ { "compiler", "identity" }, RISECBOR64::Value::String(""),
 				"empty compiler identity" },
+			{ { "compiler", "language_standard" }, RISECBOR64::Value::String("javascript"),
+				"unknown language standard" },
+			{ { "compiler", "lto_mode" }, RISECBOR64::Value::String("banana"),
+				"unknown LTO mode" },
+			{ { "compiler", "optimization_mode" }, RISECBOR64::Value::String("O4"),
+				"unknown optimization mode" },
+			{ { "fp_settings", "contraction_mode" }, RISECBOR64::Value::String("maybe"),
+				"unknown FP contraction mode" },
 			{ { "renderer_binary", "path" }, RISECBOR64::Value::String(""),
 				"empty renderer-binary path" },
+			{ { "renderer_binary", "kind" }, RISECBOR64::Value::String("spreadsheet"),
+				"unknown renderer-binary kind" },
+			{ { "renderer_binary", "hash_basis" }, RISECBOR64::Value::String("filename"),
+				"unknown renderer-binary hash basis" },
 			{ { "target", "platform" }, RISECBOR64::Value::String(""),
 				"empty target platform" },
+			{ { "target", "platform" }, RISECBOR64::Value::String("plan9"),
+				"unknown target platform" },
+			{ { "target", "architecture" }, RISECBOR64::Value::String("m68k"),
+				"unknown target architecture" },
+			{ { "gate_harness_version" }, RISECBOR64::Value::String("phase_b"),
+				"unknown gate-harness version" },
 			{ { "solver_schema_versions" }, RISECBOR64::Value::ArrayValue({
 				RISECBOR64::Value::String("") }), "empty solver-schema identity" }
 		};
