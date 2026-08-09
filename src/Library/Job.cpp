@@ -715,6 +715,23 @@ namespace
 			2,globalOptions.ReadInt("auto_probe_variance_renders",2)));
 		const unsigned int autoProbeActivationSPP = static_cast<unsigned int>(std::max(
 			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
+		const int forcedWorkerCount = globalOptions.ReadInt("force_number_of_threads",0);
+		const int maximumWorkerCount = globalOptions.ReadInt(
+			"maximum_thread_count",0x7FFFFFFF);
+		const int reservedWorkerCount = globalOptions.ReadInt(
+			"render_thread_reserve_count",1);
+		const unsigned int effectiveWorkerTaskCount = std::max(
+			1u,Implementation::ComputeRenderPoolSize());
+		const char* randomStreamPolicy =
+#if defined(MERSENNE53)
+			"per_dispatch_task_mersenne53_seeded_from_c_rand";
+#elif defined(MERSENNE)
+			"per_dispatch_task_mersenne_seeded_from_c_rand";
+#elif defined(DRAND48)
+			"process_shared_drand48";
+#else
+			"process_shared_c_rand";
+#endif
 		ResolvedRasterSequence sequence;
 		if( external ) {
 			const unsigned int workers = std::max(
@@ -811,6 +828,7 @@ namespace
 				{ "max_translucent_bounce", FireUnsigned(p.stability.maxTranslucentBounce) },
 				{ "max_transmission_bounce", FireUnsigned(p.stability.maxTransmissionBounce) },
 				{ "max_volume_bounce", FireUnsigned(p.stability.maxVolumeBounce) } }) },
+			{ "evaluated_camera_states", Value::ArrayValue({}) },
 			{ "film", Value::MapValue({
 				{ "height", Value::Unsigned(film ? film->GetHeight() : 0) },
 				{ "pixel_aspect_ratio", Value::Float(film ? film->GetPixelAR() : 1.0) },
@@ -822,6 +840,12 @@ namespace
 				{ "param_b", Value::Float(p.pixelFilter.paramB) },
 				{ "width", Value::Float(p.pixelFilter.width) } }) },
 			{ "external_runtime", externalRuntime },
+			{ "execution", Value::MapValue({
+				{ "effective_worker_task_count", FireUnsigned(effectiveWorkerTaskCount) },
+				{ "force_number_of_threads", Value::Signed(forcedWorkerCount) },
+				{ "maximum_thread_count", Value::Signed(maximumWorkerCount) },
+				{ "random_stream_policy", Value::String(randomStreamPolicy) },
+				{ "render_thread_reserve_count", Value::Signed(reservedWorkerCount) } }) },
 			{ "global_render_options", Value::MapValue({
 				{ "auto_probe", Value::MapValue({
 					{ "activation_spp", FireUnsigned(autoProbeActivationSPP) },

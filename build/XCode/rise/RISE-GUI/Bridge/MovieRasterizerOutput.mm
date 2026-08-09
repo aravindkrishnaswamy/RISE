@@ -16,6 +16,7 @@
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/ILog.h"
 #include "Rendering/FrameEncoders.h"
+#include "Utilities/RISECBOR64.h"
 
 #include <memory>
 #include <stdexcept>
@@ -142,10 +143,34 @@ static bool SameFireRenderIdentity(
     const RISE::FrameStoreOutput::Metadata& lhs,
     const RISE::FrameStoreOutput::Metadata& rhs)
 {
+
+    const auto configWithoutEvaluatedCamera = [](
+        const std::vector<unsigned char>& encoded,
+        std::vector<unsigned char>& normalized) {
+        RISE::RISECBOR64::Value record;
+        std::string error;
+        if (!RISE::RISECBOR64::DecodeCanonical(encoded, record, &error) ||
+            record.GetType() != RISE::RISECBOR64::Value::Map) return false;
+        RISE::RISECBOR64::Value::Members members;
+        for (const auto& member : record.GetMap()) {
+            if (member.first != "camera" &&
+                member.first != "evaluated_camera_states") {
+                members.push_back(member);
+            }
+        }
+        return RISE::RISECBOR64::Encode(
+            RISE::RISECBOR64::Value::MapValue(members), normalized, &error);
+    };
+    std::vector<unsigned char> lhsStaticConfig;
+    std::vector<unsigned char> rhsStaticConfig;
+    if (!configWithoutEvaluatedCamera(lhs.resolvedRenderConfigCoreV1,
+            lhsStaticConfig) ||
+        !configWithoutEvaluatedCamera(rhs.resolvedRenderConfigCoreV1,
+            rhsStaticConfig)) return false;
     if (lhs.renderFidelityStatus != rhs.renderFidelityStatus ||
         lhs.renderReasonCodes != rhs.renderReasonCodes ||
         lhs.activeFireOpticsRecordIds != rhs.activeFireOpticsRecordIds ||
-        lhs.resolvedRenderConfigCoreV1 != rhs.resolvedRenderConfigCoreV1 ||
+        lhsStaticConfig != rhsStaticConfig ||
         lhs.rendererBuildV1 != rhs.rendererBuildV1 ||
         lhs.rendererBuildId != rhs.rendererBuildId ||
         lhs.activeFireMedia.size() != rhs.activeFireMedia.size()) return false;
@@ -345,6 +370,7 @@ void MovieRasterizerOutput::outputFrame(
             _fireMetadata = metadata;
             _metadataCaptured = true;
         }
+        _fireMetadata = metadata;
 
         RISE::EncodeOpts primaryOpts;
         primaryOpts.colorSpace = RISE::eColorSpace_Rec709RGB_Linear;

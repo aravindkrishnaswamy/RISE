@@ -33,6 +33,11 @@
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Utilities/RenderParallelScope.h"
+#include "../Utilities/RISECBOR64.h"
+#include "../Cameras/PinholeCamera.h"
+#include "../Cameras/ThinLensCamera.h"
+#include "../Cameras/FisheyeCamera.h"
+#include "../Cameras/OrthographicCamera.h"
 
 #include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #include "AOVBuffers.h"
@@ -166,6 +171,141 @@ namespace
 	private:
 		T* value_;
 	};
+
+	void SetRecordMember(
+		RISECBOR64::Value::Members& members,
+		const std::string& key,
+		const RISECBOR64::Value& value )
+	{
+		for( auto& member : members ) {
+			if( member.first == key ) {
+				member.second = value;
+				return;
+			}
+		}
+		members.push_back(std::make_pair(key,value));
+	}
+
+	bool AppendEvaluatedCameraState(
+		FrameStore* store,
+		const ICamera& camera,
+		const unsigned int frame,
+		const Scalar time,
+		const char* field )
+	{
+		if( !store ) return true;
+		const FrameStoreOutput::Metadata metadata = store->Meta();
+		if( metadata.renderFidelityStatus.empty() ) return true;
+		RISECBOR64::Value record;
+		std::string error;
+		if( !RISECBOR64::DecodeCanonical(
+			metadata.resolvedRenderConfigCoreV1,record,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: cannot decode resolved camera state: %s",
+				error.c_str());
+			return false;
+		}
+		const RISECBOR64::Value* cameraRecord = record.Find("camera");
+		const RISECBOR64::Value* priorStates = record.Find("evaluated_camera_states");
+		if( !cameraRecord || cameraRecord->GetType() != RISECBOR64::Value::Map ||
+			!priorStates || priorStates->GetType() != RISECBOR64::Value::Array ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: resolved config has no camera-state surface");
+			return false;
+		}
+
+		using RISECBOR64::Value;
+		Value::Members currentCamera = cameraRecord->GetMap();
+		const Point3 location = camera.GetLocation();
+		SetRecordMember(currentCamera,"location",Value::ArrayValue({
+			Value::Float(location.x),Value::Float(location.y),Value::Float(location.z) }));
+		const Matrix4 matrix = camera.GetMatrix();
+		const Scalar matrixValues[16] = {
+			matrix._00,matrix._01,matrix._02,matrix._03,
+			matrix._10,matrix._11,matrix._12,matrix._13,
+			matrix._20,matrix._21,matrix._22,matrix._23,
+			matrix._30,matrix._31,matrix._32,matrix._33 };
+		Value::Values encodedMatrix;
+		for( const Scalar value : matrixValues ) encodedMatrix.push_back(Value::Float(value));
+		SetRecordMember(currentCamera,"matrix",Value::ArrayValue(encodedMatrix));
+		SetRecordMember(currentCamera,"exposure_compensation_ev",
+			Value::Float(camera.GetExposureCompensationEV()));
+		SetRecordMember(currentCamera,"exposure_time",
+			Value::Float(camera.GetExposureTime()));
+		SetRecordMember(currentCamera,"pixel_rate",
+			Value::Float(camera.GetPixelRate()));
+		SetRecordMember(currentCamera,"scanning_rate",
+			Value::Float(camera.GetScanningRate()));
+		if( typeid(camera) == typeid(PinholeCamera) ) {
+			const PinholeCamera* pinhole = dynamic_cast<const PinholeCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("pinhole"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
+				{ "fstop", Value::Float(pinhole->GetFstop()) },
+				{ "iso", Value::Float(pinhole->GetIsoStored()) }
+			}));
+		} else if( typeid(camera) == typeid(ThinLensCamera) ) {
+			const ThinLensCamera* thin = dynamic_cast<const ThinLensCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("thin_lens"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
+				{ "aperture_blades", Value::Unsigned(thin->GetApertureBlades()) },
+				{ "aperture_rotation", Value::Float(thin->GetApertureRotation()) },
+				{ "focal_length_mm", Value::Float(thin->GetFocalLengthStored()) },
+				{ "focus_distance_scene_units", Value::Float(thin->GetFocusDistanceStored()) },
+				{ "fstop", Value::Float(thin->GetFstop()) },
+				{ "iso", Value::Float(thin->GetIsoStored()) },
+				{ "scene_unit_meters", Value::Float(thin->GetSceneUnitMeters()) },
+				{ "sensor_size_mm", Value::Float(thin->GetSensorSize()) },
+				{ "shift_x_mm", Value::Float(thin->GetShiftX()) },
+				{ "shift_y_mm", Value::Float(thin->GetShiftY()) },
+				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
+				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
+			}));
+		} else if( typeid(camera) == typeid(FisheyeCamera) ) {
+			const FisheyeCamera* fisheye = dynamic_cast<const FisheyeCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("fisheye"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "scale", Value::Float(fisheye->GetScaleStored()) }
+			}));
+		} else if( typeid(camera) == typeid(OrthographicCamera) ) {
+			const OrthographicCamera* orthographic =
+				dynamic_cast<const OrthographicCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("orthographic"));
+			const Vector2 scale = orthographic->GetViewportScaleStored();
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "viewport_scale", Value::ArrayValue({
+					Value::Float(scale.x),Value::Float(scale.y) }) }
+			}));
+		} else {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: animated camera is not canonically introspectable");
+			return false;
+		}
+		const Value currentCameraValue = Value::MapValue(currentCamera);
+		Value::Values states = priorStates->GetArray();
+		states.push_back(Value::MapValue({
+			{ "camera", currentCameraValue },
+			{ "field", Value::String(field ? field : "both") },
+			{ "frame_index", Value::Unsigned(frame) },
+			{ "time", Value::Float(time) }
+		}));
+		Value::Members root = record.GetMap();
+		SetRecordMember(root,"camera",currentCameraValue);
+		SetRecordMember(root,"evaluated_camera_states",Value::ArrayValue(states));
+		RISECBOR64::Bytes updated;
+		if( !RISECBOR64::Encode(Value::MapValue(root),updated,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: cannot encode resolved camera state: %s",
+				error.c_str());
+			return false;
+		}
+		store->SetFireFidelityMetadata(metadata.renderFidelityStatus,
+			metadata.renderReasonCodes,metadata.activeFireOpticsRecordIds,
+			metadata.activeFireMedia,updated,metadata.rendererBuildV1,
+			metadata.rendererBuildId);
+		return true;
+	}
 }
 
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
@@ -2145,6 +2285,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	bool cancelled = false;
 	for( unsigned int i=0; i<total_frames && !cancelled; i++ )
 	{
+		const unsigned int currentFrameIndex = specificFrame ? *specificFrame : i;
 #ifdef RISE_ENABLE_OIDN
 		const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
 #else
@@ -2166,6 +2307,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			}
 			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_upper );
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime_upper,invert_fields ? "lower" : "upper") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
 			const bool upperCompleted = RenderFrameOfAnimation(
@@ -2215,6 +2361,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			}
 			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_lower );
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime_lower,invert_fields ? "upper" : "lower") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
 			const bool lowerCompleted = RenderFrameOfAnimation(
@@ -2252,6 +2403,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			}
 			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime );
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime,"both") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
 			mProgressBase = accumulatedProgress;

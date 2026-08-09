@@ -47,6 +47,7 @@
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
+#include "../src/Library/Utilities/CPUTopology.h"
 #include "../src/Library/Utilities/GaussLegendreQuadrature.h"
 #include "../src/Library/Utilities/MediumTransport.h"
 #include "../src/Library/Utilities/PlanckRadiance.h"
@@ -2423,7 +2424,8 @@ namespace
 			const bool includeFire = true,
 			const double carbonValue = 1.0,
 			const bool includeIrradianceCache = false,
-			const bool progressiveRendering = false ) {
+			const bool progressiveRendering = false,
+			const bool keyframedCamera = false ) {
 			std::ofstream output(path);
 			output <<
 				"RISE ASCII SCENE 7\n\n"
@@ -2451,7 +2453,12 @@ namespace
 			output <<
 				"}\n\n"
 				"film\n{\nwidth 1\nheight 1\n}\n\n"
-				"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n";
+				"pinhole_camera\n{\nname fire_camera\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n\n";
+			if( keyframedCamera ) {
+				output <<
+					"timeline\n{\nelement_type camera\nelement fire_camera\nparam location\n"
+					"time 0\nvalue 0 0 -2\ntime 1\nvalue 1 0 -2\n}\n\n";
+			}
 			if( includeFire ) {
 				output <<
 				"scalar_painter\n{\nname carbon\nvalue " << carbonValue << "\n}\n\n"
@@ -2529,6 +2536,8 @@ namespace
 				resolvedConfig.Find("raster_sequence") : nullptr;
 			const RISECBOR64::Value* resolvedGlobalOptions = configDecoded ?
 				resolvedConfig.Find("global_render_options") : nullptr;
+			const RISECBOR64::Value* resolvedExecution = configDecoded ?
+				resolvedConfig.Find("execution") : nullptr;
 			bool dependenciesBound = dependencyBuilds != nullptr;
 			if( dependencyBuilds ) {
 				for( const char* name : { "iex", "ilmthread", "imath", "oidn",
@@ -2576,10 +2585,18 @@ namespace
 				resolvedRasterSequence->Find("kind")->GetText() == "morton" &&
 				resolvedRasterSequence->Find("tile_size") &&
 				resolvedRasterSequence->Find("tile_size")->GetIntegerArgument() == 32u &&
+				resolvedExecution && resolvedExecution->Find("effective_worker_task_count") &&
+				resolvedExecution->Find("effective_worker_task_count")->GetIntegerArgument() ==
+					Implementation::ComputeRenderPoolSize() &&
+				resolvedExecution->Find("force_number_of_threads") &&
+				resolvedExecution->Find("maximum_thread_count") &&
+				resolvedExecution->Find("render_thread_reserve_count") &&
+				resolvedExecution->Find("random_stream_policy") &&
+				!resolvedExecution->Find("random_stream_policy")->GetText().empty() &&
 				resolvedGlobalOptions &&
 				resolvedGlobalOptions->Find("auto_probe") &&
 				resolvedGlobalOptions->Find("vcm"),
-				"resolved config binds the effective raster sequence, camera, animation, and global controls" );
+				"resolved config binds effective worker/RNG dispatch, raster sequence, camera, animation, and global controls" );
 			FirePreflightProgress sequenceProgress;
 			job->SetProgress(&sequenceProgress);
 			const bool callbackRender = job->Rasterize();
@@ -3029,6 +3046,67 @@ namespace
 				"progressive still and animation restore sampling, film, progress, and tile locks after exceptions" );
 		} else {
 			Check(false,"progressive exception-safety fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,false,false,true);
+		RISE_CreateJobPriv(&job);
+		const bool animatedCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( animatedCameraLoaded ) {
+			Implementation::FrameStore* animatedStore =
+				job->GetRasterizer()->GetFrameStore();
+			std::string animatedDecodeError;
+			auto decodedCameraStates = [&]( RISECBOR64::Value& config ) {
+				const FrameStoreOutput::Metadata current = animatedStore->Meta();
+				if( !RISECBOR64::DecodeCanonical(current.resolvedRenderConfigCoreV1,
+					config,&animatedDecodeError) ) return static_cast<const RISECBOR64::Value*>(nullptr);
+				return config.Find("evaluated_camera_states");
+			};
+			const bool multiCameraRendered =
+				job->RasterizeAnimation(0.0,1.0,2u,false,false);
+			RISECBOR64::Value multiCameraConfig;
+			const RISECBOR64::Value* multiCameraStates = multiCameraRendered ?
+				decodedCameraStates(multiCameraConfig) : nullptr;
+			const RISECBOR64::Value* multiFirstCamera = multiCameraStates &&
+				multiCameraStates->GetArray().size() == 2u ?
+				multiCameraStates->GetArray()[0].Find("camera") : nullptr;
+			const RISECBOR64::Value* multiLastCamera = multiCameraStates &&
+				multiCameraStates->GetArray().size() == 2u ?
+				multiCameraStates->GetArray()[1].Find("camera") : nullptr;
+			Check( multiFirstCamera && multiLastCamera &&
+				multiCameraStates->GetArray()[0].Find("frame_index")->GetIntegerArgument() == 0u &&
+				multiCameraStates->GetArray()[1].Find("frame_index")->GetIntegerArgument() == 1u &&
+				multiFirstCamera->Find("location")->GetArray()[0].GetFloat() == 0.0 &&
+				multiLastCamera->Find("location")->GetArray()[0].GetFloat() == 1.0,
+				"multi-frame fire provenance records each evaluated keyframed camera state" );
+
+			const bool selectedCameraRendered = job->RasterizeAnimationUsingOptions(1u);
+			RISECBOR64::Value selectedCameraConfig;
+			const RISECBOR64::Value* selectedCameraStates = selectedCameraRendered ?
+				decodedCameraStates(selectedCameraConfig) : nullptr;
+			Check( selectedCameraStates && selectedCameraStates->GetArray().size() == 1u &&
+				selectedCameraStates->GetArray()[0].Find("frame_index")->GetIntegerArgument() == 1u &&
+				selectedCameraStates->GetArray()[0].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() > 0.0,
+				"selected-frame fire provenance records the selected keyframed camera state" );
+
+			const bool fieldCameraRendered =
+				job->RasterizeAnimation(0.0,1.0,2u,true,false);
+			RISECBOR64::Value fieldCameraConfig;
+			const RISECBOR64::Value* fieldCameraStates = fieldCameraRendered ?
+				decodedCameraStates(fieldCameraConfig) : nullptr;
+			Check( fieldCameraStates && fieldCameraStates->GetArray().size() == 4u &&
+				fieldCameraStates->GetArray()[0].Find("field")->GetText() == "upper" &&
+				fieldCameraStates->GetArray()[1].Find("field")->GetText() == "lower" &&
+				fieldCameraStates->GetArray()[0].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() == 0.0 &&
+				fieldCameraStates->GetArray()[1].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() == 0.5,
+				"interlaced fire provenance records both effective keyframed camera fields" );
+		} else {
+			Check(false,"animated-camera provenance fixture loads");
 		}
 		safe_release(job);
 

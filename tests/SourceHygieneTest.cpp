@@ -569,6 +569,11 @@ int main()
 		Check( movieSource.find("PublishUnprovenancedFileTransaction") !=
 				std::string::npos,
 			"nonfire movie publication transactionally retires stale fire sidecars" );
+		Check( movieSource.find("evaluated_camera_states") != std::string::npos &&
+			movieSource.find("lhsStaticConfig != rhsStaticConfig") !=
+				std::string::npos &&
+			movieSource.find("_fireMetadata = metadata") != std::string::npos,
+			"movie provenance permits only evaluated-camera config growth and finalizes the complete state table" );
 	}
 
 	// FIRE_OUTPUT_PROVENANCE_PIN_V1 P-3 parameter-surface ratchet.  The
@@ -801,8 +806,7 @@ int main()
 				it != end; ++it ) globalOptionNames.insert((*it)[1].str());
 		}
 		const std::set<std::string> nonRenderGlobalOptions = {
-			"force_all_threads_low_priority", "force_number_of_threads",
-			"maximum_thread_count", "render_thread_reserve_count",
+			"force_all_threads_low_priority",
 			"rendered_output_folder", "rendered_output_in_rise_media_folder",
 			"thread_apply_qos"
 		};
