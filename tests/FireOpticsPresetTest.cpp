@@ -1033,6 +1033,43 @@ int main()
 							"table uncertainty magnitude is not a recorded numeric span"),
 							"each malformed table-range magnitude is rejected independently" );
 					}
+					const RISECBOR64::Value malformedMeasured = ReplaceMember(
+						ReplaceMember(*rangeUncertainty,"kind",
+							RISECBOR64::Value::String("measured_1sigma")),"magnitude",
+						RISECBOR64::Value::ArrayValue({RISECBOR64::Value()}));
+					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+						*sourceEffectiveMetadata,"uncertainty",malformedMeasured)),
+						"uncertainty magnitude is malformed"),
+						"measured table uncertainty rejects an array magnitude" );
+					const RISECBOR64::Value malformedExpanded = ReplaceMember(
+						ReplaceMember(*rangeUncertainty,"kind",
+							RISECBOR64::Value::String("expanded_95")),"magnitude",
+						RISECBOR64::Value::ArrayValue({RISECBOR64::Value::Float(0.1),
+							RISECBOR64::Value::Float(0.2)}));
+					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+						*sourceEffectiveMetadata,"uncertainty",malformedExpanded)),
+						"uncertainty magnitude is malformed"),
+						"expanded table uncertainty rejects a range magnitude" );
+					RISECBOR64::Value malformedAssumption = ReplaceMember(
+						ReplaceMember(*rangeUncertainty,"kind",
+							RISECBOR64::Value::String("assumption_bound")),"magnitude",
+						RISECBOR64::Value::ArrayValue({RISECBOR64::Value::Float(0.1),
+							RISECBOR64::Value::Float(0.2),RISECBOR64::Value::Float(0.3)}));
+					malformedAssumption = AddMember(malformedAssumption,"basis",
+						RISECBOR64::Value::String("mutation fixture"));
+					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+						*sourceEffectiveMetadata,"uncertainty",malformedAssumption)),
+						"uncertainty magnitude is malformed"),
+						"assumption-bound table uncertainty rejects a malformed range" );
+					const RISECBOR64::Value malformedExact = ReplaceMember(
+						ReplaceMember(*rangeUncertainty,"kind",
+							RISECBOR64::Value::String("design_pinned_exact")),"magnitude",
+						RISECBOR64::Value::ArrayValue({RISECBOR64::Value::Float(0.0),
+							RISECBOR64::Value::Float(0.0)}));
+					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(
+						*sourceEffectiveMetadata,"uncertainty",malformedExact)),
+						"exact uncertainty magnitude is not zero"),
+						"exact table uncertainty rejects an array magnitude" );
 					const RISECBOR64::Value changedComponents = ReplaceMember(
 						*rangeUncertainty,"components",RISECBOR64::Value::String(""));
 					Check( RejectsWith(coordinatedEffectiveMetadata(ReplaceMember(

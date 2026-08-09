@@ -320,8 +320,10 @@ namespace RISE
 			} else if( kind == "range" ||
 				kind == "computed_range_from_input_sensitivity" ) {
 				if( !orderedPair(*magnitude) ) return false;
-			} else if( magnitude->GetType() != RISECBOR64::Value::Array &&
-				!nonnegativeNumber(*magnitude) ) {
+			} else if( kind == "assumption_bound" &&
+				magnitude->GetType() == RISECBOR64::Value::Array ) {
+				if( !orderedPair(*magnitude) ) return false;
+			} else if( !nonnegativeNumber(*magnitude) ) {
 				return false;
 			}
 			return true;
