@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <initializer_list>
+#include <map>
 #include <mutex>
 #include <set>
 #include <shared_mutex>
@@ -71,6 +73,587 @@ namespace
 			version->GetType() == RISECBOR64::Value::UnsignedInteger &&
 			version->GetIntegerArgument() == 1u;
 	}
+
+	bool ExactMapKeys(
+		const RISECBOR64::Value& value,
+		const std::initializer_list<const char*> keys,
+		const char* context,
+		std::string& error )
+	{
+		if( value.GetType() != RISECBOR64::Value::Map ) {
+			error = std::string(context)+" is not a map";
+			return false;
+		}
+		std::set<std::string> expected;
+		for( const char* key : keys ) expected.insert(key);
+		if( value.GetMap().size() != expected.size() ) {
+			error = std::string(context)+" has missing or unknown schema-v1 fields";
+			return false;
+		}
+		for( const auto& member : value.GetMap() ) {
+			if( expected.erase(member.first) != 1u ) {
+				error = std::string(context)+" has missing or unknown schema-v1 fields";
+				return false;
+			}
+		}
+		return expected.empty();
+	}
+
+	bool FieldType(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value::Type type,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || value->GetType() != type ) {
+			error = std::string(context)+" field '"+key+"' has the wrong type";
+			return false;
+		}
+		return true;
+	}
+
+	bool IntegerField(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || (value->GetType() != RISECBOR64::Value::UnsignedInteger &&
+			value->GetType() != RISECBOR64::Value::NegativeInteger) ) {
+			error = std::string(context)+" field '"+key+"' is not an integer";
+			return false;
+		}
+		return true;
+	}
+
+	bool ArrayElementsAre(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value::Type type,
+		const std::size_t exactSize,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || value->GetType() != RISECBOR64::Value::Array ||
+			(exactSize != static_cast<std::size_t>(-1) &&
+			 value->GetArray().size() != exactSize) ) {
+			error = std::string(context)+" field '"+key+"' has the wrong array shape";
+			return false;
+		}
+		for( const RISECBOR64::Value& element : value->GetArray() ) {
+			if( element.GetType() != type ) {
+				error = std::string(context)+" field '"+key+"' has the wrong element type";
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ValidateCameraSchema(
+		const RISECBOR64::Value& camera,
+		std::string& error )
+	{
+		if( !ExactMapKeys(camera,{ "exposure_compensation_ev", "exposure_time",
+			"kind", "location", "matrix", "pixel_rate", "projection",
+			"scanning_rate" },"resolved camera",error) ||
+			!FieldType(camera,"exposure_compensation_ev",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"exposure_time",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"kind",RISECBOR64::Value::Text,"resolved camera",error) ||
+			!FieldType(camera,"pixel_rate",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"scanning_rate",RISECBOR64::Value::Float64,
+				"resolved camera",error) ) return false;
+		const RISECBOR64::Value* kind = camera.Find("kind");
+		const std::size_t vectorSize = kind->GetText() == "none" ? 0u : 3u;
+		const std::size_t matrixSize = kind->GetText() == "none" ? 0u : 16u;
+		if( !ArrayElementsAre(camera,"location",RISECBOR64::Value::Float64,
+			vectorSize,"resolved camera",error) ||
+			!ArrayElementsAre(camera,"matrix",RISECBOR64::Value::Float64,
+			matrixSize,"resolved camera",error) ) return false;
+		const RISECBOR64::Value* projection = camera.Find("projection");
+		if( !projection ) return false;
+		if( kind->GetText() == "none" ) {
+			return ExactMapKeys(*projection,{},"resolved camera projection",error);
+		}
+		if( kind->GetText() == "pinhole" ) {
+			return ExactMapKeys(*projection,{"fov_radians","fstop","iso"},
+				"resolved pinhole projection",error) &&
+				FieldType(*projection,"fov_radians",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error) &&
+				FieldType(*projection,"fstop",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error) &&
+				FieldType(*projection,"iso",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error);
+		}
+		if( kind->GetText() == "fisheye" ) {
+			return ExactMapKeys(*projection,{"scale"},"resolved fisheye projection",error) &&
+				FieldType(*projection,"scale",RISECBOR64::Value::Float64,
+					"resolved fisheye projection",error);
+		}
+		if( kind->GetText() == "orthographic" ) {
+			return ExactMapKeys(*projection,{"viewport_scale"},
+				"resolved orthographic projection",error) &&
+				ArrayElementsAre(*projection,"viewport_scale",RISECBOR64::Value::Float64,
+					2u,"resolved orthographic projection",error);
+		}
+		if( kind->GetText() == "thin_lens" ) {
+			if( !ExactMapKeys(*projection,{ "anamorphic_squeeze", "aperture_blades",
+				"aperture_rotation", "focal_length_mm", "focus_distance_scene_units",
+				"fstop", "iso", "scene_unit_meters", "sensor_size_mm", "shift_x_mm",
+				"shift_y_mm", "tilt_x_radians", "tilt_y_radians" },
+				"resolved thin-lens projection",error) ) return false;
+			for( const char* field : { "anamorphic_squeeze", "aperture_rotation",
+				"focal_length_mm", "focus_distance_scene_units", "fstop", "iso",
+				"scene_unit_meters", "sensor_size_mm", "shift_x_mm", "shift_y_mm",
+				"tilt_x_radians", "tilt_y_radians" } ) {
+				if( !FieldType(*projection,field,RISECBOR64::Value::Float64,
+					"resolved thin-lens projection",error) ) return false;
+			}
+			return FieldType(*projection,"aperture_blades",
+				RISECBOR64::Value::UnsignedInteger,"resolved thin-lens projection",error);
+		}
+		error = "resolved camera kind is outside schema-v1";
+		return false;
+	}
+
+	bool ValidateResolvedConfigSchemaV1(
+		const RISECBOR64::Value& record,
+		std::string& error )
+	{
+		if( !ExactMapKeys(record,{ "animation", "aov", "camera", "clamp", "depth",
+			"evaluated_camera_states", "execution", "external_runtime", "film",
+			"filter", "global_render_options", "integrator", "light_sampling",
+			"raster_sequence", "record_kind", "render_region", "sampler",
+			"schema_version", "shader", "stability", "transport" },
+			"resolved render configuration",error) ||
+			!HasRecordHeader(record,"resolved_render_configuration_v1") ) return false;
+		const RISECBOR64::Value* animation = record.Find("animation");
+		const RISECBOR64::Value* frameSelection = animation ?
+			animation->Find("frame_selection") : nullptr;
+		if( !animation || !ExactMapKeys(*animation,{ "do_fields", "frame_selection",
+			"invert_fields", "num_frames", "time_end", "time_start" },
+			"resolved animation",error) || !frameSelection ||
+			!ExactMapKeys(*frameSelection,{"active","index"},
+				"resolved frame selection",error) ||
+			!FieldType(*animation,"do_fields",RISECBOR64::Value::Boolean,
+				"resolved animation",error) ||
+			!FieldType(*animation,"invert_fields",RISECBOR64::Value::Boolean,
+				"resolved animation",error) ||
+			!FieldType(*animation,"num_frames",RISECBOR64::Value::UnsignedInteger,
+				"resolved animation",error) ||
+			!FieldType(*animation,"time_end",RISECBOR64::Value::Float64,
+				"resolved animation",error) ||
+			!FieldType(*animation,"time_start",RISECBOR64::Value::Float64,
+				"resolved animation",error) ||
+			!FieldType(*frameSelection,"active",RISECBOR64::Value::Boolean,
+				"resolved frame selection",error) ||
+			!FieldType(*frameSelection,"index",RISECBOR64::Value::UnsignedInteger,
+				"resolved frame selection",error) ) return false;
+
+		const RISECBOR64::Value* aov = record.Find("aov");
+		if( !aov || !ExactMapKeys(*aov,{"channels"},"resolved AOV",error) ||
+			!ArrayElementsAre(*aov,"channels",RISECBOR64::Value::Text,
+				static_cast<std::size_t>(-1),"resolved AOV",error) ||
+			!ValidateCameraSchema(*record.Find("camera"),error) ) return false;
+
+		const auto exactFloatMap = [&error]( const RISECBOR64::Value* value,
+			const std::initializer_list<const char*> keys, const char* context ) {
+			if( !value || !ExactMapKeys(*value,keys,context,error) ) return false;
+			for( const char* key : keys ) {
+				if( !FieldType(*value,key,RISECBOR64::Value::Float64,context,error) ) return false;
+			}
+			return true;
+		};
+		if( !exactFloatMap(record.Find("clamp"),{"direct","indirect"},"resolved clamp") )
+			return false;
+		const RISECBOR64::Value* depth = record.Find("depth");
+		if( !depth || !ExactMapKeys(*depth,{ "max_diffuse_bounce", "max_eye_depth",
+			"max_glossy_bounce", "max_light_depth", "max_recursion",
+			"max_translucent_bounce", "max_transmission_bounce", "max_volume_bounce" },
+			"resolved depth",error) ) return false;
+		for( const auto& member : depth->GetMap() ) {
+			if( member.second.GetType() != RISECBOR64::Value::UnsignedInteger ) {
+				error = "resolved depth field has the wrong type";
+				return false;
+			}
+		}
+
+		const RISECBOR64::Value* cameraStates = record.Find("evaluated_camera_states");
+		if( !cameraStates || cameraStates->GetType() != RISECBOR64::Value::Array ) {
+			error = "evaluated camera states are not an array";
+			return false;
+		}
+		for( const RISECBOR64::Value& state : cameraStates->GetArray() ) {
+			if( !ExactMapKeys(state,{"camera","field","frame_index","time"},
+				"evaluated camera state",error) ||
+				!ValidateCameraSchema(*state.Find("camera"),error) ||
+				!FieldType(state,"field",RISECBOR64::Value::Text,
+					"evaluated camera state",error) ||
+				!FieldType(state,"frame_index",RISECBOR64::Value::UnsignedInteger,
+					"evaluated camera state",error) ||
+				!FieldType(state,"time",RISECBOR64::Value::Float64,
+					"evaluated camera state",error) ) return false;
+		}
+
+		const RISECBOR64::Value* execution = record.Find("execution");
+		if( !execution || !ExactMapKeys(*execution,{ "effective_worker_task_count",
+			"force_number_of_threads", "maximum_thread_count", "random_stream_policy",
+			"render_thread_reserve_count" },"resolved execution",error) ||
+			!FieldType(*execution,"effective_worker_task_count",
+				RISECBOR64::Value::UnsignedInteger,"resolved execution",error) ||
+			!IntegerField(*execution,"force_number_of_threads","resolved execution",error) ||
+			!IntegerField(*execution,"maximum_thread_count","resolved execution",error) ||
+			!IntegerField(*execution,"render_thread_reserve_count","resolved execution",error) ||
+			!FieldType(*execution,"random_stream_policy",RISECBOR64::Value::Text,
+				"resolved execution",error) ) return false;
+
+		const RISECBOR64::Value* external = record.Find("external_runtime");
+		if( !external ) return false;
+		if( external->GetType() != RISECBOR64::Value::Null ) {
+			const RISECBOR64::Value* region = external->Find("region");
+			if( !ExactMapKeys(*external,{ "camera_override", "clay_override",
+				"idle_max_passes", "idle_mode", "indirect_only", "live_samples_per_pass",
+				"max_path_depth", "preview_scale", "progressive_on_idle", "region",
+				"tile_order", "variant_pipeline", "view_mode",
+				"view_mode_caster_installed", "xray" },"resolved external runtime",error) ||
+				!region || !ExactMapKeys(*region,{"active","bottom","left","right","top"},
+					"resolved external region",error) ) return false;
+			for( const char* key : { "camera_override", "clay_override", "idle_mode",
+				"indirect_only", "progressive_on_idle", "variant_pipeline",
+				"view_mode_caster_installed", "xray" } ) {
+				if( !FieldType(*external,key,RISECBOR64::Value::Boolean,
+					"resolved external runtime",error) ) return false;
+			}
+			for( const char* key : { "idle_max_passes", "live_samples_per_pass",
+				"max_path_depth", "preview_scale", "tile_order" } ) {
+				if( !FieldType(*external,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved external runtime",error) ) return false;
+			}
+			if( !FieldType(*external,"view_mode",RISECBOR64::Value::Text,
+				"resolved external runtime",error) ||
+				!FieldType(*region,"active",RISECBOR64::Value::Boolean,
+					"resolved external region",error) ) return false;
+			for( const char* key : {"bottom","left","right","top"} ) {
+				if( !FieldType(*region,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved external region",error) ) return false;
+			}
+		}
+
+		const RISECBOR64::Value* film = record.Find("film");
+		const RISECBOR64::Value* filter = record.Find("filter");
+		if( !film || !filter ||
+			!ExactMapKeys(*film,{"height","pixel_aspect_ratio","width"},
+			"resolved film",error) ||
+			!FieldType(*film,"height",RISECBOR64::Value::UnsignedInteger,
+				"resolved film",error) ||
+			!FieldType(*film,"width",RISECBOR64::Value::UnsignedInteger,
+				"resolved film",error) ||
+			!FieldType(*film,"pixel_aspect_ratio",RISECBOR64::Value::Float64,
+				"resolved film",error) ||
+			!ExactMapKeys(*filter,{"height","name","param_a","param_b","width"},
+				"resolved filter",error) ||
+			!FieldType(*filter,"name",RISECBOR64::Value::Text,
+				"resolved filter",error) ) return false;
+		for( const char* key : {"height","param_a","param_b","width"} )
+			if( !FieldType(*filter,key,RISECBOR64::Value::Float64,
+				"resolved filter",error) ) return false;
+
+		const RISECBOR64::Value* global = record.Find("global_render_options");
+		const RISECBOR64::Value* autoProbe = global ? global->Find("auto_probe") : nullptr;
+		const RISECBOR64::Value* vcm = global ? global->Find("vcm") : nullptr;
+		if( !global || !ExactMapKeys(*global,{"auto_probe","vcm"},
+			"resolved global options",error) || !autoProbe || !vcm ||
+			!ExactMapKeys(*autoProbe,{ "activation_spp", "reach_winsor_percentile",
+				"scale", "spp", "tau_bdpt", "tau_caustic", "tau_reach",
+				"variance_renders" },"resolved auto probe",error) ||
+			!ExactMapKeys(*vcm,{ "progressive_radius_enabled", "throughput_clamp_multiplier",
+				"throughput_clamp_percentile" },"resolved VCM options",error) ) return false;
+		for( const char* key : {"activation_spp","scale","spp","variance_renders"} ) {
+			if( !FieldType(*autoProbe,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved auto probe",error) ) return false;
+		}
+		for( const char* key : { "reach_winsor_percentile", "tau_bdpt", "tau_caustic",
+			"tau_reach" } ) if( !FieldType(*autoProbe,key,RISECBOR64::Value::Float64,
+				"resolved auto probe",error) ) return false;
+		if( !FieldType(*vcm,"progressive_radius_enabled",RISECBOR64::Value::Boolean,
+			"resolved VCM options",error) ||
+			!FieldType(*vcm,"throughput_clamp_multiplier",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ||
+			!FieldType(*vcm,"throughput_clamp_percentile",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ) return false;
+
+		const RISECBOR64::Value* integrator = record.Find("integrator");
+		const RISECBOR64::Value* guiding = integrator ? integrator->Find("path_guiding") : nullptr;
+		const RISECBOR64::Value* sms = integrator ? integrator->Find("sms") : nullptr;
+		if( !integrator || !ExactMapKeys(*integrator,{ "auto_choice", "auto_probe_enabled",
+			"effective_kind", "enable_vertex_connection", "enable_vertex_merging",
+			"integrate_rgb", "kind", "merge_radius", "path_guiding", "show_luminaires",
+			"sms" },"resolved integrator",error) || !guiding || !sms ||
+			!ExactMapKeys(*guiding,{ "alpha", "combine_training_iterations",
+				"complete_path_guiding", "complete_path_strategy_samples",
+				"complete_path_strategy_selection", "enabled", "learned_alpha",
+				"max_guiding_depth", "max_light_guiding_depth", "online", "ris_candidates",
+				"sampling_type", "training_iterations", "training_spp", "warmup_iterations" },
+				"resolved path guiding",error) ||
+			!ExactMapKeys(*sms,{ "bernoulli_trials", "biased", "enabled", "max_chain_depth",
+				"max_iterations", "max_photon_seeds_per_shading_point", "multi_trials",
+				"photon_count", "seeding_mode", "target_bounces", "threshold", "two_stage",
+				"use_levenberg_marquardt" },"resolved SMS",error) ) return false;
+		for( const char* key : {"auto_choice"} ) if( !FieldType(*integrator,key,
+			RISECBOR64::Value::UnsignedInteger,"resolved integrator",error) ) return false;
+		for( const char* key : { "auto_probe_enabled", "enable_vertex_connection",
+			"enable_vertex_merging", "integrate_rgb", "show_luminaires" } )
+			if( !FieldType(*integrator,key,RISECBOR64::Value::Boolean,
+				"resolved integrator",error) ) return false;
+		for( const char* key : {"effective_kind","kind"} ) if( !FieldType(*integrator,key,
+			RISECBOR64::Value::Text,"resolved integrator",error) ) return false;
+		if( !FieldType(*integrator,"merge_radius",RISECBOR64::Value::Float64,
+			"resolved integrator",error) ) return false;
+		for( const auto& member : guiding->GetMap() ) {
+			const std::set<std::string> floatFields = {"alpha"};
+			const std::set<std::string> boolFields = { "combine_training_iterations",
+				"complete_path_guiding", "complete_path_strategy_selection", "enabled",
+				"learned_alpha", "online" };
+			const RISECBOR64::Value::Type expected = floatFields.count(member.first) ?
+				RISECBOR64::Value::Float64 : boolFields.count(member.first) ?
+				RISECBOR64::Value::Boolean : RISECBOR64::Value::UnsignedInteger;
+			if( member.second.GetType() != expected ) {
+				error = "resolved path-guiding field has the wrong type";
+				return false;
+			}
+		}
+		for( const auto& member : sms->GetMap() ) {
+			const std::set<std::string> boolFields = {
+				"biased","enabled","two_stage","use_levenberg_marquardt"};
+			const RISECBOR64::Value::Type expected = member.first == "threshold" ?
+				RISECBOR64::Value::Float64 : boolFields.count(member.first) ?
+				RISECBOR64::Value::Boolean : RISECBOR64::Value::UnsignedInteger;
+			if( member.second.GetType() != expected ) {
+				error = "resolved SMS field has the wrong type";
+				return false;
+			}
+		}
+
+		if( !exactFloatMap(record.Find("light_sampling"),{"rr_threshold"},
+			"resolved light sampling") ) return false;
+		const RISECBOR64::Value* sequence = record.Find("raster_sequence");
+		const RISECBOR64::Value* sequenceKind = sequence ? sequence->Find("kind") : nullptr;
+		if( !sequence || !sequenceKind || sequenceKind->GetType() != RISECBOR64::Value::Text ) {
+			error = "resolved raster sequence kind is unavailable";
+			return false;
+		}
+		const std::string& sequenceName = sequenceKind->GetText();
+		if( sequenceName == "morton" ) {
+			if( !ExactMapKeys(*sequence,{"kind","tile_size"},"resolved raster sequence",error) ||
+				!FieldType(*sequence,"tile_size",RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+		} else if( sequenceName == "block" ) {
+			if( !ExactMapKeys(*sequence,{ "height", "kind", "order", "shuffle_seed",
+				"shuffle_seed_active", "width" },"resolved raster sequence",error) ) return false;
+			for( const char* key : {"height","order","shuffle_seed","width"} )
+				if( !FieldType(*sequence,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+			if( !FieldType(*sequence,"shuffle_seed_active",RISECBOR64::Value::Boolean,
+				"resolved raster sequence",error) ) return false;
+		} else if( sequenceName == "hilbert" ) {
+			if( !ExactMapKeys(*sequence,{"depth","kind"},"resolved raster sequence",error) ||
+				!FieldType(*sequence,"depth",RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+		} else if( sequenceName == "scanline" || sequenceName == "rasterizer_default" ) {
+			if( !ExactMapKeys(*sequence,{"kind"},"resolved raster sequence",error) ) return false;
+		} else {
+			error = "resolved raster sequence kind is outside schema-v1";
+			return false;
+		}
+
+		const RISECBOR64::Value* region = record.Find("render_region");
+		if( !region || !ExactMapKeys(*region,{"active","bottom","left","right","top"},
+			"resolved render region",error) ||
+			!FieldType(*region,"active",RISECBOR64::Value::Boolean,
+				"resolved render region",error) ) return false;
+		for( const char* key : {"bottom","left","right","top"} )
+			if( !FieldType(*region,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved render region",error) ) return false;
+
+		const RISECBOR64::Value* sampler = record.Find("sampler");
+		const RISECBOR64::Value* adaptive = sampler ? sampler->Find("adaptive") : nullptr;
+		const RISECBOR64::Value* progressive = sampler ? sampler->Find("progressive") : nullptr;
+		const RISECBOR64::Value* spectral = sampler ? sampler->Find("spectral") : nullptr;
+		if( !sampler || !ExactMapKeys(*sampler,{ "adaptive", "blue_noise",
+			"large_step_probability", "luminary_sampler", "luminary_sampler_param",
+			"mlt_bootstrap_samples", "mlt_chains", "mlt_mutations_per_pixel",
+			"num_luminary_samples", "pixel_sampler", "pixel_sampler_param", "pixel_samples",
+			"progressive", "spectral" },"resolved sampler",error) ||
+			!adaptive || !progressive || !spectral ||
+			!ExactMapKeys(*adaptive,{"max_samples","show_map","threshold"},
+				"resolved adaptive sampler",error) ||
+			!ExactMapKeys(*progressive,{"enabled","samples_per_pass"},
+				"resolved progressive sampler",error) ||
+			!ExactMapKeys(*spectral,{ "hwss", "nm_begin", "nm_end", "num_wavelengths",
+				"spectral_samples" },"resolved spectral sampler",error) ) return false;
+		for( const char* key : {"blue_noise"} ) if( !FieldType(*sampler,key,
+			RISECBOR64::Value::Boolean,"resolved sampler",error) ) return false;
+		for( const char* key : {"large_step_probability","luminary_sampler_param",
+			"pixel_sampler_param"} ) if( !FieldType(*sampler,key,RISECBOR64::Value::Float64,
+				"resolved sampler",error) ) return false;
+		for( const char* key : {"luminary_sampler","pixel_sampler"} )
+			if( !FieldType(*sampler,key,RISECBOR64::Value::Text,
+				"resolved sampler",error) ) return false;
+		for( const char* key : { "mlt_bootstrap_samples", "mlt_chains",
+			"mlt_mutations_per_pixel", "num_luminary_samples", "pixel_samples" } )
+			if( !FieldType(*sampler,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved sampler",error) ) return false;
+		if( !FieldType(*adaptive,"max_samples",RISECBOR64::Value::UnsignedInteger,
+			"resolved adaptive sampler",error) ||
+			!FieldType(*adaptive,"show_map",RISECBOR64::Value::Boolean,
+				"resolved adaptive sampler",error) ||
+			!FieldType(*adaptive,"threshold",RISECBOR64::Value::Float64,
+				"resolved adaptive sampler",error) ||
+			!FieldType(*progressive,"enabled",RISECBOR64::Value::Boolean,
+				"resolved progressive sampler",error) ||
+			!FieldType(*progressive,"samples_per_pass",RISECBOR64::Value::UnsignedInteger,
+				"resolved progressive sampler",error) ||
+			!FieldType(*spectral,"hwss",RISECBOR64::Value::Boolean,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"nm_begin",RISECBOR64::Value::Float64,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"nm_end",RISECBOR64::Value::Float64,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"num_wavelengths",RISECBOR64::Value::UnsignedInteger,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"spectral_samples",RISECBOR64::Value::UnsignedInteger,
+				"resolved spectral sampler",error) ) return false;
+
+		if( !FieldType(record,"shader",RISECBOR64::Value::Text,
+			"resolved render configuration",error) ) return false;
+		const RISECBOR64::Value* stability = record.Find("stability");
+		if( !stability || !ExactMapKeys(*stability,{ "filter_glossy", "optimal_mis",
+			"optimal_mis_tile_size", "optimal_mis_training_iterations", "rr_min_depth",
+			"rr_threshold", "transparent_shadows", "use_light_bvh" },
+			"resolved stability",error) ||
+			!FieldType(*stability,"filter_glossy",RISECBOR64::Value::Float64,
+				"resolved stability",error) ||
+			!FieldType(*stability,"rr_threshold",RISECBOR64::Value::Float64,
+				"resolved stability",error) ) return false;
+		for( const char* key : {"optimal_mis","transparent_shadows","use_light_bvh"} )
+			if( !FieldType(*stability,key,RISECBOR64::Value::Boolean,
+				"resolved stability",error) ) return false;
+		for( const char* key : { "optimal_mis_tile_size",
+			"optimal_mis_training_iterations", "rr_min_depth" } )
+			if( !FieldType(*stability,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved stability",error) ) return false;
+
+		const RISECBOR64::Value* transport = record.Find("transport");
+		const RISECBOR64::Value* radiance = transport ? transport->Find("radiance_map") : nullptr;
+		if( !transport || !ExactMapKeys(*transport,{ "oidn", "oidn_device",
+			"oidn_prefilter", "oidn_quality", "radiance_map" },"resolved transport",error) ||
+			!radiance || !ExactMapKeys(*radiance,{"background","name","orientation","scale"},
+				"resolved radiance map",error) ||
+			!FieldType(*transport,"oidn",RISECBOR64::Value::Boolean,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_device",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_prefilter",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_quality",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*radiance,"background",RISECBOR64::Value::Boolean,
+				"resolved radiance map",error) ||
+			!FieldType(*radiance,"name",RISECBOR64::Value::Text,
+				"resolved radiance map",error) ||
+			!ArrayElementsAre(*radiance,"orientation",RISECBOR64::Value::Float64,3u,
+				"resolved radiance map",error) ||
+			!FieldType(*radiance,"scale",RISECBOR64::Value::Float64,
+				"resolved radiance map",error) ) return false;
+		return true;
+	}
+
+	bool ValidateRendererBuildSchemaV1(
+		const RISECBOR64::Value& record,
+		std::string& error )
+	{
+		if( !ExactMapKeys(record,{ "compiler", "dependency_builds", "dirty_state",
+			"fp_settings", "gate_harness_version", "record_kind", "renderer_binary",
+			"renderer_version", "schema_version", "solver_schema_versions",
+			"source_revision", "target" },"renderer build identity",error) ||
+			!HasRecordHeader(record,"renderer_build_v1") ) return false;
+		const RISECBOR64::Value* compiler = record.Find("compiler");
+		const RISECBOR64::Value* dirty = record.Find("dirty_state");
+		const RISECBOR64::Value* binary = record.Find("renderer_binary");
+		const RISECBOR64::Value* fp = record.Find("fp_settings");
+		const RISECBOR64::Value* target = record.Find("target");
+		if( !compiler || !dirty || !binary || !fp || !target ||
+			!ExactMapKeys(*compiler,{"identity","language_standard","lto_mode",
+				"optimization_mode"},"renderer compiler",error) ||
+			!ExactMapKeys(*dirty,{"diff_sha256","state"},"renderer dirty state",error) ||
+			!ExactMapKeys(*binary,{"hash_basis","kind","path","sha256"},
+				"renderer binary",error) ||
+			!ExactMapKeys(*fp,{"contraction_mode","fast_math","finite_math_only"},
+				"renderer FP settings",error) ||
+			!ExactMapKeys(*target,{"architecture","platform"},"renderer target",error) )
+			return false;
+		for( const char* key : {"identity","language_standard","lto_mode","optimization_mode"} )
+			if( !FieldType(*compiler,key,RISECBOR64::Value::Text,"renderer compiler",error) )
+				return false;
+		for( const char* key : {"diff_sha256","state"} ) if( !FieldType(*dirty,key,
+			RISECBOR64::Value::Text,"renderer dirty state",error) ) return false;
+		for( const char* key : {"hash_basis","kind","path","sha256"} )
+			if( !FieldType(*binary,key,RISECBOR64::Value::Text,"renderer binary",error) )
+				return false;
+		if( !IsSHA256Hex(binary->Find("sha256")->GetText()) ||
+			!FieldType(*fp,"contraction_mode",RISECBOR64::Value::Text,
+				"renderer FP settings",error) ||
+			!FieldType(*fp,"fast_math",RISECBOR64::Value::Boolean,
+				"renderer FP settings",error) ||
+			!FieldType(*fp,"finite_math_only",RISECBOR64::Value::Boolean,
+				"renderer FP settings",error) ) return false;
+		for( const char* key : {"architecture","platform"} ) if( !FieldType(*target,key,
+			RISECBOR64::Value::Text,"renderer target",error) ) return false;
+		for( const char* key : { "gate_harness_version", "renderer_version",
+			"source_revision" } ) if( !FieldType(record,key,RISECBOR64::Value::Text,
+				"renderer build identity",error) ) return false;
+		if( !ArrayElementsAre(record,"solver_schema_versions",RISECBOR64::Value::Text,
+			static_cast<std::size_t>(-1),"renderer build identity",error) ) return false;
+		const RISECBOR64::Value* dependencies = record.Find("dependency_builds");
+		if( !dependencies || dependencies->GetType() != RISECBOR64::Value::Map ||
+			dependencies->GetMap().empty() ) {
+			error = "renderer dependency builds are unavailable";
+			return false;
+		}
+		for( const auto& dependency : dependencies->GetMap() ) {
+			if( !ExactMapKeys(dependency.second,{"availability","linkage",
+				"loaded_binaries","version"},"renderer dependency",error) ||
+				!FieldType(dependency.second,"availability",RISECBOR64::Value::Text,
+					"renderer dependency",error) ||
+				!FieldType(dependency.second,"linkage",RISECBOR64::Value::Text,
+					"renderer dependency",error) ||
+				!FieldType(dependency.second,"version",RISECBOR64::Value::Text,
+					"renderer dependency",error) ) return false;
+			const RISECBOR64::Value* binaries = dependency.second.Find("loaded_binaries");
+			if( !binaries || binaries->GetType() != RISECBOR64::Value::Array ) {
+				error = "renderer dependency binaries are not an array";
+				return false;
+			}
+			for( const RISECBOR64::Value& loaded : binaries->GetArray() ) {
+				if( !ExactMapKeys(loaded,{"hash_basis","path","sha256"},
+					"renderer dependency binary",error) ) return false;
+				for( const char* key : {"hash_basis","path","sha256"} )
+					if( !FieldType(loaded,key,RISECBOR64::Value::Text,
+						"renderer dependency binary",error) ) return false;
+				if( !IsSHA256Hex(loaded.Find("sha256")->GetText()) ) {
+					error = "renderer dependency binary SHA-256 is malformed";
+					return false;
+				}
+			}
+		}
+		return true;
+	}
 }
 
 bool RISE::FrameStoreOutput::IsAllowedFireRenderReasonCode(
@@ -118,6 +701,11 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			return false;
 		}
 	}
+	if( std::find(metadata.renderReasonCodes.begin(),metadata.renderReasonCodes.end(),
+		"producer_unqualified") == metadata.renderReasonCodes.end() ) {
+		error = "static fire media require the producer_unqualified render reason";
+		return false;
+	}
 	if( metadata.activeFireOpticsRecordIds.empty() ||
 		!IsStrictlySorted(metadata.activeFireOpticsRecordIds) ) {
 		error = "active fire optical record IDs are empty, duplicated, or unsorted";
@@ -134,6 +722,7 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 		return false;
 	}
 	std::set<std::string> mediumRecordIds;
+	std::map<std::string,std::string> authoredDigestOwners;
 	std::string previousBinding;
 	for( const ActiveFireMedium& medium : metadata.activeFireMedia ) {
 		if( medium.mediaKind != "static_authored" || medium.managerName.empty() ||
@@ -151,6 +740,13 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			return false;
 		}
 		previousBinding = binding;
+		const auto digestOwner = authoredDigestOwners.find(medium.authoredConfigDigest);
+		if( digestOwner != authoredDigestOwners.end() &&
+			digestOwner->second != medium.managerName ) {
+			error = "different authored fire media share one authored_config_digest";
+			return false;
+		}
+		authoredDigestOwners[medium.authoredConfigDigest] = medium.managerName;
 		for( const std::string& id : medium.opticalRecordIds ) {
 			if( !IsSHA256Hex(id) ) {
 				error = "active fire medium optical record ID is not lowercase SHA-256";
@@ -168,7 +764,7 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 	if( metadata.resolvedRenderConfigCoreV1.empty() ||
 		!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
 			resolvedConfig,&error) || resolvedConfig.GetType() != RISECBOR64::Value::Map ||
-		!HasRecordHeader(resolvedConfig,"resolved_render_configuration_v1") ||
+		!ValidateResolvedConfigSchemaV1(resolvedConfig,error) ||
 		resolvedConfig.Find("output") ) {
 		error = "resolved render configuration core is unavailable or outside schema-v1";
 		return false;
@@ -177,7 +773,7 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 	if( metadata.rendererBuildV1.empty() ||
 		!RISECBOR64::DecodeCanonical(metadata.rendererBuildV1,rendererBuild,&error) ||
 		rendererBuild.GetType() != RISECBOR64::Value::Map ||
-		!HasRecordHeader(rendererBuild,"renderer_build_v1") ||
+		!ValidateRendererBuildSchemaV1(rendererBuild,error) ||
 		!IsSHA256Hex(metadata.rendererBuildId) ||
 		metadata.rendererBuildId != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
 		error = "renderer build identity is unavailable or outside schema-v1";

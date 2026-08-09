@@ -33,10 +33,12 @@
 #include <cstring>
 #include <fstream>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
@@ -722,17 +724,203 @@ namespace
 		RISECBOR64::Bytes buildBytes;
 		std::string encodeError;
 		RISECBOR64::Encode(Value::MapValue({
-			{ "aov", Value::MapValue({}) }, { "camera", Value::MapValue({}) },
-			{ "clamp", Value::MapValue({}) }, { "depth", Value::MapValue({}) },
-			{ "film", Value::MapValue({}) }, { "filter", Value::MapValue({}) },
-			{ "integrator", Value::MapValue({}) },
+			{ "animation", Value::MapValue({
+				{ "do_fields", Value::Bool(false) },
+				{ "frame_selection", Value::MapValue({
+					{ "active", Value::Bool(false) },
+					{ "index", Value::Unsigned(0) } }) },
+				{ "invert_fields", Value::Bool(false) },
+				{ "num_frames", Value::Unsigned(1) },
+				{ "time_end", Value::Float(0.0) },
+				{ "time_start", Value::Float(0.0) } }) },
+			{ "aov", Value::MapValue({
+				{ "channels", Value::ArrayValue({ Value::String("beauty") }) } }) },
+			{ "camera", Value::MapValue({
+				{ "exposure_compensation_ev", Value::Float(0.0) },
+				{ "exposure_time", Value::Float(0.0) },
+				{ "kind", Value::String("none") },
+				{ "location", Value::ArrayValue({}) },
+				{ "matrix", Value::ArrayValue({}) },
+				{ "pixel_rate", Value::Float(0.0) },
+				{ "projection", Value::MapValue({}) },
+				{ "scanning_rate", Value::Float(0.0) } }) },
+			{ "clamp", Value::MapValue({
+				{ "direct", Value::Float(0.0) },
+				{ "indirect", Value::Float(0.0) } }) },
+			{ "depth", Value::MapValue({
+				{ "max_diffuse_bounce", Value::Unsigned(0) },
+				{ "max_eye_depth", Value::Unsigned(0) },
+				{ "max_glossy_bounce", Value::Unsigned(0) },
+				{ "max_light_depth", Value::Unsigned(0) },
+				{ "max_recursion", Value::Unsigned(0) },
+				{ "max_translucent_bounce", Value::Unsigned(0) },
+				{ "max_transmission_bounce", Value::Unsigned(0) },
+				{ "max_volume_bounce", Value::Unsigned(0) } }) },
+			{ "evaluated_camera_states", Value::ArrayValue({}) },
+			{ "execution", Value::MapValue({
+				{ "effective_worker_task_count", Value::Unsigned(1) },
+				{ "force_number_of_threads", Value::Signed(0) },
+				{ "maximum_thread_count", Value::Signed(1) },
+				{ "random_stream_policy", Value::String("test") },
+				{ "render_thread_reserve_count", Value::Signed(0) } }) },
+			{ "external_runtime", Value() },
+			{ "film", Value::MapValue({
+				{ "height", Value::Unsigned(kImgH) },
+				{ "pixel_aspect_ratio", Value::Float(1.0) },
+				{ "width", Value::Unsigned(kImgW) } }) },
+			{ "filter", Value::MapValue({
+				{ "height", Value::Float(1.0) },
+				{ "name", Value::String("box") },
+				{ "param_a", Value::Float(0.0) },
+				{ "param_b", Value::Float(0.0) },
+				{ "width", Value::Float(1.0) } }) },
+			{ "global_render_options", Value::MapValue({
+				{ "auto_probe", Value::MapValue({
+					{ "activation_spp", Value::Unsigned(1) },
+					{ "reach_winsor_percentile", Value::Float(0.99) },
+					{ "scale", Value::Unsigned(1) },
+					{ "spp", Value::Unsigned(1) },
+					{ "tau_bdpt", Value::Float(1.0) },
+					{ "tau_caustic", Value::Float(1.0) },
+					{ "tau_reach", Value::Float(1.0) },
+					{ "variance_renders", Value::Unsigned(2) } }) },
+				{ "vcm", Value::MapValue({
+					{ "progressive_radius_enabled", Value::Bool(true) },
+					{ "throughput_clamp_multiplier", Value::Float(20.0) },
+					{ "throughput_clamp_percentile", Value::Float(0.99) } }) } }) },
+			{ "integrator", Value::MapValue({
+				{ "auto_choice", Value::Unsigned(0) },
+				{ "auto_probe_enabled", Value::Bool(false) },
+				{ "effective_kind", Value::String("pt") },
+				{ "enable_vertex_connection", Value::Bool(false) },
+				{ "enable_vertex_merging", Value::Bool(false) },
+				{ "integrate_rgb", Value::Bool(false) },
+				{ "kind", Value::String("pathtracing_spectral") },
+				{ "merge_radius", Value::Float(0.0) },
+				{ "path_guiding", Value::MapValue({
+					{ "alpha", Value::Float(0.0) },
+					{ "combine_training_iterations", Value::Bool(false) },
+					{ "complete_path_guiding", Value::Bool(false) },
+					{ "complete_path_strategy_samples", Value::Unsigned(0) },
+					{ "complete_path_strategy_selection", Value::Bool(false) },
+					{ "enabled", Value::Bool(false) },
+					{ "learned_alpha", Value::Bool(false) },
+					{ "max_guiding_depth", Value::Unsigned(0) },
+					{ "max_light_guiding_depth", Value::Unsigned(0) },
+					{ "online", Value::Bool(false) },
+					{ "ris_candidates", Value::Unsigned(0) },
+					{ "sampling_type", Value::Unsigned(0) },
+					{ "training_iterations", Value::Unsigned(0) },
+					{ "training_spp", Value::Unsigned(0) },
+					{ "warmup_iterations", Value::Unsigned(0) } }) },
+				{ "show_luminaires", Value::Bool(false) },
+				{ "sms", Value::MapValue({
+					{ "bernoulli_trials", Value::Unsigned(0) },
+					{ "biased", Value::Bool(false) },
+					{ "enabled", Value::Bool(false) },
+					{ "max_chain_depth", Value::Unsigned(0) },
+					{ "max_iterations", Value::Unsigned(0) },
+					{ "max_photon_seeds_per_shading_point", Value::Unsigned(0) },
+					{ "multi_trials", Value::Unsigned(0) },
+					{ "photon_count", Value::Unsigned(0) },
+					{ "seeding_mode", Value::Unsigned(0) },
+					{ "target_bounces", Value::Unsigned(0) },
+					{ "threshold", Value::Float(0.0) },
+					{ "two_stage", Value::Bool(false) },
+					{ "use_levenberg_marquardt", Value::Bool(false) } }) } }) },
+			{ "light_sampling", Value::MapValue({
+				{ "rr_threshold", Value::Float(0.0) } }) },
+			{ "raster_sequence", Value::MapValue({
+				{ "kind", Value::String("rasterizer_default") } }) },
 			{ "record_kind", Value::String("resolved_render_configuration_v1") },
-			{ "sampler", Value::MapValue({}) }, { "schema_version", Value::Unsigned(1) }
+			{ "render_region", Value::MapValue({
+				{ "active", Value::Bool(false) },
+				{ "bottom", Value::Unsigned(0) },
+				{ "left", Value::Unsigned(0) },
+				{ "right", Value::Unsigned(0) },
+				{ "top", Value::Unsigned(0) } }) },
+			{ "sampler", Value::MapValue({
+				{ "adaptive", Value::MapValue({
+					{ "max_samples", Value::Unsigned(0) },
+					{ "show_map", Value::Bool(false) },
+					{ "threshold", Value::Float(0.0) } }) },
+				{ "blue_noise", Value::Bool(false) },
+				{ "large_step_probability", Value::Float(0.0) },
+				{ "luminary_sampler", Value::String("none") },
+				{ "luminary_sampler_param", Value::Float(0.0) },
+				{ "mlt_bootstrap_samples", Value::Unsigned(0) },
+				{ "mlt_chains", Value::Unsigned(0) },
+				{ "mlt_mutations_per_pixel", Value::Unsigned(0) },
+				{ "num_luminary_samples", Value::Unsigned(0) },
+				{ "pixel_sampler", Value::String("random") },
+				{ "pixel_sampler_param", Value::Float(0.0) },
+				{ "pixel_samples", Value::Unsigned(1) },
+				{ "progressive", Value::MapValue({
+					{ "enabled", Value::Bool(false) },
+					{ "samples_per_pass", Value::Unsigned(1) } }) },
+				{ "spectral", Value::MapValue({
+					{ "hwss", Value::Bool(false) },
+					{ "nm_begin", Value::Float(380.0) },
+					{ "nm_end", Value::Float(780.0) },
+					{ "num_wavelengths", Value::Unsigned(1) },
+					{ "spectral_samples", Value::Unsigned(1) } }) } }) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "shader", Value::String("none") },
+			{ "stability", Value::MapValue({
+				{ "filter_glossy", Value::Float(0.0) },
+				{ "optimal_mis", Value::Bool(false) },
+				{ "optimal_mis_tile_size", Value::Unsigned(1) },
+				{ "optimal_mis_training_iterations", Value::Unsigned(0) },
+				{ "rr_min_depth", Value::Unsigned(0) },
+				{ "rr_threshold", Value::Float(0.0) },
+				{ "transparent_shadows", Value::Bool(false) },
+				{ "use_light_bvh", Value::Bool(false) } }) },
+			{ "transport", Value::MapValue({
+				{ "oidn", Value::Bool(false) },
+				{ "oidn_device", Value::Unsigned(0) },
+				{ "oidn_prefilter", Value::Unsigned(0) },
+				{ "oidn_quality", Value::Unsigned(0) },
+				{ "radiance_map", Value::MapValue({
+					{ "background", Value::Bool(false) },
+					{ "name", Value::String("none") },
+					{ "orientation", Value::ArrayValue({ Value::Float(0.0),
+						Value::Float(0.0),Value::Float(0.0) }) },
+					{ "scale", Value::Float(1.0) } }) } }) }
 		}),configBytes,&encodeError);
 		RISECBOR64::Encode(Value::MapValue({
+			{ "compiler", Value::MapValue({
+				{ "identity", Value::String("test") },
+				{ "language_standard", Value::String("c++17") },
+				{ "lto_mode", Value::String("off") },
+				{ "optimization_mode", Value::String("disabled") } }) },
+			{ "dependency_builds", Value::MapValue({
+				{ "test", Value::MapValue({
+					{ "availability", Value::String("not_linked") },
+					{ "linkage", Value::String("none") },
+					{ "loaded_binaries", Value::ArrayValue({}) },
+					{ "version", Value::String("not_linked") } }) } }) },
+			{ "dirty_state", Value::MapValue({
+				{ "diff_sha256", Value::String(std::string(64,'0')) },
+				{ "state", Value::String("clean") } }) },
+			{ "fp_settings", Value::MapValue({
+				{ "contraction_mode", Value::String("off") },
+				{ "fast_math", Value::Bool(false) },
+				{ "finite_math_only", Value::Bool(false) } }) },
+			{ "gate_harness_version", Value::String("test") },
 			{ "record_kind", Value::String("renderer_build_v1") },
+			{ "renderer_binary", Value::MapValue({
+				{ "hash_basis", Value::String("file_bytes") },
+				{ "kind", Value::String("executable") },
+				{ "path", Value::String("test") },
+				{ "sha256", Value::String(std::string(64,'0')) } }) },
+			{ "renderer_version", Value::String("test") },
 			{ "schema_version", Value::Unsigned(1) },
-			{ "source_revision", Value::String("test-build") }
+			{ "solver_schema_versions", Value::ArrayValue({
+				Value::String("test") }) },
+			{ "source_revision", Value::String("test-build") },
+			{ "target", Value::MapValue({
+				{ "architecture", Value::String("test") },
+				{ "platform", Value::String("test") } }) }
 		}),buildBytes,&encodeError);
 		FrameStoreOutput::ActiveFireMedium medium;
 		medium.mediaKind = "static_authored";
@@ -1038,6 +1226,28 @@ namespace
 		Check( FrameStoreOutput::ValidateFireOutputMetadata(movieMetadata,movieError),
 			"[fire provenance] finalized frame metadata passes the shared semantic validator" );
 		FrameStore::Metadata invalidMetadata = movieMetadata;
+		invalidMetadata.renderReasonCodes.erase(std::remove(
+			invalidMetadata.renderReasonCodes.begin(),invalidMetadata.renderReasonCodes.end(),
+			"producer_unqualified"),invalidMetadata.renderReasonCodes.end());
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("producer_unqualified") != std::string::npos,
+			"[fire provenance] static authored media require producer_unqualified" );
+		invalidMetadata = movieMetadata;
+		FrameStoreOutput::ActiveFireMedium collidingMedium =
+			invalidMetadata.activeFireMedia.front();
+		collidingMedium.managerName = "other_fire";
+		collidingMedium.bindingOwner = "other_scene_slot";
+		invalidMetadata.activeFireMedia.push_back(collidingMedium);
+		std::sort(invalidMetadata.activeFireMedia.begin(),invalidMetadata.activeFireMedia.end(),
+			[]( const FrameStoreOutput::ActiveFireMedium& lhs,
+				const FrameStoreOutput::ActiveFireMedium& rhs ) {
+				return std::tie(lhs.managerName,lhs.bindingKind,lhs.bindingOwner) <
+					std::tie(rhs.managerName,rhs.bindingKind,rhs.bindingOwner);
+			});
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("share one authored_config_digest") != std::string::npos,
+			"[fire provenance] distinct static media cannot share an authored digest" );
+		invalidMetadata = movieMetadata;
 		invalidMetadata.renderReasonCodes[0] = "not_a_fire_reason";
 		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
 			movieError.find("outside the fixed enum") != std::string::npos,
@@ -1072,6 +1282,104 @@ namespace
 		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
 			movieError.find("primary linkage") != std::string::npos,
 			"[fire provenance] semantic validation rejects a partial retained-primary tuple" );
+
+		auto withoutMember = []( const RISECBOR64::Value& map,
+			const std::string& name ) {
+			RISECBOR64::Value::Members members;
+			for( const auto& member : map.GetMap() ) {
+				if( member.first != name ) members.push_back(member);
+			}
+			return RISECBOR64::Value::MapValue(members);
+		};
+		auto replaceMember = []( const RISECBOR64::Value& map,
+			const std::string& name, const RISECBOR64::Value& replacement ) {
+			RISECBOR64::Value::Members members;
+			for( const auto& member : map.GetMap() ) {
+				members.push_back(member.first == name ?
+					std::make_pair(member.first,replacement) : member);
+			}
+			return RISECBOR64::Value::MapValue(members);
+		};
+		std::function<RISECBOR64::Value(const RISECBOR64::Value&,
+			const std::vector<std::string>&,std::size_t)> withoutPath;
+		withoutPath = [&]( const RISECBOR64::Value& map,
+			const std::vector<std::string>& path, const std::size_t index ) {
+			if( index+1u == path.size() ) return withoutMember(map,path[index]);
+			const RISECBOR64::Value* child = map.Find(path[index]);
+			return child ? replaceMember(map,path[index],withoutPath(*child,path,index+1u)) : map;
+		};
+		auto encode = []( const RISECBOR64::Value& value ) {
+			RISECBOR64::Bytes bytes;
+			std::string error;
+			RISECBOR64::Encode(value,bytes,&error);
+			return bytes;
+		};
+		RISECBOR64::Value baseConfig;
+		RISECBOR64::Value baseBuild;
+		std::string schemaDecodeError;
+		Check( RISECBOR64::DecodeCanonical(movieMetadata.resolvedRenderConfigCoreV1,
+				baseConfig,&schemaDecodeError) &&
+			RISECBOR64::DecodeCanonical(movieMetadata.rendererBuildV1,
+				baseBuild,&schemaDecodeError),
+			"[fire provenance] schema mutation fixtures decode canonically" );
+		for( const auto& member : baseConfig.GetMap() ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.resolvedRenderConfigCoreV1 = encode(
+				withoutMember(baseConfig,member.first));
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				"[fire provenance] resolved-config schema rejects missing top-level "+
+				member.first );
+		}
+		const std::vector<std::vector<std::string> > configNestedPaths = {
+			{ "animation", "do_fields" },
+			{ "animation", "frame_selection", "index" },
+			{ "aov", "channels" }, { "camera", "kind" },
+			{ "clamp", "direct" }, { "depth", "max_eye_depth" },
+			{ "execution", "random_stream_policy" }, { "film", "width" },
+			{ "filter", "name" },
+			{ "global_render_options", "auto_probe", "spp" },
+			{ "global_render_options", "vcm", "progressive_radius_enabled" },
+			{ "integrator", "kind" },
+			{ "integrator", "path_guiding", "enabled" },
+			{ "integrator", "sms", "enabled" },
+			{ "light_sampling", "rr_threshold" },
+			{ "raster_sequence", "kind" }, { "render_region", "active" },
+			{ "sampler", "pixel_samples" },
+			{ "sampler", "adaptive", "threshold" },
+			{ "sampler", "progressive", "enabled" },
+			{ "sampler", "spectral", "nm_begin" },
+			{ "stability", "rr_threshold" }, { "transport", "oidn" },
+			{ "transport", "radiance_map", "name" }
+		};
+		for( const auto& path : configNestedPaths ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.resolvedRenderConfigCoreV1 = encode(
+				withoutPath(baseConfig,path,0u));
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				"[fire provenance] resolved-config schema rejects missing nested "+path.back() );
+		}
+		for( const auto& member : baseBuild.GetMap() ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.rendererBuildV1 = encode(withoutMember(baseBuild,member.first));
+			invalidMetadata.rendererBuildId =
+				RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				"[fire provenance] renderer-build schema rejects missing top-level "+
+				member.first );
+		}
+		const std::vector<std::vector<std::string> > buildNestedPaths = {
+			{ "compiler", "identity" }, { "dirty_state", "state" },
+			{ "fp_settings", "fast_math" }, { "renderer_binary", "sha256" },
+			{ "target", "platform" }, { "dependency_builds", "test", "version" }
+		};
+		for( const auto& path : buildNestedPaths ) {
+			invalidMetadata = movieMetadata;
+			invalidMetadata.rendererBuildV1 = encode(withoutPath(baseBuild,path,0u));
+			invalidMetadata.rendererBuildId =
+				RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
+			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+				"[fire provenance] renderer-build schema rejects missing nested "+path.back() );
+		}
 		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
 			movieMetadata,FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 			movieTemporary,movieFile,16u,16u,30u,2u,
