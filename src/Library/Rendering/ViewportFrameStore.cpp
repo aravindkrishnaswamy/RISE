@@ -273,6 +273,8 @@ namespace RISE
 
 		void ViewportFrameStore::BindFrameStore( FrameStore* external )
 		{
+			const uint64_t bindRevision =
+				bindRevision_.fetch_add(1u,std::memory_order_acq_rel)+1u;
 			// L8 review round 3 — DEADLOCK FIX.
 			//
 			// Pre-fix: this method held `chainMutex_` unique_lock the
@@ -369,6 +371,13 @@ namespace RISE
 			// store via `EnsureChain`.
 			if ( external ) {
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+				// A newer BindFrameStore may have completed Phase 1 while this
+				// transaction waited in RemoveObserver. Only the newest-started
+				// transaction may install; otherwise two concurrent binds can
+				// overwrite member pointers without detaching the first install.
+				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+					return;
+				}
 				external->addref();  // VFS owns one defensive ref
 				externalFrameStore_ = external;
 				framestore_         = external;
@@ -401,7 +410,7 @@ namespace RISE
 					"external FrameStore %ux%u",
 					static_cast<unsigned int>( external->Width() ),
 					static_cast<unsigned int>( external->Height() ) );
-			} else {
+			} else if( bindRevision_.load(std::memory_order_acquire) == bindRevision ) {
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: unbound — "
 					"reverted to internal-managed mode" );

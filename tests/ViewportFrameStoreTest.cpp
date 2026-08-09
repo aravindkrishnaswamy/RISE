@@ -1376,6 +1376,69 @@ namespace
 		safe_release( extFs );
 	}
 
+	void TestConcurrentExternalBindsPublishNewestOnly()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* first = new FrameStore(spec);
+		auto* second = new FrameStore(spec);
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		bool callbackEntered = false;
+		bool callbackMayReturn = false;
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			++callbacks;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			if( !callbackEntered ) {
+				callbackEntered = true;
+				callbackCondition.notify_all();
+				callbackCondition.wait(lock,[&]() { return callbackMayReturn; });
+			}
+		});
+		vfs->BindFrameStore(source);
+		std::thread dispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return callbackEntered; });
+		}
+		std::thread firstBinder([&]() { vfs->BindFrameStore(first); });
+		const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(2);
+		while( vfs->IsExternallyBound() && std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::yield();
+		}
+		const bool firstReachedTeardown = !vfs->IsExternallyBound();
+		if( firstReachedTeardown ) vfs->BindFrameStore(second);
+		const bool secondInstalledDuringTeardown =
+			firstReachedTeardown && vfs->GetFrameStore() == second;
+		{
+			std::lock_guard<std::mutex> lock(callbackMutex);
+			callbackMayReturn = true;
+		}
+		callbackCondition.notify_all();
+		dispatcher.join();
+		firstBinder.join();
+		const bool newestRetained = vfs->GetFrameStore() == second;
+		vfs->release();
+		first->BeginTile(0u,0u);
+		first->EndTile(0u,0u);
+		second->BeginTile(0u,0u);
+		second->EndTile(0u,0u);
+		Check(firstReachedTeardown && secondInstalledDuringTeardown && newestRetained &&
+			callbacks.load() == 1u,
+			"concurrent external binds publish only the newest observer/store transaction" );
+		source->release();
+		first->release();
+		second->release();
+	}
+
 	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
 	//
 	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
@@ -1546,6 +1609,7 @@ int main()
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
+	TestConcurrentExternalBindsPublishNewestOnly();
 	TestSetFrameStoreNotification_L6e2b();
 	TestObserverRetainsUnregisteredEncoder();
 

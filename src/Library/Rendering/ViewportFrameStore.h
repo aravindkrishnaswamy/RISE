@@ -63,6 +63,7 @@
 #ifndef VIEWPORTFRAMESTORE_H_
 #define VIEWPORTFRAMESTORE_H_
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <shared_mutex>
@@ -420,6 +421,7 @@ namespace RISE
 			//!     facade-level pointer lifetime.
 			//! See L4 round-2 review P1-2.
 			mutable std::shared_mutex chainMutex_;
+			std::atomic<uint64_t> bindRevision_{ 0u };
 
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;
