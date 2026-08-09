@@ -2182,18 +2182,13 @@ void MainWindow::onStateChanged(int newState)
     m_renderWidget->setRenderState(state);
 
     // L5d — gate File > Save Rendered Image.  The production VFS's
-    // FrameStore exists once the rasterizer has emitted at least
-    // one OutputImage; that happens any time we transition through
-    // Rendering / Cancelling.  Completed / Cancelled retain the
-    // last contents (`bridge.clearAll` doesn't free the VFS, per
-    // L4 §7.5).  Re-loading a scene transitions back through
-    // Loading → SceneLoaded which has no fresh output yet — gate
-    // off until the next render starts.
+    // Completed / Cancelled retain the last finalized contents
+    // (`bridge.clearAll` doesn't free the VFS, per L4 §7.5).  Never
+    // publish while Rendering / Cancelling: that surface can contain
+    // a partial fire frame whose provenance transaction is not final.
     if (m_saveImageAction) {
         const bool canSave =
-            state == RenderEngine::Rendering
-         || state == RenderEngine::Cancelling
-         || state == RenderEngine::Completed
+            state == RenderEngine::Completed
          || state == RenderEngine::Cancelled;
         m_saveImageAction->setEnabled(canSave);
     }

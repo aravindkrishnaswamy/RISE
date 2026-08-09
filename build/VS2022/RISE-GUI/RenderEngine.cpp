@@ -1397,6 +1397,7 @@ bool RenderEngine::saveAs(const QString& path,
                           const QString& formatName,
                           double         ev)
 {
+	if (m_state != Completed && m_state != Cancelled) return false;
     if (!m_productionVFS) return false;
 	IFrameEncoder* enc =
 		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(

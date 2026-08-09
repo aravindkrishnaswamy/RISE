@@ -543,6 +543,29 @@ int main()
 				std::string(guiNames[i])+
 				" GUI SaveAs requests linear FP32 from HDR encoders" );
 		}
+		const auto withoutWhitespace = []( std::string source ) {
+			source.erase(std::remove_if(source.begin(),source.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),source.end());
+			return source;
+		};
+		std::ifstream windowsMainFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "MainWindow.cpp",std::ios::binary);
+		const std::string windowsMain = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsMainFile),
+			std::istreambuf_iterator<char>()));
+		std::ifstream windowsEngineFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "RenderEngine.cpp",std::ios::binary);
+		const std::string windowsEngine = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsEngineFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsMain.find(
+			"constboolcanSave=state==RenderEngine::Completed||state==RenderEngine::Cancelled;") !=
+				std::string::npos &&
+			windowsEngine.find(
+				"if(m_state!=Completed&&m_state!=Cancelled)returnfalse;") !=
+				std::string::npos,
+			"Windows GUI and API SaveAs reject in-progress frame publication" );
 
 		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
 			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
@@ -566,6 +589,14 @@ int main()
 			movieSource.find("movie derivative has no matching raw primary") !=
 				std::string::npos,
 			"OIDN movie output archives raw fire primaries and uses denoised display derivatives" );
+		const std::size_t derivativeDisabled = movieSource.find(
+			"if (!writeDerivative || _derivativeFailed) return;");
+		const std::size_t derivativeLinkage = movieSource.find(
+			"movie derivative has no matching raw primary");
+		Check( derivativeDisabled != std::string::npos &&
+			derivativeLinkage != std::string::npos &&
+			derivativeDisabled < derivativeLinkage,
+			"a failed movie derivative cannot block later raw fire primaries" );
 		Check( movieSource.find("PublishUnprovenancedFileTransaction") !=
 				std::string::npos,
 			"nonfire movie publication transactionally retires stale fire sidecars" );

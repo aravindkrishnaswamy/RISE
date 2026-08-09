@@ -950,8 +950,10 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
 	error.clear();
 	EncodeOpts transactionOpts = opts;
-	transactionOpts.metadataSnapshot = store.Meta();
-	transactionOpts.useMetadataSnapshot = true;
+	if( !transactionOpts.useMetadataSnapshot ) {
+		transactionOpts.metadataSnapshot = store.Meta();
+		transactionOpts.useMetadataSnapshot = true;
+	}
 	for( std::size_t i=0; i<transactionOpts.attrs.size(); ++i ) {
 		if( transactionOpts.attrs[i].first.compare(0u,
 			std::strlen(kFireAttributePrefix),kFireAttributePrefix) == 0 ) {

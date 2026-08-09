@@ -407,7 +407,7 @@ void MovieRasterizerOutput::outputFrame(
         link.artifactSha256 = linked.primaryArtifactSha256;
         _framePrimaries.push_back(link);
     }
-    if (!writeDerivative) return;
+    if (!writeDerivative || _derivativeFailed) return;
     if (_fireRender &&
         (_framePrimaries.empty() ||
          _framePrimaries.back().frameIndex != frame ||
@@ -416,7 +416,6 @@ void MovieRasterizerOutput::outputFrame(
         throw std::runtime_error(
             "output_provenance_unavailable: movie derivative has no matching raw primary");
     }
-    if (_derivativeFailed) return;
 
     // Lazy initialization on first frame
     if (!_started) {

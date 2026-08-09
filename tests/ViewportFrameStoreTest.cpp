@@ -639,6 +639,9 @@ namespace
 		fireStore->GetChannel<ChannelId::Beauty>()->At(0,0) =
 			RISEPel(70000.0,2.0,1.0);
 		fireStore->EndTile(0,0);
+		FrameStore::Metadata frameMetadata = fireStore->Meta();
+		frameMetadata.frame = 17u;
+		fireStore->SetMetadata(frameMetadata);
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
 		Check( vfs->SaveAs( exrPath, exr, opts ),
 			"GUI SaveAs writes transactional EXR fire provenance" );
@@ -695,11 +698,18 @@ namespace
 			exrPayload->Find("artifact_sha256") : nullptr;
 		const RISECBOR64::Value* exrFidelity = exrPayload ?
 			exrPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* exrResolved = exrPayload ?
+			exrPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* exrOutput = exrResolved ?
+			exrResolved->Find("output") : nullptr;
+		const RISECBOR64::Value* exrFrame = exrOutput ?
+			exrOutput->Find("frame_index") : nullptr;
 		std::vector<unsigned char> strippedExr;
 		Check( StripFireProvenanceEXRAttributes(exrBytes,strippedExr,decodeError) &&
 			exrDigest && exrDigest->GetText() == RISECBOR64::SHA256Hex(strippedExr) &&
-			exrFidelity && exrFidelity->GetText() == "preview_primary",
-			"GUI EXR sidecar hashes attribute-stripped bytes as preview_primary" );
+			exrFidelity && exrFidelity->GetText() == "preview_primary" &&
+			exrFrame && exrFrame->GetIntegerArgument() == 17u,
+			"GUI EXR sidecar hashes stripped bytes and binds the finalized FrameStore frame" );
 
 		opts.colorSpace = eColorSpace_sRGB;
 		opts.bpp = 8;

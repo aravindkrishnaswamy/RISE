@@ -492,9 +492,13 @@ namespace RISE
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
 
+			EncodeOpts transactionOpts = opts;
+			transactionOpts.metadataSnapshot = snap->Meta();
+			transactionOpts.useMetadataSnapshot = true;
+			transactionOpts.frame = transactionOpts.metadataSnapshot.frame;
 			std::string error;
 			const bool success = EncodeFrameStoreFileTransaction(
-				*snap,*encoder,opts,path,error );
+				*snap,*encoder,transactionOpts,path,error );
 			snap->release();
 			if( !success ) {
 				GlobalLog()->PrintEx( eLog_Error,
