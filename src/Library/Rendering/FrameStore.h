@@ -98,6 +98,17 @@ namespace RISE
 			std::string primaryArtifactFidelity;
 		};
 
+		//! Fixed schema-v1 fire render reason-code membership.
+		bool IsAllowedFireRenderReasonCode( const std::string& reason );
+
+		//! Validates the complete semantic fire metadata envelope before render
+		//! authorization or artifact publication.  Empty renderFidelityStatus is
+		//! non-fire metadata and is intentionally rejected by this function.
+		bool ValidateFireOutputMetadata(
+			const Metadata& metadata,
+			std::string& error
+			);
+
 		//! Construction parameters for FrameStore.  Pass to the
 		//! FrameStore constructor.
 		struct FrameStoreSpec

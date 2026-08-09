@@ -67,17 +67,6 @@ namespace
 		return collector.found;
 	}
 
-	bool HasCompleteFireOutputMetadata( const FrameStoreOutput::Metadata& metadata )
-	{
-		return metadata.renderFidelityStatus == "preview" &&
-			!metadata.renderReasonCodes.empty() &&
-			!metadata.activeFireOpticsRecordIds.empty() &&
-			!metadata.activeFireMedia.empty() &&
-			!metadata.resolvedRenderConfigCoreV1.empty() &&
-			!metadata.rendererBuildV1.empty() &&
-			!metadata.rendererBuildId.empty();
-	}
-
 	std::string FireOutputMetadataBinding(
 		const FrameStoreOutput::Metadata& metadata )
 	{
@@ -208,9 +197,10 @@ bool Rasterizer::RequireFireRenderPreflight(
 	if( valid && authorization == FireRenderPreflightAuthorization::Render ) {
 		const FrameStoreOutput::Metadata metadata = currentStore ?
 			currentStore->Meta() : FrameStoreOutput::Metadata();
+		std::string metadataError;
 		valid = currentStore && authorizedStore == currentStore &&
 			authorizedGeneration == currentStore->Generation() &&
-			HasCompleteFireOutputMetadata(metadata) &&
+			FrameStoreOutput::ValidateFireOutputMetadata(metadata,metadataError) &&
 			!authorizedMetadataBinding.empty() &&
 			authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
 	}
@@ -306,8 +296,9 @@ bool Rasterizer::AuthorizeFireRenderPreflight(
 	if( authorization == FireRenderPreflightAuthorization::Render ) {
 		if( !store ) return false;
 		const FrameStoreOutput::Metadata metadata = store->Meta();
+		std::string metadataError;
 		if( storeGeneration != store->Generation() ||
-			!HasCompleteFireOutputMetadata(metadata) ) {
+			!FrameStoreOutput::ValidateFireOutputMetadata(metadata,metadataError) ) {
 			safe_release(store);
 			return false;
 		}

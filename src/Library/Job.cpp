@@ -261,31 +261,6 @@ static void BumpSceneLightGen( RISE::IScenePriv* pScene )
 		sc->BumpLightTopologyGeneration();
 }
 
-static bool IsAllowedFireRenderReasonCode( const char* reason )
-{
-	static const char* const allowed[] = {
-		"requested_preview", "producer_unqualified", "heuristic_source",
-		"qualified_record_override", "missing_optical_record", "missing_chem_record",
-		"chem_none_unqualified", "missing_condensable_record", "missing_gas_opacity_record",
-		"missing_thermochemistry_record", "missing_aerosol_thermochemistry_record",
-		"missing_transport_record", "table_domain_exceeded", "missing_channel",
-		"loading_exceeded", "wet_aerosol_unsupported", "pel_transport",
-		"hwss_transport", "pel_blur_ignored", "blur_halo_insufficient",
-		"blur_time_support_out_of_range", "nonadvected_source_blur_unsupported",
-		"keyframed_temporal_sampling_unsupported", "programmatic_scene_unqualified",
-		"unrepresented_scene_mutation", "untracked_scene_mutability", "oidn_unqualified",
-		"radiance_clamp_enabled", "path_regularization_enabled", "sms_unqualified",
-		"continuation_closure_unsupported", "sss_volume_nee_unsupported", "gate_failure",
-		"output_provenance_unavailable", "condensed_organics_ir_unclosed",
-		"unsupported_integrator_for_fire_media"
-	};
-	if( !reason || !reason[0] ) return false;
-	for( std::size_t i=0; i<sizeof(allowed)/sizeof(allowed[0]); ++i ) {
-		if( std::strcmp(reason,allowed[i]) == 0 ) return true;
-	}
-	return false;
-}
-
 namespace
 {
 	RISECBOR64::Value FireText( const char* value )
@@ -11269,7 +11244,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		for( unsigned int i=0; i<count; ++i ) {
 			const char* reason = (*medium)->GetFireRenderReasonCode(
 				m_firePredictiveRequested, i );
-			if( !IsAllowedFireRenderReasonCode(reason) ) {
+			if( !reason || !FrameStoreOutput::IsAllowedFireRenderReasonCode(reason) ) {
 				invalidFidelityMetadata = true;
 				GlobalLog()->PrintEx( eLog_Error,
 					"Job:: fire medium emitted unknown render reason code '%s'",

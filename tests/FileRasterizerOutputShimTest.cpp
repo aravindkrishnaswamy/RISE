@@ -1035,6 +1035,43 @@ namespace
 		movieFrames[1].artifactSha256 = std::string(64u,'4');
 		std::string movieError;
 		const FrameStore::Metadata movieMetadata = store->Meta();
+		Check( FrameStoreOutput::ValidateFireOutputMetadata(movieMetadata,movieError),
+			"[fire provenance] finalized frame metadata passes the shared semantic validator" );
+		FrameStore::Metadata invalidMetadata = movieMetadata;
+		invalidMetadata.renderReasonCodes[0] = "not_a_fire_reason";
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("outside the fixed enum") != std::string::npos,
+			"[fire provenance] semantic validation rejects an unknown reason code" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.renderReasonCodes.push_back(invalidMetadata.renderReasonCodes.back());
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("duplicated, or unsorted") != std::string::npos,
+			"[fire provenance] semantic validation rejects duplicate reason codes" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.activeFireOpticsRecordIds[0][0] = 'A';
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("lowercase SHA-256") != std::string::npos,
+			"[fire provenance] semantic validation rejects a malformed aggregate record ID" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.activeFireMedia[0].authoredConfigDigest[0] = 'A';
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("static_authored tagged variant") != std::string::npos,
+			"[fire provenance] semantic validation rejects a malformed authored-config digest" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.activeFireMedia[0].opticalRecordIds[0] = std::string(64u,'b');
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("do not equal the aggregate") != std::string::npos,
+			"[fire provenance] semantic validation binds component IDs to the aggregate IDs" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.rendererBuildId[0] = invalidMetadata.rendererBuildId[0] == 'a' ? 'b' : 'a';
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("renderer build identity") != std::string::npos,
+			"[fire provenance] semantic validation binds renderer build bytes to their exact ID" );
+		invalidMetadata = movieMetadata;
+		invalidMetadata.primaryArtifactSha256.clear();
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+			movieError.find("primary linkage") != std::string::npos,
+			"[fire provenance] semantic validation rejects a partial retained-primary tuple" );
 		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
 			movieMetadata,FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 			movieTemporary,movieFile,16u,16u,30u,2u,

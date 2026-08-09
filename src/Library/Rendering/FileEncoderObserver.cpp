@@ -438,6 +438,7 @@ namespace
 		std::string& error )
 	{
 		using RISECBOR64::Value;
+		if( !FrameStoreOutput::ValidateFireOutputMetadata(metadata,error) ) return false;
 		Value resolvedConfig;
 		Value rendererBuild;
 		if( metadata.resolvedRenderConfigCoreV1.empty() ||
@@ -579,6 +580,7 @@ namespace
 		std::string& error )
 	{
 		using RISECBOR64::Value;
+		if( !FrameStoreOutput::ValidateFireOutputMetadata(metadata,error) ) return false;
 		if( metadata.renderFidelityStatus != "predictive" &&
 			metadata.renderFidelityStatus != "preview" ) {
 			error = "movie has no predictive or preview fire-render status";

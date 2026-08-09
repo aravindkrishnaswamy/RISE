@@ -15,12 +15,14 @@
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/RISECBOR64.h"
 #include "AOVBuffers.h"  // L7 — PropagateAOVsToFrameStore
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <thread>
 
@@ -38,6 +40,160 @@ namespace
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
+
+namespace
+{
+	bool IsSHA256Hex( const std::string& value )
+	{
+		if( value.size() != 64u ) return false;
+		for( const char c : value ) {
+			if( !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) ) return false;
+		}
+		return true;
+	}
+
+	bool IsStrictlySorted( const std::vector<std::string>& values )
+	{
+		return std::adjacent_find(values.begin(),values.end(),
+			[]( const std::string& lhs, const std::string& rhs ) {
+				return lhs >= rhs;
+			}) == values.end();
+	}
+
+	bool HasRecordHeader(
+		const RISECBOR64::Value& value,
+		const char* recordKind )
+	{
+		const RISECBOR64::Value* kind = value.Find("record_kind");
+		const RISECBOR64::Value* version = value.Find("schema_version");
+		return kind && kind->GetType() == RISECBOR64::Value::Text &&
+			kind->GetText() == recordKind && version &&
+			version->GetType() == RISECBOR64::Value::UnsignedInteger &&
+			version->GetIntegerArgument() == 1u;
+	}
+}
+
+bool RISE::FrameStoreOutput::IsAllowedFireRenderReasonCode(
+	const std::string& reason )
+{
+	static const char* const allowed[] = {
+		"requested_preview", "producer_unqualified", "heuristic_source",
+		"qualified_record_override", "missing_optical_record", "missing_chem_record",
+		"chem_none_unqualified", "missing_condensable_record", "missing_gas_opacity_record",
+		"missing_thermochemistry_record", "missing_aerosol_thermochemistry_record",
+		"missing_transport_record", "table_domain_exceeded", "missing_channel",
+		"loading_exceeded", "wet_aerosol_unsupported", "pel_transport",
+		"hwss_transport", "pel_blur_ignored", "blur_halo_insufficient",
+		"blur_time_support_out_of_range", "nonadvected_source_blur_unsupported",
+		"keyframed_temporal_sampling_unsupported", "programmatic_scene_unqualified",
+		"unrepresented_scene_mutation", "untracked_scene_mutability", "oidn_unqualified",
+		"radiance_clamp_enabled", "path_regularization_enabled", "sms_unqualified",
+		"continuation_closure_unsupported", "sss_volume_nee_unsupported", "gate_failure",
+		"output_provenance_unavailable", "condensed_organics_ir_unclosed",
+		"unsupported_integrator_for_fire_media"
+	};
+	for( const char* value : allowed ) {
+		if( reason == value ) return true;
+	}
+	return false;
+}
+
+bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
+	const Metadata& metadata,
+	std::string& error )
+{
+	error.clear();
+	if( metadata.renderFidelityStatus != "preview" ) {
+		error = "fire render fidelity status is not preview";
+		return false;
+	}
+	if( metadata.renderReasonCodes.empty() ||
+		!IsStrictlySorted(metadata.renderReasonCodes) ) {
+		error = "fire render reason codes are empty, duplicated, or unsorted";
+		return false;
+	}
+	for( const std::string& reason : metadata.renderReasonCodes ) {
+		if( !IsAllowedFireRenderReasonCode(reason) ) {
+			error = "fire render reason code is outside the fixed enum: "+reason;
+			return false;
+		}
+	}
+	if( metadata.activeFireOpticsRecordIds.empty() ||
+		!IsStrictlySorted(metadata.activeFireOpticsRecordIds) ) {
+		error = "active fire optical record IDs are empty, duplicated, or unsorted";
+		return false;
+	}
+	for( const std::string& id : metadata.activeFireOpticsRecordIds ) {
+		if( !IsSHA256Hex(id) ) {
+			error = "active fire optical record ID is not lowercase SHA-256";
+			return false;
+		}
+	}
+	if( metadata.activeFireMedia.empty() ) {
+		error = "active fire media are empty";
+		return false;
+	}
+	std::set<std::string> mediumRecordIds;
+	std::string previousBinding;
+	for( const ActiveFireMedium& medium : metadata.activeFireMedia ) {
+		if( medium.mediaKind != "static_authored" || medium.managerName.empty() ||
+			(medium.bindingKind != "global_medium" &&
+			 medium.bindingKind != "object_interior_medium") ||
+			medium.bindingOwner.empty() || !IsSHA256Hex(medium.authoredConfigDigest) ||
+			medium.opticalRecordIds.empty() || !IsStrictlySorted(medium.opticalRecordIds) ) {
+			error = "active fire medium is not a complete static_authored tagged variant";
+			return false;
+		}
+		const std::string binding = medium.managerName+'\0'+medium.bindingKind+'\0'+
+			medium.bindingOwner;
+		if( !previousBinding.empty() && binding <= previousBinding ) {
+			error = "active fire media binding keys are duplicated or unsorted";
+			return false;
+		}
+		previousBinding = binding;
+		for( const std::string& id : medium.opticalRecordIds ) {
+			if( !IsSHA256Hex(id) ) {
+				error = "active fire medium optical record ID is not lowercase SHA-256";
+				return false;
+			}
+			mediumRecordIds.insert(id);
+		}
+	}
+	if( std::vector<std::string>(mediumRecordIds.begin(),mediumRecordIds.end()) !=
+		metadata.activeFireOpticsRecordIds ) {
+		error = "active fire media optical IDs do not equal the aggregate record IDs";
+		return false;
+	}
+	RISECBOR64::Value resolvedConfig;
+	if( metadata.resolvedRenderConfigCoreV1.empty() ||
+		!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
+			resolvedConfig,&error) || resolvedConfig.GetType() != RISECBOR64::Value::Map ||
+		!HasRecordHeader(resolvedConfig,"resolved_render_configuration_v1") ||
+		resolvedConfig.Find("output") ) {
+		error = "resolved render configuration core is unavailable or outside schema-v1";
+		return false;
+	}
+	RISECBOR64::Value rendererBuild;
+	if( metadata.rendererBuildV1.empty() ||
+		!RISECBOR64::DecodeCanonical(metadata.rendererBuildV1,rendererBuild,&error) ||
+		rendererBuild.GetType() != RISECBOR64::Value::Map ||
+		!HasRecordHeader(rendererBuild,"renderer_build_v1") ||
+		!IsSHA256Hex(metadata.rendererBuildId) ||
+		metadata.rendererBuildId != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
+		error = "renderer build identity is unavailable or outside schema-v1";
+		return false;
+	}
+	const bool anyPrimary = !metadata.primaryProvenanceId.empty() ||
+		!metadata.primaryArtifactSha256.empty() ||
+		!metadata.primaryArtifactFidelity.empty();
+	if( anyPrimary && (!IsSHA256Hex(metadata.primaryProvenanceId) ||
+		!IsSHA256Hex(metadata.primaryArtifactSha256) ||
+		metadata.primaryArtifactFidelity != "preview_primary") ) {
+		error = "retained fire primary linkage is incomplete or inconsistent";
+		return false;
+	}
+	return true;
+}
 
 namespace RISE
 {
