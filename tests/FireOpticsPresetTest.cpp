@@ -293,6 +293,31 @@ namespace
 		return ReplaceMember(record,"source_records",changedSources);
 	}
 
+	RISECBOR64::Value AddSourcePhiUncertainty(
+		const RISECBOR64::Value& record
+		)
+	{
+		using RISECBOR64::Value;
+		const Value* sourceRecords = record.Find("source_records");
+		if( !sourceRecords ) return Value();
+		Value changedSources = *sourceRecords;
+		const char* sourceKeys[] = { "hot_soot", "cool_carbon" };
+		const Value uncertainty = Value::MapValue({
+			{ "kind", Value::String("range") },
+			{ "magnitude", Value::ArrayValue({
+				Value::Float(0.0),Value::Float(1.0) }) }
+		});
+		for( std::size_t i=0; i<sizeof(sourceKeys)/sizeof(sourceKeys[0]); ++i ) {
+			const Value* source = changedSources.Find(sourceKeys[i]);
+			const Value* phi = source ? source->Find("phi_T_partition") : 0;
+			if( !source || !phi ) return Value();
+			const Value changedPhi = AddMember(*phi,"uncertainty",uncertainty);
+			changedSources = ReplaceMember(changedSources,sourceKeys[i],
+				ReplaceMember(*source,"phi_T_partition",changedPhi));
+		}
+		return ReplaceMember(record,"source_records",changedSources);
+	}
+
 	RISECBOR64::Value ReplaceTextArrayElement(
 		const RISECBOR64::Value& map,
 		const char* key,
@@ -1436,6 +1461,9 @@ int main()
 		Check( RejectsWith(ReplaceSourcePhiBand(decodedPredictive,701.0,900.0),
 			"operational phi_T_partition differs from its source record"),
 			"a coordinated source-only phi(T) mutation cannot detach operations from provenance" );
+		Check( RejectsWith(AddSourcePhiUncertainty(decodedPredictive),
+			"source phi_T_partition carries an unpinned uncertainty override"),
+			"a coordinated source-only phi(T) uncertainty mutation cannot detach operations from provenance" );
 		Check( RejectsWith(ReplaceSourcePhiBand(
 			ReplaceOperationalPhiBand(decodedPredictive,701.0,900.0),701.0,900.0),
 			"predictive v1 phi(T) band gate failed"),

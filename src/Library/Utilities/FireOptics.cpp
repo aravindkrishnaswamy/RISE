@@ -827,6 +827,10 @@ namespace RISE
 			std::string* error
 			)
 		{
+			if( source.Find("uncertainty") ) {
+				return Fail(error,
+					"fire-optics source phi_T_partition carries an unpinned uncertainty override");
+			}
 			std::string sourceForm, sourceConsistency, sourceProvenance;
 			std::string operationalForm, operationalConsistency, operationalProvenance;
 			std::vector<double> sourceBand, operationalBand;
