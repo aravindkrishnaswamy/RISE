@@ -46,6 +46,13 @@ namespace RISE
 			std::string artifactSha256;
 		};
 
+		enum class FireFrameSequenceEncoding
+		{
+			AppleProRes4444_12Bit,
+			AppleProRes4444_10Bit,
+			HevcMain10_10Bit
+		};
+
 		//! Encode to temporary files and publish the artifact only after its
 		//! required fire-provenance sidecar has been finalized.  On failure no
 		//! artifact remains without its matching sidecar.
@@ -62,6 +69,7 @@ namespace RISE
 		//! The temporary movie is consumed on success and removed on failure.
 		bool PublishFireFrameSequenceFileTransaction(
 			const FrameStoreOutput::Metadata& metadata,
+			FireFrameSequenceEncoding encoding,
 			const std::string& closedTemporaryArtifactFilename,
 			const std::string& artifactFilename,
 			unsigned int width,

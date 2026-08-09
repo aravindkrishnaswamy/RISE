@@ -588,7 +588,9 @@ bool MovieRasterizerOutput::finalize(bool publish)
         if (_fireRender) {
             std::string publishError;
             _succeeded = RISE::Implementation::PublishFireFrameSequenceFileTransaction(
-                _fireMetadata, [_writerPath UTF8String], [_outputPath UTF8String],
+                _fireMetadata,
+                RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+                [_writerPath UTF8String], [_outputPath UTF8String],
                 static_cast<unsigned int>(_width), static_cast<unsigned int>(_height),
                 static_cast<unsigned int>(_fps), _framesReceived, _framePrimaries,
                 publishError);

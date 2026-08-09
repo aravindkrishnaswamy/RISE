@@ -1036,7 +1036,8 @@ namespace
 		std::string movieError;
 		const FrameStore::Metadata movieMetadata = store->Meta();
 		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
-			movieMetadata,movieTemporary,movieFile,16u,16u,30u,2u,
+			movieMetadata,FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+			movieTemporary,movieFile,16u,16u,30u,2u,
 			movieFrames,movieError);
 		std::vector<unsigned char> movieBytes, movieSidecar;
 		RISECBOR64::Value movieEnvelope;
@@ -1080,9 +1081,41 @@ namespace
 			movieDigest && movieDigest->GetText() == RISECBOR64::SHA256Hex(movieBytes) &&
 			movieOutput && movieOutput->Find("format") &&
 			movieOutput->Find("format")->GetText() == "MOV" &&
+			movieOutput->Find("codec") &&
+			movieOutput->Find("codec")->GetText() == "apple_prores_4444" &&
+			movieOutput->Find("bits_per_channel") &&
+			movieOutput->Find("bits_per_channel")->GetIntegerArgument() == 12u &&
 			movieOutput->Find("frame_count") &&
 			movieOutput->Find("frame_count")->GetIntegerArgument() == 2u,
 			"[fire provenance] movie records display/integer/lossy reasons and exact bytes" );
+
+		const std::string hevcTemporary = MakeTempPathWithoutExt()+"_hevc.closed";
+		const std::string hevcFile = MakeTempPathWithoutExt()+"_hevc.mp4";
+		{
+			std::ofstream movie(hevcTemporary,std::ios::binary);
+			movie.write("test-hevc-bytes",15);
+		}
+		const bool hevcPublished = PublishFireFrameSequenceFileTransaction(
+			movieMetadata,FireFrameSequenceEncoding::HevcMain10_10Bit,
+			hevcTemporary,hevcFile,16u,16u,30u,2u,movieFrames,movieError);
+		std::vector<unsigned char> hevcSidecar;
+		RISECBOR64::Value hevcEnvelope;
+		const bool hevcDecoded = hevcPublished &&
+			ReadFileAllBytes(hevcFile+".provenance.cbor",hevcSidecar) &&
+			RISECBOR64::DecodeCanonical(hevcSidecar,hevcEnvelope,&movieError);
+		const RISECBOR64::Value* hevcPayload = hevcDecoded ?
+			hevcEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* hevcConfig = hevcPayload ?
+			hevcPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* hevcOutput = hevcConfig ?
+			hevcConfig->Find("output") : nullptr;
+		Check( hevcOutput && hevcOutput->Find("format") &&
+			hevcOutput->Find("format")->GetText() == "MP4" &&
+			hevcOutput->Find("codec") &&
+			hevcOutput->Find("codec")->GetText() == "hevc_main10" &&
+			hevcOutput->Find("bits_per_channel") &&
+			hevcOutput->Find("bits_per_channel")->GetIntegerArgument() == 10u,
+			"[fire provenance] HEVC derivative records its actual MP4/Main10/10-bit encoding" );
 
 		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";
 		const std::string badMovieFile = MakeTempPathWithoutExt()+"_bad_movie.mov";
@@ -1092,6 +1125,7 @@ namespace
 		}
 		movieFrames[1].frameIndex = 7u;
 		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 				badMovieTemporary,badMovieFile,16u,16u,30u,2u,movieFrames,movieError) &&
 			!std::filesystem::exists(badMovieFile),
 			"[fire provenance] movie transaction rejects a noncontiguous frame-link mutation" );
@@ -1107,6 +1141,7 @@ namespace
 		movieFrames[1].frameIndex = 5u;
 		std::filesystem::create_directory(blockedMovieFile+".provenance.cbor");
 		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 				blockedMovieTemporary,blockedMovieFile,16u,16u,30u,2u,
 				movieFrames,movieError) && !std::filesystem::exists(blockedMovieFile),
 			"[fire provenance] movie sidecar failure leaves no unlabeled MOV artifact" );
@@ -1150,6 +1185,8 @@ namespace
 			"[fire provenance] failed nonfire publication preserves the prior pair" );
 		std::remove(movieFile.c_str());
 		std::remove((movieFile+".provenance.cbor").c_str());
+		std::remove(hevcFile.c_str());
+		std::remove((hevcFile+".provenance.cbor").c_str());
 		std::remove(badMovieTemporary.c_str());
 		std::remove(badMovieFile.c_str());
 		std::remove((badMovieFile+".provenance.cbor").c_str());

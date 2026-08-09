@@ -469,6 +469,7 @@ namespace
 
 	bool BuildFireFrameSequenceProvenance(
 		const FrameStoreOutput::Metadata& metadata,
+		const FireFrameSequenceEncoding encoding,
 		const std::string& artifactSha256,
 		const unsigned int width,
 		const unsigned int height,
@@ -523,14 +524,38 @@ namespace
 			error = "renderer build identity is unavailable or noncanonical";
 			return false;
 		}
+		const char* format = nullptr;
+		const char* codec = nullptr;
+		unsigned int bitsPerChannel = 0u;
+		switch( encoding ) {
+		case FireFrameSequenceEncoding::AppleProRes4444_12Bit:
+			format = "MOV";
+			codec = "apple_prores_4444";
+			bitsPerChannel = 12u;
+			break;
+		case FireFrameSequenceEncoding::AppleProRes4444_10Bit:
+			format = "MOV";
+			codec = "apple_prores_4444";
+			bitsPerChannel = 10u;
+			break;
+		case FireFrameSequenceEncoding::HevcMain10_10Bit:
+			format = "MP4";
+			codec = "hevc_main10";
+			bitsPerChannel = 10u;
+			break;
+		}
+		if( !format || !codec || !bitsPerChannel ) {
+			error = "movie output encoding is unavailable";
+			return false;
+		}
 		Value::Members resolvedMembers = resolvedConfig.GetMap();
 		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
-			{ "bits_per_channel", Value::Unsigned(12u) },
-			{ "codec", Value::String("apple_prores_4444") },
+			{ "bits_per_channel", Value::Unsigned(bitsPerChannel) },
+			{ "codec", Value::String(codec) },
 			{ "color_space", Value::String("rec2020_pq") },
 			{ "display_transform", Value::String("rec709_linear_to_rec2020_pq") },
 			{ "first_frame_index", Value::Unsigned(frames.front().frameIndex) },
-			{ "format", Value::String("MOV") },
+			{ "format", Value::String(format) },
 			{ "frame_count", Value::Unsigned(frames.size()) },
 			{ "frames_per_second", Value::Unsigned(framesPerSecond) },
 			{ "height", Value::Unsigned(height) },
@@ -843,6 +868,7 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 
 bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	const FrameStoreOutput::Metadata& metadata,
+	const FireFrameSequenceEncoding encoding,
 	const std::string& closedTemporaryArtifactFilename,
 	const std::string& artifactFilename,
 	const unsigned int width,
@@ -867,7 +893,7 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 		return false;
 	}
 	RISECBOR64::Bytes sidecarBytes;
-	if( !BuildFireFrameSequenceProvenance(metadata,
+	if( !BuildFireFrameSequenceProvenance(metadata,encoding,
 		RISECBOR64::SHA256Hex(artifactBytes),width,height,framesPerSecond,
 		frames,sidecarBytes,error) ) {
 		std::remove(closedTemporaryArtifactFilename.c_str());

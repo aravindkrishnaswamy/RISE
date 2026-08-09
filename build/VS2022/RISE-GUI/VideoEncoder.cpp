@@ -57,6 +57,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/log.h>
@@ -101,6 +102,29 @@ static void ensureFFmpegLogRouted()
         av_log_set_callback(riseFFmpegLogCallback);
         installed = true;
     }
+}
+
+static const char* const kX265HDR10Parameters =
+    "crf=20:hdr10-opt=1:"
+    "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):"
+    "max-cll=0,0";
+
+static bool authoredCodecOptionsAvailable(
+    const AVCodec* codec,
+    const VideoEncoder::Codec encoding)
+{
+    if (!codec) return false;
+    AVCodecContext* probe = avcodec_alloc_context3(codec);
+    if (!probe) return false;
+    bool available = probe->priv_data != nullptr;
+    if (available && encoding == VideoEncoder::Codec::ProRes4444) {
+        available = av_opt_set(probe->priv_data, "profile", "4444", 0) >= 0;
+    } else if (available) {
+        available = av_opt_set(probe->priv_data, "preset", "medium", 0) >= 0 &&
+            av_opt_set(probe->priv_data, "x265-params",kX265HDR10Parameters,0) >= 0;
+    }
+    avcodec_free_context(&probe);
+    return available;
 }
 
 // PQ-encode one scene-linear channel into a 16-bit code value.
@@ -279,9 +303,6 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
     const AVCodec* availableCodec = codec == Codec::ProRes4444 ?
         avcodec_find_encoder_by_name("prores_ks") :
         avcodec_find_encoder_by_name("libx265");
-    if (!availableCodec && codec == Codec::ProRes4444) {
-        availableCodec = avcodec_find_encoder(AV_CODEC_ID_PRORES);
-    }
     std::error_code fsError;
     std::filesystem::path parent = std::filesystem::path(m_outputPath).parent_path();
     if (parent.empty()) parent = ".";
@@ -295,7 +316,7 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
         probe.close();
         std::filesystem::remove(m_writerPath, fsError);
     }
-    m_routeAvailable = availableCodec != nullptr && probeCreated &&
+    m_routeAvailable = authoredCodecOptionsAvailable(availableCodec,codec) && probeCreated &&
         (codec != Codec::ProRes4444 || m_primaryEncoder != nullptr);
 }
 
@@ -553,23 +574,12 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // Find the encoder.
     const AVCodec* codec = nullptr;
     if (isProRes) {
-        // Prefer prores_ks: it supports the 4444 profile, an alpha plane,
-        // 10-bit output, and the "profile" option.  Fall back to the
-        // generic ProRes encoder if prores_ks is absent.
+        // prores_ks is the authored encoder: it supports the 4444 profile,
+        // alpha, the requested 10-bit pixel format, and the private options
+        // validated below.  A generic ProRes substitution is not equivalent.
         codec = avcodec_find_encoder_by_name("prores_ks");
         if (codec) {
             GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using prores_ks encoder");
-        } else {
-            codec = avcodec_find_encoder(AV_CODEC_ID_PRORES);
-            if (codec) {
-                // The generic prores / prores_aw encoder may ignore the
-                // "profile" / "qscale" priv_data options and may not emit the
-                // alpha plane for a 4444 / YUVA target, so the output can
-                // differ from the intended 10-bit 4:4:4+alpha ProRes 4444.
-                GlobalLog()->PrintEx(eLog_Warning,
-                    "VideoEncoder:: prores_ks unavailable; using generic ProRes encoder "
-                    "- alpha and the 4444 profile/qscale may not be honored");
-            }
         }
     } else {
         // libx265 is the only encoder in our FFmpeg build that emits 10-bit
@@ -629,10 +639,15 @@ bool VideoEncoder::setupEncoder(int width, int height)
         // "4444" from priv_data) and the numeric profile field.  FFmpeg 7.x
         // exposes only the AV_PROFILE_* spelling (the legacy
         // FF_PROFILE_PRORES_4444 macro was removed in 7.0).
-        av_opt_set(m_codecCtx->priv_data, "profile", "4444", 0);
+        if (!m_codecCtx->priv_data ||
+            av_opt_set(m_codecCtx->priv_data, "profile", "4444", 0) < 0) {
+            GlobalLog()->PrintEasyError(
+                "VideoEncoder:: prores_ks rejected the authored 4444 profile");
+            return false;
+        }
         m_codecCtx->profile = AV_PROFILE_PRORES_4444;
-        // Quality-based rate control (prores_ks "qscale", lower = better).
-        av_opt_set(m_codecCtx->priv_data, "qscale", "5", 0);
+        m_codecCtx->flags |= AV_CODEC_FLAG_QSCALE;
+        m_codecCtx->global_quality = FF_QP2LAMBDA * 5;
     } else {
         // HEVC Main10: libx265 auto-selects the Main10 profile from the
         // 10-bit pixel format, so we don't pin avctx->profile (which could
@@ -642,12 +657,14 @@ bool VideoEncoder::setupEncoder(int width, int height)
         // 0.0001..10000 nit range matching our PQ encode where linear 1.0 =
         // 100 nits).  x265 units: CIE xy * 50000; luminance in 0.0001 cd/m^2.
         // MaxCLL/MaxFALL left 0,0 ("unknown") — we don't pre-scan for peak.
-        av_opt_set(m_codecCtx->priv_data, "preset", "medium", 0);
-        av_opt_set(m_codecCtx->priv_data, "x265-params",
-            "crf=20:hdr10-opt=1:"
-            "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):"
-            "max-cll=0,0",
-            0);
+        if (!m_codecCtx->priv_data ||
+            av_opt_set(m_codecCtx->priv_data, "preset", "medium", 0) < 0 ||
+            av_opt_set(m_codecCtx->priv_data, "x265-params",
+                kX265HDR10Parameters,0) < 0) {
+            GlobalLog()->PrintEasyError(
+                "VideoEncoder:: libx265 rejected the authored HDR10 options");
+            return false;
+        }
     }
 
     if (m_formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
@@ -662,6 +679,14 @@ bool VideoEncoder::setupEncoder(int width, int height)
         GlobalLog()->PrintEx(eLog_Error,
             "VideoEncoder:: Could not open %s codec: %s (the FFmpeg:: lines above carry the specific reason)",
             isProRes ? "ProRes" : "libx265", errbuf);
+        return false;
+    }
+    const AVPixelFormat requiredPixelFormat = isProRes ?
+        AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV420P10LE;
+    if (m_codecCtx->pix_fmt != requiredPixelFormat ||
+        (isProRes && m_codecCtx->profile != AV_PROFILE_PRORES_4444)) {
+        GlobalLog()->PrintEasyError(
+            "VideoEncoder:: encoder did not preserve the authored profile/pixel format");
         return false;
     }
 
@@ -875,7 +900,11 @@ void VideoEncoder::finalize(const bool publish)
     std::string publicationError;
     if (m_fireRender) {
         m_succeeded = Implementation::PublishFireFrameSequenceFileTransaction(
-            m_fireMetadata, m_writerPath, m_outputPath,
+            m_fireMetadata,
+            m_codec == Codec::ProRes4444 ?
+                Implementation::FireFrameSequenceEncoding::AppleProRes4444_10Bit :
+                Implementation::FireFrameSequenceEncoding::HevcMain10_10Bit,
+            m_writerPath, m_outputPath,
             static_cast<unsigned int>(m_width), static_cast<unsigned int>(m_height),
             static_cast<unsigned int>(m_fps), m_framesReceived,
             m_framePrimaries, publicationError);
