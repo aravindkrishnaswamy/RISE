@@ -600,13 +600,22 @@ int main()
 			"Windows movies publish raw fire primaries and linked derivatives transactionally" );
 		Check( windowsVideoSource.find("avcodec_find_encoder(AV_CODEC_ID_PRORES)") ==
 				std::string::npos &&
-			windowsVideoSource.find("authoredCodecOptionsAvailable(availableCodec,codec)") !=
+			windowsVideoSource.find(
+				"authoredCodecNegotiationAvailable(availableCodec,codec,fps)") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_open2(probe,codec,nullptr)") !=
 				std::string::npos &&
 			windowsVideoSource.find("FireFrameSequenceEncoding::AppleProRes4444_10Bit") !=
 				std::string::npos &&
 			windowsVideoSource.find("FireFrameSequenceEncoding::HevcMain10_10Bit") !=
 				std::string::npos,
 			"Windows movie routes require exact encoders and attest the negotiated format" );
+		Check( windowsVideoHeader.find("m_primaryRouteAvailable") != std::string::npos &&
+			windowsVideoHeader.find("m_derivativeAvailable") != std::string::npos &&
+			windowsEngine.find("hevcEncoder->DerivativeAvailable()") != std::string::npos &&
+			windowsVideoSource.find("authoredencoderunavailableatpreflight") !=
+				std::string::npos,
+			"Windows fire movies separate raw-primary viability from optional negotiated derivatives" );
 		Check( windowsVideoSource.find("rgbaData(static_cast<size_t>(m_width)*m_height*4u,uint16_t(0))") !=
 				std::string::npos &&
 			windowsVideoSource.find("for(inty=0;y<sourceHeight;++y)") !=
@@ -635,6 +644,15 @@ int main()
 				std::string::npos &&
 			bridgeSource.find("HasFinalizedFirePrimaries") != std::string::npos,
 			"macOS movie derivative failure preserves finalized fire frame primaries" );
+		Check( movieSource.find("ProbeMovieDerivativeAvailability") != std::string::npos &&
+			movieSource.find("canApplyOutputSettings") != std::string::npos &&
+			movieSource.find("startWriting") != std::string::npos &&
+			movieSource.find("CVPixelBufferPoolCreatePixelBuffer") != std::string::npos &&
+			movieSource.find("_routeAvailable = _primaryEncoder != nullptr && probeCreated") !=
+				std::string::npos &&
+			movieSource.find("_derivativeAvailable = probeCreated &&") !=
+				std::string::npos,
+			"macOS fire movies negotiate the exact derivative while preserving the FP32 primary route" );
 		const std::string compactBridge = withoutWhitespace(bridgeSource);
 		Check( compactBridge.find(
 			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=

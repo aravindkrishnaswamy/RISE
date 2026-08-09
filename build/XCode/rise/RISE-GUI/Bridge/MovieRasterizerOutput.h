@@ -87,6 +87,7 @@ private:
     bool _derivativeFailed;
     bool _succeeded;
     bool _routeAvailable;
+    bool _derivativeAvailable;
     bool _fireRender;
     bool _metadataCaptured;
     int _width;

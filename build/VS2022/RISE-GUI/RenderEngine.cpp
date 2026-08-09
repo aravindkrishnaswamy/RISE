@@ -896,15 +896,20 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                 VideoEncoder* hevcEncoder =
                     new VideoEncoder(videoBasePath, VideoEncoder::Codec::HevcHdr10);
                 rasterizer->AddRasterizerOutput(proResEncoder);
-                rasterizer->AddRasterizerOutput(hevcEncoder);
                 proResEncoder->release();
-                hevcEncoder->release();
+                if (hevcEncoder->DerivativeAvailable()) {
+                    rasterizer->AddRasterizerOutput(hevcEncoder);
+                    hevcEncoder->release();
+                } else {
+                    hevcEncoder->release();
+                    hevcEncoder = nullptr;
+                }
 
                 bool result = false;
                 try {
                     result = job->RasterizeAnimationUsingOptions();
                     proResEncoder->finalize(result);
-                    hevcEncoder->finalize(result);
+                    if (hevcEncoder) hevcEncoder->finalize(result);
                     if (result && !proResEncoder->wroteOutput() &&
                         !proResEncoder->HasFinalizedFirePrimaries()) result = false;
                 } catch (...) {
@@ -912,7 +917,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                     // the rasterizer owns these encoder references. Finalize
                     // and release them before propagating to that boundary.
                     try { proResEncoder->finalize(false); } catch (...) {}
-                    try { hevcEncoder->finalize(false); } catch (...) {}
+                    if (hevcEncoder) {
+                        try { hevcEncoder->finalize(false); } catch (...) {}
+                    }
                     rasterizer->FreeRasterizerOutputs();
                     m_productionVFSAttachedToRasterizer = false;
                     throw;
@@ -923,7 +930,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                     writtenParts << QStringLiteral("%1 (ProRes 4444)").arg(
                         QFileInfo(QString::fromStdString(proResEncoder->outputPath())).fileName());
                 }
-                if (hevcEncoder->wroteOutput()) {
+                if (hevcEncoder && hevcEncoder->wroteOutput()) {
                     writtenParts << QStringLiteral("%1 (HEVC HDR10)").arg(
                         QFileInfo(QString::fromStdString(hevcEncoder->outputPath())).fileName());
                 }

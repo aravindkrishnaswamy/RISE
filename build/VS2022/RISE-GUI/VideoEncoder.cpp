@@ -109,19 +109,54 @@ static const char* const kX265HDR10Parameters =
     "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):"
     "max-cll=0,0";
 
-static bool authoredCodecOptionsAvailable(
-    const AVCodec* codec,
-    const VideoEncoder::Codec encoding)
+static bool configureAuthoredCodecContext(
+    AVCodecContext* context,
+    const VideoEncoder::Codec encoding,
+    const int fps,
+    const int width,
+    const int height)
 {
-    if (!codec) return false;
+    if (!context || !context->priv_data || fps <= 0 || width <= 0 || height <= 0) {
+        return false;
+    }
+    const bool isProRes = encoding == VideoEncoder::Codec::ProRes4444;
+    context->width = width;
+    context->height = height;
+    context->time_base = {1, fps};
+    context->framerate = {fps, 1};
+    context->max_b_frames = 0;
+    context->gop_size = isProRes ? 1 : 2 * fps;
+    context->pix_fmt = isProRes ? AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV420P10LE;
+    context->color_primaries = AVCOL_PRI_BT2020;
+    context->color_trc = AVCOL_TRC_SMPTE2084;
+    context->colorspace = AVCOL_SPC_BT2020_NCL;
+    context->color_range = isProRes ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    if (isProRes) {
+        if (av_opt_set(context->priv_data, "profile", "4444", 0) < 0) return false;
+        context->profile = AV_PROFILE_PRORES_4444;
+        context->flags |= AV_CODEC_FLAG_QSCALE;
+        context->global_quality = FF_QP2LAMBDA * 5;
+        return true;
+    }
+    return av_opt_set(context->priv_data, "preset", "medium", 0) >= 0 &&
+        av_opt_set(context->priv_data, "x265-params",kX265HDR10Parameters,0) >= 0;
+}
+
+static bool authoredCodecNegotiationAvailable(
+    const AVCodec* codec,
+    const VideoEncoder::Codec encoding,
+    const int fps)
+{
+    if (!codec || fps <= 0) return false;
     AVCodecContext* probe = avcodec_alloc_context3(codec);
     if (!probe) return false;
-    bool available = probe->priv_data != nullptr;
-    if (available && encoding == VideoEncoder::Codec::ProRes4444) {
-        available = av_opt_set(probe->priv_data, "profile", "4444", 0) >= 0;
-    } else if (available) {
-        available = av_opt_set(probe->priv_data, "preset", "medium", 0) >= 0 &&
-            av_opt_set(probe->priv_data, "x265-params",kX265HDR10Parameters,0) >= 0;
+    const bool isProRes = encoding == VideoEncoder::Codec::ProRes4444;
+    bool available = configureAuthoredCodecContext(probe,encoding,fps,16,16);
+    if (available) {
+        available = avcodec_open2(probe, codec, nullptr) >= 0 &&
+            probe->pix_fmt == (isProRes ? AV_PIX_FMT_YUVA444P10LE :
+                AV_PIX_FMT_YUV420P10LE) &&
+            (!isProRes || probe->profile == AV_PROFILE_PRORES_4444);
     }
     avcodec_free_context(&probe);
     return available;
@@ -316,8 +351,15 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
         probe.close();
         std::filesystem::remove(m_writerPath, fsError);
     }
-    m_routeAvailable = authoredCodecOptionsAvailable(availableCodec,codec) && probeCreated &&
-        (codec != Codec::ProRes4444 || m_primaryEncoder != nullptr);
+    m_primaryRouteAvailable = codec == Codec::ProRes4444 &&
+        m_primaryEncoder != nullptr && probeCreated;
+    m_derivativeAvailable = probeCreated && authoredCodecNegotiationAvailable(
+        availableCodec,codec,fps);
+    if (!m_derivativeAvailable) {
+        GlobalLog()->PrintEx(eLog_Warning,
+            "VideoEncoder:: authored %s display derivative is unavailable at preflight",
+            codecName);
+    }
 }
 
 VideoEncoder::~VideoEncoder()
@@ -477,6 +519,14 @@ void VideoEncoder::outputFrame(
         throw std::runtime_error(
             "output_provenance_unavailable: movie derivative has no matching raw primary");
     }
+    if (!m_derivativeAvailable) {
+        if (m_fireRender) {
+            failDerivative("authored encoder unavailable at preflight");
+            return;
+        }
+        m_failed = true;
+        throw std::runtime_error("authored movie encoder unavailable at preflight");
+    }
 
     const int sourceWidth = static_cast<int>(pImage.GetWidth());
     const int sourceHeight = static_cast<int>(pImage.GetHeight());
@@ -612,59 +662,11 @@ bool VideoEncoder::setupEncoder(int width, int height)
         return false;
     }
 
-    m_codecCtx->width = m_width;
-    m_codecCtx->height = m_height;
-    m_codecCtx->time_base = {1, m_fps};
-    m_codecCtx->framerate = {m_fps, 1};
-    m_codecCtx->max_b_frames = 0;   // no B-frames (keeps PTS handling simple)
-    // ProRes is all-intra (every frame a keyframe).  HEVC is a delivery
-    // codec — allow inter-frame compression with a ~2 s keyframe interval
-    // so the .mp4 stays small; forcing all-intra HEVC would bloat it.
-    m_codecCtx->gop_size = isProRes ? 1 : (2 * m_fps);
-    m_codecCtx->pix_fmt  = isProRes ? AV_PIX_FMT_YUVA444P10LE   // 10-bit 4:4:4 + alpha
-                                    : AV_PIX_FMT_YUV420P10LE;   // HDR10 = 10-bit 4:2:0
-
-    // HDR colour tags: BT.2020 primaries, PQ (ST.2084) transfer, BT.2020
-    // non-constant-luminance matrix.  ProRes master uses full ("JPEG")
-    // range; HDR10 delivery uses the standard limited ("MPEG"/video) range
-    // consumer HDR players expect.  (libx265 forwards these avctx color
-    // fields into the HEVC VUI automatically.)
-    m_codecCtx->color_primaries = AVCOL_PRI_BT2020;
-    m_codecCtx->color_trc       = AVCOL_TRC_SMPTE2084;
-    m_codecCtx->colorspace      = AVCOL_SPC_BT2020_NCL;
-    m_codecCtx->color_range     = isProRes ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-
-    if (isProRes) {
-        // ProRes 4444 profile.  Set both the option string (prores_ks reads
-        // "4444" from priv_data) and the numeric profile field.  FFmpeg 7.x
-        // exposes only the AV_PROFILE_* spelling (the legacy
-        // FF_PROFILE_PRORES_4444 macro was removed in 7.0).
-        if (!m_codecCtx->priv_data ||
-            av_opt_set(m_codecCtx->priv_data, "profile", "4444", 0) < 0) {
-            GlobalLog()->PrintEasyError(
-                "VideoEncoder:: prores_ks rejected the authored 4444 profile");
-            return false;
-        }
-        m_codecCtx->profile = AV_PROFILE_PRORES_4444;
-        m_codecCtx->flags |= AV_CODEC_FLAG_QSCALE;
-        m_codecCtx->global_quality = FF_QP2LAMBDA * 5;
-    } else {
-        // HEVC Main10: libx265 auto-selects the Main10 profile from the
-        // 10-bit pixel format, so we don't pin avctx->profile (which could
-        // conflict with that).  All HDR10 signalling goes through x265-params:
-        // CRF 20 (high-quality delivery), HDR10 4:2:0 optimisation, and the
-        // SMPTE ST.2086 mastering-display SEI (BT.2020 primaries + D65 white,
-        // 0.0001..10000 nit range matching our PQ encode where linear 1.0 =
-        // 100 nits).  x265 units: CIE xy * 50000; luminance in 0.0001 cd/m^2.
-        // MaxCLL/MaxFALL left 0,0 ("unknown") — we don't pre-scan for peak.
-        if (!m_codecCtx->priv_data ||
-            av_opt_set(m_codecCtx->priv_data, "preset", "medium", 0) < 0 ||
-            av_opt_set(m_codecCtx->priv_data, "x265-params",
-                kX265HDR10Parameters,0) < 0) {
-            GlobalLog()->PrintEasyError(
-                "VideoEncoder:: libx265 rejected the authored HDR10 options");
-            return false;
-        }
+    if (!configureAuthoredCodecContext(
+            m_codecCtx,m_codec,m_fps,m_width,m_height)) {
+        GlobalLog()->PrintEasyError(
+            "VideoEncoder:: exact authored codec settings are unavailable");
+        return false;
     }
 
     if (m_formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {

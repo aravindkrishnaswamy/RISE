@@ -78,11 +78,15 @@ public:
 
     RISE::FireArtifactRouteKind FireArtifactRoute() const override
     {
-        if (!m_routeAvailable) return RISE::FireArtifactRouteKind::UnavailableArtifact;
-        return m_codec == Codec::ProRes4444 ?
-            RISE::FireArtifactRouteKind::PrimaryArtifact :
-            RISE::FireArtifactRouteKind::DerivativeArtifact;
+        if (m_codec == Codec::ProRes4444) {
+            return m_primaryRouteAvailable ? RISE::FireArtifactRouteKind::PrimaryArtifact :
+                RISE::FireArtifactRouteKind::UnavailableArtifact;
+        }
+        return m_derivativeAvailable ? RISE::FireArtifactRouteKind::DerivativeArtifact :
+            RISE::FireArtifactRouteKind::UnavailableArtifact;
     }
+
+    bool DerivativeAvailable() const { return m_derivativeAvailable; }
 
     void finalize(bool publish = true);
 
@@ -117,7 +121,8 @@ private:
     bool m_failed = false;
     bool m_derivativeFailed = false;
     bool m_succeeded = false;
-    bool m_routeAvailable = false;
+    bool m_primaryRouteAvailable = false;
+    bool m_derivativeAvailable = false;
     bool m_fireRender = false;
     bool m_metadataCaptured = false;
     unsigned int m_framesReceived = 0;
