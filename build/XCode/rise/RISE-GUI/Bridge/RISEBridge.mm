@@ -688,6 +688,25 @@ private:
     std::condition_variable& mCV;
 };
 
+class ProductionRenderLease
+{
+public:
+    explicit ProductionRenderLease(std::atomic<bool>& active) : mActive(active)
+    {
+        bool expected = false;
+        mAcquired = mActive.compare_exchange_strong(
+            expected,true,std::memory_order_acq_rel);
+    }
+    ~ProductionRenderLease()
+    {
+        if( mAcquired ) mActive.store(false,std::memory_order_release);
+    }
+    bool Acquired() const { return mAcquired; }
+private:
+    std::atomic<bool>& mActive;
+    bool mAcquired = false;
+};
+
 // ============================================================
 // RISEBridge implementation
 // ============================================================
@@ -752,6 +771,7 @@ private:
     NSString* _videoOutputPath;
     RenderETAEstimator _eta;  // fed from worker thread, sampled from UI thread
     std::mutex _etaMutex;
+    std::atomic<bool> _productionRenderActive { false };
 }
 
 - (instancetype)init {
@@ -1160,7 +1180,8 @@ private:
     // full-quality, multi-output rendered result lives.  Saving
     // from the interactive (live-preview) VFS would dump the
     // low-quality preview, not the production result.
-    if (!_productionVFS || !path || !formatName) return NO;
+    if (_productionRenderActive.load(std::memory_order_acquire) ||
+        !_productionVFS || !path || !formatName) return NO;
 	IFrameEncoder* enc =
 		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
 			[formatName UTF8String]);
@@ -1402,6 +1423,8 @@ private:
 
 - (BOOL)rasterizeAtSceneTime:(double)t {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
@@ -1441,6 +1464,8 @@ private:
 
 - (BOOL)rasterizeAnimation {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
@@ -1511,6 +1536,8 @@ private:
                      bottom:(uint32_t)bottom
                 atSceneTime:(double)t {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,

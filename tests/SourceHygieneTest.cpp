@@ -566,6 +566,20 @@ int main()
 				"if(m_state!=Completed&&m_state!=Cancelled)returnfalse;") !=
 				std::string::npos,
 			"Windows GUI and API SaveAs reject in-progress frame publication" );
+		std::ifstream windowsLibraryProjectFile(repoRoot / "build" / "VS2022" /
+			"Library" / "Library.vcxproj",std::ios::binary);
+		const std::string windowsLibraryProject{
+			std::istreambuf_iterator<char>(windowsLibraryProjectFile),
+			std::istreambuf_iterator<char>() };
+		const std::size_t releaseGroup = windowsLibraryProject.find(
+			"<ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">");
+		const std::size_t debugGroup = windowsLibraryProject.find(
+			"<ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">",
+			releaseGroup);
+		Check( releaseGroup != std::string::npos && debugGroup != std::string::npos &&
+			windowsLibraryProject.substr(releaseGroup,debugGroup-releaseGroup).find(
+				"<Optimization>MaxSpeed</Optimization>") != std::string::npos,
+			"Windows renderer-build O2 attestation is pinned by Release project flags" );
 
 		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
 			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
@@ -580,6 +594,13 @@ int main()
 				std::string::npos &&
 			bridgeSource.find("HasFinalizedFirePrimaries") != std::string::npos,
 			"macOS movie derivative failure preserves finalized fire frame primaries" );
+		const std::string compactBridge = withoutWhitespace(bridgeSource);
+		Check( compactBridge.find(
+			"if(_productionRenderActive.load(std::memory_order_acquire)||!_productionVFS||!path||!formatName)returnNO;") !=
+				std::string::npos &&
+			compactBridge.find("ProductionRenderLeaserenderLease(_productionRenderActive);") !=
+				std::string::npos,
+			"macOS SaveAs rechecks the bridge production-render state at execution time" );
 		Check( movieSource.find("OutputPreDenoisedImage") != std::string::npos &&
 			movieSource.find("outputFrame(pImage, frame, true, false)") !=
 				std::string::npos &&

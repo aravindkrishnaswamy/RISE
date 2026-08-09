@@ -64,6 +64,7 @@
            MSVC defaults to /std:c++14; pin to C++17 explicitly so
            std::filesystem and std::scoped_lock compile cleanly. -->
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
