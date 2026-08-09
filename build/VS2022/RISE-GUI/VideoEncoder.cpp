@@ -39,6 +39,8 @@
 
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/ILog.h"
+#include "Rendering/FrameEncoders.h"
+#include "Utilities/RISECBOR64.h"
 
 #include <cstdint>
 #include <cstring>
@@ -46,6 +48,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 extern "C" {
@@ -191,12 +197,69 @@ static std::string forceExtension(const std::string& path, const char* ext)
     return path + ext;
 }
 
+static bool sameFireMedium(
+    const FrameStoreOutput::ActiveFireMedium& lhs,
+    const FrameStoreOutput::ActiveFireMedium& rhs)
+{
+    return lhs.mediaKind == rhs.mediaKind &&
+        lhs.managerName == rhs.managerName &&
+        lhs.bindingKind == rhs.bindingKind &&
+        lhs.bindingOwner == rhs.bindingOwner &&
+        lhs.authoredConfigDigest == rhs.authoredConfigDigest &&
+        lhs.opticalRecordIds == rhs.opticalRecordIds;
+}
+
+static bool sameFireRenderIdentity(
+    const FrameStoreOutput::Metadata& lhs,
+    const FrameStoreOutput::Metadata& rhs)
+{
+    const auto staticConfig = [](const std::vector<unsigned char>& encoded,
+                                 std::vector<unsigned char>& normalized) {
+        RISECBOR64::Value record;
+        std::string error;
+        if (!RISECBOR64::DecodeCanonical(encoded, record, &error) ||
+            record.GetType() != RISECBOR64::Value::Map) return false;
+        RISECBOR64::Value::Members members;
+        for (const auto& member : record.GetMap()) {
+            if (member.first != "camera" &&
+                member.first != "evaluated_camera_states") members.push_back(member);
+        }
+        return RISECBOR64::Encode(
+            RISECBOR64::Value::MapValue(members), normalized, &error);
+    };
+    std::vector<unsigned char> lhsConfig;
+    std::vector<unsigned char> rhsConfig;
+    if (!staticConfig(lhs.resolvedRenderConfigCoreV1, lhsConfig) ||
+        !staticConfig(rhs.resolvedRenderConfigCoreV1, rhsConfig) ||
+        lhs.renderFidelityStatus != rhs.renderFidelityStatus ||
+        lhs.renderReasonCodes != rhs.renderReasonCodes ||
+        lhs.activeFireOpticsRecordIds != rhs.activeFireOpticsRecordIds ||
+        lhsConfig != rhsConfig || lhs.rendererBuildV1 != rhs.rendererBuildV1 ||
+        lhs.rendererBuildId != rhs.rendererBuildId ||
+        lhs.activeFireMedia.size() != rhs.activeFireMedia.size()) return false;
+    for (size_t i = 0; i < lhs.activeFireMedia.size(); ++i) {
+        if (!sameFireMedium(lhs.activeFireMedia[i], rhs.activeFireMedia[i])) return false;
+    }
+    return true;
+}
+
 VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
     : m_outputPath(forceExtension(outputPath, extensionForCodec(codec)))
     , m_codec(codec)
     , m_fps(fps)
 {
     ensureFFmpegLogRouted();
+
+    const std::string token = std::to_string(
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)));
+    m_writerPath = m_outputPath + ".rise-tmp.movie." + token;
+    std::filesystem::path primaryBase(m_outputPath);
+    primaryBase.replace_extension();
+    m_primaryPattern = primaryBase.string() + ".fire-primary-" + token + ".frame";
+    if (m_codec == Codec::ProRes4444) {
+        m_primaryEncoder = Implementation::FrameEncoderRegistry::Get()
+            .AcquireByFormatName("EXR");
+    }
 
     const char* codecName =
         (codec == Codec::ProRes4444) ? "ProRes 4444" : "HEVC HDR10";
@@ -212,12 +275,40 @@ VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
     GlobalLog()->PrintEx(eLog_Event,
         "VideoEncoder:: Created for output: %s (codec=%s, fps=%d)",
         m_outputPath.c_str(), codecName, fps);
+
+    const AVCodec* availableCodec = codec == Codec::ProRes4444 ?
+        avcodec_find_encoder_by_name("prores_ks") :
+        avcodec_find_encoder_by_name("libx265");
+    if (!availableCodec && codec == Codec::ProRes4444) {
+        availableCodec = avcodec_find_encoder(AV_CODEC_ID_PRORES);
+    }
+    std::error_code fsError;
+    std::filesystem::path parent = std::filesystem::path(m_outputPath).parent_path();
+    if (parent.empty()) parent = ".";
+    const bool destinationsUsable = std::filesystem::is_directory(parent, fsError) &&
+        !std::filesystem::is_directory(m_outputPath, fsError) &&
+        !std::filesystem::is_directory(m_outputPath + ".provenance.cbor", fsError);
+    bool probeCreated = false;
+    if (destinationsUsable && fps > 0) {
+        std::ofstream probe(m_writerPath, std::ios::binary | std::ios::trunc);
+        probeCreated = probe.good();
+        probe.close();
+        std::filesystem::remove(m_writerPath, fsError);
+    }
+    m_routeAvailable = availableCodec != nullptr && probeCreated &&
+        (codec != Codec::ProRes4444 || m_primaryEncoder != nullptr);
 }
 
 VideoEncoder::~VideoEncoder()
 {
     if (!m_finalized) {
-        finalize();
+        finalize(false);
+    }
+
+    if (m_primaryEncoder) m_primaryEncoder->release();
+    {
+        std::lock_guard<std::mutex> lock(m_frameStoreMutex);
+        if (m_frameStore) m_frameStore->release();
     }
 
     if (m_swsCtx) sws_freeContext(m_swsCtx);
@@ -236,27 +327,159 @@ void VideoEncoder::OutputIntermediateImage(
     // No-op for video output, matching Mac app behavior
 }
 
+void VideoEncoder::OnRasterizerFrameStoreChanged(
+    Implementation::FrameStore* frameStore)
+{
+    if (frameStore) frameStore->addref();
+    std::lock_guard<std::mutex> lock(m_frameStoreMutex);
+    if (m_frameStore) m_frameStore->release();
+    m_frameStore = frameStore;
+}
+
 void VideoEncoder::OutputImage(
     const IRasterImage& pImage, const Rect* /*pRegion*/,
     const unsigned int frame)
 {
-    int w = pImage.GetWidth();
-    int h = pImage.GetHeight();
+    outputFrame(pImage, frame, true, true);
+}
+
+void VideoEncoder::OutputPreDenoisedImage(
+    const IRasterImage& pImage, const Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, true, false);
+}
+
+void VideoEncoder::OutputDenoisedImage(
+    const IRasterImage& pImage, const Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, false, true);
+}
+
+void VideoEncoder::outputFrame(
+    const IRasterImage& pImage,
+    const unsigned int frame,
+    const bool capturePrimary,
+    const bool writeDerivative)
+{
+    if (m_finalized) return;
+
+    Implementation::FrameStore* frameStore = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_frameStoreMutex);
+        frameStore = m_frameStore;
+        if (frameStore) frameStore->addref();
+    }
+    struct StoreRelease {
+        void operator()(Implementation::FrameStore* store) const
+            { if (store) store->release(); }
+    };
+    std::unique_ptr<Implementation::FrameStore, StoreRelease> storeSnapshot(frameStore);
+    FrameStoreOutput::Metadata metadata;
+    if (frameStore) metadata = frameStore->Meta();
+    const bool fireFrame = !metadata.renderFidelityStatus.empty();
+    if (m_framesReceived == 0u && m_framePrimaries.empty()) {
+        m_fireRender = fireFrame;
+    } else if (m_fireRender != fireFrame) {
+        m_failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: fire fidelity changed within movie");
+    }
+
+    if (m_fireRender && capturePrimary) {
+        if (!frameStore || (m_codec == Codec::ProRes4444 && !m_primaryEncoder)) {
+            m_failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary encoder unavailable");
+        }
+        if (m_metadataCaptured && !sameFireRenderIdentity(m_fireMetadata, metadata)) {
+            m_failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: fire render identity changed within movie");
+        }
+        if (!m_framePrimaries.empty() &&
+            frame != m_framePrimaries.back().frameIndex + 1u) {
+            m_failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: movie frame indices are not contiguous");
+        }
+        if (!m_metadataCaptured) {
+            m_fireMetadata = metadata;
+            m_metadataCaptured = true;
+        }
+        m_fireMetadata = metadata;
+
+        if (m_codec == Codec::ProRes4444) {
+            EncodeOpts primaryOpts;
+            primaryOpts.colorSpace = eColorSpace_Rec709RGB_Linear;
+            primaryOpts.bpp = 32u;
+            primaryOpts.exrCompression = eExrCompression_Piz;
+            primaryOpts.exrWithAlpha = true;
+            primaryOpts.viewTransform = FrameStoreOutput::ViewTransform::Identity();
+            primaryOpts.frame = frame;
+            const std::string primaryPath = m_primaryPattern +
+                (frame < 10u ? "000" : frame < 100u ? "00" : frame < 1000u ? "0" : "") +
+                std::to_string(frame) + ".exr";
+            std::string primaryError;
+            if (!Implementation::EncodeFrameStoreFileTransaction(
+                *frameStore, *m_primaryEncoder, primaryOpts, primaryPath, primaryError)) {
+                m_failed = true;
+                GlobalLog()->PrintEx(eLog_Error,
+                    "VideoEncoder:: output_provenance_unavailable for frame %u: %s",
+                    frame, primaryError.c_str());
+                throw std::runtime_error(
+                    "output_provenance_unavailable: animation frame primary failed");
+            }
+            metadata = frameStore->Meta();
+        }
+        if (metadata.primaryProvenanceId.empty() ||
+            metadata.primaryArtifactSha256.empty() ||
+            (metadata.primaryArtifactFidelity != "predictive_primary" &&
+             metadata.primaryArtifactFidelity != "preview_primary")) {
+            m_failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary linkage is incomplete");
+        }
+        Implementation::FireFramePrimary link;
+        link.frameIndex = frame;
+        link.provenanceId = metadata.primaryProvenanceId;
+        link.artifactSha256 = metadata.primaryArtifactSha256;
+        m_framePrimaries.push_back(link);
+    }
+
+    if (!writeDerivative || m_derivativeFailed) return;
+    if (m_fireRender && (m_framePrimaries.empty() ||
+        m_framePrimaries.back().frameIndex != frame ||
+        m_framesReceived + 1u != m_framePrimaries.size())) {
+        m_failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: movie derivative has no matching raw primary");
+    }
+
+    const int sourceWidth = static_cast<int>(pImage.GetWidth());
+    const int sourceHeight = static_cast<int>(pImage.GetHeight());
 
     // A prior frame already failed to initialise the encoder (e.g. the
     // HEVC path on an ffmpeg build without libx265).  Don't retry per
     // frame — that would re-allocate (and leak) a format context and spam
     // the log on every frame.
     if (m_setupFailed) {
+        if (m_fireRender) failDerivative("encoder initialization");
         return;
     }
 
     // Initialize on first frame
     if (!m_started) {
-        if (!setupEncoder(w, h)) {
+        if (!setupEncoder(sourceWidth, sourceHeight)) {
             m_setupFailed = true;
             GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Failed to initialize encoder");
-            return;
+            if (m_fireRender) {
+                failDerivative("encoder initialization");
+                return;
+            }
+            m_failed = true;
+            throw std::runtime_error("movie writer initialization failed");
         }
         m_started = true;
     }
@@ -264,9 +487,10 @@ void VideoEncoder::OutputImage(
     // Convert IRasterImage to a 16-bit RGBA buffer (matches swscale's
     // AV_PIX_FMT_RGBA64LE source).  RGB is PQ-encoded so scene-linear
     // values above 1.0 survive; alpha (coverage) is encoded linearly.
-    std::vector<uint16_t> rgbaData(static_cast<size_t>(m_width) * m_height * 4);
-    for (int y = 0; y < m_height; ++y) {
-        for (int x = 0; x < m_width; ++x) {
+    std::vector<uint16_t> rgbaData(
+        static_cast<size_t>(m_width) * m_height * 4u, uint16_t(0));
+    for (int y = 0; y < sourceHeight; ++y) {
+        for (int x = 0; x < sourceWidth; ++x) {
             RISEColor c = pImage.GetPEL(x, y);
             size_t idx = (static_cast<size_t>(y) * m_width + x) * 4;
 
@@ -288,7 +512,14 @@ void VideoEncoder::OutputImage(
         }
     }
 
-    encodeFrame(rgbaData.data(), m_width, m_height, frame);
+    if (!encodeFrame(rgbaData.data(), m_width, m_height, frame)) {
+        if (m_fireRender) {
+            failDerivative("frame encode or packet write");
+            return;
+        }
+        m_failed = true;
+        throw std::runtime_error("movie frame encode failed");
+    }
     m_framesReceived++;
 
     GlobalLog()->PrintEx(eLog_Event,
@@ -313,7 +544,7 @@ bool VideoEncoder::setupEncoder(int width, int height)
         isProRes ? "ProRes 4444" : "HEVC HDR10 (Main10)",
         width, height, m_width, m_height);
 
-    int ret = avformat_alloc_output_context2(&m_formatCtx, nullptr, muxerName, m_outputPath.c_str());
+    int ret = avformat_alloc_output_context2(&m_formatCtx, nullptr, muxerName, m_writerPath.c_str());
     if (ret < 0 || !m_formatCtx) {
         GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not create output context");
         return false;
@@ -452,7 +683,7 @@ bool VideoEncoder::setupEncoder(int width, int height)
 
     // Open output file
     if (!(m_formatCtx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&m_formatCtx->pb, m_outputPath.c_str(), AVIO_FLAG_WRITE);
+        ret = avio_open(&m_formatCtx->pb, m_writerPath.c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
             GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not open output file");
             return false;
@@ -474,6 +705,10 @@ bool VideoEncoder::setupEncoder(int width, int height)
 
     // Allocate frame and packet
     m_frame = av_frame_alloc();
+    if (!m_frame) {
+        GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not allocate frame");
+        return false;
+    }
     m_frame->format = m_codecCtx->pix_fmt;
     m_frame->width = m_width;
     m_frame->height = m_height;
@@ -485,9 +720,17 @@ bool VideoEncoder::setupEncoder(int width, int height)
     m_frame->colorspace      = m_codecCtx->colorspace;
     m_frame->color_range     = m_codecCtx->color_range;
 
-    av_frame_get_buffer(m_frame, 0);
+    if (av_frame_get_buffer(m_frame, 0) < 0) {
+        GlobalLog()->PrintEx(eLog_Error,
+            "VideoEncoder:: Could not allocate frame buffer");
+        return false;
+    }
 
     m_packet = av_packet_alloc();
+    if (!m_packet) {
+        GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not allocate packet");
+        return false;
+    }
 
     // Create SWS context: 16-bit RGBA (our PQ-encoded RGBA64LE buffer) ->
     // the encoder's pixel format (4:4:4+alpha for ProRes, 4:2:0 for HEVC).
@@ -528,7 +771,7 @@ bool VideoEncoder::encodeFrame(const uint16_t* rgbaData, int width, int height, 
 {
     if (!m_codecCtx || !m_frame || !m_swsCtx) return false;
 
-    av_frame_make_writable(m_frame);
+    if (av_frame_make_writable(m_frame) < 0) return false;
 
     // Convert 16-bit RGBA (RGBA64LE) to 10-bit YUVA 4:4:4.  swscale
     // works in bytes, so the stride is the 16-bit row width in bytes
@@ -536,8 +779,8 @@ bool VideoEncoder::encodeFrame(const uint16_t* rgbaData, int width, int height, 
     // raw bytes.
     const uint8_t* srcSlice[1] = { reinterpret_cast<const uint8_t*>(rgbaData) };
     int srcStride[1] = { width * 4 * static_cast<int>(sizeof(uint16_t)) };
-    sws_scale(m_swsCtx, srcSlice, srcStride, 0, height,
-              m_frame->data, m_frame->linesize);
+    if (sws_scale(m_swsCtx, srcSlice, srcStride, 0, height,
+            m_frame->data, m_frame->linesize) != height) return false;
 
     m_frame->pts = frameNum;
 
@@ -554,42 +797,100 @@ bool VideoEncoder::encodeFrame(const uint16_t* rgbaData, int width, int height, 
         av_packet_rescale_ts(m_packet, m_codecCtx->time_base, m_stream->time_base);
         m_packet->stream_index = m_stream->index;
 
-        av_interleaved_write_frame(m_formatCtx, m_packet);
+        const int writeResult = av_interleaved_write_frame(m_formatCtx, m_packet);
         av_packet_unref(m_packet);
+        if (writeResult < 0) return false;
     }
 
     return true;
 }
 
-void VideoEncoder::flushEncoder()
+bool VideoEncoder::flushEncoder()
 {
-    if (!m_codecCtx) return;
+    if (!m_codecCtx) return false;
 
-    avcodec_send_frame(m_codecCtx, nullptr);
+    if (avcodec_send_frame(m_codecCtx, nullptr) < 0) return false;
 
     int ret = 0;
     while (ret >= 0) {
         ret = avcodec_receive_packet(m_codecCtx, m_packet);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-        if (ret < 0) break;
+        if (ret < 0) return false;
 
         av_packet_rescale_ts(m_packet, m_codecCtx->time_base, m_stream->time_base);
         m_packet->stream_index = m_stream->index;
 
-        av_interleaved_write_frame(m_formatCtx, m_packet);
+        const int writeResult = av_interleaved_write_frame(m_formatCtx, m_packet);
         av_packet_unref(m_packet);
+        if (writeResult < 0) return false;
     }
+    return true;
 }
 
-void VideoEncoder::finalize()
+void VideoEncoder::failDerivative(const char* reason)
+{
+    if (m_derivativeFailed) return;
+    m_derivativeFailed = true;
+    GlobalLog()->PrintEx(eLog_Warning,
+        "VideoEncoder:: display derivative failed (%s); finalized fire frame primaries remain valid",
+        reason ? reason : "unknown failure");
+    if (m_formatCtx && m_formatCtx->pb) avio_closep(&m_formatCtx->pb);
+    std::error_code removeError;
+    std::filesystem::remove(m_writerPath, removeError);
+}
+
+void VideoEncoder::finalize(const bool publish)
 {
     if (m_finalized) return;
     m_finalized = true;
 
-    if (m_started && m_formatCtx) {
-        flushEncoder();
-        av_write_trailer(m_formatCtx);
+    if (!m_started || !m_formatCtx || m_derivativeFailed) {
+        if (m_formatCtx && m_formatCtx->pb) avio_closep(&m_formatCtx->pb);
+        std::error_code removeError;
+        std::filesystem::remove(m_writerPath, removeError);
+        return;
+    }
+    if (!publish || m_failed) {
+        if (m_formatCtx->pb) avio_closep(&m_formatCtx->pb);
+        std::error_code removeError;
+        std::filesystem::remove(m_writerPath, removeError);
+        return;
+    }
 
+    const bool flushed = flushEncoder();
+    const bool trailerWritten = flushed && av_write_trailer(m_formatCtx) >= 0;
+    const bool closed = !m_formatCtx->pb || avio_closep(&m_formatCtx->pb) >= 0;
+    if (!trailerWritten || !closed) {
+        if (m_fireRender) {
+            failDerivative("encoder flush, trailer, or close");
+            return;
+        }
+        m_failed = true;
+        std::error_code removeError;
+        std::filesystem::remove(m_writerPath, removeError);
+        GlobalLog()->PrintEasyError("VideoEncoder:: movie finalization failed");
+        return;
+    }
+
+    std::string publicationError;
+    if (m_fireRender) {
+        m_succeeded = Implementation::PublishFireFrameSequenceFileTransaction(
+            m_fireMetadata, m_writerPath, m_outputPath,
+            static_cast<unsigned int>(m_width), static_cast<unsigned int>(m_height),
+            static_cast<unsigned int>(m_fps), m_framesReceived,
+            m_framePrimaries, publicationError);
+        if (!m_succeeded) failDerivative(publicationError.c_str());
+    } else {
+        m_succeeded = Implementation::PublishUnprovenancedFileTransaction(
+            m_writerPath, m_outputPath, publicationError);
+        if (!m_succeeded) {
+            m_failed = true;
+            GlobalLog()->PrintEx(eLog_Error,
+                "VideoEncoder:: failed to publish '%s': %s",
+                m_outputPath.c_str(), publicationError.c_str());
+        }
+    }
+    if (m_succeeded) {
         GlobalLog()->PrintEx(eLog_Event,
             "VideoEncoder:: Finalized. Total frames: %u, Output: %s",
             m_framesReceived, m_outputPath.c_str());

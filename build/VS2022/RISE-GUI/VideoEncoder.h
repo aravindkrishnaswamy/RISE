@@ -16,10 +16,14 @@
 #define VIDEOENCODER_H
 
 #include "Interfaces/IRasterizerOutput.h"
+#include "Rendering/FileEncoderObserver.h"
+#include "Rendering/FrameStore.h"
 #include "Utilities/Reference.h"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <vector>
 
 // Forward declarations for FFmpeg types
 struct AVFormatContext;
@@ -31,6 +35,7 @@ struct SwsContext;
 
 class VideoEncoder
     : public virtual RISE::IRasterizerOutput
+    , public virtual RISE::IFireRasterizerOutputRoute
     , public virtual RISE::Implementation::Reference
 {
 public:
@@ -58,7 +63,28 @@ public:
         const RISE::Rect* pRegion,
         const unsigned int frame) override;
 
-    void finalize();
+    void OutputPreDenoisedImage(
+        const RISE::IRasterImage& pImage,
+        const RISE::Rect* pRegion,
+        const unsigned int frame) override;
+
+    void OutputDenoisedImage(
+        const RISE::IRasterImage& pImage,
+        const RISE::Rect* pRegion,
+        const unsigned int frame) override;
+
+    void OnRasterizerFrameStoreChanged(
+        RISE::Implementation::FrameStore* frameStore) override;
+
+    RISE::FireArtifactRouteKind FireArtifactRoute() const override
+    {
+        if (!m_routeAvailable) return RISE::FireArtifactRouteKind::UnavailableArtifact;
+        return m_codec == Codec::ProRes4444 ?
+            RISE::FireArtifactRouteKind::PrimaryArtifact :
+            RISE::FireArtifactRouteKind::DerivativeArtifact;
+    }
+
+    void finalize(bool publish = true);
 
     // Post-render reporting — valid after finalize() and before the
     // rasterizer frees this output.  `outputPath` is the final container
@@ -66,14 +92,21 @@ public:
     // if the encoder initialised and at least one frame was encoded (e.g.
     // false for the HEVC path on an ffmpeg build without libx265).
     const std::string& outputPath() const { return m_outputPath; }
-    bool wroteOutput() const { return m_started && m_framesReceived > 0; }
+    bool wroteOutput() const { return m_succeeded; }
+    bool HasFinalizedFirePrimaries() const
+        { return m_fireRender && !m_failed && !m_framePrimaries.empty(); }
 
 private:
+    void outputFrame(const RISE::IRasterImage& pImage, unsigned int frame,
+                     bool capturePrimary, bool writeDerivative);
     bool setupEncoder(int width, int height);
     bool encodeFrame(const uint16_t* rgbaData, int width, int height, unsigned int frameNum);
-    void flushEncoder();
+    bool flushEncoder();
+    void failDerivative(const char* reason);
 
     std::string m_outputPath;
+    std::string m_writerPath;
+    std::string m_primaryPattern;
     Codec m_codec;
     int m_fps;
     int m_width = 0;
@@ -81,7 +114,19 @@ private:
     bool m_started = false;
     bool m_setupFailed = false;
     bool m_finalized = false;
+    bool m_failed = false;
+    bool m_derivativeFailed = false;
+    bool m_succeeded = false;
+    bool m_routeAvailable = false;
+    bool m_fireRender = false;
+    bool m_metadataCaptured = false;
     unsigned int m_framesReceived = 0;
+
+    RISE::Implementation::FrameStore* m_frameStore = nullptr;
+    mutable std::mutex m_frameStoreMutex;
+    RISE::IFrameEncoder* m_primaryEncoder = nullptr;
+    RISE::FrameStoreOutput::Metadata m_fireMetadata;
+    std::vector<RISE::Implementation::FireFramePrimary> m_framePrimaries;
 
     AVFormatContext* m_formatCtx = nullptr;
     AVCodecContext* m_codecCtx = nullptr;

@@ -580,6 +580,38 @@ int main()
 			windowsLibraryProject.substr(releaseGroup,debugGroup-releaseGroup).find(
 				"<Optimization>MaxSpeed</Optimization>") != std::string::npos,
 			"Windows renderer-build O2 attestation is pinned by Release project flags" );
+		std::ifstream windowsVideoHeaderFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "VideoEncoder.h",std::ios::binary);
+		const std::string windowsVideoHeader{
+			std::istreambuf_iterator<char>(windowsVideoHeaderFile),
+			std::istreambuf_iterator<char>() };
+		std::ifstream windowsVideoSourceFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "VideoEncoder.cpp",std::ios::binary);
+		const std::string windowsVideoSource = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsVideoSourceFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsVideoHeader.find("IFireRasterizerOutputRoute") !=
+				std::string::npos &&
+			windowsVideoSource.find("EncodeFrameStoreFileTransaction") !=
+				std::string::npos &&
+			windowsVideoSource.find("PublishFireFrameSequenceFileTransaction") !=
+				std::string::npos &&
+			windowsVideoSource.find(".rise-tmp.movie.") != std::string::npos,
+			"Windows movies publish raw fire primaries and linked derivatives transactionally" );
+		Check( windowsVideoSource.find("rgbaData(static_cast<size_t>(m_width)*m_height*4u,uint16_t(0))") !=
+				std::string::npos &&
+			windowsVideoSource.find("for(inty=0;y<sourceHeight;++y)") !=
+				std::string::npos &&
+			windowsVideoSource.find("for(intx=0;x<sourceWidth;++x)") !=
+				std::string::npos,
+			"Windows movie padding clears odd-size borders and never reads beyond the source image" );
+		Check( windowsVideoSource.find("if(!encodeFrame(rgbaData.data(),m_width,m_height,frame))") !=
+				std::string::npos &&
+			windowsVideoSource.find("constintwriteResult=av_interleaved_write_frame") !=
+				std::string::npos &&
+			windowsVideoSource.find("constbooltrailerWritten=flushed&&av_write_trailer(m_formatCtx)>=0;") !=
+				std::string::npos,
+			"Windows movie success requires frame, packet, flush, and trailer completion" );
 
 		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
 			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
@@ -708,6 +740,17 @@ int main()
 		const std::vector<std::string> externalMembers = members(
 			braceBody(jobPrivHeader,"struct FireExternalRenderConfig"),
 			"FireExternalRenderConfig");
+		const std::string rasterizerInterface = braceBody(slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRasterizer.h"),
+			"class IRasterizer :");
+		const std::string outputInterface = braceBody(slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRasterizerOutput.h"),
+			"class IRasterizerOutput :");
+		Check( rasterizerInterface.find("SetFireRenderPreflightAuthorization") ==
+				std::string::npos &&
+			rasterizerInterface.find("LastRenderCompleted") == std::string::npos &&
+			outputInterface.find("FireArtifactRoute") == std::string::npos,
+			"fire capability queries do not extend legacy rasterizer plugin vtables" );
 		const std::string externalWriter = braceBody(jobSource,
 			"bool Job::PrepareFireRenderForExternalRasterizerResolved(");
 		for( const std::string& member : externalMembers ) {

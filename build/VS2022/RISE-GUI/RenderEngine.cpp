@@ -903,14 +903,16 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                 bool result = false;
                 try {
                     result = job->RasterizeAnimationUsingOptions();
-                    proResEncoder->finalize();
-                    hevcEncoder->finalize();
+                    proResEncoder->finalize(result);
+                    hevcEncoder->finalize(result);
+                    if (result && !proResEncoder->wroteOutput() &&
+                        !proResEncoder->HasFinalizedFirePrimaries()) result = false;
                 } catch (...) {
                     // The platform worker catches at its outer boundary, but
                     // the rasterizer owns these encoder references. Finalize
                     // and release them before propagating to that boundary.
-                    try { proResEncoder->finalize(); } catch (...) {}
-                    try { hevcEncoder->finalize(); } catch (...) {}
+                    try { proResEncoder->finalize(false); } catch (...) {}
+                    try { hevcEncoder->finalize(false); } catch (...) {}
                     rasterizer->FreeRasterizerOutputs();
                     m_productionVFSAttachedToRasterizer = false;
                     throw;
@@ -932,6 +934,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                         animationSummary +=
                             QStringLiteral(" (HEVC .mp4 not written - see log)");
                     }
+                } else if (result && proResEncoder->HasFinalizedFirePrimaries()) {
+                    animationSummary = QStringLiteral(
+                        "Movie derivatives failed; raw fire frame primaries were preserved");
                 }
 
                 rasterizer->FreeRasterizerOutputs();
