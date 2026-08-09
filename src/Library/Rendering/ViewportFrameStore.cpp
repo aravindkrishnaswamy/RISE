@@ -510,12 +510,16 @@ namespace RISE
 				{
 					if( active ) store->ReleaseExternalArtifactMetadataLease();
 				}
-			} fireMetadataLease { snap,fireMetadataLeased };
+			};
 			transactionOpts.useMetadataSnapshot = true;
 			transactionOpts.frame = transactionOpts.metadataSnapshot.frame;
 			std::string error;
-			const bool success = EncodeFrameStoreFileTransaction(
-				*snap,*encoder,transactionOpts,path,error );
+			bool success = false;
+			{
+				FireMetadataLease fireMetadataLease { snap,fireMetadataLeased };
+				success = EncodeFrameStoreFileTransaction(
+					*snap,*encoder,transactionOpts,path,error );
+			}
 			snap->release();
 			if( !success ) {
 				GlobalLog()->PrintEx( eLog_Error,

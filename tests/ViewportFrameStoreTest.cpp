@@ -187,6 +187,56 @@ namespace
 		FrameStore::Metadata captured_;
 	};
 
+	class LeaseOrderFrameStore : public FrameStore
+	{
+	public:
+		explicit LeaseOrderFrameStore( const Spec& spec ) :
+			FrameStore(spec), finalReleaseObserved_(false),
+			finalReleaseWhileLeased_(false) {}
+
+		bool release() const override
+		{
+			if( refcount() == 1u ) {
+				bool leased = false;
+				try {
+					LeaseOrderFrameStore* self =
+						const_cast<LeaseOrderFrameStore*>(this);
+					self->SetMetadata(self->Meta());
+				}
+				catch( const std::runtime_error& error ) {
+					leased = std::string(error.what()).find("metadata is leased") !=
+						std::string::npos;
+				}
+				finalReleaseWhileLeased_.store(leased);
+				finalReleaseObserved_.store(true);
+				return true;
+			}
+			return Reference::release();
+		}
+
+		bool FinalReleaseObserved() const
+		{
+			return finalReleaseObserved_.load();
+		}
+
+		bool FinalReleaseWhileLeased() const
+		{
+			return finalReleaseWhileLeased_.load();
+		}
+
+		void FinishRelease()
+		{
+			Reference::release();
+		}
+
+	protected:
+		~LeaseOrderFrameStore() override {}
+
+	private:
+		mutable std::atomic<bool> finalReleaseObserved_;
+		mutable std::atomic<bool> finalReleaseWhileLeased_;
+	};
+
 	RISEColor PatternPixel( unsigned int x, unsigned int y )
 	{
 		const double r = static_cast<double>( x ) / static_cast<double>( kImgW - 1 );
@@ -864,6 +914,47 @@ namespace
 		vfs->release();
 	}
 
+	void TestFireSaveAsLeasePrecedesStoreRelease()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new LeaseOrderFrameStore(spec);
+		SetFireFidelityMetadata(*source);
+		source->SetPrimaryFireArtifact(
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"preview_primary");
+		vfs->BindFrameStore(source);
+		source->release();
+
+		BlockingPNGEncoder* encoder = new BlockingPNGEncoder();
+		const std::string path = MakeTempPath()+"_lease_rebind.png";
+		bool saved = false;
+		EncodeOpts opts;
+		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
+		encoder->WaitUntilEntered();
+
+		auto* replacement = new FrameStore(spec);
+		vfs->BindFrameStore(replacement);
+		replacement->release();
+		encoder->Continue();
+		saver.join();
+
+		Check( saved && source->FinalReleaseObserved() &&
+			!source->FinalReleaseWhileLeased() &&
+			vfs->GetFrameStore() == replacement,
+			"fire SaveAs releases its metadata lease before the retained store reference" );
+
+		source->FinishRelease();
+		std::remove(path.c_str());
+		std::remove((path+".provenance.cbor").c_str());
+		encoder->release();
+		vfs->release();
+	}
+
 	// ─── Section 5: rasterizer-swap simulation ────────────────────
 	// Per design doc §7.5: observers attach to FrameStore (not
 	// rasterizer), so a rasterizer swap should keep all observer
@@ -1438,6 +1529,7 @@ int main()
 	TestMultiFrameReuse();
 	TestMidRenderSaveAs();
 	TestPreparedFireFrameCannotPublish();
+	TestFireSaveAsLeasePrecedesStoreRelease();
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
