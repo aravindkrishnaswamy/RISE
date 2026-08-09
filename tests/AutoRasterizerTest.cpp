@@ -148,6 +148,56 @@ protected:
 	~FrameStoreNotificationOutput() override {}
 };
 
+class FailingFrameStoreNotificationOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmFailureAfter( const unsigned int additionalNotifications )
+	{
+		throwAt_ = notifications + additionalNotifications;
+	}
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		lastStore = store;
+		if( notifications == throwAt_ ) {
+			throw std::runtime_error("injected FrameStore notification failure");
+		}
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~FailingFrameStoreNotificationOutput() override {}
+
+private:
+	unsigned int throwAt_ = 0u;
+};
+
+class ReentrantFrameStoreSwapOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantFrameStoreSwapOutput( Rasterizer& rasterizer, FrameStore& nestedStore ) :
+		rasterizer_(rasterizer), nestedStore_(nestedStore) {}
+	void Arm( FrameStore* trigger ) { trigger_ = trigger; }
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		lastStore = store;
+		if( trigger_ && store == trigger_ ) {
+			trigger_ = nullptr;
+			rasterizer_.SetFrameStore(&nestedStore_);
+		}
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~ReentrantFrameStoreSwapOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	FrameStore& nestedStore_;
+	FrameStore* trigger_ = nullptr;
+};
+
 class ReentrantFrameStoreOutput : public FrameStoreNotificationOutput
 {
 public:
@@ -1556,6 +1606,77 @@ static void TestTransactionalDelegateReplay()
 	std::remove(path.c_str());
 }
 
+static void TestTransactionalFrameStoreReplay()
+{
+	const std::string label = "Auto FrameStore replay is transactional and reentrancy-safe";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"transactional_frame_store_replay") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	if( !rasterizer ) {
+		Check(false,"Auto rasterizer available: " + label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	job->RemoveRasterizerOutputs();
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore* originalDelegate = rasterizer->ForTest_GetDelegateFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	failing->ArmFailureAfter(2u);
+	bool delegateReplayRejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& ) {
+		delegateReplayRejected = true;
+	}
+	Check(resolved && delegateReplayRejected &&
+		rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		failing->lastStore == original,
+		"delegate callback failure restores wrapper, delegate, and observer binding: " + label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(failing);
+
+	FrameStore* nested = new FrameStore(spec);
+	ReentrantFrameStoreSwapOutput* reentrant =
+		new ReentrantFrameStoreSwapOutput(*rasterizer,*nested);
+	rasterizer->AddRasterizerOutput(reentrant);
+	reentrant->Arm(replacement);
+	bool reentryRejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& error ) {
+		reentryRejected = std::string(error.what()).find("reentrant") != std::string::npos;
+	}
+	Check(reentryRejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		reentrant->lastStore == original,
+		"nested binding is rejected and the original binding is replayed: " + label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(nested);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestPostResolutionAddReentrancy()
 {
 	const std::string label = "post-resolution output attachment honors reentrant removal";
@@ -1887,6 +2008,7 @@ int main()
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
 	TestRetainedOutputSnapshots();
 	TestTransactionalDelegateReplay();
+	TestTransactionalFrameStoreReplay();
 	TestPostResolutionAddReentrancy();
 	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();

@@ -391,10 +391,13 @@ namespace RISE
 			//! Freezes the identity-bearing fire envelope while a rasterizer is
 			//! executing an authorized fire render.  Exposure/sample/frame progress
 			//! and finalized-primary linkage remain independently writable.
-			void AcquireFireMetadataLease()
+			Metadata AcquireFireMetadataLeaseAndSnapshot()
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				++fireMetadataLeaseCount_;
+				Metadata snapshot = meta_;
+				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				return snapshot;
 			}
 
 			void ReleaseFireMetadataLease()

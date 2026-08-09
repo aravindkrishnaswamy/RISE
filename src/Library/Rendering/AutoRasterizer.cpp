@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "AutoRasterizer.h"
+#include "FrameStore.h"
 #include "../RISE_API.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IPixelFilter.h"
@@ -983,10 +984,44 @@ void AutoRasterizer::SyncDelegateFrameStore() const
 
 void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 {
-	Rasterizer::SetFrameStore( frameStore );
-	if( !mDelegate ) return;
+	bool expected = false;
+	if( !mFrameStoreReplayInProgress.compare_exchange_strong(
+		expected,true,std::memory_order_acq_rel) ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: Auto FrameStore replay is reentrant");
+	}
+	struct ReplayActivity
+	{
+		std::atomic<bool>& active;
+		~ReplayActivity() { active.store(false,std::memory_order_release); }
+	} replayActivity { mFrameStoreReplayInProgress };
 	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
-	if( delegate ) delegate->SetFrameStore( frameStore );
+	FrameStore* previous = GetFrameStore();
+	if( previous ) previous->addref();
+	try {
+		Rasterizer::SetFrameStore( frameStore );
+	}
+	catch( ... ) {
+		safe_release(previous);
+		throw;
+	}
+	if( !delegate ) {
+		safe_release(previous);
+		return;
+	}
+	try {
+		delegate->SetFrameStore( frameStore );
+	}
+	catch( ... ) {
+		try {
+			Rasterizer::SetFrameStore(previous);
+		}
+		catch( ... ) {
+		}
+		safe_release(previous);
+		throw;
+	}
+	safe_release(previous);
 }
 
 FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const

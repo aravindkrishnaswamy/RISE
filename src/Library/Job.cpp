@@ -11297,10 +11297,15 @@ bool Job::RasterizeExternalRasterizerResolved(
 	const FireExternalRenderConfig& config,
 	const Rect* region )
 {
+	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
 	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
-		rasterizer,rasterizerKind,config) || !AuthorizeFireRasterizer(
+		rasterizer,rasterizerKind,config) ) return false;
+	renderRollback.ArmPixelStateForFire();
+	if( !AuthorizeFireRasterizer(
 		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
 	rasterizer->RasterizeScene(*pScene,region,nullptr);
+	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
+	renderRollback.Commit();
 	return true;
 }
 

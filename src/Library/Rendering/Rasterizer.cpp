@@ -22,6 +22,7 @@
 #include "../Utilities/CPUTopology.h"
 #include "../Utilities/RISECBOR64.h"
 #include <cstdint>
+#include <exception>
 #include <stdexcept>
 
 using namespace RISE;
@@ -33,16 +34,17 @@ namespace
 	{
 	public:
 		explicit FireOutputBindingActivity( std::atomic<unsigned int>& active )
-			: active_(active)
+			: active_(active), previous_(active_.fetch_add(1u,std::memory_order_acq_rel))
 		{
-			active_.fetch_add(1u,std::memory_order_acq_rel);
 		}
 		~FireOutputBindingActivity()
 		{
 			active_.fetch_sub(1u,std::memory_order_release);
 		}
+		bool Nested() const { return previous_ != 0u; }
 	private:
 		std::atomic<unsigned int>& active_;
+		const unsigned int previous_;
 	};
 
 	bool SceneHasActiveFireMedium( const IScene& scene )
@@ -248,26 +250,26 @@ bool Rasterizer::RequireFireRenderPreflight(
 	bool valid = authorizedOutputTopologyGeneration == currentTopology &&
 		authorizedSceneMediaBinding == currentSceneMediaBinding &&
 		bindingInProgress == 0u;
-	if( valid && authorization == FireRenderPreflightAuthorization::Render ) {
-		const FrameStoreOutput::Metadata metadata = currentStore ?
-			currentStore->Meta() : FrameStoreOutput::Metadata();
-		std::string metadataError;
-		valid = currentStore && authorizedStore == currentStore &&
-			authorizedGeneration == currentStore->Generation() &&
-			FrameStoreOutput::ValidateFireOutputMetadata(metadata,metadataError) &&
-			!authorizedMetadataBinding.empty() &&
-			authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
-	}
+	bool metadataLeased = false;
 	if( valid && authorization == FireRenderPreflightAuthorization::Render ) {
 		std::lock_guard<std::mutex> outputsLock(outsMutex);
 		valid = currentStore == mFrameStore && currentTopology ==
 			mFireOutputTopologyGeneration.load(std::memory_order_relaxed) &&
 			mFireOutputBindingInProgress.load(std::memory_order_relaxed) == 0u;
 		if( valid ) {
-			currentStore->AcquireFireMetadataLease();
-			++mFireOutputTopologyLeaseCount;
+			const FrameStoreOutput::Metadata metadata =
+				currentStore->AcquireFireMetadataLeaseAndSnapshot();
+			metadataLeased = true;
+			std::string metadataError;
+			valid = authorizedStore == currentStore &&
+				authorizedGeneration == currentStore->Generation() &&
+				FrameStoreOutput::ValidateFireOutputMetadata(metadata,metadataError) &&
+				!authorizedMetadataBinding.empty() &&
+				authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
+			if( valid ) ++mFireOutputTopologyLeaseCount;
 		}
 	}
+	if( metadataLeased && !valid ) currentStore->ReleaseFireMetadataLease();
 	safe_release(currentStore);
 	if( !valid ) {
 		GlobalLog()->PrintEasyError(
@@ -628,6 +630,10 @@ void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 void Rasterizer::SetFrameStore( FrameStore* frameStore )
 {
 	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
+	if( binding.Nested() ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: frame store binding is reentrant");
+	}
 	FrameStore* previous = 0;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
@@ -646,56 +652,65 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 		mFrameStore = frameStore;
 		mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 	}
+	try {
+		NotifyFrameStoreChanged(frameStore);
+	}
+	catch( ... ) {
+		const std::exception_ptr failure = std::current_exception();
+		{
+			std::lock_guard<std::mutex> lock(outsMutex);
+			mFrameStore = previous;
+			mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
+		}
+		try {
+			RetainedRasterizerOutputSnapshot rollbackSnapshot(outs,outsMutex);
+			for( IRasterizerOutput* output : rollbackSnapshot.Outputs() ) {
+				try {
+					output->OnRasterizerFrameStoreChanged(previous);
+				}
+				catch( ... ) {
+				}
+			}
+		}
+		catch( ... ) {
+		}
+		safe_release(frameStore);
+		std::rethrow_exception(failure);
+	}
 	safe_release(previous);
-
-	// L6e-3 — Re-dispatch path lives in `ReannounceFrameStore`
-	// below; the swap path here calls into it after updating
-	// `mFrameStore`.
-
-	ReannounceFrameStore();
 }
 
 void Rasterizer::ReannounceFrameStore()
 {
 	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
+	if( binding.Nested() ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: frame store binding is reentrant");
+	}
+	FrameStore* frameStoreSnapshot = 0;
 	{
 		std::lock_guard<std::mutex> lock(outsMutex);
 		if( mFireOutputTopologyLeaseCount ) {
 			throw std::runtime_error(
 				"output_provenance_unavailable: fire render output topology is leased");
 		}
-	}
-	// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
-	// on every attached output.  Caller has either just swapped
-	// `mFrameStore` (called from `SetFrameStore`) or wants the
-	// outs to receive the CURRENT binding without a swap (e.g.
-	// after `FreeRasterizerOutputs` + `AddRasterizerOutput(newSink)`
-	// in the SceneEditController interactive flow).
-	//
-	// Snapshot `outs` before iterating — see L6e-2b adversarial
-	// review P1-A.  If any callback re-enters
-	// `AddRasterizerOutput`/`FreeRasterizerOutputs`, the live
-	// iterator would otherwise be invalidated.
-	// L8 round 5 — snapshot now happens under `outsMutex` to guard
-	// against concurrent mutators from non-render threads (Swift
-	// UI display-refresh path).
-	RetainedRasterizerOutputSnapshot snapshot( outs, outsMutex );
-	FrameStore* frameStoreSnapshot = 0;
-	{
-		std::lock_guard<std::mutex> lock( outsMutex );
 		frameStoreSnapshot = mFrameStore;
 		if( frameStoreSnapshot ) frameStoreSnapshot->addref();
 	}
 	try {
-		for( RasterizerOutputListType::const_iterator it = snapshot.Outputs().begin(),
-		     e = snapshot.Outputs().end(); it != e; ++it )
-		{
-			(*it)->OnRasterizerFrameStoreChanged( frameStoreSnapshot );
-		}
+		NotifyFrameStoreChanged(frameStoreSnapshot);
 	}
 	catch( ... ) {
 		safe_release(frameStoreSnapshot);
 		throw;
 	}
 	safe_release(frameStoreSnapshot);
+}
+
+void Rasterizer::NotifyFrameStoreChanged( FrameStore* frameStore )
+{
+	RetainedRasterizerOutputSnapshot snapshot(outs,outsMutex);
+	for( IRasterizerOutput* output : snapshot.Outputs() ) {
+		output->OnRasterizerFrameStoreChanged(frameStore);
+	}
 }

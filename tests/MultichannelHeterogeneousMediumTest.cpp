@@ -3273,6 +3273,24 @@ namespace
 				cancelledRestoredPixel.a == renderedPixel.a,
 				"cancelled fire still restores the prior finalized pixels and metadata" );
 			completionOutput->Reset();
+			FireExternalRenderConfig externalConfig;
+			externalConfig.samplesPerPixel = 1u;
+			rasterizer->SetProgressCallback(&cancelledProgress);
+			const bool cancelledExternalRejected =
+				!job->RasterizeExternalRasterizerResolved(rasterizer,
+					"pathtracing_spectral_rasterizer",externalConfig,nullptr);
+			rasterizer->SetProgressCallback(nullptr);
+			const RISEColor externalRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( cancelledExternalRejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				externalRestoredPixel.base[0] == renderedPixel.base[0] &&
+				externalRestoredPixel.base[1] == renderedPixel.base[1] &&
+				externalRestoredPixel.base[2] == renderedPixel.base[2] &&
+				externalRestoredPixel.a == renderedPixel.a,
+				"cancelled external fire render restores pixels and metadata before returning" );
+			completionOutput->Reset();
 			job->SetProgress(&cancelledProgress);
 			const bool cancelledAnimationRejected =
 				!job->RasterizeAnimation(0.0,0.0,1u,false,false);

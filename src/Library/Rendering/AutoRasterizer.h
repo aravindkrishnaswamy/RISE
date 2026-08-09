@@ -57,6 +57,7 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
 #include "../Utilities/SpectralConfig.h"        // SpectralConfig (auto_spectral domain)
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -339,6 +340,7 @@ namespace RISE
 			// reached from those const methods).
 			mutable IRasterizer*			mDelegate;
 			mutable unsigned long long	mReplayRevision;
+			std::atomic<bool>			mFrameStoreReplayInProgress { false };
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
 

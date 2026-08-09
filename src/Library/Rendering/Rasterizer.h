@@ -125,37 +125,12 @@ namespace RISE
 			bool UnregisterRasterizerOutput( IRasterizerOutput* ro );
 			bool ReleaseRasterizerOutputs();
 
-			//! L8 review round 5 — protects `outs` against concurrent
-			//! mutation from non-render threads.
-			//!
-			//! Background: the public mutators (`AddRasterizerOutput`,
-			//! `FreeRasterizerOutputs`) used to be unlocked.  In the
-			//! macOS GUI, Swift's `attachViewportFrameStoreToOpaqueRasterizer`
-			//! re-runs whenever the SwiftUI view body recomputes (per
-			//! display refresh, ~60 Hz), each call ending in
-			//! `Rasterizer::AddRasterizerOutput(vfs)` from the UI
-			//! thread.  Meanwhile, render workers iterate `outs`
-			//! unlocked (~20 sites across PT/BDPT/VCM/MLT subclasses)
-			//! firing OutputImage / OutputIntermediateImage.
-			//! Concurrent `push_back` during iteration is a `vector`
-			//! data race that can produce iterator-invalidation hangs
-			//! or crashes (the user-visible "hung after several
-			//! load→render cycles" symptom).
-			//!
-			//! AddRasterizerOutput + FreeRasterizerOutputs +
-			//! EnumerateRasterizerOutputs + ReannounceFrameStore take
-			//! this lock.  Iteration sites in subclasses remain
-			//! unlocked under the contract: callers must not invoke
-			//! `AddRasterizerOutput` / `FreeRasterizerOutputs` while
-			//! a render is in flight on the same rasterizer.  Bridge
-			//! enforces this at `[self rasterize]` entry
-			//! (FreeRasterizerOutputs + Attach happen before
-			//! `_job->Rasterize()` returns to the caller); but the
-			//! Swift-side display-refresh path violated it before
-			//! L8 round 5.  Companion fixes: dedup AddRasterizerOutput
-			//! (so the Swift path becomes a no-op when already
-			//! attached) and gate the bridge's `attachViewport...`
-			//! re-entries.
+			//! Protects the live output list, FrameStore binding, and fire
+			//! topology lease.  Every callback traversal retains a snapshot
+			//! under this mutex and invokes arbitrary output code only after
+			//! unlocking, so callback-side Add/Remove/Free is lifetime-safe.
+			//! A fire render leases topology for its full entry; mutations
+			//! during that interval fail closed.
 			mutable std::mutex						outsMutex;
 			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
 			std::atomic<unsigned int> mFireOutputBindingInProgress { 0u };
@@ -163,18 +138,10 @@ namespace RISE
 
 			IProgressCallback*						pProgressFunc;
 
-			//! L6a — Canonical FrameStore the rasterizer writes into
-			//! (Phase 2 design, see docs/FRAMESTORE_DESIGN.md §6).
-			//! L6a (this commit): held but unused — the helper still
-			//! routes pixel writes through `mPersistentImage`.  L6b
-			//! flips `PixelBasedRasterizerHelper` to write through
-			//! `mFrameStore->AsBeautyRasterImage()` and bracket per-
-			//! block writes with `BeginTile`/`EndTile`.  Counted
-			//! reference: addref'd in the Rasterizer constructor when
-			//! non-null, released in the destructor.  May be null
-			//! (allows a transitional period where Job hasn't yet been
-			//! migrated to allocate one — see L6a's verification
-			//! commit).
+			//! Canonical pixel/output store.  Pixel rasterizers write the
+			//! Beauty view directly and outputs observe the same counted
+			//! binding.  It may be null only before Job installs a film-sized
+			//! store or for a legacy implementation that declines the push.
 			FrameStore*								mFrameStore;
 			int									mForTestThreadCountOverride = 0;
 			mutable std::mutex mFireRenderPreflightMutex;
@@ -214,10 +181,9 @@ namespace RISE
 			mutable OIDNDenoiser*					mDenoiser;
 #endif
 
-			//! Constructor.  `frameStore` may be null while L6a is
-			//! mid-migration; non-null is the L6b+ target state.
-			//! When non-null, this constructor addrefs it; the
-			//! destructor releases.
+			//! When non-null, the constructor retains `frameStore`; the
+			//! destructor releases it.  Job may install the canonical store
+			//! later when film dimensions were unavailable at construction.
 			explicit Rasterizer( FrameStore* frameStore = nullptr );
 			virtual ~Rasterizer();
 
@@ -241,6 +207,7 @@ namespace RISE
 
 		private:
 			friend class ::RISE::Job;
+			void NotifyFrameStoreChanged( FrameStore* frameStore );
 			void ReleaseFireOutputTopologyLease() const;
 			void ClearFireRenderPreflightAuthorization() const;
 			bool AuthorizeFireRenderPreflight(
@@ -309,12 +276,10 @@ namespace RISE
 			// (rasterizer falls back to its internal IRasterImage
 			// path until L6c).
 			//
-			// Threading: caller must establish the same "rasterizer
-			// is parked, no render in flight" precondition the rest
-			// of `Job`'s mutable-state mutations honor (see Job.h
-			// CONCURRENCY CONTRACT).  L6c will introduce a
-			// chain-mutex so reader threads (UI viewports, encoders)
-			// can read FrameStore concurrently with this swap.
+			// The swap and all output notifications are transactional.
+			// Reentrant or concurrent binding changes fail closed; fire
+			// renders additionally hold a topology lease that rejects the
+			// mutation before any binding is published.
 			virtual void SetFrameStore( FrameStore* frameStore );
 
 			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
@@ -329,9 +294,7 @@ namespace RISE
 			// just dispatches `OnRasterizerFrameStoreChanged(nullptr)`,
 			// which most outputs treat as a no-op.
 			//
-			// Threading: same as `SetFrameStore` — caller must run on
-			// the same thread that drives the rasterizer (no
-			// concurrent SetFrameStore in-flight).
+			// Reentrant or concurrent binding announcements fail closed.
 			void ReannounceFrameStore();
 
 			// L6e-1.1 — Capability hook: does this rasterizer accept
