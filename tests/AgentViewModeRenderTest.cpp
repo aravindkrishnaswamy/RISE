@@ -153,6 +153,21 @@ static const char* const kSceneMeshAndSphere =
 	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 1.3 0 0\n}\n\n"
 	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
+static const char* const kFireScene =
+	"RISE ASCII SCENE 7\n"
+	"scene_options\n{\n\tscene_unit 1\n\tfidelity_mode preview\n}\n\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tnmbegin 380\n\tnmend 780\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 -2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45\n}\n\n"
+	"scalar_painter\n{\n\tname carbon\n\tvalue 1\n}\n\n"
+	"scalar_painter\n{\n\tname temperature\n\tvalue 800\n}\n\n"
+	"multichannel_heterogeneous_medium\n{\n\tname fire\n\tchannel_carbon painter carbon\n"
+	"\tchannel_temperature painter temperature\n\tchem_model none\n\tbake_resolution 2 2 2\n"
+	"\tbbox_min -1 -1 -1\n\tbbox_max 1 1 1\n\toptical_record fire_optics_v1\n}\n\n"
+	"global_medium\n{\n\tmedium fire\n}\n";
+
 //----------------------------------------------------------------------
 // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") coverage scene:
 // kSceneMeshAndSphere PLUS a transmissive glass sphere (dielectric_material,
@@ -3499,8 +3514,64 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 	pJob->release();
 }
 
+static void RunFireOutputProvenanceRejectionTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: fire output provenance preflight ===\n" );
+	const std::string scenePath = WriteTemp(
+		"rise_agent_fire_output_provenance.RISEscene",kFireScene);
+	Check( !scenePath.empty(), "fire provenance scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"fire provenance scene loads via CST" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+	Check( session != nullptr, "fire provenance session wraps" );
+	if( !session ) {
+		pJob->release();
+		std::remove(scenePath.c_str());
+		return;
+	}
+
+	struct RejectedRoute
+	{
+		const char* label;
+		AgentRenderParams params;
+	};
+	std::vector<RejectedRoute> routes;
+	routes.push_back(RejectedRoute{"production beauty",AgentRenderParams()});
+	AgentRenderParams draft;
+	draft.quality = AgentRenderQuality::Draft;
+	routes.push_back(RejectedRoute{"draft beauty",draft});
+	AgentRenderParams objectMap;
+	objectMap.renderTarget = AgentRenderTarget::ObjectMap;
+	routes.push_back(RejectedRoute{"object map",objectMap});
+	AgentRenderParams normals;
+	normals.renderTarget = AgentRenderTarget::ViewMode;
+	normals.viewMode = Implementation::ViewportRenderMode::Normals;
+	routes.push_back(RejectedRoute{"shader view mode",normals});
+	AgentRenderParams deepReflect;
+	deepReflect.renderTarget = AgentRenderTarget::ViewMode;
+	deepReflect.viewMode = Implementation::ViewportRenderMode::DeepReflect;
+	routes.push_back(RejectedRoute{"beauty variant",deepReflect});
+
+	for( const RejectedRoute& route : routes ) {
+		const AgentRenderResult result = session->Render(route.params);
+		Check( !result.ok && result.png.empty() &&
+			result.message.find("output_provenance_unavailable") != std::string::npos,
+			std::string(route.label) +
+				" rejects fire before emitting an unlinked agent image" );
+	}
+	unsigned int cachedW = 0, cachedH = 0;
+	Check( session->ReadImage(0,cachedW,cachedH).empty() &&
+		cachedW == 0 && cachedH == 0,
+		"rejected fire routes publish no image into the session cache" );
+
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
+
 int main()
 {
+	RunFireOutputProvenanceRejectionTest();
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();

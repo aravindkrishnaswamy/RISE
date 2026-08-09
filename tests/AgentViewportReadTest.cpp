@@ -133,6 +133,21 @@ static const char* const kScene =
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
 
+static const char* const kFireScene =
+	"RISE ASCII SCENE 7\n"
+	"scene_options\n{\n\tscene_unit 1\n\tfidelity_mode preview\n}\n\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tnmbegin 380\n\tnmend 780\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 -2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45\n}\n\n"
+	"scalar_painter\n{\n\tname carbon\n\tvalue 1\n}\n\n"
+	"scalar_painter\n{\n\tname temperature\n\tvalue 800\n}\n\n"
+	"multichannel_heterogeneous_medium\n{\n\tname fire\n\tchannel_carbon painter carbon\n"
+	"\tchannel_temperature painter temperature\n\tchem_model none\n\tbake_resolution 2 2 2\n"
+	"\tbbox_min -1 -1 -1\n\tbbox_max 1 1 1\n\toptical_record fire_optics_v1\n}\n\n"
+	"global_medium\n{\n\tmedium fire\n}\n";
+
 // compare_to_reference split:true discriminating scenes -- the SAME sphere
 // + area-light rig as kScene above, PLUS a hosek_wilkie_skylight (visible
 // as the BACKGROUND on every camera ray that misses all geometry -- see
@@ -1788,10 +1803,39 @@ static void RunRefusalReasonWireValues()
 	}
 }
 
+static void RunFireViewportProvenanceRejection()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_viewport_fire_provenance.RISEscene",kFireScene);
+	Check( !scenePath.empty(), "fire viewport provenance scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"fire viewport provenance scene loads via CST" );
+	{
+		SceneEditController controller(*pJob,pJob->GetRasterizer());
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+		session->AttachController(&controller);
+		AgentRpcDispatcher rpc(std::move(session));
+		const JsonValue envelope = ParseResponse(
+			rpc.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":811,\"method\":\"read_viewport\",\"params\":{}}"),
+			811.0);
+		const JsonValue& result = envelope.get("result");
+		Check( !result.get("available").asBool() &&
+			result.get("reason").asString() == "output_provenance_unavailable" &&
+			result.get("byteLength").asNumber(-1.0) == 0.0 &&
+			result.get("png_base64").asString().empty(),
+			"read_viewport rejects fire without emitting an unlinked derivative" );
+		controller.Stop();
+	}
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
 
+	RunFireViewportProvenanceRejection();
 	RunPositiveAndIsolation();
 	RunNoController();
 	RunNoFrameYet();
