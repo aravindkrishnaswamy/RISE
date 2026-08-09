@@ -937,13 +937,13 @@ namespace
 			error = "fire provenance output compression level is outside schema-v1";
 			return false;
 		}
+		const Value::Values& balance = whiteBalance->GetArray();
+		const bool identityBalance = balance[0].GetFloat() == 1.0 &&
+			balance[1].GetFloat() == 0.0 && balance[2].GetFloat() == 0.0 &&
+			balance[3].GetFloat() == 0.0 && balance[4].GetFloat() == 1.0 &&
+			balance[5].GetFloat() == 0.0 && balance[6].GetFloat() == 0.0 &&
+			balance[7].GetFloat() == 0.0 && balance[8].GetFloat() == 1.0;
 		if( !derivative ) {
-			const Value::Values& balance = whiteBalance->GetArray();
-			const bool identityBalance = balance[0].GetFloat() == 1.0 &&
-				balance[1].GetFloat() == 0.0 && balance[2].GetFloat() == 0.0 &&
-				balance[3].GetFloat() == 0.0 && balance[4].GetFloat() == 1.0 &&
-				balance[5].GetFloat() == 0.0 && balance[6].GetFloat() == 0.0 &&
-				balance[7].GetFloat() == 0.0 && balance[8].GetFloat() == 1.0;
 			const bool losslessCompression = exrCompression == "none" ||
 				exrCompression == "zip" || exrCompression == "piz";
 			const bool linearColor = colorSpace == "rec709_linear" ||
@@ -956,6 +956,24 @@ namespace
 				output->Find("view_tone_curve_strength")->GetFloat() != 1.0 ||
 				!identityBalance ) {
 				error = "fire provenance primary output is not raw lossless FP32";
+				return false;
+			}
+		} else {
+			std::set<std::string> expectedReasons;
+			if( bits->GetIntegerArgument() < 32u || exrCompression == "dwaa" ) {
+				expectedReasons.insert("lossy_output");
+			}
+			if( output->Find("view_exposure_ev")->GetFloat() != 0.0 ||
+				output->Find("view_tone_curve")->GetIntegerArgument() !=
+					static_cast<std::uint64_t>(eDisplayTransform_None) ||
+				colorSpace == "srgb" || colorSpace == "prophoto_rgb" ) {
+				expectedReasons.insert("display_transform_enabled");
+			}
+			if( !identityBalance ) expectedReasons.insert("white_balance_enabled");
+			const std::vector<std::string> expected(
+				expectedReasons.begin(),expectedReasons.end());
+			if( artifactReasons != expected ) {
+				error = "fire provenance derivative reason codes do not match the resolved output";
 				return false;
 			}
 		}
@@ -1234,14 +1252,31 @@ namespace
 		std::rename(backup.c_str(),filename.c_str());
 	}
 
+	struct EXRChannelFacts
+	{
+		std::uint32_t pixelType = 0u;
+		std::int32_t xSampling = 0;
+		std::int32_t ySampling = 0;
+	};
+
 	struct EXRHeaderFacts
 	{
 		std::map<std::string,std::string> fireAttributes;
 		std::map<std::string,std::string> stringAttributes;
-		std::map<std::string,std::uint32_t> channelTypes;
+		std::map<std::string,EXRChannelFacts> channels;
 		int compression = -1;
+		int lineOrder = -1;
+		std::array<std::int32_t,4u> dataWindow{};
+		std::array<std::int32_t,4u> displayWindow{};
 		std::array<float,8u> chromaticities{};
+		float pixelAspectRatio = 0.0f;
+		std::size_t headerEnd = 0u;
+		bool hasDataWindow = false;
+		bool hasDisplayWindow = false;
 		bool hasChromaticities = false;
+		bool hasPixelAspectRatio = false;
+		bool hasScreenWindowCenter = false;
+		bool hasScreenWindowWidth = false;
 	};
 
 	float ReadLEFloat( const RISECBOR64::Bytes& bytes, const std::size_t offset )
@@ -1276,6 +1311,11 @@ namespace
 			error = "artifact is not a supported OpenEXR byte stream";
 			return false;
 		}
+		const std::uint32_t version = ReadLE32(encoded,4u);
+		if( (version & 0xffu) != 2u || (version & ~(0xffu|0x400u)) != 0u ) {
+			error = "OpenEXR version flags are outside the single-part scanline profile";
+			return false;
+		}
 		std::size_t cursor = 8u;
 		std::set<std::string> names;
 		while( cursor < encoded.size() ) {
@@ -1284,7 +1324,17 @@ namespace
 				error = "unterminated OpenEXR attribute name";
 				return false;
 			}
-			if( name.empty() ) return true;
+			if( name.empty() ) {
+				facts.headerEnd = cursor;
+				if( facts.channels.empty() || facts.compression < 0 ||
+					facts.lineOrder < 0 || !facts.hasDataWindow ||
+					!facts.hasDisplayWindow || !facts.hasPixelAspectRatio ||
+					!facts.hasScreenWindowCenter || !facts.hasScreenWindowWidth ) {
+					error = "OpenEXR required scanline header attributes are incomplete";
+					return false;
+				}
+				return true;
+			}
 			if( !names.insert(name).second ) {
 				error = "OpenEXR header attribute is duplicated";
 				return false;
@@ -1336,16 +1386,72 @@ namespace
 					}
 					if( channelCursor+16u > valueEnd ) break;
 					const std::uint32_t pixelType = ReadLE32(encoded,channelCursor);
-					if( pixelType > 2u || !facts.channelTypes.emplace(channel,pixelType).second ) {
+					const unsigned char linear = encoded[channelCursor+4u];
+					const bool reservedZero = encoded[channelCursor+5u] == 0u &&
+						encoded[channelCursor+6u] == 0u && encoded[channelCursor+7u] == 0u;
+					EXRChannelFacts channelFacts;
+					channelFacts.pixelType = pixelType;
+					channelFacts.xSampling = static_cast<std::int32_t>(
+						ReadLE32(encoded,channelCursor+8u));
+					channelFacts.ySampling = static_cast<std::int32_t>(
+						ReadLE32(encoded,channelCursor+12u));
+					if( pixelType > 2u || linear > 1u || !reservedZero ||
+						!facts.channels.emplace(channel,channelFacts).second ) {
 						error = "OpenEXR channel list is invalid";
 						return false;
 					}
 					channelCursor += 16u;
 				}
-				if( !terminated || facts.channelTypes.empty() ) {
+				if( !terminated || facts.channels.empty() ) {
 					error = "OpenEXR channel list is truncated";
 					return false;
 				}
+			} else if( name == "dataWindow" || name == "displayWindow" ) {
+				if( type != "box2i" || size != 16u ) {
+					error = "OpenEXR image window attribute is malformed";
+					return false;
+				}
+				std::array<std::int32_t,4u> window{};
+				for( std::size_t i=0; i<window.size(); ++i ) {
+					window[i] = static_cast<std::int32_t>(ReadLE32(encoded,cursor+i*4u));
+				}
+				if( name == "dataWindow" ) {
+					facts.dataWindow = window;
+					facts.hasDataWindow = true;
+				} else {
+					facts.displayWindow = window;
+					facts.hasDisplayWindow = true;
+				}
+			} else if( name == "lineOrder" ) {
+				if( type != "lineOrder" || size != 1u || encoded[cursor] > 2u ) {
+					error = "OpenEXR line order attribute is malformed";
+					return false;
+				}
+				facts.lineOrder = encoded[cursor];
+			} else if( name == "pixelAspectRatio" ) {
+				if( type != "float" || size != 4u ) {
+					error = "OpenEXR pixel aspect ratio attribute is malformed";
+					return false;
+				}
+				facts.pixelAspectRatio = ReadLEFloat(encoded,cursor);
+				facts.hasPixelAspectRatio = std::isfinite(facts.pixelAspectRatio) &&
+					facts.pixelAspectRatio > 0.0f;
+				if( !facts.hasPixelAspectRatio ) {
+					error = "OpenEXR pixel aspect ratio is not positive and finite";
+					return false;
+				}
+			} else if( name == "screenWindowCenter" ) {
+				if( type != "v2f" || size != 8u ) {
+					error = "OpenEXR screen-window center attribute is malformed";
+					return false;
+				}
+				facts.hasScreenWindowCenter = true;
+			} else if( name == "screenWindowWidth" ) {
+				if( type != "float" || size != 4u ) {
+					error = "OpenEXR screen-window width attribute is malformed";
+					return false;
+				}
+				facts.hasScreenWindowWidth = true;
 			} else if( name == "chromaticities" ) {
 				if( type != "chromaticities" || size != 32u ) {
 					error = "OpenEXR chromaticities attribute is malformed";
@@ -1360,6 +1466,67 @@ namespace
 		}
 		error = "OpenEXR header terminator is missing";
 		return false;
+	}
+
+	bool ValidateEXRScanlineStructure(
+		const RISECBOR64::Bytes& encoded,
+		const EXRHeaderFacts& facts,
+		std::string& error )
+	{
+		if( facts.lineOrder != 0 || facts.dataWindow[0] > facts.dataWindow[2] ||
+			facts.dataWindow[1] > facts.dataWindow[3] ) {
+			error = "OpenEXR is not an increasing-order nonempty scanline image";
+			return false;
+		}
+		for( const auto& channel : facts.channels ) {
+			if( channel.second.xSampling != 1 || channel.second.ySampling != 1 ) {
+				error = "OpenEXR channel sampling is not one sample per image pixel";
+				return false;
+			}
+		}
+		const std::uint64_t height = static_cast<std::uint64_t>(
+			static_cast<std::int64_t>(facts.dataWindow[3])-
+			static_cast<std::int64_t>(facts.dataWindow[1])+1);
+		const std::uint64_t linesPerChunk = facts.compression == 0 ? 1u :
+			(facts.compression == 3 ? 16u :
+				((facts.compression == 4 || facts.compression == 8) ? 32u : 0u));
+		if( linesPerChunk == 0u ) {
+			error = "OpenEXR compression is outside the supported scanline profile";
+			return false;
+		}
+		const std::uint64_t chunkCount = (height+linesPerChunk-1u)/linesPerChunk;
+		if( chunkCount == 0u || chunkCount >
+			(static_cast<std::uint64_t>(encoded.size()-facts.headerEnd)/8u) ) {
+			error = "OpenEXR chunk offset table is missing or truncated";
+			return false;
+		}
+		const std::size_t tableBytes = static_cast<std::size_t>(chunkCount*8u);
+		std::uint64_t expectedOffset = static_cast<std::uint64_t>(facts.headerEnd+tableBytes);
+		for( std::uint64_t i=0u; i<chunkCount; ++i ) {
+			const std::uint64_t offset = ReadLE64(encoded,
+				facts.headerEnd+static_cast<std::size_t>(i*8u));
+			if( offset != expectedOffset || offset+8u > encoded.size() ) {
+				error = "OpenEXR chunk offset table is not contiguous or in range";
+				return false;
+			}
+			const std::int32_t y = static_cast<std::int32_t>(
+				ReadLE32(encoded,static_cast<std::size_t>(offset)));
+			const std::int64_t expectedY = static_cast<std::int64_t>(facts.dataWindow[1])+
+				static_cast<std::int64_t>(i*linesPerChunk);
+			const std::uint32_t packedBytes = ReadLE32(encoded,
+				static_cast<std::size_t>(offset)+4u);
+			if( static_cast<std::int64_t>(y) != expectedY || packedBytes == 0u ||
+				packedBytes > encoded.size()-static_cast<std::size_t>(offset)-8u ) {
+				error = "OpenEXR scanline pixel chunk is missing or truncated";
+				return false;
+			}
+			expectedOffset = offset+8u+packedBytes;
+		}
+		if( expectedOffset != encoded.size() ) {
+			error = "OpenEXR scanline chunks do not cover the exact artifact bytes";
+			return false;
+		}
+		return true;
 	}
 
 	bool ValidateEXRHeaderAgainstPayload(
@@ -1377,22 +1544,23 @@ namespace
 		const std::uint64_t bits = output->Find("bits_per_channel")->GetIntegerArgument();
 		const std::uint32_t expectedPixelType = bits == 32u ? 2u : 1u;
 		for( const char* channel : { "R", "G", "B" } ) {
-			const auto found = facts.channelTypes.find(channel);
-			if( found == facts.channelTypes.end() || found->second != expectedPixelType ) {
+			const auto found = facts.channels.find(channel);
+			if( found == facts.channels.end() ||
+				found->second.pixelType != expectedPixelType ) {
 				error = "OpenEXR channel precision does not match the resolved output claim";
 				return false;
 			}
 		}
-		const auto alpha = facts.channelTypes.find("A");
+		const auto alpha = facts.channels.find("A");
 		const bool claimedAlpha = output->Find("exr_with_alpha")->GetBoolean();
-		if( (alpha != facts.channelTypes.end()) != claimedAlpha ||
-			(alpha != facts.channelTypes.end() && alpha->second != expectedPixelType) ) {
+		if( (alpha != facts.channels.end()) != claimedAlpha ||
+			(alpha != facts.channels.end() && alpha->second.pixelType != expectedPixelType) ) {
 			error = "OpenEXR alpha channels do not match the resolved output claim";
 			return false;
 		}
 		if( output->Find("include_aovs")->GetBoolean() ||
 			!output->Find("aov_channels")->GetArray().empty() ||
-			facts.channelTypes.size() != (claimedAlpha ? 4u : 3u) ) {
+			facts.channels.size() != (claimedAlpha ? 4u : 3u) ) {
 			error = "OpenEXR channel set does not match the resolved output claim";
 			return false;
 		}
@@ -1412,6 +1580,22 @@ namespace
 				0.1500f,0.0600f,0.3127f,0.3290f };
 		if( !facts.hasChromaticities || facts.chromaticities != expectedChromaticities ) {
 			error = "OpenEXR chromaticities do not match the resolved output claim";
+			return false;
+		}
+		const Value* film = config->Find("film");
+		const std::uint64_t width = film->Find("width")->GetIntegerArgument();
+		const std::uint64_t height = film->Find("height")->GetIntegerArgument();
+		if( width == 0u || height == 0u || width > 0x7fffffffu ||
+			height > 0x7fffffffu || facts.dataWindow !=
+				std::array<std::int32_t,4u>{ 0,0,static_cast<std::int32_t>(width-1u),
+					static_cast<std::int32_t>(height-1u) } ||
+			facts.displayWindow != facts.dataWindow ) {
+			error = "OpenEXR image windows do not match the resolved film dimensions";
+			return false;
+		}
+		if( facts.pixelAspectRatio != static_cast<float>(
+			film->Find("pixel_aspect_ratio")->GetFloat()) ) {
+			error = "OpenEXR pixel aspect ratio does not match the resolved film claim";
 			return false;
 		}
 		for( const Value& attribute : output->Find("attributes")->GetArray() ) {
@@ -1434,10 +1618,9 @@ bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 {
 	error.clear();
 	stripped.clear();
-	if( encoded.size() < 17u || ReadLE32(encoded,0u) != 20000630u ) {
-		error = "artifact is not a supported OpenEXR byte stream";
-		return false;
-	}
+	EXRHeaderFacts facts;
+	if( !ReadEXRHeaderFacts(encoded,facts,error) ||
+		!ValidateEXRScanlineStructure(encoded,facts,error) ) return false;
 	stripped.insert(stripped.end(),encoded.begin(),encoded.begin()+8u);
 	std::size_t cursor = 8u;
 	bool retainedLongName = false;
@@ -1487,7 +1670,7 @@ bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 		return false;
 	}
 	const std::uint64_t firstChunk = ReadLE64(encoded,oldHeaderEnd);
-	if( firstChunk < oldHeaderEnd || firstChunk > encoded.size() ||
+	if( firstChunk < oldHeaderEnd || firstChunk >= encoded.size() ||
 		(firstChunk-oldHeaderEnd)%8u != 0u ) {
 		error = "OpenEXR chunk offset table is malformed";
 		return false;
@@ -1500,7 +1683,7 @@ bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 	const std::uint64_t delta = static_cast<std::uint64_t>(oldHeaderEnd-newHeaderEnd);
 	for( std::size_t offset=0u; offset<tableBytes; offset+=8u ) {
 		const std::uint64_t chunk = ReadLE64(encoded,oldHeaderEnd+offset);
-		if( chunk < delta || chunk > encoded.size() ) {
+		if( chunk < delta || chunk >= encoded.size() ) {
 			error = "OpenEXR chunk offset is out of range";
 			return false;
 		}
@@ -1542,15 +1725,16 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 		error = "fire provenance payload is missing artifact_sha256";
 		return false;
 	}
+	EXRHeaderFacts facts;
+	if( !ReadEXRHeaderFacts(encodedArtifact,facts,error) ||
+		!ValidateEXRScanlineStructure(encodedArtifact,facts,error) ||
+		!ValidateEXRHeaderAgainstPayload(facts,*payload,error) ) return false;
 	RISECBOR64::Bytes stripped;
 	if( !StripFireProvenanceEXRAttributes(encodedArtifact,stripped,error) ||
 		artifactDigest->GetText() != RISECBOR64::SHA256Hex(stripped) ) {
 		if( error.empty() ) error = "fire artifact_sha256 does not hash the stripped EXR";
 		return false;
 	}
-	EXRHeaderFacts facts;
-	if( !ReadEXRHeaderFacts(encodedArtifact,facts,error) ||
-		!ValidateEXRHeaderAgainstPayload(facts,*payload,error) ) return false;
 	std::map<std::string,std::string> expected;
 	for( std::size_t i=0; i<payload->GetMap().size(); ++i ) {
 		std::string json;

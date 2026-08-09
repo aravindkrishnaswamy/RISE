@@ -54,6 +54,7 @@
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
 #ifndef NO_EXR_SUPPORT
@@ -214,7 +215,7 @@ namespace
 		public virtual Reference
 	{
 	public:
-		enum class Mode { DropFireAttributes, ForceHalf, ForceDWAA };
+		enum class Mode { DropFireAttributes, ForceHalf, ForceDWAA, TruncatePixelData };
 
 		DivergentEXREncoder( IFrameEncoder& delegate, const Mode mode ) :
 			delegate_(delegate), mode_(mode) { delegate_.addref(); }
@@ -226,6 +227,15 @@ namespace
 		void Encode( const FrameStore& store, IWriteBuffer& output,
 			const EncodeOpts& opts ) override
 		{
+			if( mode_ == Mode::TruncatePixelData ) {
+				MemoryBuffer* encoded = new MemoryBuffer();
+				delegate_.Encode(store,*encoded,opts);
+				if( encoded->Size() > 1u ) {
+					output.setBytes(encoded->Pointer(),encoded->Size()-1u);
+				}
+				encoded->release();
+				return;
+			}
 			EncodeOpts altered = opts;
 			if( mode_ == Mode::DropFireAttributes ) {
 				altered.attrs.erase(std::remove_if(altered.attrs.begin(),altered.attrs.end(),
@@ -260,6 +270,126 @@ namespace
 		if( valuePosition == bytes.end() ) return false;
 		std::copy(to.begin(),to.end(),valuePosition);
 		return true;
+	}
+
+	std::uint32_t ReadTestLE32(
+		const std::vector<unsigned char>& bytes,
+		const std::size_t offset )
+	{
+		return static_cast<std::uint32_t>(bytes[offset]) |
+			(static_cast<std::uint32_t>(bytes[offset+1u]) << 8u) |
+			(static_cast<std::uint32_t>(bytes[offset+2u]) << 16u) |
+			(static_cast<std::uint32_t>(bytes[offset+3u]) << 24u);
+	}
+
+	void WriteTestLE32(
+		std::vector<unsigned char>& bytes,
+		const std::size_t offset,
+		const std::uint32_t value )
+	{
+		bytes[offset] = static_cast<unsigned char>(value & 0xffu);
+		bytes[offset+1u] = static_cast<unsigned char>((value >> 8u) & 0xffu);
+		bytes[offset+2u] = static_cast<unsigned char>((value >> 16u) & 0xffu);
+		bytes[offset+3u] = static_cast<unsigned char>((value >> 24u) & 0xffu);
+	}
+
+	void WriteTestLE64(
+		std::vector<unsigned char>& bytes,
+		const std::size_t offset,
+		const std::uint64_t value )
+	{
+		for( unsigned int i=0u; i<8u; ++i ) {
+			bytes[offset+i] = static_cast<unsigned char>((value >> (i*8u)) & 0xffu);
+		}
+	}
+
+	bool FindEXRHeaderEnd(
+		const std::vector<unsigned char>& bytes,
+		std::size_t& headerEnd )
+	{
+		std::size_t cursor = 8u;
+		auto skipCString = [&]( bool& empty ) {
+			const std::size_t begin = cursor;
+			while( cursor < bytes.size() && bytes[cursor] != 0u ) ++cursor;
+			if( cursor >= bytes.size() ) return false;
+			empty = cursor == begin;
+			++cursor;
+			return true;
+		};
+		while( cursor < bytes.size() ) {
+			bool empty = false;
+			if( !skipCString(empty) ) return false;
+			if( empty ) {
+				headerEnd = cursor;
+				return true;
+			}
+			if( !skipCString(empty) || empty || cursor+4u > bytes.size() ) return false;
+			const std::uint32_t size = ReadTestLE32(bytes,cursor);
+			cursor += 4u;
+			if( size > bytes.size()-cursor ) return false;
+			cursor += size;
+		}
+		return false;
+	}
+
+	bool FindEXRAttributeValue(
+		const std::vector<unsigned char>& bytes,
+		const std::string& wanted,
+		std::size_t& valueOffset,
+		std::uint32_t& valueSize )
+	{
+		std::size_t cursor = 8u;
+		auto readCString = [&]( std::string& value ) {
+			const std::size_t begin = cursor;
+			while( cursor < bytes.size() && bytes[cursor] != 0u ) ++cursor;
+			if( cursor >= bytes.size() ) return false;
+			value.assign(reinterpret_cast<const char*>(&bytes[begin]),cursor-begin);
+			++cursor;
+			return true;
+		};
+		while( cursor < bytes.size() ) {
+			std::string name, type;
+			if( !readCString(name) || name.empty() || !readCString(type) || type.empty() ||
+				cursor+4u > bytes.size() ) return false;
+			const std::uint32_t size = ReadTestLE32(bytes,cursor);
+			cursor += 4u;
+			if( size > bytes.size()-cursor ) return false;
+			if( name == wanted ) {
+				valueOffset = cursor;
+				valueSize = size;
+				return true;
+			}
+			cursor += size;
+		}
+		return false;
+	}
+
+	bool SetEXRChannelXSampling(
+		std::vector<unsigned char>& bytes,
+		const std::string& wanted,
+		const std::uint32_t sampling )
+	{
+		std::size_t valueOffset = 0u;
+		std::uint32_t valueSize = 0u;
+		if( !FindEXRAttributeValue(bytes,"channels",valueOffset,valueSize) ) return false;
+		std::size_t cursor = valueOffset;
+		const std::size_t end = valueOffset+valueSize;
+		while( cursor < end ) {
+			const std::size_t begin = cursor;
+			while( cursor < end && bytes[cursor] != 0u ) ++cursor;
+			if( cursor >= end ) return false;
+			const std::string name(
+				reinterpret_cast<const char*>(&bytes[begin]),cursor-begin);
+			++cursor;
+			if( name.empty() ) return false;
+			if( cursor+16u > end ) return false;
+			if( name == wanted ) {
+				WriteTestLE32(bytes,cursor+8u,sampling);
+				return true;
+			}
+			cursor += 16u;
+		}
+		return false;
 	}
 
 	// Forward declaration — defined later in the namespace.
@@ -1326,6 +1456,73 @@ namespace
 		mismatchedOpts.attrs.clear();
 		rejectsActualHeaderMismatch(mismatchedOpts,"authored attributes",
 			"[fire provenance] verifier binds authored strings to the EXR header" );
+		auto rejectsMalformedEXR = [&]( const std::function<bool(
+			std::vector<unsigned char>&)>& mutate, const std::string& expectedError,
+			const std::string& label ) {
+			std::vector<unsigned char> malformed = exrBytes;
+			std::string malformedError;
+			Check( mutate(malformed) && !VerifyFireProvenanceEXR(
+				malformed,exrSidecarBytes,malformedError) &&
+				malformedError.find(expectedError) != std::string::npos,label );
+		};
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			if( bytes.size() < 8u ) return false;
+			bytes[5] |= 0x02u;
+			return true;
+		},"version flags",
+			"[fire provenance] verifier rejects tiled/multipart EXR version flags" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			return SetEXRChannelXSampling(bytes,"R",2u);
+		},"channel sampling",
+			"[fire provenance] verifier rejects subsampled primary channels" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"dataWindow",offset,size) || size != 16u ) {
+				return false;
+			}
+			WriteTestLE32(bytes,offset+8u,kImgW-2u);
+			return true;
+		},"image windows",
+			"[fire provenance] verifier binds the data window to resolved film dimensions" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"displayWindow",offset,size) || size != 16u ) {
+				return false;
+			}
+			WriteTestLE32(bytes,offset+12u,kImgH-2u);
+			return true;
+		},"image windows",
+			"[fire provenance] verifier binds the display window to the data window" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"pixelAspectRatio",offset,size) || size != 4u ) {
+				return false;
+			}
+			float changed = 2.0f;
+			std::uint32_t bits = 0u;
+			std::memcpy(&bits,&changed,sizeof(bits));
+			WriteTestLE32(bytes,offset,bits);
+			return true;
+		},"pixel aspect ratio does not match",
+			"[fire provenance] verifier binds pixel aspect ratio to the resolved film" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			if( bytes.empty() ) return false;
+			bytes.pop_back();
+			return true;
+		},"pixel chunk is missing or truncated",
+			"[fire provenance] verifier rejects a truncated EXR pixel chunk" );
+		rejectsMalformedEXR([]( std::vector<unsigned char>& bytes ) {
+			std::size_t headerEnd = 0u;
+			if( !FindEXRHeaderEnd(bytes,headerEnd) || headerEnd+8u > bytes.size() ) {
+				return false;
+			}
+			WriteTestLE64(bytes,headerEnd,bytes.size());
+			return true;
+		},"offset table is not contiguous",
+			"[fire provenance] verifier rejects a chunk offset equal to EOF" );
 		auto rejectsSelfConsistentSemanticMutation = [&]( const std::string& key,
 			const RISECBOR64::Value& replacement, const std::string& expectedError,
 			const std::string& label ) {
@@ -1452,6 +1649,9 @@ namespace
 		rejectsDivergentPublication(DivergentEXREncoder::Mode::ForceDWAA,
 			"compression does not match",
 			"[fire provenance] publication rejects an encoder that substitutes lossy DWAA" );
+		rejectsDivergentPublication(DivergentEXREncoder::Mode::TruncatePixelData,
+			"pixel chunk is missing or truncated",
+			"[fire provenance] publication rejects truncated EXR pixels transactionally" );
 
 		const std::string signedZeroFile = MakeTempPathWithoutExt()+"_signed_zero.exr";
 		opts.viewTransform.whiteBalance._01 = -0.0;
@@ -1496,6 +1696,59 @@ namespace
 		Check( halfChannels && halfOutput && halfOutput->Find("bits_per_channel") &&
 			halfOutput->Find("bits_per_channel")->GetIntegerArgument() == 16u,
 			"[fire provenance] sub-32-bit EXR request resolves to matching FP16 channels" );
+		auto rejectsDerivativeReasonOmission = [&]( const RISECBOR64::Value& changedOutput,
+			const EncodeOpts& actualOpts, const std::string& label ) {
+			const RISECBOR64::Value changedConfig =
+				ReplaceMapMember(*exrConfig,"output",changedOutput);
+			RISECBOR64::Bytes changedConfigBytes;
+			std::string reasonError;
+			const bool configOK = RISECBOR64::Encode(
+				changedConfig,changedConfigBytes,&reasonError);
+			RISECBOR64::Value changedPayload = ReplaceMapMember(*halfPayload,
+				"resolved_render_configuration_v1",changedConfig);
+			changedPayload = ReplaceMapMember(changedPayload,
+				"resolved_render_configuration_id",RISECBOR64::Value::String(
+					configOK ? RISECBOR64::SHA256Hex(changedConfigBytes) : std::string()));
+			changedPayload = ReplaceMapMember(changedPayload,"artifact_reason_codes",
+				RISECBOR64::Value::ArrayValue({}));
+			std::vector<unsigned char> changedArtifact;
+			RISECBOR64::Bytes changedSidecar;
+			const bool encoded = configOK && encodeSelfConsistentEXR(
+				changedPayload,actualOpts,changedArtifact,changedSidecar);
+			Check( encoded && !VerifyFireProvenanceEXR(
+				changedArtifact,changedSidecar,reasonError) &&
+				reasonError.find("reason codes do not match") != std::string::npos,label );
+		};
+		RISECBOR64::Value derivativeOutput = ReplaceMapMember(*exrOutput,
+			"bits_per_channel",RISECBOR64::Value::Unsigned(16u));
+		EncodeOpts derivativeOpts = opts;
+		derivativeOpts.bpp = 16u;
+		rejectsDerivativeReasonOmission(derivativeOutput,derivativeOpts,
+			"[fire provenance] FP16 derivative requires lossy_output exactly" );
+		derivativeOutput = ReplaceMapMember(*exrOutput,"exr_compression",
+			RISECBOR64::Value::String("dwaa"));
+		derivativeOpts = opts;
+		derivativeOpts.bpp = 32u;
+		derivativeOpts.exrCompression = eExrCompression_Dwaa;
+		rejectsDerivativeReasonOmission(derivativeOutput,derivativeOpts,
+			"[fire provenance] DWAA derivative requires lossy_output exactly" );
+		derivativeOutput = ReplaceMapMember(*exrOutput,"color_space",
+			RISECBOR64::Value::String("srgb"));
+		derivativeOpts = opts;
+		derivativeOpts.bpp = 32u;
+		derivativeOpts.colorSpace = eColorSpace_sRGB;
+		rejectsDerivativeReasonOmission(derivativeOutput,derivativeOpts,
+			"[fire provenance] transformed derivative requires display_transform_enabled" );
+		RISECBOR64::Value::Values derivativeBalance =
+			exrOutput->Find("view_white_balance")->GetArray();
+		derivativeBalance[0] = RISECBOR64::Value::Float(0.9);
+		derivativeOutput = ReplaceMapMember(*exrOutput,"view_white_balance",
+			RISECBOR64::Value::ArrayValue(derivativeBalance));
+		derivativeOpts = opts;
+		derivativeOpts.bpp = 32u;
+		derivativeOpts.viewTransform.whiteBalance._00 = 0.9;
+		rejectsDerivativeReasonOmission(derivativeOutput,derivativeOpts,
+			"[fire provenance] white-balanced derivative requires its exact reason" );
 
 		const std::string whiteBalanceFile = MakeTempPathWithoutExt()+"_white_balance.exr";
 		opts.viewTransform.whiteBalance._00 = 0.9;
