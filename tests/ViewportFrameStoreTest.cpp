@@ -89,19 +89,19 @@ namespace
 	constexpr unsigned int kImgW = 16;
 	constexpr unsigned int kImgH = 16;
 
-	class NoWriteFrameEncoder :
+	class NoWritePNGEncoder :
 		public virtual IFrameEncoder,
 		public virtual Reference
 	{
 	public:
-		std::string FormatName() const override { return "NO_WRITE_TEST"; }
-		std::vector<std::string> Extensions() const override { return { "empty" }; }
+		std::string FormatName() const override { return "PNG"; }
+		std::vector<std::string> Extensions() const override { return { "png" }; }
 		bool SupportsHDR() const override { return false; }
 		bool SupportsAOVs() const override { return false; }
 		void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override {}
 
 	protected:
-		~NoWriteFrameEncoder() override {}
+		~NoWritePNGEncoder() override {}
 	};
 
 	class RetainedFrameEncoder :
@@ -109,38 +109,43 @@ namespace
 		public virtual Reference
 	{
 	public:
-		explicit RetainedFrameEncoder( bool& destroyed ) :
-			encodeCalls(0), destroyed_(destroyed) {}
-		std::string FormatName() const override { return "RETAINED_ENCODER_TEST"; }
-		std::vector<std::string> Extensions() const override { return { "retained" }; }
+		RetainedFrameEncoder( bool& destroyed, IFrameEncoder& delegate ) :
+			encodeCalls(0), destroyed_(destroyed), delegate_(delegate) { delegate_.addref(); }
+		std::string FormatName() const override { return "PPM"; }
+		std::vector<std::string> Extensions() const override { return { "ppm" }; }
 		bool SupportsHDR() const override { return false; }
 		bool SupportsAOVs() const override { return false; }
-		void Encode( const FrameStore&, IWriteBuffer& output,
-			const EncodeOpts& ) override
+		void Encode( const FrameStore& store, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
 		{
 			++encodeCalls;
-			output.setUChar(0x5a);
+			delegate_.Encode(store,output,opts);
 		}
 
 		unsigned int encodeCalls;
 
 	protected:
-		~RetainedFrameEncoder() override { destroyed_ = true; }
+		~RetainedFrameEncoder() override
+		{
+			delegate_.release();
+			destroyed_ = true;
+		}
 
 	private:
 		bool& destroyed_;
+		IFrameEncoder& delegate_;
 	};
 
-	class BlockingMetadataEncoder :
+	class BlockingPNGEncoder :
 		public virtual IFrameEncoder,
 		public virtual Reference
 	{
 	public:
-		std::string FormatName() const override { return "BLOCKING_METADATA_TEST"; }
-		std::vector<std::string> Extensions() const override { return { "metadata" }; }
+		std::string FormatName() const override { return "PNG"; }
+		std::vector<std::string> Extensions() const override { return { "png" }; }
 		bool SupportsHDR() const override { return false; }
 		bool SupportsAOVs() const override { return false; }
-		void Encode( const FrameStore&, IWriteBuffer& output,
+		void Encode( const FrameStore& store, IWriteBuffer& output,
 			const EncodeOpts& opts ) override
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
@@ -148,15 +153,12 @@ namespace
 			entered_ = true;
 			condition_.notify_all();
 			condition_.wait(lock,[this]() { return continue_; });
-			std::string payload = captured_.renderFidelityStatus;
-			for( const std::string& reason : captured_.renderReasonCodes ) {
-				payload += "|"+reason;
+			lock.unlock();
+			IFrameEncoder* png = FrameEncoderRegistry::Get().AcquireByFormatName("PNG");
+			if( png ) {
+				png->Encode(store,output,opts);
+				png->release();
 			}
-			for( const std::string& id : captured_.activeFireOpticsRecordIds ) {
-				payload += "|"+id;
-			}
-			output.setBytes(reinterpret_cast<const unsigned char*>(payload.data()),
-				static_cast<unsigned int>(payload.size()));
 		}
 
 		void WaitUntilEntered()
@@ -172,8 +174,10 @@ namespace
 			condition_.notify_all();
 		}
 
+		const FrameStore::Metadata& CapturedMetadata() const { return captured_; }
+
 	protected:
-		~BlockingMetadataEncoder() override {}
+		~BlockingPNGEncoder() override {}
 
 	private:
 		std::mutex mutex_;
@@ -762,8 +766,8 @@ namespace
 			"GUI SaveTo fails closed when fire provenance has no sidecar sink" );
 		safe_release( memory );
 
-		NoWriteFrameEncoder* noWrite = new NoWriteFrameEncoder();
-		const std::string emptyPath = MakeTempPath() + "_empty_fire.empty";
+		NoWritePNGEncoder* noWrite = new NoWritePNGEncoder();
+		const std::string emptyPath = MakeTempPath() + "_empty_fire.png";
 		Check( !vfs->SaveAs(emptyPath,noWrite,opts),
 			"GUI SaveAs rejects an encoder that emitted no artifact bytes" );
 		Check( !std::filesystem::exists(emptyPath) &&
@@ -786,8 +790,8 @@ namespace
 			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			"preview_primary");
-		BlockingMetadataEncoder* encoder = new BlockingMetadataEncoder();
-		const std::string path = MakeTempPath()+"_metadata_snapshot.metadata";
+		BlockingPNGEncoder* encoder = new BlockingPNGEncoder();
+		const std::string path = MakeTempPath()+"_metadata_snapshot.png";
 		bool saved = false;
 		EncodeOpts opts;
 		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
@@ -798,25 +802,25 @@ namespace
 		encoder->Continue();
 		saver.join();
 
-		std::vector<unsigned char> artifactBytes, sidecarBytes;
+		std::vector<unsigned char> sidecarBytes;
 		RISECBOR64::Value provenance;
 		std::string error;
-		const bool decoded = ReadFileAllBytes(path,artifactBytes) &&
-			ReadFileAllBytes(path+".provenance.cbor",sidecarBytes) &&
+		const bool decoded = ReadFileAllBytes(path+".provenance.cbor",sidecarBytes) &&
 			RISECBOR64::DecodeCanonical(sidecarBytes,provenance,&error);
-		const std::string artifact(artifactBytes.begin(),artifactBytes.end());
+		const FrameStore::Metadata& encodedMetadata = encoder->CapturedMetadata();
 		const RISECBOR64::Value* payload = decoded ? provenance.Find("payload") : nullptr;
 		const RISECBOR64::Value* reasons = payload ?
 			payload->Find("render_reason_codes") : nullptr;
 		const RISECBOR64::Value* ids = payload ?
 			payload->Find("active_fire_optics_record_ids") : nullptr;
-		Check( saved && decoded && artifact.find("pel_transport") != std::string::npos &&
-			artifact.find("chem_none_unqualified") == std::string::npos && reasons &&
+		Check( saved && decoded &&
+			encodedMetadata.renderReasonCodes.size() == 3u &&
+			encodedMetadata.renderReasonCodes[0] == "pel_transport" && reasons &&
 			reasons->GetArray().size() == 3u &&
 			reasons->GetArray()[0].GetText() == "pel_transport" && ids &&
 			ids->GetArray().size() == 1u && ids->GetArray()[0].GetText() ==
 				"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
-			"SaveAs artifact and sidecar share one metadata snapshot across preflight updates" );
+			"SaveAs encoder and sidecar share one metadata snapshot across preflight updates" );
 
 		std::remove(path.c_str());
 		std::remove((path+".provenance.cbor").c_str());
@@ -1332,22 +1336,30 @@ namespace
 		spec.tileEdge = 1;
 		FrameStore* store = new FrameStore(spec);
 		bool destroyed = false;
-		RetainedFrameEncoder* encoder = new RetainedFrameEncoder(destroyed);
 		FrameEncoderRegistry& registry = FrameEncoderRegistry::Get();
+		IFrameEncoder* original = registry.AcquireByFormatName("PPM");
+		if( !original ) {
+			Check(false,"PPM encoder is available for the registry lifetime fixture");
+			store->release();
+			return;
+		}
+		RetainedFrameEncoder* encoder = new RetainedFrameEncoder(destroyed,*original);
 		registry.Register(encoder);
-		IFrameEncoder* acquired = registry.AcquireByFormatName("RETAINED_ENCODER_TEST");
-		IFrameEncoder* acquiredByExtension = registry.AcquireByExtension(".retained");
+		IFrameEncoder* acquired = registry.AcquireByFormatName("PPM");
+		IFrameEncoder* acquiredByExtension = registry.AcquireByExtension(".ppm");
 		std::vector<IFrameEncoder*> acquiredAll = registry.AcquireAll();
 		bool retainedInSnapshot = false;
 		for( IFrameEncoder* candidate : acquiredAll ) {
-			if( candidate->FormatName() == "RETAINED_ENCODER_TEST" ) {
+			if( candidate == encoder ) {
 				retainedInSnapshot = true;
 			}
 		}
 		const std::string pattern = MakeTempPath() + "_retained_encoder";
-		const std::string artifact = pattern + ".retained";
+		const std::string artifact = pattern + ".ppm";
 		EncodeOpts opts;
-		const bool removed = registry.Unregister("RETAINED_ENCODER_TEST");
+		const bool removed = registry.Unregister("PPM");
+		// Register adopts this acquired reference while the wrapper retains its own.
+		registry.Register(original);
 		FileEncoderObserver* observer = acquired ? new FileEncoderObserver(
 			store,acquired,opts,pattern,false) : nullptr;
 		safe_release(acquired);
@@ -1360,7 +1372,7 @@ namespace
 		}
 		observer->OnFrameComplete(0,store->Generation());
 		Check( removed && !destroyed &&
-			acquiredByExtension->FormatName() == "RETAINED_ENCODER_TEST" &&
+			acquiredByExtension == encoder &&
 			encoder->encodeCalls == 1 &&
 			std::filesystem::exists(artifact),
 			"name, extension, and all-encoder acquisitions survive registry removal" );
