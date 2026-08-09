@@ -51,6 +51,7 @@
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Rendering/BlockRasterizeSequence.h"
+#include "Rendering/AdaptiveTileSizer.h"
 #include "Cameras/PinholeCamera.h"
 #include "Cameras/ThinLensCamera.h"
 #include "Cameras/FisheyeCamera.h"
@@ -63,6 +64,7 @@
 #include <set>
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/ThreadPool.h"
+#include "Utilities/CPUTopology.h"
 #include "Interfaces/IOptions.h"
 #include "Interfaces/IScalarPainter.h"
 #include "Interfaces/IPainterManager.h"
@@ -715,8 +717,30 @@ namespace
 			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
 		ResolvedRasterSequence sequence;
 		if( external ) {
-			sequence.kind = RasterSequenceKind::RasterizerDefault;
-			sequence.blockOrder = external->tileOrder;
+			const unsigned int workers = std::max(
+				1u,Implementation::ComputeRenderPoolSize());
+			const unsigned int width = film ? film->GetWidth() : 0u;
+			const unsigned int height = film ? film->GetHeight() : 0u;
+			unsigned int tileSize = Implementation::ComputeTileSize(
+				width,height,workers,8u,8u,64u);
+			if( store && store->Width() == width && store->Height() == height ) {
+				tileSize = Implementation::AlignTileSizeToFrameStore(
+					tileSize,static_cast<unsigned int>(store->TileEdge()));
+			}
+			if( external->variantPipeline ) {
+				sequence.kind = RasterSequenceKind::Morton;
+				sequence.tileSize = tileSize;
+			} else {
+				sequence.kind = RasterSequenceKind::Block;
+				sequence.blockWidth = tileSize;
+				sequence.blockHeight = tileSize;
+				if( external->tileOrder == 1u ) sequence.blockOrder = 2u;
+				else if( external->tileOrder == 2u ) {
+					sequence.blockOrder = 1u;
+					sequence.hasShuffleSeed = true;
+					sequence.shuffleSeed = 0u;
+				}
+			}
 		} else {
 			const RISE::String options = globalOptions.ReadString(
 				"raster_sequence_options","");
@@ -752,8 +776,7 @@ namespace
 			break;
 		case RasterSequenceKind::RasterizerDefault:
 			rasterSequence = Value::MapValue({
-				{ "kind", Value::String("rasterizer_default") },
-				{ "tile_order", FireUnsigned(sequence.blockOrder) } });
+				{ "kind", Value::String("rasterizer_default") } });
 			break;
 		}
 		const Value record = Value::MapValue({
