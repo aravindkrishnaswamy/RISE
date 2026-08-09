@@ -2622,6 +2622,33 @@ namespace
 				callbackConfig == store->Meta().resolvedRenderConfigCoreV1 &&
 				callbackConfig == metadata.resolvedRenderConfigCoreV1,
 				"progress callback presence cannot change the effective raster sequence or config ID" );
+			const RISECBOR64::Value* initialTransport = resolvedConfig.Find("transport");
+			const RISECBOR64::Value* initialRadianceMap = initialTransport ?
+				initialTransport->Find("radiance_map") : nullptr;
+			const RISECBOR64::Value* initialRadianceScale = initialRadianceMap ?
+				initialRadianceMap->Find("scale") : nullptr;
+			const double originalRadianceScale = initialRadianceScale ?
+				initialRadianceScale->GetFloat() : 1.0;
+			const bool changedRadianceScale =
+				job->SetActiveRasterizerRadianceScale(0.25) && job->Rasterize();
+			RISECBOR64::Value changedRadianceConfig;
+			const bool changedRadianceDecoded = changedRadianceScale &&
+				RISECBOR64::DecodeCanonical(store->Meta().resolvedRenderConfigCoreV1,
+					changedRadianceConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* changedTransport = changedRadianceDecoded ?
+				changedRadianceConfig.Find("transport") : nullptr;
+			const RISECBOR64::Value* changedRadianceMap = changedTransport ?
+				changedTransport->Find("radiance_map") : nullptr;
+			const RISECBOR64::Value* changedScale = changedRadianceMap ?
+				changedRadianceMap->Find("scale") : nullptr;
+			Check( changedScale && changedScale->GetFloat() == 0.25 &&
+				store->Meta().resolvedRenderConfigCoreV1 != callbackConfig,
+				"live radiance-scale edits change the resolved fire provenance" );
+			const bool restoredRadianceScale =
+				job->SetActiveRasterizerRadianceScale(originalRadianceScale) && job->Rasterize();
+			Check( restoredRadianceScale &&
+				store->Meta().resolvedRenderConfigCoreV1 == callbackConfig,
+				"restoring the live radiance scale restores the resolved configuration" );
 			const bool revisionIsHex = sourceRevision && !sourceRevision->GetText().empty() &&
 				std::all_of(sourceRevision->GetText().begin(),sourceRevision->GetText().end(),
 					[]( unsigned char c ) { return std::isxdigit(c) != 0; });

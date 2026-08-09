@@ -307,6 +307,9 @@ static void TestSetActiveRasterizerRadianceScale()
     // direct-view background (the map's own scale) stay consistent.
     if( pCaster ) Check( CloseEnough( pCaster->GetRadianceScale(), 0.25 ), "caster override == 0.25" );
     if( pRm )     Check( CloseEnough( pRm->GetScale(), 0.25 ), "map scale updated to 0.25" );
+    Check( pJob->GetRasterizerParameter(
+        pJob->GetActiveRasterizerName().c_str(), "radiance_scale" ) == "0.25",
+        "authoritative rasterizer snapshot scale updated to 0.25" );
 
     // Negative radiance scale is nonphysical -> rejected at the boundary,
     // leaving BOTH the caster override and the map scale unchanged (and

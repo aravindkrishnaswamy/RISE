@@ -11653,6 +11653,11 @@ bool Job::SetActiveRasterizerRadianceScale(
 		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: no active rasterizer" );
 		return false;
 	}
+	RasterizerRegistry::iterator active = rasterizerRegistry.find(activeRasterizerName);
+	if( active == rasterizerRegistry.end() || active->second.instance != pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no authoritative parameter snapshot" );
+		return false;
+	}
 
 	// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT and the
 	// spectral variants) derives from PixelBasedRasterizerHelper, which
@@ -11685,6 +11690,7 @@ bool Job::SetActiveRasterizerRadianceScale(
 			pRm->SetScale( Scalar( scale ) );
 		}
 	}
+	active->second.params.radianceMap.scale = Scalar(scale);
 
 	return true;
 }
