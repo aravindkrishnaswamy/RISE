@@ -15,16 +15,57 @@
 #include "Rasterizer.h"
 #include "FrameStore.h"
 #include "OIDNDenoiser.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
 #include "../Utilities/CPUTopology.h"
+#include <stdexcept>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	bool SceneHasActiveFireMedium( const IScene& scene )
+	{
+		const IMedium* global = scene.GetGlobalMedium();
+		if( global && global->IsFireMedium() ) return true;
+		const IObjectManager* objects = scene.GetObjects();
+		if( !objects ) return false;
+		struct Collector : public IEnumCallback<const char*>
+		{
+			const IObjectManager& objects;
+			bool found = false;
+			explicit Collector( const IObjectManager& source ) : objects(source) {}
+			bool operator()( const char* const& name ) override
+			{
+				const IObject* object = objects.GetItem(name);
+				const IMedium* medium = object ? object->GetInteriorMedium() : nullptr;
+				found = medium && medium->IsFireMedium();
+				return !found;
+			}
+		} collector(*objects);
+		objects->EnumerateItemNames(collector);
+		return collector.found;
+	}
+
+	bool HasCompleteFireOutputMetadata( const FrameStoreOutput::Metadata& metadata )
+	{
+		return metadata.renderFidelityStatus == "preview" &&
+			!metadata.renderReasonCodes.empty() &&
+			!metadata.activeFireOpticsRecordIds.empty() &&
+			!metadata.activeFireMedia.empty() &&
+			!metadata.resolvedRenderConfigCoreV1.empty() &&
+			!metadata.rendererBuildV1.empty() &&
+			!metadata.rendererBuildId.empty();
+	}
+}
+
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
   ,mFrameStore( frameStore )
+	,mFireRenderPreflightAuthorization(FireRenderPreflightAuthorization::None)
   ,mDenoisingPrefilter( OidnPrefilter::Fast )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
@@ -41,6 +82,49 @@ Rasterizer::Rasterizer( FrameStore* frameStore ) :
 	// is permitted during the L6a → L6b transition window.
 	if( mFrameStore ) {
 		mFrameStore->addref();
+	}
+}
+
+bool Rasterizer::RequireFireRenderPreflight(
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	if( !SceneHasActiveFireMedium(scene) ) {
+		mFireRenderPreflightAuthorization.store(
+			FireRenderPreflightAuthorization::None,std::memory_order_release);
+		return false;
+	}
+	const FireRenderPreflightAuthorization authorized =
+		mFireRenderPreflightAuthorization.exchange(
+			FireRenderPreflightAuthorization::None,std::memory_order_acq_rel);
+	if( !SupportsFireMediaTransport() ) {
+		GlobalLog()->PrintEasyError(
+			"unsupported_integrator_for_fire_media: rasterizer entry rejected before workers launch");
+		throw std::runtime_error(
+			"unsupported_integrator_for_fire_media: rasterizer entry rejected before workers launch");
+	}
+	if( authorized != authorization ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire rasterizer entry requires Job preflight");
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire rasterizer entry requires Job preflight");
+	}
+	if( authorization == FireRenderPreflightAuthorization::Render &&
+		(!mFrameStore || !HasCompleteFireOutputMetadata(mFrameStore->Meta())) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
+	}
+	return true;
+}
+
+void Rasterizer::AuthorizeInternalFireReentry(
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	if( SceneHasActiveFireMedium(scene) ) {
+		mFireRenderPreflightAuthorization.store(authorization,std::memory_order_release);
 	}
 }
 

@@ -313,6 +313,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot the active camera once at entry; structural camera
 	// changes (Add/Remove/SetActive) are required to serialize
 	// against rendering — see IScenePriv.h.

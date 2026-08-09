@@ -28,6 +28,13 @@ namespace RISE
 {
 	namespace Implementation { class FrameStore; }
 
+	enum class FireRenderPreflightAuthorization
+	{
+		None,
+		Prediction,
+		Render
+	};
+
 	class IRasterizer : public virtual IReference
 	{
 	protected:
@@ -204,6 +211,11 @@ namespace RISE
 		//! fire metadata; the default preserves out-of-tree rasterizers that do
 		//! not expose cancellation state.
 		virtual bool LastRenderCompleted() const { return true; }
+
+		//! One-shot authorization installed only after Job fire preflight succeeds.
+		//! In-tree rasterizers consume it at their public prediction/render entry.
+		virtual void SetFireRenderPreflightAuthorization(
+			FireRenderPreflightAuthorization /*authorization*/ ) {}
 	};
 }
 

@@ -459,6 +459,8 @@ void PixelBasedRasterizerHelper::ConfigureOutputRegion(
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
 {
+	RequireFireRenderPreflight(
+		pScene,FireRenderPreflightAuthorization::Prediction);
 	// Snapshot the active camera once at function entry — keeps
 	// all inner uses consistent and matches the per-pass contract
 	// (structural camera changes must serialize against rendering;
@@ -1195,6 +1197,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
 	mLastRenderCompleted.store(false,std::memory_order_release);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
 	// a free-fly ViewportPose supplies a viewport-private override camera the
@@ -2146,6 +2149,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
 	mLastRenderCompleted.store(false,std::memory_order_release);
 	if( num_frames == 0u ) {
 		GlobalLog()->PrintSourceError(

@@ -706,11 +706,13 @@ void* MLTRasterizer::RoundThread_ThreadProc( void* lpParameter )
 //////////////////////////////////////////////////////////////////////
 
 unsigned int MLTRasterizer::PredictTimeToRasterizeScene(
-	const IScene& /*pScene*/,
+	const IScene& pScene,
 	const ISampling2D& /*pSampling*/,
 	unsigned int* pActualTime
 	) const
 {
+	RequireFireRenderPreflight(
+		pScene,FireRenderPreflightAuthorization::Prediction);
 	if( pActualTime ) {
 		*pActualTime = 0;
 	}
@@ -1249,6 +1251,7 @@ void MLTRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1362,6 +1365,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {

@@ -17,6 +17,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/OidnConfig.h"
 #include "../Interfaces/IRasterizer.h"
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <vector>
@@ -155,6 +156,8 @@ namespace RISE
 			//! commit).
 			FrameStore*								mFrameStore;
 			int									mForTestThreadCountOverride = 0;
+			mutable std::atomic<FireRenderPreflightAuthorization>
+				mFireRenderPreflightAuthorization;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
@@ -190,6 +193,14 @@ namespace RISE
 			//! destructor releases.
 			explicit Rasterizer( FrameStore* frameStore = nullptr );
 			virtual ~Rasterizer();
+
+			bool RequireFireRenderPreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+			void AuthorizeInternalFireReentry(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+			virtual bool SupportsFireMediaTransport() const { return true; }
 
 			// Figures out the number of threads to spawn based on the number of
 			// processors in the system and the option settings
@@ -229,6 +240,12 @@ namespace RISE
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
+			void SetFireRenderPreflightAuthorization(
+				FireRenderPreflightAuthorization authorization )
+			{
+				mFireRenderPreflightAuthorization.store(
+					authorization,std::memory_order_release);
+			}
 
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job

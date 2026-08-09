@@ -33,6 +33,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
@@ -781,6 +782,62 @@ namespace
 
 	protected:
 		~CompletionCountingOutput() override = default;
+	};
+
+	class CountingJobOutput final : public IJobRasterizerOutput
+	{
+	public:
+		CountingJobOutput() : calls(0u) {}
+		bool PremultipliedAlpha() override { return false; }
+		int GetColorSpace() override { return 1; }
+		void OutputImageRGBA16( const unsigned short*, const unsigned int,
+			const unsigned int, const unsigned int, const unsigned int,
+			const unsigned int, const unsigned int ) override
+		{
+			calls.fetch_add(1u);
+		}
+		std::atomic<unsigned int> calls;
+	};
+
+	class OpaqueCamera final :
+		public virtual ICamera,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit OpaqueCamera( ICamera& camera ) : camera_(camera)
+		{
+			camera_.addref();
+		}
+		bool GenerateRay( const RuntimeContext& rc, Ray& ray,
+			const Point2& point ) const override
+		{
+			return camera_.GenerateRay(rc,ray,point);
+		}
+		Point3 GetLocation() const override { return camera_.GetLocation(); }
+		Matrix4 GetMatrix() const override { return camera_.GetMatrix(); }
+		Scalar GetExposureTime() const override { return camera_.GetExposureTime(); }
+		Scalar GetScanningRate() const override { return camera_.GetScanningRate(); }
+		Scalar GetPixelRate() const override { return camera_.GetPixelRate(); }
+		Scalar GetExposureCompensationEV() const override
+		{
+			return camera_.GetExposureCompensationEV();
+		}
+		IKeyframeParameter* KeyframeFromParameters(
+			const String& name, const String& value ) override
+		{
+			return camera_.KeyframeFromParameters(name,value);
+		}
+		void SetIntermediateValue( const IKeyframeParameter& value ) override
+		{
+			camera_.SetIntermediateValue(value);
+		}
+		void RegenerateData() override { camera_.RegenerateData(); }
+
+	protected:
+		~OpaqueCamera() override { camera_.release(); }
+
+	private:
+		ICamera& camera_;
 	};
 
 	class FirePreflightLogCapture final :
@@ -3162,6 +3219,97 @@ namespace
 		}
 		safe_release(job);
 
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool directBoundaryLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( directBoundaryLoaded ) {
+			IRasterizer* direct = job->GetRasterizer();
+			ISampling2D* sampling = nullptr;
+			RISE_API_CreateNRooksSampling2D(&sampling,1.0,1.0,1.0);
+			sampling->SetNumSamples(1u);
+			const auto isPreflightFailure = []( const std::runtime_error& error ) {
+				return std::string(error.what()).find(
+					"output_provenance_unavailable") != std::string::npos;
+			};
+			bool predictionRejected = false;
+			bool stillRejected = false;
+			bool animationRejected = false;
+			try {
+				direct->PredictTimeToRasterizeScene(*job->GetScene(),*sampling,nullptr);
+			} catch( const std::runtime_error& error ) {
+				predictionRejected = isPreflightFailure(error);
+			}
+			try {
+				direct->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				stillRejected = isPreflightFailure(error);
+			}
+			try {
+				direct->RasterizeSceneAnimation(*job->GetScene(),0.0,0.0,1u,
+					false,false,nullptr,nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				animationRejected = isPreflightFailure(error);
+			}
+			Check( predictionRejected && stillRejected && animationRejected,
+				"direct public fire prediction, still, and animation require Job preflight" );
+			Check( job->Rasterize(),
+				"Job preflight reauthorizes a fire rasterizer after rejected direct entry" );
+			safe_release(sampling);
+		} else {
+			Check(false,"direct fire-rasterizer boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool callbackBoundaryLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( callbackBoundaryLoaded ) {
+			CountingJobOutput callback;
+			Check( job->AddCallbackRasterizerOutput(&callback) && !job->Rasterize() &&
+				callback.calls.load() == 0u,
+				"fire callback output fails closed before unlabeled pixels are emitted" );
+		} else {
+			Check(false,"fire callback-output boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,false);
+		RISE_CreateJobPriv(&job);
+		const bool nonFirePluginCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( nonFirePluginCameraLoaded ) {
+			ICamera* camera = job->GetScene()->GetCameraMutable();
+			OpaqueCamera* opaque = camera ? new OpaqueCamera(*camera) : nullptr;
+			const bool installed = opaque &&
+				job->GetScene()->AddCamera("opaque_plugin_camera",opaque);
+			safe_release(opaque);
+			Check( installed && job->Rasterize(),
+				"non-fire plugin cameras bypass fire-only resolved-config encoding" );
+		} else {
+			Check(false,"non-fire plugin-camera boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool firePluginCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( firePluginCameraLoaded ) {
+			ICamera* camera = job->GetScene()->GetCameraMutable();
+			OpaqueCamera* opaque = camera ? new OpaqueCamera(*camera) : nullptr;
+			const bool installed = opaque &&
+				job->GetScene()->AddCamera("opaque_plugin_camera",opaque);
+			safe_release(opaque);
+			Check( installed && !job->Rasterize(),
+				"fire plugin cameras fail closed when resolved provenance is unavailable" );
+		} else {
+			Check(false,"fire plugin-camera boundary fixture loads");
+		}
+		safe_release(job);
+
 		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
 			false,true,1.0,false,true);
 		RISE_CreateJobPriv(&job);
@@ -3436,12 +3584,46 @@ namespace
 				const uint64_t generationBefore = store ? store->Generation() : 0u;
 				const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
 					FrameStoreOutput::Metadata();
+				ISampling2D* directSampling = nullptr;
+				RISE_API_CreateNRooksSampling2D(&directSampling,1.0,1.0,1.0);
+				directSampling->SetNumSamples(1u);
+				const auto isUnsupportedFailure = []( const std::runtime_error& error ) {
+					return std::string(error.what()).find(
+						"unsupported_integrator_for_fire_media") != std::string::npos;
+				};
+				bool directPredictionRejected = false;
+				bool directStillRejected = false;
+				bool directAnimationRejected = false;
+				if( rasterizer ) {
+					try {
+						rasterizer->PredictTimeToRasterizeScene(
+							*job->GetScene(),*directSampling,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directPredictionRejected = isUnsupportedFailure(error);
+					}
+					try {
+						rasterizer->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directStillRejected = isUnsupportedFailure(error);
+					}
+					try {
+						rasterizer->RasterizeSceneAnimation(*job->GetScene(),0.0,0.0,
+							1u,false,false,nullptr,nullptr,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directAnimationRejected = isUnsupportedFailure(error);
+					}
+				}
+				safe_release(directSampling);
 				FirePreflightProgress progress;
 				job->SetProgress(&progress);
 				const unsigned int reasonMatchesBefore = unsupportedCapture->Matches();
 				const bool rejected = loadedUnsupported && !job->Rasterize();
 				const std::string routeLabel = std::string(route.rasterizer) +
 					(route.hwss ? " HWSS " : " ") + fidelityMode;
+				Check( directPredictionRejected && directStillRejected &&
+					directAnimationRejected,
+					("direct unsupported fire entries reject specifically: "+
+						routeLabel).c_str() );
 				Check( rejected && progress.titleCalls.load() == 0u &&
 					progress.progressCalls.load() == 0u &&
 					unsupportedCapture->Matches() == reasonMatchesBefore+1u,

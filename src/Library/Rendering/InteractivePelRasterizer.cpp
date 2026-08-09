@@ -2161,6 +2161,8 @@ void InteractivePelRasterizer::RasterizeScene(
 	const bool bCancelled = pProgressFunc && pProgressFunc->IsCancelled();
 	if( pViewCaster && !bCancelled && pViewCaster->DepthWindowStale() )
 	{
+		AuthorizeInternalFireReentry(
+			pScene,FireRenderPreflightAuthorization::Render);
 		PixelBasedRasterizerHelper::RasterizeScene( pScene, pRect, pRasterSequence );
 	}
 }
