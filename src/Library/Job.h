@@ -188,6 +188,15 @@ namespace RISE
 		void PushJobFrameStoreToRasterizers();
 		bool PrepareFireRenderFidelityMetadata( bool publishMetadata = true );
 		bool PrepareFireRenderFidelityMetadata(
+			double animationTimeStart,
+			double animationTimeEnd,
+			unsigned int animationFrames,
+			bool animationFields,
+			bool animationInvertFields,
+			const unsigned int* animationFrame,
+			const Rect* renderRegion,
+			bool publishMetadata = true );
+		bool PrepareFireRenderFidelityMetadata(
 			IRasterizer* rasterizer,
 			const std::string& rasterizerKind,
 			Scalar wavelengthMin,
@@ -235,6 +244,7 @@ namespace RISE
 			std::string         luminarySampler = "none";   // PixelPelDefaults::luminarySampler
 			double              luminarySamplerParam = 1.0; // PixelPelDefaults::luminarySamplerParam
 			bool                integrateRGB    = false;    // PixelIntegratingSpectralDefaults::integrateRGB
+			double              lightSampleRRThreshold = 0.0;
 
 			// VCM-specific
 			double              mergeRadius     = 0.0;      // VCMPelDefaults::mergeRadius

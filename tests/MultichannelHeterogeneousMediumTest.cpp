@@ -80,12 +80,27 @@ namespace
 		const FrameStoreOutput::Metadata& b
 		)
 	{
+		if( a.activeFireMedia.size() != b.activeFireMedia.size() ) return false;
+		for( std::size_t i=0; i<a.activeFireMedia.size(); ++i ) {
+			const FrameStoreOutput::ActiveFireMedium& lhs = a.activeFireMedia[i];
+			const FrameStoreOutput::ActiveFireMedium& rhs = b.activeFireMedia[i];
+			if( lhs.mediaKind != rhs.mediaKind || lhs.managerName != rhs.managerName ||
+				lhs.bindingKind != rhs.bindingKind || lhs.bindingOwner != rhs.bindingOwner ||
+				lhs.authoredConfigDigest != rhs.authoredConfigDigest ||
+				lhs.opticalRecordIds != rhs.opticalRecordIds ) return false;
+		}
 		return a.sceneName == b.sceneName && a.cameraName == b.cameraName &&
 			a.activeRasterizer == b.activeRasterizer && a.sampleCount == b.sampleCount &&
 			a.cameraExposureEV == b.cameraExposureEV && a.frame == b.frame &&
 			a.renderFidelityStatus == b.renderFidelityStatus &&
 			a.renderReasonCodes == b.renderReasonCodes &&
-			a.activeFireOpticsRecordIds == b.activeFireOpticsRecordIds;
+			a.activeFireOpticsRecordIds == b.activeFireOpticsRecordIds &&
+			a.resolvedRenderConfigCoreV1 == b.resolvedRenderConfigCoreV1 &&
+			a.rendererBuildV1 == b.rendererBuildV1 &&
+			a.rendererBuildId == b.rendererBuildId &&
+			a.primaryProvenanceId == b.primaryProvenanceId &&
+			a.primaryArtifactSha256 == b.primaryArtifactSha256 &&
+			a.primaryArtifactFidelity == b.primaryArtifactFidelity;
 	}
 
 	class ThrowingFrameObserver : public IRenderObserver
@@ -2615,7 +2630,68 @@ namespace
 			safe_release(changedBakeJob);
 			writeScene("pathtracing_spectral_rasterizer",380u);
 
+			const bool explicitAnimationRendered =
+				job->RasterizeAnimation(2.0,3.0,1u,true,true);
+			RISECBOR64::Value explicitAnimationConfig;
+			const FrameStoreOutput::Metadata explicitAnimationMetadata = store->Meta();
+			const bool explicitAnimationDecoded = explicitAnimationRendered &&
+				RISECBOR64::DecodeCanonical(
+					explicitAnimationMetadata.resolvedRenderConfigCoreV1,
+					explicitAnimationConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* explicitAnimation = explicitAnimationDecoded ?
+				explicitAnimationConfig.Find("animation") : nullptr;
+			Check( explicitAnimation && explicitAnimation->Find("time_start") &&
+				explicitAnimation->Find("time_start")->GetFloat() == 2.0 &&
+				explicitAnimation->Find("time_end") &&
+				explicitAnimation->Find("time_end")->GetFloat() == 3.0 &&
+				explicitAnimation->Find("num_frames") &&
+				explicitAnimation->Find("num_frames")->GetIntegerArgument() == 1u &&
+				explicitAnimation->Find("do_fields") &&
+				explicitAnimation->Find("do_fields")->GetBoolean() &&
+				explicitAnimation->Find("invert_fields") &&
+				explicitAnimation->Find("invert_fields")->GetBoolean(),
+				"explicit animation arguments, not preset defaults, enter resolved provenance" );
+			const bool selectedFrameRendered = job->RasterizeAnimationUsingOptions(0u);
+			RISECBOR64::Value selectedFrameConfig;
+			const FrameStoreOutput::Metadata selectedFrameMetadata = store->Meta();
+			const bool selectedFrameDecoded = selectedFrameRendered &&
+				RISECBOR64::DecodeCanonical(selectedFrameMetadata.resolvedRenderConfigCoreV1,
+					selectedFrameConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* selectedAnimation = selectedFrameDecoded ?
+				selectedFrameConfig.Find("animation") : nullptr;
+			const RISECBOR64::Value* frameSelection = selectedAnimation ?
+				selectedAnimation->Find("frame_selection") : nullptr;
+			Check( frameSelection && frameSelection->Find("active") &&
+				frameSelection->Find("active")->GetBoolean() &&
+				frameSelection->Find("index") &&
+				frameSelection->Find("index")->GetIntegerArgument() == 0u,
+				"single-frame animation selection enters resolved provenance" );
+
+			IJobPriv* lightRRJob = nullptr;
+			RISE_CreateJobPriv(&lightRRJob);
+			const bool lightRRLoaded = lightRRJob &&
+				lightRRJob->SetLightSampleRRThreshold(0.25) &&
+				lightRRJob->LoadAsciiSceneViaCst(path.string().c_str());
+			const bool lightRRRendered = lightRRLoaded && lightRRJob->Rasterize();
+			Implementation::FrameStore* lightRRStore = lightRRRendered ?
+				lightRRJob->GetRasterizer()->GetFrameStore() : nullptr;
+			const FrameStoreOutput::Metadata lightRRMetadata = lightRRStore ?
+				lightRRStore->Meta() : FrameStoreOutput::Metadata();
+			RISECBOR64::Value lightRRConfig;
+			const bool lightRRDecoded = lightRRStore && RISECBOR64::DecodeCanonical(
+				lightRRMetadata.resolvedRenderConfigCoreV1,lightRRConfig,
+				&provenanceDecodeError);
+			const RISECBOR64::Value* lightSampling = lightRRDecoded ?
+				lightRRConfig.Find("light_sampling") : nullptr;
+			Check( lightSampling && lightSampling->Find("rr_threshold") &&
+				lightSampling->Find("rr_threshold")->GetFloat() == 0.25 &&
+				lightRRMetadata.resolvedRenderConfigCoreV1 !=
+					metadata.resolvedRenderConfigCoreV1,
+				"Job light-sampling RR threshold changes resolved provenance" );
+			safe_release(lightRRJob);
+
 			const FrameStoreOutput::Metadata renderedMetadata = store->Meta();
+			const RISEColor renderedPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
 			ThrowingFrameObserver throwingObserver;
 			store->AddObserver(&throwingObserver);
 			bool renderThrew = false;
@@ -2626,8 +2702,13 @@ namespace
 				renderThrew = true;
 			}
 			store->RemoveObserver(&throwingObserver);
-			Check( renderThrew && SameFrameMetadata(store->Meta(),renderedMetadata),
-				"a throwing render restores the last completed frame metadata" );
+			const RISEColor throwRestoredPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( renderThrew && SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				throwRestoredPixel.base[0] == renderedPixel.base[0] &&
+				throwRestoredPixel.base[1] == renderedPixel.base[1] &&
+				throwRestoredPixel.base[2] == renderedPixel.base[2] &&
+				throwRestoredPixel.a == renderedPixel.a,
+				"a throwing fire render restores the last completed pixels and metadata" );
 
 			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
 			CancelledFireProgress cancelledProgress;
@@ -2635,12 +2716,18 @@ namespace
 			job->SetProgress(&cancelledProgress);
 			const bool cancelledStillRejected = !job->Rasterize();
 			job->SetProgress(nullptr);
+			const RISEColor cancelledRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
 			Check( cancelledStillRejected && !rasterizer->LastRenderCompleted() &&
 				completionOutput->intermediateCount.load() > 0u &&
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata) &&
-				store->Meta().primaryProvenanceId == renderedMetadata.primaryProvenanceId,
-				"cancelled fire still render publishes no primary and restores prior metadata" );
+				store->Meta().primaryProvenanceId == renderedMetadata.primaryProvenanceId &&
+				cancelledRestoredPixel.base[0] == renderedPixel.base[0] &&
+				cancelledRestoredPixel.base[1] == renderedPixel.base[1] &&
+				cancelledRestoredPixel.base[2] == renderedPixel.base[2] &&
+				cancelledRestoredPixel.a == renderedPixel.a,
+				"cancelled fire still restores the prior finalized pixels and metadata" );
 			completionOutput->Reset();
 			job->SetProgress(&cancelledProgress);
 			const bool cancelledAnimationRejected =
@@ -2650,6 +2737,11 @@ namespace
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
 				"cancelled fire animation publishes no partial tail frame" );
+			const uint64_t regionBaselineGeneration = store->Generation();
+			const bool fireRegionRejected = !job->RasterizeRegion(0u,0u,0u,0u);
+			Check( fireRegionRejected && store->Generation() == regionBaselineGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"fire region render fails closed before workers can publish a hybrid primary" );
 			rasterizer->FreeRasterizerOutputs();
 			safe_release(completionOutput);
 			const uint64_t predictionBaselineGeneration = store->Generation();

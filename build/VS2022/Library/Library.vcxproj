@@ -17,6 +17,10 @@
     <VcpkgEnabled>true</VcpkgEnabled>
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
     <VcpkgTriplet>x64-windows</VcpkgTriplet>
+    <!-- renderer_build_v1 hashes the whole checkout, including CLI/GUI-only
+         sources.  Always evaluate this referenced project so its PreBuildEvent
+         regenerates the header before an executable-only incremental link. -->
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">

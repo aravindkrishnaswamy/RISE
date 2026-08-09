@@ -603,6 +603,9 @@ int main()
 		const std::string configWriter = braceBody(jobSource,"bool BuildResolvedRenderConfig(");
 		Check( !configWriter.empty(),
 			"resolved render configuration encoder is present" );
+		Check( configWriter.find("p.lightSampleRRThreshold") != std::string::npos &&
+			configWriter.find("\"rr_threshold\"") != std::string::npos,
+			"resolved-config schema consumes the Job light-sampling RR threshold" );
 		const std::vector<std::string> topMembers = members(
 			braceBody(jobHeader,"struct RasterizerParams"),"RasterizerParams");
 		for( const std::string& member : topMembers ) {
@@ -817,6 +820,11 @@ int main()
 			jobSource.find("dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath)") !=
 				std::string::npos && jobSource.find("\"android\"") != std::string::npos,
 			"Android regenerates build identity per build and hashes the renderer-containing module" );
+		Check( visualStudio.find("<DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>") !=
+				std::string::npos &&
+			visualStudio.find("generate_renderer_build_identity_header.py") !=
+				std::string::npos,
+			"Windows referenced-library builds always regenerate checkout-wide build identity" );
 		for( const char* dependency : { "iex", "ilmthread", "imath", "oidn", "openexr",
 			"openpgl", "png", "tiff", "zlib" } ) {
 			Check( jobSource.find(std::string("{ \"")+dependency+"\", DependencyBuildIdentity") !=

@@ -593,6 +593,8 @@ namespace
 		const unsigned int animationFrames,
 		const bool animationFields,
 		const bool animationInvertFields,
+		const unsigned int* animationFrame,
+		const Rect* renderRegion,
 		RISECBOR64::Bytes& bytes )
 	{
 		using RISECBOR64::Value;
@@ -712,6 +714,9 @@ namespace
 		const Value record = Value::MapValue({
 			{ "animation", Value::MapValue({
 				{ "do_fields", FireBool(animationFields) },
+				{ "frame_selection", Value::MapValue({
+					{ "active", FireBool(animationFrame != nullptr) },
+					{ "index", FireUnsigned(animationFrame ? *animationFrame : 0u) } }) },
 				{ "invert_fields", FireBool(animationInvertFields) },
 				{ "num_frames", FireUnsigned(animationFrames) },
 				{ "time_end", Value::Float(animationTimeEnd) },
@@ -809,12 +814,20 @@ namespace
 					{ "threshold", Value::Float(p.sms.threshold) },
 					{ "two_stage", FireBool(p.sms.twoStage) },
 					{ "use_levenberg_marquardt", FireBool(p.sms.useLevenbergMarquardt) } }) } }) },
+			{ "light_sampling", Value::MapValue({
+				{ "rr_threshold", Value::Float(p.lightSampleRRThreshold) } }) },
 			{ "record_kind", Value::String("resolved_render_configuration_v1") },
 			{ "raster_sequence", Value::MapValue({
 				{ "options", Value::String(globalOptions.ReadString(
 					"raster_sequence_options","").c_str()) },
 				{ "type", Value::Signed(globalOptions.ReadInt("raster_sequence_type",4)) }
 			}) },
+			{ "render_region", Value::MapValue({
+				{ "active", FireBool(renderRegion != nullptr) },
+				{ "bottom", FireUnsigned(renderRegion ? renderRegion->bottom : 0u) },
+				{ "left", FireUnsigned(renderRegion ? renderRegion->left : 0u) },
+				{ "right", FireUnsigned(renderRegion ? renderRegion->right : 0u) },
+				{ "top", FireUnsigned(renderRegion ? renderRegion->top : 0u) } }) },
 			{ "sampler", Value::MapValue({
 				{ "adaptive", Value::MapValue({
 					{ "max_samples", FireUnsigned(p.adaptive.maxSamples) },
@@ -10675,26 +10688,60 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 
 namespace
 {
-	class FrameMetadataRollback
+	class FrameRenderRollback
 	{
 	public:
-		explicit FrameMetadataRollback( RISE::Implementation::FrameStore* store )
+		explicit FrameRenderRollback( RISE::Implementation::FrameStore* store )
 			: store_(store), original_(store ? store->Meta() : RISE::FrameStoreOutput::Metadata()),
 			  committed_(false) {}
-		~FrameMetadataRollback()
+		~FrameRenderRollback()
 		{
-			if( store_ && !committed_ ) store_->SetMetadata(original_);
+			if( !store_ || committed_ ) return;
+			if( snapshot_ ) {
+				if( !store_->RestoreSnapshot(*snapshot_) ) store_->SetMetadata(original_);
+			} else {
+				store_->SetMetadata(original_);
+			}
+		}
+		bool ArmPixelStateForFire()
+		{
+			if( !store_ || store_->Meta().renderFidelityStatus.empty() ) return false;
+			snapshot_.reset(new RISE::Implementation::FrameStore::Snapshot(
+				store_->CaptureSnapshot()));
+			snapshot_->metadata = original_;
+			return true;
+		}
+		bool PreparedFire() const
+		{
+			return store_ && !store_->Meta().renderFidelityStatus.empty();
 		}
 		void Commit() { committed_ = true; }
 
 	private:
 		RISE::Implementation::FrameStore* store_;
 		RISE::FrameStoreOutput::Metadata original_;
+		std::unique_ptr<RISE::Implementation::FrameStore::Snapshot> snapshot_;
 		bool committed_;
 	};
 }
 
 bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
+
+{
+	return PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,nullptr,publishMetadata);
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	const double animationTimeStart,
+	const double animationTimeEnd,
+	const unsigned int animationFrames,
+	const bool animationFields,
+	const bool animationInvertFields,
+	const unsigned int* animationFrame,
+	const Rect* renderRegion,
+	const bool publishMetadata )
 {
 	if( !pScene || !pRasterizer ) {
 		return false;
@@ -10726,9 +10773,9 @@ bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 	RISECBOR64::Bytes resolvedConfig;
 	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
 		*resolvedParams,activeRasterizerName.c_str(),*pScene,
-		pRasterizer->GetFrameStore(),nullptr,animOptions.time_start,
-		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,resolvedConfig)) ) {
+		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
+		animationTimeEnd,animationFrames,animationFields,
+		animationInvertFields,animationFrame,renderRegion,resolvedConfig)) ) {
 		GlobalLog()->PrintEx(eLog_Error,
 			"Job:: fire render has no canonical resolved configuration");
 		return false;
@@ -10769,6 +10816,7 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 	external.stability.filterGlossy =
 		config.pathRegularizationEnabled ? Scalar(1) : Scalar(0);
 	external.sms.enabled = config.smsEnabled;
+	external.lightSampleRRThreshold = lightSampleRRThreshold;
 	external.spectral.nmBegin = Scalar(380);
 	external.spectral.nmEnd = Scalar(780);
 	if( config.variantPipeline ) external.pixelFilter.filter = "box";
@@ -10777,7 +10825,7 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		rasterizerKind ? rasterizerKind : "",*pScene,
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
-		animOptions.invert_fields,resolvedConfig) ) return false;
+		animOptions.invert_fields,nullptr,nullptr,resolvedConfig) ) return false;
 	return PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
@@ -11046,10 +11094,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 bool Job::Rasterize(
 	)
 {
-	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -11105,10 +11154,12 @@ bool Job::RasterizeAnimation(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
-	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
-	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
+		num_frames,do_fields,invert_fields,nullptr,nullptr) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -11152,7 +11203,7 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
-	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
 	}
@@ -11168,7 +11219,16 @@ bool Job::RasterizeRegion(
 	}
 	const unsigned int clippedRight = r_min( right, width-1 );
 	const unsigned int clippedBottom = r_min( bottom, height-1 );
-	if( !PrepareFireRenderFidelityMetadata() ) {
+	Rect rc( top, left, clippedBottom, clippedRight );
+	if( !PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,&rc) ) {
+		return false;
+	}
+	if( metadataRollback.PreparedFire() ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeRegion: output_provenance_unavailable: fire region renders "
+			"cannot finalize a standalone primary");
 		return false;
 	}
 
@@ -11188,8 +11248,6 @@ bool Job::RasterizeRegion(
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
-
-	Rect	rc( top, left, clippedBottom, clippedRight );
 
 	// See the matching comment in Job::Rasterize: pSeq must be released
 	// on every exit, including a worker exception propagated up through
@@ -13662,10 +13720,14 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
-	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
-	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		nullptr,nullptr) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -13683,9 +13745,6 @@ bool Job::RasterizeAnimationUsingOptions(
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
-
-	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
-	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
 	try {
 		pRasterizer->RasterizeSceneAnimation( *pScene,
@@ -13709,10 +13768,14 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
-	FrameMetadataRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
-	if( !pRasterizer || !PrepareFireRenderFidelityMetadata() ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		&frame,nullptr) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -13730,9 +13793,6 @@ bool Job::RasterizeAnimationUsingOptions(
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
-
-	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
-	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
 	try {
 		pRasterizer->RasterizeSceneAnimation( *pScene,
@@ -13803,6 +13863,8 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 	const RasterizerParams& params )
 {
 	if( !pRaster ) return;
+	RasterizerParams resolvedParams = params;
+	resolvedParams.lightSampleRRThreshold = lightSampleRRThreshold;
 
 	// Replace any prior entry under this key.  Existing entries hold
 	// addrefs we put there ourselves, so safe_release matches.  The
@@ -13816,7 +13878,7 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 			// map held would delete the instance, leaving us with a
 			// dangling pointer when we re-store and re-activate.  Just
 			// re-affirm activation and refresh the snapshot.
-			it->second.params = params;
+			it->second.params = resolvedParams;
 			pRasterizer = pRaster;
 			activeRasterizerName = name;
 			return;
@@ -13826,11 +13888,11 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 		}
 		safe_release( it->second.instance );
 		it->second.instance = pRaster;
-		it->second.params   = params;
+		it->second.params   = resolvedParams;
 	} else {
 		RasterizerEntry entry;
 		entry.instance = pRaster;
-		entry.params   = params;
+		entry.params   = resolvedParams;
 		rasterizerRegistry[ name ] = entry;
 	}
 

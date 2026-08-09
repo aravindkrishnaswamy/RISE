@@ -1045,6 +1045,49 @@ namespace
 	}
 
 	// ─── Section 10: regional post-processing confinement ─────────
+	void TestSnapshotRestore()
+	{
+		FrameStore* store = MakeStore( 2, 2, 1, {
+			ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth,
+			ChannelId::ObjectId, ChannelId::PrimitiveId } );
+		store->AsBeautyRasterImage().SetPEL( 0, 0,
+			RISEColor(RISEPel(1.0,2.0,3.0),0.25) );
+		store->GetChannel<ChannelId::Albedo>()->At(0,0) = RISEPel(4.0,5.0,6.0);
+		store->GetChannel<ChannelId::Normal>()->At(0,0) = Vector3(7.0,8.0,9.0);
+		store->GetChannel<ChannelId::Depth>()->At(0,0) = 10.0f;
+		store->GetChannel<ChannelId::ObjectId>()->At(0,0) = 11u;
+		store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) = 12u;
+		FrameStore::Metadata metadata;
+		metadata.renderFidelityStatus = "preview";
+		metadata.rendererBuildId = "prior";
+		store->SetMetadata(metadata);
+		const FrameStore::Snapshot snapshot = store->CaptureSnapshot();
+
+		store->AsBeautyRasterImage().SetPEL( 0, 0, RISEColor(RISEPel(0.0),1.0) );
+		store->GetChannel<ChannelId::Albedo>()->At(0,0) = RISEPel(0.0);
+		store->GetChannel<ChannelId::Normal>()->At(0,0) = Vector3(0.0,0.0,0.0);
+		store->GetChannel<ChannelId::Depth>()->At(0,0) = 0.0f;
+		store->GetChannel<ChannelId::ObjectId>()->At(0,0) = 0u;
+		store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) = 0u;
+		store->SetMetadata(FrameStore::Metadata());
+		const uint64_t generationBeforeRestore = store->Generation();
+		const bool restored = store->RestoreSnapshot(snapshot);
+		const RISEColor beauty = store->AsBeautyRasterImage().GetPEL(0,0);
+		const RISEPel albedo = store->GetChannel<ChannelId::Albedo>()->At(0,0);
+		const Vector3 normal = store->GetChannel<ChannelId::Normal>()->At(0,0);
+		Check( restored && beauty.base[0] == 1.0 && beauty.base[1] == 2.0 &&
+			beauty.base[2] == 3.0 && beauty.a == 0.25 &&
+			albedo[0] == 4.0 && albedo[1] == 5.0 && albedo[2] == 6.0 &&
+			normal.x == 7.0 && normal.y == 8.0 && normal.z == 9.0 &&
+			store->GetChannel<ChannelId::Depth>()->At(0,0) == 10.0f &&
+			store->GetChannel<ChannelId::ObjectId>()->At(0,0) == 11u &&
+			store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) == 12u &&
+			store->Meta().rendererBuildId == "prior" &&
+			store->Generation() == generationBeforeRestore + 1u,
+			"snapshot restore atomically recovers every channel, metadata, and generation" );
+		store->release();
+	}
+
 	void TestRegionalPostProcessingConfinement()
 	{
 		const unsigned int w = 16, h = 16;
@@ -1197,6 +1240,7 @@ int main()
 	TestBeautyRasterImageShim();
 	TestHDRArchivalIdentity();
 	TestCopyTileFromRasterImage();
+	TestSnapshotRestore();
 	TestRegionalPostProcessingConfinement();
 
 	std::cout << "------------------------------------------------------------\n";

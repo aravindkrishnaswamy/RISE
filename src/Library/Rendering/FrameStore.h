@@ -139,6 +139,18 @@ namespace RISE
 			using TargetFormat = FrameStoreOutput::TargetFormat;
 			using ViewTransform = FrameStoreOutput::ViewTransform;
 
+			struct Snapshot
+			{
+				Metadata metadata;
+				std::vector<RISEPel> beauty;
+				std::vector<Chel> alpha;
+				std::vector<RISEPel> albedo;
+				std::vector<Vector3> normal;
+				std::vector<float> depth;
+				std::vector<uint32_t> objectId;
+				std::vector<uint32_t> primitiveId;
+			};
+
 			explicit FrameStore( const Spec& spec );
 
 			// ── geometry ──────────────────────────────────────────
@@ -340,6 +352,9 @@ namespace RISE
 			//! copies from existing rasterizer outputs.  Phase 2
 			//! retires this shim — rasterizers will write directly
 			//! into the typed Beauty channel.
+			Snapshot CaptureSnapshot() const;
+			bool RestoreSnapshot( const Snapshot& snapshot );
+
 			IRasterImage&       AsBeautyRasterImage();
 			const IRasterImage& AsBeautyRasterImage() const;
 

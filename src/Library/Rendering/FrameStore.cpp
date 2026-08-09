@@ -480,10 +480,71 @@ namespace RISE
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// FrameStoreBulkBracket — RAII guard for full-image writes.
-		// See FrameStore.h for the contract.
+		// Render-state snapshot used to roll back incomplete fire primaries.
 		// ─────────────────────────────────────────────────────────────
 
+		FrameStore::Snapshot FrameStore::CaptureSnapshot() const
+		{
+			std::vector<std::shared_lock<std::shared_mutex>> tileLocks;
+			tileLocks.reserve(tileCountX_ * tileCountY_);
+			for( size_t ty=0; ty<tileCountY_; ++ty ) {
+				for( size_t tx=0; tx<tileCountX_; ++tx ) {
+					tileLocks.emplace_back(TileLockAt(tx,ty).mtx);
+				}
+			}
+
+			Snapshot snapshot;
+			snapshot.metadata = Meta();
+			const auto copyChannel = []( const auto* channel, auto& destination ) {
+				if( channel ) destination.assign(channel->Data(),channel->Data()+channel->Size());
+			};
+			copyChannel(beauty_.get(),snapshot.beauty);
+			copyChannel(alpha_.get(),snapshot.alpha);
+			copyChannel(albedo_.get(),snapshot.albedo);
+			copyChannel(normal_.get(),snapshot.normal);
+			copyChannel(depth_.get(),snapshot.depth);
+			copyChannel(objectId_.get(),snapshot.objectId);
+			copyChannel(primitiveId_.get(),snapshot.primitiveId);
+			return snapshot;
+		}
+
+		bool FrameStore::RestoreSnapshot( const Snapshot& snapshot )
+		{
+			const auto matchesChannel = []( const auto* channel, const auto& source ) {
+				return channel ? source.size() == channel->Size() : source.empty();
+			};
+			if( !matchesChannel(beauty_.get(),snapshot.beauty) ||
+				!matchesChannel(alpha_.get(),snapshot.alpha) ||
+				!matchesChannel(albedo_.get(),snapshot.albedo) ||
+				!matchesChannel(normal_.get(),snapshot.normal) ||
+				!matchesChannel(depth_.get(),snapshot.depth) ||
+				!matchesChannel(objectId_.get(),snapshot.objectId) ||
+				!matchesChannel(primitiveId_.get(),snapshot.primitiveId) ) return false;
+
+			std::vector<std::unique_lock<std::shared_mutex>> tileLocks;
+			tileLocks.reserve(tileCountX_ * tileCountY_);
+			for( size_t ty=0; ty<tileCountY_; ++ty ) {
+				for( size_t tx=0; tx<tileCountX_; ++tx ) {
+					tileLocks.emplace_back(TileLockAt(tx,ty).mtx);
+				}
+			}
+			const auto restoreChannel = []( auto* channel, const auto& source ) {
+				if( channel ) std::copy(source.begin(),source.end(),channel->Data());
+			};
+			restoreChannel(beauty_.get(),snapshot.beauty);
+			restoreChannel(alpha_.get(),snapshot.alpha);
+			restoreChannel(albedo_.get(),snapshot.albedo);
+			restoreChannel(normal_.get(),snapshot.normal);
+			restoreChannel(depth_.get(),snapshot.depth);
+			restoreChannel(objectId_.get(),snapshot.objectId);
+			restoreChannel(primitiveId_.get(),snapshot.primitiveId);
+			SetMetadata(snapshot.metadata);
+			globalGeneration_.fetch_add(1,std::memory_order_release);
+			return true;
+		}
+
+		// FrameStoreBulkBracket — RAII guard for full-image writes.
+		// See FrameStore.h for the contract.
 		FrameStoreBulkBracket::FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image )
 			: mFs( nullptr )
 		{
