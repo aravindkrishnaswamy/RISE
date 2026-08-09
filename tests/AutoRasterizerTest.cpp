@@ -46,6 +46,9 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
 	#define getpid _getpid
@@ -154,12 +157,21 @@ public:
 	void ArmFailureAfter( const unsigned int additionalNotifications )
 	{
 		throwAt_ = notifications + additionalNotifications;
+		failureCount_ = 1u;
+	}
+	void ArmFailuresAfter(
+		const unsigned int additionalNotifications,
+		const unsigned int failureCount )
+	{
+		throwAt_ = notifications + additionalNotifications;
+		failureCount_ = failureCount;
 	}
 	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
 	{
 		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
 		lastStore = store;
-		if( notifications == throwAt_ ) {
+		if( notifications >= throwAt_ &&
+			notifications < throwAt_+failureCount_ ) {
 			throw std::runtime_error("injected FrameStore notification failure");
 		}
 	}
@@ -170,6 +182,54 @@ protected:
 
 private:
 	unsigned int throwAt_ = 0u;
+	unsigned int failureCount_ = 0u;
+};
+
+class BlockingFrameStoreNotificationOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmOnNotification( const unsigned int notification )
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		blockAt_ = notification;
+	}
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			lastStore = store;
+			if( notifications != blockAt_ ) return;
+			entered_ = true;
+		}
+		condition_.notify_all();
+		std::unique_lock<std::mutex> lock(mutex_);
+		condition_.wait(lock,[this]() { return continue_; });
+	}
+	void WaitUntilEntered()
+	{
+		std::unique_lock<std::mutex> lock(mutex_);
+		condition_.wait(lock,[this]() { return entered_; });
+	}
+	void Continue()
+	{
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			continue_ = true;
+		}
+		condition_.notify_all();
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~BlockingFrameStoreNotificationOutput() override {}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable condition_;
+	bool entered_ = false;
+	bool continue_ = false;
+	unsigned int blockAt_ = 1u;
 };
 
 class ReentrantFrameStoreSwapOutput : public FrameStoreNotificationOutput
@@ -312,6 +372,7 @@ public:
 		const unsigned int triggerNotification
 		) :
 		mutated(false),
+		reentrantAddRejected(false),
 		rasterizer_(rasterizer),
 		replacementProgress_(replacementProgress),
 		removedOutput_(removedOutput),
@@ -323,6 +384,14 @@ public:
 	{
 		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
 		if( notifications == triggerNotification_ ) {
+			try {
+				rasterizer_.AddRasterizerOutput(&survivingOutput_);
+			}
+			catch( const std::runtime_error& error ) {
+				reentrantAddRejected =
+					std::string(error.what()).find("reentrant") != std::string::npos;
+				return;
+			}
 			mutated = true;
 			rasterizer_.SetProgressCallback(&replacementProgress_);
 			rasterizer_.RemoveRasterizerOutput(&removedOutput_);
@@ -332,6 +401,7 @@ public:
 	}
 
 	bool mutated;
+	bool reentrantAddRejected;
 
 protected:
 	~TransactionalReplayOutput() override {}
@@ -1637,7 +1707,7 @@ static void TestTransactionalFrameStoreReplay()
 	spec.width = original ? original->Width() : 1u;
 	spec.height = original ? original->Height() : 1u;
 	FrameStore* replacement = new FrameStore(spec);
-	failing->ArmFailureAfter(2u);
+	failing->ArmFailuresAfter(2u,2u);
 	bool delegateReplayRejected = false;
 	try {
 		rasterizer->SetFrameStore(replacement);
@@ -1677,9 +1747,99 @@ static void TestTransactionalFrameStoreReplay()
 	std::remove(path.c_str());
 }
 
+static void TestConcurrentOutputRegistrationRejectsFrameStoreSwap()
+{
+	const std::string label =
+		"concurrent output registration rejects a split FrameStore swap";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"concurrent_output_registration") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore* originalDelegate = rasterizer ?
+		rasterizer->ForTest_GetDelegateFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	std::thread registrar([&]() { rasterizer->AddRasterizerOutput(blocking); });
+	blocking->WaitUntilEntered();
+	bool rejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& error ) {
+		rejected = std::string(error.what()).find("reentrant") != std::string::npos;
+	}
+	blocking->Continue();
+	registrar.join();
+	Check(resolved && rejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		blocking->lastStore == original,
+		"registration barrier leaves wrapper, delegate, and output on the old store: "+
+		label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolutionPublicationTracksConcurrentFrameStoreSwap()
+{
+	const std::string label =
+		"delegate resolution publication tracks a concurrent FrameStore swap";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"resolution_frame_store_swap") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	blocking->ArmOnNotification(2u);
+	rasterizer->AddRasterizerOutput(blocking);
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	bool resolved = false;
+	std::thread resolver([&]() {
+		resolved = rasterizer->ResolveForFirePreflight(*job->GetScene());
+	});
+	blocking->WaitUntilEntered();
+	rasterizer->SetFrameStore(replacement);
+	blocking->Continue();
+	resolver.join();
+	Check(resolved && rasterizer->GetFrameStore() == replacement &&
+		rasterizer->ForTest_GetDelegateFrameStore() == replacement,
+		"published delegate synchronizes to the store selected during replay: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestPostResolutionAddReentrancy()
 {
-	const std::string label = "post-resolution output attachment honors reentrant removal";
+	const std::string label = "post-resolution output attachment rejects nested topology changes";
 	std::cout << "Testing " << label << std::endl;
 	IJobPriv* job = nullptr;
 	std::string path;
@@ -1710,10 +1870,10 @@ static void TestPostResolutionAddReentrancy()
 	}
 	rasterizer->AddRasterizerOutput(mutator);
 	const bool rendered = job->Rasterize();
-	Check(initiallyRendered && mutator->mutated,
-		"resolved delegate attachment callback replaced the wrapper output set: " + label);
-	Check(rendered && survivor->width > 0 && mutatorBase->images == 0,
-		"removed output is not resurrected in the resolved delegate: " + label);
+	Check(initiallyRendered && mutator->reentrantAddRejected && !mutator->mutated,
+		"same-rasterizer nested attachment fails closed before other mutations: " + label);
+	Check(rendered && survivor->width == 0 && mutatorBase->images > 0,
+		"rejected nested attachment preserves the originally registered output: " + label);
 	safe_release(mutator);
 	safe_release(unused);
 	safe_release(survivor);
@@ -2009,6 +2169,8 @@ int main()
 	TestRetainedOutputSnapshots();
 	TestTransactionalDelegateReplay();
 	TestTransactionalFrameStoreReplay();
+	TestConcurrentOutputRegistrationRejectsFrameStoreSwap();
+	TestResolutionPublicationTracksConcurrentFrameStoreSwap();
 	TestPostResolutionAddReentrancy();
 	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();

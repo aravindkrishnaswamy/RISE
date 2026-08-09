@@ -317,7 +317,39 @@ namespace
 // — the string form of ResolvedIntegrator() for the IRasterizer query surface.
 const char* AutoRasterizer::ResolvedIntegratorName() const
 {
-	return IntegratorName( mResolved );
+	return IntegratorName( ResolvedIntegrator() );
+}
+
+AutoIntegratorChoice AutoRasterizer::ResolvedIntegrator() const
+{
+	std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+	return mResolved;
+}
+
+const char* AutoRasterizer::ResolveReason() const
+{
+	thread_local std::string snapshot;
+	std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+	snapshot = mResolveReason;
+	return snapshot.c_str();
+}
+
+double AutoRasterizer::LastProbeSeconds() const
+{
+	std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+	return mLastProbeSeconds;
+}
+
+unsigned int AutoRasterizer::LastProbeRenders() const
+{
+	std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+	return mLastProbeRenders;
+}
+
+void AutoRasterizer::SetResolveReason( const std::string& reason ) const
+{
+	std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+	mResolveReason = reason;
 }
 
 AutoRasterizer::AutoRasterizer(
@@ -380,7 +412,13 @@ AutoRasterizer::AutoRasterizer(
 AutoRasterizer::~AutoRasterizer()
 {
 	// The base ~Rasterizer releases mFrameStore + the buffered outs.
-	safe_release( mDelegate );
+	IRasterizer* delegate = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		delegate = mDelegate;
+		mDelegate = nullptr;
+	}
+	safe_release( delegate );
 	safe_release( mCaster );
 	safe_release( mSamples );
 	safe_release( mFilter );
@@ -391,9 +429,9 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	// Tier 0 — an explicit author pin always wins and skips static
 	// analysis entirely (and Phase 4's probe).
 	switch( mPinned ) {
-		case AutoIntegratorChoice::PT:   mResolveReason = "author pin"; return AutoIntegratorChoice::PT;
-		case AutoIntegratorChoice::BDPT: mResolveReason = "author pin"; return AutoIntegratorChoice::BDPT;
-		case AutoIntegratorChoice::VCM:  mResolveReason = "author pin"; return AutoIntegratorChoice::VCM;
+		case AutoIntegratorChoice::PT:   SetResolveReason("author pin"); return AutoIntegratorChoice::PT;
+		case AutoIntegratorChoice::BDPT: SetResolveReason("author pin"); return AutoIntegratorChoice::BDPT;
+		case AutoIntegratorChoice::VCM:  SetResolveReason("author pin"); return AutoIntegratorChoice::VCM;
 		case AutoIntegratorChoice::Auto:
 		default:                         break;   // -> Tier-1 static analysis
 	}
@@ -408,7 +446,7 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	if( !scene ) {
 		// Defensive: the render path always passes a real scene, but a
 		// null here must not crash the dispatcher — fall back to PT.
-		mResolveReason = "no scene (defaulted)";
+		SetResolveReason("no scene (defaulted)");
 		return AutoIntegratorChoice::PT;
 	}
 
@@ -417,7 +455,7 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	// surface scenes, but may not select an integrator that lacks the PT-only
 	// medium feature set.
 	if( SceneHasPTOnlyMedium( *scene ) ) {
-		mResolveReason = "fire, heterogeneous, or emissive medium";
+		SetResolveReason("fire, heterogeneous, or emissive medium");
 		return AutoIntegratorChoice::PT;
 	}
 
@@ -459,7 +497,7 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	// hits all four point/spot-lit dielectric-caustic scenes (pool_caustics,
 	// glass_pavilion, diamond_teapot, torus_chain) with no false positives.
 	if( hasTransmissive && hasPositional ) {
-		mResolveReason = "dielectric + positional light";
+		SetResolveReason("dielectric + positional light");
 		return AutoIntegratorChoice::VCM;
 	}
 
@@ -474,7 +512,7 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 	// mistake.  So BDPT detection is deferred to the Phase-4 σ²·T probe;
 	// the static tier conservatively defaults to PT.  (Full analysis +
 	// matrix hit/miss table in AUTO_RASTERIZER_DESIGN.md §5.)
-	mResolveReason = "no caustic/strong-indirect signal";
+	SetResolveReason("no caustic/strong-indirect signal");
 	return AutoIntegratorChoice::PT;
 }
 
@@ -625,16 +663,23 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 
 	// Cost instrumentation (the §6.2 sweep reads this — directly via
 	// LastProbeSeconds()/LastProbeRenders() and from the summary log line).
-	mLastProbeSeconds = 0.0;
-	mLastProbeRenders = 0;
-	auto account = [this, &cfg]( const ProbeResult& r, bool variance ) {
-		mLastProbeSeconds += r.rasSeconds;
-		mLastProbeRenders += variance ? cfg.varianceRenders : 1u;
+	double probeSeconds = 0.0;
+	unsigned int probeRenders = 0u;
+	auto account = [&cfg, &probeSeconds, &probeRenders](
+		const ProbeResult& r, bool variance ) {
+		probeSeconds += r.rasSeconds;
+		probeRenders += variance ? cfg.varianceRenders : 1u;
 	};
-	auto finish = [this, &cfg]( AutoIntegratorChoice pick ) -> AutoIntegratorChoice {
+	auto finish = [this, &cfg, &probeSeconds, &probeRenders](
+		AutoIntegratorChoice pick ) -> AutoIntegratorChoice {
+		{
+			std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+			mLastProbeSeconds = probeSeconds;
+			mLastProbeRenders = probeRenders;
+		}
 		GlobalLog()->PrintEx( eLog_Event,
 			"AutoRasterizer:: probe cost %.3fs over %u candidate renders (scale 1/%u, spp %u)",
-			mLastProbeSeconds, mLastProbeRenders, cfg.scale, cfg.spp );
+			probeSeconds, probeRenders, cfg.scale, cfg.spp );
 		return pick;
 	};
 
@@ -691,7 +736,7 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 				std::snprintf( reason, sizeof(reason),
 					"probe -> vcm: median %.2fx > %.2f and reach %.2fx > %.2f (raw %.2fx)",
 					medRatio, cfg.tauCaustic, meanRatio, cfg.tauReach, rawReachR );
-				mResolveReason = reason;
+				SetResolveReason(reason);
 				return finish( AutoIntegratorChoice::VCM );
 			}
 			if( medRatio > cfg.tauCaustic ) {
@@ -742,16 +787,16 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 				std::snprintf( reason, sizeof(reason),
 					"probe -> bdpt: sigma2T %.1fx > %.2f", ratio, cfg.tauBdpt );
 			}
-			mResolveReason = reason;
+			SetResolveReason(reason);
 			return finish( AutoIntegratorChoice::BDPT );
 		}
 		std::snprintf( reason, sizeof(reason),
 			"probe -> pt: sigma2T %.2fx <= %.2f", ratio, cfg.tauBdpt );
-		mResolveReason = reason;
+		SetResolveReason(reason);
 		return finish( AutoIntegratorChoice::PT );
 	}
 
-	mResolveReason = "probe -> pt (insufficient probe signal)";
+	SetResolveReason("probe -> pt (insufficient probe signal)");
 	return finish( AutoIntegratorChoice::PT );
 }
 
@@ -761,8 +806,23 @@ IRasterizer* AutoRasterizer::BuildDelegate( AutoIntegratorChoice choice ) const
 	// wrapper's own denoise / guiding / adaptive configs.  This is the
 	// construction the concrete chunk parsers perform, so pinning `auto`
 	// to X yields the same image as a bare X_pel_rasterizer.
-	return BuildDelegate( choice, mSamples, GetFrameStore(),
-		mOidnDenoise, mGuiding, mAdaptive );
+	FrameStore* frameStore = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		frameStore = mFrameStore;
+		if( frameStore ) frameStore->addref();
+	}
+	IRasterizer* delegate = nullptr;
+	try {
+		delegate = BuildDelegate( choice, mSamples, frameStore,
+			mOidnDenoise, mGuiding, mAdaptive );
+	}
+	catch( ... ) {
+		safe_release(frameStore);
+		throw;
+	}
+	safe_release(frameStore);
+	return delegate;
 }
 
 IRasterizer* AutoRasterizer::BuildDelegate(
@@ -888,7 +948,10 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		IRasterizer* candidate = BuildDelegate( choice );
 
 		if( !candidate ) {
-			mResolved = choice;
+			{
+				std::lock_guard<std::mutex> lock(mResolutionStateMutex);
+				mResolved = choice;
+			}
 			GlobalLog()->PrintEasyError(
 				"AutoRasterizer:: failed to build the chosen delegate rasterizer" );
 			return;
@@ -908,10 +971,11 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		// wrapper is not) — apply it to the delegate, which IS one.
 		RISE_API_SetRasterizerProgressiveRendering(
 			candidate, mProgressive.enabled, mProgressive.samplesPerPass );
+		const std::string resolveReason = ResolveReason();
 		GlobalLog()->PrintEx( eLog_Event,
 			"AutoRasterizer:: [%s] integrator '%s' -> delegating to '%s' (%s)",
 			mSpectral ? "spectral" : "pel", IntegratorName( mPinned ), IntegratorName( choice ),
-			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
+			resolveReason.empty() ? "default" : resolveReason.c_str() );
 
 		// Replay outside the wrapper lock because AddRasterizerOutput notifies
 		// arbitrary sinks. Every wrapper mutation advances mReplayRevision. If a
@@ -954,7 +1018,10 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 				if( revision != mReplayRevision ) continue;
 				mDelegate = candidate;
 				candidate = nullptr;
-				mResolved = choice;
+				{
+					std::lock_guard<std::mutex> stateLock(mResolutionStateMutex);
+					mResolved = choice;
+				}
 				break;
 			}
 		}
@@ -962,24 +1029,74 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 	} );
 }
 
+IRasterizer* AutoRasterizer::RetainDelegate() const
+{
+	std::lock_guard<std::mutex> lock(outsMutex);
+	IRasterizer* delegate = mDelegate;
+	if( delegate ) delegate->addref();
+	return delegate;
+}
+
+bool AutoRasterizer::HonorsRegion() const
+{
+	IRasterizer* delegate = RetainDelegate();
+	const bool honors = delegate ? delegate->HonorsRegion() : true;
+	safe_release(delegate);
+	return honors;
+}
+
+bool AutoRasterizer::LastRenderCompleted() const
+{
+	IRasterizer* delegate = RetainDelegate();
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(delegate);
+	const bool completed = !state || state->LastRenderCompleted();
+	safe_release(delegate);
+	return completed;
+}
+
+bool AutoRasterizer::ResolveForFirePreflight( const IScene& scene ) const
+{
+	EnsureResolved(&scene);
+	SyncDelegateFrameStore();
+	IRasterizer* delegate = RetainDelegate();
+	const bool resolved = delegate != nullptr;
+	safe_release(delegate);
+	return resolved;
+}
+
 void AutoRasterizer::SyncDelegateFrameStore() const
 {
-	if( !mDelegate ) {
-		return;
+	IRasterizer* delegate = nullptr;
+	FrameStore* mine = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		delegate = mDelegate;
+		if( delegate ) delegate->addref();
+		mine = mFrameStore;
+		if( mine ) mine->addref();
 	}
-	FrameStore* mine = GetFrameStore();
-	if( mDelegate->GetFrameStore() == mine ) {
-		return;   // already in sync (the common case)
+	if( !delegate || delegate->GetFrameStore() == mine ) {
+		safe_release(delegate);
+		safe_release(mine);
+		return;
 	}
 	// The delegate is always an in-tree Rasterizer; push our current
 	// FrameStore so a late SetFrameStore (deferred Job push when the
 	// camera dims weren't known at construction, or a viewport resize)
 	// reaches the object that writes pixels.  SetFrameStore balances the
 	// refcount internally (addref new, release old).
-	Rasterizer* r = dynamic_cast<Rasterizer*>( mDelegate );
-	if( r ) {
-		r->SetFrameStore( mine );
+	Rasterizer* r = dynamic_cast<Rasterizer*>( delegate );
+	try {
+		if( r ) r->SetFrameStore(mine);
 	}
+	catch( ... ) {
+		safe_release(delegate);
+		safe_release(mine);
+		throw;
+	}
+	safe_release(delegate);
+	safe_release(mine);
 }
 
 void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
@@ -995,9 +1112,12 @@ void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 		std::atomic<bool>& active;
 		~ReplayActivity() { active.store(false,std::memory_order_release); }
 	} replayActivity { mFrameStoreReplayInProgress };
-	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
-	FrameStore* previous = GetFrameStore();
-	if( previous ) previous->addref();
+	FrameStore* previous = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		previous = mFrameStore;
+		if( previous ) previous->addref();
+	}
 	try {
 		Rasterizer::SetFrameStore( frameStore );
 	}
@@ -1005,7 +1125,10 @@ void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 		safe_release(previous);
 		throw;
 	}
+	IRasterizer* retainedDelegate = RetainDelegate();
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>(retainedDelegate);
 	if( !delegate ) {
+		safe_release(retainedDelegate);
 		safe_release(previous);
 		return;
 	}
@@ -1013,37 +1136,56 @@ void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 		delegate->SetFrameStore( frameStore );
 	}
 	catch( ... ) {
-		try {
-			Rasterizer::SetFrameStore(previous);
-		}
+		const std::exception_ptr failure = std::current_exception();
+		try { RestoreFrameStoreAfterFailedTransaction(previous); }
 		catch( ... ) {
+			safe_release(retainedDelegate);
+			safe_release(previous);
+			throw;
 		}
+		safe_release(retainedDelegate);
 		safe_release(previous);
-		throw;
+		std::rethrow_exception(failure);
 	}
+	safe_release(retainedDelegate);
 	safe_release(previous);
 }
 
 FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const
 {
-	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
-	return delegate ? delegate->GetFrameStore() : 0;
+	IRasterizer* retained = RetainDelegate();
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>(retained);
+	FrameStore* frameStore = delegate ? delegate->GetFrameStore() : nullptr;
+	safe_release(retained);
+	return frameStore;
 }
 
 void AutoRasterizer::AttachToScene( const IScene* pScene )
 {
 	EnsureResolved( pScene );
 	SyncDelegateFrameStore();
-	if( mDelegate ) {
-		mDelegate->AttachToScene( pScene );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) delegate->AttachToScene(pScene);
 	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
 }
 
 void AutoRasterizer::DetachFromScene( const IScene* pScene )
 {
-	if( mDelegate ) {
-		mDelegate->DetachFromScene( pScene );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) delegate->DetachFromScene(pScene);
 	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
 }
 
 //
@@ -1157,8 +1299,19 @@ unsigned int AutoRasterizer::PredictTimeToRasterizeScene(
 	SyncDelegateFrameStore();
 	RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Prediction);
-	if( mDelegate ) {
-		return mDelegate->PredictTimeToRasterizeScene( pScene, pSampling, pActualTime );
+	IRasterizer* delegate = RetainDelegate();
+	if( delegate ) {
+		unsigned int predicted = 0u;
+		try {
+			predicted = delegate->PredictTimeToRasterizeScene(
+				pScene,pSampling,pActualTime);
+		}
+		catch( ... ) {
+			safe_release(delegate);
+			throw;
+		}
+		safe_release(delegate);
+		return predicted;
 	}
 	if( pActualTime ) {
 		*pActualTime = 0;
@@ -1176,9 +1329,15 @@ void AutoRasterizer::RasterizeScene(
 	SyncDelegateFrameStore();
 	FireOutputTopologyLease fireOutputTopologyLease(
 		*this,pScene,FireRenderPreflightAuthorization::Render);
-	if( mDelegate ) {
-		mDelegate->RasterizeScene( pScene, pRect, pRasterSequence );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) delegate->RasterizeScene(pScene,pRect,pRasterSequence);
 	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
 	ValidateFireOutputLeaseState();
 }
 
@@ -1198,10 +1357,18 @@ void AutoRasterizer::RasterizeSceneAnimation(
 	SyncDelegateFrameStore();
 	FireOutputTopologyLease fireOutputTopologyLease(
 		*this,pScene,FireRenderPreflightAuthorization::Render);
-	if( mDelegate ) {
-		mDelegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
-			do_fields, invert_fields, pRect, specificFrame, pRasterSequence );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) {
+			delegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
+				do_fields, invert_fields, pRect, specificFrame, pRasterSequence );
+		}
 	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
 	ValidateFireOutputLeaseState();
 }
 

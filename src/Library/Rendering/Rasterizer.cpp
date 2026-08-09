@@ -567,6 +567,10 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 {
 	if( !ro ) return false;
 	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
+	if( binding.Nested() ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: frame store binding is reentrant");
+	}
 	FrameStore* frameStoreSnapshot = 0;
 
 	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
@@ -725,22 +729,78 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 			mFrameStore = previous;
 			mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 		}
-		try {
-			RetainedRasterizerOutputSnapshot rollbackSnapshot(outs,outsMutex);
-			for( IRasterizerOutput* output : rollbackSnapshot.Outputs() ) {
-				try {
-					output->OnRasterizerFrameStoreChanged(previous);
-				}
-				catch( ... ) {
-				}
-			}
-		}
-		catch( ... ) {
-		}
+		bool restored = false;
+		try { restored = RestoreOutputFrameStoreBindings(previous); }
+		catch( ... ) { restored = false; }
 		safe_release(frameStore);
+		if( !restored ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: frame store rollback detached an "
+				"unrecoverable output");
+		}
 		std::rethrow_exception(failure);
 	}
 	safe_release(previous);
+}
+
+bool Rasterizer::RestoreOutputFrameStoreBindings( FrameStore* frameStore )
+{
+	RetainedRasterizerOutputSnapshot rollbackSnapshot(outs,outsMutex);
+	std::vector<IRasterizerOutput*> unrecoverable;
+	for( IRasterizerOutput* output : rollbackSnapshot.Outputs() ) {
+		bool restored = false;
+		for( unsigned int attempt=0u; attempt<2u && !restored; ++attempt ) {
+			try {
+				output->OnRasterizerFrameStoreChanged(frameStore);
+				restored = true;
+			}
+			catch( ... ) {
+			}
+		}
+		if( !restored ) unrecoverable.push_back(output);
+	}
+	if( unrecoverable.empty() ) return true;
+
+	std::vector<IRasterizerOutput*> detached;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		for( IRasterizerOutput* failed : unrecoverable ) {
+			for( RasterizerOutputListType::iterator output=outs.begin();
+				output!=outs.end(); ++output ) {
+				if( *output == failed ) {
+					detached.push_back(*output);
+					outs.erase(output);
+					mFireOutputTopologyGeneration.fetch_add(
+						1u,std::memory_order_release);
+					break;
+				}
+			}
+		}
+	}
+	for( IRasterizerOutput* output : detached ) output->release();
+	return false;
+}
+
+void Rasterizer::RestoreFrameStoreAfterFailedTransaction( FrameStore* frameStore )
+{
+	FrameStore* displaced = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		if( frameStore == mFrameStore ) return;
+		if( frameStore ) frameStore->addref();
+		displaced = mFrameStore;
+		mFrameStore = frameStore;
+		mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
+	}
+	bool restored = false;
+	try { restored = RestoreOutputFrameStoreBindings(frameStore); }
+	catch( ... ) { restored = false; }
+	safe_release(displaced);
+	if( !restored ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: frame store rollback detached an "
+			"unrecoverable output");
+	}
 }
 
 void Rasterizer::ReannounceFrameStore()

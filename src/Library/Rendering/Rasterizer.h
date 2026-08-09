@@ -128,6 +128,8 @@ namespace RISE
 			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
 			bool UnregisterRasterizerOutput( IRasterizerOutput* ro );
 			bool ReleaseRasterizerOutputs();
+			bool RestoreOutputFrameStoreBindings( FrameStore* frameStore );
+			void RestoreFrameStoreAfterFailedTransaction( FrameStore* frameStore );
 
 			//! Protects the live output list, FrameStore binding, and fire
 			//! topology lease.  Every callback traversal retains a snapshot

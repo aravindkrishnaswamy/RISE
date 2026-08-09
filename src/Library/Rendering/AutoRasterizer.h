@@ -155,7 +155,7 @@ namespace RISE
 			//! the first render-time entry runs selection; the concrete
 			//! pick (PT/BDPT/VCM) thereafter.  For diagnostics / a future
 			//! UI "Auto -> VCM" surfacing.
-			AutoIntegratorChoice ResolvedIntegrator() const { return mResolved; }
+			AutoIntegratorChoice ResolvedIntegrator() const;
 
 			//! IRasterizer auto-dispatcher introspection (the cross-UI query
 			//! surface): IsAutoDispatcher()==true; the resolved concrete integrator
@@ -163,33 +163,24 @@ namespace RISE
 			//! one-line reason, both valid after the first render-time resolution.
 			bool IsAutoDispatcher() const override { return true; }
 			const char* ResolvedIntegratorName() const override;
-			const char* ResolveReason() const override { return mResolveReason.c_str(); }
+			const char* ResolveReason() const override;
 
 			//! Region honesty follows the RESOLVED integrator (today's
 			//! candidate set PT/BDPT/VCM all honor regions, so this is
 			//! future-proofing: if a non-region-honoring integrator ever
 			//! joins the candidate set, the query stays truthful).
-			bool HonorsRegion() const override { return mDelegate ? mDelegate->HonorsRegion() : true; }
-			bool LastRenderCompleted() const override
-			{
-				const IFireRasterizerState* state =
-					dynamic_cast<const IFireRasterizerState*>(mDelegate);
-				return !state || state->LastRenderCompleted();
-			}
-			bool ResolveForFirePreflight( const IScene& scene ) const override
-			{
-				EnsureResolved(&scene);
-				return mDelegate != nullptr;
-			}
+			bool HonorsRegion() const override;
+			bool LastRenderCompleted() const override;
+			bool ResolveForFirePreflight( const IScene& scene ) const override;
 
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed
 			//! so the §6.2 resolution/cost sweep can read the REAL in-process
 			//! probe cost directly instead of log-scraping.  Valid after the
 			//! first render-time entry.
-			double LastProbeSeconds() const { return mLastProbeSeconds; }
+			double LastProbeSeconds() const;
 			//! Number of candidate renders the probe issued (0 if it didn't run).
-			unsigned int LastProbeRenders() const { return mLastProbeRenders; }
+			unsigned int LastProbeRenders() const;
 
 			//! Test-only visibility for the delegated FrameStore identity.  Agent
 			//! isolation must restore both wrapper and delegate immediately.
@@ -298,6 +289,8 @@ namespace RISE
 			//! late `SetFrameStore` (deferred Job push, camera resize)
 			//! reaches the object that actually writes pixels.
 			void SyncDelegateFrameStore() const;
+			IRasterizer* RetainDelegate() const;
+			void SetResolveReason( const std::string& reason ) const;
 
 			// Integrator-agnostic build inputs (addref'd; released in dtor).
 			IRayCaster*					mCaster;
@@ -343,6 +336,7 @@ namespace RISE
 			std::atomic<bool>			mFrameStoreReplayInProgress { false };
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
+			mutable std::mutex				mResolutionStateMutex;
 
 			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
 			// when the probe is inactive).
