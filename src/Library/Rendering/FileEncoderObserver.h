@@ -101,6 +101,13 @@ namespace RISE
 			std::string& error
 			);
 
+		bool ValidateFireFrameSequenceEncodingDescriptor(
+			FireFrameSequenceEncoding encoding,
+			unsigned int framesPerSecond,
+			const FireFrameSequenceEncodingDescriptor& descriptor,
+			std::string& error
+			);
+
 		//! Encode to temporary files and publish the artifact only after its
 		//! required fire-provenance sidecar has been finalized.  On failure no
 		//! artifact remains without its matching sidecar.

@@ -117,6 +117,7 @@
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <psapi.h>
+#include <winver.h>
 #endif
 
 using namespace RISE;
@@ -374,6 +375,88 @@ namespace
 		return false;
 	}
 
+	std::string LoadedRuntimeBinaryVersion( const std::string& path )
+	{
+#if defined(__APPLE__)
+		const std::uint32_t imageCount = _dyld_image_count();
+		for( std::uint32_t i=0u; i<imageCount; ++i ) {
+			const char* imagePath = _dyld_get_image_name(i);
+			if( !imagePath || path != imagePath ) continue;
+			const mach_header* header = _dyld_get_image_header(i);
+			if( !header || (header->magic != MH_MAGIC && header->magic != MH_MAGIC_64) ) {
+				return std::string();
+			}
+			const std::size_t headerSize = header->magic == MH_MAGIC_64 ?
+				sizeof(mach_header_64) : sizeof(mach_header);
+			const load_command* command = reinterpret_cast<const load_command*>(
+				reinterpret_cast<const unsigned char*>(header)+headerSize);
+			for( std::uint32_t j=0u; j<header->ncmds; ++j ) {
+				if( command->cmdsize < sizeof(load_command) ) return std::string();
+				if( command->cmd == LC_ID_DYLIB && command->cmdsize >= sizeof(dylib_command) ) {
+					const std::uint32_t version =
+						reinterpret_cast<const dylib_command*>(command)->dylib.current_version;
+					return "mach_o_current_version:"+
+						std::to_string((version>>16u)&0xffffu)+"."+
+						std::to_string((version>>8u)&0xffu)+"."+
+						std::to_string(version&0xffu);
+				}
+				command = reinterpret_cast<const load_command*>(
+					reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+			}
+			return std::string();
+		}
+		return std::string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		const std::size_t slash = path.find_last_of('/');
+		const std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+		const std::size_t suffix = name.find(".so.");
+		return suffix != std::string::npos && suffix+4u < name.size() ?
+			"elf_soname_suffix:"+name.substr(suffix+4u) : std::string();
+#elif defined(_WIN32)
+		HMODULE versionLibrary = GetModuleHandleA("version.dll");
+		bool releaseVersionLibrary = false;
+		if( !versionLibrary ) {
+			versionLibrary = LoadLibraryA("version.dll");
+			releaseVersionLibrary = versionLibrary != nullptr;
+		}
+		if( !versionLibrary ) return std::string();
+		using SizeFunction = DWORD (WINAPI*)(LPCSTR,LPDWORD);
+		using InfoFunction = BOOL (WINAPI*)(LPCSTR,DWORD,DWORD,LPVOID);
+		using QueryFunction = BOOL (WINAPI*)(LPCVOID,LPCSTR,LPVOID*,PUINT);
+		const SizeFunction sizeFunction = reinterpret_cast<SizeFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoSizeA"));
+		const InfoFunction infoFunction = reinterpret_cast<InfoFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoA"));
+		const QueryFunction queryFunction = reinterpret_cast<QueryFunction>(
+			GetProcAddress(versionLibrary,"VerQueryValueA"));
+		DWORD ignored = 0u;
+		const DWORD size = sizeFunction ? sizeFunction(path.c_str(),&ignored) : 0u;
+		std::vector<unsigned char> data(size);
+		LPVOID raw = nullptr;
+		UINT rawSize = 0u;
+		const bool read = size && infoFunction && queryFunction &&
+			infoFunction(path.c_str(),0u,size,data.data()) &&
+			queryFunction(data.data(),"\\",&raw,&rawSize) &&
+			rawSize >= sizeof(VS_FIXEDFILEINFO);
+		std::string version;
+		if( read ) {
+			const VS_FIXEDFILEINFO* fixed = static_cast<const VS_FIXEDFILEINFO*>(raw);
+			if( fixed->dwSignature == 0xfeef04bdu ) {
+				version = "pe_file_version:"+
+					std::to_string(HIWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(HIWORD(fixed->dwFileVersionLS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionLS));
+			}
+		}
+		if( releaseVersionLibrary ) FreeLibrary(versionLibrary);
+		return version;
+#else
+		(void)path;
+		return std::string();
+#endif
+	}
+
 	std::string CurrentRendererBinaryPath()
 	{
 #if defined(__ANDROID__)
@@ -501,8 +584,14 @@ namespace
 			}
 			const std::size_t slash = path.find_last_of("/\\");
 			const std::string binaryHash = RISECBOR64::SHA256Hex(fileBytes);
+			const std::string binaryVersion = LoadedRuntimeBinaryVersion(path);
+			if( binaryVersion.empty() ) {
+				complete = false;
+				continue;
+			}
 			binaryVersions.push_back(path.substr(
-				slash == std::string::npos ? 0u : slash+1u)+"@sha256:"+binaryHash);
+				slash == std::string::npos ? 0u : slash+1u)+"@version="+
+				binaryVersion+"@sha256="+binaryHash);
 			binaries.push_back(Value::MapValue({
 				{ "hash_basis", Value::String(hashBasis) },
 				{ "path", Value::String(path) },
@@ -511,7 +600,7 @@ namespace
 		}
 		std::string version = "not_loaded";
 		if( !binaryVersions.empty() ) {
-			version = "loaded_binary:";
+			version = "runtime_binaries_v1:";
 			for( std::size_t i=0u; i<binaryVersions.size(); ++i ) {
 				if( i ) version += ',';
 				version += binaryVersions[i];

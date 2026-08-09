@@ -905,6 +905,12 @@ int main()
 			encoderSource,"bool BuildFireFrameSequenceProvenance(");
 		const std::string sequenceHeader = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.h");
+		std::string windowsMovieWriter = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"VideoEncoder.cpp");
+		windowsMovieWriter.erase(std::remove_if(windowsMovieWriter.begin(),
+			windowsMovieWriter.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),windowsMovieWriter.end());
 		const std::string frameEncoders = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"FrameEncoders.cpp");
 		for( const std::string& member : allDataMembers(
@@ -928,6 +934,8 @@ int main()
 			"FireFrameSequenceEncodingDescriptor") ) {
 			Check( sequenceConfigWriter.find("descriptor."+member) != std::string::npos,
 				"movie provenance consumes FireFrameSequenceEncodingDescriptor::"+member );
+			Check( windowsMovieWriter.find("descriptor."+member) != std::string::npos,
+				"Windows authored movie writer consumes descriptor field "+member );
 		}
 		const std::map<std::string,std::string> fileOutputEvidence = {
 			{ "pattern", "pattern_" }, { "multiple", "bMultiple_" },

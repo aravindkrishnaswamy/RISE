@@ -132,6 +132,70 @@ static AVPixelFormat descriptorPixelFormat(
     return AV_PIX_FMT_NONE;
 }
 
+static AVPixelFormat descriptorInputPixelFormat(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    return descriptor.inputPixelFormat == "rgba64le" ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_NONE;
+}
+
+static bool validateAuthoredDescriptor(
+    const VideoEncoder::Codec encoding,
+    const int fps,
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    std::string descriptorError;
+    if (fps <= 0 || static_cast<unsigned int>(fps) > UINT_MAX/2u ||
+        !RISE::Implementation::ValidateFireFrameSequenceEncodingDescriptor(
+            descriptorEncoding(encoding),static_cast<unsigned int>(fps),
+            descriptor,descriptorError) ||
+        descriptor.schemaVersion != 1u ||
+        descriptor.backend != "ffmpeg_libavcodec_libavformat_libswscale" ||
+        descriptor.bitsPerChannel != 10u ||
+        descriptorInputPixelFormat(descriptor) != AV_PIX_FMT_RGBA64LE ||
+        descriptor.colorPrimaries != "bt2020" ||
+        descriptor.transferFunction != "smpte_st_2084_pq" ||
+        descriptor.ycbcrMatrix != "bt2020_nonconstant_luminance" ||
+        descriptor.displayTransform != "rec709_linear_to_rec2020_pq" ||
+        descriptor.referenceWhiteNits == 0u ||
+        descriptor.pqPeakNits <= descriptor.referenceWhiteNits ||
+        descriptor.dimensionRounding != "round_up_to_even" ||
+        descriptor.maxBFrames != 0u ||
+        descriptor.conversionFilter != "sws_bilinear" ||
+        descriptor.conversionMatrix != "sws_cs_bt2020" ||
+        descriptor.conversionSourceRange != "full" ||
+        descriptor.conversionBrightness != 0 ||
+        descriptor.conversionContrast != (1 << 16) ||
+        descriptor.conversionSaturation != (1 << 16) ||
+        descriptor.expectsMediaDataInRealTime) return false;
+    if (encoding == VideoEncoder::Codec::ProRes4444) {
+        return descriptor.containerFormat == "MOV" &&
+            descriptor.codec == "apple_prores_4444" &&
+            descriptor.codecImplementation == "prores_ks" &&
+            descriptor.codecProfile == "4444" &&
+            descriptor.outputPixelFormat == "yuva444p10le" &&
+            descriptor.chromaSubsampling == "4:4:4" &&
+            descriptor.alphaMode == "encoded" && descriptor.colorRange == "full" &&
+            descriptor.gopFrames == 1u &&
+            descriptor.rateControl == "qscale_global_quality" &&
+            descriptor.encoderPreset == "none" &&
+            descriptor.codecOptions == "profile=4444;global_quality=FF_QP2LAMBDA*5" &&
+            descriptor.codecTag == "ap4h" && descriptor.muxerFlags == "none" &&
+            descriptor.conversionDestinationRange == "full";
+    }
+    return descriptor.containerFormat == "MP4" && descriptor.codec == "hevc_main10" &&
+        descriptor.codecImplementation == "libx265" &&
+        descriptor.codecProfile == "main10" &&
+        descriptor.outputPixelFormat == "yuv420p10le" &&
+        descriptor.chromaSubsampling == "4:2:0" && descriptor.alphaMode == "dropped" &&
+        descriptor.colorRange == "limited" &&
+        descriptor.gopFrames == 2u*static_cast<unsigned int>(fps) &&
+        descriptor.rateControl == "crf_20" && descriptor.encoderPreset == "medium" &&
+        descriptor.codecOptions ==
+            "crf=20:hdr10-opt=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):max-cll=0,0" &&
+        descriptor.codecTag == "hvc1" && descriptor.muxerFlags == "+faststart" &&
+        descriptor.conversionDestinationRange == "limited";
+}
+
 static bool configureAuthoredCodecContext(
     AVCodecContext* context,
     const VideoEncoder::Codec encoding,
@@ -140,18 +204,14 @@ static bool configureAuthoredCodecContext(
     const int width,
     const int height)
 {
-    if (!context || !context->priv_data || fps <= 0 || width <= 0 || height <= 0) {
+    if (!context || !context->priv_data || fps <= 0 || width <= 0 || height <= 0 ||
+        !validateAuthoredDescriptor(encoding,fps,descriptor)) {
         return false;
     }
     const bool isProRes = encoding == VideoEncoder::Codec::ProRes4444;
     const AVPixelFormat pixelFormat = descriptorPixelFormat(descriptor);
     if (pixelFormat == AV_PIX_FMT_NONE || descriptor.maxBFrames > INT_MAX ||
-        descriptor.gopFrames > INT_MAX || descriptor.colorPrimaries != "bt2020" ||
-        descriptor.transferFunction != "smpte_st_2084_pq" ||
-        descriptor.ycbcrMatrix != "bt2020_nonconstant_luminance" ||
-        descriptor.conversionFilter != "sws_bilinear" ||
-        descriptor.conversionMatrix != "sws_cs_bt2020" ||
-        descriptor.conversionSourceRange != "full") return false;
+        descriptor.gopFrames > INT_MAX) return false;
     context->width = width;
     context->height = height;
     context->time_base = {1, fps};
@@ -264,7 +324,7 @@ static bool authoredCodecNegotiationAvailable(
     if (available) {
         const int swsFlags = descriptor.conversionFilter == "sws_bilinear" ?
             SWS_BILINEAR : 0;
-        scale = swsFlags ? sws_getContext(16,16,AV_PIX_FMT_RGBA64LE,
+        scale = swsFlags ? sws_getContext(16,16,descriptorInputPixelFormat(descriptor),
             16,16,context->pix_fmt,swsFlags,nullptr,nullptr,nullptr) : nullptr;
         const int destinationRange = descriptor.conversionDestinationRange == "full" ?
             1 : descriptor.conversionDestinationRange == "limited" ? 0 : -1;
@@ -330,11 +390,15 @@ static bool authoredCodecNegotiationAvailable(
 //
 // The result fills the full 16-bit range; the swscale stage scales it
 // down to the encoder's 10-bit working precision.
-static uint16_t linearToPQ16(double linear)
+static uint16_t linearToPQ16(
+    double linear,
+    const unsigned int referenceWhiteNits,
+    const unsigned int pqPeakNits)
 {
     // Normalise scene-linear onto the PQ [0,1] domain.  100-nit
     // reference white at linear 1.0, 10000-nit PQ peak.
-    double Lp = fmin(fmax(linear, 0.0), 1.0e9) * (100.0 / 10000.0);
+    double Lp = fmin(fmax(linear, 0.0), 1.0e9) *
+        (static_cast<double>(referenceWhiteNits) / static_cast<double>(pqPeakNits));
     Lp = fmin(Lp, 1.0);
 
     // SMPTE ST.2084 forward (linear -> PQ code) OETF.
@@ -735,9 +799,9 @@ void VideoEncoder::outputFrame(
             double R, G, B;
             rec709ToRec2020(r, g, b, R, G, B);
 
-            rgbaData[idx + 0] = linearToPQ16(R);
-            rgbaData[idx + 1] = linearToPQ16(G);
-            rgbaData[idx + 2] = linearToPQ16(B);
+            rgbaData[idx + 0] = linearToPQ16(R,m_referenceWhiteNits,m_pqPeakNits);
+            rgbaData[idx + 1] = linearToPQ16(G,m_referenceWhiteNits,m_pqPeakNits);
+            rgbaData[idx + 2] = linearToPQ16(B,m_referenceWhiteNits,m_pqPeakNits);
             // Alpha is coverage, not light: encode linearly, no gamut/OETF.
             rgbaData[idx + 3] = static_cast<uint16_t>(
                 lround(std::min(std::max(c.a, 0.0), 1.0) * 65535.0));
@@ -762,10 +826,12 @@ bool VideoEncoder::setupEncoder(int width, int height)
 {
     RISE::Implementation::FireFrameSequenceEncodingDescriptor descriptor;
     if (!authoredEncodingDescriptor(m_codec,m_fps,descriptor) ||
-        descriptor.dimensionRounding != "round_up_to_even") return false;
+        !validateAuthoredDescriptor(m_codec,m_fps,descriptor)) return false;
     // Round to even dimensions (matching Mac app)
     m_width = (width + 1) & ~1;
     m_height = (height + 1) & ~1;
+    m_referenceWhiteNits = descriptor.referenceWhiteNits;
+    m_pqPeakNits = descriptor.pqPeakNits;
 
     const bool isProRes = (m_codec == Codec::ProRes4444);
 
@@ -937,7 +1003,7 @@ bool VideoEncoder::setupEncoder(int width, int height)
         SWS_BILINEAR : 0;
     if (!swsFlags) return false;
     m_swsCtx = sws_getContext(
-        m_width, m_height, AV_PIX_FMT_RGBA64LE,
+        m_width, m_height, descriptorInputPixelFormat(descriptor),
         m_width, m_height, m_codecCtx->pix_fmt,
         swsFlags, nullptr, nullptr, nullptr);
 

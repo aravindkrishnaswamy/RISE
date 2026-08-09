@@ -151,6 +151,54 @@ bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 	return true;
 }
 
+bool RISE::Implementation::ValidateFireFrameSequenceEncodingDescriptor(
+	const FireFrameSequenceEncoding encoding,
+	const unsigned int framesPerSecond,
+	const FireFrameSequenceEncodingDescriptor& descriptor,
+	std::string& error )
+{
+	FireFrameSequenceEncodingDescriptor expected;
+	if( !DescribeFireFrameSequenceEncoding(encoding,framesPerSecond,expected,error) ) {
+		return false;
+	}
+	const bool exact = descriptor.schemaVersion == expected.schemaVersion &&
+		descriptor.backend == expected.backend &&
+		descriptor.containerFormat == expected.containerFormat &&
+		descriptor.codec == expected.codec &&
+		descriptor.codecImplementation == expected.codecImplementation &&
+		descriptor.codecProfile == expected.codecProfile &&
+		descriptor.bitsPerChannel == expected.bitsPerChannel &&
+		descriptor.inputPixelFormat == expected.inputPixelFormat &&
+		descriptor.outputPixelFormat == expected.outputPixelFormat &&
+		descriptor.chromaSubsampling == expected.chromaSubsampling &&
+		descriptor.alphaMode == expected.alphaMode &&
+		descriptor.colorRange == expected.colorRange &&
+		descriptor.colorPrimaries == expected.colorPrimaries &&
+		descriptor.transferFunction == expected.transferFunction &&
+		descriptor.ycbcrMatrix == expected.ycbcrMatrix &&
+		descriptor.displayTransform == expected.displayTransform &&
+		descriptor.referenceWhiteNits == expected.referenceWhiteNits &&
+		descriptor.pqPeakNits == expected.pqPeakNits &&
+		descriptor.dimensionRounding == expected.dimensionRounding &&
+		descriptor.maxBFrames == expected.maxBFrames &&
+		descriptor.gopFrames == expected.gopFrames &&
+		descriptor.rateControl == expected.rateControl &&
+		descriptor.encoderPreset == expected.encoderPreset &&
+		descriptor.codecOptions == expected.codecOptions &&
+		descriptor.codecTag == expected.codecTag &&
+		descriptor.muxerFlags == expected.muxerFlags &&
+		descriptor.conversionFilter == expected.conversionFilter &&
+		descriptor.conversionMatrix == expected.conversionMatrix &&
+		descriptor.conversionSourceRange == expected.conversionSourceRange &&
+		descriptor.conversionDestinationRange == expected.conversionDestinationRange &&
+		descriptor.conversionBrightness == expected.conversionBrightness &&
+		descriptor.conversionContrast == expected.conversionContrast &&
+		descriptor.conversionSaturation == expected.conversionSaturation &&
+		descriptor.expectsMediaDataInRealTime == expected.expectsMediaDataInRealTime;
+	if( !exact ) error = "movie encoding descriptor differs from its authored schema-v1 values";
+	return exact;
+}
+
 namespace
 {
 	const char kFireAttributePrefix[] = "riseFireProv_";
@@ -428,6 +476,74 @@ namespace
 		return std::vector<std::string>(reasons.begin(),reasons.end());
 	}
 
+	bool ResolveEffectiveEncoderOptions(
+		const IFrameEncoder& encoder,
+		const EncodeOpts& requested,
+		EncodeOpts& effective,
+		std::string& error )
+	{
+		effective = requested;
+		const std::string format = encoder.FormatName();
+		if( requested.includeAOVs || !requested.aovChannels.empty() ) {
+			if( !encoder.SupportsAOVs() ) {
+				error = "authored encoder does not support AOV channels";
+				return false;
+			}
+		}
+		if( requested.compressionLevel != -1 ) {
+			error = "authored encoder does not expose compression_level";
+			return false;
+		}
+		if( format != "EXR" && !requested.attrs.empty() ) {
+			error = "authored encoder does not support custom attributes";
+			return false;
+		}
+		const FrameStoreOutput::ViewTransform& view = requested.viewTransform;
+		const bool identityView = view.exposureEV == 0.0f &&
+			view.toneCurve == eDisplayTransform_None && view.toneCurveStrength == 1.0f &&
+			view.whiteBalance._00 == 1.0 && view.whiteBalance._01 == 0.0 &&
+			view.whiteBalance._02 == 0.0 && view.whiteBalance._10 == 0.0 &&
+			view.whiteBalance._11 == 1.0 && view.whiteBalance._12 == 0.0 &&
+			view.whiteBalance._20 == 0.0 && view.whiteBalance._21 == 0.0 &&
+			view.whiteBalance._22 == 1.0;
+		if( (format == "EXR" || format == "HDR" || format == "RGBEA") &&
+			!identityView ) {
+			error = "authored HDR encoder does not apply a display transform";
+			return false;
+		}
+		if( format == "PNG" ) {
+			if( requested.bpp != 8u && requested.bpp != 16u ) {
+				error = "PNG bits_per_channel must be 8 or 16";
+				return false;
+			}
+		} else if( format == "EXR" ) {
+			effective.bpp = requested.bpp >= 32u ? 32u : 16u;
+			effective.viewTransform = FrameStoreOutput::ViewTransform();
+			if( requested.exrCompression < eExrCompression_None ||
+				requested.exrCompression > eExrCompression_Dwaa ) {
+				error = "EXR compression is outside the authored enum";
+				return false;
+			}
+		} else if( format == "RGBEA" ) {
+			effective.bpp = 16u;
+			effective.colorSpace = eColorSpace_ROMMRGB_Linear;
+			effective.viewTransform = FrameStoreOutput::ViewTransform();
+		} else if( format == "HDR10_PNG" ) {
+			effective.bpp = 16u;
+			effective.exrWithAlpha = false;
+		} else if( format == "TIFF" || format == "HDR" ||
+			format == "TGA" || format == "PPM" ) {
+			effective.bpp = 8u;
+			if( format == "HDR" ) {
+				effective.viewTransform = FrameStoreOutput::ViewTransform();
+			}
+		} else {
+			error = "authored encoder format is outside the resolved output schema";
+			return false;
+		}
+		return true;
+	}
+
 	bool BuildFireProvenance(
 		const FrameStore::Metadata& metadata,
 		const IFrameEncoder& encoder,
@@ -474,15 +590,18 @@ namespace
 				{ "value", Value::String(opts.attrs[i].second) }
 			}));
 		}
+		const std::string outputFormat = encoder.FormatName();
 		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
 			{ "aov_channels", Value::ArrayValue(aovChannels) },
 			{ "attributes", Value::ArrayValue(authoredAttributes) },
 			{ "bits_per_channel", Value::Unsigned(opts.bpp) },
-			{ "color_space", Value::String(ColorSpaceName(opts.colorSpace)) },
+			{ "color_space", Value::String(outputFormat == "HDR10_PNG" ?
+				"bt2020_pq" : ColorSpaceName(opts.colorSpace)) },
 			{ "compression_level", Value::Signed(opts.compressionLevel) },
 			{ "denoised_derivative", Value::Bool(opts.denoisedDerivative) },
-			{ "exr_compression", Value::String(EXRCompressionName(opts.exrCompression)) },
-			{ "exr_with_alpha", Value::Bool(opts.exrWithAlpha) },
+			{ "exr_compression", Value::String(outputFormat == "EXR" ?
+				EXRCompressionName(opts.exrCompression) : "not_applicable") },
+			{ "exr_with_alpha", Value::Bool(outputFormat == "EXR" && opts.exrWithAlpha) },
 			{ "format", Value::String(encoder.FormatName()) },
 			{ "frame_index", Value::Unsigned(opts.frame) },
 			{ "include_aovs", Value::Bool(opts.includeAOVs) },
@@ -1112,7 +1231,8 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 {
 	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
 	error.clear();
-	EncodeOpts transactionOpts = opts;
+	EncodeOpts transactionOpts;
+	if( !ResolveEffectiveEncoderOptions(encoder,opts,transactionOpts,error) ) return false;
 	if( !transactionOpts.useMetadataSnapshot ) {
 		transactionOpts.metadataSnapshot = store.Meta();
 		transactionOpts.useMetadataSnapshot = true;

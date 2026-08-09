@@ -55,6 +55,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
 #ifndef NO_EXR_SUPPORT
+#include <ImfChannelList.h>
 #include <ImfInputFile.h>
 #include <ImfStringAttribute.h>
 #endif
@@ -971,10 +972,20 @@ namespace
 		const std::string exrSidecar = exrFile+".provenance.cbor";
 		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
 		opts.bpp = 32;
-		opts.includeAOVs = true;
-		opts.aovChannels = { FrameStoreOutput::ChannelId::Albedo };
 		opts.attrs.push_back(std::make_pair("authoringNote","ratchet"));
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName("EXR");
+		EncodeOpts unsupportedAOVs = opts;
+		unsupportedAOVs.includeAOVs = true;
+		unsupportedAOVs.aovChannels = { FrameStoreOutput::ChannelId::Albedo };
+		const std::string unsupportedAOVFile =
+			MakeTempPathWithoutExt()+"_unsupported_aov.exr";
+		std::string transactionError;
+		Check( !EncodeFrameStoreFileTransaction(*store,*exr,unsupportedAOVs,
+				unsupportedAOVFile,transactionError) &&
+			!std::filesystem::exists(unsupportedAOVFile) &&
+			!std::filesystem::exists(unsupportedAOVFile+".provenance.cbor") &&
+			transactionError.find("does not support AOV") != std::string::npos,
+			"[fire provenance] unsupported AOV requests fail before artifact publication" );
 		FileEncoderObserver* observer = new FileEncoderObserver(store,exr,opts,exrBase,false);
 		store->AddObserver(observer);
 		store->MarkFrameComplete(0);
@@ -1017,14 +1028,14 @@ namespace
 			store->Meta().primaryProvenanceId == exrProvenanceId->GetText(),
 			"[fire provenance] EXR hash excludes mirrored attributes and binds the retained primary" );
 		Check( exrOutput && exrOutput->Find("include_aovs") &&
-			exrOutput->Find("include_aovs")->GetBoolean() && exrAOVChannels &&
-			exrAOVChannels->GetArray().size() == 1u && exrAttributes &&
+			!exrOutput->Find("include_aovs")->GetBoolean() && exrAOVChannels &&
+			exrAOVChannels->GetArray().empty() && exrAttributes &&
 			exrAttributes->GetArray().size() == 1u &&
 			exrAttributes->GetArray()[0].Find("name") &&
 			exrAttributes->GetArray()[0].Find("name")->GetText() == "authoringNote" &&
 			exrAttributes->GetArray()[0].Find("value") &&
 			exrAttributes->GetArray()[0].Find("value")->GetText() == "ratchet",
-			"[fire provenance] output config binds AOV selection and caller-authored attributes" );
+			"[fire provenance] output config binds effective channels and caller-authored attributes" );
 		std::string verifyError;
 		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
 			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );
@@ -1041,8 +1052,17 @@ namespace
 			verifyError.find("do not match") != std::string::npos,
 			"[fire provenance] verifier rejects an independently mismatched EXR mirror" );
 		bool attributesMatch = false;
+		bool channelsMatch = false;
 		try {
 			Imf::InputFile input(exrFile.c_str());
+			const Imf::ChannelList& channels = input.header().channels();
+			const Imf::Channel* red = channels.findChannel("R");
+			const Imf::Channel* green = channels.findChannel("G");
+			const Imf::Channel* blue = channels.findChannel("B");
+			const Imf::Channel* alpha = channels.findChannel("A");
+			channelsMatch = red && green && blue && alpha &&
+				red->type == Imf::FLOAT && green->type == Imf::FLOAT &&
+				blue->type == Imf::FLOAT && alpha->type == Imf::FLOAT;
 			const Imf::StringAttribute* statusAttribute =
 				input.header().findTypedAttribute<Imf::StringAttribute>(
 					"riseFireProv_render_fidelity_status");
@@ -1061,10 +1081,12 @@ namespace
 		}
 		Check( attributesMatch,
 			"[fire provenance] EXR mirrors canonical JSON status, digest, and provenance ID" );
+		Check( channelsMatch && exrOutput && exrOutput->Find("bits_per_channel") &&
+			exrOutput->Find("bits_per_channel")->GetIntegerArgument() == 32u,
+			"[fire provenance] emitted EXR channel types equal the effective precision claim" );
 
 		const std::string signedZeroFile = MakeTempPathWithoutExt()+"_signed_zero.exr";
 		opts.viewTransform.whiteBalance._01 = -0.0;
-		std::string transactionError;
 		Check( EncodeFrameStoreFileTransaction(*store,*exr,opts,signedZeroFile,
 				transactionError),
 			"[fire provenance] signed-zero EXR transaction succeeds" );
@@ -1074,42 +1096,46 @@ namespace
 			VerifyFireProvenanceEXR(signedZeroBytes,signedZeroSidecar,transactionError),
 			"[fire provenance] EXR mirror canonicalizes negative zero exactly as CBOR" );
 
+		const std::string halfFile = MakeTempPathWithoutExt()+"_effective_half.exr";
+		EncodeOpts halfOpts = opts;
+		halfOpts.bpp = 8u;
+		const bool halfWritten = EncodeFrameStoreFileTransaction(
+			*store,*exr,halfOpts,halfFile,transactionError);
+		std::vector<unsigned char> halfSidecar;
+		RISECBOR64::Value halfEnvelope;
+		const bool halfDecoded = halfWritten &&
+			ReadFileAllBytes(halfFile+".provenance.cbor",halfSidecar) &&
+			RISECBOR64::DecodeCanonical(halfSidecar,halfEnvelope,&transactionError);
+		const RISECBOR64::Value* halfPayload = halfDecoded ?
+			halfEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* halfConfig = halfPayload ?
+			halfPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* halfOutput = halfConfig ? halfConfig->Find("output") : nullptr;
+		bool halfChannels = false;
+		try {
+			Imf::InputFile input(halfFile.c_str());
+			const Imf::ChannelList& channels = input.header().channels();
+			const Imf::Channel* red = channels.findChannel("R");
+			const Imf::Channel* green = channels.findChannel("G");
+			const Imf::Channel* blue = channels.findChannel("B");
+			const Imf::Channel* alpha = channels.findChannel("A");
+			halfChannels = red && green && blue && alpha &&
+				red->type == Imf::HALF && green->type == Imf::HALF &&
+				blue->type == Imf::HALF && alpha->type == Imf::HALF;
+		} catch( ... ) {
+			halfChannels = false;
+		}
+		Check( halfChannels && halfOutput && halfOutput->Find("bits_per_channel") &&
+			halfOutput->Find("bits_per_channel")->GetIntegerArgument() == 16u,
+			"[fire provenance] sub-32-bit EXR request resolves to matching FP16 channels" );
+
 		const std::string whiteBalanceFile = MakeTempPathWithoutExt()+"_white_balance.exr";
 		opts.viewTransform.whiteBalance._00 = 0.9;
-		Check( EncodeFrameStoreFileTransaction(*store,*exr,opts,whiteBalanceFile,
-				transactionError),
-			"[fire provenance] nonidentity white-balance EXR transaction succeeds" );
-		std::vector<unsigned char> whiteBalanceSidecar;
-		RISECBOR64::Value whiteBalanceEnvelope;
-		const bool whiteBalanceDecoded =
-			ReadFileAllBytes(whiteBalanceFile+".provenance.cbor",whiteBalanceSidecar) &&
-			RISECBOR64::DecodeCanonical(whiteBalanceSidecar,whiteBalanceEnvelope,
-				&transactionError);
-		const RISECBOR64::Value* whiteBalancePayload = whiteBalanceDecoded ?
-			whiteBalanceEnvelope.Find("payload") : nullptr;
-		const RISECBOR64::Value* whiteBalanceReasons = whiteBalancePayload ?
-			whiteBalancePayload->Find("artifact_reason_codes") : nullptr;
-		const RISECBOR64::Value* whiteBalanceFidelity = whiteBalancePayload ?
-			whiteBalancePayload->Find("artifact_fidelity") : nullptr;
-		const RISECBOR64::Value* whiteBalanceConfig = whiteBalancePayload ?
-			whiteBalancePayload->Find("resolved_render_configuration_v1") : nullptr;
-		const RISECBOR64::Value* whiteBalanceOutput = whiteBalanceConfig ?
-			whiteBalanceConfig->Find("output") : nullptr;
-		const RISECBOR64::Value* whiteBalanceMatrix = whiteBalanceOutput ?
-			whiteBalanceOutput->Find("view_white_balance") : nullptr;
-		bool hasWhiteBalanceReason = false;
-		if( whiteBalanceReasons ) {
-			for( const auto& reason : whiteBalanceReasons->GetArray() ) {
-				hasWhiteBalanceReason = hasWhiteBalanceReason ||
-					reason.GetText() == "white_balance_enabled";
-			}
-		}
-		Check( whiteBalanceFidelity &&
-			whiteBalanceFidelity->GetText() == "display_derivative" &&
-			hasWhiteBalanceReason && whiteBalanceMatrix &&
-			whiteBalanceMatrix->GetArray().size() == 9u &&
-			whiteBalanceMatrix->GetArray()[0].GetFloat() == 0.9,
-			"[fire provenance] white balance forces and fully records a display derivative" );
+		Check( !EncodeFrameStoreFileTransaction(*store,*exr,opts,whiteBalanceFile,
+				transactionError) && !std::filesystem::exists(whiteBalanceFile) &&
+			!std::filesystem::exists(whiteBalanceFile+".provenance.cbor") &&
+			transactionError.find("does not apply a display transform") != std::string::npos,
+			"[fire provenance] ignored EXR white balance fails before publication" );
 
 		opts.viewTransform.whiteBalance = Matrix3();
 		const std::string denoisedBase = MakeTempPathWithoutExt()+"_denoised_frame";
@@ -1166,6 +1192,7 @@ namespace
 		const std::string pngSidecar = pngFile+".provenance.cbor";
 		opts.colorSpace = eColorSpace_sRGB;
 		opts.bpp = 8;
+		opts.attrs.clear();
 		opts.viewTransform.toneCurve = eDisplayTransform_ACES;
 		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName("PNG");
 		observer = new FileEncoderObserver(store,png,opts,pngBase,false);
@@ -1222,6 +1249,8 @@ namespace
 		std::remove(pngSidecar.c_str());
 		std::remove(signedZeroFile.c_str());
 		std::remove((signedZeroFile+".provenance.cbor").c_str());
+		std::remove(halfFile.c_str());
+		std::remove((halfFile+".provenance.cbor").c_str());
 		std::remove(whiteBalanceFile.c_str());
 		std::remove((whiteBalanceFile+".provenance.cbor").c_str());
 		std::remove(denoisedFile.c_str());
@@ -1413,6 +1442,37 @@ namespace
 			Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
 				"[fire provenance] renderer-build schema rejects missing nested "+path.back() );
 		}
+		const std::string runtimeHash(64u,'a');
+		const RISECBOR64::Value runtimeBinary = RISECBOR64::Value::MapValue({
+			{ "hash_basis", RISECBOR64::Value::String("file_bytes") },
+			{ "path", RISECBOR64::Value::String("/test/libavcodec.1.dylib") },
+			{ "sha256", RISECBOR64::Value::String(runtimeHash) }
+		});
+		const RISECBOR64::Value validRuntimeDependency = RISECBOR64::Value::MapValue({
+			{ "availability", RISECBOR64::Value::String("loaded") },
+			{ "linkage", RISECBOR64::Value::String("runtime_loaded") },
+			{ "loaded_binaries", RISECBOR64::Value::ArrayValue({ runtimeBinary }) },
+			{ "version", RISECBOR64::Value::String(
+				"runtime_binaries_v1:libavcodec.1.dylib@version=mach_o_current_version:1.2.3@sha256="+
+				runtimeHash) }
+		});
+		invalidMetadata = movieMetadata;
+		invalidMetadata.rendererBuildV1 = encode(replacePath(baseBuild,
+			{ "dependency_builds", "avcodec" },0u,validRuntimeDependency));
+		invalidMetadata.rendererBuildId =
+			RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
+		Check( FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+			"[fire provenance] renderer-build schema accepts a bound runtime version/hash" );
+		const RISECBOR64::Value mismatchedRuntimeDependency = replaceMember(
+			validRuntimeDependency,"version",RISECBOR64::Value::String(
+				"runtime_binaries_v1:libavcodec.1.dylib@version=mach_o_current_version:1.2.3@sha256="+
+				std::string(64u,'b')));
+		invalidMetadata.rendererBuildV1 = encode(replacePath(baseBuild,
+			{ "dependency_builds", "avcodec" },0u,mismatchedRuntimeDependency));
+		invalidMetadata.rendererBuildId =
+			RISECBOR64::SHA256Hex(invalidMetadata.rendererBuildV1);
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
+			"[fire provenance] renderer-build schema rejects a runtime version/hash mismatch" );
 		struct BuildSemanticMutation {
 			std::vector<std::string> path;
 			RISECBOR64::Value replacement;
@@ -1568,6 +1628,46 @@ namespace
 			windowsProRes.conversionContrast == 65536 &&
 			windowsProRes.conversionSaturation == 65536,
 			"[fire provenance] Windows ProRes encoding-v1 ratchets its full parameter surface" );
+		Check( ValidateFireFrameSequenceEncodingDescriptor(
+				FireFrameSequenceEncoding::AppleProRes4444_10Bit,30u,
+				windowsProRes,descriptorError),
+			"[fire provenance] exact Windows ProRes descriptor validates" );
+		auto rejectsWindowsDescriptor = [&](
+			const FireFrameSequenceEncodingDescriptor& changed, const char* label ) {
+			std::string mutationError;
+			Check( !ValidateFireFrameSequenceEncodingDescriptor(
+				FireFrameSequenceEncoding::AppleProRes4444_10Bit,30u,
+				changed,mutationError) && mutationError.find("differs") != std::string::npos,
+				label );
+		};
+		FireFrameSequenceEncodingDescriptor changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.bitsPerChannel = 12u;
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed bit depth");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.inputPixelFormat = "rgba32";
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed input pixel format");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.chromaSubsampling = "4:2:0";
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed chroma subsampling");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.alphaMode = "dropped";
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed alpha semantics");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.displayTransform = "identity";
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed display transform");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.referenceWhiteNits = 101u;
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed reference white");
+		changedWindowsDescriptor = windowsProRes;
+		changedWindowsDescriptor.pqPeakNits = 9999u;
+		rejectsWindowsDescriptor(changedWindowsDescriptor,
+			"[fire provenance] Windows descriptor rejects changed PQ peak");
 
 		const std::string hevcTemporary = MakeTempPathWithoutExt()+"_hevc.closed";
 		const std::string hevcFile = MakeTempPathWithoutExt()+"_hevc.mp4";

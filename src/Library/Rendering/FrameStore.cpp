@@ -685,6 +685,7 @@ namespace
 				error = "renderer dependency availability and linkage are inconsistent";
 				return false;
 			}
+			std::string previousBinaryPath;
 			for( const RISECBOR64::Value& loaded : binaries->GetArray() ) {
 				if( !ExactMapKeys(loaded,{"hash_basis","path","sha256"},
 					"renderer dependency binary",error) ) return false;
@@ -698,6 +699,51 @@ namespace
 				if( loaded.Find("hash_basis")->GetText().empty() ||
 					loaded.Find("path")->GetText().empty() ) {
 					error = "renderer dependency binary identity is incomplete";
+					return false;
+				}
+				if( !previousBinaryPath.empty() &&
+					loaded.Find("path")->GetText() <= previousBinaryPath ) {
+					error = "renderer dependency binaries are duplicated or unsorted";
+					return false;
+				}
+				previousBinaryPath = loaded.Find("path")->GetText();
+			}
+			if( linkage == "runtime_loaded" ) {
+				const std::string prefix = "runtime_binaries_v1:";
+				if( version.compare(0u,prefix.size(),prefix) != 0 ) {
+					error = "renderer runtime dependency version is outside schema-v1";
+					return false;
+				}
+				std::size_t cursor = prefix.size();
+				for( std::size_t i=0u; i<binaries->GetArray().size(); ++i ) {
+					const RISECBOR64::Value& loaded = binaries->GetArray()[i];
+					const std::string& path = loaded.Find("path")->GetText();
+					const std::size_t slash = path.find_last_of("/\\");
+					const std::string tokenPrefix = path.substr(
+						slash == std::string::npos ? 0u : slash+1u)+"@version=";
+					if( version.compare(cursor,tokenPrefix.size(),tokenPrefix) != 0 ) {
+						error = "renderer runtime dependency version does not name its binary";
+						return false;
+					}
+					cursor += tokenPrefix.size();
+					const std::string hashSuffix = "@sha256="+
+						loaded.Find("sha256")->GetText();
+					const std::size_t hashPosition = version.find(hashSuffix,cursor);
+					if( hashPosition == std::string::npos || hashPosition == cursor ) {
+						error = "renderer runtime dependency version is missing its binary version/hash";
+						return false;
+					}
+					cursor = hashPosition+hashSuffix.size();
+					if( i+1u < binaries->GetArray().size() ) {
+						if( cursor >= version.size() || version[cursor] != ',' ) {
+							error = "renderer runtime dependency version list is malformed";
+							return false;
+						}
+						++cursor;
+					}
+				}
+				if( cursor != version.size() ) {
+					error = "renderer runtime dependency version has unmatched data";
 					return false;
 				}
 			}

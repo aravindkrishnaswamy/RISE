@@ -115,6 +115,8 @@ private:
     int m_fps;
     int m_width = 0;
     int m_height = 0;
+    unsigned int m_referenceWhiteNits = 0u;
+    unsigned int m_pqPeakNits = 0u;
     bool m_started = false;
     bool m_setupFailed = false;
     bool m_finalized = false;
