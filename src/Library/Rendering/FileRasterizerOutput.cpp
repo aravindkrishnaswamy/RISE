@@ -27,8 +27,6 @@
 #include "../Utilities/RasterSanityScan.h"
 
 #include <cassert>
-#include <string.h>
-#include <stdio.h>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -63,22 +61,19 @@ FileRasterizerOutput::FileRasterizerOutput(
 
 	// First check to see if we should just stick stuff using a rendered subfolder from the media location
 	const bool bUseMediaFolder = options.ReadBool( "rendered_output_in_rise_media_folder", false );
+	const std::string authoredPattern = szPattern_ ? szPattern_ : "";
 
 	if( bUseMediaFolder ) {
-		// Do the concatenation
 		const char* szmediapath = getenv( "RISE_MEDIA_PATH" );
 		if( szmediapath ) {
-			strcpy( szPattern, szmediapath );
-			strcat( szPattern, szPattern_ );
+			pattern = std::string(szmediapath) + authoredPattern;
 		} else {
 			GlobalLog()->PrintEasyWarning( "FileRenderedOutput: Asked to use media path for rendered files, but media path is not set!" );
-			strcpy( szPattern, szPattern_ );
+			pattern = authoredPattern;
 		}
 	} else {
-		// Look for an option that gives us the folder
 		RISE::String strOutputFolder = options.ReadString( "rendered_output_folder", "" );
-		strcpy( szPattern, strOutputFolder.c_str() );
-		strcat( szPattern, szPattern_ );
+		pattern = std::string(strOutputFolder.c_str()) + authoredPattern;
 	}
 
 	if( color_space==eColorSpace_Rec709RGB_Linear || color_space==eColorSpace_ROMMRGB_Linear ) {
@@ -270,7 +265,7 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 
 	encoderObserver_ = new FileEncoderObserver(
 		store, encoder_, opts,
-		std::string( szPattern ), bMultiple );
+		pattern, bMultiple );
 	store->AddObserver( encoderObserver_ );
 	return true;
 }
@@ -455,19 +450,19 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputPreDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }

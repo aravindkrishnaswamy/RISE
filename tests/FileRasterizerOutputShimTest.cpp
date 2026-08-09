@@ -187,9 +187,9 @@ namespace
 	// straight to FileRasterizerOutput's constructor, which (per
 	// global.options' checked-in `rendered_output_in_rise_media_folder
 	// TRUE`) unconditionally does
-	// `strcpy(szPattern, getenv("RISE_MEDIA_PATH")); strcat(szPattern,
-	// szPattern_)` — with no check for szPattern_ already being
-	// absolute.  On any dev/CI box that has exported RISE_MEDIA_PATH
+	// prepends RISE_MEDIA_PATH to the authored pattern, with no check
+	// for whether that pattern is already absolute.  On any dev/CI box
+	// that has exported RISE_MEDIA_PATH
 	// per the Quickstart (`export RISE_MEDIA_PATH="$(pwd)/"`), that
 	// turns our absolute temp path into a bogus double-rooted one
 	// (e.g. ".../RISE//var/folders/...") that doesn't exist on disk,
@@ -565,6 +565,18 @@ namespace
 		std::remove( f1.c_str() );
 		std::remove( f7.c_str() );
 		safe_release( img );
+	}
+
+	void TestLongOutputPattern()
+	{
+		const std::string longPattern(4096u,'x');
+		FileRasterizerOutput* output = new FileRasterizerOutput(
+			longPattern.c_str(),false,FileRasterizerOutput::TGA,8,
+			eColorSpace_sRGB,0.0,eDisplayTransform_None,
+			eExrCompression_Zip,true);
+		Check( output->HasEncoder(),
+			"output patterns longer than the legacy 1024-byte buffer construct safely" );
+		safe_release(output);
 	}
 
 	void TestMultiFrameReuse()
@@ -1172,6 +1184,7 @@ int main()
 	TestHDRZerosCameraEV();
 	TestDenoiseDualWrite();
 	TestAnimationFrameNumbering();
+	TestLongOutputPattern();
 	TestMultiFrameReuse();
 	TestFireFidelityProvenanceOutput();
 

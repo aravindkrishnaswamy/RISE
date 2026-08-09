@@ -19,6 +19,7 @@
 #include "../Utilities/Reference.h"
 #include "../RasterImages/EXRCompression.h"
 #include "DisplayTransform.h"
+#include <string>
 
 namespace RISE
 {
@@ -71,7 +72,7 @@ namespace RISE
 			}
 
 		protected:
-			char				szPattern[1024];
+			std::string		pattern;
 			bool				bMultiple;
 			FRO_TYPE			type;
 			unsigned char		bpp;
