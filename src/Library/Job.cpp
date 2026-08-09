@@ -11125,7 +11125,11 @@ namespace
 			return store_ && (!original_.renderFidelityStatus.empty() ||
 				!store_->Meta().renderFidelityStatus.empty());
 		}
-		void Commit() { committed_ = true; }
+		void Commit()
+		{
+			if( store_ ) store_->CompleteFireRenderPublication();
+			committed_ = true;
+		}
 
 	private:
 		RISE::Implementation::FrameStore* store_;
@@ -11717,7 +11721,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 				"Job:: fire render output provenance metadata is unavailable");
 			return false;
 		}
-		store->SetFireFidelityMetadata(status,
+		store->SetPreparedFireFidelityMetadata(status,
 			std::vector<std::string>(reasons.begin(),reasons.end()),
 			std::vector<std::string>(recordIds.begin(),recordIds.end()),
 			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);

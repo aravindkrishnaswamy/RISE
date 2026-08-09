@@ -316,6 +316,7 @@ namespace RISE
 						"output_provenance_unavailable: fire render metadata is leased");
 				}
 				meta_ = metadata;
+				fireRenderPublicationBlocked_ = false;
 				completedFrame_.store(metadata.frame,std::memory_order_relaxed);
 			}
 
@@ -353,6 +354,61 @@ namespace RISE
 				meta_.primaryProvenanceId.clear();
 				meta_.primaryArtifactSha256.clear();
 				meta_.primaryArtifactFidelity.clear();
+				fireRenderPublicationBlocked_ = false;
+			}
+
+			void SetPreparedFireFidelityMetadata(
+				const std::string& status,
+				const std::vector<std::string>& reasons,
+				const std::vector<std::string>& recordIds,
+				const std::vector<FrameStoreOutput::ActiveFireMedium>& media,
+				const std::vector<unsigned char>& renderConfig,
+				const std::vector<unsigned char>& rendererBuild,
+				const std::string& rendererBuildId )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( fireMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: fire render metadata is leased");
+				}
+				meta_.renderFidelityStatus = status;
+				meta_.renderReasonCodes = reasons;
+				meta_.activeFireOpticsRecordIds = recordIds;
+				meta_.activeFireMedia = media;
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.rendererBuildV1 = rendererBuild;
+				meta_.rendererBuildId = rendererBuildId;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
+				fireRenderPublicationBlocked_ = !status.empty();
+			}
+
+			void CompleteFireRenderPublication()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				fireRenderPublicationBlocked_ = false;
+			}
+
+			bool AcquireExternalArtifactMetadataSnapshot(
+				Metadata& snapshot,
+				bool& fireLease )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				fireLease = false;
+				if( !meta_.renderFidelityStatus.empty() ) {
+					if( fireRenderPublicationBlocked_ || fireMetadataLeaseCount_ ) return false;
+					++fireMetadataLeaseCount_;
+					fireLease = true;
+				}
+				snapshot = meta_;
+				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				return true;
+			}
+
+			void ReleaseExternalArtifactMetadataLease()
+			{
+				ReleaseFireMetadataLease();
 			}
 
 			void SetPrimaryFireArtifact(
@@ -507,6 +563,7 @@ namespace RISE
 
 			mutable std::mutex metadataMutex_;
 			unsigned int fireMetadataLeaseCount_ = 0u;
+			bool fireRenderPublicationBlocked_ = false;
 			std::atomic<unsigned int> completedFrame_;
 			Metadata meta_;
 

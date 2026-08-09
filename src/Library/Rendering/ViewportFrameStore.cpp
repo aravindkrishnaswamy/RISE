@@ -493,7 +493,24 @@ namespace RISE
 			if ( !snap ) return false;
 
 			EncodeOpts transactionOpts = opts;
-			transactionOpts.metadataSnapshot = snap->Meta();
+			bool fireMetadataLeased = false;
+			if( !snap->AcquireExternalArtifactMetadataSnapshot(
+				transactionOpts.metadataSnapshot,fireMetadataLeased) ) {
+				snap->release();
+				GlobalLog()->PrintEx( eLog_Error,
+					"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': "
+					"fire render is not finalized",path.c_str() );
+				return false;
+			}
+			struct FireMetadataLease
+			{
+				FrameStore* store;
+				bool active;
+				~FireMetadataLease()
+				{
+					if( active ) store->ReleaseExternalArtifactMetadataLease();
+				}
+			} fireMetadataLease { snap,fireMetadataLeased };
 			transactionOpts.useMetadataSnapshot = true;
 			transactionOpts.frame = transactionOpts.metadataSnapshot.frame;
 			std::string error;

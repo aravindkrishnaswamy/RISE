@@ -796,9 +796,16 @@ namespace
 		EncodeOpts opts;
 		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
 		encoder->WaitUntilEntered();
-		store->SetFireFidelityMetadata("preview",
-			{ "chem_none_unqualified", "producer_unqualified" },
-			{ "ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb" });
+		bool concurrentPreflightRejected = false;
+		try {
+			store->SetFireFidelityMetadata("preview",
+				{ "chem_none_unqualified", "producer_unqualified" },
+				{ "ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb" });
+		}
+		catch( const std::runtime_error& error ) {
+			concurrentPreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
 		encoder->Continue();
 		saver.join();
 
@@ -813,18 +820,46 @@ namespace
 			payload->Find("render_reason_codes") : nullptr;
 		const RISECBOR64::Value* ids = payload ?
 			payload->Find("active_fire_optics_record_ids") : nullptr;
-		Check( saved && decoded &&
+		Check( saved && decoded && concurrentPreflightRejected &&
 			encodedMetadata.renderReasonCodes.size() == 3u &&
 			encodedMetadata.renderReasonCodes[0] == "pel_transport" && reasons &&
 			reasons->GetArray().size() == 3u &&
 			reasons->GetArray()[0].GetText() == "pel_transport" && ids &&
 			ids->GetArray().size() == 1u && ids->GetArray()[0].GetText() ==
 				"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
-			"SaveAs encoder and sidecar share one metadata snapshot across preflight updates" );
+			"SaveAs leases one metadata snapshot and rejects concurrent fire preflight" );
 
 		std::remove(path.c_str());
 		std::remove((path+".provenance.cbor").c_str());
 		encoder->release();
+		safe_release(img);
+		vfs->release();
+	}
+
+	void TestPreparedFireFrameCannotPublish()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		SetFireFidelityMetadata(*store);
+		const FrameStoreOutput::Metadata finalized = store->Meta();
+		store->SetPreparedFireFidelityMetadata(finalized.renderFidelityStatus,
+			finalized.renderReasonCodes,finalized.activeFireOpticsRecordIds,
+			finalized.activeFireMedia,finalized.resolvedRenderConfigCoreV1,
+			finalized.rendererBuildV1,finalized.rendererBuildId);
+
+		IFrameEncoder* png = FrameEncoderRegistry::Get().AcquireByFormatName("PNG");
+		EncodeOpts opts;
+		const std::string path = MakeTempPath()+"_prepared_fire.png";
+		Check( png && !vfs->SaveAs(path,png,opts),
+			"GUI SaveAs rejects a prepared but uncommitted fire frame" );
+		Check( !std::filesystem::exists(path) &&
+			!std::filesystem::exists(path+".provenance.cbor"),
+			"rejected prepared fire frame publishes neither artifact nor sidecar" );
+
+		store->SetMetadata(finalized);
+		if( png ) png->release();
 		safe_release(img);
 		vfs->release();
 	}
@@ -1402,6 +1437,7 @@ int main()
 	TestResolutionChange();
 	TestMultiFrameReuse();
 	TestMidRenderSaveAs();
+	TestPreparedFireFrameCannotPublish();
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();

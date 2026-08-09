@@ -97,7 +97,7 @@ namespace FireOutputMetadataTestFixture
 				{ "effective_worker_task_count", Value::Unsigned(1) },
 				{ "force_number_of_threads", Value::Signed(0) },
 				{ "maximum_thread_count", Value::Signed(1) },
-				{ "random_stream_policy", Value::String("test") },
+				{ "random_stream_policy", Value::String("process_shared_c_rand") },
 				{ "render_thread_reserve_count", Value::Signed(0) } }) },
 			{ "external_runtime", Value() },
 			{ "film", Value::MapValue({ { "height", Value::Unsigned(height) },
@@ -117,7 +117,7 @@ namespace FireOutputMetadataTestFixture
 				{ "enable_vertex_connection", Value::Bool(false) },
 				{ "enable_vertex_merging", Value::Bool(false) },
 				{ "integrate_rgb", Value::Bool(false) },
-				{ "kind", Value::String("pathtracing_spectral") },
+				{ "kind", Value::String("pathtracing_spectral_rasterizer") },
 				{ "merge_radius", Value::Float(0.0) }, { "path_guiding", guiding },
 				{ "show_luminaires", Value::Bool(false) }, { "sms", sms } }) },
 			{ "light_sampling", Value::MapValue({ { "rr_threshold", Value::Float(0.0) } }) },
@@ -183,7 +183,7 @@ namespace FireOutputMetadataTestFixture
 				{ "contraction_mode", Value::String("off") },
 				{ "fast_math", Value::Bool(false) },
 				{ "finite_math_only", Value::Bool(false) } }) },
-			{ "gate_harness_version", Value::String("test") },
+			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
 			{ "record_kind", Value::String("renderer_build_v1") },
 			{ "renderer_binary", Value::MapValue({
 				{ "hash_basis", Value::String("file_bytes") },
@@ -192,10 +192,12 @@ namespace FireOutputMetadataTestFixture
 				{ "sha256", Value::String(std::string(64,'0')) } }) },
 			{ "renderer_version", Value::String("test") },
 			{ "schema_version", Value::Unsigned(1) },
-			{ "solver_schema_versions", Value::ArrayValue({ Value::String("test") }) },
+			{ "solver_schema_versions", Value::ArrayValue({
+				Value::String("fire_optics_schema_v3"),
+				Value::String("fire_output_provenance_schema_v1") }) },
 			{ "source_revision", Value::String("test-build") },
-			{ "target", Value::MapValue({ { "architecture", Value::String("test") },
-				{ "platform", Value::String("test") } }) } });
+			{ "target", Value::MapValue({ { "architecture", Value::String("arm64") },
+				{ "platform", Value::String("macos") } }) } });
 		RISE::RISECBOR64::Bytes encoded;
 		std::string error;
 		RISE::RISECBOR64::Encode(record,encoded,&error);
