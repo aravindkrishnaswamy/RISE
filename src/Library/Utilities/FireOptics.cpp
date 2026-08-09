@@ -340,6 +340,7 @@ namespace RISE
 
 		bool ValidateTableMetadata(
 			const RISECBOR64::Value& metadata,
+			const RISECBOR64::Value& table,
 			std::string* error
 			)
 		{
@@ -351,6 +352,45 @@ namespace RISE
 			if( columnMetadata && columnMetadata->GetType() != RISECBOR64::Value::Map ) {
 				return Fail(error,
 					"fire-optics column_metadata must be a map");
+			}
+			const RISECBOR64::Value* columns = Required(
+				table,"columns",RISECBOR64::Value::Array,error );
+			if( !columns ) return false;
+			if( columnMetadata ) {
+				for( const auto& member : columnMetadata->GetMap() ) {
+					bool declared = false;
+					for( const RISECBOR64::Value& column : columns->GetArray() ) {
+						if( column.GetType() != RISECBOR64::Value::Text ) {
+							return Fail(error,
+								"fire-optics table column name is not text");
+						}
+						declared = declared || column.GetText() == member.first;
+					}
+					if( !declared ) {
+						return Fail(error,
+							"fire-optics column_metadata names an unknown table column");
+					}
+					if( member.second.GetType() != RISECBOR64::Value::Map ) {
+						return Fail(error,
+							"fire-optics column metadata envelope is malformed");
+					}
+					const RISECBOR64::Value* provenance = Required(
+						member.second,"provenance",RISECBOR64::Value::Map,error );
+					const RISECBOR64::Value* uncertainty = Required(
+						member.second,"uncertainty",RISECBOR64::Value::Map,error );
+					if( !provenance || !uncertainty ||
+						!Required(member.second,"applicability",
+							RISECBOR64::Value::Text,error) ||
+						!Required(*provenance,"citation",RISECBOR64::Value::Text,error) ||
+						!Required(*provenance,"locator",RISECBOR64::Value::Text,error) ||
+						!Required(*provenance,"access",RISECBOR64::Value::Text,error) ||
+						!Required(*provenance,"secondary_source",
+							RISECBOR64::Value::Boolean,error) ||
+						!ValidateUncertainty(*uncertainty,0,false,error) ) {
+						return Fail(error,
+							"fire-optics column metadata envelope is incomplete");
+					}
+				}
 			}
 			std::string granularity;
 			const RISECBOR64::Value* uncertainty = Required(
@@ -1452,14 +1492,20 @@ namespace RISE
 			const RISECBOR64::Value* hotMetadata = hotComputed ? Required(
 				*hotComputed, "spectral_young_dp30_N50_metadata",
 				RISECBOR64::Value::Map, error ) : 0;
+			const RISECBOR64::Value* hotTable = hotComputed ? Required(
+				*hotComputed, "spectral_young_dp30_N50",
+				RISECBOR64::Value::Map, error ) : 0;
 			const RISECBOR64::Value* condensedMetadata = condensedComputed ? Required(
 				*condensedComputed, "table_metadata", RISECBOR64::Value::Map, error ) : 0;
-			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ) {
+			const RISECBOR64::Value* condensedTable = condensedComputed ? Required(
+				*condensedComputed, "table", RISECBOR64::Value::Map, error ) : 0;
+			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ||
+				!hotTable || !condensedTable ) {
 				return Fail(error, "fire-optics source table metadata is incomplete");
 			}
-			if( !ValidateTableMetadata(*effectiveMetadata,error) ||
-				!ValidateTableMetadata(*hotMetadata,error) ||
-				!ValidateTableMetadata(*condensedMetadata,error) ) return false;
+			if( !ValidateTableMetadata(*effectiveMetadata,*effectiveTable,error) ||
+				!ValidateTableMetadata(*hotMetadata,*hotTable,error) ||
+				!ValidateTableMetadata(*condensedMetadata,*condensedTable,error) ) return false;
 			if( m_recordName == "fire-optics-synthetic-regression-v1" ) {
 				sourceFixtures = Required(
 					*sourceRecords, "synthetic_fixtures", RISECBOR64::Value::Map, error );
@@ -1564,9 +1610,9 @@ namespace RISE
 			if( !effectiveMetadata || !hotMetadata || !condensedMetadata ) {
 				return Fail(error, "fire-optics operational table metadata is incomplete");
 			}
-			if( !ValidateTableMetadata(*effectiveMetadata,error) ||
-				!ValidateTableMetadata(*hotMetadata,error) ||
-				!ValidateTableMetadata(*condensedMetadata,error) ) return false;
+			if( !ValidateTableMetadata(*effectiveMetadata,*effective,error) ||
+				!ValidateTableMetadata(*hotMetadata,*hot,error) ||
+				!ValidateTableMetadata(*condensedMetadata,*condensed,error) ) return false;
 			if( !Required(*hotMetadata, "adopted_550nm", RISECBOR64::Value::Map, error) ||
 				!Required(*hotMetadata, "adoption_ruling", RISECBOR64::Value::Map, error) ) {
 				return Fail(error, "fire-optics operational table metadata is incomplete");
@@ -1934,7 +1980,7 @@ namespace RISE
 					!ValidateSourceEnvelope(*sourceDensityEnvelope,sourceDensity,"range",error) ||
 					!ValidateSourceEnvelope(*sourceCoolKmEnvelope,sourceCoolKm,
 						"expanded_95",error) ||
-					!ValidateTableMetadata(*sourceCondensedMetadata,error) ||
+					!ValidateTableMetadata(*sourceCondensedMetadata,*sourceCondensedTable,error) ||
 					!ReadSourceRows(*sourceCondensedTable,4,sourceCondensedRows,error) ) {
 					return Fail(error,
 						"fire-optics synthetic scalar source binding is incomplete");

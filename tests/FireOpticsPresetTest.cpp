@@ -1109,6 +1109,35 @@ int main()
 				Check( RejectsWith(malformedRecord,
 					"column_metadata must be a map"),
 					"coordinated malformed column metadata is rejected" );
+				const RISECBOR64::Value malformedColumnEnvelope =
+					RISECBOR64::Value::MapValue({
+						{ "lambda_nm", RISECBOR64::Value() } });
+				const RISECBOR64::Value sourceWithMalformedColumn = ReplaceMember(
+					*sourceHot,"computed_outputs",ReplaceMember(*sourceHotComputed,
+						"spectral_young_dp30_N50_metadata",AddMember(*sourceHotMetadata,
+							"column_metadata",malformedColumnEnvelope)));
+				const RISECBOR64::Value malformedColumnRecord = ReplaceMember(
+					ReplaceMember(decodedPredictive,"source_records",ReplaceMember(
+						*sourceRecords,"hot_soot",sourceWithMalformedColumn)),"hot_soot",
+					ReplaceMember(*operationalHot,"table_metadata",AddMember(
+						*operationalHotMetadata,"column_metadata",malformedColumnEnvelope)));
+				Check( RejectsWith(malformedColumnRecord,
+					"column metadata envelope is malformed"),
+					"coordinated null column metadata envelope is rejected" );
+				const RISECBOR64::Value unknownColumn = RISECBOR64::Value::MapValue({
+					{ "unknown_column", RISECBOR64::Value() } });
+				const RISECBOR64::Value sourceWithUnknownColumn = ReplaceMember(
+					*sourceHot,"computed_outputs",ReplaceMember(*sourceHotComputed,
+						"spectral_young_dp30_N50_metadata",AddMember(*sourceHotMetadata,
+							"column_metadata",unknownColumn)));
+				const RISECBOR64::Value unknownColumnRecord = ReplaceMember(
+					ReplaceMember(decodedPredictive,"source_records",ReplaceMember(
+						*sourceRecords,"hot_soot",sourceWithUnknownColumn)),"hot_soot",
+					ReplaceMember(*operationalHot,"table_metadata",AddMember(
+						*operationalHotMetadata,"column_metadata",unknownColumn)));
+				Check( RejectsWith(unknownColumnRecord,
+					"column_metadata names an unknown table column"),
+					"coordinated unknown column metadata key is rejected" );
 				const RISECBOR64::Value changedMetadata = ReplaceMember(
 					*operationalHotMetadata,"provenance",
 					RISECBOR64::Value::String("detached hot table provenance"));
