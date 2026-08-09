@@ -204,6 +204,13 @@ bool Rasterizer::RequireFireRenderPreflight(
 			!authorizedMetadataBinding.empty() &&
 			authorizedMetadataBinding == FireOutputMetadataBinding(metadata);
 	}
+	if( valid && authorization == FireRenderPreflightAuthorization::Render ) {
+		std::lock_guard<std::mutex> outputsLock(outsMutex);
+		valid = currentStore == mFrameStore && currentTopology ==
+			mFireOutputTopologyGeneration.load(std::memory_order_relaxed) &&
+			mFireOutputBindingInProgress.load(std::memory_order_relaxed) == 0u;
+		if( valid ) ++mFireOutputTopologyLeaseCount;
+	}
 	safe_release(currentStore);
 	if( !valid ) {
 		GlobalLog()->PrintEasyError(
@@ -212,6 +219,26 @@ bool Rasterizer::RequireFireRenderPreflight(
 			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
 	}
 	return true;
+}
+
+Rasterizer::FireOutputTopologyLease::FireOutputTopologyLease(
+	const Rasterizer& owner,
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) :
+	owner_(owner.RequireFireRenderPreflight(scene,authorization) &&
+		authorization == FireRenderPreflightAuthorization::Render ? &owner : nullptr)
+{
+}
+
+Rasterizer::FireOutputTopologyLease::~FireOutputTopologyLease()
+{
+	if( owner_ ) owner_->ReleaseFireOutputTopologyLease();
+}
+
+void Rasterizer::ReleaseFireOutputTopologyLease() const
+{
+	std::lock_guard<std::mutex> lock(outsMutex);
+	if( mFireOutputTopologyLeaseCount ) --mFireOutputTopologyLeaseCount;
 }
 
 void Rasterizer::ClearFireRenderPreflightAuthorization() const
@@ -420,6 +447,10 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 	// showed 30+ duplicates accumulated per render).
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
+		if( mFireOutputTopologyLeaseCount ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: fire render output topology is leased");
+		}
 		for( IRasterizerOutput* existing : outs ) {
 			if( existing == ro ) {
 				return false;  // already registered, no-op
@@ -463,6 +494,10 @@ bool Rasterizer::UnregisterRasterizerOutput( IRasterizerOutput* ro )
 	if( !ro ) return false;
 
 	std::lock_guard<std::mutex> lock( outsMutex );
+	if( mFireOutputTopologyLeaseCount ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire render output topology is leased");
+	}
 	for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
 		if( *i == ro ) {
 			IRasterizerOutput* removed = *i;
@@ -483,6 +518,10 @@ void Rasterizer::FreeRasterizerOutputs( )
 bool Rasterizer::ReleaseRasterizerOutputs()
 {
 	std::lock_guard<std::mutex> lock( outsMutex );
+	if( mFireOutputTopologyLeaseCount ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire render output topology is leased");
+	}
 	const bool released = !outs.empty();
 	RasterizerOutputListType::iterator	i, e;
 	for( i=outs.begin(), e=outs.end(); i!=e; i++ ) {
@@ -527,6 +566,10 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 	FrameStore* previous = 0;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
+		if( mFireOutputTopologyLeaseCount ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: fire render output topology is leased");
+		}
 		// Same-pointer early-return: existing outputs are already bound, while
 		// outputs attached after the original swap receive the current store from
 		// RegisterRasterizerOutput at insertion time.
@@ -550,6 +593,13 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 void Rasterizer::ReannounceFrameStore()
 {
 	FireOutputBindingActivity binding(mFireOutputBindingInProgress);
+	{
+		std::lock_guard<std::mutex> lock(outsMutex);
+		if( mFireOutputTopologyLeaseCount ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: fire render output topology is leased");
+		}
+	}
 	// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 	// on every attached output.  Caller has either just swapped
 	// `mFrameStore` (called from `SetFrameStore`) or wants the

@@ -1021,7 +1021,8 @@ void MLTSpectralRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
-	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1101,7 +1102,8 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
-	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {

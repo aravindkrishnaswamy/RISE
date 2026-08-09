@@ -1139,8 +1139,8 @@ void AutoRasterizer::RasterizeScene(
 {
 	EnsureResolved( &pScene );
 	SyncDelegateFrameStore();
-	RequireFireRenderPreflight(
-		pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
 		mDelegate->RasterizeScene( pScene, pRect, pRasterSequence );
 	}
@@ -1160,8 +1160,8 @@ void AutoRasterizer::RasterizeSceneAnimation(
 {
 	EnsureResolved( &pScene );
 	SyncDelegateFrameStore();
-	RequireFireRenderPreflight(
-		pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
 		mDelegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
 			do_fields, invert_fields, pRect, specificFrame, pRasterSequence );

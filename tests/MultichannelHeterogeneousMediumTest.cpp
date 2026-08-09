@@ -192,6 +192,42 @@ namespace
 		mutable unsigned int routeCalls_ = 0u;
 	};
 
+	class CallbackTopologyMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit CallbackTopologyMutatingFireOutput( IRasterizer& rasterizer ) :
+			rasterizer_(rasterizer), injected_(new UnclassifiedFireOutput()) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			try {
+				rasterizer_.AddRasterizerOutput(injected_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected_ = std::string(error.what()).find(
+					"fire render output topology is leased") != std::string::npos;
+				throw;
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		bool Rejected() const { return rejected_; }
+		unsigned int InjectedFinalCount() const { return injected_->finalCount; }
+	protected:
+		~CallbackTopologyMutatingFireOutput() override { safe_release(injected_); }
+	private:
+		IRasterizer& rasterizer_;
+		UnclassifiedFireOutput* injected_;
+		bool attempted_ = false;
+		bool rejected_ = false;
+	};
+
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
 	{
@@ -3289,6 +3325,33 @@ namespace
 			safe_release(output);
 		} else {
 			Check(false,"output-topology mutation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool callbackTopologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( callbackTopologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			CallbackTopologyMutatingFireOutput* output =
+				new CallbackTopologyMutatingFireOutput(*rasterizer);
+			rasterizer->AddRasterizerOutput(output);
+			bool rejectedDuringCallback = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejectedDuringCallback = std::string(error.what()).find(
+					"fire render output topology is leased") != std::string::npos;
+			}
+			Check( rejectedDuringCallback && output->Attempted() && output->Rejected() &&
+				output->InjectedFinalCount() == 0u,
+				"fire render leases output topology through reentrant output callbacks" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"callback output-topology mutation fixture loads");
 		}
 		safe_release(job);
 

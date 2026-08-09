@@ -37,6 +37,20 @@ namespace RISE
 		{
 		protected:
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
+			class FireOutputTopologyLease
+			{
+			public:
+				FireOutputTopologyLease(
+					const Rasterizer& owner,
+					const IScene& scene,
+					FireRenderPreflightAuthorization authorization );
+				~FireOutputTopologyLease();
+				FireOutputTopologyLease( const FireOutputTopologyLease& ) = delete;
+				FireOutputTopologyLease& operator=(
+					const FireOutputTopologyLease& ) = delete;
+			private:
+				const Rasterizer* owner_;
+			};
 			class RetainedRasterizerOutputSnapshot
 			{
 			public:
@@ -145,6 +159,7 @@ namespace RISE
 			mutable std::mutex						outsMutex;
 			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
 			std::atomic<unsigned int> mFireOutputBindingInProgress { 0u };
+			mutable unsigned int mFireOutputTopologyLeaseCount = 0u;
 
 			IProgressCallback*						pProgressFunc;
 
@@ -225,6 +240,7 @@ namespace RISE
 
 		private:
 			friend class ::RISE::Job;
+			void ReleaseFireOutputTopologyLease() const;
 			void ClearFireRenderPreflightAuthorization() const;
 			bool AuthorizeFireRenderPreflight(
 				const IScene& scene,

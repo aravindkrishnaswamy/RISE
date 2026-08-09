@@ -1197,7 +1197,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	mLastRenderCompleted.store(false,std::memory_order_release);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
 	// a free-fly ViewportPose supplies a viewport-private override camera the
@@ -2149,7 +2150,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	RequireFireRenderPreflight(pScene,FireRenderPreflightAuthorization::Render);
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	mLastRenderCompleted.store(false,std::memory_order_release);
 	if( num_frames == 0u ) {
 		GlobalLog()->PrintSourceError(
