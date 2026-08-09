@@ -570,12 +570,34 @@ namespace
 	void TestLongOutputPattern()
 	{
 		const std::string longPattern(4096u,'x');
+		Check( BuildFrameArtifactFilename(longPattern,"_denoised",7u,"exr",true) ==
+			longPattern+"_denoised0007.exr",
+			"frame artifact filename construction never truncates dynamic patterns" );
+
+		const std::filesystem::path root = MakeTempPathWithoutExt()+"_long_path";
+		std::filesystem::path directory = root;
+		for( unsigned int i=0u; i<3u; ++i ) {
+			directory /= std::string(180u,static_cast<char>('a'+i));
+		}
+		std::error_code directoryError;
+		const bool madeDirectories = std::filesystem::create_directories(
+			directory,directoryError) || std::filesystem::exists(directory);
+		const std::string actualPattern = (directory/"artifact").string();
 		FileRasterizerOutput* output = new FileRasterizerOutput(
-			longPattern.c_str(),false,FileRasterizerOutput::TGA,8,
+			actualPattern.c_str(),false,FileRasterizerOutput::TGA,8,
 			eColorSpace_sRGB,0.0,eDisplayTransform_None,
 			eExrCompression_Zip,true);
-		Check( output->HasEncoder(),
-			"output patterns longer than the legacy 1024-byte buffer construct safely" );
+		RasterImage_Template<RISEPel>* image = new RasterImage_Template<RISEPel>(
+			1u,1u,RISEColor(RISEPel(0.25,0.5,0.75),1.0));
+		if( madeDirectories && output->HasEncoder() ) {
+			output->OutputImage(*image,nullptr,0u);
+		}
+		Check( madeDirectories && output->HasEncoder() &&
+			std::filesystem::exists(actualPattern+".tga"),
+			"long valid nested output patterns publish through the observer write path" );
+		std::filesystem::remove(actualPattern+".tga");
+		std::filesystem::remove_all(root,directoryError);
+		safe_release(image);
 		safe_release(output);
 	}
 

@@ -35,6 +35,19 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+std::string RISE::Implementation::BuildFrameArtifactFilename(
+	const std::string& pattern,
+	const std::string& suffix,
+	const unsigned int frame,
+	const std::string& extension,
+	const bool multiple )
+{
+	if( !multiple ) return pattern+suffix+"."+extension;
+	std::string frameText = std::to_string(frame);
+	if( frameText.size() < 4u ) frameText.insert(0u,4u-frameText.size(),'0');
+	return pattern+suffix+frameText+"."+extension;
+}
+
 namespace
 {
 	const char kFireAttributePrefix[] = "riseFireProv_";
@@ -1137,17 +1150,8 @@ void FileEncoderObserver::WriteFile(
 	if ( !exts.empty() ) ext = exts.front();
 	else                  ext = "out";
 
-	// Build the filename — same templating as
-	// FileRasterizerOutput.cpp:156-160.
-	static const int MAX_BUFFER_SIZE = 2048;
-	char filename[MAX_BUFFER_SIZE];
-	if ( bMultiple_ ) {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s%.4u.%s",
-			pattern_.c_str(), suffix, frame, ext.c_str() );
-	} else {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s.%s",
-			pattern_.c_str(), suffix, ext.c_str() );
-	}
+	std::string filename = BuildFrameArtifactFilename(
+		pattern_,suffix ? suffix : "",frame,ext,bMultiple_);
 
 	EncodeOpts frameOpts = opts_;
 	frameOpts.frame = frame;
@@ -1160,28 +1164,22 @@ void FileEncoderObserver::WriteFile(
 			if( primaryArtifact ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"FileEncoderObserver:: output_provenance_unavailable for '%s': %s",
-					filename,writeError.c_str() );
+					filename.c_str(),writeError.c_str() );
 				throw std::runtime_error("output_provenance_unavailable: "+writeError);
 			}
 			GlobalLog()->PrintEx( eLog_Warning,
 				"FileEncoderObserver:: display derivative transaction failed for '%s' "
 				"(%s); the finalized fire primary remains valid",
-				filename,writeError.c_str() );
+				filename.c_str(),writeError.c_str() );
 			return;
 		}
 		const FileEncoderObserver* pMe = this;
-		char emergency[MAX_BUFFER_SIZE];
-		if ( bMultiple_ ) {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s_%.4u.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, frame, ext.c_str() );
-		} else {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, ext.c_str() );
-		}
+		const std::string emergencyPattern = "fro_temp_"+
+			std::to_string(static_cast<unsigned long>(
+				reinterpret_cast<uintptr_t>(pMe)))+
+			(suffix ? suffix : "")+(bMultiple_ ? "_" : "");
+		const std::string emergency = BuildFrameArtifactFilename(
+			emergencyPattern,"",frame,ext,bMultiple_);
 
 		std::string emergencyError;
 		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,emergency,
@@ -1189,19 +1187,19 @@ void FileEncoderObserver::WriteFile(
 			GlobalLog()->PrintEx( eLog_Error,
 				"FileEncoderObserver:: artifact transaction failed for '%s' (%s); "
 				"emergency transaction also failed for '%s' (%s)",
-				filename,writeError.c_str(),emergency,emergencyError.c_str() );
+				filename.c_str(),writeError.c_str(),emergency.c_str(),
+				emergencyError.c_str() );
 			return;
 		}
 		GlobalLog()->PrintEx( eLog_Warning,
 			"Artifact transaction failed for '%s' (%s); rendered scene written "
 			"transactionally to emergency file '%s' instead!",
-			filename,writeError.c_str(),emergency );
+			filename.c_str(),writeError.c_str(),emergency.c_str() );
 		// Use the emergency filename as the effective filename for
 		// the success log message below.
-		std::strncpy( filename, emergency, MAX_BUFFER_SIZE );
-		filename[ MAX_BUFFER_SIZE - 1 ] = '\0';
+		filename = emergency;
 	}
 
 	GlobalLog()->PrintEx( eLog_Event,
-		"FileEncoderObserver:: Written to '%s'", filename );
+		"FileEncoderObserver:: Written to '%s'", filename.c_str() );
 }

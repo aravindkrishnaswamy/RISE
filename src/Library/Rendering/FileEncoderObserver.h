@@ -98,6 +98,14 @@ namespace RISE
 			std::string& error
 			);
 
+		std::string BuildFrameArtifactFilename(
+			const std::string& pattern,
+			const std::string& suffix,
+			unsigned int frame,
+			const std::string& extension,
+			bool multiple
+			);
+
 		class FileEncoderObserver : public virtual IRenderObserver,
 		                            public virtual Reference
 		{
