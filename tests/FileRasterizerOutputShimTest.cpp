@@ -1518,6 +1518,7 @@ namespace
 			windowsProRes.rateControl == "qscale_global_quality" &&
 			windowsProRes.codecOptions ==
 				"profile=4444;global_quality=FF_QP2LAMBDA*5" &&
+			windowsProRes.codecTag == "ap4h" &&
 			windowsProRes.conversionFilter == "sws_bilinear" &&
 			windowsProRes.conversionMatrix == "sws_cs_bt2020" &&
 			windowsProRes.conversionSourceRange == "full" &&

@@ -112,7 +112,7 @@ bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 		descriptor.rateControl = "qscale_global_quality";
 		descriptor.encoderPreset = "none";
 		descriptor.codecOptions = "profile=4444;global_quality=FF_QP2LAMBDA*5";
-		descriptor.codecTag = "backend_default";
+		descriptor.codecTag = "ap4h";
 		descriptor.muxerFlags = "none";
 		descriptor.conversionFilter = "sws_bilinear";
 		descriptor.conversionMatrix = "sws_cs_bt2020";

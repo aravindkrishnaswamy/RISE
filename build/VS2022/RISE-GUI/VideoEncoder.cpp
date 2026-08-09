@@ -224,7 +224,9 @@ static bool authoredCodecNegotiationAvailable(
     if (available) {
         if (descriptor.codecTag == "hvc1") {
             stream->codecpar->codec_tag = MKTAG('h','v','c','1');
-        } else if (descriptor.codecTag != "backend_default") {
+        } else if (descriptor.codecTag == "ap4h") {
+            stream->codecpar->codec_tag = MKTAG('a','p','4','h');
+        } else {
             available = false;
         }
         stream->time_base = context->time_base;
@@ -866,7 +868,9 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // built-in player and QuickTime reject the muxer-default 'hev1'.
     if (descriptor.codecTag == "hvc1") {
         m_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
-    } else if (descriptor.codecTag != "backend_default") {
+    } else if (descriptor.codecTag == "ap4h") {
+        m_stream->codecpar->codec_tag = MKTAG('a', 'p', '4', 'h');
+    } else {
         return false;
     }
 

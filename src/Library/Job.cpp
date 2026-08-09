@@ -500,12 +500,13 @@ namespace
 				continue;
 			}
 			const std::size_t slash = path.find_last_of("/\\");
+			const std::string binaryHash = RISECBOR64::SHA256Hex(fileBytes);
 			binaryVersions.push_back(path.substr(
-				slash == std::string::npos ? 0u : slash+1u));
+				slash == std::string::npos ? 0u : slash+1u)+"@sha256:"+binaryHash);
 			binaries.push_back(Value::MapValue({
 				{ "hash_basis", Value::String(hashBasis) },
 				{ "path", Value::String(path) },
-				{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
+				{ "sha256", Value::String(binaryHash) }
 			}));
 		}
 		std::string version = "not_loaded";
