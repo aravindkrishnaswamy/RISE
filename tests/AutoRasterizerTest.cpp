@@ -292,6 +292,37 @@ private:
 	FrameStoreNotificationOutput& lateOutput_;
 };
 
+class ReentrantResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantResolveOutput( AutoRasterizer& rasterizer, const IScene& scene ) :
+		rasterizer_(rasterizer), scene_(scene) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		attempted = true;
+		try {
+			rasterizer_.ResolveForFirePreflight(scene_);
+		}
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("resolution is reentrant") !=
+				std::string::npos;
+		}
+	}
+
+	bool attempted = false;
+	bool rejected = false;
+
+protected:
+	~ReentrantResolveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	const IScene& scene_;
+};
+
 class LifetimeFrameStoreOutput
 	: public virtual IRasterizerOutput
 	, public virtual Reference
@@ -1896,6 +1927,105 @@ static void TestSyncAndFrameStoreSwapAreSerialized()
 	std::remove(path.c_str());
 }
 
+static void TestSyncFailureReplaysWrapperTopology()
+{
+	const std::string label =
+		"Auto delegate sync restores outputs detached by a failed rollback";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_failure_topology") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	FrameStore* wrapperStore = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = wrapperStore ? wrapperStore->Width() : 1u;
+	spec.height = wrapperStore ? wrapperStore->Height() : 1u;
+	FrameStore* delegateOnly = new FrameStore(spec);
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	rasterizer->ForTest_SetDelegateFrameStore(delegateOnly);
+	failing->ArmFailuresAfter(1u,3u);
+	bool rejected = false;
+	try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	const bool replayed = rasterizer->ForTest_WrapperContainsOutput(failing) &&
+		rasterizer->ForTest_DelegateContainsOutput(failing);
+	bool recovered = false;
+	try { recovered = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( ... ) { recovered = false; }
+	Check(initiallyResolved && rejected && replayed && recovered &&
+		rasterizer->ForTest_GetDelegateFrameStore() == wrapperStore,
+		"failed sync replays the authoritative wrapper topology before retry: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(failing);
+	safe_release(delegateOnly);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolutionCallbackReentryFailsClosed()
+{
+	const std::string label =
+		"Auto delegate resolution callback reentry fails closed without deadlock";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"resolution_callback_reentry") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	ReentrantResolveOutput* reentrant = rasterizer ?
+		new ReentrantResolveOutput(*rasterizer,*job->GetScene()) : nullptr;
+	if( !reentrant ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(reentrant);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: resolution callback exceeded the deadlock watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && reentrant->attempted && reentrant->rejected,
+		"nested resolution is rejected while the outer resolution completes: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestPersistentRollbackDetachesBothTopologies()
 {
 	const std::string label = "persistent FrameStore rollback failure detaches both Auto topologies";
@@ -2311,6 +2441,8 @@ int main()
 	TestConcurrentOutputRegistrationRejectsFrameStoreSwap();
 	TestConcurrentAddRemoveIsAtomicAcrossDelegate();
 	TestSyncAndFrameStoreSwapAreSerialized();
+	TestSyncFailureReplaysWrapperTopology();
+	TestResolutionCallbackReentryFailsClosed();
 	TestPersistentRollbackDetachesBothTopologies();
 	TestResolutionPublicationTracksConcurrentFrameStoreSwap();
 	TestPostResolutionAddReentrancy();

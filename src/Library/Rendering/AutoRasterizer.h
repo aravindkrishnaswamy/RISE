@@ -295,6 +295,7 @@ namespace RISE
 			IRasterizer* RetainDelegate() const;
 			void SetResolveReason( const std::string& reason ) const;
 			bool ReconcileDelegateOutputTopology( IRasterizer* delegate );
+			bool ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegate ) const;
 
 			// Integrator-agnostic build inputs (addref'd; released in dtor).
 			IRayCaster*					mCaster;

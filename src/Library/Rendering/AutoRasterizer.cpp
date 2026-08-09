@@ -46,6 +46,8 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	thread_local const AutoRasterizer* gResolvingAutoRasterizer = nullptr;
+
 	//! Lowercase scene-language spelling of an integrator choice; used
 	//! only for the diagnostic log line that surfaces the runtime pick.
 	const char* IntegratorName( AutoIntegratorChoice c )
@@ -943,7 +945,19 @@ IRasterizer* AutoRasterizer::BuildDelegate(
 
 void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 {
+	if( gResolvingAutoRasterizer == this ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: Auto delegate resolution is reentrant");
+	}
 	std::call_once( mResolveOnce, [this, scene]() {
+		struct ResolutionActivity
+		{
+			const AutoRasterizer*& active;
+			const AutoRasterizer* previous;
+			ResolutionActivity( const AutoRasterizer*& slot, const AutoRasterizer* current ) :
+				active(slot), previous(slot) { active = current; }
+			~ResolutionActivity() { active = previous; }
+		} resolutionActivity(gResolvingAutoRasterizer,this);
 		const AutoIntegratorChoice choice = SelectIntegrator( scene );
 		IRasterizer* candidate = BuildDelegate( choice );
 
@@ -1077,7 +1091,18 @@ void AutoRasterizer::SyncDelegateFrameStore() const
 		mine = mFrameStore;
 		if( mine ) mine->addref();
 	}
-	if( !delegate || delegate->GetFrameStore() == mine ) {
+	if( !delegate ) {
+		safe_release(delegate);
+		safe_release(mine);
+		return;
+	}
+	if( !ReplayWrapperOutputTopologyToDelegate(delegate) ) {
+		safe_release(delegate);
+		safe_release(mine);
+		throw std::runtime_error(
+			"output_provenance_unavailable: Auto delegate output topology could not be replayed");
+	}
+	if( delegate->GetFrameStore() == mine ) {
 		safe_release(delegate);
 		safe_release(mine);
 		return;
@@ -1092,9 +1117,15 @@ void AutoRasterizer::SyncDelegateFrameStore() const
 		if( r ) r->SetFrameStore(mine);
 	}
 	catch( ... ) {
+		const std::exception_ptr failure = std::current_exception();
+		const bool reconciled = ReplayWrapperOutputTopologyToDelegate(delegate);
 		safe_release(delegate);
 		safe_release(mine);
-		throw;
+		if( !reconciled ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: Auto delegate output topology could not be replayed");
+		}
+		std::rethrow_exception(failure);
 	}
 	safe_release(delegate);
 	safe_release(mine);
@@ -1229,6 +1260,34 @@ bool AutoRasterizer::ReconcileDelegateOutputTopology( IRasterizer* delegate )
 		for( IRasterizerOutput* output : delegateOutputs ) {
 			if( std::find(wrapperOutputs.begin(),wrapperOutputs.end(),output) ==
 				wrapperOutputs.end() ) concrete->RemoveRasterizerOutput(output);
+		}
+	}
+	catch( ... ) {
+		for( IRasterizerOutput* output : wrapperOutputs ) output->release();
+		for( IRasterizerOutput* output : delegateOutputs ) output->release();
+		return false;
+	}
+	for( IRasterizerOutput* output : wrapperOutputs ) output->release();
+	for( IRasterizerOutput* output : delegateOutputs ) output->release();
+	return true;
+}
+
+bool AutoRasterizer::ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegate ) const
+{
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(delegate);
+	if( !concrete ) return false;
+	std::vector<IRasterizerOutput*> wrapperOutputs;
+	std::vector<IRasterizerOutput*> delegateOutputs;
+	try {
+		wrapperOutputs = RetainRasterizerOutputs();
+		delegateOutputs = concrete->RetainRasterizerOutputs();
+		for( IRasterizerOutput* output : delegateOutputs ) {
+			if( std::find(wrapperOutputs.begin(),wrapperOutputs.end(),output) ==
+				wrapperOutputs.end() ) concrete->RemoveRasterizerOutput(output);
+		}
+		for( IRasterizerOutput* output : wrapperOutputs ) {
+			if( std::find(delegateOutputs.begin(),delegateOutputs.end(),output) ==
+				delegateOutputs.end() ) concrete->AddRasterizerOutput(output);
 		}
 	}
 	catch( ... ) {
