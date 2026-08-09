@@ -690,6 +690,271 @@ namespace
 		return true;
 	}
 
+	bool ExactKeys( const RISECBOR64::Value& value,
+		const std::initializer_list<const char*> keys )
+	{
+		if( value.GetType() != RISECBOR64::Value::Map ||
+			value.GetMap().size() != keys.size() ) return false;
+		for( const char* key : keys ) if( !value.Find(key) ) return false;
+		return true;
+	}
+
+	bool ParseTextArray( const RISECBOR64::Value* value,
+		std::vector<std::string>& parsed )
+	{
+		parsed.clear();
+		if( !value || value->GetType() != RISECBOR64::Value::Array ) return false;
+		for( const RISECBOR64::Value& item : value->GetArray() ) {
+			if( item.GetType() != RISECBOR64::Value::Text ) return false;
+			parsed.push_back(item.GetText());
+		}
+		return true;
+	}
+
+	bool ValidateFireProvenancePayload(
+		const RISECBOR64::Value& payload,
+		std::string& error )
+	{
+		using RISECBOR64::Value;
+		const Value* fidelity = payload.Find("artifact_fidelity");
+		if( !fidelity || fidelity->GetType() != Value::Text ) {
+			error = "fire provenance artifact_fidelity is unavailable";
+			return false;
+		}
+		const bool derivative = fidelity->GetText() == "display_derivative";
+		if( fidelity->GetText() != "preview_primary" &&
+			fidelity->GetText() != "predictive_primary" && !derivative ) {
+			error = "fire provenance artifact_fidelity is outside schema-v1";
+			return false;
+		}
+		const bool exactPayload = derivative ?
+			ExactKeys(payload,{ "active_fire_media", "active_fire_optics_record_ids",
+				"artifact_fidelity", "artifact_reason_codes", "artifact_sha256",
+				"derivation_kind", "derived_from_frames", "derived_from_primary",
+				"record_kind", "render_fidelity_status", "render_reason_codes",
+				"renderer_build_id", "renderer_build_v1",
+				"resolved_render_configuration_id",
+				"resolved_render_configuration_v1", "schema_version" }) :
+			ExactKeys(payload,{ "active_fire_media", "active_fire_optics_record_ids",
+				"artifact_fidelity", "artifact_reason_codes", "artifact_sha256",
+				"record_kind", "render_fidelity_status", "render_reason_codes",
+				"renderer_build_id", "renderer_build_v1",
+				"resolved_render_configuration_id",
+				"resolved_render_configuration_v1", "schema_version" });
+		const Value* schema = payload.Find("schema_version");
+		const Value* recordKind = payload.Find("record_kind");
+		const Value* artifactDigest = payload.Find("artifact_sha256");
+		const Value* renderStatus = payload.Find("render_fidelity_status");
+		if( !exactPayload || !schema || schema->GetType() != Value::UnsignedInteger ||
+			schema->GetIntegerArgument() != 1u || !recordKind ||
+			recordKind->GetType() != Value::Text ||
+			recordKind->GetText() != "fire_output_provenance" || !artifactDigest ||
+			artifactDigest->GetType() != Value::Text ||
+			!IsSHA256Hex(artifactDigest->GetText()) || !renderStatus ||
+			renderStatus->GetType() != Value::Text ) {
+			error = "fire provenance payload header is outside schema-v1";
+			return false;
+		}
+
+		std::vector<std::string> artifactReasons;
+		if( !ParseTextArray(payload.Find("artifact_reason_codes"),artifactReasons) ) {
+			error = "fire provenance artifact reason codes are not text";
+			return false;
+		}
+		const std::set<std::string> allowedArtifactReasons = {
+			"display_transform_enabled", "integer_output", "lossy_output",
+			"white_balance_enabled" };
+		if( !std::is_sorted(artifactReasons.begin(),artifactReasons.end()) ||
+			std::adjacent_find(artifactReasons.begin(),artifactReasons.end()) !=
+				artifactReasons.end() ) {
+			error = "fire provenance artifact reason codes are duplicated or unsorted";
+			return false;
+		}
+		for( const std::string& reason : artifactReasons ) {
+			if( !allowedArtifactReasons.count(reason) ) {
+				error = "fire provenance artifact reason code is outside schema-v1";
+				return false;
+			}
+		}
+		if( !derivative && !artifactReasons.empty() ) {
+			error = "fire provenance primary artifact reason codes are not empty";
+			return false;
+		}
+
+		FrameStoreOutput::Metadata metadata;
+		metadata.renderFidelityStatus = renderStatus->GetText();
+		if( !ParseTextArray(payload.Find("render_reason_codes"),
+			metadata.renderReasonCodes) ||
+			!ParseTextArray(payload.Find("active_fire_optics_record_ids"),
+				metadata.activeFireOpticsRecordIds) ) {
+			error = "fire provenance render reasons or optical IDs are not text arrays";
+			return false;
+		}
+		const Value* media = payload.Find("active_fire_media");
+		if( !media || media->GetType() != Value::Array ) {
+			error = "fire provenance active media are not an array";
+			return false;
+		}
+		for( const Value& encodedMedium : media->GetArray() ) {
+			if( !ExactKeys(encodedMedium,{ "authored_config_digest", "binding_kind",
+				"binding_owner", "manager_name", "media_kind", "optical_record_ids" }) ) {
+				error = "fire provenance active medium is outside schema-v1";
+				return false;
+			}
+			for( const char* key : { "authored_config_digest", "binding_kind",
+				"binding_owner", "manager_name", "media_kind" } ) {
+				if( encodedMedium.Find(key)->GetType() != Value::Text ) {
+					error = "fire provenance active medium text field has the wrong type";
+					return false;
+				}
+			}
+			FrameStoreOutput::ActiveFireMedium decoded;
+			decoded.authoredConfigDigest = encodedMedium.Find("authored_config_digest")->GetText();
+			decoded.bindingKind = encodedMedium.Find("binding_kind")->GetText();
+			decoded.bindingOwner = encodedMedium.Find("binding_owner")->GetText();
+			decoded.managerName = encodedMedium.Find("manager_name")->GetText();
+			decoded.mediaKind = encodedMedium.Find("media_kind")->GetText();
+			if( !ParseTextArray(encodedMedium.Find("optical_record_ids"),
+				decoded.opticalRecordIds) ) {
+				error = "fire provenance active medium optical IDs are not text";
+				return false;
+			}
+			metadata.activeFireMedia.push_back(decoded);
+		}
+
+		const Value* build = payload.Find("renderer_build_v1");
+		const Value* buildId = payload.Find("renderer_build_id");
+		if( !build || build->GetType() != Value::Map || !buildId ||
+			buildId->GetType() != Value::Text ||
+			!RISECBOR64::Encode(*build,metadata.rendererBuildV1,&error) ||
+			buildId->GetText() != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
+			error = "fire provenance renderer_build_id does not bind renderer_build_v1";
+			return false;
+		}
+		metadata.rendererBuildId = buildId->GetText();
+
+		const Value* config = payload.Find("resolved_render_configuration_v1");
+		const Value* configId = payload.Find("resolved_render_configuration_id");
+		const Value* output = config && config->GetType() == Value::Map ?
+			config->Find("output") : nullptr;
+		if( !config || config->GetType() != Value::Map || !configId ||
+			configId->GetType() != Value::Text || !output ||
+			!ExactKeys(*output,{ "aov_channels", "attributes", "bits_per_channel",
+				"color_space", "compression_level", "denoised_derivative",
+				"exr_compression", "exr_with_alpha", "format", "frame_index",
+				"include_aovs", "view_exposure_ev", "view_tone_curve",
+				"view_tone_curve_strength", "view_white_balance" }) ) {
+			error = "fire provenance resolved output configuration is outside schema-v1";
+			return false;
+		}
+		RISECBOR64::Bytes finalizedConfigBytes;
+		if( !RISECBOR64::Encode(*config,finalizedConfigBytes,&error) ||
+			configId->GetText() != RISECBOR64::SHA256Hex(finalizedConfigBytes) ) {
+			error = "fire provenance resolved configuration ID does not bind its bytes";
+			return false;
+		}
+		const Value* format = output->Find("format");
+		const Value* bits = output->Find("bits_per_channel");
+		const Value* aovChannels = output->Find("aov_channels");
+		const Value* attributes = output->Find("attributes");
+		const Value* whiteBalance = output->Find("view_white_balance");
+		if( !format || format->GetType() != Value::Text || format->GetText() != "EXR" ||
+			!bits || bits->GetType() != Value::UnsignedInteger ||
+			(bits->GetIntegerArgument() != 16u && bits->GetIntegerArgument() != 32u) ||
+			!aovChannels || aovChannels->GetType() != Value::Array || !attributes ||
+			attributes->GetType() != Value::Array || !whiteBalance ||
+			whiteBalance->GetType() != Value::Array ||
+			whiteBalance->GetArray().size() != 9u ) {
+			error = "fire provenance EXR output surface is outside schema-v1";
+			return false;
+		}
+		for( const Value& channel : aovChannels->GetArray() ) {
+			if( channel.GetType() != Value::UnsignedInteger ||
+				channel.GetIntegerArgument() >=
+					static_cast<std::uint64_t>(FrameStoreOutput::ChannelId::COUNT) ) {
+				error = "fire provenance output AOV channel is outside schema-v1";
+				return false;
+			}
+		}
+		for( const Value& attribute : attributes->GetArray() ) {
+			if( !ExactKeys(attribute,{"name","value"}) ||
+				attribute.Find("name")->GetType() != Value::Text ||
+				attribute.Find("value")->GetType() != Value::Text ) {
+				error = "fire provenance output attribute is outside schema-v1";
+				return false;
+			}
+		}
+		for( const Value& component : whiteBalance->GetArray() ) {
+			if( component.GetType() != Value::Float64 ) {
+				error = "fire provenance output white balance has the wrong type";
+				return false;
+			}
+		}
+		for( const char* key : { "denoised_derivative", "exr_with_alpha", "include_aovs" } ) {
+			if( output->Find(key)->GetType() != Value::Boolean ) {
+				error = "fire provenance output boolean has the wrong type";
+				return false;
+			}
+		}
+		for( const char* key : { "color_space", "exr_compression" } ) {
+			if( output->Find(key)->GetType() != Value::Text ) {
+				error = "fire provenance output enum has the wrong type";
+				return false;
+			}
+		}
+		for( const char* key : { "view_exposure_ev", "view_tone_curve_strength" } ) {
+			if( output->Find(key)->GetType() != Value::Float64 ) {
+				error = "fire provenance output scalar has the wrong type";
+				return false;
+			}
+		}
+		for( const char* key : { "frame_index", "view_tone_curve" } ) {
+			if( output->Find(key)->GetType() != Value::UnsignedInteger ) {
+				error = "fire provenance output integer has the wrong type";
+				return false;
+			}
+		}
+		if( output->Find("compression_level")->GetType() != Value::NegativeInteger ||
+			output->Find("compression_level")->GetIntegerArgument() != 0u ) {
+			error = "fire provenance output compression level is outside schema-v1";
+			return false;
+		}
+
+		Value::Members coreMembers;
+		for( const auto& member : config->GetMap() ) {
+			if( member.first != "output" ) coreMembers.push_back(member);
+		}
+		if( !RISECBOR64::Encode(Value::MapValue(coreMembers),
+			metadata.resolvedRenderConfigCoreV1,&error) ) return false;
+
+		if( derivative ) {
+			const Value* derivationKind = payload.Find("derivation_kind");
+			const Value* frames = payload.Find("derived_from_frames");
+			const Value* primary = payload.Find("derived_from_primary");
+			if( !derivationKind || derivationKind->GetType() != Value::Text ||
+				derivationKind->GetText() != "single_primary" || !frames ||
+				frames->GetType() != Value::Array || !frames->GetArray().empty() ||
+				!primary || !ExactKeys(*primary,{"artifact_sha256","provenance_id"}) ||
+				primary->Find("artifact_sha256")->GetType() != Value::Text ||
+				primary->Find("provenance_id")->GetType() != Value::Text ) {
+				error = "fire provenance derivative linkage is outside schema-v1";
+				return false;
+			}
+			metadata.primaryArtifactSha256 = primary->Find("artifact_sha256")->GetText();
+			metadata.primaryProvenanceId = primary->Find("provenance_id")->GetText();
+			metadata.primaryArtifactFidelity = "preview_primary";
+		}
+		if( !FrameStoreOutput::ValidateFireOutputMetadata(metadata,error) ) {
+			error = "fire provenance payload metadata is invalid: "+error;
+			return false;
+		}
+		if( !derivative && fidelity->GetText() != "preview_primary" ) {
+			error = "fire provenance predictive primary is unavailable in schema-v1";
+			return false;
+		}
+		return true;
+	}
+
 	bool BuildFireFrameSequenceProvenance(
 		const FrameStoreOutput::Metadata& metadata,
 		const FireFrameSequenceEncoding encoding,
@@ -1075,6 +1340,7 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 		error = "fire provenance envelope is missing payload or provenance_id";
 		return false;
 	}
+	if( !ValidateFireProvenancePayload(*payload,error) ) return false;
 	RISECBOR64::Bytes payloadBytes;
 	if( !RISECBOR64::Encode(*payload,payloadBytes,&error) ||
 		provenanceId->GetText() != RISECBOR64::SHA256Hex(payloadBytes) ) {

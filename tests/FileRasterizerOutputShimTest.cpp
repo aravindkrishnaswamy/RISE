@@ -120,6 +120,49 @@ namespace
 		return f.good() || f.eof();
 	}
 
+	RISECBOR64::Value ReplaceMapMember( const RISECBOR64::Value& map,
+		const std::string& name, const RISECBOR64::Value& replacement )
+	{
+		RISECBOR64::Value::Members members;
+		for( const auto& member : map.GetMap() ) {
+			members.push_back(member.first == name ?
+				std::make_pair(member.first,replacement) : member);
+		}
+		return RISECBOR64::Value::MapValue(members);
+	}
+
+	std::string SimpleCanonicalJSON( const RISECBOR64::Value& value )
+	{
+		if( value.GetType() == RISECBOR64::Value::UnsignedInteger ) {
+			return std::to_string(value.GetIntegerArgument());
+		}
+		if( value.GetType() == RISECBOR64::Value::Text ) {
+			return "\""+value.GetText()+"\"";
+		}
+		if( value.GetType() == RISECBOR64::Value::Array ) {
+			std::string json = "[";
+			for( std::size_t i=0; i<value.GetArray().size(); ++i ) {
+				if( i ) json += ',';
+				json += SimpleCanonicalJSON(value.GetArray()[i]);
+			}
+			return json+"]";
+		}
+		return std::string();
+	}
+
+	bool ReplaceBytesAfter( std::vector<unsigned char>& bytes,
+		const std::string& marker, const std::string& from, const std::string& to )
+	{
+		if( from.size() != to.size() ) return false;
+		auto markerPosition = std::search(bytes.begin(),bytes.end(),
+			marker.begin(),marker.end());
+		if( markerPosition == bytes.end() ) return false;
+		auto valuePosition = std::search(markerPosition,bytes.end(),from.begin(),from.end());
+		if( valuePosition == bytes.end() ) return false;
+		std::copy(to.begin(),to.end(),valuePosition);
+		return true;
+	}
+
 	// Forward declaration — defined later in the namespace.
 	std::string MakeTempPathWithoutExt();
 
@@ -1040,6 +1083,64 @@ namespace
 		std::string verifyError;
 		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
 			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );
+		auto rejectsSelfConsistentSemanticMutation = [&]( const std::string& key,
+			const RISECBOR64::Value& replacement, const std::string& expectedError,
+			const std::string& label ) {
+			const RISECBOR64::Value* original = exrPayload->Find(key);
+			const std::string oldJSON = original ? SimpleCanonicalJSON(*original) : std::string();
+			const std::string newJSON = SimpleCanonicalJSON(replacement);
+			const RISECBOR64::Value mutatedPayload =
+				ReplaceMapMember(*exrPayload,key,replacement);
+			RISECBOR64::Bytes mutatedPayloadBytes;
+			std::string mutationError;
+			const bool payloadOK = RISECBOR64::Encode(
+				mutatedPayload,mutatedPayloadBytes,&mutationError);
+			const std::string newId = payloadOK ?
+				RISECBOR64::SHA256Hex(mutatedPayloadBytes) : std::string();
+			const RISECBOR64::Value mutatedEnvelope = RISECBOR64::Value::MapValue({
+				{ "payload", mutatedPayload },
+				{ "provenance_id", RISECBOR64::Value::String(newId) }
+			});
+			RISECBOR64::Bytes mutatedSidecar;
+			const bool sidecarOK = payloadOK && RISECBOR64::Encode(
+				mutatedEnvelope,mutatedSidecar,&mutationError);
+			std::vector<unsigned char> mutatedEXR = exrBytes;
+			const bool mirrorsOK = original && !oldJSON.empty() && !newJSON.empty() &&
+				ReplaceBytesAfter(mutatedEXR,"riseFireProv_"+key,oldJSON,newJSON) &&
+				ReplaceBytesAfter(mutatedEXR,"riseFireProv_provenance_id",
+					"\""+exrProvenanceId->GetText()+"\"","\""+newId+"\"");
+			std::string semanticError;
+			Check( sidecarOK && mirrorsOK &&
+				!VerifyFireProvenanceEXR(mutatedEXR,mutatedSidecar,semanticError) &&
+				semanticError.find(expectedError) != std::string::npos,label );
+		};
+		rejectsSelfConsistentSemanticMutation("schema_version",
+			RISECBOR64::Value::Unsigned(2),"header",
+			"[fire provenance] verifier rejects a self-consistent unknown schema version" );
+		rejectsSelfConsistentSemanticMutation("artifact_fidelity",
+			RISECBOR64::Value::String("unknown_primary"),"artifact_fidelity",
+			"[fire provenance] verifier rejects a self-consistent unknown artifact fidelity" );
+		RISECBOR64::Value::Values invalidReasons =
+			exrPayload->Find("render_reason_codes")->GetArray();
+		for( RISECBOR64::Value& reason : invalidReasons ) {
+			if( reason.GetText() == "pel_transport" ) {
+				reason = RISECBOR64::Value::String("not_a_reasonx");
+			}
+		}
+		rejectsSelfConsistentSemanticMutation("render_reason_codes",
+			RISECBOR64::Value::ArrayValue(invalidReasons),"outside the fixed enum",
+			"[fire provenance] verifier rejects a self-consistent unknown render reason" );
+		std::string invalidBuildId = exrPayload->Find("renderer_build_id")->GetText();
+		invalidBuildId[0] = invalidBuildId[0] == 'a' ? 'b' : 'a';
+		rejectsSelfConsistentSemanticMutation("renderer_build_id",
+			RISECBOR64::Value::String(invalidBuildId),"renderer_build_id",
+			"[fire provenance] verifier rejects a self-consistent mismatched build identity" );
+		std::string invalidConfigId =
+			exrPayload->Find("resolved_render_configuration_id")->GetText();
+		invalidConfigId[0] = invalidConfigId[0] == 'a' ? 'b' : 'a';
+		rejectsSelfConsistentSemanticMutation("resolved_render_configuration_id",
+			RISECBOR64::Value::String(invalidConfigId),"configuration ID",
+			"[fire provenance] verifier rejects a self-consistent mismatched config identity" );
 		std::vector<unsigned char> mismatchedEXR = exrBytes;
 		const std::string statusName = "riseFireProv_render_fidelity_status";
 		const std::string previewJSON = "\"preview\"";
