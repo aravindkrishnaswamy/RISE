@@ -106,7 +106,10 @@
 #endif
 
 #if defined(__APPLE__)
+#include <mach/mach_init.h>
+#include <mach/task_info.h>
 #include <mach-o/dyld.h>
+#include <mach-o/dyld_images.h>
 #include <mach-o/loader.h>
 #elif defined(__linux__) || defined(__ANDROID__)
 #include <dlfcn.h>
@@ -136,6 +139,114 @@ bool RISE::Implementation::BuildIdentityModuleNameMatches(
 			static_cast<unsigned char>(name[accepted.size()]);
 		if( boundary == '.' || boundary == '-' || boundary == '_' ||
 			std::isdigit(boundary) ) return true;
+	}
+	return false;
+}
+
+bool RISE::Implementation::ReadStoredAPKBuildIdentity(
+	const std::string& modulePath,
+	std::vector<unsigned char>& bytes )
+{
+	const std::size_t separator = modulePath.find("!/");
+	if( separator == std::string::npos || separator == 0u ||
+		separator+2u >= modulePath.size() ) return false;
+	const std::string archivePath = modulePath.substr(0u,separator);
+	const std::string entryName = modulePath.substr(separator+2u);
+	std::ifstream input(archivePath,std::ios::binary);
+	if( !input ) return false;
+	input.seekg(0,std::ios::end);
+	const std::streamoff fileSize = input.tellg();
+	if( fileSize < 22 ) return false;
+	auto readAt = [&input,fileSize]( const std::uint64_t offset,
+		unsigned char* destination, const std::size_t count ) {
+		if( offset > static_cast<std::uint64_t>(fileSize) ||
+			count > static_cast<std::uint64_t>(fileSize)-offset ) return false;
+		input.clear();
+		input.seekg(static_cast<std::streamoff>(offset),std::ios::beg);
+		input.read(reinterpret_cast<char*>(destination),
+			static_cast<std::streamsize>(count));
+		return input.good() || (input.eof() &&
+			static_cast<std::size_t>(input.gcount()) == count);
+	};
+	auto little16 = []( const unsigned char* value ) {
+		return static_cast<std::uint16_t>(value[0]) |
+			(static_cast<std::uint16_t>(value[1])<<8u);
+	};
+	auto little32 = []( const unsigned char* value ) {
+		return static_cast<std::uint32_t>(value[0]) |
+			(static_cast<std::uint32_t>(value[1])<<8u) |
+			(static_cast<std::uint32_t>(value[2])<<16u) |
+			(static_cast<std::uint32_t>(value[3])<<24u);
+	};
+	const std::size_t tailSize = static_cast<std::size_t>(std::min<std::streamoff>(
+		fileSize,static_cast<std::streamoff>(65557u)));
+	std::vector<unsigned char> tail(tailSize);
+	if( !readAt(static_cast<std::uint64_t>(fileSize)-tailSize,
+		tail.data(),tail.size()) ) return false;
+	std::size_t endOffset = 0u;
+	bool foundEnd = false;
+	for( std::size_t position=tail.size()-22u+1u; position-- > 0u; ) {
+		const unsigned char* candidate = &tail[position];
+		if( little32(candidate) != 0x06054b50u ) continue;
+		const std::uint16_t commentSize = little16(candidate+20u);
+		if( position+22u+commentSize != tail.size() ) continue;
+		endOffset = position;
+		foundEnd = true;
+		break;
+	}
+	if( !foundEnd ) return false;
+	const unsigned char* end = &tail[endOffset];
+	const std::uint16_t disk = little16(end+4u);
+	const std::uint16_t centralDisk = little16(end+6u);
+	const std::uint16_t diskEntries = little16(end+8u);
+	const std::uint16_t totalEntries = little16(end+10u);
+	const std::uint32_t centralSize = little32(end+12u);
+	const std::uint32_t centralOffset = little32(end+16u);
+	if( disk != 0u || centralDisk != 0u || diskEntries != totalEntries ||
+		totalEntries == 0xffffu || centralSize == 0xffffffffu ||
+		centralOffset == 0xffffffffu ||
+		static_cast<std::uint64_t>(centralOffset)+centralSize >
+			static_cast<std::uint64_t>(fileSize) ) return false;
+	std::uint64_t cursor = centralOffset;
+	for( std::uint16_t entry=0u; entry<totalEntries; ++entry ) {
+		unsigned char central[46];
+		if( !readAt(cursor,central,sizeof(central)) ||
+			little32(central) != 0x02014b50u ) return false;
+		const std::uint16_t flags = little16(central+8u);
+		const std::uint16_t method = little16(central+10u);
+		const std::uint32_t compressedSize = little32(central+20u);
+		const std::uint32_t uncompressedSize = little32(central+24u);
+		const std::uint16_t nameSize = little16(central+28u);
+		const std::uint16_t extraSize = little16(central+30u);
+		const std::uint16_t commentSize = little16(central+32u);
+		const std::uint16_t startDisk = little16(central+34u);
+		const std::uint32_t localOffset = little32(central+42u);
+		std::vector<unsigned char> encodedName(nameSize);
+		if( !readAt(cursor+sizeof(central),encodedName.data(),encodedName.size()) ) {
+			return false;
+		}
+		const std::string name(encodedName.begin(),encodedName.end());
+		if( name == entryName ) {
+			if( (flags&1u) || method != 0u || compressedSize != uncompressedSize ||
+				startDisk != 0u || compressedSize == 0xffffffffu ||
+				localOffset == 0xffffffffu ) return false;
+			unsigned char local[30];
+			if( !readAt(localOffset,local,sizeof(local)) ||
+				little32(local) != 0x04034b50u || little16(local+8u) != 0u ||
+				(little16(local+6u)&1u) ) return false;
+			const std::uint16_t localNameSize = little16(local+26u);
+			const std::uint16_t localExtraSize = little16(local+28u);
+			std::vector<unsigned char> localName(localNameSize);
+			if( !readAt(static_cast<std::uint64_t>(localOffset)+sizeof(local),
+				localName.data(),localName.size()) ||
+				std::string(localName.begin(),localName.end()) != entryName ) return false;
+			const std::uint64_t dataOffset = static_cast<std::uint64_t>(localOffset)+
+				sizeof(local)+localNameSize+localExtraSize;
+			bytes.resize(uncompressedSize);
+			return readAt(dataOffset,bytes.data(),bytes.size());
+		}
+		cursor += sizeof(central)+nameSize+extraSize+commentSize;
+		if( cursor > static_cast<std::uint64_t>(centralOffset)+centralSize ) return false;
 	}
 	return false;
 }
@@ -231,81 +342,57 @@ namespace
 			return true;
 		}
 #if defined(__APPLE__)
-		const std::uint32_t count = _dyld_image_count();
-		for( std::uint32_t i=0u; i<count; ++i ) {
-			const char* imagePath = _dyld_get_image_name(i);
-			if( !imagePath || path != imagePath ) continue;
-			const mach_header* header = _dyld_get_image_header(i);
-			if( !header || header->magic != MH_MAGIC_64 ) return false;
-			const mach_header_64* header64 =
-				reinterpret_cast<const mach_header_64*>(header);
-			const std::size_t commandBytes = sizeof(mach_header_64)+header64->sizeofcmds;
-			const unsigned char* headerData =
-				reinterpret_cast<const unsigned char*>(header64);
-			bytes.assign(headerData,headerData+commandBytes);
-			const std::int64_t slide = _dyld_get_image_vmaddr_slide(i);
-			const load_command* command = reinterpret_cast<const load_command*>(
-				headerData+sizeof(mach_header_64));
-			bool sawExecutableSegment = false;
-			for( std::uint32_t j=0u; j<header64->ncmds; ++j ) {
-				if( command->cmd == LC_SEGMENT_64 ) {
-					const segment_command_64* segment =
-						reinterpret_cast<const segment_command_64*>(command);
-					if( (segment->initprot & VM_PROT_EXECUTE) && segment->filesize ) {
-						const unsigned char* segmentData = reinterpret_cast<const unsigned char*>(
-							slide+segment->vmaddr);
-						bytes.insert(bytes.end(),segmentData,
-							segmentData+static_cast<std::size_t>(segment->filesize));
-						sawExecutableSegment = true;
+		if( __builtin_available(macOS 11.0, *) ) {
+			if( _dyld_shared_cache_contains_path(path.c_str()) ) {
+				task_dyld_info_data_t taskDyld = {};
+				mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+				if( task_info(mach_task_self(),TASK_DYLD_INFO,
+					reinterpret_cast<task_info_t>(&taskDyld),&count) != KERN_SUCCESS ||
+					!taskDyld.all_image_info_addr ) return false;
+				const dyld_all_image_infos* infos =
+					reinterpret_cast<const dyld_all_image_infos*>(
+						taskDyld.all_image_info_addr);
+				if( infos->version < 13u ) return false;
+				bool nonzeroUUID = false;
+				bytes.assign(infos->sharedCacheUUID,infos->sharedCacheUUID+16u);
+				for( unsigned char value : bytes ) nonzeroUUID = nonzeroUUID || value != 0u;
+				if( !nonzeroUUID ) return false;
+				bool foundImageUUID = false;
+				const std::uint32_t imageCount = _dyld_image_count();
+				for( std::uint32_t i=0u; i<imageCount && !foundImageUUID; ++i ) {
+					const char* imagePath = _dyld_get_image_name(i);
+					if( !imagePath || path != imagePath ) continue;
+					const mach_header* header = _dyld_get_image_header(i);
+					if( !header || header->magic != MH_MAGIC_64 ) return false;
+					const mach_header_64* header64 =
+						reinterpret_cast<const mach_header_64*>(header);
+					const load_command* command = reinterpret_cast<const load_command*>(
+						reinterpret_cast<const unsigned char*>(header64)+sizeof(mach_header_64));
+					for( std::uint32_t j=0u; j<header64->ncmds; ++j ) {
+						if( command->cmd == LC_UUID &&
+							command->cmdsize >= sizeof(uuid_command) ) {
+							const uuid_command* imageUUID =
+								reinterpret_cast<const uuid_command*>(command);
+							bytes.insert(bytes.end(),imageUUID->uuid,imageUUID->uuid+16u);
+							foundImageUUID = true;
+							break;
+						}
+						if( command->cmdsize < sizeof(load_command) ) return false;
+						command = reinterpret_cast<const load_command*>(
+							reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
 					}
 				}
-				command = reinterpret_cast<const load_command*>(
-					reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+				if( !foundImageUUID ) return false;
+				bytes.push_back(0u);
+				bytes.insert(bytes.end(),path.begin(),path.end());
+				hashBasis = "dyld_shared_cache_and_image_uuids";
+				return true;
 			}
-			if( !sawExecutableSegment ) return false;
-			hashBasis = "loaded_mach_header_and_executable_segments";
-			return true;
 		}
 #endif
-#if defined(__linux__) || defined(__ANDROID__)
-		struct LoadedELFRequest
-		{
-			const std::string& path;
-			RISECBOR64::Bytes& bytes;
-			bool found;
-		};
-		struct LoadedELFCollector
-		{
-			static int Append( dl_phdr_info* info, std::size_t, void* opaque )
-			{
-				LoadedELFRequest& request = *static_cast<LoadedELFRequest*>(opaque);
-				const std::string candidate = info->dlpi_name ? info->dlpi_name : "";
-				const std::size_t targetSlash = request.path.find_last_of('/');
-				const std::size_t candidateSlash = candidate.find_last_of('/');
-				const std::string targetName = request.path.substr(
-					targetSlash == std::string::npos ? 0u : targetSlash+1u);
-				const std::string candidateName = candidate.substr(
-					candidateSlash == std::string::npos ? 0u : candidateSlash+1u);
-				if( candidate != request.path &&
-					(targetName.empty() || targetName != candidateName) ) return 0;
-				for( std::size_t i=0u; i<info->dlpi_phnum; ++i ) {
-					const ElfW(Phdr)& header = info->dlpi_phdr[i];
-					if( header.p_type != PT_LOAD || !(header.p_flags & PF_X) ||
-						header.p_filesz == 0u ) continue;
-					const unsigned char* begin = reinterpret_cast<const unsigned char*>(
-						info->dlpi_addr+header.p_vaddr);
-					request.bytes.insert(request.bytes.end(),begin,
-						begin+static_cast<std::size_t>(header.p_filesz));
-					request.found = true;
-				}
-				return request.found ? 1 : 0;
-			}
-		};
-		bytes.clear();
-		LoadedELFRequest request = { path,bytes,false };
-		dl_iterate_phdr(&LoadedELFCollector::Append,&request);
-		if( request.found ) {
-			hashBasis = "loaded_elf_executable_segments";
+#if defined(__ANDROID__)
+		if( RISE::Implementation::ReadStoredAPKBuildIdentity(path,bytes) ) {
+			hashBasis = "apk_stored_entry_bytes";
 			return true;
 		}
 #endif
@@ -338,7 +425,8 @@ namespace
 		std::vector<char> path(32768u);
 		const DWORD size = GetModuleFileNameA(nullptr,path.data(),
 			static_cast<DWORD>(path.size()));
-		return size && size < path.size() ? std::string(path.data(),size) : std::string();
+		return size && size < static_cast<DWORD>(path.size()) ?
+			std::string(path.data(),size) : std::string();
 #else
 		return std::string();
 #endif
@@ -368,10 +456,12 @@ namespace
 		HMODULE modules[1024];
 		DWORD bytes = 0;
 		if( EnumProcessModules(GetCurrentProcess(),modules,sizeof(modules),&bytes) ) {
-			const DWORD count = std::min<DWORD>(bytes/sizeof(HMODULE),1024u);
+			const DWORD count = std::min<DWORD>(
+				bytes/static_cast<DWORD>(sizeof(HMODULE)),1024u);
 			for( DWORD i=0; i<count; ++i ) {
 				char path[32768];
-				const DWORD size = GetModuleFileNameA(modules[i],path,sizeof(path));
+				const DWORD size = GetModuleFileNameA(modules[i],path,
+					static_cast<DWORD>(sizeof(path)));
 				if( size ) paths.push_back(std::string(path,size));
 			}
 		}

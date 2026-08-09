@@ -159,6 +159,73 @@ namespace
 		return input.good() || input.eof();
 	}
 
+	void AppendLE16( RISECBOR64::Bytes& bytes, const std::uint16_t value )
+	{
+		bytes.push_back(static_cast<unsigned char>(value));
+		bytes.push_back(static_cast<unsigned char>(value>>8u));
+	}
+
+	void AppendLE32( RISECBOR64::Bytes& bytes, const std::uint32_t value )
+	{
+		bytes.push_back(static_cast<unsigned char>(value));
+		bytes.push_back(static_cast<unsigned char>(value>>8u));
+		bytes.push_back(static_cast<unsigned char>(value>>16u));
+		bytes.push_back(static_cast<unsigned char>(value>>24u));
+	}
+
+	bool WriteStoredAPKEntry( const std::filesystem::path& archive,
+		const std::string& entry, const RISECBOR64::Bytes& payload )
+	{
+		if( entry.size() > 0xffffu || payload.size() > 0xffffffffu ) return false;
+		RISECBOR64::Bytes encoded;
+		AppendLE32(encoded,0x04034b50u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE16(encoded,static_cast<std::uint16_t>(entry.size()));
+		AppendLE16(encoded,0u);
+		encoded.insert(encoded.end(),entry.begin(),entry.end());
+		encoded.insert(encoded.end(),payload.begin(),payload.end());
+		const std::uint32_t centralOffset = static_cast<std::uint32_t>(encoded.size());
+		AppendLE32(encoded,0x02014b50u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE16(encoded,static_cast<std::uint16_t>(entry.size()));
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,0u);
+		encoded.insert(encoded.end(),entry.begin(),entry.end());
+		const std::uint32_t centralSize =
+			static_cast<std::uint32_t>(encoded.size())-centralOffset;
+		AppendLE32(encoded,0x06054b50u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,1u);
+		AppendLE16(encoded,1u);
+		AppendLE32(encoded,centralSize);
+		AppendLE32(encoded,centralOffset);
+		AppendLE16(encoded,0u);
+		std::ofstream output(archive,std::ios::binary|std::ios::trunc);
+		output.write(reinterpret_cast<const char*>(encoded.data()),
+			static_cast<std::streamsize>(encoded.size()));
+		return output.good();
+	}
+
 	bool Near( const Scalar actual, const Scalar expected, const Scalar tolerance )
 	{
 		return std::fabs( actual - expected ) <= tolerance;
@@ -2426,6 +2493,21 @@ namespace
 			!Implementation::BuildIdentityModuleNameMatches(
 				"C:\\vcpkg\\bin\\OpenEXR-3_4.dll",{"iex"}),
 			"build identity matches versioned Windows and APK module basenames without collisions" );
+		char apkFilename[128];
+		std::snprintf(apkFilename,sizeof(apkFilename),
+			"/tmp/rise_build_identity_%d.apk",static_cast<int>(::getpid()));
+		const std::string apkEntry = "lib/arm64-v8a/librise_jni.so";
+		const RISECBOR64::Bytes exactModuleBytes = {
+			0x7fu,0x45u,0x4cu,0x46u,0x11u,0x22u,0x33u,0x44u };
+		RISECBOR64::Bytes extractedModuleBytes;
+		const bool wroteAPK = WriteStoredAPKEntry(
+			apkFilename,apkEntry,exactModuleBytes);
+		const bool readAPKModule = wroteAPK &&
+			Implementation::ReadStoredAPKBuildIdentity(
+				std::string(apkFilename)+"!/"+apkEntry,extractedModuleBytes);
+		Check( readAPKModule && extractedModuleBytes == exactModuleBytes,
+			"APK build identity hashes the exact complete stored module entry" );
+		std::remove(apkFilename);
 		char filename[128];
 		std::snprintf( filename, sizeof(filename),
 			"rise_fire_fidelity_%d.RISEscene", static_cast<int>( ::getpid() ) );
@@ -2579,6 +2661,23 @@ namespace
 					}
 				}
 			}
+			RISECBOR64::Bytes exactRendererBytes;
+			const RISECBOR64::Value* rendererHashBasis = rendererBinary ?
+				rendererBinary->Find("hash_basis") : nullptr;
+			const RISECBOR64::Value* rendererPath = rendererBinary ?
+				rendererBinary->Find("path") : nullptr;
+			const RISECBOR64::Value* rendererSHA = rendererBinary ?
+				rendererBinary->Find("sha256") : nullptr;
+			bool exactRendererRead = false;
+			if( rendererHashBasis && rendererPath ) {
+				if( rendererHashBasis->GetText() == "file_bytes" ) {
+					exactRendererRead = ReadFileBytes(
+						rendererPath->GetText(),exactRendererBytes);
+				} else if( rendererHashBasis->GetText() == "apk_stored_entry_bytes" ) {
+					exactRendererRead = Implementation::ReadStoredAPKBuildIdentity(
+						rendererPath->GetText(),exactRendererBytes);
+				}
+			}
 			Check( configDecoded && resolvedConfig.Find("film") &&
 				resolvedConfig.Find("camera") && resolvedConfig.Find("integrator") &&
 				resolvedConfig.Find("sampler") && resolvedConfig.Find("depth") &&
@@ -2587,6 +2686,9 @@ namespace
 				metadata.rendererBuildId ==
 					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
 				"resolved-config categories and exact renderer-build preimage are canonical" );
+			Check( exactRendererRead && rendererSHA &&
+				rendererSHA->GetText() == RISECBOR64::SHA256Hex(exactRendererBytes),
+				"renderer build identity SHA covers the complete executable or module bytes" );
 			Check( resolvedCamera && resolvedCamera->Find("kind") &&
 				resolvedCamera->Find("kind")->GetText() == "pinhole" &&
 				resolvedCamera->Find("location") &&

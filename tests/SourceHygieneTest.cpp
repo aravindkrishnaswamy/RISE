@@ -836,11 +836,14 @@ int main()
 			jobSource.find("dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath)") !=
 				std::string::npos && jobSource.find("\"android\"") != std::string::npos,
 			"Android regenerates build identity per build and hashes the renderer-containing module" );
-		Check( jobSource.find("loaded_elf_executable_segments") != std::string::npos &&
+		Check( jobSource.find("apk_stored_entry_bytes") != std::string::npos &&
 			jobSource.find("ReadLoadedBinaryIdentity(rendererBinaryPath") !=
 				std::string::npos &&
+			jobSource.find("loaded_elf_executable_segments") == std::string::npos &&
+			jobSource.find("loaded_mach_header_and_executable_segments") ==
+				std::string::npos &&
 			jobSource.find("{\"z\",\"zlib\"}") != std::string::npos,
-			"renderer identity supports APK-loaded ELF text and Windows zlib basenames" );
+			"renderer identity hashes exact APK entries and Windows zlib basenames" );
 		Check( visualStudio.find("<DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>") !=
 				std::string::npos &&
 			visualStudio.find("generate_renderer_build_identity_header.py") !=

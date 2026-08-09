@@ -64,6 +64,9 @@ namespace RISE
 		bool BuildIdentityModuleNameMatches(
 			const std::string& path,
 			const std::vector<std::string>& acceptedNames );
+		bool ReadStoredAPKBuildIdentity(
+			const std::string& modulePath,
+			std::vector<unsigned char>& bytes );
 	}
 
 	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
