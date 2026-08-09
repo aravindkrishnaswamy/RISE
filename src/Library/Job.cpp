@@ -10911,15 +10911,26 @@ namespace
 	public:
 		explicit FrameRenderRollback( RISE::Implementation::FrameStore* store )
 			: store_(store), original_(store ? store->Meta() : RISE::FrameStoreOutput::Metadata()),
-			  committed_(false) {}
+			  committed_(false)
+		{
+			if( store_ ) store_->addref();
+		}
 		~FrameRenderRollback()
 		{
-			if( !store_ || committed_ ) return;
-			if( snapshot_ ) {
-				if( !store_->RestoreSnapshot(*snapshot_) ) store_->SetMetadata(original_);
-			} else {
-				store_->SetMetadata(original_);
+			if( store_ && !committed_ ) {
+				try {
+					if( snapshot_ ) {
+						if( !store_->RestoreSnapshot(*snapshot_) ) store_->SetMetadata(original_);
+					} else {
+						store_->SetMetadata(original_);
+					}
+				}
+				catch( ... ) {
+					GlobalLog()->PrintEasyError(
+						"output_provenance_unavailable: fire frame rollback could not restore metadata");
+				}
 			}
+			safe_release(store_);
 		}
 		bool ArmPixelStateForFire()
 		{
@@ -10969,7 +10980,10 @@ bool Job::AuthorizeFireRasterizer(
 	IRasterizer* rasterizer,
 	const FireRenderPreflightAuthorization authorization ) const
 {
-	if( !rasterizer || !pScene || !SceneHasActiveFireMedium(*pScene) ) return true;
+	if( !rasterizer || !pScene ) return true;
+	const Implementation::FrameStore* store = rasterizer->GetFrameStore();
+	const bool preparedFire = store && !store->Meta().renderFidelityStatus.empty();
+	if( !SceneHasActiveFireMedium(*pScene) && !preparedFire ) return true;
 	Implementation::Rasterizer* concrete =
 		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
 	if( !concrete || !concrete->AuthorizeFireRenderPreflight(*pScene,authorization) ) {
@@ -11161,6 +11175,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	}
 	ClearFireRasterizerAuthorization(rasterizer);
 	pScene->SetFireTemporalHold(false);
+	Implementation::FrameStore* const preparedFrameStore = rasterizer->GetFrameStore();
 
 	struct ActiveMediumBinding
 	{
@@ -11202,6 +11217,35 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		InteriorMediumCollector collector(*objects,activeMedia,activeBindings);
 		objects->EnumerateItemNames(collector);
 	}
+	const auto sameActiveBindings = [this,&activeBindings]() {
+		std::set<const IMedium*> currentMedia;
+		std::vector<ActiveMediumBinding> currentBindings;
+		if( const IMedium* global = pScene->GetGlobalMedium() ) {
+			currentMedia.insert(global);
+			currentBindings.push_back(ActiveMediumBinding{
+				global,"global_medium","scene"});
+		}
+		if( const IObjectManager* objects = pScene->GetObjects() ) {
+			InteriorMediumCollector collector(*objects,currentMedia,currentBindings);
+			objects->EnumerateItemNames(collector);
+		}
+		const auto less = []( const ActiveMediumBinding& lhs,
+			const ActiveMediumBinding& rhs ) {
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			if( lhs.bindingOwner != rhs.bindingOwner ) return lhs.bindingOwner < rhs.bindingOwner;
+			return std::less<const IMedium*>()(lhs.medium,rhs.medium);
+		};
+		std::vector<ActiveMediumBinding> original = activeBindings;
+		std::sort(original.begin(),original.end(),less);
+		std::sort(currentBindings.begin(),currentBindings.end(),less);
+		if( original.size() != currentBindings.size() ) return false;
+		for( std::size_t i=0; i<original.size(); ++i ) {
+			if( original[i].medium != currentBindings[i].medium ||
+				original[i].bindingKind != currentBindings[i].bindingKind ||
+				original[i].bindingOwner != currentBindings[i].bindingOwner ) return false;
+		}
+		return true;
+	};
 
 	std::set<std::string> recordIds;
 	std::set<std::string> reasons;
@@ -11378,6 +11422,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			}
 		} routes;
 		rasterizer->EnumerateRasterizerOutputs(routes);
+		if( rasterizer->GetFrameStore() != preparedFrameStore ||
+			!sameActiveBindings() ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
 		if( routes.unknownRoute || (routes.sawArtifactOutput &&
 			(routes.unavailableRoute || !routes.sawPrimary ||
 			 routes.derivativeBeforePrimary)) ) {

@@ -38,6 +38,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,8 @@ namespace RISE
 	namespace Implementation
 	{
 		class FrameStore;  // forward for the back-compat shim below
+		class PixelBasedRasterizerHelper;
+		class Rasterizer;
 	}
 
 	namespace FrameStoreOutput
@@ -308,6 +311,10 @@ namespace RISE
 			void SetMetadata( const Metadata& metadata )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( fireMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: fire render metadata is leased");
+				}
 				meta_ = metadata;
 				completedFrame_.store(metadata.frame,std::memory_order_relaxed);
 			}
@@ -332,6 +339,10 @@ namespace RISE
 				)
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( fireMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: fire render metadata is leased");
+				}
 				meta_.renderFidelityStatus = status;
 				meta_.renderReasonCodes = reasons;
 				meta_.activeFireOpticsRecordIds = recordIds;
@@ -375,6 +386,37 @@ namespace RISE
 			virtual ~FrameStore();
 
 		private:
+			friend class PixelBasedRasterizerHelper;
+			friend class Rasterizer;
+			//! Freezes the identity-bearing fire envelope while a rasterizer is
+			//! executing an authorized fire render.  Exposure/sample/frame progress
+			//! and finalized-primary linkage remain independently writable.
+			void AcquireFireMetadataLease()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				++fireMetadataLeaseCount_;
+			}
+
+			void ReleaseFireMetadataLease()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( fireMetadataLeaseCount_ ) --fireMetadataLeaseCount_;
+			}
+
+			void UpdateAnimatedFireMetadata(
+				const std::vector<unsigned char>& renderConfig )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( !fireMetadataLeaseCount_ || meta_.renderFidelityStatus.empty() ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: animated fire metadata update is unauthorized");
+				}
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
+			}
+
 			//! Per-tile reader/writer lock.  `std::shared_mutex`
 			//! gives N readers / 1 writer semantics that match the
 			//! design intent (one rasterizer writes a tile while
@@ -461,6 +503,7 @@ namespace RISE
 			mutable std::condition_variable   observerDispatchDone_;
 
 			mutable std::mutex metadataMutex_;
+			unsigned int fireMetadataLeaseCount_ = 0u;
 			std::atomic<unsigned int> completedFrame_;
 			Metadata meta_;
 

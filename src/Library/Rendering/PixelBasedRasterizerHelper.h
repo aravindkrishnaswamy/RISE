@@ -71,6 +71,12 @@ namespace RISE
 			void SetViewportCameraOverride( const ICamera* pCam ) { m_pViewportCameraOverride = pCam; }
 
 		private:
+			static bool AppendEvaluatedCameraState(
+				FrameStore* store,
+				const ICamera& camera,
+				unsigned int frame,
+				Scalar time,
+				const char* field );
 
 			const ICamera* m_pViewportCameraOverride = nullptr;
 			// A regional irradiance-cache pre-pass must cover the full film

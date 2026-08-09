@@ -186,7 +186,9 @@ namespace
 		members.push_back(std::make_pair(key,value));
 	}
 
-	bool AppendEvaluatedCameraState(
+}
+
+bool PixelBasedRasterizerHelper::AppendEvaluatedCameraState(
 		FrameStore* store,
 		const ICamera& camera,
 		const unsigned int frame,
@@ -300,13 +302,9 @@ namespace
 				error.c_str());
 			return false;
 		}
-		store->SetFireFidelityMetadata(metadata.renderFidelityStatus,
-			metadata.renderReasonCodes,metadata.activeFireOpticsRecordIds,
-			metadata.activeFireMedia,updated,metadata.rendererBuildV1,
-			metadata.rendererBuildId);
+		store->UpdateAnimatedFireMetadata(updated);
 		return true;
 	}
-}
 
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	IRayCaster* pCaster_,

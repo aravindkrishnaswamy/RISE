@@ -228,6 +228,132 @@ namespace
 		bool rejected_ = false;
 	};
 
+	class DuplicateCallbackFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit DuplicateCallbackFireOutput( IRasterizer& rasterizer ) :
+			rasterizer_(rasterizer) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override
+			{ ++finalCount_; }
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			rasterizer_.AddRasterizerOutput(this);
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		unsigned int FinalCount() const { return finalCount_; }
+	protected:
+		~DuplicateCallbackFireOutput() override = default;
+	private:
+		IRasterizer& rasterizer_;
+		bool attempted_ = false;
+		unsigned int finalCount_ = 0u;
+	};
+
+	class MetadataMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit MetadataMutatingFireOutput( Implementation::FrameStore& store ) :
+			store_(store) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			FrameStoreOutput::Metadata replacement = store_.Meta();
+			replacement.activeFireMedia[0].authoredConfigDigest =
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+			try {
+				store_.SetMetadata(replacement);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected_ = std::string(error.what()).find(
+					"fire render metadata is leased") != std::string::npos;
+				throw;
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		bool Rejected() const { return rejected_; }
+	protected:
+		~MetadataMutatingFireOutput() override = default;
+	private:
+		Implementation::FrameStore& store_;
+		bool attempted_ = false;
+		bool rejected_ = false;
+	};
+
+	class FrameStoreSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit FrameStoreSwappingFireOutput( Implementation::Rasterizer& rasterizer ) :
+			rasterizer_(rasterizer), replacement_(nullptr) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				Implementation::FrameStore* current = rasterizer_.GetFrameStore();
+				Implementation::FrameStore::Spec spec;
+				spec.width = current ? current->Width() : 1u;
+				spec.height = current ? current->Height() : 1u;
+				replacement_ = new Implementation::FrameStore(spec);
+				rasterizer_.SetFrameStore(replacement_);
+				replacement_->release();
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		bool Mutated() const { return mutated_; }
+		Implementation::FrameStore* Replacement() const { return replacement_; }
+	protected:
+		~FrameStoreSwappingFireOutput() override = default;
+	private:
+		Implementation::Rasterizer& rasterizer_;
+		mutable Implementation::FrameStore* replacement_;
+		mutable bool mutated_ = false;
+	};
+
+	class SceneMediumSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		SceneMediumSwappingFireOutput( IScenePriv& scene, const IMedium& replacement ) :
+			scene_(scene), replacement_(replacement) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				scene_.SetGlobalMedium(&replacement_);
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		bool Mutated() const { return mutated_; }
+	protected:
+		~SceneMediumSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		const IMedium& replacement_;
+		mutable bool mutated_ = false;
+	};
+
 	bool ReadFileBytes( const std::filesystem::path& path,
 		RISECBOR64::Bytes& bytes )
 	{
@@ -3354,6 +3480,110 @@ namespace
 			Check(false,"callback output-topology mutation fixture loads");
 		}
 		safe_release(job);
+
+		for( const char* rasterizerKind : {
+			"pathtracing_spectral_rasterizer", "auto_spectral_rasterizer" } ) {
+			writeScene(rasterizerKind,380u);
+			RISE_CreateJobPriv(&job);
+			const bool duplicateCallbackLoaded = job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str());
+			if( duplicateCallbackLoaded ) {
+				IRasterizer* rasterizer = job->GetRasterizer();
+				DuplicateCallbackFireOutput* output =
+					new DuplicateCallbackFireOutput(*rasterizer);
+				rasterizer->AddRasterizerOutput(output);
+				Check( job->Rasterize() && output->Attempted() && output->FinalCount() == 1u,
+					(std::string(rasterizerKind)+
+						" duplicate output attachment remains an idempotent callback no-op").c_str() );
+				rasterizer->FreeRasterizerOutputs();
+				safe_release(output);
+			} else {
+				Check(false,"duplicate callback fire fixture loads");
+			}
+			safe_release(job);
+		}
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool metadataMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( metadataMutationLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+			MetadataMutatingFireOutput* output = store ?
+				new MetadataMutatingFireOutput(*store) : nullptr;
+			if( output ) rasterizer->AddRasterizerOutput(output);
+			const FrameStoreOutput::Metadata before = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"fire render metadata is leased") != std::string::npos;
+			}
+			Check( output && rejected && output->Attempted() && output->Rejected() &&
+				SameFrameMetadata(store->Meta(),before),
+				"fire callback cannot replace the authorized metadata envelope" );
+			if( rasterizer ) rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"metadata mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool frameStoreMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( frameStoreMutationLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			FrameStoreSwappingFireOutput* output = rasterizer ?
+				new FrameStoreSwappingFireOutput(*rasterizer) : nullptr;
+			if( output ) rasterizer->AddRasterizerOutput(output);
+			const bool rejected = !job->Rasterize();
+			Implementation::FrameStore* replacement = output ? output->Replacement() : nullptr;
+			Check( output && rejected && output->Mutated() && replacement &&
+				replacement == rasterizer->GetFrameStore() &&
+				replacement->Meta().renderFidelityStatus.empty(),
+				"FrameStore swap during route preflight rejects without a rollback lifetime fault" );
+			if( rasterizer ) rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"FrameStore mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		for( const bool replaceWithFire : { false, true } ) {
+			writeScene("pathtracing_spectral_rasterizer",380u);
+			RISE_CreateJobPriv(&job);
+			const bool sceneMutationLoaded = job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str());
+			if( sceneMutationLoaded ) {
+				PluginPhase* phase = new PluginPhase();
+				IMedium* replacement = replaceWithFire ?
+					static_cast<IMedium*>(new InvalidReasonFireMedium(*phase)) :
+					static_cast<IMedium*>(new DerivedHomogeneousMedium(*phase));
+				IRasterizer* rasterizer = job->GetRasterizer();
+				SceneMediumSwappingFireOutput* output =
+					new SceneMediumSwappingFireOutput(*job->GetScene(),*replacement);
+				rasterizer->AddRasterizerOutput(output);
+				Check( !job->Rasterize() && output->Mutated(),
+					replaceWithFire ?
+						"fire-to-fire medium swap invalidates route preflight" :
+						"fire-to-nonfire medium swap invalidates route preflight" );
+				rasterizer->FreeRasterizerOutputs();
+				safe_release(output);
+				safe_release(replacement);
+				safe_release(phase);
+			} else {
+				Check(false,"scene medium mutation fire fixture loads");
+			}
+			safe_release(job);
+		}
 
 		writeScene("auto_spectral_rasterizer",380u);
 		RISE_CreateJobPriv(&job);

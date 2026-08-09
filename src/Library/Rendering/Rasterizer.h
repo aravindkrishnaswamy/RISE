@@ -184,6 +184,7 @@ namespace RISE
 			mutable uint64_t mFireRenderPreflightGeneration;
 			mutable uint64_t mFireRenderPreflightOutputTopologyGeneration;
 			mutable std::string mFireRenderPreflightMetadataBinding;
+			mutable std::string mFireRenderPreflightSceneMediaBinding;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
