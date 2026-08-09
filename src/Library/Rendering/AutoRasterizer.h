@@ -166,7 +166,16 @@ namespace RISE
 			//! joins the candidate set, the query stays truthful).
 			bool HonorsRegion() const override { return mDelegate ? mDelegate->HonorsRegion() : true; }
 			bool LastRenderCompleted() const override
-				{ return mDelegate ? mDelegate->LastRenderCompleted() : true; }
+			{
+				const IFireRasterizerState* state =
+					dynamic_cast<const IFireRasterizerState*>(mDelegate);
+				return !state || state->LastRenderCompleted();
+			}
+			bool ResolveForFirePreflight( const IScene& scene ) const override
+			{
+				EnsureResolved(&scene);
+				return mDelegate != nullptr;
+			}
 
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed

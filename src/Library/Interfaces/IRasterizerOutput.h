@@ -109,11 +109,25 @@ namespace RISE
 		//! lock during this dispatch.
 		virtual void OnRasterizerFrameStoreChanged( Implementation::FrameStore* /*framestore*/ ) {}
 
-		//! Fire-output preflight surface. Outputs that author artifacts opt in;
-		//! the Job rejects an unavailable route before render workers launch.
-		virtual bool DeclaresFireArtifactRoute() const { return false; }
-		virtual bool ProvidesFirePrimaryArtifactRoute() const { return false; }
-		virtual bool IsFireArtifactRouteAvailable() const { return true; }
+	};
+
+	//! Queryable fire-output capability kept outside IRasterizerOutput's
+	//! historical vtable. Unknown/out-of-tree sinks fail closed at preflight;
+	//! in-tree display sinks and artifact publishers classify themselves.
+	enum class FireArtifactRouteKind
+	{
+		DisplayOnly,
+		PrimaryArtifact,
+		DerivativeArtifact,
+		UnavailableArtifact
+	};
+
+	class IFireRasterizerOutputRoute
+	{
+	protected:
+		virtual ~IFireRasterizerOutputRoute() {}
+	public:
+		virtual FireArtifactRouteKind FireArtifactRoute() const = 0;
 	};
 }
 

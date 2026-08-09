@@ -20,6 +20,7 @@
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
 #include "../Utilities/CPUTopology.h"
+#include "../Utilities/RISECBOR64.h"
 #include <stdexcept>
 
 using namespace RISE;
@@ -60,13 +61,60 @@ namespace
 			!metadata.rendererBuildV1.empty() &&
 			!metadata.rendererBuildId.empty();
 	}
+
+	std::string FireOutputMetadataBinding(
+		const FrameStoreOutput::Metadata& metadata )
+	{
+		using RISECBOR64::Value;
+		Value::Values reasons;
+		for( const std::string& reason : metadata.renderReasonCodes ) {
+			reasons.push_back(Value::String(reason));
+		}
+		Value::Values recordIds;
+		for( const std::string& recordId : metadata.activeFireOpticsRecordIds ) {
+			recordIds.push_back(Value::String(recordId));
+		}
+		Value::Values media;
+		for( const FrameStoreOutput::ActiveFireMedium& medium : metadata.activeFireMedia ) {
+			Value::Values opticalIds;
+			for( const std::string& recordId : medium.opticalRecordIds ) {
+				opticalIds.push_back(Value::String(recordId));
+			}
+			media.push_back(Value::MapValue({
+				{ "authored_config_digest", Value::String(medium.authoredConfigDigest) },
+				{ "binding_kind", Value::String(medium.bindingKind) },
+				{ "binding_owner", Value::String(medium.bindingOwner) },
+				{ "manager_name", Value::String(medium.managerName) },
+				{ "media_kind", Value::String(medium.mediaKind) },
+				{ "optical_record_ids", Value::ArrayValue(opticalIds) }
+			}));
+		}
+		RISECBOR64::Bytes encoded;
+		std::string error;
+		const Value binding = Value::MapValue({
+			{ "active_fire_media", Value::ArrayValue(media) },
+			{ "active_fire_optics_record_ids", Value::ArrayValue(recordIds) },
+			{ "render_fidelity_status", Value::String(metadata.renderFidelityStatus) },
+			{ "render_reason_codes", Value::ArrayValue(reasons) },
+			{ "renderer_build_id", Value::String(metadata.rendererBuildId) },
+			{ "renderer_build_v1", Value::BytesValue(metadata.rendererBuildV1) },
+			{ "resolved_render_config_core_v1",
+				Value::BytesValue(metadata.resolvedRenderConfigCoreV1) }
+		});
+		if( !RISECBOR64::Encode(binding,encoded,&error) ) return std::string();
+		return RISECBOR64::SHA256Hex(encoded);
+	}
 }
 
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
-  ,mFrameStore( frameStore )
+	,mFrameStore( frameStore )
 	,mFireRenderPreflightAuthorization(FireRenderPreflightAuthorization::None)
-  ,mDenoisingPrefilter( OidnPrefilter::Fast )
+	,mFireRenderPreflightScene(nullptr)
+	,mFireRenderPreflightStore(nullptr)
+	,mFireRenderPreflightGeneration(0u)
+	,mFireRenderPreflightOutputTopologyGeneration(0u)
+	,mDenoisingPrefilter( OidnPrefilter::Fast )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
@@ -90,31 +138,94 @@ bool Rasterizer::RequireFireRenderPreflight(
 	const FireRenderPreflightAuthorization authorization ) const
 {
 	if( !SceneHasActiveFireMedium(scene) ) {
-		mFireRenderPreflightAuthorization.store(
-			FireRenderPreflightAuthorization::None,std::memory_order_release);
+		ClearFireRenderPreflightAuthorization();
 		return false;
 	}
-	const FireRenderPreflightAuthorization authorized =
-		mFireRenderPreflightAuthorization.exchange(
-			FireRenderPreflightAuthorization::None,std::memory_order_acq_rel);
+	FireRenderPreflightAuthorization authorized = FireRenderPreflightAuthorization::None;
+	const IScene* authorizedScene = nullptr;
+	const FrameStore* authorizedStore = nullptr;
+	uint64_t authorizedGeneration = 0u;
+	uint64_t authorizedOutputTopologyGeneration = 0u;
+	std::string authorizedMetadataBinding;
+	{
+		std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+		authorized = mFireRenderPreflightAuthorization;
+		authorizedScene = mFireRenderPreflightScene;
+		authorizedStore = mFireRenderPreflightStore;
+		authorizedGeneration = mFireRenderPreflightGeneration;
+		authorizedOutputTopologyGeneration =
+			mFireRenderPreflightOutputTopologyGeneration;
+		authorizedMetadataBinding = mFireRenderPreflightMetadataBinding;
+		mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
+		mFireRenderPreflightScene = nullptr;
+		mFireRenderPreflightStore = nullptr;
+		mFireRenderPreflightGeneration = 0u;
+		mFireRenderPreflightOutputTopologyGeneration = 0u;
+		mFireRenderPreflightMetadataBinding.clear();
+	}
 	if( !SupportsFireMediaTransport() ) {
 		GlobalLog()->PrintEasyError(
 			"unsupported_integrator_for_fire_media: rasterizer entry rejected before workers launch");
 		throw std::runtime_error(
 			"unsupported_integrator_for_fire_media: rasterizer entry rejected before workers launch");
 	}
-	if( authorized != authorization ) {
+	if( authorized != authorization || authorizedScene != &scene ) {
 		GlobalLog()->PrintEasyError(
 			"output_provenance_unavailable: fire rasterizer entry requires Job preflight");
 		throw std::runtime_error(
 			"output_provenance_unavailable: fire rasterizer entry requires Job preflight");
 	}
 	if( authorization == FireRenderPreflightAuthorization::Render &&
-		(!mFrameStore || !HasCompleteFireOutputMetadata(mFrameStore->Meta())) ) {
+		(!mFrameStore || authorizedStore != mFrameStore ||
+		 authorizedGeneration != mFrameStore->Generation() ||
+		 authorizedOutputTopologyGeneration !=
+			mFireOutputTopologyGeneration.load(std::memory_order_acquire) ||
+		 !HasCompleteFireOutputMetadata(mFrameStore->Meta()) ||
+		 authorizedMetadataBinding.empty() ||
+		 authorizedMetadataBinding != FireOutputMetadataBinding(mFrameStore->Meta())) ) {
 		GlobalLog()->PrintEasyError(
 			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
 		throw std::runtime_error(
 			"output_provenance_unavailable: fire rasterizer entry has incomplete output metadata");
+	}
+	return true;
+}
+
+void Rasterizer::ClearFireRenderPreflightAuthorization() const
+{
+	std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+	mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
+	mFireRenderPreflightScene = nullptr;
+	mFireRenderPreflightStore = nullptr;
+	mFireRenderPreflightGeneration = 0u;
+	mFireRenderPreflightOutputTopologyGeneration = 0u;
+	mFireRenderPreflightMetadataBinding.clear();
+}
+
+bool Rasterizer::AuthorizeFireRenderPreflight(
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	std::lock_guard<std::mutex> lock(mFireRenderPreflightMutex);
+	mFireRenderPreflightAuthorization = FireRenderPreflightAuthorization::None;
+	mFireRenderPreflightScene = nullptr;
+	mFireRenderPreflightStore = nullptr;
+	mFireRenderPreflightGeneration = 0u;
+	mFireRenderPreflightOutputTopologyGeneration = 0u;
+	mFireRenderPreflightMetadataBinding.clear();
+	if( authorization == FireRenderPreflightAuthorization::None ) return true;
+	mFireRenderPreflightAuthorization = authorization;
+	mFireRenderPreflightScene = &scene;
+	mFireRenderPreflightStore = mFrameStore;
+	mFireRenderPreflightGeneration = mFrameStore ? mFrameStore->Generation() : 0u;
+	mFireRenderPreflightOutputTopologyGeneration =
+		mFireOutputTopologyGeneration.load(std::memory_order_acquire);
+	if( authorization == FireRenderPreflightAuthorization::Render ) {
+		if( !mFrameStore ) return false;
+		const FrameStoreOutput::Metadata metadata = mFrameStore->Meta();
+		if( !HasCompleteFireOutputMetadata(metadata) ) return false;
+		mFireRenderPreflightMetadataBinding = FireOutputMetadataBinding(metadata);
+		if( mFireRenderPreflightMetadataBinding.empty() ) return false;
 	}
 	return true;
 }
@@ -124,7 +235,22 @@ void Rasterizer::AuthorizeInternalFireReentry(
 	const FireRenderPreflightAuthorization authorization ) const
 {
 	if( SceneHasActiveFireMedium(scene) ) {
-		mFireRenderPreflightAuthorization.store(authorization,std::memory_order_release);
+		if( !AuthorizeFireRenderPreflight(scene,authorization) ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: internal fire reentry authorization failed");
+		}
+	}
+}
+
+void Rasterizer::AuthorizeInternalFireDelegate(
+	IRasterizer& delegate,
+	const IScene& scene,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(&delegate);
+	if( !concrete || !concrete->AuthorizeFireRenderPreflight(scene,authorization) ) {
+		throw std::runtime_error(
+			"output_provenance_unavailable: fire delegate authorization failed");
 	}
 }
 
@@ -189,6 +315,7 @@ bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
 			ro->release();
 			throw;
 		}
+		mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 		frameStoreSnapshot = mFrameStore;
 		if( frameStoreSnapshot ) frameStoreSnapshot->addref();
 	}
@@ -218,6 +345,7 @@ bool Rasterizer::UnregisterRasterizerOutput( IRasterizerOutput* ro )
 		if( *i == ro ) {
 			IRasterizerOutput* removed = *i;
 			outs.erase( i );
+			mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 			safe_release( removed );
 			return true;
 		}
@@ -239,6 +367,7 @@ bool Rasterizer::ReleaseRasterizerOutputs()
 		safe_release( (*i) );
 	}
 	outs.clear();
+	if( released ) mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
 	return released;
 }
 

@@ -147,6 +147,15 @@ namespace RISE
 			IRasterizer* rasterizer,
 			const char* rasterizerKind,
 			const FireExternalRenderConfig& config ) = 0;
+
+		//! Atomically preflight and enter a controller-owned rasterizer so the
+		//! Job-only fire capability never escapes to an external caller.
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool RasterizeExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config,
+			const Rect* region ) = 0;
 	};
 
 

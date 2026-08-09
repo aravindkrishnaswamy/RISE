@@ -24,6 +24,7 @@
 
 class MovieRasterizerOutput :
     public virtual RISE::IRasterizerOutput,
+    public virtual RISE::IFireRasterizerOutputRoute,
     public virtual RISE::Implementation::Reference
 {
 public:
@@ -47,9 +48,11 @@ public:
                             const unsigned int frame) override;
     void OnRasterizerFrameStoreChanged(
         RISE::Implementation::FrameStore* framestore) override;
-    bool DeclaresFireArtifactRoute() const override { return true; }
-    bool ProvidesFirePrimaryArtifactRoute() const override { return true; }
-    bool IsFireArtifactRouteAvailable() const override { return _routeAvailable; }
+    RISE::FireArtifactRouteKind FireArtifactRoute() const override
+    {
+        return _routeAvailable ? RISE::FireArtifactRouteKind::PrimaryArtifact :
+            RISE::FireArtifactRouteKind::UnavailableArtifact;
+    }
 
     /// Flush remaining frames and close the movie file.
     bool finalize(bool publish = true);

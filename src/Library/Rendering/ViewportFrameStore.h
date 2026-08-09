@@ -87,9 +87,12 @@ namespace RISE
 		class FrameSink;
 
 		class ViewportFrameStore : public virtual IRasterizerOutput,
+		                           public virtual IFireRasterizerOutputRoute,
 		                           public virtual Reference
 		{
 		public:
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::DisplayOnly; }
 			//! Callback for tile-completion events.  Fires from a
 			//! rasterizer worker thread; platform code is
 			//! responsible for marshalling to its UI thread (Qt

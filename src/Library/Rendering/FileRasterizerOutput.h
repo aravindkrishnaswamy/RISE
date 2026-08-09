@@ -34,7 +34,8 @@ namespace RISE
 		class FrameSink;
 		class FileEncoderObserver;
 
-		class FileRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
+		class FileRasterizerOutput : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		public:
 			enum FRO_TYPE
@@ -181,20 +182,18 @@ namespace RISE
 				);
 
 			bool HasEncoder() const { return encoder_ != nullptr; }
-			bool DeclaresFireArtifactRoute() const override { return true; }
-			bool ProvidesFirePrimaryArtifactRoute() const override
+			FireArtifactRouteKind FireArtifactRoute() const override
 			{
-				return type == EXR && bpp >= 32u &&
+				if( !encoder_ ) return FireArtifactRouteKind::UnavailableArtifact;
+				const bool primary = type == EXR && bpp >= 32u &&
 					(color_space == eColorSpace_Rec709RGB_Linear ||
 					 color_space == eColorSpace_ROMMRGB_Linear) &&
 					(exr_compression == eExrCompression_None ||
 					 exr_compression == eExrCompression_Zip ||
 					 exr_compression == eExrCompression_Piz) &&
 					exposureEV == Scalar(0) && display_transform == eDisplayTransform_None;
-			}
-			bool IsFireArtifactRouteAvailable() const override
-			{
-				return encoder_ != nullptr;
+				return primary ? FireArtifactRouteKind::PrimaryArtifact :
+					FireArtifactRouteKind::DerivativeArtifact;
 			}
 
 			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;

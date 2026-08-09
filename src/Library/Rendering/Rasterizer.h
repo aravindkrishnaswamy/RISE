@@ -20,16 +20,20 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace RISE
 {
+	class Job;
 	namespace Implementation
 	{
 		class OIDNDenoiser;	// forward decl — full type only needed in Rasterizer.cpp
 		class FrameStore;	// forward decl — held as a counted reference
 
-		class Rasterizer : public virtual IRasterizer, public virtual Reference
+		class Rasterizer : public virtual IRasterizer,
+		                   public virtual IFireRasterizerState,
+		                   public virtual Reference
 		{
 		protected:
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
@@ -139,6 +143,7 @@ namespace RISE
 			//! attached) and gate the bridge's `attachViewport...`
 			//! re-entries.
 			mutable std::mutex						outsMutex;
+			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
 
 			IProgressCallback*						pProgressFunc;
 
@@ -156,8 +161,13 @@ namespace RISE
 			//! commit).
 			FrameStore*								mFrameStore;
 			int									mForTestThreadCountOverride = 0;
-			mutable std::atomic<FireRenderPreflightAuthorization>
-				mFireRenderPreflightAuthorization;
+			mutable std::mutex mFireRenderPreflightMutex;
+			mutable FireRenderPreflightAuthorization mFireRenderPreflightAuthorization;
+			mutable const IScene* mFireRenderPreflightScene;
+			mutable const FrameStore* mFireRenderPreflightStore;
+			mutable uint64_t mFireRenderPreflightGeneration;
+			mutable uint64_t mFireRenderPreflightOutputTopologyGeneration;
+			mutable std::string mFireRenderPreflightMetadataBinding;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
@@ -200,8 +210,21 @@ namespace RISE
 			void AuthorizeInternalFireReentry(
 				const IScene& scene,
 				FireRenderPreflightAuthorization authorization ) const;
+			void AuthorizeInternalFireDelegate(
+				IRasterizer& delegate,
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
 			virtual bool SupportsFireMediaTransport() const { return true; }
 
+		private:
+			friend class ::RISE::Job;
+			void ClearFireRenderPreflightAuthorization() const;
+			bool AuthorizeFireRenderPreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+
+		public:
+			bool LastRenderCompleted() const override { return true; }
 			// Figures out the number of threads to spawn based on the number of
 			// processors in the system and the option settings
 			int HowManyThreadsToSpawn() const;
@@ -230,36 +253,23 @@ namespace RISE
 			void ForTest_SetThreadCountOverride( const int count ) {
 				mForTestThreadCountOverride = count;
 			}
-			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			virtual void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			//! Removes exactly one matching output, if present.  This is an
 			//! implementation-level companion to the legacy all-or-nothing
 			//! FreeRasterizerOutputs API, used by transactional callers that must
 			//! roll back one attachment without disturbing outputs added later by
 			//! another owner.
 			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
-			virtual void FreeRasterizerOutputs( );
-			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
-			virtual void SetProgressCallback( IProgressCallback* pFunc );
-			void SetFireRenderPreflightAuthorization(
-				FireRenderPreflightAuthorization authorization )
-			{
-				mFireRenderPreflightAuthorization.store(
-					authorization,std::memory_order_release);
-			}
-
+			virtual void FreeRasterizerOutputs( ) override;
+			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
+			virtual void SetProgressCallback( IProgressCallback* pFunc ) override;
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job
 			// migrates to allocate one).
-			// `virtual` is explicitly written here to match the
-			// style of every other IRasterizer override in this
-			// section (AddRasterizerOutput, SetProgressCallback,
-			// etc. all spell out `virtual`).  `override` is
-			// intentionally OMITTED because the surrounding
-			// overrides aren't marked `override`; adding it here
-			// trips `-Winconsistent-missing-override` against the
-			// pre-existing methods.  See user memory:
-			// `feedback_override_keyword_in_job.md`.
-			virtual FrameStore* GetFrameStore() const
+			// `virtual` remains explicit to match the surrounding
+			// IRasterizer methods; `override` pins the capability after
+			// the fire-boundary review made this class multi-interface.
+			virtual FrameStore* GetFrameStore() const override
 				{ return mFrameStore; }
 
 			// L6b — Late-binding FrameStore setter.  Used by `Job` to

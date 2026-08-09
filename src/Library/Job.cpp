@@ -740,6 +740,7 @@ namespace
 	bool BuildResolvedRenderConfig(
 		const Job::RasterizerParams& p,
 		const char* rasterizerKind,
+		const char* effectiveIntegrator,
 		const IScene& scene,
 		const FrameStore* store,
 		const FireExternalRenderConfig* external,
@@ -1022,6 +1023,7 @@ namespace
 			{ "integrator", Value::MapValue({
 				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
 				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },
+				{ "effective_kind", FireText(effectiveIntegrator) },
 				{ "enable_vertex_connection", FireBool(p.enableVC) },
 				{ "enable_vertex_merging", FireBool(p.enableVM) },
 				{ "integrate_rgb", FireBool(p.integrateRGB) },
@@ -10037,7 +10039,8 @@ namespace RISE {
 	namespace Implementation {
 		//! This is out dispatcher that handles the rasterizer output calls and pipes them off
 		//! to the client application
-		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput, public virtual Reference
+		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		protected:
 			IJobRasterizerOutput&	pObj;
@@ -10076,7 +10079,7 @@ namespace RISE {
 			void OutputIntermediateImage(
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
-				)
+				) override
 			{
 				// Reallocate the dispatch buffer whenever the image
 				// dimensions change, not only on first call.  Without
@@ -10213,13 +10216,13 @@ namespace RISE {
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
 				const unsigned int frame
-				)
+				) override
 			{
 				OutputIntermediateImage( pImage, pRegion );
 			}
 
-			bool DeclaresFireArtifactRoute() const { return true; }
-			bool IsFireArtifactRouteAvailable() const { return false; }
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::UnavailableArtifact; }
 		};
 	}
 }
@@ -10862,8 +10865,11 @@ bool Job::PredictRasterizationTime(
 	RISE_API_CreateNRooksSampling2D( &pSampling, 1.0, 1.0, 1.0 );
 	pSampling->SetNumSamples( num );
 
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Prediction);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Prediction) ) {
+		safe_release(pSampling);
+		return false;
+	}
 	unsigned int nMs = pRasterizer->PredictTimeToRasterizeScene( *pScene, *pSampling, actual );
 
 	if( ms ) {
@@ -10964,6 +10970,48 @@ namespace
 	};
 }
 
+bool Job::ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const
+{
+	if( !rasterizer || !pScene || !SceneHasActiveFireMedium(*pScene) ) return true;
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	if( !state || !state->ResolveForFirePreflight(*pScene) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire rasterizer has no preflight capability");
+		return false;
+	}
+	return true;
+}
+
+void Job::ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const
+{
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( concrete ) concrete->ClearFireRenderPreflightAuthorization();
+}
+
+bool Job::AuthorizeFireRasterizer(
+	IRasterizer* rasterizer,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	if( !rasterizer || !pScene || !SceneHasActiveFireMedium(*pScene) ) return true;
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( !concrete || !concrete->AuthorizeFireRenderPreflight(*pScene,authorization) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: Job could not bind fire preflight authorization");
+		return false;
+	}
+	return true;
+}
+
+bool Job::FireRasterizerLastRenderCompleted( const IRasterizer* rasterizer ) const
+{
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	return !state || state->LastRenderCompleted();
+}
+
 bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
 
 {
@@ -10986,8 +11034,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	if( !pScene || !pRasterizer ) {
 		return false;
 	}
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::None);
+	ClearFireRasterizerAuthorization(pRasterizer);
 	if( !SceneHasActiveFireMedium(*pScene) ) {
 		pScene->SetFireTemporalHold(false);
 		if( resolvedSequence ) {
@@ -11003,6 +11050,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		}
 		return true;
 	}
+	if( !ResolveFireRasterizerForPreflight(pRasterizer) ) return false;
 
 	Scalar wavelengthMin = 380.0;
 	Scalar wavelengthMax = 780.0;
@@ -11028,8 +11076,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		smsEnabled = active->second.params.sms.enabled;
 	}
 	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = pRasterizer->ResolvedIntegratorName();
 	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
-		*resolvedParams,activeRasterizerName.c_str(),*pScene,
+		*resolvedParams,activeRasterizerName.c_str(),
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			activeRasterizerName.c_str(),*pScene,
 		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
 		animationTimeEnd,animationFrames,animationFields,
 		animationInvertFields,animationFrame,renderRegion,resolvedSequence,
@@ -11066,14 +11117,14 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 	const char* rasterizerKind,
 	const FireExternalRenderConfig& config )
 {
-	if( rasterizer ) rasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::None);
+	ClearFireRasterizerAuthorization(rasterizer);
 	if( pScene && !SceneHasActiveFireMedium(*pScene) ) {
 		pScene->SetFireTemporalHold(false);
 		FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
 		if( store ) store->SetFireFidelityMetadata("",{},{});
 		return true;
 	}
+	if( !ResolveFireRasterizerForPreflight(rasterizer) ) return false;
 	RasterizerParams external;
 	external.numPixelSamples = config.samplesPerPixel;
 	external.oidnDenoise = config.oidnDenoise;
@@ -11087,8 +11138,11 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 	external.spectral.nmEnd = Scalar(780);
 	if( config.variantPipeline ) external.pixelFilter.filter = "box";
 	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = rasterizer ? rasterizer->ResolvedIntegratorName() : "";
 	if( !pScene || !BuildResolvedRenderConfig(external,
-		rasterizerKind ? rasterizerKind : "",*pScene,
+		rasterizerKind ? rasterizerKind : "",
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			(rasterizerKind ? rasterizerKind : ""),*pScene,
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
 		animOptions.invert_fields,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
@@ -11097,9 +11151,20 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
 		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
 		resolvedConfig,true);
-	if( prepared && rasterizer ) rasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
 	return prepared;
+}
+
+bool Job::RasterizeExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config,
+	const Rect* region )
+{
+	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
+		rasterizer,rasterizerKind,config) || !AuthorizeFireRasterizer(
+		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
+	rasterizer->RasterizeScene(*pScene,region,nullptr);
+	return true;
 }
 
 bool Job::PrepareFireRenderFidelityMetadata(
@@ -11119,8 +11184,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	if( !pScene || !rasterizer ) {
 		return false;
 	}
-	rasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::None);
+	ClearFireRasterizerAuthorization(rasterizer);
 	pScene->SetFireTemporalHold(false);
 
 	struct ActiveMediumBinding
@@ -11303,27 +11367,45 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	if( hasFireMedia ) {
 		struct FireFileRouteCollector : public IEnumCallback<IRasterizerOutput>
 		{
-			bool sawFileOutput = false;
+			bool sawArtifactOutput = false;
 			bool sawPrimary = false;
 			bool derivativeBeforePrimary = false;
 			bool unavailableRoute = false;
+			bool unknownRoute = false;
 			bool operator()( const IRasterizerOutput& output ) override
 			{
-				if( !output.DeclaresFireArtifactRoute() ) return true;
-				sawFileOutput = true;
-				unavailableRoute = unavailableRoute ||
-					!output.IsFireArtifactRouteAvailable();
-				if( output.ProvidesFirePrimaryArtifactRoute() ) {
+				const IFireRasterizerOutputRoute* route =
+					dynamic_cast<const IFireRasterizerOutputRoute*>(&output);
+				if( !route ) {
+					unknownRoute = true;
+					return true;
+				}
+				switch( route->FireArtifactRoute() ) {
+				case FireArtifactRouteKind::DisplayOnly:
+					return true;
+				case FireArtifactRouteKind::UnavailableArtifact:
+					sawArtifactOutput = true;
+					unavailableRoute = true;
+					return true;
+				case FireArtifactRouteKind::PrimaryArtifact:
+					sawArtifactOutput = true;
 					sawPrimary = true;
-				} else if( !sawPrimary ) {
+					return true;
+				case FireArtifactRouteKind::DerivativeArtifact:
+					sawArtifactOutput = true;
+					if( !sawPrimary ) derivativeBeforePrimary = true;
+					return true;
+				}
+				if( !sawPrimary ) {
 					derivativeBeforePrimary = true;
 				}
 				return true;
 			}
 		} routes;
 		rasterizer->EnumerateRasterizerOutputs(routes);
-		if( routes.sawFileOutput && (routes.unavailableRoute || !routes.sawPrimary ||
-			routes.derivativeBeforePrimary) ) {
+		if( routes.unknownRoute || (routes.sawArtifactOutput &&
+			(routes.unavailableRoute || !routes.sawPrimary ||
+			 routes.derivativeBeforePrimary)) ) {
 			invalidFidelityMetadata = true;
 			reasons.insert("output_provenance_unavailable");
 		}
@@ -11411,8 +11493,11 @@ bool Job::Rasterize(
 	// refcounted sequence object.  Release-and-rethrow keeps the success
 	// path's release at the exact same point (right after RasterizeScene
 	// returns) as before this fix.
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
 	}
@@ -11420,7 +11505,7 @@ bool Job::Rasterize(
 		safe_release( pSeq );
 		throw;
 	}
-	const bool renderCompleted = pRasterizer->LastRenderCompleted();
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
@@ -11464,8 +11549,11 @@ bool Job::RasterizeAnimation(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end,
 			num_frames, do_fields, invert_fields, 0, 0, pSeq );
@@ -11474,7 +11562,7 @@ bool Job::RasterizeAnimation(
 		safe_release( pSeq );
 		throw;
 	}
-	const bool renderCompleted = pRasterizer->LastRenderCompleted();
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
@@ -11538,8 +11626,11 @@ bool Job::RasterizeRegion(
 	// on every exit, including a worker exception propagated up through
 	// RasterizeScene since ThreadPool::ParallelFor stopped
 	// std::terminate'ing on those (commit 2692d1af).
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
 	}
@@ -11547,7 +11638,7 @@ bool Job::RasterizeRegion(
 		safe_release( pSeq );
 		throw;
 	}
-	const bool renderCompleted = pRasterizer->LastRenderCompleted();
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
@@ -14036,8 +14127,11 @@ bool Job::RasterizeAnimationUsingOptions(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeSceneAnimation( *pScene,
 			aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
@@ -14046,7 +14140,7 @@ bool Job::RasterizeAnimationUsingOptions(
 		safe_release( pSeq );
 		throw;
 	}
-	const bool renderCompleted = pRasterizer->LastRenderCompleted();
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
 	metadataRollback.Commit();
@@ -14083,8 +14177,11 @@ bool Job::RasterizeAnimationUsingOptions(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->SetFireRenderPreflightAuthorization(
-		FireRenderPreflightAuthorization::Render);
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeSceneAnimation( *pScene,
 			aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
@@ -14093,7 +14190,7 @@ bool Job::RasterizeAnimationUsingOptions(
 		safe_release( pSeq );
 		throw;
 	}
-	const bool renderCompleted = pRasterizer->LastRenderCompleted();
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
 	metadataRollback.Commit();

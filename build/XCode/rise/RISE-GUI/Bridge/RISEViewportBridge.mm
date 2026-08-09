@@ -171,9 +171,12 @@ namespace {
 // ============================================================
 class ViewportPreviewSink :
     public IRasterizerOutput,
+    public IFireRasterizerOutputRoute,
     public Implementation::Reference
 {
 public:
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
     ViewportPreviewSink()
     : mBlock( nil )
     , mController( nullptr )

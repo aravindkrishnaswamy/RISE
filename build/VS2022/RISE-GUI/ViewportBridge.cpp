@@ -87,9 +87,12 @@ QImage RasterImageToQImage(const IRasterImage& image, IsCurrent&& isCurrent)
 // cancelled passes.
 // =====================================================================
 class ViewportPreviewSink : public IRasterizerOutput,
+                            public IFireRasterizerOutputRoute,
                             public Implementation::Reference
 {
 public:
+    FireArtifactRouteKind FireArtifactRoute() const override
+        { return FireArtifactRouteKind::DisplayOnly; }
     explicit ViewportPreviewSink(ViewportBridge* bridge)
         : m_bridge(bridge)
         , m_presentGeneration(std::make_shared<std::atomic<unsigned long long>>(0))
@@ -204,9 +207,12 @@ private:
 // so Single-layout behaviour never touches this class at all.
 // =====================================================================
 class ViewportPaneSink : public IRasterizerOutput,
+                          public IFireRasterizerOutputRoute,
                           public Implementation::Reference
 {
 public:
+    FireArtifactRouteKind FireArtifactRoute() const override
+        { return FireArtifactRouteKind::DisplayOnly; }
     ViewportPaneSink(ViewportBridge* bridge, unsigned int pane)
         : m_bridge(bridge)
         , m_pane(pane)

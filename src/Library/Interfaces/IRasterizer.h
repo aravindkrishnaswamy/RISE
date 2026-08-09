@@ -206,16 +206,18 @@ namespace RISE
 		//! ABI-stable (same convention as the overrides above).
 		virtual bool HonorsRegion() const { return true; }
 
-		//! Reports whether the most recent rasterization reached a complete
-		//! final frame. Job render entry points consult this before committing
-		//! fire metadata; the default preserves out-of-tree rasterizers that do
-		//! not expose cancellation state.
-		virtual bool LastRenderCompleted() const { return true; }
+	};
 
-		//! One-shot authorization installed only after Job fire preflight succeeds.
-		//! In-tree rasterizers consume it at their public prediction/render entry.
-		virtual void SetFireRenderPreflightAuthorization(
-			FireRenderPreflightAuthorization /*authorization*/ ) {}
+	//! Queryable completion capability kept outside IRasterizer's historical
+	//! vtable so old rasterizer plugins remain safe to inspect. Fire renders
+	//! require the in-tree Rasterizer authorization path separately.
+	class IFireRasterizerState
+	{
+	protected:
+		virtual ~IFireRasterizerState() {}
+	public:
+		virtual bool LastRenderCompleted() const = 0;
+		virtual bool ResolveForFirePreflight( const IScene& ) const { return true; }
 	};
 }
 

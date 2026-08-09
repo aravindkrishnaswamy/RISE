@@ -834,8 +834,12 @@ namespace {
 //     after a production render returns so the production image stays
 //     on screen until the user actually starts interacting.
 class ViewportPreviewSink : public RISE::IRasterizerOutput,
+                            public RISE::IFireRasterizerOutputRoute,
                             public RISE::Implementation::Reference {
 public:
+    RISE::FireArtifactRouteKind FireArtifactRoute() const override {
+        return RISE::FireArtifactRouteKind::DisplayOnly;
+    }
     explicit ViewportPreviewSink(RiseBridge* b) : m_bridge(b) {}
     ~ViewportPreviewSink() override {
         if (m_fanoutVFS) {

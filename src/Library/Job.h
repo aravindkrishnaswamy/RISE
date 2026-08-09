@@ -221,6 +221,12 @@ namespace RISE
 			bool smsEnabled,
 			const std::vector<unsigned char>& resolvedConfig,
 			bool publishMetadata );
+		bool ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const;
+		void ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const;
+		bool AuthorizeFireRasterizer(
+			IRasterizer* rasterizer,
+			FireRenderPreflightAuthorization authorization ) const;
+		bool FireRasterizerLastRenderCompleted( const IRasterizer* rasterizer ) const;
 
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
@@ -438,6 +444,11 @@ namespace RISE
 			IRasterizer* rasterizer,
 			const char* rasterizerKind,
 			const FireExternalRenderConfig& config );
+		bool RasterizeExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config,
+			const Rect* region );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

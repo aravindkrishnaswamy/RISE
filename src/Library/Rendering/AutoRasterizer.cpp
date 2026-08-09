@@ -1123,7 +1123,7 @@ unsigned int AutoRasterizer::PredictTimeToRasterizeScene(
 	const bool fire = RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Prediction);
 	if( mDelegate ) {
-		if( fire ) mDelegate->SetFireRenderPreflightAuthorization(
+		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
 			FireRenderPreflightAuthorization::Prediction);
 		return mDelegate->PredictTimeToRasterizeScene( pScene, pSampling, pActualTime );
 	}
@@ -1144,7 +1144,7 @@ void AutoRasterizer::RasterizeScene(
 	const bool fire = RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
-		if( fire ) mDelegate->SetFireRenderPreflightAuthorization(
+		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
 			FireRenderPreflightAuthorization::Render);
 		mDelegate->RasterizeScene( pScene, pRect, pRasterSequence );
 	}
@@ -1167,7 +1167,7 @@ void AutoRasterizer::RasterizeSceneAnimation(
 	const bool fire = RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Render);
 	if( mDelegate ) {
-		if( fire ) mDelegate->SetFireRenderPreflightAuthorization(
+		if( fire ) AuthorizeInternalFireDelegate(*mDelegate,pScene,
 			FireRenderPreflightAuthorization::Render);
 		mDelegate->RasterizeSceneAnimation( pScene, time_start, time_end, num_frames,
 			do_fields, invert_fields, pRect, specificFrame, pRasterSequence );

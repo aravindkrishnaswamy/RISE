@@ -14117,15 +14117,14 @@ void SceneEditController::DoOneRenderPass()
 		fireConfig.viewModeCasterInstalled = mInteractiveImpl->HasViewModeCaster();
 		fireConfig.xray = mInteractiveImpl->GetXrayView();
 	}
-	if( !mJob.PrepareFireRenderForExternalRasterizerResolved(activeRast,
-		mVariantRasterizer ? "pathtracing_pel_rasterizer" : "interactive_pel_rasterizer",
-		fireConfig) ) {
-		if( fireStore ) fireStore->SetMetadata(priorMetadata);
-		return;
-	}
 	const auto t0 = std::chrono::steady_clock::now();
 	try {
-		activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
+		if( !mJob.RasterizeExternalRasterizerResolved(activeRast,
+		mVariantRasterizer ? "pathtracing_pel_rasterizer" : "interactive_pel_rasterizer",
+		fireConfig,pRegion) ) {
+			if( fireStore ) fireStore->SetMetadata(priorMetadata);
+			return;
+		}
 	}
 	catch( ... ) {
 		if( fireStore ) fireStore->SetMetadata(priorMetadata);

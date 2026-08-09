@@ -134,6 +134,7 @@ namespace
 
 	class ThrowingIntermediateOutput final :
 		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
 		public virtual Implementation::Reference
 	{
 	public:
@@ -142,8 +143,23 @@ namespace
 			throw std::runtime_error("intentional intermediate output failure");
 		}
 		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
 	protected:
 		~ThrowingIntermediateOutput() override = default;
+	};
+
+	class UnclassifiedFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual Implementation::Reference
+	{
+	public:
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override
+			{ ++finalCount; }
+		unsigned int finalCount = 0u;
+	protected:
+		~UnclassifiedFireOutput() override = default;
 	};
 
 	bool ReadFileBytes( const std::filesystem::path& path,
@@ -732,6 +748,13 @@ namespace
 		std::atomic<unsigned int> progressCalls;
 	};
 
+	bool FireRenderCompleted( const IRasterizer* rasterizer )
+	{
+		const IFireRasterizerState* state =
+			dynamic_cast<const IFireRasterizerState*>(rasterizer);
+		return !state || state->LastRenderCompleted();
+	}
+
 	class CancelledFireProgress final : public IProgressCallback
 	{
 	public:
@@ -750,6 +773,7 @@ namespace
 
 	class CompletionCountingOutput final :
 		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
 		public virtual Implementation::Reference
 	{
 	public:
@@ -772,6 +796,8 @@ namespace
 			finalCount.store(0u);
 			lastSnapshot.reset();
 		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
 
 		Implementation::FrameStore* store_;
 		std::atomic<unsigned int> intermediateCount;
@@ -3038,7 +3064,7 @@ namespace
 			job->SetProgress(nullptr);
 			const RISEColor cancelledRestoredPixel =
 				store->AsBeautyRasterImage().GetPEL(0u,0u);
-			Check( cancelledStillRejected && !rasterizer->LastRenderCompleted() &&
+			Check( cancelledStillRejected && !FireRenderCompleted(rasterizer) &&
 				completionOutput->intermediateCount.load() > 0u &&
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata) &&
@@ -3053,7 +3079,7 @@ namespace
 			const bool cancelledAnimationRejected =
 				!job->RasterizeAnimation(0.0,0.0,1u,false,false);
 			job->SetProgress(nullptr);
-			Check( cancelledAnimationRejected && !rasterizer->LastRenderCompleted() &&
+			Check( cancelledAnimationRejected && !FireRenderCompleted(rasterizer) &&
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata),
 				"cancelled fire animation publishes no partial tail frame" );
@@ -3065,7 +3091,7 @@ namespace
 			job->SetProgress(nullptr);
 			const RISEColor signalOnlyRestoredPixel =
 				store->AsBeautyRasterImage().GetPEL(0u,0u);
-			Check( signalOnlyAnimationRejected && !rasterizer->LastRenderCompleted() &&
+			Check( signalOnlyAnimationRejected && !FireRenderCompleted(rasterizer) &&
 				completionOutput->finalCount.load() == 0u &&
 				SameFrameMetadata(store->Meta(),renderedMetadata) &&
 				signalOnlyRestoredPixel.base[0] == renderedPixel.base[0] &&
@@ -3255,9 +3281,32 @@ namespace
 				"direct public fire prediction, still, and animation require Job preflight" );
 			Check( job->Rasterize(),
 				"Job preflight reauthorizes a fire rasterizer after rejected direct entry" );
+			bool staleMetadataRejected = false;
+			try {
+				direct->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				staleMetadataRejected = isPreflightFailure(error);
+			}
+			Check( staleMetadataRejected,
+				"a consumed Job capability cannot be replayed against finalized fire metadata" );
 			safe_release(sampling);
 		} else {
 			Check(false,"direct fire-rasterizer boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool unknownOutputLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( unknownOutputLoaded ) {
+			UnclassifiedFireOutput* output = new UnclassifiedFireOutput();
+			job->GetRasterizer()->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->finalCount == 0u,
+				"an output without an explicit fire-route capability fails closed" );
+			safe_release(output);
+		} else {
+			Check(false,"unclassified-output preflight fixture loads");
 		}
 		safe_release(job);
 
@@ -3492,6 +3541,19 @@ namespace
 		const bool autoCancellationLoaded = job &&
 			job->LoadAsciiSceneViaCst(path.string().c_str());
 		if( autoCancellationLoaded ) {
+			Check( job->Rasterize(),
+				"fresh Auto fire preflight resolves its concrete delegate before encoding" );
+			Implementation::FrameStore* autoStore =
+				job->GetRasterizer()->GetFrameStore();
+			RISECBOR64::Value autoConfig;
+			std::string autoConfigError;
+			const bool autoConfigDecoded = autoStore && RISECBOR64::DecodeCanonical(
+				autoStore->Meta().resolvedRenderConfigCoreV1,autoConfig,&autoConfigError);
+			const RISECBOR64::Value* autoIntegrator = autoConfigDecoded ?
+				autoConfig.Find("integrator") : nullptr;
+			Check( autoIntegrator && autoIntegrator->Find("effective_kind") &&
+				autoIntegrator->Find("effective_kind")->GetText() == "pt",
+				"Auto fire provenance records the effective PT delegate" );
 			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
 			CancelledFireProgress cancelledProgress;
 			IRasterizer* rasterizer = job->GetRasterizer();
@@ -3499,7 +3561,7 @@ namespace
 			job->SetProgress(&cancelledProgress);
 			const bool rejected = !job->Rasterize();
 			job->SetProgress(nullptr);
-			Check( rejected && !rasterizer->LastRenderCompleted() &&
+			Check( rejected && !FireRenderCompleted(rasterizer) &&
 				completionOutput->finalCount.load() == 0u,
 				"Auto delegate propagates cancelled fire completion state transactionally" );
 			rasterizer->FreeRasterizerOutputs();
