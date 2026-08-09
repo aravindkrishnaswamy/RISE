@@ -598,6 +598,15 @@ int main()
 				std::string::npos &&
 			windowsVideoSource.find(".rise-tmp.movie.") != std::string::npos,
 			"Windows movies publish raw fire primaries and linked derivatives transactionally" );
+		Check( windowsVideoSource.find("avcodec_find_encoder(AV_CODEC_ID_PRORES)") ==
+				std::string::npos &&
+			windowsVideoSource.find("authoredCodecOptionsAvailable(availableCodec,codec)") !=
+				std::string::npos &&
+			windowsVideoSource.find("FireFrameSequenceEncoding::AppleProRes4444_10Bit") !=
+				std::string::npos &&
+			windowsVideoSource.find("FireFrameSequenceEncoding::HevcMain10_10Bit") !=
+				std::string::npos,
+			"Windows movie routes require exact encoders and attest the negotiated format" );
 		Check( windowsVideoSource.find("rgbaData(static_cast<size_t>(m_width)*m_height*4u,uint16_t(0))") !=
 				std::string::npos &&
 			windowsVideoSource.find("for(inty=0;y<sourceHeight;++y)") !=
@@ -628,11 +637,13 @@ int main()
 			"macOS movie derivative failure preserves finalized fire frame primaries" );
 		const std::string compactBridge = withoutWhitespace(bridgeSource);
 		Check( compactBridge.find(
-			"if(_productionRenderActive.load(std::memory_order_acquire)||!_productionVFS||!path||!formatName)returnNO;") !=
+			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=
+				std::string::npos &&
+			compactBridge.find("if(!publicationLease.Acquired())returnNO;") !=
 				std::string::npos &&
 			compactBridge.find("ProductionRenderLeaserenderLease(_productionRenderActive);") !=
 				std::string::npos,
-			"macOS SaveAs rechecks the bridge production-render state at execution time" );
+			"macOS SaveAs and production rendering hold one exclusive publication lease" );
 		Check( movieSource.find("OutputPreDenoisedImage") != std::string::npos &&
 			movieSource.find("outputFrame(pImage, frame, true, false)") !=
 				std::string::npos &&

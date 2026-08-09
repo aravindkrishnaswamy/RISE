@@ -1181,8 +1181,9 @@ private:
     // full-quality, multi-output rendered result lives.  Saving
     // from the interactive (live-preview) VFS would dump the
     // low-quality preview, not the production result.
-    if (_productionRenderActive.load(std::memory_order_acquire) ||
-        !_productionVFS || !path || !formatName) return NO;
+	if (!_productionVFS || !path || !formatName) return NO;
+	ProductionRenderLease publicationLease(_productionRenderActive);
+	if (!publicationLease.Acquired()) return NO;
 	IFrameEncoder* enc =
 		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
 			[formatName UTF8String]);
