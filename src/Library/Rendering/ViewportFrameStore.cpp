@@ -293,6 +293,29 @@ namespace RISE
 		{
 			const uint64_t bindRevision =
 				bindRevision_.fetch_add(1u,std::memory_order_acq_rel)+1u;
+			if( bindPhaseOneTestHook_ ) bindPhaseOneTestHook_(bindRevision);
+			if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+				return;
+			}
+			if( external ) external->addref();
+			bool drainRequests = false;
+			{
+				std::lock_guard<std::mutex> lock(bindRequestMutex_);
+				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+					safe_release(external);
+					return;
+				}
+				if( pendingBindValid_ ) safe_release(pendingBind_);
+				pendingBind_ = external;
+				pendingBindRevision_ = bindRevision;
+				pendingBindValid_ = true;
+				if( !bindDrainActive_ ) {
+					bindDrainActive_ = true;
+					drainRequests = true;
+				}
+			}
+			if( !drainRequests ) return;
+
 			struct BindActivity
 			{
 				std::atomic<unsigned int>& active;
@@ -300,39 +323,44 @@ namespace RISE
 					{ active.fetch_add(1u,std::memory_order_acq_rel); }
 				~BindActivity() { active.fetch_sub(1u,std::memory_order_acq_rel); }
 			} bindActivity(bindTransactionsInFlight_);
-			if( bindPhaseOneTestHook_ ) bindPhaseOneTestHook_(bindRevision);
-			// L8 review round 3 — DEADLOCK FIX.
-			//
-			// Pre-fix: this method held `chainMutex_` unique_lock the
-			// whole way, including across `TeardownChain()`'s
-			// `RemoveObserver` call.  `RemoveObserver` blocks until
-			// any in-flight observer dispatch on the old store
-			// returns.  But the observer chain ultimately calls back
-			// into `vfs->RenderToBuffer` (the bridge's tile-complete
-			// callback path), which itself takes `chainMutex_`
-			// shared_lock.  Worker thread blocked waiting for
-			// shared_lock → main thread blocked waiting for worker's
-			// dispatch to finish → DEADLOCK.  Reproduced as user-
-			// reported hang on second-render-after-scene-reload.
-			//
-			// Post-fix: phase the work so `RemoveObserver` runs
-			// WITHOUT `chainMutex_` held:
-			//   1. Snapshot old state under unique_lock + clear
-			//      member pointers.  Concurrent readers from this
-			//      point see "no chain" (RenderToBuffer no-ops).
-			//   2. Release the lock.
-			//   3. Call `RemoveObserver` + cleanup.  Workers can
-			//      acquire shared_lock for RenderToBuffer; their
-			//      dispatches complete; in-flight counter
-			//      decrements; RemoveObserver returns.
-			//   4. Re-acquire the lock to install the new state.
-			//
-			// Consequence: brief gap between Phase 2 and Phase 4
-			// where readers see no chain.  Acceptable — same window
-			// as a transient unbind-then-bind cycle, and the bridge's
-			// tile callbacks during that gap simply don't update.
+			try {
+				for( ;; ) {
+					FrameStore* requested = nullptr;
+					uint64_t requestRevision = 0u;
+					{
+						std::lock_guard<std::mutex> lock(bindRequestMutex_);
+						if( !pendingBindValid_ ) {
+							bindDrainActive_ = false;
+							break;
+						}
+						requested = pendingBind_;
+						requestRevision = pendingBindRevision_;
+						pendingBind_ = nullptr;
+						pendingBindRevision_ = 0u;
+						pendingBindValid_ = false;
+					}
+					try {
+						ApplyBindFrameStore(requested,requestRevision);
+					} catch ( ... ) {
+						safe_release(requested);
+						throw;
+					}
+					safe_release(requested);
+				}
+			} catch ( ... ) {
+				std::lock_guard<std::mutex> lock(bindRequestMutex_);
+				if( pendingBindValid_ ) safe_release(pendingBind_);
+				pendingBind_ = nullptr;
+				pendingBindRevision_ = 0u;
+				pendingBindValid_ = false;
+				bindDrainActive_ = false;
+				throw;
+			}
+		}
 
-			// ----- Phase 1: snapshot + clear under unique_lock. -----
+		void ViewportFrameStore::ApplyBindFrameStore(
+			FrameStore* external, const uint64_t requestRevision )
+		{
 			FrameStore*     oldExternal = nullptr;
 			FrameStore*     oldFs       = nullptr;
 			FrameSink*      oldSink     = nullptr;
@@ -340,7 +368,7 @@ namespace RISE
 			std::vector<DormantChain> oldDormant;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
-				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+				if( bindRevision_.load(std::memory_order_acquire) != requestRevision ) {
 					return;
 				}
 
@@ -366,13 +394,38 @@ namespace RISE
 				observer_           = nullptr;
 			}
 
-			// ----- Phase 2/3: teardown OUTSIDE chainMutex_. -----
-			// RemoveObserver can wait for in-flight observer
-			// dispatches without blocking workers that need
-			// chainMutex_ shared_lock for RenderToBuffer.
-			if ( oldFs && oldObs ) {
-				oldFs->RemoveObserver( oldObs );
+			bool oldObserverDetached = false;
+			std::vector<bool> dormantObserverDetached(oldDormant.size(),false);
+			try {
+				if ( oldFs && oldObs ) {
+					oldFs->RemoveObserver( oldObs );
+					oldObserverDetached = true;
+				}
+				for( size_t i=0; i<oldDormant.size(); ++i ) {
+					DormantChain& d = oldDormant[i];
+					if( d.fs && d.obs ) {
+						d.fs->RemoveObserver(d.obs);
+						dormantObserverDetached[i] = true;
+					}
+				}
+			} catch ( ... ) {
+				if( oldObserverDetached ) oldFs->AddObserver(oldObs);
+				for( size_t i=0; i<oldDormant.size(); ++i ) {
+					if( dormantObserverDetached[i] ) {
+						oldDormant[i].fs->AddObserver(oldDormant[i].obs);
+					}
+				}
+				{
+					std::unique_lock<std::shared_mutex> lock(chainMutex_);
+					externalFrameStore_ = oldExternal;
+					framestore_ = oldFs;
+					framesink_ = oldSink;
+					observer_ = oldObs;
+					dormant_.swap(oldDormant);
+				}
+				throw;
 			}
+
 			delete oldObs;
 			safe_release( oldSink );
 			if ( oldExternal ) {
@@ -384,49 +437,32 @@ namespace RISE
 				// Internal mode: framestore_ owned its addref.
 				safe_release( oldFs );
 			}
-			// Drain dormant cache (only populated in internal mode;
-			// external mode bypasses the cache entirely).
 			for ( auto& d : oldDormant ) {
-				if ( d.fs && d.obs ) {
-					d.fs->RemoveObserver( d.obs );
-				}
 				delete d.obs;
 				safe_release( d.sink );
 				safe_release( d.fs );
 			}
 
-			// ----- Phase 4: install new state under unique_lock. -----
-			// Bind to the new external (if non-null).  `nullptr`
-			// reverts to internal-managed mode — the next
-			// `Output*Image` call will lazy-allocate a fresh internal
-			// store via `EnsureChain`.
 			if ( external ) {
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
-				// A newer BindFrameStore may have completed Phase 1 while this
-				// transaction waited in RemoveObserver. Only the newest-started
-				// transaction may install; otherwise two concurrent binds can
-				// overwrite member pointers without detaching the first install.
-				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
+				if( bindRevision_.load(std::memory_order_acquire) != requestRevision ) {
 					return;
 				}
-				external->addref();  // VFS owns one defensive ref
+				BridgeObserver* newObserver = nullptr;
+				external->addref();
+				try {
+					external->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
+					newObserver = new BridgeObserver(*this);
+					external->AddObserver(newObserver);
+				} catch ( ... ) {
+					delete newObserver;
+					safe_release(external);
+					throw;
+				}
 				externalFrameStore_ = external;
-				framestore_         = external;
-				// `framesink_` stays null — the IRasterizerOutput
-				// chain becomes a no-op for VFS bound to an external
-				// store (the rasterizer's per-tile bracketing already
-				// fires observers on the same store).
-
-				// Build observer + register on the external store.
-				// `BridgeObserver` is internal-only lifecycle managed
-				// by us, same pattern as `EnsureChain`.
-				observer_ = new BridgeObserver( *this );
-				external->AddObserver( observer_ );
-
-				// Re-apply the camera EV snapshot (matches
-				// `EnsureChain` post-allocate / dormant-rehydrate).
-				external->SetCameraExposureEV(
-					static_cast<double>(cameraExposureEV_));
+				framestore_ = external;
+				observer_ = newObserver;
 
 				// L8 round-18d — eLog_Info (was eLog_Event).  With the
 				// interactive preview-scale path firing this message on
@@ -441,7 +477,7 @@ namespace RISE
 					"external FrameStore %ux%u",
 					static_cast<unsigned int>( external->Width() ),
 					static_cast<unsigned int>( external->Height() ) );
-			} else if( bindRevision_.load(std::memory_order_acquire) == bindRevision ) {
+			} else if( bindRevision_.load(std::memory_order_acquire) == requestRevision ) {
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: unbound — "
 					"reverted to internal-managed mode" );
@@ -992,7 +1028,16 @@ namespace RISE
 			// chainMutex_ shared_lock; calling it without the lock
 			// lets those dispatches drain.  No-op on empty/default
 			// DormantChain.
-			TeardownDormant_unlocked( evicted );
+			try {
+				TeardownDormant_unlocked(evicted);
+			} catch ( ... ) {
+				std::unique_lock<std::shared_mutex> lock(chainMutex_);
+				if( evicted.fs ) {
+					dormant_.push_back(evicted);
+					evicted = DormantChain();
+				}
+				throw;
+			}
 		}
 
 	} // namespace Implementation

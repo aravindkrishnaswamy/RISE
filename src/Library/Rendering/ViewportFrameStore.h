@@ -66,6 +66,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -346,8 +347,8 @@ namespace RISE
 			//! scaling).  The previous behaviour
 			//! (TeardownChain + fresh allocate every time the dims
 			//! changed) churned the FrameStore's tile-grid
-			//! allocations, observer registration, and seqlock
-			//! arrays per pass — measurably visible as repeated
+			//! allocations, observer registration, and tile-lock
+			//! grids per pass — measurably visible as repeated
 			//! "rasterizer image size changed" warnings during
 			//! interactive editing.  EnsureChain now parks the
 			//! current active chain into `dormant_` on dim change
@@ -365,14 +366,18 @@ namespace RISE
 			//! observe the active `framestore_` snapshot — they
 			//! never see the dormant entries.
 			void EnsureChain( unsigned int width, unsigned int height );
+			void ApplyBindFrameStore(
+				Implementation::FrameStore* external,
+				uint64_t requestRevision );
 
 			// L8 review round 3 — `TeardownChain()` removed.  Was
 			// holding `chainMutex_` unique_lock around
 			// `RemoveObserver`, deadlocking against in-flight
 			// observer dispatches that re-enter chainMutex_ via
 			// `RenderToBuffer`.  Replacement: `BindFrameStore(nullptr)`
-			// uses a phased pattern (snapshot + drop lock + RemoveObserver
-			// + cleanup) that doesn't deadlock.  See
+			// uses a serialized phased pattern (snapshot + drop lock +
+			// RemoveObserver + rollback-or-cleanup) that doesn't deadlock
+			// and preserves the old chain if removal fails. See
 			// ViewportFrameStore.cpp for details.
 
 			struct DormantChain;
@@ -423,9 +428,14 @@ namespace RISE
 			//!     facade-level pointer lifetime.
 			//! See L4 round-2 review P1-2.
 			mutable std::shared_mutex chainMutex_;
+			std::mutex bindRequestMutex_;
 			std::atomic<uint64_t> bindRevision_{ 0u };
 			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
 			std::function<void(uint64_t)> bindPhaseOneTestHook_;
+			Implementation::FrameStore* pendingBind_ = nullptr;
+			uint64_t pendingBindRevision_ = 0u;
+			bool pendingBindValid_ = false;
+			bool bindDrainActive_ = false;
 
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;

@@ -59,6 +59,7 @@
 #include "../src/Library/Utilities/RISECBOR64.h"
 #include "FireOutputMetadataTestFixture.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
+#include "../src/Library/Interfaces/IRenderObserver.h"
 
 #ifndef NO_EXR_SUPPORT
 	#include <ImfChannelList.h>
@@ -88,6 +89,17 @@ namespace
 
 	constexpr unsigned int kImgW = 16;
 	constexpr unsigned int kImgH = 16;
+
+	class CallbackObserver : public IRenderObserver
+	{
+	public:
+		explicit CallbackObserver( std::function<void()> callback ) :
+			callback_(std::move(callback)) {}
+		void OnTileComplete( const Rect&, uint64_t ) override { callback_(); }
+
+	private:
+		std::function<void()> callback_;
+	};
 
 	class NoWritePNGEncoder :
 		public virtual IFrameEncoder,
@@ -1551,8 +1563,8 @@ namespace
 		}
 		const bool firstReachedTeardown = !vfs->IsExternallyBound();
 		if( firstReachedTeardown ) vfs->BindFrameStore(second);
-		const bool secondInstalledDuringTeardown =
-			firstReachedTeardown && vfs->GetFrameStore() == second;
+		const bool secondQueuedDuringTeardown =
+			firstReachedTeardown && vfs->GetFrameStore() == nullptr;
 		{
 			std::lock_guard<std::mutex> lock(callbackMutex);
 			callbackMayReturn = true;
@@ -1566,9 +1578,9 @@ namespace
 		first->EndTile(0u,0u);
 		second->BeginTile(0u,0u);
 		second->EndTile(0u,0u);
-		Check(firstReachedTeardown && secondInstalledDuringTeardown && newestRetained &&
+		Check(firstReachedTeardown && secondQueuedDuringTeardown && newestRetained &&
 			callbacks.load() == 1u,
-			"concurrent external binds publish only the newest observer/store transaction" );
+			"concurrent external binds queue the newest store until teardown is safe" );
 		source->release();
 		first->release();
 		second->release();
@@ -1674,6 +1686,76 @@ namespace
 		image->release();
 		source->release();
 		replacement->release();
+	}
+
+	void TestRejectedCrossStoreBindPreservesExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		auto* trigger = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool sourceCallbackEntered = false;
+		bool sourceCallbackMayReturn = false;
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			++callbacks;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			if( !sourceCallbackEntered ) {
+				sourceCallbackEntered = true;
+				gateCondition.notify_all();
+				gateCondition.wait(lock,[&]() { return sourceCallbackMayReturn; });
+			}
+		});
+		vfs->BindFrameStore(source);
+		std::thread sourceDispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			gateCondition.wait(lock,[&]() { return sourceCallbackEntered; });
+		}
+		bool rejected = false;
+		std::string rejection;
+		CallbackObserver triggerObserver([&]() {
+			try {
+				vfs->BindFrameStore(replacement);
+			} catch( const std::runtime_error& error ) {
+				rejected = true;
+				rejection = error.what();
+			}
+		});
+		trigger->AddObserver(&triggerObserver);
+		trigger->BeginTile(0u,0u);
+		trigger->EndTile(0u,0u);
+		trigger->RemoveObserver(&triggerObserver);
+		const bool preservedDuringRejection =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			sourceCallbackMayReturn = true;
+		}
+		gateCondition.notify_all();
+		sourceDispatcher.join();
+		source->BeginTile(0u,1u);
+		source->EndTile(0u,1u);
+		replacement->BeginTile(0u,0u);
+		replacement->EndTile(0u,0u);
+		Check(rejected && rejection ==
+				"FrameStore observer removal would wait on another callback" &&
+			preservedDuringRejection && vfs->GetFrameStore() == source &&
+			callbacks.load() == 2u,
+			"cross-store bind rejection restores the complete existing observer chain" );
+		vfs->release();
+		source->release();
+		replacement->release();
+		trigger->release();
 	}
 
 	void TestNullBindTearsDownInternalChain()
@@ -1892,6 +1974,7 @@ int main()
 	TestConcurrentExternalBindsPublishNewestOnly();
 	TestDelayedOlderBindCannotClearNewerBinding();
 	TestBindTeardownGapRejectsInternalChainCreation();
+	TestRejectedCrossStoreBindPreservesExistingChain();
 	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();
 	TestObserverRetainsUnregisteredEncoder();
