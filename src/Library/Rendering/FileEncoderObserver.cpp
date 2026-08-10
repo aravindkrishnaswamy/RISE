@@ -2074,6 +2074,13 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 		std::remove(closedTemporaryArtifactFilename.c_str());
 		return false;
 	}
+	RISECBOR64::Bytes validatedArtifactBytes;
+	if( !ReadArtifact(closedTemporaryArtifactFilename.c_str(),validatedArtifactBytes) ||
+		validatedArtifactBytes != artifactBytes ) {
+		error = "closed movie changed while its finalized artifact was being validated";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
 	RISECBOR64::Bytes sidecarBytes;
 	if( !BuildFireFrameSequenceProvenance(metadata,encoding,
 		RISECBOR64::SHA256Hex(artifactBytes),width,height,framesPerSecond,

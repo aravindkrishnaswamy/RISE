@@ -672,6 +672,17 @@ int main()
 				std::string::npos &&
 			windowsVideoSource.find("decoded!=frames.size()") != std::string::npos,
 			"Windows movie publication decodes and counts the finalized frame sequence" );
+		Check( windowsVideoSource.find(
+				"validateClosedMovieArtifact(probePath,descriptorEncoding(encoding)") !=
+				std::string::npos &&
+			windowsVideoSource.find("frames[decoded].frameIndex") != std::string::npos &&
+			windowsVideoSource.find("AV_FRAME_DATA_MASTERING_DISPLAY_METADATA") !=
+				std::string::npos &&
+			windowsVideoSource.find("AV_FRAME_DATA_CONTENT_LIGHT_LEVEL") !=
+				std::string::npos &&
+			windowsVideoSource.find("masteringMetadataSeen") != std::string::npos &&
+			windowsVideoSource.find("contentLightMetadataSeen") != std::string::npos,
+			"Windows movie preflight binds frame indices and exact HDR metadata through decode" );
 
 		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
 			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
@@ -712,6 +723,17 @@ int main()
 				std::string::npos &&
 			movieSource.find("decoded != frames.size()") != std::string::npos,
 			"macOS movie publication decodes and counts the finalized frame sequence" );
+		Check( movieSource.find("kCMFormatDescriptionExtension_BitsPerComponent") !=
+				std::string::npos &&
+			movieSource.find("kCMFormatDescriptionExtension_Depth") != std::string::npos &&
+			movieSource.find("kCMFormatDescriptionExtension_ContainsAlphaChannel") !=
+				std::string::npos &&
+			movieSource.find("kCVPixelFormatType_64ARGB") != std::string::npos &&
+			movieSource.find("CMTimeMake(frames[decoded].frameIndex,framesPerSecond)") !=
+				std::string::npos &&
+			movieSource.find("ValidateClosedMovieArtifact([writerPath UTF8String]") !=
+				std::string::npos,
+			"macOS movie preflight validates native depth, alpha, and exact linked timestamps" );
 		const std::string compactBridge = withoutWhitespace(bridgeSource);
 		Check( compactBridge.find(
 			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=

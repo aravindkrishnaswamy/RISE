@@ -61,6 +61,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/log.h>
 #include <libavutil/error.h>
@@ -301,24 +302,58 @@ static bool validateClosedMovieArtifact(
     }
 
     std::size_t decoded = 0u;
-    int64_t firstTimestamp = AV_NOPTS_VALUE;
+    bool masteringMetadataSeen = false;
+    bool contentLightMetadataSeen = false;
+    const auto validateHevcStaticMetadata = [&]( const AVFrame& decodedFrame ) {
+        const AVFrameSideData* masteringSide = av_frame_get_side_data(
+            &decodedFrame,AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+        if (masteringSide) {
+            if (masteringSide->size < sizeof(AVMasteringDisplayMetadata)) return false;
+            const auto* mastering = reinterpret_cast<const AVMasteringDisplayMetadata*>(
+                masteringSide->data);
+            const AVRational expectedPrimaries[3][2] = {
+                { {35400,50000},{14600,50000} },
+                { {8500,50000},{39850,50000} },
+                { {6550,50000},{2300,50000} }
+            };
+            if (!mastering->has_primaries || !mastering->has_luminance) return false;
+            for (int primary = 0; primary < 3; ++primary) {
+                for (int axis = 0; axis < 2; ++axis) {
+                    if (av_cmp_q(mastering->display_primaries[primary][axis],
+                        expectedPrimaries[primary][axis]) != 0) return false;
+                }
+            }
+            if (av_cmp_q(mastering->white_point[0],AVRational{15635,50000}) != 0 ||
+                av_cmp_q(mastering->white_point[1],AVRational{16450,50000}) != 0 ||
+                av_cmp_q(mastering->max_luminance,AVRational{100000000,10000}) != 0 ||
+                av_cmp_q(mastering->min_luminance,AVRational{1,10000}) != 0) return false;
+            masteringMetadataSeen = true;
+        }
+        const AVFrameSideData* lightSide = av_frame_get_side_data(
+            &decodedFrame,AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+        if (lightSide) {
+            if (lightSide->size < sizeof(AVContentLightMetadata)) return false;
+            const auto* light = reinterpret_cast<const AVContentLightMetadata*>(lightSide->data);
+            if (light->MaxCLL != 0u || light->MaxFALL != 0u) return false;
+            contentLightMetadataSeen = true;
+        }
+        return true;
+    };
     auto receiveFrames = [&]() {
         for (;;) {
             const int receive = avcodec_receive_frame(codec.get(),frame.get());
             if (receive == AVERROR(EAGAIN) || receive == AVERROR_EOF) return true;
             if (receive < 0) return false;
             const int64_t timestamp = frame->best_effort_timestamp;
-            if (decoded == 0u) firstTimestamp = timestamp;
             if (decoded >= frames.size() ||
                 frame->width != static_cast<int>(width) ||
                 frame->height != static_cast<int>(height) ||
                 frame->format != expectedPixelFormat ||
-                timestamp == AV_NOPTS_VALUE || firstTimestamp == AV_NOPTS_VALUE ||
-                (decoded != 0u && frames[decoded].frameIndex !=
-                    frames[decoded-1u].frameIndex+1u) ||
-                av_compare_ts(timestamp-firstTimestamp,video->time_base,
-                    static_cast<int64_t>(decoded),AVRational{
-                        1,static_cast<int>(framesPerSecond)}) != 0) return false;
+                timestamp == AV_NOPTS_VALUE ||
+                av_compare_ts(timestamp,video->time_base,
+                    static_cast<int64_t>(frames[decoded].frameIndex),AVRational{
+                        1,static_cast<int>(framesPerSecond)}) != 0 ||
+                (hevc && !validateHevcStaticMetadata(*frame))) return false;
             ++decoded;
             av_frame_unref(frame.get());
         }
@@ -337,7 +372,8 @@ static bool validateClosedMovieArtifact(
         }
     }
     if (readResult != AVERROR_EOF || avcodec_send_packet(codec.get(),nullptr) < 0 ||
-        !receiveFrames() || decoded != frames.size()) {
+		!receiveFrames() || decoded != frames.size() ||
+        (hevc && (!masteringMetadataSeen || !contentLightMetadataSeen))) {
         error = "FFmpeg did not decode the complete authored frame sequence";
         return false;
     }
@@ -524,6 +560,21 @@ static bool authoredCodecNegotiationAvailable(
     }
     const bool fileClosed = available && std::filesystem::is_regular_file(probePath,fsError) &&
         std::filesystem::file_size(probePath,fsError) > 0u;
+    if (fileClosed) {
+        // The frozen descriptor is authoritative.  In particular, a prores_ks
+        // build that cannot round-trip its full-range claim is unavailable;
+        // preflight must not silently substitute the encoder's limited range.
+        std::vector<RISE::Implementation::FireFramePrimary> probeFrames(1u);
+        probeFrames[0].frameIndex = 0u;
+        std::string validationError;
+        available = validateClosedMovieArtifact(probePath,descriptorEncoding(encoding),
+            16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        if (available) {
+            probeFrames[0].frameIndex = 1u;
+            available = !validateClosedMovieArtifact(probePath,descriptorEncoding(encoding),
+                16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        }
+    }
     std::filesystem::remove(probePath,fsError);
     available = available && fileClosed;
     return available;

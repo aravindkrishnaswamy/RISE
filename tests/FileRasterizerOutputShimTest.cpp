@@ -178,6 +178,20 @@ namespace
 		return false;
 	}
 
+	bool MutateTestMovieArtifact(
+		const std::string& path,
+		FireFrameSequenceEncoding,
+		unsigned int,
+		unsigned int,
+		unsigned int,
+		const std::vector<FireFramePrimary>&,
+		std::string& )
+	{
+		std::ofstream changed(path,std::ios::binary|std::ios::trunc);
+		changed.write("changed-during-validation",25);
+		return changed.good();
+	}
+
 	RISECBOR64::Value ReplaceMapMember( const RISECBOR64::Value& map,
 		const std::string& name, const RISECBOR64::Value& replacement )
 	{
@@ -2875,6 +2889,23 @@ namespace
 			!std::filesystem::exists(corruptMovieTemporary) &&
 			!std::filesystem::exists(corruptMovieFile),
 			"[fire provenance] decoder rejection leaves no movie artifact or sidecar" );
+
+		const std::string changedMovieTemporary =
+			MakeTempPathWithoutExt()+"_changed_movie.closed";
+		const std::string changedMovieFile =
+			MakeTempPathWithoutExt()+"_changed_movie.mov";
+		{
+			std::ofstream movie(changedMovieTemporary,std::ios::binary);
+			movie.write("validated-before-change",23);
+		}
+		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+				changedMovieTemporary,changedMovieFile,16u,16u,30u,2u,
+				movieFrames,MutateTestMovieArtifact,movieError) &&
+			movieError.find("changed while") != std::string::npos &&
+			!std::filesystem::exists(changedMovieTemporary) &&
+			!std::filesystem::exists(changedMovieFile),
+			"[fire provenance] validator-side mutation cannot publish a stale digest" );
 
 		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";
 		const std::string badMovieFile = MakeTempPathWithoutExt()+"_bad_movie.mov";

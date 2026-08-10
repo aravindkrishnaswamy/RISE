@@ -122,6 +122,15 @@ static NSDictionary* MovieBufferAttributes(
     };
 }
 
+static bool ValidateClosedMovieArtifact(
+    const std::string& path,
+    RISE::Implementation::FireFrameSequenceEncoding encoding,
+    unsigned int width,
+    unsigned int height,
+    unsigned int framesPerSecond,
+    const std::vector<RISE::Implementation::FireFramePrimary>& frames,
+    std::string& error);
+
 static bool ProbeMovieDerivativeAvailability(
     NSString* writerPath,
     const int fps,
@@ -182,6 +191,20 @@ static bool ProbeMovieDerivativeAvailability(
     } else {
         [writer cancelWriting];
     }
+    if (available) {
+        std::vector<RISE::Implementation::FireFramePrimary> probeFrames(1u);
+        probeFrames[0].frameIndex = 0u;
+        std::string validationError;
+        available = ValidateClosedMovieArtifact([writerPath UTF8String],
+            RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+            16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        if (available) {
+            probeFrames[0].frameIndex = 1u;
+            available = !ValidateClosedMovieArtifact([writerPath UTF8String],
+                RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+                16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        }
+    }
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     return available;
 }
@@ -218,24 +241,26 @@ static bool ValidateClosedMovieArtifact(
     }];
     __block NSArray<AVAssetTrack*>* videoTracks = nil;
     __block NSArray<AVAssetTrack*>* audioTracks = nil;
-    __block NSError* trackError = nil;
+    __block NSError* videoTrackError = nil;
+    __block NSError* audioTrackError = nil;
     dispatch_group_t trackGroup = dispatch_group_create();
     dispatch_group_enter(trackGroup);
     [asset loadTracksWithMediaType:AVMediaTypeVideo
         completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
             videoTracks = tracks;
-            if (loadError) trackError = loadError;
+            videoTrackError = loadError;
             dispatch_group_leave(trackGroup);
         }];
     dispatch_group_enter(trackGroup);
     [asset loadTracksWithMediaType:AVMediaTypeAudio
         completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
             audioTracks = tracks;
-            if (loadError && !trackError) trackError = loadError;
+            audioTrackError = loadError;
             dispatch_group_leave(trackGroup);
         }];
     dispatch_group_wait(trackGroup,DISPATCH_TIME_FOREVER);
-    if (trackError || videoTracks.count != 1u || audioTracks.count != 0u) {
+    if (videoTrackError || audioTrackError ||
+        videoTracks.count != 1u || audioTracks.count != 0u) {
         error = "finalized MOV does not contain exactly one video track and no audio";
         return false;
     }
@@ -255,6 +280,21 @@ static bool ValidateClosedMovieArtifact(
         const CFTypeRef actual = extensions ? CFDictionaryGetValue(extensions,key) : nullptr;
         return actual && CFEqual(actual,expected);
     };
+    const auto integerExtension = [extensions](const CFStringRef key,
+        int32_t& value) {
+        const CFTypeRef actual = extensions ? CFDictionaryGetValue(extensions,key) : nullptr;
+        return actual && CFGetTypeID(actual) == CFNumberGetTypeID() &&
+            CFNumberGetValue(static_cast<CFNumberRef>(actual),kCFNumberSInt32Type,&value);
+    };
+    int32_t componentBits = 0;
+    int32_t encodedDepth = 0;
+    const CFTypeRef containsAlpha = extensions ?
+        CFDictionaryGetValue(extensions,kCMFormatDescriptionExtension_ContainsAlphaChannel) :
+        nullptr;
+    const bool alphaFactValid = integerExtension(
+            kCMFormatDescriptionExtension_Depth,encodedDepth) && encodedDepth == 32 &&
+        (!containsAlpha || (CFGetTypeID(containsAlpha) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue(static_cast<CFBooleanRef>(containsAlpha))));
     if (CMFormatDescriptionGetMediaSubType(description) !=
             kCMVideoCodecType_AppleProRes4444 ||
         dimensions.width != static_cast<int32_t>(width) ||
@@ -264,15 +304,17 @@ static bool ValidateClosedMovieArtifact(
         !matchesExtension(kCMFormatDescriptionExtension_TransferFunction,
             kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ) ||
         !matchesExtension(kCMFormatDescriptionExtension_YCbCrMatrix,
-            kCMFormatDescriptionYCbCrMatrix_ITU_R_2020)) {
-        error = "finalized MOV codec, dimensions, or HDR color tags differ from authoring";
+            kCMFormatDescriptionYCbCrMatrix_ITU_R_2020) ||
+        !integerExtension(kCMFormatDescriptionExtension_BitsPerComponent,componentBits) ||
+        componentBits != 12 || !alphaFactValid) {
+        error = "finalized MOV codec, native depth, alpha, dimensions, or HDR tags differ from authoring";
         return false;
     }
 
     NSError* readerError = nil;
     AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset error:&readerError];
     NSDictionary* outputSettings = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_64ARGB)
     };
     AVAssetReaderTrackOutput* output = [AVAssetReaderTrackOutput
         assetReaderTrackOutputWithTrack:track outputSettings:outputSettings];
@@ -287,21 +329,19 @@ static bool ValidateClosedMovieArtifact(
         return false;
     }
     std::size_t decoded = 0u;
-    CMTime previousTime = kCMTimeInvalid;
     for (;;) {
         CMSampleBufferRef sample = [output copyNextSampleBuffer];
         if (!sample) break;
         const CVImageBufferRef image = CMSampleBufferGetImageBuffer(sample);
         const CMTime actualTime = CMSampleBufferGetPresentationTimeStamp(sample);
-        const CMTime expectedTime = decoded == 0u ? actualTime :
-            CMTimeAdd(previousTime,CMTimeMake(1,framesPerSecond));
+        const CMTime expectedTime = decoded < frames.size() ?
+            CMTimeMake(frames[decoded].frameIndex,framesPerSecond) : kCMTimeInvalid;
         const bool valid = image && decoded < frames.size() &&
-            (decoded == 0u || frames[decoded].frameIndex ==
-                frames[decoded-1u].frameIndex+1u) &&
             CVPixelBufferGetWidth(image) == width &&
-            CVPixelBufferGetHeight(image) == height && CMTIME_IS_NUMERIC(actualTime) &&
+            CVPixelBufferGetHeight(image) == height &&
+            CVPixelBufferGetPixelFormatType(image) == kCVPixelFormatType_64ARGB &&
+            CMTIME_IS_NUMERIC(actualTime) && CMTIME_IS_NUMERIC(expectedTime) &&
             CMTimeCompare(actualTime,expectedTime) == 0;
-        previousTime = actualTime;
         CFRelease(sample);
         if (!valid) {
             [reader cancelReading];
