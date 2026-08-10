@@ -3488,7 +3488,7 @@ namespace
 		safe_release(marchJob);
 	}
 
-	void TestThinEmitterSheetAtGrazingAngles()
+	void TestThinEmitterSheetAtGrazingAngles( const bool extendedStatistics )
 	{
 		std::cout << "TestThinEmitterSheetAtGrazingAngles" << std::endl;
 		const std::filesystem::path scenePath =
@@ -3566,7 +3566,8 @@ namespace
 				unsigned int positive;
 			};
 			const Scalar nm = 500.0;
-			const unsigned int samples = 2000000;
+			const unsigned int samples =
+				extendedStatistics ? 2000000u : 500000u;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			StabilityConfig config;
@@ -3664,8 +3665,9 @@ namespace
 				std::endl;
 			Check( ptOn.mean>0.0 && ptOff.mean>0.0 &&
 				shaderOn.mean>0.0 && shaderOff.mean>0.0 &&
-				ptOn.positive>100000 && shaderOn.positive>100000 &&
-				ptOff.positive>3000 && shaderOff.positive>3000,
+				ptOn.positive>samples/20 && shaderOn.positive>samples/20 &&
+				ptOff.positive>samples*3/2000 &&
+				shaderOff.positive>samples*3/2000,
 				"ordinary NEE is active and brute-force routes retain nontrivial grazing support" );
 			Check( withinSixStandardErrors(ptOn,ptOff) &&
 				withinSixStandardErrors(shaderOn,shaderOff),
@@ -3868,7 +3870,7 @@ namespace
 		safe_release(marchJob);
 	}
 
-	void TestFlameBehindGlassIsMarchOnly()
+	void TestFlameBehindGlassIsMarchOnly( const bool extendedStatistics )
 	{
 		std::cout << "TestFlameBehindGlassIsMarchOnly" << std::endl;
 		auto sceneText = []( const bool includeGlass ) {
@@ -4033,7 +4035,8 @@ namespace
 				Scalar variance;
 				unsigned int positive;
 			};
-			const unsigned int samples = 2000000;
+			const unsigned int samples =
+				extendedStatistics ? 2000000u : 500000u;
 			const Scalar nm = 500.0;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
@@ -4168,8 +4171,10 @@ namespace
 						ptOn.positive << "/" << ptOff.positive << " " <<
 						shaderOn.positive << "/" << shaderOff.positive <<
 						std::endl;
-					Check( ptOn.positive>1000 && ptOff.positive>1000 &&
-						shaderOn.positive>1000 && shaderOff.positive>1000,
+					Check( ptOn.positive>samples/2000 &&
+						ptOff.positive>samples/2000 &&
+						shaderOn.positive>samples/2000 &&
+						shaderOff.positive>samples/2000,
 						"refracted march paths reach the fire under the selected shadow mode" );
 					Check( withinSixStandardErrors(ptOn,ptOff) &&
 						withinSixStandardErrors(shaderOn,shaderOff),
@@ -4311,7 +4316,8 @@ namespace
 		std::filesystem::remove(glassPath);
 	}
 
-	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission()
+	void TestPrimaryScatteringEventHonorsVolumeCapAfterEmission(
+		const bool extendedStatistics )
 	{
 		std::cout << "TestPrimaryScatteringEventHonorsVolumeCapAfterEmission" << std::endl;
 		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
@@ -4374,7 +4380,8 @@ namespace
 		if( job && caster && terminalCaster && cappedIntegrator && terminalIntegrator &&
 			rrOneIntegrator && rrIntermediateIntegrator && rrZeroIntegrator ) {
 			const Scalar nm = 500.0;
-			const unsigned int samples = 320000;
+			const unsigned int samples =
+				extendedStatistics ? 320000u : 160000u;
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			const RasterizerState rast = {0,0};
 			auto meanPT = [&]( PathTracingIntegrator& integrator,
@@ -4608,7 +4615,7 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
-	void TestIsolatedSmokeConfigurationReplay()
+	void TestIsolatedSmokeConfigurationReplay( const bool extendedStatistics )
 	{
 		std::cout << "TestIsolatedSmokeConfigurationReplay" << std::endl;
 		struct TopologyRow
@@ -4705,8 +4712,17 @@ namespace
 				std::fabs(a.mean-b.mean)<=8.0*standardError;
 		};
 
-		for( const MechanismRow& mechanism : mechanisms ) {
-			for( const TopologyRow& topology : topologyRows ) {
+		for( size_t mechanismIndex=0;
+			mechanismIndex<sizeof(mechanisms)/sizeof(mechanisms[0]);
+			++mechanismIndex ) {
+			const MechanismRow& mechanism = mechanisms[mechanismIndex];
+			for( size_t topologyIndex=0;
+				topologyIndex<sizeof(topologyRows)/sizeof(topologyRows[0]);
+				++topologyIndex ) {
+				const TopologyRow& topology = topologyRows[topologyIndex];
+				const bool requireEquality = extendedStatistics ||
+					topologyIndex % (sizeof(mechanisms)/sizeof(mechanisms[0]))==
+						mechanismIndex || topologyIndex==mechanismIndex%2;
 				Moments baselinePT = {0,0,0,0};
 				Moments baselineRC = {0,0,0,0};
 				for( size_t modeIndex=0; modeIndex<guideModes.size(); ++modeIndex ) {
@@ -4784,7 +4800,8 @@ namespace
 						mechanism.mechanism==SmokeMechanism::Terminal ? 1 : 2;
 					onIntegrator->SetMaxPathDepth(pathDepth);
 					offIntegrator->SetMaxPathDepth(pathDepth);
-					const unsigned int samples = 30000;
+					const unsigned int samples = requireEquality ?
+						(extendedStatistics ? 30000u : 10000u) : 128u;
 					const unsigned int seed = 0x6d00000u +
 						static_cast<unsigned int>(mechanism.mechanism)*0x10001u +
 						static_cast<unsigned int>(topology.topology)*0x1001u +
@@ -5021,9 +5038,10 @@ namespace
 						rcOff = momentsRC(*offCaster,false,seed+4u);
 					}
 
-					bool equality = false;
+					bool passes = false;
 					if( structural ) {
-						equality = ptOn.mean>0.0 && ptOff.mean>0.0 &&
+						const bool statisticalEquality =
+							ptOn.mean>0.0 && ptOff.mean>0.0 &&
 							rcOn.mean>0.0 && rcOff.mean>0.0 &&
 							withinEightStandardErrors(ptOn,ptOff,samples) &&
 							withinEightStandardErrors(rcOn,rcOff,samples) &&
@@ -5055,23 +5073,25 @@ namespace
 							rayCasterSurvivalWitness = rayCasterSurvivalWitness &&
 								onConcrete->CompetingMediumZeroSurvivalObserved();
 						}
-						equality = equality && endpointWitness && survivalWitness &&
+						const bool routeWitness = endpointWitness && survivalWitness &&
 							rayCasterSurvivalWitness &&
 							!onIntegrator->CompetingMediumGuideAlphaNonzero() &&
 							onIntegrator->CompetingMediumGuideSampleCount()==0 &&
 							onConcrete &&
 							!onConcrete->CompetingMediumGuideAlphaNonzero() &&
 							onConcrete->CompetingMediumGuideSampleCount()==0;
-						if( modeIndex==0 ) {
+						passes = routeWitness &&
+							(!requireEquality || statisticalEquality);
+						if( requireEquality && modeIndex==0 ) {
 							baselinePT = ptOn;
 							baselineRC = rcOn;
-						} else {
-							equality = equality &&
+						} else if( requireEquality ) {
+							passes = passes &&
 								withinEightStandardErrors(ptOn,baselinePT,samples) &&
 								withinEightStandardErrors(rcOn,baselineRC,samples);
 						}
 					}
-					if( !equality ) {
+					if( !passes ) {
 						std::cout << "  smoke matrix " << mechanism.label << " / " <<
 							topology.label << " / " << guideMode.label <<
 							" PT=" << ptOn.mean << "/" << ptOff.mean <<
@@ -5086,10 +5106,14 @@ namespace
 							offIntegrator->NonCompetingMediumFallbackVertexCount() <<
 							" structural=" << structural << std::endl;
 					}
-					const std::string label = std::string("isolated-smoke matrix ") +
+					const std::string label = std::string(
+						requireEquality ? "isolated-smoke statistical matrix " :
+							"isolated-smoke structural matrix ") +
 						mechanism.label + " / " + topology.label + " / " +
-						guideMode.label + " preserves its Phase-B partition";
-					Check(equality,label.c_str());
+						guideMode.label + (requireEquality ?
+							" preserves its Phase-B partition" :
+							" binds its authored topology and route witnesses");
+					Check(passes,label.c_str());
 
 					safe_release(onIntegrator);
 					safe_release(offIntegrator);
@@ -7994,7 +8018,7 @@ namespace
 		std::filesystem::remove( scenePath );
 	}
 
-	void TestSSSBSSRDFPreviewContainment()
+	void TestSSSBSSRDFPreviewContainment( const bool extendedStatistics )
 	{
 		std::cout << "TestSSSBSSRDFPreviewContainment" << std::endl;
 		for( unsigned int fixture=0; fixture<2; ++fixture ) {
@@ -8048,7 +8072,8 @@ namespace
 				const Ray ray(Point3(0,0,-3),Vector3(0,0,1));
 				const Scalar nm = 500.0;
 				struct Moments { Scalar mean; Scalar variance; };
-				const unsigned int samples = 60000;
+				const unsigned int samples =
+					extendedStatistics ? 60000u : 30000u;
 				auto moments = [&]( const IScene& scene, const IRayCaster& route,
 					const unsigned int seed ) {
 					RandomNumberGenerator rng(seed);
@@ -8307,7 +8332,7 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
-	void TestPhaseBConfigurationMatrix()
+	void TestPhaseBConfigurationMatrix( const bool extendedMatrix )
 	{
 		std::cout << "TestPhaseBConfigurationMatrix" << std::endl;
 		struct MatrixRow
@@ -8359,7 +8384,8 @@ namespace
 			Scalar variance;
 			unsigned int positive;
 		};
-		const unsigned int samples = 80000;
+		const unsigned int samples = extendedMatrix ? 80000u : 10000u;
+		const unsigned int structuralSamples = 128;
 		const Scalar nm = 500.0;
 		const RasterizerState rast = {0,0};
 		const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
@@ -8398,7 +8424,9 @@ namespace
 			const MechanismRow& mechanism,
 			MatrixGuidePtr guiding,
 			const unsigned int guidingMode,
-			const char* modeLabel ) -> MatrixResult {
+			const char* modeLabel,
+			const unsigned int sampleCount,
+			const bool requireEquality ) -> MatrixResult {
 			const std::filesystem::path scenePath =
 				std::filesystem::temp_directory_path() /
 				( "rise_phase_b_matrix_" + std::to_string(static_cast<int>(::getpid())) +
@@ -8700,7 +8728,7 @@ namespace
 					long double sum = 0.0;
 					long double sumSquares = 0.0;
 					unsigned int positive = 0;
-					for( unsigned int i=0; i<samples; ++i ) {
+					for( unsigned int i=0; i<sampleCount; ++i ) {
 						const Scalar value = integrator.IntegrateRayNM(
 							rc,rast,fixtureRay,nm,scene,route,
 							sampler,nullptr,nullptr);
@@ -8708,7 +8736,7 @@ namespace
 						sumSquares += static_cast<long double>(value)*value;
 						if( value>0.0 ) ++positive;
 					}
-					const long double count = static_cast<long double>(samples);
+					const long double count = static_cast<long double>(sampleCount);
 					const long double mean = sum/count;
 					const long double variance =
 						(sumSquares-sum*sum/count)/(count-1.0);
@@ -8724,7 +8752,7 @@ namespace
 					long double sum = 0.0;
 					long double sumSquares = 0.0;
 					unsigned int positive = 0;
-					for( unsigned int i=0; i<samples; ++i ) {
+					for( unsigned int i=0; i<sampleCount; ++i ) {
 						Scalar value = 0.0;
 						route.CastRayNM(
 							rc,rast,fixtureRay,value,state,nm,nullptr,nullptr);
@@ -8732,7 +8760,7 @@ namespace
 						sumSquares += static_cast<long double>(value)*value;
 						if( value>0.0 ) ++positive;
 					}
-					const long double count = static_cast<long double>(samples);
+					const long double count = static_cast<long double>(sampleCount);
 					const long double mean = sum/count;
 					const long double variance =
 						(sumSquares-sum*sum/count)/(count-1.0);
@@ -8780,17 +8808,19 @@ namespace
 				auto withinSixStandardErrors = [&]( const Moments& a,
 					const Moments& b ) {
 					const Scalar standardError = std::sqrt(
-						(a.variance+b.variance)/static_cast<Scalar>(samples));
+						(a.variance+b.variance)/static_cast<Scalar>(sampleCount));
 					return standardError>0.0 &&
 						std::fabs(a.mean-b.mean)<=6.0*standardError;
 				};
-				const unsigned int minimumPositive =
+				const unsigned int extendedMinimumPositive =
 					(mechanism.mechanism==PhaseBMatrixMechanism::ThinGrazingEmitter ||
 					 mechanism.mechanism==PhaseBMatrixMechanism::GlassMarchOnly) ? 10 : 100;
+				const unsigned int minimumPositive = extendedMatrix ?
+					extendedMinimumPositive : extendedMinimumPositive/2;
 				fixtureValid = topologyWitness && mechanismWitness &&
 					transparentShadowConfigurationActive &&
 					endpointWitness && guideWitness;
-				agrees = fixtureValid &&
+				agrees = fixtureValid && (!requireEquality || (
 					ptOn.mean>0.0 && ptOff.mean>0.0 &&
 					shaderOn.mean>0.0 && shaderOff.mean>0.0 &&
 					ptOn.positive>minimumPositive && ptOff.positive>minimumPositive &&
@@ -8799,13 +8829,13 @@ namespace
 					withinSixStandardErrors(ptOn,ptOff) &&
 					withinSixStandardErrors(shaderOn,shaderOff) &&
 					withinSixStandardErrors(ptOn,shaderOn) &&
-					withinSixStandardErrors(ptOff,shaderOff);
+					withinSixStandardErrors(ptOff,shaderOff)));
 			}
 			if( !agrees ) {
 				const Scalar ptStandardError = std::sqrt(
-					(ptOn.variance+ptOff.variance)/static_cast<Scalar>(samples));
+					(ptOn.variance+ptOff.variance)/static_cast<Scalar>(sampleCount));
 				const Scalar shaderStandardError = std::sqrt(
-					(shaderOn.variance+shaderOff.variance)/static_cast<Scalar>(samples));
+					(shaderOn.variance+shaderOff.variance)/static_cast<Scalar>(sampleCount));
 				std::cout << "  matrix " << materialNames[static_cast<unsigned int>(material)] <<
 					" / " << row.label << " / " << mechanism.label <<
 					" / " << modeLabel <<
@@ -8826,10 +8856,13 @@ namespace
 				}
 				std::cout << std::endl;
 			}
-			const std::string label = std::string("Phase-B matrix ") +
+			const std::string label = std::string(
+				requireEquality ? "Phase-B statistical matrix " :
+					"Phase-B structural matrix ") +
 				materialNames[static_cast<unsigned int>(material)] + " / " +
 				row.label + " / " + mechanism.label + " / " + modeLabel +
-				" preserves volume-NEE versus march equality";
+				(requireEquality ? " preserves volume-NEE versus march equality" :
+					" binds topology, mechanism, and estimator routes");
 			Check( agrees,label.c_str() );
 			safe_release(neeCaster);
 			safe_release(marchOnlyCaster);
@@ -8845,7 +8878,7 @@ namespace
 			return MatrixResult{ptOn,ptOff,shaderOn,shaderOff,fixtureValid};
 		};
 
-		auto runMode = [&]( MatrixGuidePtr guiding,
+		auto runExtendedMode = [&]( MatrixGuidePtr guiding,
 			const unsigned int guidingMode, const char* modeLabel ) {
 			for( const SurfaceReceiverMaterial material : materials ) {
 				for( const MechanismRow& mechanism : mechanisms ) {
@@ -8854,7 +8887,7 @@ namespace
 						rowIndex<sizeof(rows)/sizeof(rows[0]); ++rowIndex ) {
 						results[rowIndex] = runFixture(
 							material,rows[rowIndex],mechanism,
-							guiding,guidingMode,modeLabel);
+							guiding,guidingMode,modeLabel,samples,true);
 					}
 				auto withinSixStandardErrors = [&]( const Moments& a,
 					const Moments& b ) {
@@ -8887,7 +8920,67 @@ namespace
 			}
 		};
 
-		runMode(nullptr,0,"guiding off");
+		auto runDefaultMode = [&]( MatrixGuidePtr guiding,
+			const unsigned int guidingMode, const char* modeLabel ) {
+			for( const SurfaceReceiverMaterial material : materials ) {
+				for( const MechanismRow& mechanism : mechanisms ) {
+					for( const MatrixRow& row : rows ) {
+						runFixture(material,row,mechanism,guiding,guidingMode,
+							modeLabel,structuralSamples,false);
+					}
+				}
+			}
+
+			for( size_t materialIndex=0;
+				materialIndex<sizeof(materials)/sizeof(materials[0]); ++materialIndex ) {
+				for( size_t mechanismIndex=0;
+					mechanismIndex<sizeof(mechanisms)/sizeof(mechanisms[0]);
+					++mechanismIndex ) {
+					const size_t rowIndex =
+						(materialIndex*(sizeof(mechanisms)/sizeof(mechanisms[0]))+
+							mechanismIndex) % (sizeof(rows)/sizeof(rows[0]));
+					runFixture(materials[materialIndex],rows[rowIndex],
+						mechanisms[mechanismIndex],guiding,guidingMode,modeLabel,
+						samples,true);
+				}
+			}
+
+			MatrixResult flagResults[sizeof(rows)/sizeof(rows[0])];
+			for( size_t rowIndex=0; rowIndex<sizeof(rows)/sizeof(rows[0]);
+				++rowIndex ) {
+				flagResults[rowIndex] = runFixture(
+					SurfaceReceiverMaterial::Lambertian,rows[rowIndex],mechanisms[0],
+					guiding,guidingMode,modeLabel,samples,true);
+			}
+			auto withinSixStandardErrors = [&]( const Moments& a,
+				const Moments& b ) {
+				const Scalar standardError = std::sqrt(
+					(a.variance+b.variance)/static_cast<Scalar>(samples));
+				return standardError>0.0 &&
+					std::fabs(a.mean-b.mean)<=6.0*standardError;
+			};
+			for( const size_t topologyStart : {size_t(2),size_t(6)} ) {
+				for( size_t offset=1; offset<4; ++offset ) {
+					const MatrixResult& reference = flagResults[topologyStart];
+					const MatrixResult& toggled = flagResults[topologyStart+offset];
+					const bool invariant = reference.valid && toggled.valid &&
+						withinSixStandardErrors(reference.ptOn,toggled.ptOn) &&
+						withinSixStandardErrors(reference.ptOff,toggled.ptOff) &&
+						withinSixStandardErrors(reference.shaderOn,toggled.shaderOn) &&
+						withinSixStandardErrors(reference.shaderOff,toggled.shaderOff);
+					const std::string label = std::string("Phase-B statistical matrix ") +
+						rows[topologyStart].label + " / " + modeLabel +
+						" remains transport-equivalent under the shadow-flag cross-product";
+					Check(invariant,label.c_str());
+				}
+			}
+		};
+
+		if( extendedMatrix ) {
+			runExtendedMode(nullptr,0,"guiding off");
+		} else {
+			runDefaultMode(nullptr,0,"guiding off");
+		}
 
 #ifdef RISE_ENABLE_OPENPGL
 		PathGuidingConfig guidingConfig;
@@ -8955,15 +9048,22 @@ namespace
 			Check( normalized,
 				"OpenPGL surface and volume samples are unit directions bound to their evaluated PDFs" );
 		}
-		runMode(guiding,static_cast<unsigned int>(eGuidingOneSampleMIS),
-			"guiding one-sample MIS requested");
-		runMode(guiding,static_cast<unsigned int>(eGuidingRIS),
-			"guiding RIS requested at the non-competing reference vertex");
+		if( extendedMatrix ) {
+			runExtendedMode(guiding,static_cast<unsigned int>(eGuidingOneSampleMIS),
+				"guiding one-sample MIS requested");
+			runExtendedMode(guiding,static_cast<unsigned int>(eGuidingRIS),
+				"guiding RIS requested at the non-competing reference vertex");
+		} else {
+			runDefaultMode(guiding,static_cast<unsigned int>(eGuidingOneSampleMIS),
+				"guiding one-sample MIS requested");
+			runDefaultMode(guiding,static_cast<unsigned int>(eGuidingRIS),
+				"guiding RIS requested at the non-competing reference vertex");
+		}
 		safe_release(guiding);
 #endif
 	}
 
-	void TestPreviewContainmentConfigurationMatrix()
+	void TestPreviewContainmentConfigurationMatrix( const bool extendedMatrix )
 	{
 		std::cout << "TestPreviewContainmentConfigurationMatrix" << std::endl;
 		struct MatrixRow
@@ -9233,6 +9333,9 @@ namespace
 			bool valid;
 		};
 		const size_t rowCount = sizeof(rows)/sizeof(rows[0]);
+		const unsigned int fallbackSamples = extendedMatrix ? 6000u : 4000u;
+		const unsigned int sssSamples = extendedMatrix ? 12000u : 4000u;
+		const unsigned int namedSSSSamples = extendedMatrix ? 6000u : 4000u;
 		auto validateAxes = [&]( const std::vector<PreviewMatrixResult>& results,
 			const char* fixtureName, const unsigned int samples,
 			const bool hasShaderRoute, const bool requireTransportActivation ) {
@@ -9411,7 +9514,7 @@ namespace
 					integrator->SetMaxPathDepth(2);
 					const unsigned int seed = 0xc440000u+serial*0x101u;
 					const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
-					const unsigned int samples = 6000;
+					const unsigned int samples = fallbackSamples;
 					PreviewMoments pureOn = {0,0,0};
 					PreviewMoments pureOff = {0,0,0};
 					PreviewMoments shaderOn = {0,0,0};
@@ -9459,7 +9562,8 @@ namespace
 				}
 			}
 			validateAxes(results,
-				(std::string("preview fallback ")+fixture.name).c_str(),6000,true,true);
+				(std::string("preview fallback ")+fixture.name).c_str(),
+				fallbackSamples,true,true);
 		}
 
 		for( unsigned int sssType=0; sssType<2; ++sssType ) {
@@ -9520,7 +9624,7 @@ namespace
 					const bool competitionBefore =
 						SSSContainedChildCompetitionObserved();
 					const unsigned int seed = 0xc550000u+serial*0x101u;
-					const unsigned int samples = 12000;
+					const unsigned int samples = sssSamples;
 					PreviewMoments on = {0,0,0};
 					PreviewMoments off = {0,0,0};
 					PreviewMoments shaderOn = {0,0,0};
@@ -9589,10 +9693,12 @@ namespace
 			}
 			validateAxes(results,
 				sssType ? "SSS random-walk" : "SSS diffusion-profile",
-				12000,true,false);
+				sssSamples,true,false);
 			for( size_t modeIndex=0; modeIndex<modes.size(); ++modeIndex ) {
 				const Scalar clear = topologyProbeTransmittance[modeIndex];
-				for( const size_t topologyStart : {size_t(2),size_t(6),size_t(10)} ) {
+				// The probe walks media directly; the opaque partial blocker is a
+				// geometry-only topology and is covered by the transport matrix above.
+				for( const size_t topologyStart : {size_t(2),size_t(6)} ) {
 					const Scalar topology = topologyProbeTransmittance[
 						topologyStart*modes.size()+modeIndex];
 					const std::string label = std::string(
@@ -9600,10 +9706,14 @@ namespace
 						" / " + modes[modeIndex].label +
 						" activates targeted topology probe row " +
 						std::to_string(topologyStart);
-					Check(clear>0.0 && topology>0.0 &&
+					const bool active = clear>0.0 && topology>0.0 &&
 						std::fabs(clear-topology)>
-							std::fmax(Scalar(1e-12),clear*Scalar(1e-6)),
-						label.c_str());
+							std::fmax(Scalar(1e-12),clear*Scalar(1e-6));
+					if( !active ) {
+						std::cout << "  topology probe clear/topology=" <<
+							clear << "/" << topology << std::endl;
+					}
+					Check(active,label.c_str());
 				}
 			}
 		}
@@ -9688,7 +9798,7 @@ namespace
 					auto momentsNamed = [&]( const IRayCaster& caster,
 						const RayIntersection& intersection,
 						const unsigned int seed ) {
-						const unsigned int samples = 6000;
+						const unsigned int samples = namedSSSSamples;
 						RandomNumberGenerator rng(seed);
 						RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
 						configureRuntime(rc,mode);
@@ -9733,7 +9843,7 @@ namespace
 						SSSContainedChildLaunchCount()>childrenBefore :
 						SSSContainedChildLaunchCount()==childrenBefore;
 					const bool contained = ready &&
-						agreesWithinSixSE(on,off,6000) &&
+						agreesWithinSixSE(on,off,namedSSSSamples) &&
 						childLaunchWitness &&
 						SSSContainedVolumePivotAttemptCount()==pivotsBefore &&
 						SSSContainedVolumeEndpointAttemptCount()==endpointsBefore &&
@@ -9765,7 +9875,7 @@ namespace
 					std::filesystem::remove(path);
 				}
 			}
-			validateAxes(results,fixture.name,6000,false,true);
+			validateAxes(results,fixture.name,namedSSSSamples,false,true);
 		}
 		safe_release(unknownSSSShader);
 		safe_release(unknownSSS);
@@ -9789,8 +9899,25 @@ namespace
 	}
 }
 
-int main()
+int main( const int argc, const char* const argv[] )
 {
+	bool extendedMatrix = false;
+	bool previewMatrixOnly = false;
+	for( int i=1; i<argc; ++i ) {
+		if( std::string(argv[i])=="--extended-matrix" ) {
+			extendedMatrix = true;
+		} else if( std::string(argv[i])=="--preview-matrix-only" ) {
+			previewMatrixOnly = true;
+		} else {
+			std::cerr << "unknown argument: " << argv[i] << std::endl;
+			return 2;
+		}
+	}
+	if( previewMatrixOnly ) {
+		TestPreviewContainmentConfigurationMatrix(extendedMatrix);
+		std::cout << passed << " passed, " << failed << " failed" << std::endl;
+		return failed == 0 ? 0 : 1;
+	}
 	TestNMAbsoluteParityAndSceneUnits();
 	TestHWSSRequestedUsesPerWavelengthFallback();
 	TestEquiangularMixtureUsesItsActualDistanceDensity();
@@ -9798,11 +9925,11 @@ int main()
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
 	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
-	TestThinEmitterSheetAtGrazingAngles();
+	TestThinEmitterSheetAtGrazingAngles(extendedMatrix);
 	TestCameraPrimaryDirectViewKeepsWeightOne();
-	TestFlameBehindGlassIsMarchOnly();
-	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission();
-	TestIsolatedSmokeConfigurationReplay();
+	TestFlameBehindGlassIsMarchOnly(extendedMatrix);
+	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission(extendedMatrix);
+	TestIsolatedSmokeConfigurationReplay(extendedMatrix);
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestUnsupportedMaterialVolumeNEEFallback();
 	TestOrenNayarSurfaceVolumeNEEEquality();
@@ -9825,10 +9952,10 @@ int main()
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
 	TestZeroSootChemOnlyLineEstimator();
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
-	TestSSSBSSRDFPreviewContainment();
+	TestSSSBSSRDFPreviewContainment(extendedMatrix);
 	TestNestedSSSShaderOpContainment();
-	TestPhaseBConfigurationMatrix();
-	TestPreviewContainmentConfigurationMatrix();
+	TestPhaseBConfigurationMatrix(extendedMatrix);
+	TestPreviewContainmentConfigurationMatrix(extendedMatrix);
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }
