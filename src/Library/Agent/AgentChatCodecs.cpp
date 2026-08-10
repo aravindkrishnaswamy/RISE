@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the SIXTEEN provider-neutral tool definitions -- fifteen are
+//    (1) the NINETEEN provider-neutral tool definitions -- eighteen are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -841,6 +841,38 @@ namespace RISE
 						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
 						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
 					"},\"required\":[\"reference\"]}"
+				},
+				{
+					"file_part_plan",
+					"File the part plan for the thing you are building: one entry per part, each naming "
+					"how that part will be constructed. On a session that has not filed one, EVERY call "
+					"that creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
+					"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
+					"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
+					"intercepting for the rest of the session. `construction` is REQUIRED per part "
+					"and must be one of exactly: \"primitive\" (a single built-in shape chunk), \"csg\" (a "
+					"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
+					"profile swept along a path), \"chain\" (several shapes blended into one form), "
+					"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
+					"chunk). Any answer is accepted, including \"primitive\" for every part. The plan is "
+					"NOT binding: declaring one construction and then authoring a different chunk kind is "
+					"allowed and is never refused. Filing does not change the document -- no chunk, no "
+					"head version, no undo step. Returns {filed,replacedPreviousPlan,partCount,parts:"
+					"[{part,construction,note}],message}. Calling it again replaces the previous plan.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"parts\":{\"type\":\"array\",\"minItems\":1,\"description\":"
+						"\"Required, at least one entry -- the parts of the subject you are about to build.\","
+						"\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"part\":{\"type\":\"string\",\"description\":"
+							"\"Required. The name of this part, in your own words (e.g. \\\"left wing\\\", \\\"lamp base\\\").\"},"
+							"\"construction\":{\"type\":\"string\","
+							"\"enum\":[\"primitive\",\"csg\",\"sweep\",\"chain\",\"displaced\",\"mesh\"],"
+							"\"description\":"
+							"\"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh.\"},"
+							"\"note\":{\"type\":\"string\",\"description\":"
+							"\"Optional free text about this part.\"}"
+						"},\"required\":[\"part\",\"construction\"]}}"
+					"},\"required\":[\"parts\"]}"
 				},
 				{
 					"ask_user",

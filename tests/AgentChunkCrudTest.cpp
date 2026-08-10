@@ -7501,8 +7501,1012 @@ static void TestReplaceGeometryScaffoldWireShape()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// G2 (2026-08-10, refuse-until-filed cap 2026-08-10 supervisor overrule):
+// the PART-PLAN GATE.
+//
+// See AgentSession.h's block above FilePartPlan for the mechanism and the
+// anti-Goodhart properties.  What these tests pin, in order:
+//   G2a  the gate REFUSES on the 1st, 2nd and 3rd geometry-creating
+//        insert_chunk on a session that has not filed a plan -- document
+//        COMPLETELY untouched every time, refusal names the tool, the
+//        enum, that any value is accepted, and the ACCURATE remaining-
+//        refusal count -- then GIVES UP on the 4th: that call applies and
+//        its own result carries the give-up fact.  A gate clearable by a
+//        bare retry without filing would yield zero plans to measure,
+//        which is why the original once-per-session design was overruled;
+//        the cap exists so a session that genuinely cannot form
+//        file_part_plan is not stranded forever
+//   G2b  a plan filed FIRST means no interception at all, ever
+//   G2c  every triggering verb fires it, each on its own fresh session
+//   G2d  non-geometry chunks (painter/material/light) do NOT trigger it
+//   G2e  all-`primitive` is a complete, accepted plan (anti-Goodhart)
+//   G2f  declare `sweep`, insert a box_geometry -> APPLIES (non-binding;
+//        the measurement-critical behaviour -- enforcing would hide
+//        compliance-without-competence, which is the finding)
+//   G2g  the launch-time disable switch turns it off completely
+//   G2h  wire shape: a clean -32602 naming the enum, and the filed-plan
+//        result payload
+//   G2i  an insert_chunks batch is refused ATOMICALLY -- every element, and
+//        the document byte-identical
+//----------------------------------------------------------------------
+
+//! Build a session with the part-plan gate ARMED.  main() turns the process
+//! default OFF for this whole binary (see its comment), so the gate's own
+//! tests turn it back on for exactly the width of the construction call --
+//! the session SNAPSHOTS it, so restoring immediately after keeps every
+//! other test's opt-out in force and leaves no global set behind.
+static std::unique_ptr<Agent::AgentSession> WrapJobGateArmed( Job* pJob )
+{
+	Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
+	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
+	Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	return s;
+}
+
+//! The two-part plan every "a plan is filed" test uses.  Deliberately NOT
+//! all-primitive (G2e covers that separately) and deliberately declaring a
+//! construction the test then does not use (G2f).
+static std::vector<Agent::AgentSession::AgentPartPlanEntry> SamplePlan()
+{
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> p;
+	Agent::AgentSession::AgentPartPlanEntry a; a.part = "body";  a.construction = "sweep";  p.push_back( a );
+	Agent::AgentSession::AgentPartPlanEntry b; b.part = "base";  b.construction = "csg";    b.note = "two boxes"; p.push_back( b );
+	return p;
+}
+
+static const char* const kG2GeometryChunk =
+	"box_geometry\n{\n\tname g2_box\n\twidth 1.0\n\theight 1.0\n\tdepth 1.0\n}";
+
+//! G2a (2026-08-10 refuse-until-filed cap, supervisor overrule of the
+//! original once-per-session design): the gate REFUSES the 1st, 2nd and 3rd
+//! geometry-creating insert_chunk on a session that has not filed a plan --
+//! document byte-identical and refusal accurate on every one of them -- then
+//! GIVES UP on the 4th, which applies and carries the give-up fact in its own
+//! result.  What would go red for each assertion is called out inline.
+static void TestPartPlanGateRefusesUntilFiledCapped()
+{
+	std::printf( "G2a: the part-plan gate refuses up to 3 times, then gives up on the 4th...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	Check( sess->PartPlanGateEnabled(),   "G2a the session is constructed with the gate ARMED" );
+	Check( !sess->PartPlanFiled(),        "G2a no plan is filed yet" );
+	Check( !sess->PartPlanGateHasFired(), "G2a the gate has not fired yet" );
+	Check( sess->PartPlanGateRefusalCount() == 0, "G2a the refusal counter starts at 0" );
+	Check( !sess->PartPlanGateGaveUp(),    "G2a the gate has not given up yet" );
+
+	const std::string docBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+	// The 1st, 2nd and 3rd calls: all REFUSED, document/head byte-identical
+	// every time, remaining-refusal count accurate on each.  Would go red if
+	// the gate disarmed after the first refusal (the old once-per-session
+	// behaviour), if any refusal mutated the document, or if the
+	// remaining-attempts wording drifted from what CheckPartPlanGate_
+	// actually does.
+	static const char* const kExpectRemaining[3] =
+	{
+		"2 more calls will be refused before this gate stops intercepting",
+		"1 more call will be refused before this gate stops intercepting",
+		"0 more calls will be refused before this gate stops intercepting",
+	};
+	for( int attempt = 1; attempt <= 3; ++attempt )
+	{
+		const std::string p = "G2a attempt " + std::to_string( attempt ) + ": ";
+		const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+		Check( !r.applied,             p + "geometry insert is REFUSED" );
+		Check( r.status == "rejected", p + "refusal reports status `rejected`" );
+		Check( !r.retriable,
+		       p + "`retriable` is FALSE -- that wire flag is the GUI clients' silent "
+		       "client-side auto-retry signal (ChatViewModel.swift / ChatPanel.cpp re-dispatch up to "
+		       "5 times without showing the model anything), which under the capped semantics would "
+		       "burn ALL 3 refusals before the model ever saw one" );
+		Check( r.message.find( "file_part_plan" ) != std::string::npos,
+		       p + "the refusal NAMES the tool to call" );
+		Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		       p + "the refusal lists the CLOSED construction enum" );
+		Check( r.message.find( "`primitive` for every part is a complete plan" ) != std::string::npos,
+		       p + "the refusal states that ANY value is accepted (anti-Goodhart)" );
+		Check( r.message.find( "does not constrain" ) != std::string::npos,
+		       p + "the refusal states that the plan is NON-BINDING" );
+		Check( r.message.find( kExpectRemaining[attempt - 1] ) != std::string::npos,
+		       p + "MONEY ASSERTION: the refusal states the ACCURATE remaining-refusal "
+		       "count -- a false count in a model-facing payload is a P1 in this repo" );
+		Check( r.kind == "box_geometry" && r.name == "g2_box",
+		       p + "the refusal still stamps the IDENTITY echo (kind/name)" );
+		Check( sess->ReadDocument() == docBefore,
+		       p + "MONEY ASSERTION: the document is COMPLETELY untouched by the refusal" );
+		Check( sess->HeadVersion() == vBefore, p + "the head version did not move" );
+		Check( sess->PartPlanGateHasFired(),   p + "the gate is marked as having fired" );
+		Check( sess->PartPlanGateRefusalCount() == attempt,
+		       p + "the refusal counter incremented exactly once per refusal" );
+		Check( !sess->PartPlanGateGaveUp(), p + "the gate has not given up yet" );
+		Check( !sess->PartPlanFiled(),      p + "a refusal does NOT count as a filed plan" );
+	}
+
+	// The 4th call: the gate GIVES UP.  Would go red if the 4th call were
+	// still refused (the cap not honoured), if it silently applied with no
+	// trace (the give-up not surfaced in the payload), or if the gate kept
+	// intercepting afterward (not PERMANENTLY disarmed).
+	const Agent::AgentChunkResult r4 = sess->InsertChunk( kG2GeometryChunk );
+	Check( r4.applied,
+	       "G2a MONEY ASSERTION: the 4th call SUCCEEDS -- the gate gives up rather than refuse a "
+	       "4th time" );
+	Check( sess->ReadDocument() != docBefore, "G2a the 4th call really did land the chunk" );
+	Check( sess->PartPlanGateGaveUp(),  "G2a the gate is now marked as having given up" );
+	Check( sess->PartPlanGateRefusalCount() == 3,
+	       "G2a the refusal counter stays at 3 -- the give-up is not itself a 4th refusal" );
+	Check( r4.message.find( "part-plan gate" ) != std::string::npos &&
+	       r4.message.find( "3 refusals" ) != std::string::npos &&
+	       r4.message.find( "disarmed for this session" ) != std::string::npos,
+	       "G2a MONEY ASSERTION: the successful 4th call's OWN result carries the factual give-up "
+	       "notice -- greppable in the payload a trajectory census reads, not only in a log line" );
+
+	// A later geometry call, through a DIFFERENT verb, is not intercepted
+	// either -- the give-up is permanent for the rest of the session, not
+	// scoped to insert_chunk.
+	const Agent::AgentSession::AgentGeometryScaffoldResult gs =
+		sess->InsertGeometryScaffold( "sdf_column", "g2a", 1.0, 0.5, 1.0 );
+	Check( gs.ok, "G2a a LATER geometry-scaffold call in the same session is not intercepted" );
+	Check( gs.message.find( "part-plan gate" ) == std::string::npos,
+	       "G2a the give-up notice is reported EXACTLY ONCE -- on the call that tripped it, not on "
+	       "every later geometry call" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestPartPlanFiledFirstNeverIntercepts()
+{
+	std::printf( "G2b: a plan filed FIRST means no interception at all...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2b fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	const std::string docBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( SamplePlan() );
+	Check( pr.ok,                       "G2b the plan is accepted" );
+	Check( !pr.replacedPreviousPlan,    "G2b the first filing replaced nothing" );
+	Check( pr.parts.size() == 2,        "G2b the result echoes both parts" );
+	Check( pr.parts[0].part == "body" && pr.parts[0].construction == "sweep",
+	       "G2b the echo is FACTUAL: part name and declared construction, in order" );
+	Check( pr.parts[1].note == "two boxes", "G2b the optional per-part note round-trips" );
+	Check( pr.message.find( "body: sweep" ) != std::string::npos &&
+	       pr.message.find( "base: csg" ) != std::string::npos,
+	       "G2b the message echoes each part and its declared construction" );
+	Check( sess->ReadDocument() == docBefore,
+	       "G2b filing a plan does NOT touch the document" );
+	Check( sess->PartPlanFiled(), "G2b the session now reports a filed plan" );
+
+	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+	       "G2b MONEY ASSERTION: with a plan on file the FIRST geometry insert applies -- no "
+	       "interception at all" );
+	Check( !sess->PartPlanGateHasFired(), "G2b the gate never fired" );
+
+	// Re-filing REPLACES and is never refused (an over-refusal on a call that
+	// costs the document nothing is the E1 review's P1).
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> p2;
+	Agent::AgentSession::AgentPartPlanEntry e; e.part = "everything"; e.construction = "mesh"; p2.push_back( e );
+	const Agent::AgentSession::AgentPartPlanResult pr2 = sess->FilePartPlan( p2 );
+	Check( pr2.ok && pr2.replacedPreviousPlan, "G2b re-filing is accepted and reports the replacement" );
+	Check( sess->PartPlan().size() == 1 && sess->PartPlan()[0].part == "everything",
+	       "G2b the re-filed plan REPLACED the previous one" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! G2a3 (2026-08-10 refuse-until-filed cap): filing at ANY point -- after 0
+//! (covered by G2b above), 1 or 2 refusals -- clears the gate IMMEDIATELY
+//! and PERMANENTLY, exactly like filing before ever being refused.  Would go
+//! red if a refusal count > 0 changed FilePartPlan's disarming behaviour, or
+//! if the gate kept intercepting after a plan filed mid-refusal-sequence.
+static void TestPartPlanFiledMidRefusalSequenceClearsGate()
+{
+	std::printf( "G2a3: filing after 1 or 2 refusals clears the gate immediately and permanently...\n" );
+
+	// After exactly ONE refusal.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2a3_1.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2a3/1 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/1 the 1st call is refused" );
+			Check( sess->PartPlanGateRefusalCount() == 1, "G2a3/1 refusal count is 1" );
+			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2a3/1 filing after 1 refusal is accepted" );
+			Check( !sess->PartPlanGateGaveUp(), "G2a3/1 filing is NOT the give-up path" );
+			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+			Check( r.applied,
+			       "G2a3/1 MONEY ASSERTION: the very next call APPLIES -- filing mid-sequence disarms "
+			       "the gate immediately, it does not need to reach the cap first" );
+			Check( r.message.find( "part-plan gate" ) == std::string::npos,
+			       "G2a3/1 no give-up notice: the gate cleared by FILING, not by exhausting the cap" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// After exactly TWO refusals.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2a3_2.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2a3/2 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/2 the 1st call is refused" );
+			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/2 the 2nd call is refused" );
+			Check( sess->PartPlanGateRefusalCount() == 2, "G2a3/2 refusal count is 2" );
+			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2a3/2 filing after 2 refusals is accepted" );
+			Check( !sess->PartPlanGateGaveUp(), "G2a3/2 filing is NOT the give-up path" );
+			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+			Check( r.applied,
+			       "G2a3/2 MONEY ASSERTION: the very next call APPLIES -- filing mid-sequence disarms "
+			       "the gate PERMANENTLY, one refusal short of the cap" );
+			Check( r.message.find( "part-plan gate" ) == std::string::npos,
+			       "G2a3/2 no give-up notice: the gate cleared by FILING, not by exhausting the cap" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
+static void TestPartPlanGateEveryTriggeringVerb()
+{
+	std::printf( "G2c: every triggering verb fires the gate, each on its own fresh session...\n" );
+
+	// insert_chunk is covered by G2a.  Each verb below gets a FRESH session so
+	// one covering for another cannot hide a miss -- the red-prove shape
+	// AgentChatLoopTest's mutating-verb sweep uses.
+
+	// insert_chunks (batch) -- ATOMIC refusal: every element, document
+	// byte-identical.  This also proves the gate costs a batching model ONE
+	// call, not N.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2c1.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2c/insert_chunks fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const std::string docBefore = sess->ReadDocument();
+			const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+			std::vector<std::string> batch;
+			batch.push_back( "uniformcolor_painter\n{\n\tname g2c_p\n\tcolor 0.2 0.3 0.4\n}" );
+			batch.push_back( kG2GeometryChunk );
+			batch.push_back( "uniformcolor_painter\n{\n\tname g2c_q\n\tcolor 0.4 0.3 0.2\n}" );
+			const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+			Check( rs.size() == 3, "G2c/insert_chunks returns one result per element" );
+			bool allRefused = !rs.empty();
+			for( const Agent::AgentChunkResult& e : rs )
+				allRefused = allRefused && !e.applied && e.status == "rejected" &&
+				             e.message.find( "file_part_plan" ) != std::string::npos;
+			Check( allRefused,
+			       "G2c/insert_chunks MONEY ASSERTION: ONE geometry element refuses the WHOLE batch, "
+			       "every element carrying the same verdict (a policy refusal is not an authoring "
+			       "failure -- half a landed batch is a scene the model never asked for)" );
+			Check( sess->ReadDocument() == docBefore, "G2c/insert_chunks the document is byte-identical" );
+			Check( sess->HeadVersion() == vBefore,    "G2c/insert_chunks the head version did not move" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// insert_geometry_scaffold
+	{
+		const std::string tmp = TempPath( "agentcrud_g2c2.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2c/insert_geometry_scaffold fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const std::string docBefore = sess->ReadDocument();
+			const Agent::AgentSession::AgentGeometryScaffoldResult gs =
+				sess->InsertGeometryScaffold( "sdf_column", "g2c2", 1.0, 0.5, 1.0 );
+			Check( !gs.ok, "G2c/insert_geometry_scaffold is REFUSED" );
+			Check( gs.message.find( "file_part_plan" ) != std::string::npos,
+			       "G2c/insert_geometry_scaffold the refusal names the tool" );
+			Check( gs.chunkResults.empty(),
+			       "G2c/insert_geometry_scaffold nothing was submitted through InsertChunks" );
+			Check( sess->ReadDocument() == docBefore, "G2c/insert_geometry_scaffold document untouched" );
+			// The retry WITHOUT filing is refused AGAIN under the capped
+			// refuse-until-filed semantics -- would go red if the gate
+			// disarmed after one refusal (the superseded once-per-session
+			// behaviour).
+			const Agent::AgentSession::AgentGeometryScaffoldResult retry =
+				sess->InsertGeometryScaffold( "sdf_column", "g2c2", 1.0, 0.5, 1.0 );
+			Check( !retry.ok && retry.message.find( "file_part_plan" ) != std::string::npos,
+			       "G2c/insert_geometry_scaffold RED-PROVE: the retry without filing is refused again "
+			       "(refusal 2 of 3), not silently let through" );
+			Check( sess->PartPlanGateRefusalCount() == 2,
+			       "G2c/insert_geometry_scaffold the counter reflects both refusals" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// replace_geometry_scaffold
+	{
+		const std::string tmp = TempPath( "agentcrud_g2c3.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2c/replace_geometry_scaffold fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const std::string docBefore = sess->ReadDocument();
+			const Agent::AgentSession::AgentGeometryScaffoldResult rs =
+				sess->ReplaceGeometryScaffold( "obj_sph", "sdf_column", "g2c3", 1.0, 0.5, 1.0 );
+			Check( !rs.ok, "G2c/replace_geometry_scaffold is REFUSED" );
+			Check( rs.message.find( "file_part_plan" ) != std::string::npos,
+			       "G2c/replace_geometry_scaffold the refusal names the tool" );
+			Check( sess->ReadDocument() == docBefore, "G2c/replace_geometry_scaffold document untouched" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
+static void TestPartPlanGateIgnoresNonGeometry()
+{
+	std::printf( "G2d: non-geometry inserts do NOT trigger the gate...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2d.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname g2d_p\n\tcolor 0.1 0.2 0.3\n}" ).applied,
+	       "G2d a painter insert is NOT intercepted" );
+	Check( sess->InsertChunk( "lambertian_material\n{\n\tname g2d_m\n\treflectance g2d_p\n}" ).applied,
+	       "G2d a material insert is NOT intercepted" );
+	Check( sess->InsertChunk( "omni_light\n{\n\tname g2d_l\n\tpower 50.0\n\tposition 2 2 2\n}" ).applied,
+	       "G2d a light insert is NOT intercepted" );
+	// insert_material_scaffold emits painters + a material and no geometry:
+	// it must not burn the gate either.
+	Check( sess->InsertMaterialScaffold( "rough_stone", "g2d", "0.5 0.5 0.5", 0.5, 1.0 ).ok,
+	       "G2d insert_material_scaffold (painters + material, no geometry) is NOT intercepted" );
+	Check( !sess->PartPlanGateHasFired(),
+	       "G2d MONEY ASSERTION: after four non-geometry authoring calls the gate is still ARMED -- "
+	       "it triggers on GEOMETRY, not on editing" );
+
+	// ...and the very next geometry insert DOES fire it, proving the negative
+	// assertions above are not vacuous.
+	const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+	Check( !r.applied && r.message.find( "file_part_plan" ) != std::string::npos,
+	       "G2d RED-PROVE: the next GEOMETRY insert on the same session does fire the gate" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestPartPlanAnyPlanAcceptedAndNonBinding()
+{
+	std::printf( "G2e/G2f: all-`primitive` is a complete plan; the plan is NON-BINDING...\n" );
+
+	// G2e: a plan that declares `primitive` for every part is legal and
+	// disarms the gate exactly like any other.  ANTI-GOODHART: the gate must
+	// never be satisfiable only by declaring richness, or it teaches gaming.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2e fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			for( int i = 0; i < 4; ++i ) {
+				Agent::AgentSession::AgentPartPlanEntry e;
+				e.part = "part" + std::to_string( i );
+				e.construction = "primitive";
+				plan.push_back( e );
+			}
+			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			Check( pr.ok, "G2e MONEY ASSERTION: a plan of `primitive` for EVERY part is accepted" );
+			Check( pr.message.find( "part0: primitive" ) != std::string::npos,
+			       "G2e the echo reports it back factually, with no grading of any kind" );
+			Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+			       "G2e the all-primitive plan disarms the gate exactly like any other" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// G2f: declaring `sweep` and then inserting a box_geometry APPLIES.  This
+	// is the measurement-critical behaviour: v1 is deliberately non-binding,
+	// because if models declare richly and author primitives anyway, THAT is
+	// the finding (compliance without competence) and enforcing would hide it.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2f.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2f fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			Agent::AgentSession::AgentPartPlanEntry e; e.part = "body"; e.construction = "sweep";
+			plan.push_back( e );
+			Check( sess->FilePartPlan( plan ).ok, "G2f the sweep plan is filed" );
+			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+			Check( r.applied,
+			       "G2f MONEY ASSERTION: `sweep` was declared and a box_geometry was inserted -- and it "
+			       "APPLIES.  The declaration is NON-BINDING by design; refusing here would suppress the "
+			       "exact signal (declare-rich, author-plain) this slice exists to measure" );
+			Check( r.message.find( "file_part_plan" ) == std::string::npos &&
+			       r.message.find( "sweep" ) == std::string::npos,
+			       "G2f nothing anywhere in the result mentions the mismatch -- no nag, no advice" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
+static void TestPartPlanGateDisableSwitch()
+{
+	std::printf( "G2g: the launch-time disable switch turns the gate off completely...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2g.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2g fixture loads" );
+	if( !pJob ) return;
+
+	// The process default is already false for this binary (main()'s opt-out
+	// is the SAME call `--agent-part-plan-gate=off` makes), so this session
+	// snapshots a DISARMED gate -- exactly the gate-off measurement arm.
+	Check( !Agent::AgentSession::PartPlanGateDefaultEnabled(),
+	       "G2g the process default is off (what --agent-part-plan-gate=off sets)" );
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Check( !sess->PartPlanGateEnabled(), "G2g the session snapshotted the disabled default" );
+
+	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+	       "G2g MONEY ASSERTION: with the gate off, the first geometry insert applies -- no "
+	       "interception, no plan needed" );
+	Check( sess->InsertGeometryScaffold( "sdf_column", "g2g", 1.0, 0.5, 1.0 ).ok,
+	       "G2g insert_geometry_scaffold is not intercepted either" );
+	Check( !sess->PartPlanGateHasFired(), "G2g the gate never fired" );
+
+	// A session's posture is snapshotted at CONSTRUCTION -- flipping the
+	// process default mid-session must not re-arm a running session.
+	Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
+	Check( !sess->PartPlanGateEnabled(),
+	       "G2g a mid-session change of the process default does NOT re-arm this session" );
+	Check( sess->InsertChunk( "box_geometry\n{\n\tname g2g_box2\n\twidth 1\n\theight 1\n\tdepth 1\n}" ).applied,
+	       "G2g and it really is still off in behaviour, not just in the accessor" );
+	Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// G2 fix-round (2026-08-10): the PATCH arm.
+//
+// Before this round the part-plan gate had exactly FOUR call sites, all
+// INSERT verbs, and propose_patch / propose_patches had none -- while a
+// param VALUE is spliced into the document as TEXT, so a value carrying
+// `}` + a whole `box_geometry { ... }` block + a trailing `#` lands a REAL
+// geometry chunk on serialization.  That is the identical VALUE-SPLICE
+// bypass R1c's arm (b) exists to close for rasterizer chunks.  A session
+// could therefore build a whole scene through propose_patch with no plan
+// filed and the refusal counter still reading ZERO -- the instrument
+// measuring nothing.  What these pin:
+//   G2j  RED-PROOF: the splice patch is REFUSED, document byte-identical,
+//        head unbumped, counter incremented
+//   G2k  OVER-REFUSAL GUARD: editing an EXISTING geometry chunk's params
+//        (a sphere's radius) is NOT a creation and must apply
+//   G2l  a splice that introduces a NON-geometry chunk (a painter) is not
+//        this gate's business and must apply
+//   G2m  propose_patches: PER-ELEMENT, matching what the batch already
+//        does for E1 / R1c refusals
+//   G2n  ONE session-wide budget: patch refusals and insert refusals draw
+//        on the SAME 3, and the 4th call anywhere is the give-up
+//   G2o  the STAGED path: a ParamEdit staged while the gate was armed and
+//        approved later cannot land geometry the delta now sees
+//----------------------------------------------------------------------
+
+//! The VALUE-SPLICE payload, aimed at `standard_object obj_sph`'s `name`.
+//!
+//! Shape, and why each piece is there: the legal value (`obj_sph`), then
+//! the chunk's REMAINING params re-stated so the original chunk closes
+//! COMPLETE, then `}`, then the smuggled chunk, then a fresh
+//! `standard_object {` header that the original chunk's own trailing
+//! `geometry`/`material` lines and closing brace go on to complete.  The
+//! result is a document that still LOADS and DERIVES and simply has one
+//! more chunk in it than the agent was allowed to create -- which is the
+//! whole point: this is not a malformed-input probe, it is a legal edit
+//! whose serialized bytes carry geometry.
+//!
+//! ONE LINE, deliberately: DocSetOrAddParamValue stores a value as
+//! whitespace-separated pvalue TOKENS, so any newline in it comes back out
+//! of SerializeCst as a space.  The single-line form is therefore what
+//! actually lands, and writing it that way keeps the fixture honest about
+//! the bytes under test.
+//!
+//! `name` is ValueKind::String, so the DERIVE layer accepts the whole blob
+//! as a name and the edit COMMITS.  (A Double or Color slot rejects the
+//! blob before serialization -- which is why R1c's own value-splice test
+//! has to drive its gate function directly.  It is exactly that "most
+//! splices are caught anyway" reasoning that let this hole stay open:
+//! `most` is not a gate.)
+static const char* const kG2SpliceGeometryValue =
+	"obj_sph geometry sph material mat_diffuse } "
+	"box_geometry { name sneaky width 1 height 1 depth 1 } "
+	"standard_object { name obj_sph_tail";
+
+//! The same shape, but splicing a PAINTER instead of geometry -- the
+//! control that proves G2j's refusal is about the CATEGORY, not about the
+//! splice mechanism.
+static const char* const kG2SplicePainterValue =
+	"obj_sph geometry sph material mat_diffuse } "
+	"uniformcolor_painter { name g2_sneaky_p color 0.1 0.2 0.3 } "
+	"standard_object { name obj_sph_tail";
+
+#define G2_SPLICE_TARGET "obj_sph", "standard_object", "name"
+
+static Agent::AgentSetPatch MakePatch( const char* target, const char* kind,
+                                       const char* param, const char* value )
+{
+	Agent::AgentSetPatch p;
+	p.target = target;
+	p.kind   = kind;
+	p.param  = param;
+	p.value  = value;
+	return p;
+}
+
+static void TestPartPlanGatePatchArm()
+{
+	std::printf( "G2j-G2n: the part-plan gate's PATCH arm (value-splice bypass)...\n" );
+
+	// -- G2j RED-PROOF ------------------------------------------------
+	// Pre-fix this assertion set goes RED at the very first Check: the
+	// patch APPLIES, a real box_geometry lands, the document changes, the
+	// head bumps and PartPlanGateRefusalCount() stays 0.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2j.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2j fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const std::string docBefore = sess->ReadDocument();
+			const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+			const Agent::AgentPatchResult r = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+
+			Check( !r.applied,
+			       "G2j MONEY ASSERTION: a propose_patch whose VALUE splices a whole box_geometry "
+			       "chunk into the document is REFUSED by the part-plan gate -- this is the bypass "
+			       "the four insert-verb call sites left wide open" );
+			Check( r.status == "rejected", "G2j the refusal reports status `rejected`" );
+			Check( !r.retriable,
+			       "G2j `retriable` is FALSE -- the GUI chat loops silently re-dispatch a retriable "
+			       "refusal up to 5 times, which would burn all 3 refusals before the model saw one" );
+			Check( r.message.find( "propose_patch refused" ) != std::string::npos,
+			       "G2j the refusal names the VERB that was refused" );
+			Check( r.message.find( "file_part_plan" ) != std::string::npos,
+			       "G2j the refusal names the tool to call -- the SAME text the insert verbs emit" );
+			Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+			       "G2j the refusal lists the CLOSED construction enum" );
+			Check( r.message.find( "2 more calls will be refused" ) != std::string::npos,
+			       "G2j the refusal states the ACCURATE remaining-refusal count" );
+			Check( r.message.find( "`box_geometry`" ) != std::string::npos &&
+			       r.message.find( "sneaky" ) != std::string::npos,
+			       "G2j the refusal names the geometry chunk the splice WOULD have introduced "
+			       "(the echoed name is the spliced chunk's `name` param verbatim -- on a "
+			       "single-line splice that param legitimately swallows the rest of the line, and "
+			       "echoing it as-authored is the honest report)" );
+			Check( sess->ReadDocument() == docBefore,
+			       "G2j MONEY ASSERTION: the document is BYTE-IDENTICAL -- no box_geometry landed" );
+			Check( sess->HeadVersion() == vBefore, "G2j the head version did not move" );
+			Check( sess->ReadDocument().find( "sneaky" ) == std::string::npos,
+			       "G2j RED-PROVE (direct): the spliced chunk's name appears nowhere in the document" );
+			Check( sess->PartPlanGateRefusalCount() == 1,
+			       "G2j MONEY ASSERTION: the SHARED refusal counter incremented -- before the fix it "
+			       "stayed at 0 and the instrument measured nothing" );
+			Check( !sess->PartPlanFiled(), "G2j a refusal does not count as a filed plan" );
+
+			// ...and after filing, the very same patch goes through: the gate
+			// is a SEQUENCING check, not a content ban.
+			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2j the plan is filed" );
+			const Agent::AgentPatchResult r2 = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+			Check( r2.applied,
+			       "G2j MONEY ASSERTION: after file_part_plan the SAME patch applies -- the gate "
+			       "sequences, it does not forbid" );
+			Check( sess->ReadDocument().find( "box_geometry" ) != std::string::npos &&
+			       sess->ReadDocument().find( "sneaky" ) != std::string::npos,
+			       "G2j and the splice really did create a chunk, so the refusal above was not vacuous" );
+			// STRONGEST form of "not vacuous": the engine's OWN canonical
+			// parser -- the same ParseToCst every scene load, every gate and
+			// every agent read goes through -- sees a REAL top-level
+			// box_geometry chunk in the COMMITTED bytes.
+			//
+			// (A strict file RELOAD of those bytes does fail, because the
+			// scene grammar wants chunk braces on their own lines and
+			// DocSetOrAddParamValue stores a value as whitespace-separated
+			// tokens, so the splice necessarily lands on ONE line.  That is a
+			// separate robustness fact and emphatically NOT a defence: the
+			// chunk is live in the retained Document, which is what every
+			// agent verb reads, what the derive consumed, and what `save`
+			// writes.  A gate whose only backstop is "the grammar might reject
+			// it later" is not a gate -- the same "most splices are caught
+			// anyway" reasoning is what let this hole stay open.)
+			{
+				const RISE::Cst::Document reparsed = RISE::Cst::ParseToCst( sess->ReadDocument() );
+				bool sawBox = false;
+				const int nItems = RISE::Cst::DocItemCount( reparsed );
+				for( int i = 0; i < nItems && !sawBox; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( reparsed, RISE::Cst::DocNodeIdAt( reparsed, i ) );
+					sawBox = it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == "box_geometry";
+				}
+				Check( sawBox,
+				       "G2j MONEY ASSERTION (canonical parse): the committed bytes carry a REAL "
+				       "top-level box_geometry chunk -- exactly what the part-plan gate exists to "
+				       "intercept, and exactly what the gate's delta detector sees" );
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// -- G2k OVER-REFUSAL GUARD ---------------------------------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g2k.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2k fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const Agent::AgentPatchResult r = sess->ProposePatch(
+				MakePatch( "sph", "sphere_geometry", "radius", "1.25" ) );
+			Check( r.applied,
+			       "G2k MONEY ASSERTION: editing an EXISTING geometry chunk's param is NOT a creation "
+			       "-- the geometry-keyword multiset is unchanged, so the gate must not fire (delta, "
+			       "not state: the E1 lesson)" );
+			Check( !sess->PartPlanGateHasFired(), "G2k the gate did not fire" );
+			Check( sess->PartPlanGateRefusalCount() == 0, "G2k no refusal was burned" );
+			// A RENAME of an existing geometry chunk is not a creation either.
+			const Agent::AgentPatchResult rn = sess->ProposePatch(
+				MakePatch( "sph", "sphere_geometry", "name", "sph_renamed" ) );
+			Check( !sess->PartPlanGateHasFired(),
+			       "G2k renaming an existing geometry chunk is not a creation either (the keyword "
+			       "multiset is unchanged), whatever the derive layer then makes of the dangling "
+			       "reference" );
+			(void)rn;
+			Check( sess->PartPlanGateRefusalCount() == 0,
+			       "G2k MONEY ASSERTION: after two edits that TOUCH geometry the counter is still 0" );
+			// ...and the next genuine creation still fires, so the negatives
+			// above are not vacuous.
+			const Agent::AgentPatchResult rc = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+			Check( !rc.applied && rc.message.find( "file_part_plan" ) != std::string::npos,
+			       "G2k RED-PROVE: a genuine creation on the same session DOES fire" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// -- G2l NON-GEOMETRY SPLICE --------------------------------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g2l.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2l fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			const Agent::AgentPatchResult r = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SplicePainterValue ) );
+			Check( r.applied,
+			       "G2l MONEY ASSERTION: the SAME splice mechanism introducing a PAINTER is not this "
+			       "gate's business -- G2 triggers on ChunkCategory::Geometry, not on chunk creation" );
+			Check( sess->ReadDocument().find( "g2_sneaky_p" ) != std::string::npos,
+			       "G2l the painter really was created, so the positive above is not vacuous" );
+			Check( !sess->PartPlanGateHasFired(),
+			       "G2l the gate is still ARMED after a non-geometry splice" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// -- G2m propose_patches: PER-ELEMENT -----------------------------
+	// DECISION (G2 fix-round): the batch refuses PER-ELEMENT, matching what
+	// ProposePatches already does for E1 and R1c refusals.  ProposePatches
+	// is a thin loop over ProposePatch and is NOT atomic -- only a stale
+	// baseHeadVersion on element 0 is batch-fatal (each element is its own
+	// commit against the head as it then stands).  insert_chunkS refuses
+	// ATOMICALLY because IT is atomic; making the patch batch atomic would
+	// mean inventing a rollback the verb has never had.
+	{
+		const std::string tmp = TempPath( "agentcrud_g2m.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2m fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSetPatch> batch;
+			batch.push_back( MakePatch( "sph", "sphere_geometry", "radius", "0.9" ) );
+			batch.push_back( MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+			batch.push_back( MakePatch( "mat_diffuse", "lambertian_material", "reflectance",
+			                            "pnt_albedo" ) );
+			const std::vector<Agent::AgentPatchResult> rs = sess->ProposePatches( batch, nullptr );
+			Check( rs.size() == 3, "G2m one result per element" );
+			if( rs.size() == 3 ) {
+				Check( rs[0].applied, "G2m element 0 (an innocent geometry param edit) APPLIES" );
+				Check( !rs[1].applied && rs[1].message.find( "file_part_plan" ) != std::string::npos,
+				       "G2m MONEY ASSERTION: only the geometry-introducing element is refused" );
+				Check( rs[2].applied,
+				       "G2m element 2 still APPLIES -- per-element, exactly as E1/R1c refusals behave "
+				       "in this batch verb" );
+			}
+			Check( sess->ReadDocument().find( "sneaky" ) == std::string::npos,
+			       "G2m the refused element landed nothing" );
+			Check( sess->PartPlanGateRefusalCount() == 1,
+			       "G2m the batch burned exactly ONE refusal -- one geometry-introducing element" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// -- G2n ONE SHARED BUDGET ----------------------------------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g2n.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G2n fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+			// refusal 1 -- through the PATCH arm
+			const Agent::AgentPatchResult p1 = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+			Check( !p1.applied && sess->PartPlanGateRefusalCount() == 1, "G2n patch refusal is #1" );
+			Check( p1.message.find( "2 more calls will be refused" ) != std::string::npos,
+			       "G2n the patch refusal reports 2 remaining" );
+
+			// refusal 2 -- through insert_chunk
+			const Agent::AgentChunkResult i2 = sess->InsertChunk( kG2GeometryChunk );
+			Check( !i2.applied && sess->PartPlanGateRefusalCount() == 2,
+			       "G2n MONEY ASSERTION: an INSERT refusal draws on the SAME counter the patch "
+			       "refusal incremented -- one session-wide budget, not two" );
+			Check( i2.message.find( "1 more call will be refused" ) != std::string::npos,
+			       "G2n the insert refusal's remaining count continues the patch refusal's sequence" );
+
+			// refusal 3 -- through insert_geometry_scaffold
+			const Agent::AgentSession::AgentGeometryScaffoldResult g3 =
+				sess->InsertGeometryScaffold( "sdf_column", "g2n", 1.0, 0.5, 1.0 );
+			Check( !g3.ok && sess->PartPlanGateRefusalCount() == 3, "G2n scaffold refusal is #3" );
+			Check( !sess->PartPlanGateGaveUp(), "G2n the gate has not given up yet" );
+
+			// the 4th -- back through the PATCH arm -- is the GIVE-UP
+			const Agent::AgentPatchResult p4 = sess->ProposePatch(
+				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+			Check( p4.applied,
+			       "G2n MONEY ASSERTION: the 4th interception -- arriving through the PATCH arm -- is "
+			       "the shared give-up, not a 4th refusal" );
+			Check( sess->PartPlanGateGaveUp(), "G2n the gate is now permanently disarmed" );
+			Check( sess->PartPlanGateRefusalCount() == 3, "G2n the counter stays at 3" );
+			Check( p4.message.find( "part-plan gate" ) != std::string::npos &&
+			       p4.message.find( "3 refusals" ) != std::string::npos &&
+			       p4.message.find( "disarmed for this session" ) != std::string::npos,
+			       "G2n MONEY ASSERTION: the give-up notice is folded into the PATCH result too -- "
+			       "greppable in the payload a trajectory census reads" );
+			Check( sess->ReadDocument().find( "sneaky" ) != std::string::npos,
+			       "G2n the give-up call really did apply" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
+//! G2o (fix-round 2026-08-10): the STAGED / resolve path.
+//!
+//! The insert verbs gate BEFORE their External staging branch and the two
+//! disarm flags are permanent-once-set, so the ordinary direction is closed
+//! by construction.  The residual this pins is the one HEAD-DEPENDENT
+//! window a ParamEdit has: a patch whose target does not resolve at stage
+//! time (so the delta sees nothing to refuse) can become geometry-
+//! introducing once someone creates that target, and the Owner then
+//! approves it.  ResolveProposal re-runs the same stateless delta.
+static void TestPartPlanGateStagedResolve()
+{
+	std::printf( "G2o: the part-plan gate's staged/resolve re-check...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2o.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2o fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+	std::unique_ptr<Agent::AgentSession> owner =
+		Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+	owner->AttachController( &c );
+
+	// (o1) STAGE TIME: an External session's geometry-introducing patch is
+	// refused BEFORE it can reach the queue -- the gate sits ahead of the
+	// authority branching, exactly as the insert verbs' arms do.
+	{
+		// WrapJobGateArmed wraps as Owner, so arm the default by hand for
+		// exactly the width of this External construction (same idiom).
+		Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
+		std::unique_ptr<Agent::AgentSession> ext =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+		ext->AttachController( &c );
+		const Agent::AgentPatchResult r = ext->ProposePatch(
+			MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
+		Check( !r.applied && r.status == "rejected",
+		       "G2o(o1) MONEY ASSERTION: an External geometry-introducing patch is refused BEFORE "
+		       "staging -- the G2 arm sits ahead of the authority branch" );
+		Check( r.message.find( "file_part_plan" ) != std::string::npos,
+		       "G2o(o1) the refusal is the part-plan gate's, not the staging refusal" );
+		Check( owner->ListProposals().empty(), "G2o(o1) and NOTHING was enqueued" );
+	}
+
+	// (o2) RESOLVE TIME: stage directly on the controller with the
+	// armed-at-stage flag set (the shape a proposal has when it staged while
+	// innocent -- e.g. its target did not resolve then), then approve it once
+	// the delta DOES see geometry.  The re-check must refuse.
+	{
+		SceneEditController::AgentProposal p;
+		p.kind       = SceneEditController::AgentProposalKind::ParamEdit;
+		p.target     = String( "obj_sph" );
+		p.entityKind = String( "standard_object" );
+		p.param      = String( "name" );
+		p.value      = String( kG2SpliceGeometryValue );
+		p.hasExplicitBaseVersion   = false;
+		p.partPlanGateArmedAtStage = true;
+		RISE::Cst::CstHeadVersion stagedHead{};
+		const std::uint64_t id = c.StageProposal( p, &stagedHead );
+		Check( id != 0, "G2o(o2) the innocent-at-stage proposal reaches the queue" );
+
+		const std::string headBefore = owner->ReadDocument();
+		const Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok, "G2o(o2) resolve runs (the id is found)" );
+		Check( rr.status == "rejected",
+		       "G2o(o2) MONEY ASSERTION: approving a staged ParamEdit that would NOW introduce "
+		       "geometry is REFUSED at resolve time" );
+		Check( rr.message.find( "resolve refused" ) != std::string::npos,
+		       "G2o(o2) the message carries the resolve-refusal marker" );
+		Check( rr.message.find( "file_part_plan" ) != std::string::npos &&
+		       rr.message.find( "`box_geometry`" ) != std::string::npos,
+		       "G2o(o2) the refusal names the remedy and the chunk it would have introduced" );
+		Check( owner->ReadDocument() == headBefore,
+		       "G2o(o2) MONEY ASSERTION: the live document never received the spliced geometry" );
+	}
+
+	// (o3) the SAME proposal shape with the flag CLEAR -- the ordinary case,
+	// a proposal staged by a session whose gate was already disarmed -- must
+	// APPLY.  Without this the re-check would be a blanket ban on geometry-
+	// creating patches through the staged path.
+	{
+		SceneEditController::AgentProposal p;
+		p.kind       = SceneEditController::AgentProposalKind::ParamEdit;
+		p.target     = String( "obj_sph" );
+		p.entityKind = String( "standard_object" );
+		p.param      = String( "name" );
+		p.value      = String( kG2SpliceGeometryValue );
+		p.hasExplicitBaseVersion   = false;
+		p.partPlanGateArmedAtStage = false;
+		RISE::Cst::CstHeadVersion stagedHead{};
+		const std::uint64_t id = c.StageProposal( p, &stagedHead );
+		Check( id != 0, "G2o(o3) the disarmed-at-stage proposal reaches the queue" );
+		const Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok && rr.status == "applied",
+		       "G2o(o3) MONEY ASSERTION: with the gate disarmed at stage time the SAME proposal "
+		       "APPLIES -- the re-check is conditional, not a blanket ban" );
+		Check( owner->ReadDocument().find( "sneaky" ) != std::string::npos,
+		       "G2o(o3) and it really landed the chunk, so (o2)'s refusal was not vacuous" );
+	}
+
+	owner.reset();
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestPartPlanWireShape()
+{
+	std::printf( "G2h: file_part_plan wire shape + param validation through the LIVE dispatcher...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2h.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G2h fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	// -32602, naming the enum, for every malformed shape.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_part_plan\",\"params\":{}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "G2h a missing 'parts' is -32602" );
+		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		       "G2h that error NAMES the accepted enum" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_part_plan\",\"params\":{\"parts\":[]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "G2h an EMPTY 'parts' array is -32602" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"wing\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "G2h a MISSING 'construction' is -32602" );
+		Check( resp.find( "parts[0].construction" ) != std::string::npos,
+		       "G2h that error names the offending INDEX and field" );
+		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		       "G2h and the accepted enum" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\"},"
+			"{\"part\":\"tail\",\"construction\":\"lathe\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "G2h a construction OUTSIDE the enum is -32602" );
+		Check( resp.find( "parts[1].construction" ) != std::string::npos &&
+		       resp.find( "`lathe`" ) != std::string::npos,
+		       "G2h that error names the index AND echoes the rejected value" );
+		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		       "G2h and the accepted enum" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"\",\"construction\":\"mesh\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos && resp.find( "parts[0].part" ) != std::string::npos,
+		       "G2h an EMPTY part name is -32602 naming the field" );
+	}
+
+	// A refused plan must NOT have disarmed the gate: the intercepted insert
+	// still fires.  (A malformed filing that silently counted would be the
+	// worst of both -- the model gets no plan and no gate.)
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
+			"\"box_geometry\\n{\\n\\tname g2h_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
+		Check( resp.find( "file_part_plan" ) != std::string::npos,
+		       "G2h RED-PROVE: after five REFUSED filings the gate is still armed and fires" );
+	}
+
+	// The success envelope.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"membrane\"},"
+			"{\"part\":\"body\",\"construction\":\"primitive\"}]}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "G2h file_part_plan returns a JSON-RPC result object" );
+		Check( result.get( "filed" ).isBool() && result.get( "filed" ).asBool(), "G2h `filed` is true" );
+		Check( !result.get( "replacedPreviousPlan" ).asBool( true ),
+		       "G2h `replacedPreviousPlan` is false on the first filing" );
+		Check( result.get( "partCount" ).asNumber( -1 ) == 2.0, "G2h `partCount` is 2" );
+		Check( result.get( "parts" ).isArray() && result.get( "parts" ).size() == 2,
+		       "G2h `parts` echoes one entry per declared part" );
+		Check( result.get( "parts" ).at( 0 ).get( "part" ).asString() == "wing" &&
+		       result.get( "parts" ).at( 0 ).get( "construction" ).asString() == "sweep" &&
+		       result.get( "parts" ).at( 0 ).get( "note" ).asString() == "membrane",
+		       "G2h each entry carries {part,construction,note}, in the order declared" );
+		Check( result.get( "parts" ).at( 1 ).get( "note" ).asString().empty(),
+		       "G2h an omitted note echoes as an empty string, never absent" );
+		Check( result.get( "message" ).asString().find( "wing: sweep" ) != std::string::npos,
+		       "G2h `message` is a factual echo of the plan" );
+		Check( !result.has( "headVersion" ),
+		       "G2h there is NO headVersion -- the call does not touch the document" );
+	}
+
+	// And now the same insert lands.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
+			"\"box_geometry\\n{\\n\\tname g2h_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "G2h the post-plan insert returns a result" );
+		Check( result.get( "applied" ).asBool(),
+		       "G2h MONEY ASSERTION (wire): after file_part_plan the SAME insert applies" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
+	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk; R1a: remove_chunks) ===\n" );
 
 	TestHeadlessInsert();
@@ -7548,6 +8552,16 @@ int main()
 	TestMaterialScaffoldNameLengthCap();
 	TestMaterialScaffoldNameCollision();
 	TestMaterialScaffoldProposalMode();
+	TestPartPlanGateRefusesUntilFiledCapped();
+	TestPartPlanFiledMidRefusalSequenceClearsGate();
+	TestPartPlanFiledFirstNeverIntercepts();
+	TestPartPlanGateEveryTriggeringVerb();
+	TestPartPlanGateIgnoresNonGeometry();
+	TestPartPlanAnyPlanAcceptedAndNonBinding();
+	TestPartPlanGateDisableSwitch();
+	TestPartPlanGatePatchArm();        // G2 fix-round (2026-08-10): the value-splice bypass
+	TestPartPlanGateStagedResolve();   // G2 fix-round (2026-08-10): the staged/resolve re-check
+	TestPartPlanWireShape();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();
 	TestGeometryScaffoldAspectFlow();

@@ -6072,6 +6072,44 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 					: RISE::Agent::CheckRasterizerAllowlistGateForInsert(
 						std::string( snapshot.chunkText.c_str() ) );
 			}
+			// G2 fix-round (2026-08-10, part-plan gate): the THIRD re-check,
+			// and the only CONDITIONAL one -- see
+			// AgentProposal::partPlanGateArmedAtStage for why it has to be
+			// (the gate is SESSION state; this controller has no handle on
+			// the session that staged the proposal, so the armed-ness is
+			// carried on the proposal itself while the DELTA stays stateless).
+			//
+			// PARAMEDIT ONLY, deliberately.  An InsertChunk proposal needs no
+			// re-check: its chunk text is FIXED, so the insert-side classifier
+			// gives the identical answer at stage and at resolve, and all four
+			// insert verbs gate BEFORE their External staging branch -- a
+			// geometry-creating insert staged while armed is impossible.
+			// RemoveChunk / RemoveChunks cannot create a chunk at all.  A
+			// ParamEdit is the one kind whose effect is HEAD-DEPENDENT (a
+			// target that did not resolve at stage time can resolve later),
+			// which is exactly the staleness window this closes.
+			//
+			// The gate's COUNTER is deliberately NOT touched here.  The
+			// 3-refusal budget belongs to the staging session; incrementing
+			// anything from the controller would be a SECOND budget, which is
+			// the bug this fix-round exists to avoid.  This is a stale-proposal
+			// rejection, not a gate refusal.
+			if( clause.empty() && snapshot.partPlanGateArmedAtStage &&
+			    snapshot.kind == AgentProposalKind::ParamEdit )
+			{
+				std::string introducedName;
+				const std::string introducedKind = RISE::Agent::DescribePartPlanGeometryDeltaForPatch(
+					headText, std::string( snapshot.target.c_str() ),
+					std::string( snapshot.entityKind.c_str() ),
+					std::string( snapshot.param.c_str() ),
+					std::string( snapshot.value.c_str() ), &introducedName );
+				if( !introducedKind.empty() )
+					clause = "this proposal was staged before any part plan was filed, and applying it to "
+					         "the head as it stands now would introduce a `" + introducedKind + "` chunk" +
+					         ( introducedName.empty() ? std::string() : ( " named `" + introducedName + "`" ) ) +
+					         " -- it did not when it was staged. Nothing in the document was changed. The "
+					         "proposing session must call file_part_plan and reissue the patch.";
+			}
 			if( !clause.empty() )
 			{
 				gateRefused    = true;

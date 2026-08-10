@@ -137,7 +137,19 @@ namespace RISE
 				       // render itself) and grades against a HOST-registered
 				       // reference image; available under every autonomy
 				       // posture, including Read.
-				       method == "compare_to_reference";
+				       method == "compare_to_reference" ||
+				       // G2 (2026-08-10): file_part_plan records a per-session
+				       // DECLARATION (a list of part names and their declared
+				       // construction) and touches the retained Document not
+				       // at all -- no chunk, no param, no head bump -- so it is
+				       // read-safe on the same test render/read_viewport pass.
+				       // It must ALSO be reachable under every posture for a
+				       // second, load-bearing reason: it is the ONLY way to
+				       // disarm the part-plan gate, and under Propose the gate
+				       // can genuinely fire (insert_chunk reaches the session
+				       // there).  A gate whose unblock is refused by the
+				       // autonomy layer would be an un-unlockable session.
+				       method == "file_part_plan";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -1723,6 +1735,87 @@ namespace RISE
 				//   autonomy staging-vs-commit, conflict detection, and
 				//   per-chunk `issues` are all inherited unchanged.
 				//--------------------------------------------------------------
+				//--------------------------------------------------------------
+				// file_part_plan {parts:[{part,construction,note?},...]}
+				//   -> {filed:true, replacedPreviousPlan:bool, partCount:number,
+				//       parts:[{part,construction,note},...], message}
+				//   G2 (2026-08-10): the ONLY way to disarm the part-plan gate
+				//   (AgentSession.h's block above FilePartPlan).  READ-SAFE --
+				//   it records a per-session declaration and touches the
+				//   Document not at all, so there is no headVersion, no
+				//   baseHeadVersion, no conflict, no staging, and no authority
+				//   branch: an External-authority session files a plan
+				//   directly, exactly like it renders directly.
+				//   Every param error below is a clean kInvalidParams naming
+				//   the accepted enum; the plan CONTENT is never judged (a
+				//   plan of all-`primitive` is as valid as any other).
+				//--------------------------------------------------------------
+				if( m == "file_part_plan" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const std::string enumList = AgentSession::PartPlanConstructionList();
+					const JsonValue* partsVal = params.find( "parts" );
+					if( !partsVal || !partsVal->isArray() || partsVal->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'parts' (non-empty array of {part, construction[, note]}) "
+							"is required; each element's 'construction' must be one of: " + enumList );
+					}
+					std::vector<AgentSession::AgentPartPlanEntry> entries;
+					entries.reserve( partsVal->size() );
+					for( std::size_t i = 0; i < partsVal->size(); ++i ) {
+						const JsonValue& e = partsVal->at( i );
+						char idx[32];
+						std::snprintf( idx, sizeof( idx ), "parts[%d]", static_cast<int>( i ) );
+						if( !e.isObject() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + " must be an object "
+								"{part, construction[, note]}" );
+						}
+						const JsonValue* partVal = e.find( "part" );
+						if( !partVal || !partVal->isString() || partVal->asString().empty() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".part (non-empty string) is required" );
+						}
+						const JsonValue* consVal = e.find( "construction" );
+						if( !consVal || !consVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".construction (string) is required "
+								"-- one of: " + enumList );
+						}
+						if( !AgentSession::IsValidPartConstruction( consVal->asString() ) ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".construction is `" +
+								consVal->asString() + "` -- it must be one of: " + enumList );
+						}
+						const JsonValue* noteVal = e.find( "note" );
+						if( noteVal && !noteVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".note must be a string when present" );
+						}
+						AgentSession::AgentPartPlanEntry entry;
+						entry.part         = partVal->asString();
+						entry.construction = consVal->asString();
+						if( noteVal ) entry.note = noteVal->asString();
+						entries.push_back( entry );
+					}
+
+					const AgentSession::AgentPartPlanResult pr = s->FilePartPlan( entries );
+					JsonValue partsArr = JsonValue::MakeArray();
+					for( const AgentSession::AgentPartPlanEntry& e : pr.parts ) {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "part",         JsonValue::MakeString( e.part ) );
+						o.set( "construction", JsonValue::MakeString( e.construction ) );
+						o.set( "note",         JsonValue::MakeString( e.note ) );
+						partsArr.push_back( o );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "filed",                JsonValue::MakeBool( pr.ok ) );
+					result.set( "replacedPreviousPlan", JsonValue::MakeBool( pr.replacedPreviousPlan ) );
+					result.set( "partCount",            JsonValue::MakeNumber( static_cast<double>( pr.parts.size() ) ) );
+					result.set( "parts",                partsArr );
+					result.set( "message",              JsonValue::MakeString( pr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
 				if( m == "insert_material_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* familyVal = params.find( "family" );

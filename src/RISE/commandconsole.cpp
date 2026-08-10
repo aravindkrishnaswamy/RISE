@@ -701,6 +701,28 @@ int main( int argc, char** argv )
 	//                           LAUNCH-TIME ONLY: nothing reachable from
 	//                           stdin (a request parameter, a scene file) can
 	//                           change it.
+	//   --agent-part-plan-gate=on|off
+	//                           (G2, 2026-08-10) the part-plan gate: on a
+	//                           session that has not filed a part plan, EVERY
+	//                           geometry-creating call is refused and told to
+	//                           call file_part_plan -- up to 3 refusals, after
+	//                           which the gate GIVES UP (the 4th such call is
+	//                           let through, carrying a factual give-up notice
+	//                           in its result, and the gate disarms for that
+	//                           session).  Filing a plan at any point clears it
+	//                           immediately and permanently.  The cap exists
+	//                           because -- unlike E4's render-cadence gate,
+	//                           which any cheap render satisfies -- clearing
+	//                           this one needs a NEW tool call with a valid
+	//                           schema, so an uncapped form could strand a
+	//                           session that cannot form it. DEFAULT
+	//                           (flag omitted) is `on`. `off` disables it
+	//                           entirely for every session this process
+	//                           creates -- the misfire off-ramp and the
+	//                           gate-off measurement arm. Same contract as
+	//                           --agent-autonomy: LAUNCH-TIME ONLY, and any
+	//                           value but exactly "on"/"off" (including a
+	//                           missing `=value`) is a loud failure.
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -746,6 +768,21 @@ int main( int argc, char** argv )
 	RISE::Agent::AgentAutonomy cliAutonomy = RISE::Agent::AgentAutonomy::Read;
 	const char* kAutonomyFlagPrefix = "--agent-autonomy=";
 	const std::size_t kAutonomyFlagPrefixLen = strlen( kAutonomyFlagPrefix );
+	// G2 (2026-08-10): `--agent-part-plan-gate=on|off` -- the OFF-RAMP for
+	// the part-plan gate (AgentSession.h's block above FilePartPlan).  ON by
+	// default, matching AgentSession's own process default; `off` disables it
+	// completely for every session this process creates, which is both the
+	// misfire escape hatch and the gate-off arm of the behavioural
+	// measurement.  Parsed and VALIDATED here, then applied once below --
+	// BEFORE any session is constructed and therefore before anything can be
+	// dispatched.  LAUNCH-TIME ONLY, exactly like --agent-autonomy: nothing
+	// reachable from the wire (a request parameter, an MCP tools/call, a
+	// scene file) can reach it -- AgentRpc exposes no verb that touches it.
+	// Any value but exactly "on" or "off" is a loud launch-time failure,
+	// never a silent default, matching this flag family's contract.
+	bool cliPartPlanGate = true;
+	const char* kPartPlanGateFlagPrefix = "--agent-part-plan-gate=";
+	const std::size_t kPartPlanGateFlagPrefixLen = strlen( kPartPlanGateFlagPrefix );
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
@@ -832,6 +869,26 @@ int main( int argc, char** argv )
 				std::cerr << "ERROR: --agent-autonomy requires 'read', 'propose', or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
+		} else if( strncmp( a, kPartPlanGateFlagPrefix, kPartPlanGateFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kPartPlanGateFlagPrefixLen;
+			if( val == "on" ) {
+				cliPartPlanGate = true;
+			} else if( val == "off" ) {
+				cliPartPlanGate = false;
+			} else {
+				std::cerr << "ERROR: --agent-part-plan-gate requires 'on' or 'off'; got `" << val << "`.\n";
+				cliArgError = true;
+			}
+		} else if( strcmp( a, "--agent-part-plan-gate" ) == 0 ) {
+			// The bare token with no `=value`: loud, for exactly the reason
+			// --agent-autonomy's own bare-token branch below is loud -- the
+			// SPACE form `--agent-part-plan-gate off` would otherwise have
+			// its value silently swallowed as the positional scene argument.
+			// Exact strcmp (not a prefix match) so a longer future flag
+			// sharing this prefix falls through to its own branch.
+			std::cerr << "ERROR: --agent-part-plan-gate requires the form "
+			             "`--agent-part-plan-gate=on` or `--agent-part-plan-gate=off`; got `" << a << "`.\n";
+			cliArgError = true;
 		} else if( strcmp( a, "--agent-autonomy" ) == 0 ) {
 			// Hardening (loud-never-silent): this catches the BARE
 			// `--agent-autonomy` token with no `=value` at all -- the SPACE
@@ -875,6 +932,12 @@ int main( int argc, char** argv )
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
 	}
+	// G2 (2026-08-10): apply the part-plan-gate posture ONCE, here -- after
+	// the whole command line has been validated (so a malformed flag has
+	// already exited above) and BEFORE any transport dispatch below
+	// constructs an AgentSession.  Every session snapshots this at
+	// construction; nothing changes it afterwards.
+	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( cliPartPlanGate );
 	// Eval-harness slice E4: `--agent-eval` is a batch runner, not a live
 	// transport -- reject it combined with either live transport LOUDLY and
 	// BEFORE the transport dispatch below (otherwise the stdio/http branch

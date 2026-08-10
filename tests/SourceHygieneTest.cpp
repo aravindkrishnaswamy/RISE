@@ -1058,6 +1058,96 @@ int main()
 			       "allowlist AgentSession.cpp enforces" );
 		}
 
+		// ---- G2: part-plan gate, surface parity --------------------------
+		// GROUND TRUTH IS THE CODE.  The closed `construction` enum lives in
+		// AgentSession.cpp's kPartPlanConstructionValues, and three facts about
+		// the gate are RESTATED, in prose, on the two hand-authored surfaces a
+		// model actually reads: the shared chat tool defs (AgentChatCodecs.cpp
+		// `kToolDefs` -- the text sent with EVERY API call) and the MCP
+		// tools/list description (AgentMcpAdapter.cpp).  They are written
+		// independently, share no string, and are compiled against nothing, so
+		// only this scan pins them.
+		//
+		// The three facts are load-bearing, not decoration.  (1) The ENUM: a
+		// value outside it is a -32602, so a surface that omits a value costs
+		// the model a round trip discovering it -- and a surface that omits the
+		// enum entirely invites free text into the one required field.  (2)
+		// NON-BINDING: if a model believes the declaration constrains its later
+		// authoring, it will either under-declare defensively or refuse to
+		// deviate -- both of which corrupt the measurement this gate exists to
+		// produce.  (3) CAPPED AT 3 REFUSALS (2026-08-10 refuse-until-filed
+		// redesign, superseding the original once-per-session design): the
+		// refusal asserts the cap, so both surfaces must too, or the model is
+		// reading two different contracts.
+		//
+		// This is the G1 review's finding generalized: a caveat present on the
+		// MCP schema and absent from the chat codec is absent from the text
+		// that ships with every API call.
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+			std::vector<std::string> enumValues;
+			{
+				const std::string anchorDecl = "kPartPlanConstructionValues[6] =";
+				const size_t at = sessionSrc.find( anchorDecl );
+				const size_t end = at == std::string::npos ? std::string::npos
+				                                           : sessionSrc.find( "};", at );
+				if( end != std::string::npos ) {
+					const std::string body = sessionSrc.substr( at, end - at );
+					for( size_t q = body.find( '"' ); q != std::string::npos; q = body.find( '"', q + 1 ) ) {
+						const size_t q2 = body.find( '"', q + 1 );
+						if( q2 == std::string::npos ) break;
+						enumValues.push_back( body.substr( q + 1, q2 - q - 1 ) );
+						q = q2;
+					}
+				}
+			}
+			Check( enumValues.size() == 6,
+			       "G2 parity: parsed the closed construction enum out of AgentSession.cpp (got "
+			       + std::to_string( enumValues.size() ) + ")" );
+
+			static const char* const kPlanSurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
+			std::vector<std::string> planProblems;
+			for( const char* fname : kPlanSurfaces ) {
+				const std::string src = slurp( agentDir / fname );
+				if( src.find( "file_part_plan" ) == std::string::npos ) {
+					planProblems.push_back( std::string( fname ) + ": never mentions file_part_plan at all" );
+					continue;
+				}
+				// A surface satisfies the ENUM half either MECHANICALLY (it
+				// builds the list from kPartPlanConstructionValues, so it
+				// cannot drift) or by naming every value verbatim.  The MCP
+				// adapter takes the first route and the chat codec -- whose
+				// schemas are raw string literals, so it cannot -- takes the
+				// second, with each value spelled inside an ESCAPED JSON
+				// string (\"primitive\") in the C++ source.
+				const bool derivesEnum = src.find( "kPartPlanConstructionValues" ) != std::string::npos;
+				if( !derivesEnum ) {
+					for( const std::string& v : enumValues )
+						if( src.find( "\\\"" + v + "\\\"" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": never names the construction "
+								"value `" + v + "` (and does not derive the list from "
+								"kPartPlanConstructionValues) -- a model reading this surface will not know "
+								"it is legal, and any other value is a -32602" );
+				}
+				if( src.find( "NOT binding" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the part plan "
+						"is NOT binding -- a model that believes otherwise will under-declare or refuse "
+						"to deviate, corrupting the measurement" );
+				if( src.find( "up to 3 refusals" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the gate refuses "
+						"up to 3 times before it stops intercepting -- the refusal itself asserts the cap "
+						"(2026-08-10 refuse-until-filed redesign), so this surface would be a second, "
+						"different contract" );
+			}
+			for( const std::string& p : planProblems )
+				std::cout << "  G2 PART-PLAN SURFACE DRIFT: " << p << std::endl;
+			Check( planProblems.empty(),
+			       "G2: both hand-authored tool-description surfaces state the SAME construction enum "
+			       "and the SAME non-binding / capped-refusal contract" );
+		}
+
 		// ---- render{imageMaxEdge} through the drivers' async detour -------
 		// WHY THIS IS GUARDED IN SOURCE.  `render{imageMaxEdge:N}` returns the
 		// PNG inline so an ordinary look costs ONE turn.  The RPC refuses that

@@ -318,7 +318,7 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 23 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 24 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -639,6 +639,58 @@ namespace RISE
 						"before any chunk is generated (document unchanged) -- reported as a tool error, not a "
 						"partial result. Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "insert_material_scaffold", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// file_part_plan (G2, 2026-08-10) -- READ-SAFE (no autonomy
+				// note of any kind: it is on IsReadSafeVerb, so it dispatches
+				// under Read and Propose exactly as under Commit).
+				{
+					JsonValue entryProps = JsonValue::MakeObject();
+					entryProps.set( "part", StringProp(
+						"Required. The name of this part, in your own words (e.g. \"left wing\", \"lamp base\")." ) );
+					JsonValue construction = StringProp(
+						"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh." );
+					{
+						JsonValue enumArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kPartPlanConstructionCount; ++i )
+							enumArr.push_back( JsonValue::MakeString( AgentSession::kPartPlanConstructionValues[i] ) );
+						construction.set( "enum", enumArr );
+					}
+					entryProps.set( "construction", construction );
+					entryProps.set( "note", StringProp( "Optional free text about this part." ) );
+					std::vector<std::string> entryRequired;
+					entryRequired.push_back( "part" ); entryRequired.push_back( "construction" );
+
+					JsonValue partsProp = JsonValue::MakeObject();
+					partsProp.set( "type", JsonValue::MakeString( "array" ) );
+					partsProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					partsProp.set( "items", ObjectProp( "", entryProps, entryRequired ) );
+					partsProp.set( "description", JsonValue::MakeString(
+						"Required, at least one entry -- the parts of the subject you are about to build." ) );
+
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "parts", partsProp );
+					std::vector<std::string> required;
+					required.push_back( "parts" );
+
+					const std::string desc =
+						"File the part plan for the thing you are building: one entry per part, each naming how "
+						"that part will be constructed. On a session that has not filed one, EVERY call that "
+						"creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
+						"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
+						"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
+						"intercepting for the rest of the session. `construction` is REQUIRED per part and "
+						"must be one of exactly: \"primitive\" (a single built-in shape chunk), \"csg\" (a "
+						"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
+						"profile swept along a path), \"chain\" (several shapes blended into one form), "
+						"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
+						"chunk). Any answer is accepted, including \"primitive\" for every part. The plan "
+						"is NOT binding: declaring one construction and then authoring a different chunk "
+						"kind is allowed and is never refused. Filing does not change the document -- no chunk, no head "
+						"version, no undo step -- so there is no baseHeadVersion and no conflict outcome. "
+						"Returns {filed,replacedPreviousPlan,partCount,parts:[{part,construction,note}],message}. "
+						"Calling it again replaces the previous plan.";
+					tools.push_back( MakeTool( "file_part_plan", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// insert_geometry_scaffold (Arc-75 slice S3b; extended by slice E3
@@ -1211,12 +1263,13 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 23 tool names this adapter recognizes --
+			//! The list of the 24 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
+					"file_part_plan",   // G2 (2026-08-10): read-safe, the part-plan gate's unblock
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold",
 					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
@@ -1370,7 +1423,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 23 verbs as MCP tools.
+				// tools/list -> the 24 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

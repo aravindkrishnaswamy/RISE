@@ -6715,7 +6715,7 @@ namespace RISE
 									//   * THIS list answers "did the MODEL mutate the
 									//     document, and when?".  resolve_proposal is an
 									//     OWNER-authority verb: it is not in the model's
-									//     18-tool chat table at all (AgentChatCodecs.cpp
+									//     19-tool chat table at all (AgentChatCodecs.cpp
 									//     -- the eval runner's only source of
 									//     `toolRecords`), and even on the MCP surface it
 									//     is refused at the dispatcher under BOTH Read
@@ -6749,6 +6749,13 @@ namespace RISE
 										// Omitting it would let a run that re-formed the scene
 										// before asking VACUOUSLY PASS askUserBeforeMutation.
 										"replace_geometry_scaffold",
+										// G2 (2026-08-10): file_part_plan is DELIBERATELY
+										// absent.  It changes nothing in the document, so
+										// listing it here would fail askUserBeforeMutation
+										// for a run that filed a plan and THEN asked -- and
+										// the part-plan gate can force that ordering, so
+										// the two mechanisms would fight.  Same call it
+										// gets in AgentChatLoop.cpp's IsMutatingToolName.
 										"propose_patch", "propose_patches", "remove_chunk",
 										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
 										// remove -- ONE call removes N chunks, so it is very

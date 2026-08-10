@@ -769,6 +769,32 @@ namespace RISE
 			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) and
 			//! StageProposal passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
+			//! G2 fix-round (2026-08-10): was the staging session's PART-PLAN
+			//! GATE still ARMED at stage time (no plan filed, not given up, not
+			//! disabled)?  Carried on the proposal because ResolveProposal has
+			//! no handle on the AgentSession that staged it and the gate's state
+			//! is session-scoped -- unlike E1's and R1c's re-checks, which are
+			//! stateless policy the controller can evaluate on its own.
+			//!
+			//! Used for ONE narrow re-check: a ParamEdit staged while the gate
+			//! was armed was, by construction, NOT geometry-introducing against
+			//! the head AS IT STOOD THEN (AgentSession::ProposePatch's G2 arm
+			//! refuses those before they can stage).  But a param edit's effect
+			//! is head-dependent -- a target that did not resolve at stage time
+			//! can resolve later -- so the same value can become
+			//! geometry-introducing while the proposal sits on the queue.
+			//! ResolveProposal therefore re-runs the stateless delta
+			//! (RISE::Agent::DescribePartPlanGeometryDeltaForPatch) against the
+			//! CURRENT head and refuses, exactly as it already does for E1 and
+			//! R1c.  FALSE for every proposal staged with the gate disarmed --
+			//! including every pre-G2 proposal shape and every default-
+			//! constructed AgentProposal -- so the re-check simply does not run
+			//! for them, which is the correct answer: no plan was ever required.
+			//! The gate's disarm flags are permanent-once-set, so this can only
+			//! be conservatively STALE (armed at stage, plan filed before
+			//! resolve); the refusal names reissue as the remedy and the
+			//! reissued patch stages cleanly.
+			bool                partPlanGateArmedAtStage = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};

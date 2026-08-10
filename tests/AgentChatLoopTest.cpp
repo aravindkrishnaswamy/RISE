@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 18, "body carries eighteen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 19, "body carries nineteen OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -566,8 +566,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 18,
-		       "xAI body carries the same eighteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 19,
+		       "xAI body carries the same nineteen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -832,7 +832,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 18, "body carries eighteen tools" );
+	Check( tools.isArray() && tools.size() == 19, "body carries nineteen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1772,7 +1772,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 18, "eighteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 19, "nineteen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -9332,8 +9332,189 @@ static void TestDriverNoteSmoke()
 	       "T46: Reset() leaves the count/text at their zero state" );
 }
 
+//----------------------------------------------------------------------
+// T47 (G2, 2026-08-10): file_part_plan on the shared tool table, and its
+// E4 SEQUENCING-GATE classification.
+//
+// (a) The tool is present on every provider codec with the CLOSED
+//     construction enum -- the enum is the whole mechanism, so a codec that
+//     dropped it would leave a model free-texting a field the dispatcher
+//     then -32602s.
+// (b) It is NEITHER a mutation NOR a look, exactly like ask_user: it leaves
+//     the blind-edit streak untouched.  Both halves are red-proved, because
+//     each mistake is separately harmful -- counted as a MUTATION it would
+//     let E4 refuse a model for filing the plan G2 just demanded (two gates
+//     fighting), and counted as a LOOK it would hand every model a free
+//     image-free streak reset and silently defeat E4.
+//----------------------------------------------------------------------
+static void TestFilePartPlanToolAndGateClassification()
+{
+	std::printf( "T47: file_part_plan tool table + E4 streak classification (neither mutation nor look)...\n" );
+
+	// (a) present on every provider codec, carrying the enum.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			if( tools.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			saw = true;
+			const JsonValue& items = tools.at( i ).get( "input_schema" ).get( "properties" )
+			                              .get( "parts" ).get( "items" );
+			const JsonValue& en = items.get( "properties" ).get( "construction" ).get( "enum" );
+			Check( en.isArray() && en.size() == 6, "T47a: anthropic `construction` carries a 6-value enum" );
+			Check( en.at( 0 ).asString() == "primitive" && en.at( 5 ).asString() == "mesh",
+			       "T47a: the enum is primitive..mesh in the documented order" );
+			const JsonValue& req = items.get( "required" );
+			bool hasPart = false, hasCons = false;
+			for( std::size_t k = 0; k < req.size(); ++k ) {
+				if( req.at( k ).asString() == "part" ) hasPart = true;
+				if( req.at( k ).asString() == "construction" ) hasCons = true;
+			}
+			Check( hasPart && hasCons, "T47a: both `part` and `construction` are REQUIRED per entry" );
+			const std::string desc = tools.at( i ).get( "description" ).asString();
+			Check( desc.find( "NOT binding" ) != std::string::npos,
+			       "T47a: the description states the plan is NOT binding" );
+			Check( desc.find( "up to 3 refusals" ) != std::string::npos,
+			       "T47a: the description states the gate is capped at 3 refusals "
+			       "(2026-08-10 refuse-until-filed redesign)" );
+			Check( desc.find( "consider" ) == std::string::npos &&
+			       desc.find( "should use" ) == std::string::npos &&
+			       desc.find( "try to" ) == std::string::npos,
+			       "T47a: MEASUREMENT HYGIENE -- the description carries no exhortation, only facts" );
+		}
+		Check( saw, "T47a: the Anthropic tool table includes file_part_plan" );
+	}
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			if( tools.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			saw = true;
+			const JsonValue& en = tools.at( i ).get( "parameters" ).get( "properties" )
+			                           .get( "parts" ).get( "items" )
+			                           .get( "properties" ).get( "construction" ).get( "enum" );
+			Check( en.isArray() && en.size() == 6, "T47a: openai `construction` carries the 6-value enum" );
+		}
+		Check( saw, "T47a: the OpenAI tool table includes file_part_plan" );
+	}
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
+		bool saw = false;
+		for( std::size_t i = 0; i < decls.size(); ++i ) {
+			if( decls.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			saw = true;
+			const JsonValue& en = decls.at( i ).get( "parameters" ).get( "properties" )
+			                           .get( "parts" ).get( "items" )
+			                           .get( "properties" ).get( "construction" ).get( "enum" );
+			Check( en.isArray() && en.size() == 6, "T47a: gemini `construction` carries the 6-value enum" );
+		}
+		Check( saw, "T47a: the Gemini declarations include file_part_plan" );
+	}
+
+	// (b) E4 classification.
+	const std::string kPlanResult =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"replacedPreviousPlan\":false,"
+		"\"partCount\":2,\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"\"},"
+		"{\"part\":\"body\",\"construction\":\"primitive\",\"note\":\"\"}],\"message\":\"part plan filed\"}}";
+	const std::string kInsertResult =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\"}}";
+
+	// NOT A MUTATION: three inserts (threshold 3) with a file_part_plan
+	// interleaved must still refuse on the fourth INSERT and never on the
+	// plan itself.  If the plan counted as a mutation, the third insert would
+	// already be refused.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditGateThreshold( 3 );
+		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
+		auto step = [&]( const char* verb, const std::string& result ) -> bool {
+			ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_p\",\"name\":\"" ) + verb +
+				"\",\"input\":{}}]", "tool_use" ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, result );
+			return false;
+		};
+		Check( !step( "file_part_plan", kPlanResult ),
+		       "T47b: file_part_plan is never itself gated" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1 -- not refused" );
+		Check( !step( "file_part_plan", kPlanResult ),
+		       "T47b: a file_part_plan between edits is never itself gated" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2 -- not refused" );
+		Check( !step( "insert_chunk", kInsertResult ),
+		       "T47b: insert 3 -- not refused (streak 2->3; if the two plan calls had counted as "
+		       "MUTATIONS the streak would already be past threshold 3 and this would refuse)" );
+		Check( step( "insert_chunk", kInsertResult ),
+		       "T47b: insert 4 -- REFUSED; the streak counted exactly the three inserts" );
+	}
+
+	// NOT A LOOK: after the gate has armed, a file_part_plan must NOT clear
+	// it -- only a real visual observation may.  RED-PROVE against the
+	// tempting "it is a read, so it resets" mis-wiring.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditGateThreshold( 3 );
+		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
+		auto step = [&]( const char* verb, const std::string& result ) -> bool {
+			ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_q\",\"name\":\"" ) + verb +
+				"\",\"input\":{}}]", "tool_use" ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, result );
+			return false;
+		};
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1/3" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2/3" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 3/3 (gate now armed)" );
+		Check( !step( "file_part_plan", kPlanResult ),
+		       "T47b: the plan call itself passes the gate (it is not a mutation)" );
+		Check( step( "insert_chunk", kInsertResult ),
+		       "T47b: MONEY ASSERTION -- the next insert is STILL refused: filing a plan is not a "
+		       "LOOK and must not reset the blind-edit streak" );
+	}
+
+	// The transcript one-liner reports WHAT was declared, not "ok".
+	{
+		ChatToolCall call;
+		call.name = "file_part_plan";
+		const std::string line = AgentChatLoop::ToolOutcomeLineForDisplay( call, kPlanResult );
+		Check( line.find( "wing=sweep" ) != std::string::npos &&
+		       line.find( "body=primitive" ) != std::string::npos,
+		       "T47c: the outcome line echoes each part and its declared construction" );
+	}
+}
+
 int main()
 {
+	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
 
 	// ONE live dispatcher over the inline scene, shared by the tests that
@@ -9403,6 +9584,7 @@ int main()
 	TestReasoningSurvivalMatrix();
 	TestDegenerateTurnRetryParity();
 	TestSequencingGateAcrossProvidersAndByteIdentity();
+	TestFilePartPlanToolAndGateClassification();
 	TestDriverNoteSmoke();
 
 	std::remove( scenePath.c_str() );

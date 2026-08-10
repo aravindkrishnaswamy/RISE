@@ -343,6 +343,13 @@ namespace
 			outToolName = name;
 			return true;
 		}
+		// G2 (2026-08-10): file_part_plan is DELIBERATELY not on this list.
+		// It changes nothing in the document (no chunk, no param, no head
+		// bump), so it carries none of the leverage this limiter meters --
+		// and it is the ONLY way to disarm the part-plan gate, so rate-
+		// limiting it could leave a client that hit its mutation budget
+		// unable to unblock itself.  Read-safe here, exactly as in
+		// AgentRpc.cpp's IsReadSafeVerb.
 		return false;
 	}
 

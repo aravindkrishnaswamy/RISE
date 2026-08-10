@@ -44,6 +44,31 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
+//      file_part_plan {parts:[{part,construction,note?},...]}
+//                                        -> {filed:true,replacedPreviousPlan:bool,partCount:number,
+//                                            parts:[{part,construction,note},...],message}
+//                                           (G2, 2026-08-10: file the session's PART PLAN --
+//                                            a list of the parts of the subject being
+//                                            built, each with a `construction` value from
+//                                            the CLOSED enum
+//                                            primitive|csg|sweep|chain|displaced|mesh.
+//                                            READ-SAFE: it records a per-session
+//                                            declaration and touches the retained
+//                                            Document not at all -- no head bump, no
+//                                            conflict, no staging, no authority branch --
+//                                            so it is available under EVERY autonomy
+//                                            posture, which it must be: it is the only
+//                                            way to disarm the part-plan gate, and that
+//                                            gate can fire under Propose.  ANY plan is
+//                                            accepted (all-`primitive` included); the
+//                                            declaration is NON-BINDING and constrains
+//                                            no later authoring.  Re-filing REPLACES the
+//                                            previous plan and is never refused.  A
+//                                            missing/empty `parts`, a missing `part`, or
+//                                            a `construction` outside the enum is a clean
+//                                            -32602 naming the accepted values.  See
+//                                            AgentSession.h's block above FilePartPlan
+//                                            for the gate itself.)
 //      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
 //                                            validated:"head"|"text"}
 //                                           (TWO forms, both read-only.  WITH `text`:
@@ -905,7 +930,8 @@
 //    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
-//    list_proposals, read_viewport, query_object_at, compare_to_reference --
+//    list_proposals, read_viewport, query_object_at, compare_to_reference,
+//    file_part_plan --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
@@ -1028,7 +1054,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_part_plan) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
 			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but

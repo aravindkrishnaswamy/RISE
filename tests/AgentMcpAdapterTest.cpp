@@ -128,6 +128,13 @@ static JsonValue ParseResponse( const std::string& line, double expectId )
 
 int main()
 {
+	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentMcpAdapterTest (Secure-MCP slice 1: MCP envelope adapter) ===\n" );
 
 	const std::string scenePath = WriteTemp( "rise_mcp_adapter_slice1.RISEscene", kScene );
@@ -216,7 +223,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 23, "id:null tools/list result carries all 23 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 24, "id:null tools/list result carries all 24 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -290,7 +297,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 23, "tools/list returns EXACTLY the 23 agent verbs" );
+		Check( toolsList.size() == 24, "tools/list returns EXACTLY the 24 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
@@ -672,7 +679,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 23, "no-head tools/list still lists all 23 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 24, "no-head tools/list still lists all 24 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

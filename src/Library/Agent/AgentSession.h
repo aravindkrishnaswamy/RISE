@@ -1708,6 +1708,53 @@ namespace RISE
 		                                                   const std::string& param,
 		                                                   const std::string& value );
 
+		//! G2 fix-round (2026-08-10): would this PARAM EDIT newly introduce a
+		//! chunk whose registry ChunkCategory is Geometry?  Returns that
+		//! chunk's KEYWORD (and, via `outName`, its bare `name` param) -- ""
+		//! when the edit introduces none.
+		//!
+		//! WHY A PARAM EDIT CAN CREATE A CHUNK AT ALL, and why this exists as a
+		//! separate arm rather than being argued away: DocSetOrAddParamValue
+		//! splices `value` into the target param's value token VERBATIM, so a
+		//! value carrying `}` followed by a complete `box_geometry { ... }`
+		//! block (and a trailing `#` to comment out the orphaned brace) becomes
+		//! a REAL new geometry chunk the moment the document is serialized.
+		//! That is the identical VALUE-SPLICE mechanism R1c's arm (b) was built
+		//! to close for rasterizer chunks; before this fix the part-plan gate
+		//! -- which guards the four INSERT verbs -- had no equivalent, so
+		//! propose_patch / propose_patches could land geometry with no plan
+		//! filed and the gate's refusal counter still reading zero, i.e. the
+		//! instrument measured nothing.
+		//!
+		//! DELTA, NOT STATE (the E1 lesson): the head and the candidate are
+		//! compared by geometry-keyword MULTISET, so editing an EXISTING
+		//! geometry chunk's params -- or renaming one -- is never a creation
+		//! and never trips the gate.  Only a keyword whose count GOES UP does.
+		//! The candidate is built ROUND-TRIPPED THROUGH BYTES, for the reason
+		//! R1c's arm (b) documents at length: the in-memory edit result still
+		//! has exactly the head's chunks; it is the serialized bytes where the
+		//! splice becomes a chunk.
+		//!
+		//! REGISTRY-DRIVEN classification (DescriptorForKeyword ->
+		//! ChunkCategory::Geometry), matching AgentSession::
+		//! ChunkTextCreatesGeometry_ -- NOT a `_geometry` suffix match -- so a
+		//! geometry kind added to the registry later is covered automatically
+		//! (`gltf_import` is Geometry today and carries no such suffix).
+		//!
+		//! A FREE function (external linkage) for the same cross-TU reason E1's
+		//! and R1c's patch arms are: SceneEditController::ResolveProposal's
+		//! stale-staged-proposal re-check calls this identical delta.  It is
+		//! PURE -- it never touches the gate's counter or its disarm flags;
+		//! deciding what to DO about a positive answer is the caller's job
+		//! (AgentSession::ProposePatch routes it through the ONE shared
+		//! CheckPartPlanGate_ budget).
+		std::string DescribePartPlanGeometryDeltaForPatch( const std::string& headText,
+		                                                    const std::string& target,
+		                                                    const std::string& kind,
+		                                                    const std::string& param,
+		                                                    const std::string& value,
+		                                                    std::string* outName = nullptr );
+
 		//! R1c round-3 FIX A (2026-08-09).  TRUE iff `pin` (already run
 		//! through the same lower-case/quote-strip/synonym normalization
 		//! CheckRasterizerAllowlistGateForPatch's arm (a) uses) is one of the
@@ -2706,6 +2753,156 @@ namespace RISE
 			                                                     double taper = 0.0,
 			                                                     const std::string& tone = std::string(),
 			                                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//----------------------------------------------------------------
+			// G2 (2026-08-10): the PART-PLAN GATE.
+			//
+			// WHAT IT IS.  A blocking REFUSE-UNTIL-FILED interception of every
+			// geometry-creating call (insert_chunk / insert_chunks carrying
+			// any Geometry-category chunk, insert_geometry_scaffold,
+			// replace_geometry_scaffold) on a session that has not filed a
+			// part plan.  The refusal names `file_part_plan` and the closed
+			// `construction` enum; the Document is COMPLETELY untouched.
+			//
+			// WHY.  A census of 48 GUI agent trajectories found 252 bare
+			// primitives against ~57 advanced geometry chunks and not one
+			// triangle mesh -- but the SAME models compose a 14-part CSG gear
+			// and a properly swept retort neck when the subject has an obvious
+			// operational reading.  The gap is REPRESENTATION CHOICE, not
+			// vocabulary and not skill.  This gate makes that choice happen
+			// explicitly, at the moment of decision.  It is PRIMING at
+			// decision time, NOT policing.
+			//
+			// NON-BINDING IN v1, DELIBERATELY.  The declaration constrains
+			// nothing: declaring `sweep` for a part and then inserting a
+			// `box_geometry` is allowed and is NOT refused, anywhere.  If
+			// models declare richly and then author primitives anyway, that
+			// is the FINDING (compliance without competence) -- enforcing
+			// would hide exactly the signal the gate exists to produce.
+			//
+			// REFUSE-UNTIL-FILED, CAPPED AT kPartPlanGateMaxRefusals (3) PER
+			// SESSION (2026-08-10 supervisor overrule of the original
+			// once-per-session design).  A gate a model can clear by simply
+			// re-issuing the SAME call without filing anything yields zero
+			// plans to measure -- so the gate stays armed across the 1st,
+			// 2nd and 3rd geometry-creating call and refuses every one of
+			// them, with the SAME document-untouched guarantee each time.
+			// On the 4th interception it GIVES UP: that call is let through
+			// and the gate disarms permanently for the rest of the session.
+			// The cap exists because clearing this gate, unlike the shipped
+			// E4 render-cadence gate (any cheap render satisfies E4's
+			// condition), requires discovering a brand-new tool and
+			// producing a valid schema for it -- an uncapped refuse-until-
+			// filed could strand a session that genuinely cannot form that
+			// call.  The cap bounds that failure mode while still forcing
+			// the choice on any model that can make it.  The give-up is not
+			// silent: the call that trips it carries a factual notice in its
+			// own result (see CheckPartPlanGate_'s doc) so the event is
+			// visible in the payload a trajectory census reads.
+			//
+			// ANTI-GOODHART BY CONSTRUCTION.  ANY plan is accepted:
+			// `primitive` for every part is a complete, legal plan.  Filing
+			// disarms the gate PERMANENTLY and immediately, at any point --
+			// after 0, 1 or 2 refusals -- so it cannot be farmed for a
+			// compliance score, and a session that plans first is never
+			// intercepted at all.  Every refusal states, accurately, how
+			// many more calls will still be refused before the gate stops
+			// intercepting -- never a claim the code does not honour.
+			//----------------------------------------------------------------
+
+			//! One declared part of the subject being built.  `construction`
+			//! is REQUIRED and comes from the closed enum
+			//! kPartPlanConstructionValues; `note` is optional free text.
+			struct AgentPartPlanEntry
+			{
+				std::string part;           //!< free-string part name
+				std::string construction;   //!< one of kPartPlanConstructionValues
+				std::string note;           //!< optional, may be empty
+			};
+
+			//! The structured result of FilePartPlan.  `ok` is true whenever
+			//! the plan was recorded (which is every well-formed call -- the
+			//! ONLY rejections are shape errors, and those are caught at the
+			//! wire layer as -32602 before reaching here).
+			struct AgentPartPlanResult
+			{
+				bool                            ok = false;
+				bool                            replacedPreviousPlan = false;
+				std::vector<AgentPartPlanEntry> parts;
+				std::string                     message;
+			};
+
+			//! The CLOSED `construction` enum, in declaration order.  Six
+			//! values naming the six ways RISE can build a part; the model
+			//! picks one per part.  Order is the order they are listed to the
+			//! model everywhere (refusal text, tool schemas), so it is part of
+			//! the contract, not an implementation detail.
+			static const char* const kPartPlanConstructionValues[6];
+			static const std::size_t kPartPlanConstructionCount = 6;
+
+			//! True iff `v` is exactly one of kPartPlanConstructionValues.
+			static bool IsValidPartConstruction( const std::string& v );
+
+			//! "primitive, csg, sweep, chain, displaced, mesh" -- the ONE
+			//! rendering of the enum every message that names it uses, so the
+			//! refusal, the -32602 and both tool schemas cannot drift apart.
+			static std::string PartPlanConstructionList();
+
+			//! Record `parts` as this session's part plan and DISARM the gate
+			//! permanently.  Any non-empty list of well-formed entries is
+			//! accepted -- including `primitive` for every part.  Re-filing is
+			//! allowed and REPLACES the previous plan (reported in
+			//! `replacedPreviousPlan`); it is never refused, because a refusal
+			//! here would be an over-refusal on a call that costs the document
+			//! nothing (the E1 review's P1).  Touches the Document not at all.
+			AgentPartPlanResult FilePartPlan( const std::vector<AgentPartPlanEntry>& parts );
+
+			//! Has this session filed a part plan?  Observation only -- no
+			//! gating decision reads this from outside the class.
+			bool PartPlanFiled() const { return mPartPlanFiled; }
+
+			//! The plan as filed (empty before the first FilePartPlan).
+			const std::vector<AgentPartPlanEntry>& PartPlan() const { return mPartPlan; }
+
+			//! Has the gate refused at least one call in this session?
+			//! Observation only.  True from the FIRST refusal onward, whether
+			//! the session is still being refused (count 1 or 2), about to
+			//! give up (count 3), or has already given up -- see
+			//! PartPlanGateRefusalCount / PartPlanGateGaveUp for the finer
+			//! state.
+			bool PartPlanGateHasFired() const { return mPartPlanGateRefusalCount > 0; }
+
+			//! How many times the gate has REFUSED a call this session, 0..
+			//! kPartPlanGateMaxRefusals.  Stops incrementing once the gate
+			//! gives up -- the 4th interception is a give-up, not a 4th
+			//! refusal.  Observation only.
+			int PartPlanGateRefusalCount() const { return mPartPlanGateRefusalCount; }
+
+			//! Has the gate given up?  True once the
+			//! (kPartPlanGateMaxRefusals+1)'th interception let its call
+			//! through and disarmed the gate for the rest of the session.
+			//! Observation only.
+			bool PartPlanGateGaveUp() const { return mPartPlanGateGaveUp; }
+
+			//! Is the gate armed for THIS session (the process default
+			//! snapshotted at construction)?
+			bool PartPlanGateEnabled() const { return mPartPlanGateEnabled; }
+
+			//! The PROCESS-WIDE default every AgentSession snapshots at
+			//! construction.  Defaults to TRUE (fail-safe: a construction site
+			//! nobody remembered to touch gets the gate, rather than silently
+			//! opting out of it), and is resolved at LAUNCH TIME only --
+			//! src/RISE/commandconsole.cpp's `--agent-part-plan-gate=on|off`,
+			//! parsed and validated before any session runs.  NOTHING
+			//! reachable from the wire (a JSON-RPC param, an MCP tools/call, a
+			//! scene file) can reach this: it is not exposed by AgentRpc at
+			//! all.  Test binaries that are not testing the gate call
+			//! SetPartPlanGateDefaultEnabled(false) once in main().
+			//!
+			//! Atomic because sessions are constructed from several threads in
+			//! the GUI hosts; the value itself never changes after launch.
+			static void SetPartPlanGateDefaultEnabled( bool enabled );
+			static bool PartPlanGateDefaultEnabled();
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
@@ -4100,6 +4297,96 @@ namespace RISE
 			//! QueryObjectAt is a non-const method (it renders), so no
 			//! const-escape is needed here.
 			std::function<void()> mEphemeralCacheGuardOpenHookForTest;
+
+			//----------------------------------------------------------------
+			// G2 (2026-08-10): the part-plan gate's per-session state.  See
+			// the public block above FilePartPlan for the mechanism.
+			//
+			// REFUSE-UNTIL-FILED, CAPPED: mPartPlanGateRefusalCount counts
+			// refusals (0..kPartPlanGateMaxRefusals) and does NOT disarm the
+			// gate by itself -- the gate stays armed and keeps refusing while
+			// the count is below the cap.  Two INDEPENDENT permanent-disarm
+			// flags: mPartPlanFiled (a plan was filed -- the intended exit)
+			// and mPartPlanGateGaveUp (the cap was reached and the gate
+			// stopped intercepting anyway -- the bounded-failure exit).  The
+			// gate is armed iff  mPartPlanGateEnabled && !mPartPlanFiled &&
+			// !mPartPlanGateGaveUp.
+			//
+			// Single-threaded like the rest of this class's non-Render surface
+			// (see mDrainChunkMsForTest) -- an agent surface serves one call
+			// at a time.
+			//----------------------------------------------------------------
+
+			//! Snapshot of PartPlanGateDefaultEnabled() taken at construction,
+			//! so a mid-session change of the process default cannot alter a
+			//! running session's posture.
+			bool mPartPlanGateEnabled = true;
+			//! Set by FilePartPlan; disarms the gate permanently.
+			bool mPartPlanFiled = false;
+			//! How many calls the gate has refused this session, 0..
+			//! kPartPlanGateMaxRefusals.  Does NOT by itself disarm the gate --
+			//! see mPartPlanGateGaveUp for the cap's actual disarm flag.
+			int mPartPlanGateRefusalCount = 0;
+			//! Set once the gate GIVES UP -- the interception that would have
+			//! been the (kPartPlanGateMaxRefusals+1)'th refusal is let through
+			//! instead, and this disarms the gate permanently for the rest of
+			//! the session (same permanence as mPartPlanFiled).
+			bool mPartPlanGateGaveUp = false;
+			//! The refusal cap.  See CheckPartPlanGate_'s doc for why the gate
+			//! is capped at all (the E4-vs-G2 asymmetry: any cheap render
+			//! satisfies E4's condition, but clearing G2 requires discovering
+			//! a new tool and producing a valid schema for it) and why 3 --
+			//! enough attempts that a bare-retry model still gets refused more
+			//! than once, bounded enough that a session which genuinely cannot
+			//! form the file_part_plan call is not stranded.
+			static const int kPartPlanGateMaxRefusals = 3;
+			//! The plan as filed, in the order the caller listed it.
+			std::vector<AgentPartPlanEntry> mPartPlan;
+
+			//! Is the gate armed?  A pure bool/int test with no parse, no
+			//! lock and no document access -- checked BEFORE the CST parse
+			//! ChunkTextCreatesGeometry_ needs, so that once the gate is
+			//! disarmed (the common case for the whole rest of a session)
+			//! every insert pays exactly nothing for it.
+			bool PartPlanGateArmed_() const
+			{
+				return mPartPlanGateEnabled && !mPartPlanFiled && !mPartPlanGateGaveUp;
+			}
+
+			//! True iff `chunkText` parses to at least one top-level chunk
+			//! whose registry descriptor is ChunkCategory::Geometry -- the
+			//! registry IS the classifier, so a geometry kind added later is
+			//! covered without touching this gate.  A chunk text that does not
+			//! parse, or carries only non-geometry chunks, is NOT
+			//! geometry-creating (the gate never fires on a call that was
+			//! going to be refused for being malformed anyway).
+			//! On a true return, `outKind`/`outName` (when non-null) receive
+			//! the FIRST geometry chunk's keyword and its bare `name` param --
+			//! so a refusal can still stamp the identity echo every other
+			//! InsertChunk guard honours.
+			static bool ChunkTextCreatesGeometry_( const std::string& chunkText,
+			                                       std::string* outKind = nullptr,
+			                                       std::string* outName = nullptr );
+
+			//! The part-plan gate check for `verb`.  Call it ONLY once the
+			//! caller has established that this call really does create
+			//! geometry.  Three outcomes:
+			//!   * gate disarmed (disabled for this session, a plan already
+			//!     filed, or it already gave up) -- returns "", touches
+			//!     nothing, `outGiveUpNotice` left UNTOUCHED.
+			//!   * gate armed and the refusal count is below
+			//!     kPartPlanGateMaxRefusals -- REFUSES: increments the count
+			//!     and returns the full refusal message (accurately stating
+			//!     how many more calls will still be refused).
+			//!   * gate armed and the refusal count has reached the cap --
+			//!     GIVES UP: sets mPartPlanGateGaveUp (permanently disarming
+			//!     the gate, read by PartPlanGateArmed_) and returns "" so the
+			//!     call proceeds, but first writes a factual give-up notice to
+			//!     `*outGiveUpNotice` (when non-null) for the caller to fold
+			//!     into THIS call's own result -- the whole reason for the
+			//!     out-param is that the give-up event must be visible in the
+			//!     payload a trajectory census reads, not only in a log line.
+			std::string CheckPartPlanGate_( const char* verb, std::string* outGiveUpNotice = nullptr );
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

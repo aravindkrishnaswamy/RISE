@@ -1790,6 +1790,13 @@ static void RunRefusalReasonWireValues()
 
 int main()
 {
+	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentViewportReadTest ===\n" );
 
 	RunPositiveAndIsolation();

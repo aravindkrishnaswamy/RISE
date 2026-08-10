@@ -652,6 +652,12 @@ namespace RISE
 			  mImageCache( sharedImageCache ? sharedImageCache
 			                                : std::make_shared<AgentImageCache>() )
 		{
+			// G2 (2026-08-10): SNAPSHOT the process-wide part-plan-gate
+			// default here, once.  A session's posture is fixed for its whole
+			// life -- a mid-session change of the process default (only a test
+			// can do that; the launch flag is resolved before any session
+			// exists) must never flip a running session's gate.
+			mPartPlanGateEnabled = PartPlanGateDefaultEnabled();
 		}
 
 		std::uint64_t AgentSession::RetainedPerceptionBytesLocked_() const
@@ -1474,6 +1480,76 @@ namespace RISE
 
 				return std::string();
 			}
+
+			//! G2 fix-round (2026-08-10): resolve the chunk a PARAM EDIT
+			//! addresses, exactly the way Job::ApplyCstParamEditImpl_ will --
+			//! a named target by name, or (EMPTY name + non-empty kind) the
+			//! sole chunk of that kind, the KIND-ADDRESSED SINGLETON form the
+			//! agent surface uses for the unnamed film / rasterizer chunks.
+			//! Null when the patch addresses nothing.
+			//!
+			//! Factored out of CheckRasterizerAllowlistGateForPatch so R1c's
+			//! arm (b) and the G2 geometry-delta arm below resolve the target
+			//! through ONE definition: two document-delta gates that disagreed
+			//! about which chunk an edit lands on would be a bypass by
+			//! construction.
+			RISE::Cst::NodeId ResolvePatchTargetChunk_( const Document& headDoc,
+			                                            const std::string& target,
+			                                            const std::string& kind )
+			{
+				if( target.empty() && kind.empty() ) return RISE::Cst::NodeId();
+				const bool uniqueFallback = ( target.empty() && !kind.empty() );
+				return RISE::Cst::DocFindByNameAnyRole( headDoc, target, nullptr, kind, uniqueFallback );
+			}
+
+			//! G2 fix-round (2026-08-10): build the document a param edit
+			//! WOULD PRODUCE, ROUND-TRIPPED THROUGH BYTES.
+			//!
+			//! The round-trip is load-bearing, not defensive, and the reason is
+			//! the same one R1c's arm (b) documents: DocSetOrAddParamValue
+			//! writes `value` VERBATIM into the target param's value token, so
+			//! the in-memory candidate still carries exactly the chunks the head
+			//! carried, no matter what the value string contains.  It is the
+			//! SERIALIZED bytes -- the head an agent commits, and the bytes any
+			//! later load re-parses -- where a value carrying `}` followed by a
+			//! whole `box_geometry { ... }` block becomes a real second chunk.
+			//! So any gate that asks "what would this edit ADD to the document"
+			//! must ask it of ParseToCst(SerializeCst(candidate)), i.e. of what
+			//! the document WILL MEAN, not of the node tree the edit
+			//! mechanically produced.
+			//!
+			//! Extracted so R1c's rasterizer delta and G2's geometry delta share
+			//! ONE definition of "the candidate" (see ResolvePatchTargetChunk_).
+			Document BuildPatchCandidateAsBytes_( const Document& headDoc,
+			                                      const RISE::Cst::NodeId& id,
+			                                      const std::string& param,
+			                                      const std::string& value )
+			{
+				const Document candidate = RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+				return RISE::Cst::ParseToCst( RISE::Cst::SerializeCst( candidate ) );
+			}
+
+			//! G2 fix-round (2026-08-10): every top-level chunk in `doc` whose
+			//! REGISTRY descriptor is ChunkCategory::Geometry, as (keyword,
+			//! bare `name` param) pairs in document order.  The registry IS the
+			//! classifier -- not a `_geometry` suffix match -- so a geometry
+			//! kind added to the registry later is covered with no edit here,
+			//! the same rule AgentSession::ChunkTextCreatesGeometry_ applies to
+			//! the insert verbs.
+			std::vector<std::pair<std::string, std::string> > CollectGeometryChunks_( const Document& doc )
+			{
+				std::vector<std::pair<std::string, std::string> > out;
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+					if( d && d->category == ChunkCategory::Geometry )
+						out.push_back( std::make_pair( it->role, ChunkParamString_( it, "name" ) ) );
+				}
+				return out;
+			}
 		}
 
 		//! R1c round-3 FIX A (2026-08-09).  TRUE iff `pin` (already run
@@ -1674,9 +1750,11 @@ namespace RISE
 			// is deliberately NOT reproduced here: a camera is never a
 			// rasterizer, so the two rules can only differ on chunks this gate
 			// has nothing to say about.
-			const bool uniqueFallback = ( target.empty() && !kind.empty() );
-			const RISE::Cst::NodeId id =
-				RISE::Cst::DocFindByNameAnyRole( headDoc, target, nullptr, kind, uniqueFallback );
+			// G2 fix-round (2026-08-10): resolution moved into the SHARED
+			// ResolvePatchTargetChunk_ so this gate and the G2 geometry-delta
+			// gate below cannot drift on which chunk an edit lands on.  Same
+			// rule as before, byte-for-byte.
+			const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
 			if( !id ) return std::string();
 			const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( headDoc, id );
 			if( !chunkItem ) return std::string();
@@ -1724,10 +1802,82 @@ namespace RISE
 			// mechanically produced.  (The derive layer independently rejects
 			// most such splices -- a Double slot refuses a non-numeric token
 			// -- but "most" is not a gate.)
-			const RISE::Cst::Document candidate = RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
-			const RISE::Cst::Document candidateAsBytes =
-				RISE::Cst::ParseToCst( RISE::Cst::SerializeCst( candidate ) );
-			return DescribeNewlyBlockedRasterizerDelta_( headDoc, candidateAsBytes );
+			//
+			// G2 fix-round (2026-08-10): the construction itself moved into the
+			// SHARED BuildPatchCandidateAsBytes_ (which carries the round-trip
+			// rationale above in full) so the G2 geometry-delta gate below
+			// judges the SAME candidate this one does.
+			return DescribeNewlyBlockedRasterizerDelta_(
+				headDoc, BuildPatchCandidateAsBytes_( headDoc, id, param, value ) );
+		}
+
+		//! G2 fix-round (2026-08-10) -- see the declaration in AgentSession.h.
+		//! A FREE function for the same cross-TU reason E1's and R1c's patch
+		//! arms are: SceneEditController::ResolveProposal's stale-staged-
+		//! proposal re-check calls the IDENTICAL delta AgentSession::
+		//! ProposePatch's arm uses, with zero duplication.
+		std::string DescribePartPlanGeometryDeltaForPatch( const std::string& headText,
+		                                                   const std::string& target,
+		                                                   const std::string& kind,
+		                                                   const std::string& param,
+		                                                   const std::string& value,
+		                                                   std::string* outName )
+		{
+			// Same two cheap pre-filters R1c's patch arm applies: a patch that
+			// addresses nothing, or names no param, produces no candidate.
+			if( target.empty() && kind.empty() ) return std::string();
+			if( param.empty() ) return std::string();
+
+			const Document headDoc = RISE::Cst::ParseToCst( headText );
+			const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
+			if( !id ) return std::string();
+			if( !RISE::Cst::DocResolveNodeId( headDoc, id ) ) return std::string();
+
+			const Document candidateAsBytes = BuildPatchCandidateAsBytes_( headDoc, id, param, value );
+
+			// DELTA, not state -- the E1 lesson, and the reason a patch that
+			// merely edits an EXISTING geometry chunk's params (a sphere's
+			// `radius`, a box's `width`) can never trip this gate: the
+			// per-keyword geometry MULTISET is identical before and after, so
+			// there is nothing NEWLY introduced to refuse.  Only a keyword
+			// whose COUNT GOES UP counts -- which covers a value-splice
+			// injection however it is shaped, including splicing a SECOND
+			// chunk of a kind the scene already had.  Keyword multiset rather
+			// than name set, matching DescribeNewlyBlockedRasterizerDelta_
+			// exactly, so a RENAME of an existing geometry chunk is also
+			// correctly not-a-creation.
+			const std::vector<std::pair<std::string, std::string> > headGeom = CollectGeometryChunks_( headDoc );
+			const std::vector<std::pair<std::string, std::string> > candGeom = CollectGeometryChunks_( candidateAsBytes );
+
+			std::map<std::string, int> headCounts;
+			for( std::size_t i = 0; i < headGeom.size(); ++i ) ++headCounts[headGeom[i].first];
+			std::map<std::string, int> candCounts;
+			for( std::size_t i = 0; i < candGeom.size(); ++i ) ++candCounts[candGeom[i].first];
+
+			for( std::size_t i = 0; i < candGeom.size(); ++i )
+			{
+				const std::string& kw = candGeom[i].first;
+				const std::map<std::string, int>::const_iterator h = headCounts.find( kw );
+				const int before = ( h == headCounts.end() ) ? 0 : h->second;
+				if( candCounts[kw] <= before ) continue;
+				// This KIND gained a chunk.  For the identity echo prefer the
+				// first candidate chunk of that kind whose `name` is not on the
+				// head (the newly spliced one); fall back to this one's name
+				// when every name already existed (a duplicate-name splice).
+				if( outName ) {
+					std::string pick = candGeom[i].second;
+					for( std::size_t j = 0; j < candGeom.size(); ++j ) {
+						if( candGeom[j].first != kw ) continue;
+						bool onHead = false;
+						for( std::size_t k = 0; k < headGeom.size() && !onHead; ++k )
+							onHead = ( headGeom[k].first == kw && headGeom[k].second == candGeom[j].second );
+						if( !onHead ) { pick = candGeom[j].second; break; }
+					}
+					*outName = pick;
+				}
+				return kw;
+			}
+			return std::string();
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -2219,11 +2369,114 @@ namespace RISE
 			void AttachParamEditRejectionIssues( AgentPatchResult& r, const RISE::Cst::Document& doc,
 			                                     const std::string& target, const std::string& kind,
 			                                     const std::string& param, const std::string& value );
+
+			//! G2 (2026-08-10, refuse-until-filed cap): folds a part-plan-gate
+			//! GIVE-UP notice into a std::string result field no matter which
+			//! `return` inside the caller actually fires.  The notice is only
+			//! known the instant CheckPartPlanGate_ decides to give up --
+			//! which happens BEFORE the rest of the caller's normal logic
+			//! runs and long before that logic picks its own exit -- so a
+			//! destructor-time append is the one place that can't be missed
+			//! by an early return.  `field` binds to a result object declared
+			//! earlier in the same scope (so it outlives this guard); setting
+			//! `.notice` after construction is enough, there is nothing else
+			//! to call.  A no-op when `.notice` stays empty (the overwhelming
+			//! common case: disabled, already filed, mid-refusal, or already
+			//! given up).
+			//!
+			//! G2 fix-round (2026-08-10): DEFINED HERE, above ProposePatch,
+			//! rather than at its original site above InsertChunk -- the patch
+			//! arm added below needs it too and is the earlier of the two in
+			//! this file.  Every `namespace { ... }` block at this scope
+			//! reopens the SAME anonymous namespace, so InsertChunk's use
+			//! further down names this identical type.
+			struct PartPlanGiveUpFold_
+			{
+				std::string& field;
+				std::string  notice;
+				~PartPlanGiveUpFold_()
+				{
+					if( notice.empty() ) return;
+					if( !field.empty() ) field += "  ";
+					field += notice;
+				}
+			};
 		}
 
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
+			PartPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+
+			// G2 fix-round (2026-08-10, part-plan gate -- the PATCH arm): FIRST,
+			// ahead of E1's and R1c's and ahead of the authority branching, for
+			// the same two reasons InsertChunk's G2 arm goes first.  (1) It is a
+			// pure SEQUENCING check that consults nothing about whether the
+			// patch would otherwise be accepted.  (2) The three gates are
+			// DISJOINT by construction, so ordering cannot steal a refusal from
+			// another gate: E1 polices `csg_object` (registry category Object),
+			// R1c polices rasterizer chunks (category Rasterizer), and this arm
+			// fires only on ChunkCategory::Geometry.
+			//
+			// WHY A PATCH ARM EXISTS AT ALL.  Until this fix the part-plan gate
+			// had exactly four call sites, all INSERT verbs, while
+			// propose_patch could create geometry outright: a param value is
+			// spliced into the document as TEXT, so a value carrying `}` plus a
+			// whole `box_geometry { ... }` block lands a real geometry chunk on
+			// serialization.  That is the same VALUE-SPLICE bypass R1c's arm (b)
+			// was built to close, and with no equivalent here a session could
+			// build an entire scene through propose_patch with no plan filed and
+			// the refusal counter still reading zero -- the instrument measuring
+			// nothing.  The delta itself lives in the shared, PURE
+			// DescribePartPlanGeometryDeltaForPatch (AgentSession.h), which
+			// SceneEditController::ResolveProposal's re-check also calls.
+			//
+			// COST.  Guarded on PartPlanGateArmed_() -- a pure bool/int test
+			// with no parse, no lock and no document access -- exactly as the
+			// insert arms are.  The gate disarms PERMANENTLY on the first filed
+			// plan or the third refusal, so for the whole rest of any session
+			// this arm costs one predictable branch and nothing else.  While
+			// armed it does pay its own snapshot + serialize/reparse round-trip
+			// (it does not share R1c's, which is computed inside a free function
+			// R1c may not even reach); that is a handful of calls at the head of
+			// a session, against a surface whose cheapest verb is a render.
+			//
+			// `retriable` stays FALSE, for the two reasons InsertChunk's arm
+			// documents (the wire flag is the GUI chat loops' SILENT client-side
+			// auto-retry signal -- it would burn all three refusals and trip the
+			// give-up before the model ever saw one).
+			if( PartPlanGateArmed_() && ( !patch.target.empty() || !patch.kind.empty() ) )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				std::string g2Name;
+				const std::string g2Kind = snap.hasDocument
+					? DescribePartPlanGeometryDeltaForPatch( snap.document, patch.target, patch.kind,
+					                                          patch.param, patch.value, &g2Name )
+					: std::string();
+				if( !g2Kind.empty() ) {
+					// SAME machinery as the four insert sites: same refusal text
+					// (verb substituted), the SAME session-wide 3-refusal budget
+					// (one counter, not a second), the same give-up transition
+					// folded through g2Fold, and the same document-untouched
+					// guarantee -- this returns before E1, R1c, staging and every
+					// commit path below.
+					const std::string clause = CheckPartPlanGate_( "propose_patch", &g2Fold.notice );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.retriable   = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = snap.headVersion;
+						r.message     = clause + " (this patch's value would have introduced a `" +
+						                g2Kind + "` chunk" +
+						                ( g2Name.empty() ? std::string() : ( " named `" + g2Name + "`" ) ) + ".)";
+						return r;
+					}
+					// clause.empty() here means this call IS the give-up -- the
+					// notice was written into g2Fold and its destructor folds it
+					// into r.message whichever return below fires.
+				}
+			}
 
 			// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
 			// arc.md sec 7 / 76-...-log.md sec 3's mechanism law -- blocking
@@ -2321,6 +2574,14 @@ namespace RISE
 				p.value       = String( patch.value.c_str() );
 				p.hasExplicitBaseVersion = patch.hasBaseVersion;
 				if( patch.hasBaseVersion ) p.baseVersion = patch.baseVersion;
+				// G2 fix-round (2026-08-10): carry the gate's ARMED-ness to
+				// resolve time.  Reaching here with it armed means the G2 arm at
+				// the top of this function found NO geometry delta against the
+				// head as it stood a moment ago -- but a param edit's effect is
+				// head-dependent (an unresolvable target can become resolvable),
+				// so the controller re-runs the same stateless delta on approval.
+				// See AgentProposal::partPlanGateArmedAtStage.
+				p.partPlanGateArmedAtStage = PartPlanGateArmed_();
 				// Secure-MCP slice 5c: stamp this session's diagnostic label
 				// (see SetSessionLabel's doc) -- "" for every pre-5c session,
 				// byte-for-byte unchanged behaviour.
@@ -3771,6 +4032,57 @@ namespace RISE
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentChunkResult r;
+			PartPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+
+			// G2 (2026-08-10, part-plan gate): the InsertChunk arm, FIRST --
+			// ahead of R1c's and E1's, because this gate is a pure SEQUENCING
+			// check that consults nothing about the document and nothing about
+			// whether the chunk would otherwise be accepted.  It only fires on
+			// a chunk text that really does create geometry (the registry
+			// category test), so it can never burn a refusal on a call that
+			// was going to be refused for being a blocked rasterizer (not a
+			// Geometry chunk) or an unacknowledged emissive csg_object
+			// (csg_object is not a Geometry chunk either) -- the three gates
+			// are disjoint by construction.
+			//
+			// `retriable` stays FALSE, deliberately -- now for TWO independent
+			// reasons, either alone sufficient.  (1) The wire's `retriable`
+			// flag means something narrower than "the model is meant to
+			// reissue this": it is the CLIENT-SIDE auto-retry signal both GUI
+			// chat loops read (ChatViewModel.swift / ChatPanel.cpp re-dispatch
+			// a retriable refusal up to 5 times WITHOUT showing the model
+			// anything).  Setting it true would have the GUI silently burn
+			// the gate on the model's behalf -- the refusal would never reach
+			// the model at all, defeating the mechanism on the exact surface
+			// it was designed for.  (2) That risk is now STRICTLY WORSE under
+			// the refuse-until-filed cap: a client that auto-retries up to 5
+			// times would burn all kPartPlanGateMaxRefusals (3) refusals AND
+			// trip the give-up transition before the model ever saw a single
+			// one of them -- the model would never learn the gate exists.
+			std::string g2Kind, g2Name;
+			if( PartPlanGateArmed_() && ChunkTextCreatesGeometry_( chunkText, &g2Kind, &g2Name ) ) {
+				const std::string clause = CheckPartPlanGate_( "insert_chunk", &g2Fold.notice );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					// Identity echo even on refusal -- the contract every other
+					// InsertChunk guard honours.  Free here: the gate already
+					// parsed the chunk to classify it.
+					r.kind        = g2Kind;
+					r.name        = g2Name;
+					r.message     = clause;
+					return r;
+				}
+				// clause.empty() here means either "not armed / already
+				// resolved" OR "this call is the give-up" -- g2Fold.notice was
+				// written in the latter case and stays empty in the former;
+				// either way, normal InsertChunk processing continues below
+				// and g2Fold's destructor folds any notice into r.message
+				// whichever return statement this function ultimately takes.
+			}
 
 			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
 			// of the gate, FIRST -- before E1's and before the authority
@@ -4014,6 +4326,53 @@ namespace RISE
 
 			out.reserve( chunkTexts.size() );
 
+			// G2 (2026-08-10, part-plan gate): an UP-FRONT scan, before the
+			// per-element loop and before R1c's own scan, for the SAME reason
+			// R1c deviates from the documented best-effort contract -- a
+			// POLICY refusal is not an authoring failure, so landing half a
+			// batch and then refusing the rest leaves a scene the model never
+			// asked for.  ONE geometry-creating element anywhere in the batch
+			// refuses the WHOLE batch atomically, document byte-identical,
+			// head unbumped, every element carrying the same verdict.  This is
+			// also what makes the gate cost exactly ONE INTERCEPTION per call:
+			// a model that batches its whole build into one insert_chunks is
+			// intercepted once per call, not once per element -- so the
+			// refuse-until-filed cap (kPartPlanGateMaxRefusals) is spent at
+			// the same rate a single-chunk caller spends it, never faster.
+			//
+			// `g2GiveUpNotice` is set IFF this call is the one that trips the
+			// cap (see CheckPartPlanGate_'s doc) and is folded into EVERY
+			// result this call returns below -- the R1c-refused-batch return
+			// right after this block, and each per-element InsertChunk result
+			// in the SEQUENTIAL loop further down -- so the give-up is
+			// visible in the payload regardless of which of those paths this
+			// particular call ends up taking.
+			std::string g2GiveUpNotice;
+			{
+				bool createsGeometry = false;
+				if( PartPlanGateArmed_() ) {
+					for( std::size_t i = 0; i < chunkTexts.size() && !createsGeometry; ++i )
+						createsGeometry = ChunkTextCreatesGeometry_( chunkTexts[i] );
+				}
+				if( createsGeometry ) {
+					const std::string clause = CheckPartPlanGate_( "insert_chunks", &g2GiveUpNotice );
+					if( !clause.empty() ) {
+						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+							AgentChunkResult e;
+							e.applied     = false;
+							e.retriable   = false;   // see InsertChunk's arm for why
+							e.rawCode     = 0;
+							e.status      = "rejected";
+							e.headVersion = head;
+							e.message     = clause;
+							out.push_back( e );
+						}
+						return out;
+					}
+				}
+			}
+
 			// R1c (2026-08-09, agent rasterizer allowlist): an UP-FRONT scan of
 			// EVERY element, before a single insert runs.  This is the one
 			// place R1c deviates from InsertChunks' documented SEQUENTIAL,
@@ -4048,6 +4407,13 @@ namespace RISE
 						e.status      = "rejected";
 						e.headVersion = head;
 						e.message     = std::string( buf ) + clause;
+						// G2: this call may have JUST tripped the give-up cap
+						// (see the block above) even though it goes on to be
+						// refused here for the UNRELATED rasterizer reason --
+						// the give-up already happened and disarmed the gate
+						// permanently, so report it here too rather than lose
+						// it.
+						if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
 						out.push_back( e );
 					}
 					return out;
@@ -4067,7 +4433,17 @@ namespace RISE
 			for( std::size_t i = 0; i < chunkTexts.size(); ++i )
 			{
 				const RISE::Cst::CstHeadVersion* base = ( i == 0 ) ? baseOrNull : nullptr;
-				out.push_back( InsertChunk( chunkTexts[i], base ) );
+				AgentChunkResult e = InsertChunk( chunkTexts[i], base );
+				// G2: fold this call's give-up notice (if any) into every
+				// element -- InsertChunk's OWN gate check sees the gate
+				// already disarmed by the up-front scan above, so it never
+				// writes a second notice; this is the one and only place it
+				// is attached for a batched insert.
+				if( !g2GiveUpNotice.empty() ) {
+					if( !e.message.empty() ) e.message += "  ";
+					e.message += g2GiveUpNotice;
+				}
+				out.push_back( e );
 			}
 
 			return out;
@@ -5715,6 +6091,29 @@ namespace RISE
 		{
 			AgentGeometryScaffoldResult out;
 			out.family = family;
+			// G2: folds a give-up notice into out.message no matter which of
+			// this function's several `return out;` statements fires -- see
+			// PartPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
+			PartPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+
+			// G2 (2026-08-10, part-plan gate): FIRST -- every geometry-scaffold
+			// family expands to at least one Geometry-category chunk, so this
+			// verb is unconditionally geometry-creating and needs no per-family
+			// test.  Placed ahead of the family/param validation on purpose:
+			// the gate's subject is the DECISION to build a part, which the
+			// caller has already made by naming this verb, and a caller who
+			// mistyped a family should not be told about a plan only on their
+			// second attempt.  When the gate passes, the InsertChunks this
+			// verb routes through sees a disarmed gate and cannot double-fire
+			// (or double-notice, for the same reason).
+			{
+				const std::string clause = CheckPartPlanGate_( "insert_geometry_scaffold", &g2Fold.notice );
+				if( !clause.empty() ) {
+					out.ok      = false;
+					out.message = clause;
+					return out;
+				}
+			}
 
 			// R2 (2026-08-10): the family parse, the per-family param
 			// validation and the graph expansion now live in the SHARED
@@ -5793,6 +6192,25 @@ namespace RISE
 			AgentGeometryScaffoldResult out;
 			out.family         = family;
 			out.replacedObject = target;
+			// G2: folds a give-up notice into out.message no matter which of
+			// this function's several `return out;` statements fires -- see
+			// PartPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
+			PartPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+
+			// G2 (2026-08-10, part-plan gate): FIRST, for the same reasons the
+			// insert sibling states -- this verb is unconditionally
+			// geometry-creating, and a refusal here leaves `status` empty /
+			// `ok` false, i.e. the pre-commit refusal shape every other
+			// validation return in this method already produces (see the
+			// section-(1) note directly below: nothing is touched on ANY
+			// failure before the single commit).
+			{
+				const std::string clause = CheckPartPlanGate_( "replace_geometry_scaffold", &g2Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
 
 			// ---- (1) Request validation + expansion.  Nothing is touched on any failure below; every
 			// return in this whole method before the single commit leaves the document, the head version,
@@ -6299,6 +6717,185 @@ namespace RISE
 				}
 				m += " -- pass them to remove_chunks if you want them gone.";
 			}
+			out.message = m;
+			return out;
+		}
+
+		//--------------------------------------------------------------------
+		// G2 (2026-08-10): the part-plan gate.  See AgentSession.h's block
+		// above FilePartPlan for what it is and why; this is the whole
+		// implementation, four call sites aside (InsertChunk, InsertChunks,
+		// InsertGeometryScaffold, ReplaceGeometryScaffold).
+		//
+		// NOTHING here reads or writes the Document, takes a controller lock,
+		// or derives -- the gate is pure per-session bookkeeping plus one CST
+		// parse of the caller's own chunk text.
+		//--------------------------------------------------------------------
+
+		const char* const AgentSession::kPartPlanConstructionValues[6] =
+		{
+			"primitive", "csg", "sweep", "chain", "displaced", "mesh"
+		};
+
+		namespace
+		{
+			//! G2 (2026-08-10): the PROCESS-WIDE gate default -- see
+			//! AgentSession::SetPartPlanGateDefaultEnabled's doc.  TRUE by
+			//! default, deliberately: a construction site nobody remembered to
+			//! touch gets the gate, which is the fail-safe polarity (the
+			//! inverse -- default off, enabled per host -- would make a
+			//! forgotten host silently opt out of the measurement, the exact
+			//! fail-open shape IsReadSafeVerb's doc argues against).
+			std::atomic<bool> gPartPlanGateDefaultEnabled_{ true };
+		}
+
+		void AgentSession::SetPartPlanGateDefaultEnabled( bool enabled )
+		{
+			gPartPlanGateDefaultEnabled_.store( enabled, std::memory_order_relaxed );
+		}
+
+		bool AgentSession::PartPlanGateDefaultEnabled()
+		{
+			return gPartPlanGateDefaultEnabled_.load( std::memory_order_relaxed );
+		}
+
+		bool AgentSession::IsValidPartConstruction( const std::string& v )
+		{
+			for( std::size_t i = 0; i < kPartPlanConstructionCount; ++i ) {
+				if( v == kPartPlanConstructionValues[i] ) return true;
+			}
+			return false;
+		}
+
+		std::string AgentSession::PartPlanConstructionList()
+		{
+			std::string s;
+			for( std::size_t i = 0; i < kPartPlanConstructionCount; ++i ) {
+				if( i ) s += ", ";
+				s += kPartPlanConstructionValues[i];
+			}
+			return s;
+		}
+
+		bool AgentSession::ChunkTextCreatesGeometry_( const std::string& chunkText,
+		                                              std::string* outKind, std::string* outName )
+		{
+			if( chunkText.empty() ) return false;
+			const RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				// The REGISTRY is the classifier, not a `_geometry` suffix
+				// match -- the same DescriptorForKeyword / ChunkCategory
+				// lookup ComputeDesignNoteConditionsFromDoc_ and
+				// AgentEvalRunner.cpp's CheckerCollectKindFilterMatches use.
+				// A geometry kind added to the registry later is covered here
+				// with no edit.
+				const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+				if( d && d->category == ChunkCategory::Geometry ) {
+					if( outKind ) *outKind = it->role;
+					if( outName ) *outName = ChunkParamString_( it, "name" );
+					return true;
+				}
+			}
+			return false;
+		}
+
+		std::string AgentSession::CheckPartPlanGate_( const char* verb, std::string* outGiveUpNotice )
+		{
+			// The armed-ness test is factored into PartPlanGateArmed_ so the
+			// hot call sites can skip their CST parse without duplicating it.
+			// Disarmed covers three cases identically: disabled, a plan
+			// already filed, or the gate already gave up -- none of them
+			// write outGiveUpNotice, so a caller that clears its own local
+			// before calling sees "no notice" on every one of them.
+			if( !PartPlanGateArmed_() ) return std::string();
+
+			if( mPartPlanGateRefusalCount < kPartPlanGateMaxRefusals )
+			{
+				// REFUSE -- and count it, but do NOT disarm.  This is the
+				// 2026-08-10 supervisor overrule of the original once-per-
+				// session design: a gate a model can clear by simply
+				// re-issuing the SAME call without filing anything yields
+				// zero plans to measure, so the gate stays ARMED across the
+				// 1st, 2nd and 3rd interception and refuses every one of
+				// them, document byte-identical each time.
+				++mPartPlanGateRefusalCount;
+				const int remaining = kPartPlanGateMaxRefusals - mPartPlanGateRefusalCount;
+
+				// FACTS ONLY.  No "consider using", no recommendation, no
+				// richness advice -- both because this project has measured
+				// ambient exhortation at ~0 effect, and because any nudge
+				// toward a particular construction here would contaminate the
+				// very behaviour this gate exists to measure.  The remaining-
+				// attempts count is itself a fact this refusal MUST get right
+				// (a false claim in a model-facing payload is a P1 in this
+				// repo): it is exactly kPartPlanGateMaxRefusals minus the
+				// count just incremented to, so it can never drift from what
+				// CheckPartPlanGate_ actually does on the next call.
+				return std::string( verb ) + " refused: no part plan has been filed for this session. "
+					"Call file_part_plan first, listing the parts of the subject you are about to build; "
+					"each part needs a `construction` value from: " + PartPlanConstructionList() + ". "
+					"Any value is accepted -- `primitive` for every part is a complete plan. The plan "
+					"does not constrain what you author afterwards. Nothing in the document was changed "
+					"by this call; reissue it after filing. The gate clears as soon as a plan is filed; "
+					"otherwise " + std::to_string( remaining ) +
+					( remaining == 1 ? " more call will be refused" : " more calls will be refused" ) +
+					" before this gate stops intercepting.";
+			}
+
+			// GIVE UP.  This is the (kPartPlanGateMaxRefusals+1)'th
+			// interception -- unlike the shipped E4 render-cadence gate,
+			// where any cheap render satisfies the condition, clearing THIS
+			// gate requires discovering a brand-new tool and producing a
+			// valid schema for it, so an uncapped refuse-until-filed could
+			// strand a session that genuinely cannot form that call.  Let
+			// this call through and disarm PERMANENTLY (mPartPlanGateGaveUp,
+			// read by PartPlanGateArmed_) rather than refuse a 4th time.
+			mPartPlanGateGaveUp = true;
+			if( outGiveUpNotice ) {
+				// FACTS ONLY, same measurement-hygiene rule as the refusal
+				// text above.  The caller is responsible for folding this
+				// into ITS OWN result (not a log line) so the give-up is
+				// greppable in the trajectory payload a census reads.
+				*outGiveUpNotice = std::string( "part-plan gate: not satisfied after " ) +
+					std::to_string( kPartPlanGateMaxRefusals ) + " refusals -- " + verb +
+					" proceeded without a filed plan and the gate has disarmed for this session; "
+					"no further geometry-creating call will be intercepted.";
+			}
+			return std::string();
+		}
+
+		AgentSession::AgentPartPlanResult AgentSession::FilePartPlan(
+			const std::vector<AgentPartPlanEntry>& parts )
+		{
+			AgentPartPlanResult out;
+			out.replacedPreviousPlan = mPartPlanFiled;
+
+			mPartPlan     = parts;
+			mPartPlanFiled = true;
+			out.ok        = true;
+			out.parts     = mPartPlan;
+
+			// The result ECHOES the plan back factually -- this project has
+			// measured that task-specific facts in a JUST-REQUESTED tool
+			// result are acted on, while ambient advice is not, so the echo is
+			// the one place worth spending words.  It states what was
+			// recorded and nothing else: no grading, no suggestion, no
+			// "consider" of any kind.
+			std::string m = "part plan filed: " + std::to_string( mPartPlan.size() ) +
+				( mPartPlan.size() == 1 ? " part" : " parts" ) + " -- ";
+			for( std::size_t i = 0; i < mPartPlan.size(); ++i ) {
+				if( i ) m += ", ";
+				m += mPartPlan[i].part + ": " + mPartPlan[i].construction;
+			}
+			m += ". The part-plan gate is now off for this session; it will not intercept any call. "
+			     "This declaration does not constrain what you author -- any part may be built with "
+			     "any chunk kind.";
+			if( out.replacedPreviousPlan )
+				m += " This replaced the plan previously filed in this session.";
 			out.message = m;
 			return out;
 		}

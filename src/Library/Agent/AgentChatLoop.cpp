@@ -458,6 +458,17 @@ namespace RISE
 			//! streak UNCHANGED -- pausing to ask a clarifying question is
 			//! not progress toward the blind-edit failure mode this gate
 			//! guards against, so it should neither reset nor grow it.
+			//!
+			//! G2 (2026-08-10): file_part_plan is DELIBERATELY neither, for
+			//! exactly ask_user's reason and by the same test.  It does not
+			//! mutate the document (no chunk, no param, no head bump), so
+			//! counting it as a mutation would refuse a model for declaring a
+			//! plan -- and the part-plan gate can force that call, so the two
+			//! gates would fight.  It is not a LOOK either: it observes no
+			//! rendered pixels, so resetting the blind-edit streak with it
+			//! would hand every model a free, image-free streak reset and
+			//! silently defeat E4.  It leaves the streak exactly as it found
+			//! it.
 			bool IsVisualObserveToolName( const std::string& v )
 			{
 				return v == "render" || v == "read_image" || v == "read_viewport" ||
@@ -1256,6 +1267,7 @@ namespace RISE
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
+			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ..." (G2)
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
 			//!                                                  each with " (candidate)" appended when validated == "text".
@@ -1397,6 +1409,24 @@ namespace RISE
 						return "image " + std::to_string( w ) + "x" + std::to_string( h );
 					}
 					return "ok";
+				}
+
+				// 7b. G2 (2026-08-10) file_part_plan: "ok" would throw away the
+				// one fact the human watching the transcript wants -- WHAT the
+				// model declared.  The whole point of the gate is the
+				// representation choice, so the choice is what the line
+				// reports.  Factual echo only, no verdict on the plan.
+				if( call.name == "file_part_plan" ) {
+					const JsonValue& parts = result.get( "parts" );
+					if( !parts.isArray() || parts.size() == 0 ) return "ok";
+					std::string line = std::to_string( parts.size() ) +
+						( parts.size() == 1 ? " part: " : " parts: " );
+					for( std::size_t i = 0; i < parts.size(); ++i ) {
+						if( i ) line += ", ";
+						line += parts.at( i ).get( "part" ).asString() + "=" +
+						        parts.at( i ).get( "construction" ).asString();
+					}
+					return TruncateForOutcome( line, 120 );
 				}
 
 				// 8. validate: the one-liner must say whether the scene is
