@@ -1511,16 +1511,14 @@ final class RenderViewModel: ObservableObject {
 
         // Progressive-update Timer: every ~33 ms (30 Hz) we call
         // `bridge.pollProductionVFS`, which checks the production
-        // VFS's atomic generation counter and emits a full-image
+        // VFS's retained FrameStore generation and emits a full-image
         // refresh only when workers have produced new pixels.
         // Worker tile callbacks independently capture short-lived toggle
         // markers; the shared coalescer bounds full-image construction.
         //
-        // Timer fires on the main run loop — fine for the polling
-        // (atomic load + compare is ~10 ns when nothing has changed,
-        // a one-shot emit when dirty).  The emit-when-dirty path
-        // does the per-pixel encode + Swift block dispatch in
-        // ~5 ms at 800x600, well under the 33 ms tick budget.
+        // Timer fires on the main run loop. A no-change poll takes a short VFS
+        // chain snapshot and skips image conversion; a dirty poll's cost scales
+        // with the active frame and display hardware.
         //
         // L8 round 10 — added to `.common` run-loop mode so the
         // timer fires during user interaction (button hovers, menu

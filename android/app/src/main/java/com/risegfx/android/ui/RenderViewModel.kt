@@ -102,14 +102,15 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     // Polling job that samples elapsed/remaining from the native estimator
     // while a render is in flight. Cancelled when the render ends.
     private var etaPollJob: Job? = null
-    // L8 round 9 — Drives the lockless progressive-update path.
+    // L8 round 9 — Drives the generation-gated progressive-update path.
     // Worker threads no longer fire per-tile callbacks across the
     // JNI boundary; instead this coroutine calls
     // `RiseNative.nativePollProductionVFS()` at the display refresh
-    // cadence (~33 ms = 30 Hz).  When the production VFS's atomic
-    // generation counter has advanced, the native side emits one
+    // cadence (~33 ms = 30 Hz).  When the production FrameStore generation
+    // has advanced, the native side emits one
     // full-image refresh via the standard `onRegionInvalidated`
-    // JNI hop; otherwise the poll is a ~10 ns no-op.  Started in
+    // JNI hop; otherwise the poll skips image conversion after a short VFS
+    // chain snapshot.  Started in
     // `runProductionRenderInternal` just before `nativeRasterize`,
     // cancelled after.
     private var progressivePollJob: Job? = null
@@ -334,7 +335,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             }
         }
 
-        // L8 round 9 — drive the lockless progressive-update poll
+        // L8 round 9 — drive the generation-gated progressive-update poll
         // at 30 Hz.  Workers don't fire per-tile callbacks any more
         // (see `RiseBridge::ensureProductionVFSAttachedToRasterizer`
         // — `SetTileCompleteCallback` deliberately omitted); this
@@ -560,7 +561,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         private const val ETA_POLL_INTERVAL_MS = 500L
         // L8 round 9 — 33 ms ≈ 30 Hz, matches the typical display
         // refresh.  Tradeoff: shorter = smoother UI update cadence
-        // + more frequent no-op polls (cheap; ~10 ns atomic load).
+        // + more frequent VFS snapshots, even when no pixels changed.
         // Longer = less UI smoothness during heavy renders.
         private const val PROGRESSIVE_POLL_INTERVAL_MS = 33L
     }

@@ -329,9 +329,10 @@ private:
     // IJobRasterizerOutput RasterizerOutputAdapter.  The bridge owns
     // one persistent VFS reference; the rasterizer's reference is
     // bumped on Attach() and dropped via FreeRasterizerOutputs()
-    // between renders.  Production-render path; the interactive
-    // viewport's ViewportPreviewSink (m_viewportSink below) is a
-    // separate sink, deferred to a follow-up landing.  See
+    // between renders.  The interactive viewport uses its own
+    // ViewportPreviewSink and VFS below; that sink forwards final images
+    // into the interactive VFS while production remains independently
+    // bound to the rasterizer's canonical FrameStore.  See
     // docs/FRAMESTORE_DESIGN.md §11 L4d.
     // L5a round-5 — TWO independent ViewportFrameStores, mirroring
     // the macOS architecture (see
@@ -356,6 +357,7 @@ private:
     // L5e — LDR view tone curve.  Default 2 = ACES; matches the
     // modern preview-standard convergent across other platforms.
     std::atomic<int>                          m_viewToneCurve{2 /* eDisplayTransform_ACES */};
+    void ensureProductionVFSCreated();
     void ensureProductionVFSAttachedToRasterizer();
     void ensureInteractiveVFSCreated();
     // L4 round-7 P1: tile callback takes the half-open roi so we
@@ -365,7 +367,7 @@ private:
     void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
                                      bool nonBlocking = false);
     void onProductionVFSFrameComplete();
-    // L8 round 9 — lockless progressive-update poll.  Called from
+    // L8 round 9 — generation-gated progressive-update poll.  Called from
     // the Kotlin Choreographer at the display refresh rate during
     // an active render.  See `pollProductionVFS` impl in
     // RiseBridge.cpp + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`

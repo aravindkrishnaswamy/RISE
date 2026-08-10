@@ -54,7 +54,12 @@ RiseBridge& getBridge() {
     return instance;
 }
 
-RiseBridge::RiseBridge() = default;
+RiseBridge::RiseBridge() {
+    // The UI starts its generation poll before nativeRasterize enters the IO
+    // thread.  Publish the fully configured VFS with the process-wide bridge,
+    // before either thread can access it.
+    ensureProductionVFSCreated();
+}
 
 RiseBridge::~RiseBridge() {
     teardownJob();
@@ -414,11 +419,7 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
 // synchronously from the rasterizer thread.  Both routes render RGBA8_sRGB
 // directly into m_framebuffer under m_fbMutex and notify Kotlin through the
 // legacy onRegionInvalidated JNI hop.
-void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
-    if (!m_job) return;
-    RISE::IRasterizer* rasterizer = m_job->GetRasterizer();
-    if (!rasterizer) return;
-
+void RiseBridge::ensureProductionVFSCreated() {
     if (!m_productionVFS) {
         m_productionVFS = new RISE::Implementation::ViewportFrameStore();
 
@@ -458,6 +459,13 @@ void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
                 this->onProductionVFSFrameComplete();
             });
     }
+}
+
+void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
+    ensureProductionVFSCreated();
+    if (!m_job) return;
+    RISE::IRasterizer* rasterizer = m_job->GetRasterizer();
+    if (!rasterizer) return;
 
     // L6e-2b/c — `Attach` auto-binds the VFS to the rasterizer's
     // canonical FrameStore via `BindFrameStore(rasterizer->GetFrameStore())`.
@@ -576,13 +584,13 @@ void RiseBridge::pollProductionVFS() {
     // `ensureProductionVFSAttachedToRasterizer` for the architecture
     // rationale; the Mac (`RISEBridge.mm`) impl is the spec.
     //
-    // Reads `vfs->Generation()` atomically.  No-ops when the counter
-    // matches the last-emitted sentinel (workers haven't produced
-    // new pixels since the previous poll).  Otherwise routes through
-    // the same full-image emit path that `onProductionVFSFrameComplete`
-    // uses — the lock + RenderToBuffer + onRegionInvalidated JNI hop.
-    // Workers never block on this; they only bump the atomic
-    // generation counter inside `FrameStore` via `EndTile`.
+    // `ViewportFrameStore::Generation()` briefly takes the VFS chain's
+    // shared lock to retain the current FrameStore, then reads that store's
+    // atomic counter.  It no-ops when the counter matches the last-emitted
+    // sentinel.  Otherwise it routes through the same full-image emit path
+    // that `onProductionVFSFrameComplete` uses.  The poll can briefly contend
+    // with a VFS rebind, so Kotlin drives it at display cadence; render workers
+    // do not wait for this polling path.
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
     if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;

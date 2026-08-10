@@ -225,7 +225,7 @@ public:
         lastSeenGeneration_ = vfs->Generation();
     }
 
-    // L8 round 9 — Lockless progressive-update path.
+    // L8 round 9 — Generation-gated progressive-update path.
     //
     // Replaces the synchronous per-tile `OnTileComplete` callback
     // that previously fired from rasterizer worker threads.  That
@@ -239,24 +239,22 @@ public:
     // overhead from observer serialisation even when no inversion
     // fired.
     //
-    // The UI path polls `vfs->Generation()`
-    // (a `std::atomic<uint64_t>` already bumped on every EndTile)
-    // at its own cadence — typically a 30 Hz `NSTimer` driven from
+    // The UI path polls `vfs->Generation()` at its own cadence — typically a
+    // 30 Hz `NSTimer` driven from
     // the Swift `RenderViewModel`.  When the generation advances,
     // `PollAndEmitIfDirty` does a single full-frame
     // `EmitFullImage_locked` on the UI thread.  Net properties:
     //   * Workers: a non-blocking try_lock and one tile emit only when
     //     acquired; they skip immediately when the polling path is busy.
-    //   * UI thread: bounded ~15% utilisation during render
-    //     (~5 ms × 30 Hz emit cost); idle when generation hasn't
-    //     advanced.
+    //   * UI thread: no image conversion when generation is unchanged;
+    //     dirty cost scales with the active frame and display hardware.
     //   * Visual: smooth 30 fps update of the in-progress image.
     //     Per-pixel cadence is whatever the workers produce; UI
     //     reads at 30 Hz.
     //
-    // No-op when `vfs` is null or its generation hasn't changed
-    // since the last call.  Safe to call repeatedly (cheap when
-    // nothing is dirty).
+    // No-op when `vfs` is null or its generation hasn't changed since the
+    // last call.  Generation snapshots can briefly contend with a chain bind,
+    // so callers keep this at display cadence.
     void PollAndEmitIfDirty(Implementation::ViewportFrameStore* vfs) {
         if (!vfs) return;
         const uint64_t gen = vfs->Generation();
@@ -1153,11 +1151,12 @@ private:
 
 // L8 round 9 — UI-thread polling entry points.  Driven by the Swift
 // side's display Timer at ~30 Hz during a render.  Each call:
-//   * Reads `vfs->Generation()` (atomic, lock-free).
+//   * Briefly snapshots the VFS chain, then reads the retained FrameStore's
+//     atomic generation.
 //   * No-ops if the generation matches the last-emitted sentinel —
 //     workers haven't produced new pixels since the previous poll.
-//   * Otherwise acquires `bufferMutex_` (uncontended in this design
-//     — tile workers use only a non-blocking try_lock), emits one
+//   * Otherwise acquires `bufferMutex_`; tile workers use a non-blocking
+//     try_lock and skip when it is held. The poll emits one
 //     full-image RenderToBuffer + block dispatch, updates the
 //     sentinel.
 //
@@ -1271,18 +1270,12 @@ private:
 // Metal layer.  Called from `-opaqueInteractiveViewportFrameStore`
 // when the interactive viewport bridge requests the handle.
 //
-// Note (L6e-2c): the INTERACTIVE VFS deliberately does NOT call
-// `Attach(rasterizer)` — it's exposed as an opaque handle to the
-// interactive viewport which feeds it via the
-// `ViewportPreviewSink` fan-out (frame-complete only) per L5a's
-// SceneEditController-driven preview-scale oscillation.  As a
-// result the interactive VFS stays in INTERNAL-managed mode (the
-// L5a dormant-cache codepath in EnsureChain is still load-bearing
-// for resolution oscillation reuse).  Only the PRODUCTION VFS
-// migrated to direct-bind in L6e-2b.  Migrating the interactive
-// path requires routing the SceneEditController's per-pass
-// rasterizer through Attach / OnRasterizerFrameStoreChanged
-// instead of OutputImage; deferred until L6e-3.
+// L6e-3: `RISEViewportBridge.mm` owns the interactive
+// `ViewportPreviewSink`; its `OnRasterizerFrameStoreChanged` forwards every
+// per-pass canonical store to this VFS through `BindFrameStore`.  The
+// `OutputImage` fan-out remains a fallback, and is a no-op while the VFS is
+// externally bound.  Internal allocation is therefore only a fallback when a
+// producer has not published a canonical FrameStore.
 - (void)ensureInteractiveVFSCreated {
     if (_interactiveVFS) return;
     _interactiveVFS = new Implementation::ViewportFrameStore();
@@ -1310,9 +1303,9 @@ private:
 
     // (Re-)attach.  Each rasterize call begins with FreeRasterizerOutputs
     // which dropped the rasterizer's reference; we reattach here.  Attach
-    // is also safe to call repeatedly without a Free in between (it'll
-    // just stack a redundant reference) — the BOOL guard avoids that
-    // case for clarity.
+    // is also safe to call repeatedly without a Free in between because the
+    // rasterizer rejects duplicate output pointers.  The BOOL guard avoids
+    // redundant registration and bind work.
     //
     // L6e-2b/c — `Attach` (post-commit-f6b0bb4) automatically calls
     // `BindFrameStore(rasterizer->GetFrameStore())` if the rasterizer

@@ -225,21 +225,21 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// display-side mapping).
 - (void)setViewToneCurve:(int)curve;
 
-/// L8 round 9 — UI-thread polling entry points for the lockless
+/// L8 round 9 — UI-thread polling entry points for the generation-gated
 /// progressive-update path.  Call from a display Timer (~30 Hz
 /// recommended) during an active render so the on-screen image
 /// refreshes as workers produce new pixels.
 ///
-/// Each call atomically reads the underlying FrameStore's
-/// generation counter (which workers bump on every EndTile) and:
+/// Each call briefly snapshots the VFS chain, then reads the retained
+/// FrameStore's atomic generation counter (which workers bump on every
+/// EndTile) and:
 ///   * No-ops if the counter hasn't changed since the last poll.
 ///   * Otherwise emits a full-image `RenderToBuffer` and fires the
 ///     LDR / HDR block(s) for the bound layer.
 ///
-/// Cost when nothing has changed: ~10 ns (one atomic load + compare).
-/// Cost when dirty: one full-image emit (~5 ms at 800x600).
-/// Safe to call at any rate; the no-change short-circuit means
-/// over-polling is cheap.
+/// A no-change poll avoids image conversion but can briefly contend with a
+/// VFS rebind.  Dirty cost scales with resolution and hardware.  Call at
+/// display cadence rather than in an unbounded loop.
 ///
 /// Production workers may synchronously emit a just-completed tile through
 /// a try-lock path so short-lived toggle markers remain visible. Polling is

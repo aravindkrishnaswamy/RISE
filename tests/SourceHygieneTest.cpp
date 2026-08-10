@@ -1029,10 +1029,20 @@ int main()
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");
 		const std::string riseBridgeHeader = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.h");
+		const std::string riseViewportBridge = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEViewportBridge.mm");
 		const std::string renderViewModel = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"RenderViewModel.swift");
 		const std::string metalEDRView = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"MetalEDRView.swift");
+		const std::string androidBridgeSource = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.cpp");
+		const std::string androidNative = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"nativebridge"/"RiseNative.kt");
+		const std::string androidRenderViewModel = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"RenderViewModel.kt");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
@@ -1046,6 +1056,26 @@ int main()
 			riseBridgeHeader.find("Active production renders reject Save As") !=
 				std::string::npos,
 			"macOS public Save As contract matches its production render lease" );
+		Check(riseViewportBridge.find(
+			"mFanoutVFS->BindFrameStore( framestore )") != std::string::npos &&
+			riseBridge.find("deferred until L6e-3") == std::string::npos &&
+			riseBridge.find("stays in INTERNAL-managed mode") == std::string::npos &&
+			riseBridge.find("stack a redundant reference") == std::string::npos,
+			"macOS interactive VFS and attachment comments match direct binding and output dedup" );
+		Check(braceBody(androidBridgeSource,"RiseBridge::RiseBridge()").find(
+			"ensureProductionVFSCreated();") != std::string::npos,
+			"Android publishes its production VFS before UI polling can begin" );
+		Check(riseBridgeHeader.find("~10 ns") == std::string::npos &&
+			riseBridgeHeader.find("~5 ms") == std::string::npos &&
+			riseBridge.find("atomic, lock-free") == std::string::npos &&
+			renderViewModel.find("atomic load + compare is ~10 ns") ==
+				std::string::npos &&
+			androidNative.find("~10 ns") == std::string::npos &&
+			androidNative.find("~5 ms") == std::string::npos &&
+			androidRenderViewModel.find("~10 ns") == std::string::npos &&
+			androidBridgeHeader.find("lockless progressive-update poll") ==
+				std::string::npos,
+			"GUI polling contracts account for VFS snapshot contention and resolution-dependent cost" );
 		const std::string regionUpdate = braceBody(renderViewModel,"func updateOutput(");
 		const std::string imageCoalescer = braceBody(
 			renderViewModel,"final class CoalescedImageDelivery");

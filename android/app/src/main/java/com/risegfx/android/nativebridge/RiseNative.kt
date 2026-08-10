@@ -175,20 +175,19 @@ object RiseNative {
     external fun nativeSetViewToneCurve(curve: Int)
 
     /**
-     * L8 round 9 — lockless progressive-update poll.  Called from a
+     * L8 round 9 — generation-gated progressive-update poll.  Called from a
      * `Choreographer.postFrameCallback` loop at the display refresh
-     * rate during an active render.  The native impl checks the
-     * production VFS's atomic generation counter and emits one
+     * rate during an active render.  The native impl briefly snapshots the
+     * production VFS chain, checks its FrameStore generation, and emits one
      * full-image refresh ONLY when the counter has advanced since
-     * the previous poll.  Cost when nothing has changed: ~10 ns
-     * (one atomic load + compare).  Cost when dirty: one full-image
-     * encode (~5 ms at 800x600).
+     * the previous poll.  A no-change poll avoids image conversion; a dirty
+     * poll's cost scales with the active image and device.
      *
      * Worker threads no longer fire per-tile observer callbacks
      * across the JNI boundary; they just bump the atomic generation
      * counter inside `FrameStore::EndTile`.  This poll is the sole
-     * driver of progressive UI updates during a render.  Safe to
-     * call at any rate; over-polling is cheap.
+     * driver of progressive UI updates during a render and is intended for
+     * display cadence, since its VFS snapshot can briefly contend with a bind.
      */
     external fun nativePollProductionVFS()
 

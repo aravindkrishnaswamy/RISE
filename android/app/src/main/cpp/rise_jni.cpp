@@ -148,11 +148,11 @@ JNIF(void, nativeSetViewToneCurve)(JNIEnv* /*env*/, jobject /*thiz*/,
     getBridge().setViewToneCurve(static_cast<int>(curve));
 }
 
-// L8 round 9 — lockless progressive-update poll.  Called by the
+// L8 round 9 — generation-gated progressive-update poll.  Called by the
 // Kotlin side's `Choreographer.postFrameCallback` loop at the
-// display refresh rate during an active render.  Reads the
-// production VFS's atomic generation counter; no-ops if the counter
-// hasn't advanced since the last poll, otherwise emits one
+// display refresh rate during an active render.  Snapshots the
+// production VFS chain and reads its FrameStore generation; no-ops if
+// the counter hasn't advanced since the last poll, otherwise emits one
 // full-image refresh via the standard `onRegionInvalidated` JNI
 // path.  Workers fire NO synchronous bridge callbacks per tile;
 // they just bump the generation counter in `FrameStore::EndTile`.
