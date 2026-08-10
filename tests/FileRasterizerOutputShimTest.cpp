@@ -581,13 +581,9 @@ namespace
 	// concatenation for the lifetime of this test instead.
 	std::string MakeTempPathWithoutExt()
 	{
-		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir ) tmpdir = "/tmp/";
 		std::ostringstream os;
-		os << tmpdir;
-		if ( os.str().back() != '/' ) os << '/';
 		os << "rise_l3_shim_" << ::getpid();
-		return os.str();
+		return (std::filesystem::temp_directory_path()/os.str()).string();
 	}
 
 	// Drive the FileRasterizerOutput shim to write a file with the

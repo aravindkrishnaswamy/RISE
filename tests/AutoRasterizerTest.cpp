@@ -710,9 +710,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path),
-		"/tmp/auto_rasterizer_%s_%d.RISEscene", tag, static_cast<int>(::getpid()) );
+	std::ostringstream filename;
+	filename << "auto_rasterizer_" << tag << '_' << ::getpid() << ".RISEscene";
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path()/filename.str();
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -720,7 +721,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 	}
 	ofs << sceneText;
 	ofs.close();
-	return std::string( path );
+	return path.string();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -969,7 +970,7 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
 	// constituent, baked field, proposal, and seed is held fixed.  Measured on
 	// the operational values now hashed by record 2cdd0045... at the extended
-	// tier's five seeds, repeated in the full suite and standalone, the blue
+	// tier's five seeds, repeated through the explicit extended runner, the blue
 	// image-mean
 	// increase is +58.49%: +38.00 points (65.0%) from magnitude, +14.21 (24.3%)
 	// from tilt, and +6.28 (10.7%) from nonlinear coupling.  Per-seed blue
@@ -1000,8 +1001,8 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	// 2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137
 	// (metadata-complete canonicalization e3a3392b; tripwire recorded by cdb1aad4;
 	// schema-v3 operational projection e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9)
-	// over the extended tier's paired seeds, repeated byte-for-byte in the full
-	// suite and standalone: red 0.60-3.46%, green 0.27-3.30%, and blue 3.73-13.00%
+	// over the extended tier's paired seeds, repeated in standalone extended
+	// runs: red 0.60-3.46%, green 0.27-3.30%, and blue 3.73-13.00%
 	// (five-seed blue mean 9.44%).  The
 	// coefficient change explains the blue shift: E_eff rises from the
 	// fixture's constant 0.26 to 0.420169 at 550 nm (+61.6%; +76.9% at
@@ -3247,9 +3248,10 @@ int main( const int argc, const char* const argv[] )
 	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
 	// lowered activation gate never reaches them (probe defaults off).
 	{
-		char optPath[256];
-		std::snprintf( optPath, sizeof(optPath),
-			"/tmp/auto_probe_test_opts_%d.txt", static_cast<int>(::getpid()) );
+		std::ostringstream optFilename;
+		optFilename << "auto_probe_test_opts_" << ::getpid() << ".txt";
+		const std::string optPath = (std::filesystem::temp_directory_path()/
+			optFilename.str()).string();
 		std::ofstream ofs( optPath );
 		ofs << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
@@ -3261,9 +3263,9 @@ int main( const int argc, const char* const argv[] )
 		    << "auto_probe_variance_renders 2\n";
 		ofs.close();
 #ifdef _WIN32
-		_putenv_s( "RISE_OPTIONS_FILE", optPath );
+		_putenv_s( "RISE_OPTIONS_FILE", optPath.c_str() );
 #else
-		setenv( "RISE_OPTIONS_FILE", optPath, 1 );
+		setenv( "RISE_OPTIONS_FILE", optPath.c_str(), 1 );
 #endif
 	}
 

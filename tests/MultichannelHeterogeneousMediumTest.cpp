@@ -2824,9 +2824,8 @@ namespace
 			!Implementation::BuildIdentityModuleNameMatches(
 				"C:\\vcpkg\\bin\\OpenEXR-3_4.dll",{"iex"}),
 			"build identity matches versioned Windows and APK module basenames without collisions" );
-		char apkFilename[128];
-		std::snprintf(apkFilename,sizeof(apkFilename),
-			"/tmp/rise_build_identity_%d.apk",static_cast<int>(::getpid()));
+		const std::string apkFilename = (std::filesystem::temp_directory_path()/
+			("rise_build_identity_"+std::to_string(::getpid())+".apk")).string();
 		const std::string apkEntry = "lib/arm64-v8a/librise_jni.so";
 		const RISECBOR64::Bytes exactModuleBytes = {
 			0x7fu,0x45u,0x4cu,0x46u,0x11u,0x22u,0x33u,0x44u };
@@ -2835,10 +2834,10 @@ namespace
 			apkFilename,apkEntry,exactModuleBytes);
 		const bool readAPKModule = wroteAPK &&
 			Implementation::ReadStoredAPKBuildIdentity(
-				std::string(apkFilename)+"!/"+apkEntry,extractedModuleBytes);
+				apkFilename+"!/"+apkEntry,extractedModuleBytes);
 		Check( readAPKModule && extractedModuleBytes == exactModuleBytes,
 			"APK build identity hashes the exact complete stored module entry" );
-		std::remove(apkFilename);
+		std::remove(apkFilename.c_str());
 		char filename[128];
 		std::snprintf( filename, sizeof(filename),
 			"rise_fire_fidelity_%d.RISEscene", static_cast<int>( ::getpid() ) );
