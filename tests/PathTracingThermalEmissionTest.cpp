@@ -9957,9 +9957,9 @@ int main( const int argc, const char* const argv[] )
 		TestNullBoundaryMixtureSurvivalEquality();
 		TestHollowCavityFullSphereVolumeNEEEquality();
 		TestPointLightFlameThreeStrategyEquality();
-		TestNonNullSurfaceClearsMediumMarchCompetition();
 		TestCollisionEmissionConsumesMarchCompetitionState();
 	}
+	TestNonNullSurfaceClearsMediumMarchCompetition();
 	TestPelGreyStructuralIdentity();
 	TestDirectPelEntryRunsFirePreview();
 	TestPelTerminalSegmentsCollectThermalSourceBeforeContinuationGates();

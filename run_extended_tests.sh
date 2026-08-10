@@ -20,5 +20,5 @@ run_extended() {
 # These render-heavy experiments deliberately run one at a time. They retain
 # the original high-sample matrices that are unsuitable for the per-commit
 # 236-test gate.
-run_extended AutoRasterizerTest --extended-fire-ablation || exit $?
+run_extended AutoRasterizerTest --extended-fire-ablation --fire-preview-only || exit $?
 run_extended PathTracingThermalEmissionTest --extended-matrix || exit $?

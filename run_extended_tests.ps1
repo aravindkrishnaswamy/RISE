@@ -21,5 +21,5 @@ function Invoke-ExtendedTest {
 
 # Render-heavy experiments stay sequential: each render already consumes the
 # available worker pool.
-Invoke-ExtendedTest "AutoRasterizerTest" @("--extended-fire-ablation")
+Invoke-ExtendedTest "AutoRasterizerTest" @("--extended-fire-ablation", "--fire-preview-only")
 Invoke-ExtendedTest "PathTracingThermalEmissionTest" @("--extended-matrix")
