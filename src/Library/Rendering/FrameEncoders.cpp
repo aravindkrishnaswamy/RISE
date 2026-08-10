@@ -219,8 +219,10 @@ namespace RISE
 			void HDR10PNG_WriteCallback( png_structp png_ptr, png_bytep data, png_size_t length )
 			{
 				IWriteBuffer* buf = static_cast<IWriteBuffer*>( png_get_io_ptr( png_ptr ) );
-				if ( !buf ) return;
-				buf->setBytes( static_cast<const void*>( data ), static_cast<unsigned int>( length ) );
+				if ( !buf || !buf->setBytes(
+					static_cast<const void*>(data),static_cast<unsigned int>(length)) ) {
+					png_error(png_ptr,"RISE output buffer rejected HDR10 PNG bytes");
+				}
 			}
 			void HDR10PNG_FlushCallback( png_structp /*png_ptr*/ )
 			{
@@ -240,7 +242,7 @@ namespace RISE
 				"HDR10PNGFrameEncoder::Encode: NO_PNG_SUPPORT — "
 				"libpng not compiled in; cannot emit HDR10 PNG",
 				__FILE__, __LINE__ );
-			return;
+			throw std::runtime_error("HDR10 PNG encoder is unavailable");
 #else
 			// L5c review P1 — host-endian guard.  `png_set_swap`
 			// below assumes little-endian host (the only platforms
@@ -291,7 +293,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: png_create_write_struct failed",
 					__FILE__, __LINE__ );
-				return;
+				throw std::runtime_error("HDR10 PNG write-structure allocation failed");
 			}
 			png_infop info_ptr = png_create_info_struct( png_ptr );
 			if ( !info_ptr ) {
@@ -299,7 +301,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: png_create_info_struct failed",
 					__FILE__, __LINE__ );
-				return;
+				throw std::runtime_error("HDR10 PNG info-structure allocation failed");
 			}
 
 			// libpng uses setjmp/longjmp for error reporting.  If any
@@ -310,7 +312,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: libpng error during write",
 					__FILE__, __LINE__ );
-				return;
+				throw std::runtime_error("HDR10 PNG codec write failed");
 			}
 
 			png_set_write_fn( png_ptr, &dst, HDR10PNG_WriteCallback, HDR10PNG_FlushCallback );

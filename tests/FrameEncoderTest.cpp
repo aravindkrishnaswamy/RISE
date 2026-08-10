@@ -128,6 +128,25 @@ namespace
 		bool& destroyed_;
 	};
 
+	class PartialFailingMemoryBuffer : public MemoryBuffer
+	{
+	public:
+		bool setBytes( const void* source, unsigned int amount ) override
+		{
+			if( failed_ ) return false;
+			failed_ = true;
+			const unsigned int partial = std::min(amount,8u);
+			if( partial ) MemoryBuffer::setBytes(source,partial);
+			return false;
+		}
+
+	protected:
+		~PartialFailingMemoryBuffer() override {}
+
+	private:
+		bool failed_ = false;
+	};
+
 	// ─── Pixel pattern ────────────────────────────────────────────
 	// Small (16x16) image with values that exercise:
 	//   - Black (0,0,0,1)
@@ -976,6 +995,14 @@ void TestHDR10PNGEncoder_L5c()
 	Check( cICPFound, "L5c: HDR10_PNG cICP chunk emitted before IDAT" );
 	Check( cICPPayloadOK,
 		"L5c: HDR10_PNG cICP payload = {9 (BT.2020), 16 (PQ), 0 (RGB), 1 (full range)}" );
+
+	PartialFailingMemoryBuffer* failingBuffer = new PartialFailingMemoryBuffer();
+	bool codecFailurePropagated = false;
+	try { hdr10->Encode(*store,*failingBuffer,opts); }
+	catch( const std::runtime_error& ) { codecFailurePropagated = true; }
+	Check(codecFailurePropagated && failingBuffer->getCurPos() > 0u,
+		"L5c: HDR10_PNG propagates a partial output-buffer failure" );
+	safe_release(failingBuffer);
 
 	// 4b. ByExtension("png") must still return the SDR PNG encoder
 	// (HDR10_PNG is a same-extension encoder; users select via

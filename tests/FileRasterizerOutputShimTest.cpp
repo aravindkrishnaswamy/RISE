@@ -85,6 +85,26 @@ namespace
 	constexpr unsigned int kImgW = 16;
 	constexpr unsigned int kImgH = 16;
 
+	class PartialThrowingEXREncoder
+		: public virtual IFrameEncoder
+		, public virtual Reference
+	{
+	public:
+		std::string FormatName() const override { return "EXR"; }
+		std::vector<std::string> Extensions() const override { return { "exr" }; }
+		bool SupportsHDR() const override { return true; }
+		bool SupportsAOVs() const override { return true; }
+		void Encode( const FrameStore&, IWriteBuffer& output, const EncodeOpts& ) override
+		{
+			static const unsigned char partial[] = { 0x76,0x2f,0x31,0x01 };
+			output.setBytes(partial,sizeof(partial));
+			throw std::runtime_error("injected codec failure after partial write");
+		}
+
+	protected:
+		~PartialThrowingEXREncoder() override {}
+	};
+
 	// Same pattern shape as FrameEncoderTest, copied here because
 	// the two tests must share the test fixture: any drift between
 	// L2 input and L3 input would mask byte-equivalence bugs.
@@ -1278,12 +1298,22 @@ namespace
 	{
 		FrameStore* store = MakeFireFidelityStore();
 		EncodeOpts opts;
+		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		opts.bpp = 32;
+		PartialThrowingEXREncoder* partialEncoder = new PartialThrowingEXREncoder();
+		const std::string partialFile = MakeTempPathWithoutExt()+"_partial_failure.exr";
+		std::string partialError;
+		Check(!EncodeFrameStoreFileTransaction(
+				*store,*partialEncoder,opts,partialFile,partialError) &&
+			!std::filesystem::exists(partialFile) &&
+			!std::filesystem::exists(partialFile+".provenance.cbor") &&
+			partialError.find("finalized bytes") != std::string::npos,
+			"[fire provenance] partial codec failure publishes neither artifact nor sidecar" );
+		safe_release(partialEncoder);
 #ifndef NO_EXR_SUPPORT
 		const std::string exrBase = MakeTempPathWithoutExt()+"_fire_provenance";
 		const std::string exrFile = exrBase+".exr";
 		const std::string exrSidecar = exrFile+".provenance.cbor";
-		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
-		opts.bpp = 32;
 		opts.attrs.push_back(std::make_pair("authoringNote","ratchet"));
 		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName("EXR");
 		EncodeOpts unsupportedAOVs = opts;
