@@ -403,6 +403,33 @@ namespace
 		return false;
 	}
 
+	bool SetEXRChannelPLinear(
+		std::vector<unsigned char>& bytes,
+		const std::string& wanted,
+		const bool linear )
+	{
+		std::size_t valueOffset = 0u;
+		std::uint32_t valueSize = 0u;
+		if( !FindEXRAttributeValue(bytes,"channels",valueOffset,valueSize) ) return false;
+		std::size_t cursor = valueOffset;
+		const std::size_t end = valueOffset+valueSize;
+		while( cursor < end ) {
+			const std::size_t begin = cursor;
+			while( cursor < end && bytes[cursor] != 0u ) ++cursor;
+			if( cursor >= end ) return false;
+			const std::string name(
+				reinterpret_cast<const char*>(&bytes[begin]),cursor-begin);
+			++cursor;
+			if( name.empty() || cursor+16u > end ) return false;
+			if( name == wanted ) {
+				bytes[cursor+4u] = linear ? 1u : 0u;
+				return true;
+			}
+			cursor += 16u;
+		}
+		return false;
+	}
+
 	// Forward declaration — defined later in the namespace.
 	std::string MakeTempPathWithoutExt();
 
@@ -1585,6 +1612,88 @@ namespace
 			corruptPixels,corruptSidecar,corruptError) &&
 			corruptError.find("pixel decode failed") != std::string::npos,
 			"[fire provenance] verifier decodes every self-consistently hashed EXR pixel chunk" );
+		auto rejectsSelfConsistentHeaderMutation = [&]( const std::function<bool(
+			std::vector<unsigned char>&)>& mutate, const std::string& expectedError,
+			const std::string& label ) {
+			std::vector<unsigned char> artifact = exrBytes;
+			std::vector<unsigned char> strippedArtifact;
+			std::string mutationError;
+			bool prepared = mutate(artifact) && StripFireProvenanceEXRAttributes(
+				artifact,strippedArtifact,mutationError);
+			const std::string digest = prepared ?
+				RISECBOR64::SHA256Hex(strippedArtifact) : std::string();
+			const RISECBOR64::Value payload = ReplaceMapMember(*exrPayload,
+				"artifact_sha256",RISECBOR64::Value::String(digest));
+			RISECBOR64::Bytes payloadBytes;
+			prepared = prepared && RISECBOR64::Encode(payload,payloadBytes,&mutationError);
+			const std::string id = prepared ?
+				RISECBOR64::SHA256Hex(payloadBytes) : std::string();
+			RISECBOR64::Bytes sidecar;
+			prepared = prepared && RISECBOR64::Encode(
+				RISECBOR64::Value::MapValue({
+					{ "payload", payload },
+					{ "provenance_id", RISECBOR64::Value::String(id) }
+				}),sidecar,&mutationError) &&
+				ReplaceBytesAfter(artifact,"riseFireProv_artifact_sha256",
+					"\""+exrDigest->GetText()+"\"","\""+digest+"\"") &&
+				ReplaceBytesAfter(artifact,"riseFireProv_provenance_id",
+					"\""+exrProvenanceId->GetText()+"\"","\""+id+"\"");
+			Check( prepared && !VerifyFireProvenanceEXR(
+				artifact,sidecar,mutationError) &&
+				mutationError.find(expectedError) != std::string::npos,label );
+		};
+		rejectsSelfConsistentHeaderMutation([]( std::vector<unsigned char>& bytes ) {
+			return SetEXRChannelPLinear(bytes,"R",true);
+		},"channel profile",
+			"[fire provenance] verifier binds self-consistently hashed channel pLinear" );
+		rejectsSelfConsistentHeaderMutation([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"screenWindowCenter",offset,size) ||
+				size != 8u ) return false;
+			float changed = 0.25f;
+			std::uint32_t bits = 0u;
+			std::memcpy(&bits,&changed,sizeof(bits));
+			WriteTestLE32(bytes,offset,bits);
+			return true;
+		},"interpretation attributes",
+			"[fire provenance] verifier binds self-consistently hashed screen-window center" );
+		rejectsSelfConsistentHeaderMutation([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"screenWindowWidth",offset,size) ||
+				size != 4u ) return false;
+			float changed = 2.0f;
+			std::uint32_t bits = 0u;
+			std::memcpy(&bits,&changed,sizeof(bits));
+			WriteTestLE32(bytes,offset,bits);
+			return true;
+		},"interpretation attributes",
+			"[fire provenance] verifier binds self-consistently hashed screen-window width" );
+		rejectsSelfConsistentHeaderMutation([]( std::vector<unsigned char>& bytes ) {
+			std::size_t offset = 0u;
+			std::uint32_t size = 0u;
+			if( !FindEXRAttributeValue(bytes,"whiteLuminance",offset,size) ||
+				size != 4u ) return false;
+			float changed = 2.0f;
+			std::uint32_t bits = 0u;
+			std::memcpy(&bits,&changed,sizeof(bits));
+			WriteTestLE32(bytes,offset,bits);
+			return true;
+		},"interpretation attributes",
+			"[fire provenance] verifier binds self-consistently hashed white luminance" );
+		EncodeOpts undeclaredHeaderOpts = opts;
+		undeclaredHeaderOpts.attrs.push_back({ "undeclaredHeader", "changed" });
+		std::vector<unsigned char> undeclaredHeaderArtifact;
+		RISECBOR64::Bytes undeclaredHeaderSidecar;
+		std::string undeclaredHeaderError;
+		const bool undeclaredHeaderEncoded = encodeSelfConsistentEXR(
+			*exrPayload,undeclaredHeaderOpts,undeclaredHeaderArtifact,
+			undeclaredHeaderSidecar);
+		Check( undeclaredHeaderEncoded && !VerifyFireProvenanceEXR(
+			undeclaredHeaderArtifact,undeclaredHeaderSidecar,undeclaredHeaderError) &&
+			undeclaredHeaderError.find("undeclared header attribute") != std::string::npos,
+			"[fire provenance] verifier rejects a self-consistently hashed undeclared header attribute" );
 		auto rejectsSelfConsistentSemanticMutation = [&]( const std::string& key,
 			const RISECBOR64::Value& replacement, const std::string& expectedError,
 			const std::string& label ) {

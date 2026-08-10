@@ -36,6 +36,16 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+std::string EXRWriter::SoftwareAttribute()
+{
+	char value[256];
+	snprintf( value, sizeof(value),
+		"R.I.S.E. v%d.%d.%d build %d",
+		RISE_VER_MAJOR_VERSION, RISE_VER_MINOR_VERSION,
+		RISE_VER_REVISION_VERSION, RISE_VER_BUILD_VERSION );
+	return value;
+}
+
 #ifndef NO_EXR_SUPPORT
 EXRWriter::EXRWriter(
 	IWriteBuffer&         buffer_,
@@ -139,14 +149,7 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 
 	// Software / version stamp.  Lets a future inspector trace an
 	// EXR back to the build that produced it.
-	{
-		char szSoftware[256];
-		snprintf( szSoftware, sizeof(szSoftware),
-			"R.I.S.E. v%d.%d.%d build %d",
-			RISE_VER_MAJOR_VERSION, RISE_VER_MINOR_VERSION,
-			RISE_VER_REVISION_VERSION, RISE_VER_BUILD_VERSION );
-		header.insert( "software", Imf::StringAttribute( szSoftware ) );
-	}
+	header.insert( "software", Imf::StringAttribute( SoftwareAttribute() ) );
 	for( std::vector<std::pair<std::string, std::string> >::const_iterator
 		attribute=string_attributes.begin(); attribute!=string_attributes.end(); ++attribute ) {
 		header.insert(attribute->first, Imf::StringAttribute(attribute->second));

@@ -11,6 +11,7 @@
 #include "FrameStore.h"
 
 #include "../RasterImages/EXRReader.h"
+#include "../RasterImages/EXRWriter.h"
 #include "../Utilities/DiskFileWriteBuffer.h"
 #include "../Utilities/MemoryBuffer.h"
 #include "../Utilities/RISECBOR64.h"
@@ -607,9 +608,18 @@ namespace
 				"bt2020_pq" : ColorSpaceName(opts.colorSpace)) },
 			{ "compression_level", Value::Signed(opts.compressionLevel) },
 			{ "denoised_derivative", Value::Bool(opts.denoisedDerivative) },
+			{ "exr_channel_p_linear", Value::Bool(false) },
+			{ "exr_channel_x_sampling", Value::Unsigned(1u) },
+			{ "exr_channel_y_sampling", Value::Unsigned(1u) },
 			{ "exr_compression", Value::String(outputFormat == "EXR" ?
 				EXRCompressionName(opts.exrCompression) : "not_applicable") },
+			{ "exr_line_order", Value::String("increasing_y") },
 			{ "exr_pixel_aspect_ratio", Value::Float(opts.exrPixelAspectRatio) },
+			{ "exr_screen_window_center", Value::ArrayValue({
+				Value::Float(0.0), Value::Float(0.0) }) },
+			{ "exr_screen_window_width", Value::Float(1.0) },
+			{ "exr_software", Value::String(EXRWriter::SoftwareAttribute()) },
+			{ "exr_white_luminance", Value::Float(1.0) },
 			{ "exr_with_alpha", Value::Bool(outputFormat == "EXR" && opts.exrWithAlpha) },
 			{ "format", Value::String(encoder.FormatName()) },
 			{ "frame_index", Value::Unsigned(opts.frame) },
@@ -850,8 +860,11 @@ namespace
 			configId->GetType() != Value::Text || !output ||
 			!ExactKeys(*output,{ "aov_channels", "attributes", "bits_per_channel",
 				"color_space", "compression_level", "denoised_derivative",
-				"exr_compression", "exr_pixel_aspect_ratio", "exr_with_alpha",
-				"format", "frame_index",
+				"exr_channel_p_linear", "exr_channel_x_sampling",
+				"exr_channel_y_sampling", "exr_compression", "exr_line_order",
+				"exr_pixel_aspect_ratio", "exr_screen_window_center",
+				"exr_screen_window_width", "exr_software", "exr_white_luminance",
+				"exr_with_alpha", "format", "frame_index",
 				"include_aovs", "view_exposure_ev", "view_tone_curve",
 				"view_tone_curve_strength", "view_white_balance" }) ) {
 			error = "fire provenance resolved output configuration is outside schema-v1";
@@ -867,7 +880,15 @@ namespace
 		const Value* bits = output->Find("bits_per_channel");
 		const Value* aovChannels = output->Find("aov_channels");
 		const Value* attributes = output->Find("attributes");
+		const Value* pLinear = output->Find("exr_channel_p_linear");
+		const Value* xSampling = output->Find("exr_channel_x_sampling");
+		const Value* ySampling = output->Find("exr_channel_y_sampling");
+		const Value* lineOrder = output->Find("exr_line_order");
 		const Value* pixelAspectRatio = output->Find("exr_pixel_aspect_ratio");
+		const Value* screenCenter = output->Find("exr_screen_window_center");
+		const Value* screenWidth = output->Find("exr_screen_window_width");
+		const Value* software = output->Find("exr_software");
+		const Value* whiteLuminance = output->Find("exr_white_luminance");
 		const Value* whiteBalance = output->Find("view_white_balance");
 		if( !format || format->GetType() != Value::Text || format->GetText() != "EXR" ||
 			!bits || bits->GetType() != Value::UnsignedInteger ||
@@ -880,6 +901,28 @@ namespace
 			!std::isfinite(pixelAspectRatio->GetFloat()) ||
 			pixelAspectRatio->GetFloat() <= 0.0 ) {
 			error = "fire provenance EXR output surface is outside schema-v1";
+			return false;
+		}
+		if( !pLinear || pLinear->GetType() != Value::Boolean || pLinear->GetBoolean() ||
+			!xSampling || xSampling->GetType() != Value::UnsignedInteger ||
+			xSampling->GetIntegerArgument() != 1u || !ySampling ||
+			ySampling->GetType() != Value::UnsignedInteger ||
+			ySampling->GetIntegerArgument() != 1u || !lineOrder ||
+			lineOrder->GetType() != Value::Text ||
+			lineOrder->GetText() != "increasing_y" || !screenCenter ||
+			screenCenter->GetType() != Value::Array ||
+			screenCenter->GetArray().size() != 2u ||
+			screenCenter->GetArray()[0].GetType() != Value::Float64 ||
+			screenCenter->GetArray()[1].GetType() != Value::Float64 ||
+			screenCenter->GetArray()[0].GetFloat() != 0.0 ||
+			screenCenter->GetArray()[1].GetFloat() != 0.0 || !screenWidth ||
+			screenWidth->GetType() != Value::Float64 ||
+			screenWidth->GetFloat() != 1.0 || !software ||
+			software->GetType() != Value::Text ||
+			software->GetText() != EXRWriter::SoftwareAttribute() || !whiteLuminance ||
+			whiteLuminance->GetType() != Value::Float64 ||
+			whiteLuminance->GetFloat() != 1.0 ) {
+			error = "fire provenance EXR interpretation profile is outside schema-v1";
 			return false;
 		}
 		for( const Value& channel : aovChannels->GetArray() ) {
@@ -1269,6 +1312,7 @@ namespace
 	struct EXRChannelFacts
 	{
 		std::uint32_t pixelType = 0u;
+		bool pLinear = false;
 		std::int32_t xSampling = 0;
 		std::int32_t ySampling = 0;
 	};
@@ -1278,12 +1322,16 @@ namespace
 		std::map<std::string,std::string> fireAttributes;
 		std::map<std::string,std::string> stringAttributes;
 		std::map<std::string,EXRChannelFacts> channels;
+		std::set<std::string> attributeNames;
 		int compression = -1;
 		int lineOrder = -1;
 		std::array<std::int32_t,4u> dataWindow{};
 		std::array<std::int32_t,4u> displayWindow{};
 		std::array<float,8u> chromaticities{};
+		std::array<float,2u> screenWindowCenter{};
 		float pixelAspectRatio = 0.0f;
+		float screenWindowWidth = 0.0f;
+		float whiteLuminance = 0.0f;
 		std::size_t headerEnd = 0u;
 		bool hasDataWindow = false;
 		bool hasDisplayWindow = false;
@@ -1291,6 +1339,7 @@ namespace
 		bool hasPixelAspectRatio = false;
 		bool hasScreenWindowCenter = false;
 		bool hasScreenWindowWidth = false;
+		bool hasWhiteLuminance = false;
 	};
 
 	float ReadLEFloat( const RISECBOR64::Bytes& bytes, const std::size_t offset )
@@ -1331,7 +1380,6 @@ namespace
 			return false;
 		}
 		std::size_t cursor = 8u;
-		std::set<std::string> names;
 		while( cursor < encoded.size() ) {
 			std::string name;
 			if( !ReadCString(encoded,cursor,name) ) {
@@ -1349,7 +1397,7 @@ namespace
 				}
 				return true;
 			}
-			if( !names.insert(name).second ) {
+			if( !facts.attributeNames.insert(name).second ) {
 				error = "OpenEXR header attribute is duplicated";
 				return false;
 			}
@@ -1405,6 +1453,7 @@ namespace
 						encoded[channelCursor+6u] == 0u && encoded[channelCursor+7u] == 0u;
 					EXRChannelFacts channelFacts;
 					channelFacts.pixelType = pixelType;
+					channelFacts.pLinear = linear != 0u;
 					channelFacts.xSampling = static_cast<std::int32_t>(
 						ReadLE32(encoded,channelCursor+8u));
 					channelFacts.ySampling = static_cast<std::int32_t>(
@@ -1459,13 +1508,39 @@ namespace
 					error = "OpenEXR screen-window center attribute is malformed";
 					return false;
 				}
-				facts.hasScreenWindowCenter = true;
+				facts.screenWindowCenter = {
+					ReadLEFloat(encoded,cursor), ReadLEFloat(encoded,cursor+4u) };
+				facts.hasScreenWindowCenter =
+					std::isfinite(facts.screenWindowCenter[0]) &&
+					std::isfinite(facts.screenWindowCenter[1]);
+				if( !facts.hasScreenWindowCenter ) {
+					error = "OpenEXR screen-window center is not finite";
+					return false;
+				}
 			} else if( name == "screenWindowWidth" ) {
 				if( type != "float" || size != 4u ) {
 					error = "OpenEXR screen-window width attribute is malformed";
 					return false;
 				}
-				facts.hasScreenWindowWidth = true;
+				facts.screenWindowWidth = ReadLEFloat(encoded,cursor);
+				facts.hasScreenWindowWidth = std::isfinite(facts.screenWindowWidth) &&
+					facts.screenWindowWidth > 0.0f;
+				if( !facts.hasScreenWindowWidth ) {
+					error = "OpenEXR screen-window width is not positive and finite";
+					return false;
+				}
+			} else if( name == "whiteLuminance" ) {
+				if( type != "float" || size != 4u ) {
+					error = "OpenEXR white luminance attribute is malformed";
+					return false;
+				}
+				facts.whiteLuminance = ReadLEFloat(encoded,cursor);
+				facts.hasWhiteLuminance = std::isfinite(facts.whiteLuminance) &&
+					facts.whiteLuminance > 0.0f;
+				if( !facts.hasWhiteLuminance ) {
+					error = "OpenEXR white luminance is not positive and finite";
+					return false;
+				}
 			} else if( name == "chromaticities" ) {
 				if( type != "chromaticities" || size != 32u ) {
 					error = "OpenEXR chromaticities attribute is malformed";
@@ -1630,6 +1705,11 @@ namespace
 		}
 		const std::uint64_t bits = output->Find("bits_per_channel")->GetIntegerArgument();
 		const std::uint32_t expectedPixelType = bits == 32u ? 2u : 1u;
+		const bool expectedPLinear = output->Find("exr_channel_p_linear")->GetBoolean();
+		const std::int32_t expectedXSampling = static_cast<std::int32_t>(
+			output->Find("exr_channel_x_sampling")->GetIntegerArgument());
+		const std::int32_t expectedYSampling = static_cast<std::int32_t>(
+			output->Find("exr_channel_y_sampling")->GetIntegerArgument());
 		for( const char* channel : { "R", "G", "B" } ) {
 			const auto found = facts.channels.find(channel);
 			if( found == facts.channels.end() ||
@@ -1637,11 +1717,21 @@ namespace
 				error = "OpenEXR channel precision does not match the resolved output claim";
 				return false;
 			}
+			if( found->second.pLinear != expectedPLinear ||
+				found->second.xSampling != expectedXSampling ||
+				found->second.ySampling != expectedYSampling ) {
+				error = "OpenEXR channel profile does not match the resolved output claim";
+				return false;
+			}
 		}
 		const auto alpha = facts.channels.find("A");
 		const bool claimedAlpha = output->Find("exr_with_alpha")->GetBoolean();
 		if( (alpha != facts.channels.end()) != claimedAlpha ||
-			(alpha != facts.channels.end() && alpha->second.pixelType != expectedPixelType) ) {
+			(alpha != facts.channels.end() &&
+				(alpha->second.pixelType != expectedPixelType ||
+				 alpha->second.pLinear != expectedPLinear ||
+				 alpha->second.xSampling != expectedXSampling ||
+				 alpha->second.ySampling != expectedYSampling)) ) {
 			error = "OpenEXR alpha channels do not match the resolved output claim";
 			return false;
 		}
@@ -1656,6 +1746,11 @@ namespace
 			(compression == "zip" ? 3 : (compression == "piz" ? 4 : 8));
 		if( facts.compression != expectedCompression ) {
 			error = "OpenEXR compression does not match the resolved output claim";
+			return false;
+		}
+		if( facts.lineOrder != 0 ||
+			output->Find("exr_line_order")->GetText() != "increasing_y" ) {
+			error = "OpenEXR line order does not match the resolved output claim";
 			return false;
 		}
 		const std::string& colorSpace = output->Find("color_space")->GetText();
@@ -1688,14 +1783,45 @@ namespace
 			error = "OpenEXR pixel aspect ratio does not match the resolved film claim";
 			return false;
 		}
+		const Value::Values& screenCenter =
+			output->Find("exr_screen_window_center")->GetArray();
+		if( facts.screenWindowCenter != std::array<float,2u>{
+				static_cast<float>(screenCenter[0].GetFloat()),
+				static_cast<float>(screenCenter[1].GetFloat()) } ||
+			facts.screenWindowWidth != static_cast<float>(
+				output->Find("exr_screen_window_width")->GetFloat()) ||
+			facts.whiteLuminance != static_cast<float>(
+				output->Find("exr_white_luminance")->GetFloat()) ) {
+			error = "OpenEXR interpretation attributes do not match the resolved output claim";
+			return false;
+		}
+		const auto software = facts.stringAttributes.find("software");
+		if( software == facts.stringAttributes.end() ||
+			software->second != output->Find("exr_software")->GetText() ) {
+			error = "OpenEXR software attribute does not match the resolved output claim";
+			return false;
+		}
+		std::set<std::string> expectedAttributes = {
+			"channels", "chromaticities", "compression", "dataWindow",
+			"displayWindow", "lineOrder", "pixelAspectRatio", "screenWindowCenter",
+			"screenWindowWidth", "software", "whiteLuminance"
+		};
 		for( const Value& attribute : output->Find("attributes")->GetArray() ) {
 			const std::string& name = attribute.Find("name")->GetText();
 			const std::string& value = attribute.Find("value")->GetText();
+			expectedAttributes.insert(name);
 			const auto actual = facts.stringAttributes.find(name);
 			if( actual == facts.stringAttributes.end() || actual->second != value ) {
 				error = "OpenEXR authored attributes do not match the resolved output claim";
 				return false;
 			}
+		}
+		for( const auto& attribute : facts.fireAttributes ) {
+			expectedAttributes.insert(attribute.first);
+		}
+		if( facts.attributeNames != expectedAttributes ) {
+			error = "OpenEXR contains an undeclared header attribute";
+			return false;
 		}
 		return true;
 	}

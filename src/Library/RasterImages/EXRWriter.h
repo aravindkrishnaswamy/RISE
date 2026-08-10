@@ -139,6 +139,8 @@ namespace RISE
 		#endif
 
 		public:
+			static std::string SoftwareAttribute();
+
 			EXRWriter(
 				IWriteBuffer&         buffer,
 				const COLOR_SPACE     color_space_,
