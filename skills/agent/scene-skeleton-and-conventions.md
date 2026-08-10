@@ -99,16 +99,22 @@ above.
 Hand-authoring a turned profile -- a chain of `sdf_geometry`
 `roundcone` parts joined by `smin` (see object-modeling-recipes' turned-
 vessel recipe) -- is the right verb but several lines of `part` math.
-`insert_geometry_scaffold` expands one of four family templates
-(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`) into
-that graph in a single call, e.g. `insert_geometry_scaffold
-{family:"sdf_column", name:"column1", size:1.0, detail:0.5,
-aspect:1.5}` -- this lands `tmpl_column1_col` (a single `sdf_geometry`
-base/shaft/capital `smin` chain, closed with the same flat-bottom cut)
-as an ordinary, editable chunk.  Unlike `insert_material_scaffold`,
-this tool never emits a material or a `standard_object` -- point a
+`insert_geometry_scaffold` expands one of six family templates
+(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`,
+`blended_chain`, `volume_bank`) into that graph in a single call, e.g.
+`insert_geometry_scaffold {family:"sdf_column", name:"column1",
+size:1.0, detail:0.5, aspect:1.5}` -- this lands `tmpl_column1_col` (a
+single `sdf_geometry` base/shaft/capital `smin` chain, closed with the
+same flat-bottom cut) as an ordinary, editable chunk.  Unlike
+`insert_material_scaffold`, this tool never emits a material or a
+`standard_object` (except `volume_bank`, which emits its own -- see the
+modeling-workflow-and-geometry skill) -- point a
 `standard_object.geometry` at `tmpl_column1_col` yourself, exactly like
-`sph` in the minimal scene above.
+`sph` in the minimal scene above.  Already placed a part and want to
+revise its FORM rather than author it from scratch -- `replace_geometry_scaffold`
+expands the same graph and rebinds an existing object's `geometry` slot
+to it in one call, preserving every other param; see the
+modeling-workflow-and-geometry skill for the full contract.
 
 ## Convention traps (each has caused real bugs)
 

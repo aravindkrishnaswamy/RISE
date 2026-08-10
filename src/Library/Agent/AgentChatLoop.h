@@ -528,7 +528,8 @@ namespace RISE
 			//! Default SEQUENCING GATE threshold (see the file header): after
 			//! this many CONSECUTIVE calls to one of the DOCUMENT-MUTATING
 			//! tools (insert_chunk / insert_chunks / insert_material_scaffold
-			//! / insert_geometry_scaffold / propose_patch / propose_patches /
+			//! / insert_geometry_scaffold / replace_geometry_scaffold /
+			//! propose_patch / propose_patches /
 			//! remove_chunk) with NO intervening VISUAL observation (render /
 			//! read_image / read_viewport / query_object_at /
 			//! compare_to_reference), GateRefusalResponse starts REFUSING

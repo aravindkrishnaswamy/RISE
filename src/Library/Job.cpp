@@ -11327,7 +11327,8 @@ int Job::ApplyCstRemoveChunks( const char* const* targets, const char* const* ki
 // dry-run-guarded re-derive tail every other chunk-CRUD verb ends in, so a restore that would not derive
 // leaves the Document + live scene byte-identical exactly like every other refusal here.
 int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
-                                      char* outDiag, unsigned int diagMax )
+                                      char* outDiag, unsigned int diagMax,
+                                      const char* diagContext )
 {
 	S2CopyOut( outDiag, diagMax, std::string() );
 	if( !pCstDocument || !fullText || !fullText[0] ) {
@@ -11340,7 +11341,11 @@ int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRa
 		return 0;
 	}
 	std::string firstDiag;
-	const int code = RederiveCstDocumentFull_( std::move( d1 ), "restore document (agent remove_chunks undo)",
+	// R2 (2026-08-10): `diagContext` names the operation in the re-derive's log lines.  Null keeps R1a's
+	// original wording byte-for-byte, so the existing remove_chunks-undo caller's logs are unchanged.
+	const int code = RederiveCstDocumentFull_( std::move( d1 ),
+	                                           ( diagContext && diagContext[0] ) ? diagContext
+	                                                                             : "restore document (agent remove_chunks undo)",
 	                                           &firstDiag, restoreActiveRasterizer );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
 	return code;

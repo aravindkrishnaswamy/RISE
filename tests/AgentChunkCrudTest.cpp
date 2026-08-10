@@ -6897,6 +6897,610 @@ static void TestGeometryScaffoldBlendedChainAdversarialContinuityRender()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// RG1-RG12: R2 (2026-08-10, replace_geometry_scaffold) -- one-call form
+// revision.  Same fixture/helper conventions as GS1-GS25 above
+// (TempPath/LoadScene/TmplName/ExtractParamAfter reused verbatim).
+//----------------------------------------------------------------------
+
+//! The whole `standard_object { ... }` chunk text for `name`, from its
+//! keyword line through its closing brace -- the byte-exact unit RG1
+//! compares before/after to prove that ONLY the `geometry` param moved.
+static std::string ExtractObjectChunkText( const std::string& doc, const std::string& name )
+{
+	const std::string marker = "name " + name + "\n";
+	const std::size_t namePos = doc.find( marker );
+	if( namePos == std::string::npos ) return std::string();
+	const std::size_t open = doc.rfind( "standard_object", namePos );
+	if( open == std::string::npos ) return std::string();
+	const std::size_t close = doc.find( "\n}", namePos );
+	if( close == std::string::npos ) return std::string();
+	return doc.substr( open, ( close + 2 ) - open );
+}
+
+//! The value of `param` inside the `standard_object` named `name` --
+//! tab-tolerant, unlike ExtractParamAfter above (the fixture scene's
+//! chunks are TAB-indented; the scaffold generator's are not, which is
+//! why the older helper never had to handle it).
+static std::string ExtractObjectParam( const std::string& doc, const std::string& name, const std::string& param )
+{
+	const std::string chunk = ExtractObjectChunkText( doc, name );
+	if( chunk.empty() ) return std::string();
+	const std::size_t at = chunk.find( "\n" );
+	std::size_t pos = ( at == std::string::npos ) ? 0 : at;
+	while( pos < chunk.size() ) {
+		const std::size_t eol = chunk.find( '\n', pos + 1 );
+		std::string line = chunk.substr( pos + 1, ( eol == std::string::npos ? chunk.size() : eol ) - pos - 1 );
+		std::size_t b = line.find_first_not_of( " \t" );
+		if( b != std::string::npos ) {
+			line = line.substr( b );
+			if( line.compare( 0, param.size(), param ) == 0 && line.size() > param.size() &&
+			    ( line[param.size()] == ' ' || line[param.size()] == '\t' ) ) {
+				std::string v = line.substr( param.size() );
+				const std::size_t vb = v.find_first_not_of( " \t" );
+				if( vb == std::string::npos ) return std::string();
+				v = v.substr( vb );
+				while( !v.empty() && ( v.back() == '\r' || v.back() == ' ' || v.back() == '\t' ) ) v.pop_back();
+				return v;
+			}
+		}
+		if( eol == std::string::npos ) break;
+		pos = eol;
+	}
+	return std::string();
+}
+
+//! RG1: the happy path, per REPLACEABLE family (all five -- volume_bank
+//! is refused, RG5).  The object's `geometry` rebinds to the generated
+//! chunk, every generated chunk is in the document, the head bumps
+//! EXACTLY ONCE for the whole composite, and every OTHER param on the
+//! object (position/orientation/scale/material) is byte-identical.
+static void TestReplaceGeometryScaffoldFamilies()
+{
+	std::printf( "RG1: replace_geometry_scaffold -- all 5 replaceable families rebind + one head bump + transform preserved...\n" );
+
+	struct RCase { const char* family; const char* geometryKind; const char* roleSuffix; };
+	const RCase cases[] = {
+		{ "displaced_slab", "displaced_geometry", "disp"   },
+		{ "sweep_rail",     "sweep_geometry",     "rail"   },
+		{ "blended_vessel", "sdf_geometry",       "vessel" },
+		{ "sdf_column",     "sdf_geometry",       "col"    },
+		{ "blended_chain",  "sdf_geometry",       "chain"  },
+	};
+
+	for( const RCase& rc : cases ) {
+		const std::string tmp = TempPath( ( std::string( "agentcrud_rg1_" ) + rc.family + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( "RG1(" ) + rc.family + ") fixture loads" );
+		if( !pJob ) continue;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// Give obj_sph a transform + orientation so "preserved" is a real
+		// claim about real params, not vacuously true on an empty object.
+		{
+			Agent::AgentSetPatch p1;
+			p1.target = "obj_sph"; p1.kind = "standard_object";
+			p1.param = "position"; p1.value = "0.25 -0.5 0.75";
+			Check( sess->ProposePatch( p1 ).applied, std::string( "RG1(" ) + rc.family + ") fixture position patch applied" );
+			Agent::AgentSetPatch p2;
+			p2.target = "obj_sph"; p2.kind = "standard_object";
+			p2.param = "orientation"; p2.value = "10 20 30";
+			Check( sess->ProposePatch( p2 ).applied, std::string( "RG1(" ) + rc.family + ") fixture orientation patch applied" );
+		}
+
+		const std::string docBefore = sess->ReadDocument();
+		const std::string objBefore = ExtractObjectChunkText( docBefore, "obj_sph" );
+		Check( !objBefore.empty(), std::string( "RG1(" ) + rc.family + ") the object chunk is extractable before the call" );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		const bool isChain = ( std::string( rc.family ) == "blended_chain" );
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->ReplaceGeometryScaffold(
+			"obj_sph", rc.family, "formA", isChain ? 0.25 : 1.2, 0.6, 1.3,
+			isChain ? std::string( "0 0 0; 0.4 0.9 0.1; 0.9 1.4 -0.2" ) : std::string(),
+			isChain ? 0.6 : 0.0, std::string(), &v0 );
+
+		Check( sr.ok, std::string( "RG1(" ) + rc.family + ") call succeeded: " + sr.message );
+		if( !sr.ok ) { pJob->release(); std::remove( tmp.c_str() ); continue; }
+
+		Check( sr.geometryKind == rc.geometryKind,
+		       std::string( "RG1(" ) + rc.family + ") geometry kind matches the family design" );
+		Check( sr.geometryName == TmplName( "formA", rc.roleSuffix ),
+		       std::string( "RG1(" ) + rc.family + ") geometry chunk is named tmpl_formA_" + rc.roleSuffix );
+		Check( sr.replacedObject == "obj_sph", std::string( "RG1(" ) + rc.family + ") result echoes the rebound object" );
+		Check( sr.previousGeometryName == "sph",
+		       std::string( "RG1(" ) + rc.family + ") result names the PREVIOUS geometry" );
+
+		// ONE head bump for the WHOLE composite -- the headline property.
+		const RISE::Cst::CstHeadVersion v1 = sess->HeadVersion();
+		Check( v1.revision == v0.revision + 1,
+		       std::string( "RG1(" ) + rc.family + ") EXACTLY ONE head-version bump for the whole composite (was " +
+		       std::to_string( (unsigned long long)v0.revision ) + ", now " +
+		       std::to_string( (unsigned long long)v1.revision ) + ")" );
+
+		const std::string docAfter = sess->ReadDocument();
+		Check( ExtractObjectParam( docAfter, "obj_sph", "geometry" ) == sr.geometryName,
+		       std::string( "RG1(" ) + rc.family + ") the object's geometry slot now names the NEW chunk" );
+		for( const Agent::AgentChunkResult& cr : sr.chunkResults ) {
+			Check( cr.applied, std::string( "RG1(" ) + rc.family + ") generated chunk `" + cr.name + "` reports applied" );
+			Check( docAfter.find( "name " + cr.name + "\n" ) != std::string::npos,
+			       std::string( "RG1(" ) + rc.family + ") generated chunk `" + cr.name + "` is in the document" );
+		}
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) != nullptr,
+		       std::string( "RG1(" ) + rc.family + ") the live geometry manager resolved the new graph" );
+
+		// TRANSFORM PRESERVED: the object chunk differs from before ONLY in
+		// its `geometry` value.  Rebuild the before-text with the geometry
+		// value swapped and require BYTE equality with the after-text.
+		const std::string objAfter = ExtractObjectChunkText( docAfter, "obj_sph" );
+		std::string objExpected = objBefore;
+		{
+			const std::string from = "geometry sph";
+			const std::size_t at = objExpected.find( from );
+			Check( at != std::string::npos, std::string( "RG1(" ) + rc.family + ") the before-text carries `geometry sph`" );
+			if( at != std::string::npos )
+				objExpected = objExpected.substr( 0, at ) + "geometry " + sr.geometryName +
+				              objExpected.substr( at + from.size() );
+		}
+		Check( objAfter == objExpected,
+		       std::string( "RG1(" ) + rc.family + ") the object chunk is BYTE-IDENTICAL apart from the geometry value "
+		       "(position/orientation/material/every other param preserved)" );
+
+		// The old geometry was referenced ONLY by obj_sph, so it goes.
+		Check( sr.previousGeometryRemoved,
+		       std::string( "RG1(" ) + rc.family + ") the now-unreferenced previous geometry was removed" );
+		Check( docAfter.find( "name sph\n" ) == std::string::npos,
+		       std::string( "RG1(" ) + rc.family + ") `sph` is gone from the document" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! RG2: orphan policy -- the previous geometry is RETAINED (and its
+//! referrers named) when a SECOND object still references it.
+static void TestReplaceGeometryScaffoldRetainsSharedGeometry()
+{
+	std::printf( "RG2: replace_geometry_scaffold -- shared previous geometry is RETAINED and its referrers reported...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG2 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentChunkResult ins = sess->InsertChunk(
+		"standard_object\n{\nname obj_sph2\ngeometry sph\nmaterial mat_diffuse\nposition 2 0 0\n}" );
+	Check( ins.applied, "RG2 a SECOND object referencing `sph` applied" );
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "shared1", 1.0, 0.4, 1.0 );
+	Check( sr.ok, std::string( "RG2 the replace succeeded: " ) + sr.message );
+	Check( !sr.previousGeometryRemoved, "RG2 the previous geometry was NOT removed (still referenced)" );
+	bool namesOther = false;
+	for( const std::string& r : sr.previousGeometryReferrers ) if( r == "obj_sph2" ) namesOther = true;
+	Check( namesOther, "RG2 the result NAMES the remaining referrer (`obj_sph2`)" );
+	Check( sr.message.find( "obj_sph2" ) != std::string::npos, "RG2 the message names the remaining referrer too" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "name sph\n" ) != std::string::npos, "RG2 `sph` is still in the document" );
+	Check( ExtractObjectParam( docAfter, "obj_sph2", "geometry" ) == "sph",
+	       "RG2 the OTHER object still points at `sph`" );
+	Check( ExtractObjectParam( docAfter, "obj_sph", "geometry" ) == sr.geometryName,
+	       "RG2 the TARGET object points at the new geometry" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG3: deeper orphans are REPORTED, never chased.  Replace a
+//! displaced_slab-produced geometry: its base box + its noise Function2D
+//! become unreferenced when the displaced_geometry goes, and the verb
+//! must NAME them rather than delete them.
+static void TestReplaceGeometryScaffoldReportsDeeperOrphans()
+{
+	std::printf( "RG3: replace_geometry_scaffold -- deeper orphans REPORTED, not removed...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// First give obj_sph a displaced_slab form (3 chunks: base box, noise
+	// Function2D, displaced_geometry) -- then replace THAT.
+	const Agent::AgentSession::AgentGeometryScaffoldResult first =
+		sess->ReplaceGeometryScaffold( "obj_sph", "displaced_slab", "slabA", 1.2, 0.5, 1.0 );
+	Check( first.ok, std::string( "RG3 the first (displaced_slab) replace succeeded: " ) + first.message );
+	Check( first.chunkResults.size() == 3, "RG3 displaced_slab generated its 3-chunk graph" );
+
+	const std::string docMid = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vMid = sess->HeadVersion();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult second =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "railA", 1.0, 0.4, 1.0 );
+	Check( second.ok, std::string( "RG3 the second (sweep_rail) replace succeeded: " ) + second.message );
+	Check( second.previousGeometryRemoved, "RG3 the displaced_geometry chunk itself WAS removed" );
+	Check( second.previousGeometryKind == "displaced_geometry", "RG3 the previous geometry's kind is reported" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "name " + first.geometryName + "\n" ) == std::string::npos,
+	       "RG3 the old displaced_geometry is gone" );
+
+	// Its two feeders are now unreferenced -- REPORTED, still present.
+	Check( !second.reportedOrphans.empty(), "RG3 at least one deeper orphan was REPORTED" );
+	bool sawBase = false, sawNoise = false;
+	for( const std::string& o : second.reportedOrphans ) {
+		if( o.find( TmplName( "slabA", "base" ) ) != std::string::npos ) sawBase = true;
+		if( o.find( TmplName( "slabA", "noise" ) ) != std::string::npos ) sawNoise = true;
+		// Reported in "keyword/name" form so a model can hand them to remove_chunks.
+		Check( o.find( '/' ) != std::string::npos, "RG3 each reported orphan carries its keyword/name form" );
+		const std::string bare = o.substr( o.find( '/' ) + 1 );
+		Check( docAfter.find( "name " + bare + "\n" ) != std::string::npos,
+		       "RG3 reported orphan `" + bare + "` is STILL IN the document (reported, not removed)" );
+	}
+	Check( sawBase || sawNoise, "RG3 the displaced_slab feeders are among the reported orphans" );
+	Check( second.message.find( "remove_chunks" ) != std::string::npos,
+	       "RG3 the message points the model at remove_chunks for the leftovers" );
+
+	// ONE head bump for the second composite too.
+	Check( sess->HeadVersion().revision == vMid.revision + 1, "RG3 the second composite bumped the head exactly once" );
+	Check( docMid != docAfter, "RG3 the document actually changed" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG4: volume_bank is refused with the actionable message, document
+//! byte-identical and head unbumped.
+static void TestReplaceGeometryScaffoldVolumeBankRefused()
+{
+	std::printf( "RG4: replace_geometry_scaffold -- volume_bank refused (it emits its own object)...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+	// NOTE the deliberately ABSENT `tone`: volume_bank's own required param.
+	// The family refusal must WIN over any per-family param complaint --
+	// telling a caller to supply `tone` for a family they cannot use here
+	// would send them one full turn in the wrong direction.
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr = sess->ReplaceGeometryScaffold(
+		"obj_sph", "volume_bank", "bankA", 1.4, 0.6, 2.0, std::string(), 0.0, std::string() );
+	Check( !sr.ok, "RG4 volume_bank is REFUSED" );
+	Check( sr.message.find( "tone" ) == std::string::npos,
+	       "RG4 the refusal is about the FAMILY, not about volume_bank's own missing `tone` param" );
+	Check( sr.message.find( "volume_bank" ) != std::string::npos, "RG4 the refusal names the family" );
+	Check( sr.message.find( "insert_geometry_scaffold" ) != std::string::npos,
+	       "RG4 the refusal points at insert_geometry_scaffold (the route that works)" );
+	Check( sr.message.find( "document unchanged" ) != std::string::npos, "RG4 the refusal says the document is unchanged" );
+	Check( sess->ReadDocument() == docBefore, "RG4 the document IS byte-identical" );
+	Check( sess->HeadVersion().revision == v0.revision, "RG4 the head version is unbumped" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG5: passing a GEOMETRY chunk name where an OBJECT name belongs --
+//! the likely model mistake -- is diagnosed SPECIFICALLY, naming the
+//! objects that consume that geometry.
+static void TestReplaceGeometryScaffoldGeometryTargetDiagnosis()
+{
+	std::printf( "RG5: replace_geometry_scaffold -- a geometry-chunk target names the consuming objects...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG5 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->ReplaceGeometryScaffold( "sph", "sweep_rail", "geoTgt", 1.0, 0.4, 1.0 );
+	Check( !sr.ok, "RG5 a geometry-chunk target is REFUSED" );
+	Check( sr.message.find( "sphere_geometry" ) != std::string::npos,
+	       "RG5 the refusal says WHAT the target actually is" );
+	Check( sr.message.find( "obj_sph" ) != std::string::npos,
+	       "RG5 the refusal NAMES the standard_object that consumes it (the argument the caller meant)" );
+	Check( sess->ReadDocument() == docBefore, "RG5 the document IS byte-identical" );
+	Check( sess->HeadVersion().revision == v0.revision, "RG5 the head version is unbumped" );
+
+	// A non-geometry, non-object target gets the plain kind refusal.
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr2 =
+		sess->ReplaceGeometryScaffold( "mat_diffuse", "sweep_rail", "matTgt", 1.0, 0.4, 1.0 );
+	Check( !sr2.ok, "RG5 a material target is REFUSED" );
+	Check( sr2.message.find( "lambertian_material" ) != std::string::npos &&
+	       sr2.message.find( "standard_object" ) != std::string::npos,
+	       "RG5 the material refusal names the actual kind AND the required one" );
+	Check( sess->ReadDocument() == docBefore, "RG5 the document is STILL byte-identical after the second refusal" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG6: unknown and AMBIGUOUS targets both refuse with the document
+//! unmutated and the head unbumped.
+static void TestReplaceGeometryScaffoldUnknownAndAmbiguousTarget()
+{
+	std::printf( "RG6: replace_geometry_scaffold -- unknown / ambiguous target refusals...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg6.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG6 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult unknown =
+		sess->ReplaceGeometryScaffold( "obj_sphere", "sweep_rail", "unk1", 1.0, 0.4, 1.0 );
+	Check( !unknown.ok, "RG6 an unknown target is REFUSED" );
+	Check( unknown.message.find( "obj_sph" ) != std::string::npos,
+	       "RG6 the unknown-target refusal offers the near-miss `obj_sph`" );
+	Check( sess->ReadDocument() == docBefore, "RG6 the document is byte-identical after the unknown-target refusal" );
+	Check( sess->HeadVersion().revision == v0.revision, "RG6 the head is unbumped after the unknown-target refusal" );
+
+	// AMBIGUOUS: a painter and a geometry sharing one bare name.
+	{
+		const Agent::AgentChunkResult a =
+			sess->InsertChunk( "uniformcolor_painter\n{\nname twin\ncolor 0.2 0.3 0.4\n}" );
+		Check( a.applied, "RG6 the first `twin` chunk applied" );
+		const Agent::AgentChunkResult b = sess->InsertChunk( "sphere_geometry\n{\nname twin\nradius 0.3\n}" );
+		Check( b.applied, "RG6 the second `twin` chunk (different kind, same name) applied" );
+	}
+	const std::string docTwin = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vTwin = sess->HeadVersion();
+	const Agent::AgentSession::AgentGeometryScaffoldResult amb =
+		sess->ReplaceGeometryScaffold( "twin", "sweep_rail", "amb1", 1.0, 0.4, 1.0 );
+	Check( !amb.ok, "RG6 an ambiguous target is REFUSED" );
+	Check( amb.message.find( "ambiguous" ) != std::string::npos, "RG6 the refusal says `ambiguous`" );
+	Check( sess->ReadDocument() == docTwin, "RG6 the document is byte-identical after the ambiguous refusal" );
+	Check( sess->HeadVersion().revision == vTwin.revision, "RG6 the head is unbumped after the ambiguous refusal" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG7: ATOMIC FAILURE -- a param refusal, a name collision and a stale
+//! baseHeadVersion each leave the document byte-identical and the head
+//! unbumped.  Nothing partial ever lands.
+static void TestReplaceGeometryScaffoldAtomicRefusals()
+{
+	std::printf( "RG7: replace_geometry_scaffold -- every refusal leaves document + head untouched...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg7.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG7 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+	struct Bad { const char* what; const char* family; double size; double detail; double aspect; };
+	const Bad bads[] = {
+		{ "size <= 0",      "sweep_rail", 0.0, 0.5, 1.0 },
+		{ "detail > 1",     "sweep_rail", 1.0, 1.5, 1.0 },
+		{ "aspect <= 0",    "sweep_rail", 1.0, 0.5, 0.0 },
+		{ "unknown family", "no_such",    1.0, 0.5, 1.0 },
+	};
+	for( const Bad& b : bads ) {
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj_sph", b.family, "badA", b.size, b.detail, b.aspect );
+		Check( !sr.ok, std::string( "RG7 (" ) + b.what + ") is refused" );
+		Check( sr.message.find( "replace_geometry_scaffold refused" ) != std::string::npos,
+		       std::string( "RG7 (" ) + b.what + ") refusal is labelled with THIS verb" );
+		Check( sess->ReadDocument() == docBefore, std::string( "RG7 (" ) + b.what + ") document byte-identical" );
+		Check( sess->HeadVersion().revision == v0.revision, std::string( "RG7 (" ) + b.what + ") head unbumped" );
+	}
+
+	// NAME COLLISION: land one expansion, then re-use its name.
+	const Agent::AgentSession::AgentGeometryScaffoldResult ok1 =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "collideA", 1.0, 0.4, 1.0 );
+	Check( ok1.ok, std::string( "RG7 the first expansion landed: " ) + ok1.message );
+	const std::string docMid = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vMid = sess->HeadVersion();
+	const Agent::AgentSession::AgentGeometryScaffoldResult dup =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "collideA", 1.0, 0.4, 1.0 );
+	Check( !dup.ok, "RG7 a colliding name is refused" );
+	Check( dup.message.find( "already exists" ) != std::string::npos, "RG7 the collision refusal says so" );
+	Check( sess->ReadDocument() == docMid, "RG7 document byte-identical after the collision refusal" );
+	Check( sess->HeadVersion().revision == vMid.revision, "RG7 head unbumped after the collision refusal" );
+
+	// STALE baseHeadVersion -> CONFLICT, nothing touched.  R2 fix-round (P1): a conflict reaches a
+	// commit-stage disposition -- `ok` is true (the request itself was well-formed) and `status`
+	// carries the actual outcome, the SAME distinction ProposePatch's identical stale-base check
+	// draws; it is not folded into the same `ok==false` bucket as the pre-flight refusals above.
+	const Agent::AgentSession::AgentGeometryScaffoldResult stale =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "staleA", 1.0, 0.4, 1.0,
+		                               std::string(), 0.0, std::string(), &v0 );
+	Check( stale.ok, "RG7 MONEY RED-PROVE: a stale baseHeadVersion conflict reports ok=true" );
+	Check( stale.status == "conflict", "RG7 MONEY RED-PROVE: status is \"conflict\"" );
+	Check( !stale.retriable, "RG7 a conflict does not set retriable" );
+	Check( stale.headVersion == vMid, "RG7 the reported headVersion is the CURRENT head" );
+	Check( stale.message.find( "baseHeadVersion" ) != std::string::npos, "RG7 the conflict refusal says baseHeadVersion" );
+	Check( sess->ReadDocument() == docMid, "RG7 document byte-identical after the conflict refusal" );
+	Check( sess->HeadVersion().revision == vMid.revision, "RG7 head unbumped after the conflict refusal" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG8: the E1 non-sampling-emitter gate and the R1c rasterizer
+//! allowlist gate are evaluated against the CANDIDATE document on this
+//! path -- and, being DELTA gates, they must not FREEZE a scene that
+//! already carries the construct they police.  Both conditions are
+//! asserted here: a scene with a pre-existing unacknowledged emissive
+//! csg_object, and a scene with a pre-existing BLOCKED rasterizer, are
+//! both still form-revisable, and the gates leave their subjects alone.
+static void TestReplaceGeometryScaffoldGatesAreDelta()
+{
+	std::printf( "RG8: replace_geometry_scaffold -- E1 + R1c gates run on the candidate and are DELTA, not state...\n" );
+
+	// (a) A scene whose ACTIVE rasterizer is a BLOCKED kind (bdpt).  The
+	// candidate's rasterizer multiset is unchanged by a geometry swap, so
+	// the R1c arm must return "" and the replace must land.
+	{
+		std::string sceneText( kScene );
+		sceneText += "\nbdpt_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n}\n";
+		const std::string tmp = TempPath( "agentcrud_rg8a.RISEscene" );
+		Job* pJob = LoadScene( sceneText.c_str(), tmp );
+		Check( pJob != nullptr, "RG8(a) blocked-rasterizer fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "r1cA", 1.0, 0.4, 1.0 );
+			Check( sr.ok, std::string( "RG8(a) a scene that ALREADY declares a blocked rasterizer is still "
+			                           "form-revisable (the R1c gate is a DELTA): " ) + sr.message );
+			const std::string docAfter = sess->ReadDocument();
+			Check( docAfter.find( "bdpt_pel_rasterizer" ) != std::string::npos,
+			       "RG8(a) the pre-existing blocked rasterizer is untouched by the composite" );
+			// RED-PROVE the gate is actually wired: the SAME candidate arm
+			// refuses when a blocked rasterizer really IS newly introduced.
+			const Agent::AgentChunkResult bad =
+				sess->InsertChunk( "mlt_rasterizer\n{\nsamples 4\n}" );
+			Check( !bad.applied && bad.message.find( "SPECIALIZED rasterizer" ) != std::string::npos,
+			       "RG8(a) the shared R1c policy still BLOCKS a newly introduced mlt_rasterizer" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (b) A scene carrying a PRE-EXISTING unacknowledged emissive
+	// csg_object (exactly the construct E1 refuses to CREATE).  A geometry
+	// swap on an unrelated object neither creates nor worsens it, so the
+	// E1 arm must return "" and the replace must land -- the "Warning nags,
+	// edits proceed" posture arm C of the patch gate documents.
+	{
+		std::string sceneText( kScene );
+		sceneText +=
+			"\nsphere_geometry\n{\n\tname csg_a_geo\n\tradius 0.3\n}\n"
+			"\nstandard_object\n{\n\tname csg_a\n\tgeometry csg_a_geo\n\tmaterial mat_diffuse\n}\n"
+			"\nstandard_object\n{\n\tname csg_b\n\tgeometry csg_a_geo\n\tmaterial mat_diffuse\n\tposition 0.2 0 0\n}\n"
+			"\ncsg_object\n{\n\tname csg_emit\n\tobja csg_a\n\tobjb csg_b\n\toperation union\n\tmaterial mat_emit\n}\n";
+		const std::string tmp = TempPath( "agentcrud_rg8b.RISEscene" );
+		Job* pJob = LoadScene( sceneText.c_str(), tmp );
+		// The fixture is only useful if it loads; a csg param-name change
+		// upstream would make this vacuous, so say so rather than pass quietly.
+		Check( pJob != nullptr, "RG8(b) pre-existing-unacknowledged-emitter fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string docBefore = sess->ReadDocument();
+			Check( docBefore.find( "csg_emit" ) != std::string::npos, "RG8(b) the csg_object is in the head" );
+			// RED-PROVE the fixture is NOT vacuous: E1 must actually see this
+			// construct.  Arm A (re-pointing the csg's own `material`) is
+			// STATE-based, so re-pointing it at the same emissive material is
+			// refused precisely because the candidate comes back unacknowledged.
+			{
+				Agent::AgentSetPatch p;
+				p.target = "csg_emit"; p.kind = "csg_object";
+				p.param  = "material"; p.value = "mat_emit";
+				const Agent::AgentPatchResult pr = sess->ProposePatch( p );
+				Check( !pr.applied && pr.message.find( "allow_non_sampling_emitter" ) != std::string::npos,
+				       "RG8(b) RED-PROOF: E1 DOES flag this fixture's csg_object (so the delta assertion below is not vacuous)" );
+			}
+			const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+				sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "e1A", 1.0, 0.4, 1.0 );
+			Check( sr.ok, std::string( "RG8(b) an unrelated form revision is NOT frozen by a PRE-EXISTING "
+			                           "unacknowledged emissive csg (the E1 gate is a DELTA): " ) + sr.message );
+			Check( sess->ReadDocument().find( "csg_emit" ) != std::string::npos,
+			       "RG8(b) the csg_object is untouched by the composite" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
+//! RG9: External authority does NOT stage this verb -- it is refused
+//! with the two-call route, document byte-identical.
+static void TestReplaceGeometryScaffoldExternalAuthority()
+{
+	std::printf( "RG9: replace_geometry_scaffold -- External authority is REFUSED (no staged form), document unchanged...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg9.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG9 fixture loads" );
+	if( !pJob ) return;
+
+	TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+	c.Start();
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+	sess->AttachController( &c );
+	const std::string docBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+		sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "extR", 1.0, 0.4, 1.0 );
+	Check( !sr.ok, "RG9 the call is REFUSED under External authority" );
+	Check( sr.message.find( "insert_geometry_scaffold" ) != std::string::npos &&
+	       sr.message.find( "propose_patch" ) != std::string::npos,
+	       "RG9 the refusal names the two-call staged route that DOES work" );
+	Check( sess->ReadDocument() == docBefore, "RG9 the document is byte-identical (nothing staged, nothing committed)" );
+
+	c.Stop();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! RG10: the JSON-RPC wire shape -- params, the result envelope, and the
+//! specific errors a model has to be able to act on.
+static void TestReplaceGeometryScaffoldWireShape()
+{
+	std::printf( "RG10: replace_geometry_scaffold -- JSON-RPC wire shape...\n" );
+	const std::string tmp = TempPath( "agentcrud_rg10.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RG10 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	// Missing `target` -> invalid params, naming it.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"family\":\"sweep_rail\",\"name\":\"w1\",\"size\":1.0,\"detail\":0.4,\"aspect\":1.0}}" );
+		Check( resp.find( "\"error\"" ) != std::string::npos, "RG10 a missing `target` is an error" );
+		Check( resp.find( "'target'" ) != std::string::npos, "RG10 the error names `target`" );
+	}
+	// Happy path -> the documented result envelope.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj_sph\",\"family\":\"sweep_rail\",\"name\":\"wireA\",\"size\":1.0,"
+			"\"detail\":0.4,\"aspect\":1.0}}" );
+		Check( resp.find( "\"error\"" ) == std::string::npos, std::string( "RG10 the happy path succeeds: " ) + resp );
+		Check( resp.find( "\"target\":\"obj_sph\"" ) != std::string::npos, "RG10 the result echoes `target`" );
+		Check( resp.find( "\"geometry\"" ) != std::string::npos, "RG10 the result carries `geometry`" );
+		Check( resp.find( "\"previousGeometry\"" ) != std::string::npos, "RG10 the result carries `previousGeometry`" );
+		Check( resp.find( "\"removed\":true" ) != std::string::npos,
+		       "RG10 previousGeometry.removed is true when the old chunk went" );
+		Check( resp.find( "\"results\"" ) != std::string::npos, "RG10 the result carries the per-chunk `results` array" );
+	}
+	// volume_bank at the wire -> refused with the actionable message.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj_sph\",\"family\":\"volume_bank\",\"name\":\"wireB\",\"size\":1.0,"
+			"\"detail\":0.4,\"aspect\":2.0,\"tone\":\"0.5 0.5 0.5\"}}" );
+		Check( resp.find( "\"error\"" ) != std::string::npos, "RG10 volume_bank is an error at the wire too" );
+		Check( resp.find( "insert_geometry_scaffold" ) != std::string::npos,
+		       "RG10 the wire refusal still points at insert_geometry_scaffold" );
+	}
+	// An unknown family -> the family list, NOT a per-family param error.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj_sph\",\"family\":\"nope\",\"name\":\"wireC\",\"size\":1.0,\"detail\":0.4}}" );
+		Check( resp.find( "unknown family" ) != std::string::npos, "RG10 an unknown family says so" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk; R1a: remove_chunks) ===\n" );
@@ -6973,6 +7577,18 @@ int main()
 	TestGeometryScaffoldVolumeBankBboxContainerCoupling();
 	TestGeometryScaffoldBlendedChainPointsMagnitudeCap();
 	TestGeometryScaffoldBlendedChainAdversarialContinuityRender();
+
+	// R2 (2026-08-10): replace_geometry_scaffold -- one-call form revision.
+	TestReplaceGeometryScaffoldFamilies();
+	TestReplaceGeometryScaffoldRetainsSharedGeometry();
+	TestReplaceGeometryScaffoldReportsDeeperOrphans();
+	TestReplaceGeometryScaffoldVolumeBankRefused();
+	TestReplaceGeometryScaffoldGeometryTargetDiagnosis();
+	TestReplaceGeometryScaffoldUnknownAndAmbiguousTarget();
+	TestReplaceGeometryScaffoldAtomicRefusals();
+	TestReplaceGeometryScaffoldGatesAreDelta();
+	TestReplaceGeometryScaffoldExternalAuthority();
+	TestReplaceGeometryScaffoldWireShape();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -268,6 +268,40 @@
 //                                            truthful -- see AgentSession.h's
 //                                            InsertGeometryScaffold doc for the full
 //                                            autonomy-vs-authority caveat.)
+//      replace_geometry_scaffold {target,family,name,size,detail,aspect?,points?,taper?,baseHeadVersion?}
+//                                        -> {applied,total,results:[...],family,name,target,
+//                                            geometry:{name,kind},
+//                                            previousGeometry:{name,kind,removed,referrers?},
+//                                            orphans?:[...],message}
+//                                           (R2 (2026-08-10): the SAME expansion
+//                                            insert_geometry_scaffold performs, but it
+//                                            REBINDS the `geometry` slot of the EXISTING
+//                                            `standard_object` named `target` to the new
+//                                            chunk instead of leaving the wiring to the
+//                                            model -- so revising a part's FORM costs ONE
+//                                            call, the same as revising its colour.  The
+//                                            object's transform and every other param are
+//                                            preserved byte-identically; the previous
+//                                            geometry chunk is removed IF nothing else
+//                                            references it (else RETAINED, with the
+//                                            referrers named), and chunks left
+//                                            unreferenced one hop deeper are REPORTED in
+//                                            `orphans`, never removed.  ONE call = ONE
+//                                            head bump = ONE undo step; ALL-OR-NOTHING on
+//                                            any refusal.  `family` volume_bank is
+//                                            refused (it emits its OWN standard_object).
+//                                            DELIBERATELY excluded from IsProposeSafeVerb
+//                                            for the SAME reason its two scaffold
+//                                            siblings are, with the SAME dedicated
+//                                            Propose-specific message shape -- and, for
+//                                            this one, additionally because a composite
+//                                            whole-document swap has no AgentProposalKind
+//                                            an Owner could approve card-by-card, which
+//                                            is also why an External-authority session is
+//                                            refused rather than staged.  See
+//                                            AgentSession.h's ReplaceGeometryScaffold doc
+//                                            for the resolution rules, the orphan policy,
+//                                            and the candidate-document gate evaluation.)
 //      remove_chunk {target,kind?,baseHeadVersion?}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: REMOVE the chunk

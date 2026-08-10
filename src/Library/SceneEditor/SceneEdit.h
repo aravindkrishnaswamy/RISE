@@ -334,6 +334,38 @@ namespace RISE
 			//!   * `agentChunkIndex`   = UNUSED (a batch has no single index); left at its default.
 			AgentRemoveChunks,
 
+			//! R2 (2026-08-10, replace_geometry_scaffold): an AGENT-originated COMPOSITE geometry
+			//! replacement (SceneEditController::ApplyAgentReplaceGeometry), pushed AFTER the mutation has
+			//! already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already happened
+			//! outside SceneEditor::Apply" shape AgentRemoveChunk / AgentRemoveChunks use.  ONE of these
+			//! records the WHOLE composite (new scaffold chunks spliced in + the target object's `geometry`
+			//! slot rebound + the orphaned old geometry chunk erased), so a single Cmd-Z restores the
+			//! byte-exact pre-call document -- the point of the verb.
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunks' own carriers -- see that op's doc for the
+			//! no-batch-only-members rationale; the ONE difference is that BOTH directions are a whole-
+			//! document text swap, because the forward mutation is itself a whole-document swap and there is
+			//! no by-name verb to replay):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the composite.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!   * `prevPropertyValue` = the BYTE-EXACT candidate document the forward commit installed.
+			//!                           Redo = Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!                           Recording the POST text (rather than replaying the verb by name)
+			//!                           is what makes Redo byte-exact AND independent of the scaffold
+			//!                           generator: a Redo can never re-jitter, re-resolve, or re-collide.
+			//!   * `objectName`        = the rebound `standard_object`'s name; `cstEntityKind` =
+			//!                           "standard_object", so MarkCstHeadDirty routes it to that entity's
+			//!                           own channel exactly as the forward commit does.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb never creates or erases a
+			//!                           `*_rasterizer` chunk (its candidate differs from the head only by
+			//!                           geometry/painter/function chunks and one `geometry` param value),
+			//!                           so the document's last-wins rasterizer activation is invariant
+			//!                           across the composite and the pre-swap active rasterizer is
+			//!                           correctly restored in BOTH directions.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentReplaceGeometry,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

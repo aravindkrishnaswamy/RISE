@@ -3803,9 +3803,17 @@ namespace RISE
 
 		//! R1a (2026-08-09, batched remove_chunks -- UNDO): replace the ENTIRE retained CST Document with
 		//! `fullText` (re-parsed via Cst::ParseToCst) and realize it through the SAME dry-run-guarded full
-		//! re-derive tail every chunk-CRUD verb uses.  Used ONLY by an agent `AgentRemoveChunks` op's Undo
+		//! re-derive tail every chunk-CRUD verb uses.  Used by an agent `AgentRemoveChunks` op's Undo
 		//! (SceneEditor::ApplyRevertMutation), whose recorded payload is the byte-exact serialization of the
 		//! Document as it stood immediately BEFORE the batch erase.
+		//!
+		//! R2 (2026-08-10, replace_geometry_scaffold): this primitive is ALSO the FORWARD commit of the
+		//! composite geometry-replacement verb, and the Undo AND Redo of its history record -- one call
+		//! swaps in a candidate document that was computed whole (new scaffold chunks spliced in, the
+		//! target object's `geometry` slot rebound, the orphaned old geometry chunk erased), so the entire
+		//! composite is ONE Document mutation, ONE dry-run-guarded re-derive and ONE head-version bump.
+		//! `diagContext` (nullable) names the operation in the re-derive's log lines; null keeps R1a's
+		//! original "restore document (agent remove_chunks undo)" wording verbatim for its existing caller.
 		//!
 		//! WHY a whole-document restore rather than N ApplyCstRestoreChunkAt splices: the batch erases N
 		//! scattered top-level indices in one shot, so the per-chunk "captured bytes + captured index" record
@@ -3824,7 +3832,8 @@ namespace RISE
 		//! `fullText`, text that parses to no top-level item, or a dry-run failure -- nothing changed).
 		//! Never 1.  Default no-op returning 0; see the Job override.  NB: appended at the IJob tail.
 		virtual int ApplyCstReplaceDocumentText( const char* /*fullText*/, bool /*restoreActiveRasterizer*/,
-		                                         char* outDiag, unsigned int diagMax )
+		                                         char* outDiag, unsigned int diagMax,
+		                                         const char* /*diagContext*/ = nullptr )
 		{
 			if( outDiag && diagMax ) outDiag[0] = '\0';
 			return 0;

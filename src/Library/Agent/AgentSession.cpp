@@ -5521,6 +5521,188 @@ namespace RISE
 				}
 				return GeoScaffoldGraph();
 			}
+
+			//! R2 (2026-08-10, replace_geometry_scaffold): the SHARED
+			//! validate-then-expand front half of BOTH geometry scaffold verbs.
+			//! Extracted VERBATIM from InsertGeometryScaffold's own prologue --
+			//! every guard, every message, and the per-family dispatch below are
+			//! the original text with the VERB NAME passed in rather than
+			//! hard-coded, so insert_geometry_scaffold's refusal strings stay
+			//! byte-identical and the two verbs can never drift on what a valid
+			//! family/param set is or on what chunks a family expands to.
+			//!
+			//! Returns true with `outFam`/`outGraph` populated; false with
+			//! `outMessage` carrying the actionable, verb-labelled refusal.
+			//! Pure text generation -- no session/controller/document access at
+			//! all (the name-collision precheck, which DOES need the document,
+			//! stays at each caller).
+			bool ScaffoldValidateAndBuildGeometry( const char* verb,
+			                                       const std::string& family, const std::string& name,
+			                                       double size, double detail, double aspect,
+			                                       const std::string& points, double taper, const std::string& tone,
+			                                       AgentSession::GeometryScaffoldFamily& outFam,
+			                                       GeoScaffoldGraph& outGraph, std::string& outMessage )
+			{
+				const std::string v( verb );
+
+				if( !ScaffoldParseGeometryFamily( family, outFam ) ) {
+					outMessage = v + " refused: unknown family `" + family +
+						"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column, "
+						"blended_chain, volume_bank";
+					return false;
+				}
+				if( !ScaffoldNameIsValid( name ) ) {
+					outMessage = v + " refused: `name` must be a non-empty token "
+						"(letters, digits, underscore, hyphen only, max " + std::to_string( kScaffoldMaxNameLength ) +
+						" chars) -- got `" + name + "`";
+					return false;
+				}
+				if( !std::isfinite( size ) || size <= 0.0 ) {
+					outMessage = v + " refused: `size` must be a finite number > 0";
+					return false;
+				}
+				if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
+					outMessage = v + " refused: `detail` must be a finite number in [0,1]";
+					return false;
+				}
+
+				// Per-family param shape (E3): blended_chain takes `points`/
+				// `taper` INSTEAD of `aspect`; volume_bank takes `aspect` PLUS
+				// `tone`; the original four take only `aspect`.  See
+				// InsertGeometryScaffold's header doc for the full per-family
+				// param table.
+				std::vector<std::array<double,3>> parsedPoints;
+				double toneR = 0.0, toneG = 0.0, toneB = 0.0;
+
+				if( outFam == AgentSession::GeometryScaffoldFamily::BlendedChain ) {
+					std::string perr;
+					if( !ScaffoldParsePoints( points, parsedPoints, perr ) ) {
+						outMessage = v + " refused: " + perr;
+						return false;
+					}
+					if( !std::isfinite( taper ) || taper < 0.0 || taper > 1.0 ) {
+						outMessage = v + " refused: `taper` must be a finite number in [0,1]";
+						return false;
+					}
+				} else if( outFam == AgentSession::GeometryScaffoldFamily::VolumeBank ) {
+					if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+						outMessage = v + " refused: `aspect` must be a finite number > 0";
+						return false;
+					}
+					if( !ScaffoldParseTone( tone, toneR, toneG, toneB ) ) {
+						outMessage = v + " refused: `tone` must be \"r g b\", each 0..1 -- got `" + tone + "`";
+						return false;
+					}
+				} else {
+					if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
+						outMessage = v + " refused: `aspect` must be a finite number > 0";
+						return false;
+					}
+				}
+
+				if( outFam == AgentSession::GeometryScaffoldFamily::BlendedChain ) {
+					outGraph = BuildBlendedChain( name, parsedPoints, size, taper, detail );
+				} else if( outFam == AgentSession::GeometryScaffoldFamily::VolumeBank ) {
+					outGraph = BuildVolumeBank( name, size, detail, aspect, toneR, toneG, toneB );
+				} else {
+					outGraph = BuildGeometryScaffoldGraph( outFam, name, size, detail, aspect );
+				}
+				return true;
+			}
+
+			//! R2 (2026-08-10): the DECLARATION-TIER classifier
+			//! Job::ApplyCstInsertChunk's own insert-position block uses, restated
+			//! here (same two tiers, same ChunkCategory mapping, same "everything
+			//! else appends" default) because replace_geometry_scaffold builds its
+			//! candidate document in ONE piece and therefore cannot route each
+			//! chunk through that Job primitive.  Keep the two in lockstep: a new
+			//! ChunkCategory must be classified in BOTH.
+			int ScaffoldDeclarationTier_( const std::string& keyword )
+			{
+				const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+				if( !d ) return -1;
+				switch( d->category ) {
+					case ChunkCategory::Painter:
+					case ChunkCategory::Function: return 0;
+					case ChunkCategory::Material:
+					case ChunkCategory::Geometry:
+					case ChunkCategory::Modifier:
+					case ChunkCategory::Medium:
+					case ChunkCategory::Shader:
+					case ChunkCategory::ShaderOp: return 1;
+					case ChunkCategory::Object:
+					case ChunkCategory::Light:    return 2;
+					default:                      return -1;   // append-at-end class
+				}
+			}
+
+			//! R2 (2026-08-10): splice ONE generated chunk text into `doc` at its
+			//! DECLARATION TIER -- the [leadSep "\n"][chunk][trailSep "\n"]
+			//! anti-glue triple Job::ApplyCstInsertChunk uses, positioned by
+			//! ScaffoldDeclarationTier_ above so a geometry chunk lands BEFORE the
+			//! first object/light and therefore before the very object whose
+			//! `geometry` slot this verb is about to rebind (scenes declare before
+			//! use; an appended-at-end geometry would not derive).  Returns the
+			//! spliced document; returns `doc` unchanged when the text does not
+			//! parse to a chunk (impossible for generator output -- defensive).
+			//!
+			//! NO append-at-end fallback (unlike ApplyCstInsertChunk's second
+			//! attempt): the whole candidate gets ONE dry-run, and for THIS verb
+			//! append-at-end is not a useful fallback anyway -- it is precisely the
+			//! position that cannot derive, since the consumer object is already in
+			//! the document ahead of it.
+			RISE::Cst::Document ScaffoldSpliceChunkTierPositioned_( const RISE::Cst::Document& doc,
+			                                                        const std::string& chunkText )
+			{
+				RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef  chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it =
+							RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( !chunkItem ) return doc;
+
+				RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+				RISE::Cst::Document sepDoc   = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::NodeRef  sepItem  = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+				if( !leadItem || !sepItem ) return doc;
+
+				const int tier  = ScaffoldDeclarationTier_( chunkItem->role );
+				const int endAt = RISE::Cst::DocItemCount( doc );
+				int at = endAt;
+				if( tier == 0 || tier == 1 ) {
+					for( int i = 0; i < endAt; ++i ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						if( ScaffoldDeclarationTier_( it->role ) > tier ) { at = i; break; }
+					}
+				}
+
+				RISE::Cst::Document work = doc;
+				work = RISE::Cst::DocInsertItem( work, at,     leadItem );
+				work = RISE::Cst::DocInsertItem( work, at + 1, chunkItem );
+				work = RISE::Cst::DocInsertItem( work, at + 2, sepItem );
+				return work;
+			}
+
+			//! R2 (2026-08-10): the bare display label for a chunk NodeRef -- its
+			//! `name` when it has one, else its keyword (the SAME fallback
+			//! AnalyzeRejectedRemove's referrer labelling uses).
+			std::string ScaffoldChunkLabel_( const RISE::Cst::Document& doc, RISE::Cst::NodeId id )
+			{
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, id );
+				if( !it ) return std::string();
+				const std::string namePath = RISE::Cst::ChunkNamePath( it );
+				const std::string prefix   = it->role + "/";
+				if( namePath.size() > prefix.size() && namePath.compare( 0, prefix.size(), prefix ) == 0 )
+					return namePath.substr( prefix.size() );
+				return it->role;
+			}
 		}
 
 		AgentSession::AgentGeometryScaffoldResult AgentSession::InsertGeometryScaffold(
@@ -5531,79 +5713,22 @@ namespace RISE
 			AgentGeometryScaffoldResult out;
 			out.family = family;
 
-			GeometryScaffoldFamily fam;
-			if( !ScaffoldParseGeometryFamily( family, fam ) ) {
-				out.ok = false;
-				out.message = "insert_geometry_scaffold refused: unknown family `" + family +
-					"` -- valid families are: displaced_slab, sweep_rail, blended_vessel, sdf_column, "
-					"blended_chain, volume_bank";
-				return out;
-			}
-			if( !ScaffoldNameIsValid( name ) ) {
-				out.ok = false;
-				out.message = "insert_geometry_scaffold refused: `name` must be a non-empty token "
-					"(letters, digits, underscore, hyphen only, max " + std::to_string( kScaffoldMaxNameLength ) +
-					" chars) -- got `" + name + "`";
-				return out;
-			}
-			if( !std::isfinite( size ) || size <= 0.0 ) {
-				out.ok = false;
-				out.message = "insert_geometry_scaffold refused: `size` must be a finite number > 0";
-				return out;
-			}
-			if( !std::isfinite( detail ) || detail < 0.0 || detail > 1.0 ) {
-				out.ok = false;
-				out.message = "insert_geometry_scaffold refused: `detail` must be a finite number in [0,1]";
-				return out;
-			}
-
-			// Per-family param shape (E3): blended_chain takes `points`/
-			// `taper` INSTEAD of `aspect`; volume_bank takes `aspect` PLUS
-			// `tone`; the original four take only `aspect`.  See
-			// InsertGeometryScaffold's header doc for the full per-family
-			// param table.
-			std::vector<std::array<double,3>> parsedPoints;
-			double toneR = 0.0, toneG = 0.0, toneB = 0.0;
-
-			if( fam == GeometryScaffoldFamily::BlendedChain ) {
-				std::string perr;
-				if( !ScaffoldParsePoints( points, parsedPoints, perr ) ) {
-					out.ok = false;
-					out.message = "insert_geometry_scaffold refused: " + perr;
-					return out;
-				}
-				if( !std::isfinite( taper ) || taper < 0.0 || taper > 1.0 ) {
-					out.ok = false;
-					out.message = "insert_geometry_scaffold refused: `taper` must be a finite number in [0,1]";
-					return out;
-				}
-			} else if( fam == GeometryScaffoldFamily::VolumeBank ) {
-				if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
-					out.ok = false;
-					out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
-					return out;
-				}
-				if( !ScaffoldParseTone( tone, toneR, toneG, toneB ) ) {
-					out.ok = false;
-					out.message = "insert_geometry_scaffold refused: `tone` must be \"r g b\", each 0..1 -- got `" +
-						tone + "`";
-					return out;
-				}
-			} else {
-				if( !std::isfinite( aspect ) || aspect <= 0.0 ) {
-					out.ok = false;
-					out.message = "insert_geometry_scaffold refused: `aspect` must be a finite number > 0";
-					return out;
-				}
-			}
-
+			// R2 (2026-08-10): the family parse, the per-family param
+			// validation and the graph expansion now live in the SHARED
+			// ScaffoldValidateAndBuildGeometry (extracted verbatim from here,
+			// verb-name-parameterized) so replace_geometry_scaffold expands
+			// through the IDENTICAL path -- see that helper's doc.
+			GeometryScaffoldFamily fam = GeometryScaffoldFamily::DisplacedSlab;
 			GeoScaffoldGraph graph;
-			if( fam == GeometryScaffoldFamily::BlendedChain ) {
-				graph = BuildBlendedChain( name, parsedPoints, size, taper, detail );
-			} else if( fam == GeometryScaffoldFamily::VolumeBank ) {
-				graph = BuildVolumeBank( name, size, detail, aspect, toneR, toneG, toneB );
-			} else {
-				graph = BuildGeometryScaffoldGraph( fam, name, size, detail, aspect );
+			{
+				std::string err;
+				if( !ScaffoldValidateAndBuildGeometry( "insert_geometry_scaffold", family, name,
+				                                       size, detail, aspect, points, taper, tone,
+				                                       fam, graph, err ) ) {
+					out.ok      = false;
+					out.message = err;
+					return out;
+				}
 			}
 
 			// Collision precheck: refuse the WHOLE expansion, document
@@ -5653,6 +5778,525 @@ namespace RISE
 					"creation time -- if you reposition or rescale that object, also update `" + graph.mediumName +
 					"`'s bbox_min/bbox_max to match, or the density field will no longer align with the container.";
 			}
+			return out;
+		}
+
+		AgentSession::AgentGeometryScaffoldResult AgentSession::ReplaceGeometryScaffold(
+			const std::string& target, const std::string& family, const std::string& name,
+			double size, double detail, double aspect,
+			const std::string& points, double taper, const std::string& tone,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentGeometryScaffoldResult out;
+			out.family         = family;
+			out.replacedObject = target;
+
+			// ---- (1) Request validation + expansion.  Nothing is touched on any failure below; every
+			// return in this whole method before the single commit leaves the document, the head version,
+			// the history and the proposal queue byte-identical.
+			if( target.empty() ) {
+				out.message = "replace_geometry_scaffold refused: `target` must name the standard_object whose "
+					"geometry slot to rebind";
+				return out;
+			}
+
+			// volume_bank emits its OWN standard_object (plus a material and a medium) because
+			// painter_heterogeneous_medium's bbox is WORLD-SPACE and fixed at creation time -- see
+			// InsertGeometryScaffold's doc.  There is therefore no existing object's geometry slot for it to
+			// rebind, and rebinding one to its container geometry would silently strand the medium.  Refuse
+			// with the route that DOES work.  Keyed on the LITERAL family string, BEFORE the shared
+			// validate-and-expand below, for two reasons: a caller who picked an unavailable family must not
+			// first be sent to fix that family's OWN params (a missing `tone` here is not the problem), and
+			// there is no point expanding a graph that is about to be discarded.  An UNKNOWN family string
+			// can never equal "volume_bank", so this cannot intercept the "valid families are ..." message.
+			if( family == "volume_bank" ) {
+				out.message = "replace_geometry_scaffold refused: family `volume_bank` emits its OWN "
+					"standard_object (plus a dielectric material and a medium, wired to a WORLD-SPACE density "
+					"bbox), so there is no existing object's `geometry` slot to rebind -- use "
+					"insert_geometry_scaffold for volume_bank, then remove the object you were replacing if "
+					"you no longer want it -- document unchanged";
+				return out;
+			}
+
+			GeometryScaffoldFamily fam = GeometryScaffoldFamily::DisplacedSlab;
+			GeoScaffoldGraph graph;
+			{
+				std::string err;
+				if( !ScaffoldValidateAndBuildGeometry( "replace_geometry_scaffold", family, name,
+				                                       size, detail, aspect, points, taper, tone,
+				                                       fam, graph, err ) ) {
+					out.message = err;
+					return out;
+				}
+			}
+
+			// ---- (2) Snapshot the head ONCE.  Everything below is computed against THESE bytes, and the
+			// commit re-checks that the head is still exactly this version (see step 7) -- so the candidate
+			// can never be committed on top of a head that moved underneath it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "replace_geometry_scaffold refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				// R2 fix-round (P1): a stale caller-supplied base is a CONFLICT, not a request-validity
+				// failure -- the SAME distinction ProposePatch's identical precondition draws
+				// (AgentPatchResult::status=="conflict", applied==false).  `ok` stays true: the request
+				// itself was well-formed and reached a commit-stage disposition; `status`/`retriable`/
+				// `headVersion` carry the actual disposition so AgentRpc.cpp returns MakeSuccess rather
+				// than folding this into an "invalid params" error.
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"replace_geometry_scaffold refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.retriable   = false;
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (3) Resolve `target`.  Bare-name, unique-or-refuse -- the SAME DocFindByNameAnyRole
+			// resolution ProposePatch/remove_chunk use, with NO kind narrowing parameter (the required kind
+			// IS standard_object) and NO positional fallback (that exists for cameras, which this verb can
+			// never address).  Resolving with an EMPTY kind constraint deliberately: it is what lets the
+			// "you passed a geometry chunk, not an object" case below be diagnosed SPECIFICALLY instead of
+			// coming back as an indistinguishable "not found".
+			int occ = 0;
+			const RISE::Cst::NodeId targetId =
+				RISE::Cst::DocFindByNameAnyRole( headDoc, target, &occ, "", /*uniqueFallback*/ false );
+			if( targetId == 0 ) {
+				if( occ > 1 ) {
+					char buf[224];
+					std::snprintf( buf, sizeof( buf ),
+						"replace_geometry_scaffold refused: `%s` is ambiguous -- %d chunks share that name; "
+						"rename one, or address the object by a unique name -- document unchanged",
+						target.c_str(), occ );
+					out.message = buf;
+					return out;
+				}
+				std::string m = "replace_geometry_scaffold refused: no chunk named `" + target +
+					"` -- `target` is the standard_object whose geometry slot to rebind";
+				const std::vector<std::string> near =
+					RankNearMisses( CollectTargetNameCandidates( headDoc, std::string() ), target );
+				if( !near.empty() ) {
+					m += "; did you mean ";
+					for( std::size_t i = 0; i < near.size(); ++i ) {
+						if( i ) m += ", ";
+						m += "`" + near[i] + "`";
+					}
+					m += "?";
+				}
+				m += " -- document unchanged";
+				out.message = m;
+				return out;
+			}
+			const RISE::Cst::NodeRef targetItem = RISE::Cst::DocResolveNodeId( headDoc, targetId );
+			if( !targetItem ) {
+				out.message = "replace_geometry_scaffold refused: `" + target + "` did not resolve to a chunk "
+					"-- document unchanged";
+				return out;
+			}
+			if( targetItem->role != "standard_object" ) {
+				// THE LIKELY MODEL MISTAKE: passing the GEOMETRY chunk's name (the thing being replaced)
+				// rather than the OBJECT's.  A generic "not a standard_object" would cost a whole turn, so
+				// name the object(s) that actually consume this geometry -- that IS the argument the caller
+				// meant to pass.
+				const ChunkDescriptor* d = DescriptorForKeyword( String( targetItem->role.c_str() ) );
+				if( d && d->category == ChunkCategory::Geometry ) {
+					std::vector<std::string> consumers;
+					{
+						const RISE::Cst::ReferenceGraph g = RISE::Cst::BuildReferenceGraph( headDoc, nullptr, nullptr );
+						const std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >::const_iterator dep =
+							g.dependents.find( targetId );
+						if( dep != g.dependents.end() ) {
+							for( const RISE::Cst::NodeId refId : dep->second ) {
+								const RISE::Cst::NodeRef refItem = RISE::Cst::DocResolveNodeId( headDoc, refId );
+								if( !refItem || refItem->role != "standard_object" ) continue;
+								const std::string lbl = ScaffoldChunkLabel_( headDoc, refId );
+								if( !lbl.empty() ) consumers.push_back( lbl );
+							}
+						}
+					}
+					std::string m = "replace_geometry_scaffold refused: `" + target + "` is a `" +
+						targetItem->role + "` (a GEOMETRY chunk), not the object that uses it -- `target` must "
+						"name the standard_object whose `geometry` slot to rebind";
+					if( !consumers.empty() ) {
+						m += "; the standard_object" + std::string( consumers.size() == 1 ? "" : "s" ) +
+							" using this geometry: ";
+						for( std::size_t i = 0; i < consumers.size(); ++i ) {
+							if( i ) m += ", ";
+							m += "`" + consumers[i] + "`";
+						}
+						m += " -- pass " + std::string( consumers.size() == 1 ? "that" : "one of those" ) +
+							" instead";
+					} else {
+						m += "; nothing currently references it, so there is no slot to rebind -- use "
+							"insert_geometry_scaffold and wire the object yourself";
+					}
+					m += " -- document unchanged";
+					out.message = m;
+					return out;
+				}
+				out.message = "replace_geometry_scaffold refused: `" + target + "` is a `" + targetItem->role +
+					"`, not a `standard_object` -- `target` must name the object whose `geometry` slot to "
+					"rebind -- document unchanged";
+				return out;
+			}
+
+			const std::string oldGeomName = ChunkParamString_( targetItem, "geometry" );
+			if( oldGeomName.empty() ) {
+				out.message = "replace_geometry_scaffold refused: `" + target + "` has no `geometry` param to "
+					"rebind -- add one with propose_patch, or use insert_geometry_scaffold and wire it "
+					"yourself -- document unchanged";
+				return out;
+			}
+			out.previousGeometryName = oldGeomName;
+
+			// ---- (4) Name-collision precheck: refuse the WHOLE expansion, document UNCHANGED, if ANY
+			// generated (kind,name) already exists AT SNAPSHOT TIME.  The IDENTICAL precheck (and the
+			// IDENTICAL TOCTOU hedge) InsertGeometryScaffold's own precheck comment documents -- except that
+			// here the TOCTOU hedge is not even needed: the commit's conflict gate (step 7) refuses outright
+			// if the head moved between this check and the swap.
+			for( const GeoScaffoldChunkEntry& c : graph.chunks ) {
+				if( RISE::Cst::DocFindByName( headDoc, c.kind + "/" + c.name ) != 0 ) {
+					out.message = "replace_geometry_scaffold refused: a `" + c.kind + "` named `" + c.name +
+						"` already exists -- every generated chunk is named tmpl_<name>_<role>, and this "
+						"collides; pick a different `name` -- document unchanged";
+					return out;
+				}
+			}
+
+			// ---- (5) Build the CANDIDATE document: splice in every generated chunk (declaration-tier
+			// positioned, so the new geometry is declared ahead of the object that will reference it),
+			// rebind the object's `geometry` slot, then erase the old geometry chunk IF it is now
+			// unreferenced.  One document, committed once -- that is the whole atomicity story.
+			RISE::Cst::Document work = headDoc;
+			for( const GeoScaffoldChunkEntry& c : graph.chunks )
+				work = ScaffoldSpliceChunkTierPositioned_( work, c.text );
+
+			// Re-resolve the object in the SPLICED document rather than reusing `targetId`: the splices
+			// produced a new Document value, and re-resolving by the canonical (kind,name) path is both
+			// cheap and immune to any NodeId-stability assumption.
+			const RISE::Cst::NodeId objIdInWork =
+				RISE::Cst::DocFindByName( work, std::string( "standard_object/" ) + target );
+			if( objIdInWork == 0 ) {
+				out.message = "replace_geometry_scaffold refused: internal -- `" + target + "` could not be "
+					"re-resolved after the scaffold splice; document unchanged";
+				return out;
+			}
+			work = RISE::Cst::DocSetParamValue( work, objIdInWork, "geometry", 0, graph.geometryName );
+
+			// ORPHAN POLICY (see the header doc for the full rationale).  After the rebind, ask the
+			// reference graph who still points at the OLD geometry chunk.  Nobody -> erase it in this same
+			// candidate.  Somebody -> RETAIN it and name the referrers.  Either way, report (never remove)
+			// the chunks that were referenced ONLY by it -- exactly the set whose `dependents` is the
+			// singleton {old geometry}, which is what "this chunk existed only to feed the discarded form"
+			// means in graph terms.
+			{
+				const RISE::Cst::NodeId oldGeomId =
+					RISE::Cst::DocFindByNameAnyRole( work, oldGeomName, nullptr, "", false );
+				const RISE::Cst::NodeRef oldItem =
+					( oldGeomId != 0 ) ? RISE::Cst::DocResolveNodeId( work, oldGeomId ) : RISE::Cst::NodeRef();
+				// KIND VERIFICATION before anything DESTRUCTIVE -- the defensive pattern Job.cpp's
+				// CstResolveRemoveTarget_ applies for the same reason.  The bare-name lookup above
+				// carries no kind constraint DELIBERATELY (a same-named chunk of another kind then
+				// comes back AMBIGUOUS, id 0, instead of being mistaken for the geometry) -- but a
+				// DANGLING `geometry` value that happens to match some unrelated uniquely-named chunk
+				// would otherwise resolve here and be ERASED.  Only ever touch a chunk the descriptor
+				// registry itself calls Geometry.
+				const ChunkDescriptor* oldDesc =
+					oldItem ? DescriptorForKeyword( String( oldItem->role.c_str() ) ) : nullptr;
+				if( oldItem && oldDesc && oldDesc->category == ChunkCategory::Geometry )
+				{
+					out.previousGeometryKind = oldItem->role;
+
+					const RISE::Cst::ReferenceGraph g = RISE::Cst::BuildReferenceGraph( work, nullptr, nullptr );
+					const std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >::const_iterator dep =
+						g.dependents.find( oldGeomId );
+					const bool stillReferenced = ( dep != g.dependents.end() && !dep->second.empty() );
+
+					if( stillReferenced ) {
+						for( const RISE::Cst::NodeId refId : dep->second ) {
+							const std::string lbl = ScaffoldChunkLabel_( work, refId );
+							if( !lbl.empty() ) out.previousGeometryReferrers.push_back( lbl );
+						}
+					}
+					else {
+						// Deeper orphans, computed BEFORE the erase (afterwards the edges are gone).
+						for( const std::pair<const RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >& kv : g.dependents ) {
+							if( kv.second.size() != 1 || *kv.second.begin() != oldGeomId ) continue;
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( work, kv.first );
+							if( !it ) continue;
+							const std::string lbl = ScaffoldChunkLabel_( work, kv.first );
+							if( lbl.empty() || lbl == it->role ) continue;   // unnamed -> not addressable by remove_chunks
+							out.reportedOrphans.push_back( it->role + "/" + lbl );
+						}
+						const int idx = RISE::Cst::DocIndexOfNodeId( work, oldGeomId, nullptr );
+						if( idx >= 0 ) {
+							work = RISE::Cst::DocEraseChunkTidy( work, idx );
+							out.previousGeometryRemoved = true;
+						}
+						else {
+							// No top-level index (should be impossible for a resolved chunk) -- leave it
+							// rather than erase something else, and report honestly.
+							out.reportedOrphans.clear();
+						}
+					}
+				}
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "replace_geometry_scaffold refused: internal -- the candidate document "
+					"serialized to nothing; document unchanged";
+				return out;
+			}
+
+			// ---- (6) GATES against the CANDIDATE document.  This is a CREATION path, so both post-arc
+			// enforcement gates are evaluated here rather than argued away -- see the header doc.  Neither
+			// can fire through R2's own mutation today (no geometry family emits a rasterizer chunk, and no
+			// family emits or edits a csg_object), which is precisely why they are cheap: the rasterizer arm
+			// is a keyword multiset compare, and the emitter arm short-circuits on a CST-only scan for any
+			// csg_object at all before paying a derive.
+			{
+				const std::string clause = DescribeNewlyBlockedRasterizerDelta_( headDoc, work );
+				if( !clause.empty() ) {
+					out.message = "replace_geometry_scaffold refused: " + clause;
+					return out;
+				}
+			}
+			{
+				// DELTA, not state (the E1 lesson -- see CheckNonSamplingEmitterGateForPatch's arm C): a
+				// csg_object that was ALREADY an unacknowledged null-geometry emitter on the head is not
+				// this edit's doing and must not freeze every future form revision in the scene.
+				std::vector<std::string> csgNames;
+				{
+					const int n = RISE::Cst::DocItemCount( work );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it =
+							RISE::Cst::DocResolveNodeId( work, RISE::Cst::DocNodeIdAt( work, i ) );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk || it->role != "csg_object" ) continue;
+						const std::string n2 = ChunkParamString_( it, "name" );
+						if( !n2.empty() ) csgNames.push_back( n2 );
+					}
+				}
+				if( !csgNames.empty() ) {
+					const std::vector<std::string> candHits = FindUnacknowledgedNullGeometryEmitters_( work, csgNames );
+					if( !candHits.empty() ) {
+						const std::vector<std::string> headHits =
+							FindUnacknowledgedNullGeometryEmitters_( headDoc, csgNames );
+						std::vector<std::string> created;
+						for( const std::string& nm : candHits ) {
+							bool preExisting = false;
+							for( const std::string& h : headHits ) if( h == nm ) { preExisting = true; break; }
+							if( !preExisting ) created.push_back( nm );
+						}
+						if( !created.empty() ) {
+							out.message = "replace_geometry_scaffold refused: " +
+								DescribeUnacknowledgedNullGeometryEmitters_( created );
+							return out;
+						}
+					}
+				}
+			}
+
+			// ---- (7) COMMIT: ONE whole-document swap, ONE dry-run-guarded re-derive, ONE head bump.
+			// `snap.headVersion` is passed as the base UNCONDITIONALLY (even when the caller omitted
+			// baseHeadVersion): the candidate above was computed outside the commit lock, so committing it
+			// against a head that moved would silently clobber a co-editor.  See the header doc.
+			AgentChunkResult commit;
+			commit.name = target;
+			commit.kind = "standard_object";
+
+			if( mAuthority == AgentAuthority::External )
+			{
+				// No staging path for this verb: an AgentProposal replays ONE of the four
+				// AgentProposalKind verbs, and a composite whole-document swap is none of them -- an Owner
+				// approving it card-by-card is not even a meaningful operation, and inventing a
+				// "replay the scaffold generator later" kind would re-run generation against a DIFFERENT
+				// head than the one the candidate was computed for.  Refuse with the two-call route that
+				// DOES stage cleanly.  Document byte-identical.
+				out.message = "replace_geometry_scaffold refused: this session is External-authority, and this "
+					"verb has no staged-proposal form (it is ONE composite document swap, not a single "
+					"chunk edit an Owner can approve card-by-card) -- do it in two staged steps instead: "
+					"insert_geometry_scaffold to create the new geometry, then propose_patch on `" + target +
+					"`'s `geometry` param to rebind it -- document unchanged";
+				return out;
+			}
+
+			if( mController )
+			{
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( target.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() )
+			{
+				out.message = "replace_geometry_scaffold refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else
+			{
+				// HEADLESS (direct-Job).  The conflict gate the controller applies under its lock is applied
+				// here too -- single-threaded in practice, but the invariant ("the candidate is committed
+				// against exactly the head it was computed from, or not at all") is the verb's, not the
+				// controller's.
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					// R2 fix-round (P1): same reclassification as the explicit-baseOrNull check in step
+					// (2) -- a head that moved underneath the headless commit is a CONFLICT, not a
+					// request-validity failure.  See this method's header doc, CONCURRENCY.
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"replace_geometry_scaffold refused: the head moved (revision %llu) while the "
+						"replacement was being composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.retriable   = false;
+					out.headVersion = cur;
+					out.message     = buf;
+					// R2 fix-round (P2, review round 2): this early return SKIPS the shared
+					// !commit.applied block below, which is where a non-applied outcome clears the
+					// step-(5) disposition fields.  Those fields were computed against the CANDIDATE
+					// document -- they describe a plan that did NOT happen here -- so clear them
+					// explicitly, exactly as lines ~6248-6250 do for the controller-mediated path.
+					// Leaving them set would contradict this very message ("document unchanged") with
+					// a `previousGeometry.removed:true` a model may act on.
+					out.previousGeometryRemoved = false;
+					out.previousGeometryReferrers.clear();
+					out.reportedOrphans.clear();
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "replace_geometry_scaffold" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 ) {
+					commit.applied = true;
+					commit.status  = "applied";
+					commit.message = "geometry replaced via a single full re-derive (Scene + managers were replaced)";
+				}
+				else if( code == 3 ) {
+					commit.applied = false;
+					commit.status  = "diagnosed";
+					commit.message = "geometry replacement NOT a clean success: the Document was mutated and the "
+						"live managers were replaced, BUT the full re-derive emitted diagnostics (see log) -- "
+						"do NOT treat as applied";
+				}
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					std::string m = "geometry replacement rejected (NOTHING changed): the candidate document "
+						"would not derive -- head unchanged";
+					if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+					commit.message = m;
+				}
+			}
+
+			// ---- (8) Report.  `chunkResults` keeps the shape every scaffold caller already handles -- one
+			// entry per GENERATED chunk, in generation order -- but, unlike insert_geometry_scaffold's, these
+			// are NOT independent verdicts: the whole call is one atomic mutation, so every entry carries the
+			// SAME verdict, status and head version.  A caller that checks each element still reads the truth.
+			out.chunkResults.reserve( graph.chunks.size() );
+			for( const GeoScaffoldChunkEntry& c : graph.chunks ) {
+				AgentChunkResult e = commit;
+				e.name = c.name;
+				e.kind = c.kind;
+				out.chunkResults.push_back( e );
+			}
+
+			// R2 fix-round (P1): every path that reaches here ATTEMPTED a commit -- `ok` reflects that (the
+			// request was well-formed and submitted), matching InsertGeometryScaffold's identical "ok is not
+			// a promise every chunk landed" hedge; `status`/`retriable`/`headVersion` carry the ACTUAL
+			// disposition (applied / rejected / conflict / diagnosed) so a caller can branch on it without
+			// digging into chunkResults[0], and AgentRpc.cpp returns MakeSuccess for every one of these --
+			// MakeError is reserved for the pre-commit refusals that returned before this point.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.headVersion = commit.headVersion;
+
+			if( !commit.applied ) {
+				if( commit.status == "diagnosed" ) {
+					// R2 fix-round (P2): code 3 DID mutate the Document -- the new chunk(s) landed, the
+					// slot was rebound, the old geometry's disposition below is whatever step (5) actually
+					// computed against the SPLICED document (BEFORE this commit, but that IS what landed),
+					// RebindEditorToJob ran, and a real undo record was pushed.  Unlike a true refusal,
+					// nothing here is a "plan that did not happen" -- report it as reality, not as if
+					// nothing changed.  previousGeometryRemoved/previousGeometryReferrers/reportedOrphans
+					// were already computed correctly in step (5) against `work`; leave them alone.
+					out.geometryName = graph.geometryName;
+					out.geometryKind = graph.geometryKind;
+					out.message = "replace_geometry_scaffold: " + commit.message + " -- the Document WAS "
+						"mutated (the new geometry landed and the object's `geometry` slot was rebound; the "
+						"previous-geometry disposition in this response is real, not a discarded plan) even "
+						"though the re-derive diagnosed -- treat as a mutation that needs a look at the log, "
+						"not as unchanged.";
+				}
+				else {
+					// A true refusal (rejected / conflict / a transient retriable reject) -- nothing was
+					// touched, so none of the disposition fields describe reality.  Clear them rather than
+					// report a plan that did not happen.
+					out.previousGeometryRemoved = false;
+					out.previousGeometryReferrers.clear();
+					out.reportedOrphans.clear();
+					out.message = "replace_geometry_scaffold: " + commit.message;
+				}
+				return out;
+			}
+
+			out.geometryName = graph.geometryName;
+			out.geometryKind = graph.geometryKind;
+
+			// A factual (non-advisory) account of what the one mutation did -- the model needs the old
+			// chunk's disposition to know whether it still has cleanup to do.
+			std::string m = "`" + target + "`.geometry rebound to the new `" + graph.geometryKind + "` `" +
+				graph.geometryName + "` (" + std::to_string( graph.chunks.size() ) +
+				" chunk" + ( graph.chunks.size() == 1 ? "" : "s" ) + " added); the object's transform and every "
+				"other param are unchanged.";
+			if( out.previousGeometryRemoved ) {
+				m += " The previous geometry `" + oldGeomName + "` was unreferenced after the rebind and was "
+					"removed in the same edit.";
+			}
+			else if( !out.previousGeometryReferrers.empty() ) {
+				m += " The previous geometry `" + oldGeomName + "` was RETAINED because it is still referenced by ";
+				for( std::size_t i = 0; i < out.previousGeometryReferrers.size(); ++i ) {
+					if( i ) m += ", ";
+					m += "`" + out.previousGeometryReferrers[i] + "`";
+				}
+				m += ".";
+			}
+			else {
+				m += " The previous geometry `" + oldGeomName + "` was left in place.";
+			}
+			if( !out.reportedOrphans.empty() ) {
+				m += " Now unreferenced and NOT removed (this verb removes only the geometry chunk it "
+					"unbound, never deeper): ";
+				for( std::size_t i = 0; i < out.reportedOrphans.size(); ++i ) {
+					if( i ) m += ", ";
+					m += "`" + out.reportedOrphans[i] + "`";
+				}
+				m += " -- pass them to remove_chunks if you want them gone.";
+			}
+			out.message = m;
 			return out;
 		}
 

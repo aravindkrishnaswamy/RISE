@@ -468,6 +468,20 @@ namespace RISE
 			const String& displayTargets, const String& priorDocText, const String& redoTargetLines,
 			bool anyWasRasterizer );
 
+		//! R2 (2026-08-10, replace_geometry_scaffold): push the ONE EditHistory record that represents a WHOLE
+		//! agent composite geometry replacement already applied to the retained Document (via
+		//! Job::ApplyCstReplaceDocumentText -- see SceneEditController::ApplyAgentReplaceGeometry).  Same
+		//! "forward already happened" shape as PushAgentRemoveChunksEdit; one record, so one Cmd-Z restores the
+		//! byte-exact pre-call document and one Cmd-Shift-Z reinstalls the byte-exact post-call one.
+		//!
+		//! `objectName` is the rebound `standard_object`'s name (a REAL addressable entity here, unlike the
+		//! batch remove's display-only list, so the record also carries `cstEntityKind` = "standard_object");
+		//! `priorDocText` / `postDocText` are the byte-exact Cst::SerializeCst of the Document immediately
+		//! BEFORE and AFTER the composite.  Does NOT mark dirty or fire notifications -- the caller already
+		//! calls MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentReplaceGeometryEdit(
+			const String& objectName, const String& priorDocText, const String& postDocText );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
@@ -938,6 +952,13 @@ namespace RISE
 		//! helper rather than folded into it: the two directions consume entirely different fields and call
 		//! entirely different Job primitives, so a shared four-way branch would only obscure both.
 		bool RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): the AgentReplaceGeometry sibling of
+		//! RouteAgentRemoveChunksBatch_.  BOTH directions are the SAME primitive on DIFFERENT recorded bytes --
+		//! `forward` false = Undo (Job::ApplyCstReplaceDocumentText on `propertyValue`, the pre-composite
+		//! document), `forward` true = Redo (the SAME call on `prevPropertyValue`, the post-composite one).
+		//! Same mutation-keyed return + `outDiagnosed` convention as RouteAgentChunkCrud_.
+		bool RouteAgentReplaceGeometryDoc_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.

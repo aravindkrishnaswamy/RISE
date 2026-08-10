@@ -2242,8 +2242,41 @@ namespace RISE
 			//! `ok==true` volume_bank result -- see InsertGeometryScaffold's
 			//! doc -- unlike every other family, where `message` stays
 			//! empty on success.
+			//! R2 (2026-08-10, replace_geometry_scaffold) addendum: the four
+			//! `replaced*` fields below are populated ONLY by
+			//! ReplaceGeometryScaffold and stay empty/false for every
+			//! InsertGeometryScaffold result -- the struct is shared
+			//! deliberately (the two verbs produce the SAME chunk graph and the
+			//! SAME per-chunk reporting; only the disposition of the OLD
+			//! geometry differs) rather than forking a near-duplicate type.
+			//! See ReplaceGeometryScaffold's doc for the orphan-cleanup policy
+			//! these fields report.
+			//! R2 fix-round (2026-08-10, P1) addendum: `status`/`retriable`/
+			//! `headVersion` below are ReplaceGeometryScaffold-only (empty/false/
+			//! default for every InsertGeometryScaffold result, which has no
+			//! single composite commit to report) -- mirror
+			//! AgentRemoveBatchResult's identically-named fields, field-for-field,
+			//! so the two composite-commit verbs read alike.  For
+			//! ReplaceGeometryScaffold, `ok` is redefined precisely (see the
+			//! field's own doc below): it now means the request reached a
+			//! commit-stage disposition (attempted, whatever the outcome), NOT
+			//! that the commit applied -- `status` carries the outcome.
 			struct AgentGeometryScaffoldResult
 			{
+				//! For InsertGeometryScaffold: unchanged (pre-flight request
+				//! validity -- see the struct's main doc above).
+				//! For ReplaceGeometryScaffold (R2 fix-round): true once the
+				//! request passed pre-flight validation AND a base-head/commit
+				//! disposition was reached -- applied, rejected, conflict,
+				//! diagnosed, or a transient retriable reject ALL set ok=true,
+				//! exactly like InsertGeometryScaffold's "well-formed and
+				//! submitted, not a promise every chunk landed" hedge.  `status`/
+				//! `retriable`/`headVersion` (and each `chunkResults` entry's own
+				//! `applied`) carry the actual disposition.  ok stays false ONLY
+				//! for a genuine pre-commit refusal that never reached that point:
+				//! bad/missing params, unknown family, the volume_bank refusal,
+				//! target-resolution failure, name collision, no retained
+				//! Document, or the External-authority hard refusal.
 				bool        ok = false;
 				std::string message;
 				std::string family;
@@ -2256,6 +2289,50 @@ namespace RISE
 				std::string objectName;
 				std::string objectKind;
 				std::vector<AgentChunkResult> chunkResults;
+
+				//! R2: the `standard_object` whose `geometry` slot was rebound.
+				std::string replacedObject;
+				//! R2: the geometry chunk that slot pointed at BEFORE the call
+				//! (name + keyword), whether or not it was removed.
+				std::string previousGeometryName;
+				std::string previousGeometryKind;
+				//! R2: true iff the previous geometry chunk was UNREFERENCED
+				//! after the rebind and was therefore erased in the same atomic
+				//! mutation.  False means it was RETAINED because something else
+				//! still references it -- `previousGeometryReferrers` names what.
+				bool        previousGeometryRemoved = false;
+				//! R2: the chunks that STILL reference the previous geometry
+				//! (empty when it was removed).  Bare names where the referrer
+				//! is named, else its keyword.
+				std::vector<std::string> previousGeometryReferrers;
+				//! R2: chunks that the removal left UNREFERENCED but that this
+				//! verb deliberately did NOT chase (e.g. the noise Function2D
+				//! that fed a removed displaced_geometry).  Reported as
+				//! "keyword/name" so a model can hand them straight to
+				//! remove_chunks -- see ReplaceGeometryScaffold's doc for why
+				//! v1 reports rather than removes them.
+				std::vector<std::string> reportedOrphans;
+
+				//! R2 fix-round (2026-08-10, P1): ReplaceGeometryScaffold-only --
+				//! see the struct's addendum above and `ok`'s own doc.  Empty/
+				//! false/default for every InsertGeometryScaffold result and for
+				//! a pre-commit ReplaceGeometryScaffold refusal (ok==false).
+				//! `status`: "applied" / "rejected" / "conflict" / "diagnosed" --
+				//! the SAME four values AgentPatchResult::status and
+				//! SceneEditController::AgentCommitResult::status use.
+				//! `retriable`: meaningful for status=="rejected" only -- true
+				//! means the reject is TRANSIENT (an open editor transaction/
+				//! gesture, or the render-admission gate) and the IDENTICAL call
+				//! can succeed later with no change; false means permanent.  A
+				//! CONFLICT does NOT set this -- see AgentCommitResult::retriable's
+				//! doc for why (its own status IS the retry signal, via re-read/
+				//! rebase/re-propose, not verbatim resubmission).
+				//! `headVersion`: the head AFTER the call on applied/diagnosed, or
+				//! the CURRENT head (the one that refused the request) on
+				//! rejected/conflict.
+				std::string               status;
+				bool                      retriable = false;
+				RISE::Cst::CstHeadVersion headVersion;
 			};
 
 			//! Expand geometry `family` into a small chunk graph (1-3 chunks
@@ -2387,6 +2464,131 @@ namespace RISE
 			                                                    double taper = 0.0,
 			                                                    const std::string& tone = std::string(),
 			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! R2 (2026-08-10, replace_geometry_scaffold): expand `family` into
+			//! the SAME chunk graph InsertGeometryScaffold produces (identical
+			//! validation, identical generators, identical deterministic
+			//! jitter -- one shared code path, not a copy) and REBIND the
+			//! `geometry` slot of the EXISTING `standard_object` named `target`
+			//! to the new geometry chunk, ALL IN ONE CALL.
+			//!
+			//! WHY THIS VERB EXISTS (the R1 trajectory census): models revise
+			//! what a ONE-PARAMETER patch can revise.  A rich MATERIAL is one
+			//! chunk bound to a slot, so models iterate on materials freely; a
+			//! rich FORM is a multi-chunk composition, so re-forming a part
+			//! today costs "author a new geometry chunk + patch the object's
+			//! geometry slot + remove the orphan" -- three calls -- and the
+			//! measured consequence is ZERO geometry revisions across a whole
+			//! build+render+revise trajectory.  This verb makes form revision
+			//! cost exactly what a colour tweak costs.
+			//!
+			//! WHAT IT PRESERVES: ONLY the `geometry` param changes.  The
+			//! object's `position` / `orientation` / `scale` / `material` /
+			//! every other slot is left byte-identical -- placement the model
+			//! tuned BY LOOKING must survive a form change, which is the whole
+			//! point of the verb.
+			//!
+			//! ONE CALL = ONE MUTATION: the new chunks, the slot rebind, and the
+			//! old chunk's removal are computed into ONE candidate document and
+			//! committed by ONE dry-run-guarded re-derive -- so ONE head-version
+			//! bump, ONE history entry, ONE Cmd-Z, and ONE mutation as far as the
+			//! chat loop's E4 blind-edit streak is concerned.  ALL-OR-NOTHING:
+			//! on ANY refusal (and on a candidate that would not derive) the
+			//! document, the head version, the history and the proposal queue
+			//! are completely unmutated.  Note that this is NOT
+			//! InsertGeometryScaffold's route: that verb submits through
+			//! InsertChunks, which is SEQUENTIAL and BEST-EFFORT (N head bumps,
+			//! N history entries) -- correct for a purely ADDITIVE batch, wrong
+			//! for a composite whose intermediate states are incoherent (a
+			//! rebound slot pointing at a chunk that did not land, an orphan
+			//! removed before its replacement exists).
+			//!
+			//! CONCURRENCY: the candidate is computed against a head SNAPSHOT
+			//! read outside the commit lock, so this verb ALWAYS commits under
+			//! optimistic concurrency -- even when the caller omits
+			//! `baseOrNull`, the snapshot's own head version is passed to the
+			//! commit and a head that moved in between yields `status ==
+			//! "conflict"`, never a silent clobber of a co-editor's edit.  An
+			//! explicit `baseOrNull` that does not match the snapshot is a
+			//! conflict up front.  R2 fix-round (2026-08-10, P1): a CONFLICT --
+			//! whether the up-front `baseOrNull` mismatch or a race lost at the
+			//! actual commit -- is NOT a request-validity failure: `ok` stays
+			//! true (a commit-stage disposition WAS reached) and
+			//! `status`/`retriable`/`headVersion` carry it, the SAME distinction
+			//! ProposePatch's identical precondition draws
+			//! (AgentPatchResult::status=="conflict" with `applied`==false).
+			//!
+			//! PARAMS: `target` (REQUIRED) plus the EXACT param set
+			//! InsertGeometryScaffold takes, with the SAME per-family shape and
+			//! the SAME validation messages (only the verb name in the refusal
+			//! text differs).  `target` is resolved by the ProposePatch/
+			//! remove_chunk rules (bare name, unique-or-refuse; no kind
+			//! narrowing parameter -- `standard_object` IS the kind constraint).
+			//!
+			//! REFUSALS (blocking, actionable, document byte-identical):
+			//!   * `family == "volume_bank"` -- that family emits its OWN
+			//!     `standard_object` (see InsertGeometryScaffold's doc), so
+			//!     there is no existing object's geometry slot to rebind;
+			//!     the message points at insert_geometry_scaffold.
+			//!   * `target` resolves to nothing (with near-miss suggestions),
+			//!     or is AMBIGUOUS (with the disambiguation hint ProposePatch
+			//!     gives).
+			//!   * `target` resolves to a GEOMETRY chunk rather than an object
+			//!     -- diagnosed SPECIFICALLY, naming the `standard_object`(s)
+			//!     that consume it, because that is the likely model mistake
+			//!     and a generic "not found" would cost a whole turn.
+			//!   * `target` resolves to some OTHER kind, or to a
+			//!     `standard_object` with no `geometry` param.
+			//!   * a generated chunk name collides with an existing (kind,name).
+			//!
+			//! ORPHAN CLEANUP (conservative v1, deliberately): after the
+			//! rebind, the PREVIOUS geometry chunk is removed IF AND ONLY IF
+			//! nothing else references it; if something does, it is RETAINED and
+			//! the result names the remaining referrers.  Chunks that the
+			//! removal leaves unreferenced ONE HOP DEEPER (e.g. the perlin2d
+			//! Function2D that only fed a removed displaced_geometry) are NOT
+			//! chased -- they are REPORTED by name in `reportedOrphans` so the
+			//! model can remove them with remove_chunks if it wants.  Rationale:
+			//! a transitive sweep would have to decide, without the author's
+			//! intent, whether a shared painter/function is "part of" the
+			//! discarded form or a scene-wide asset the author will rebind in a
+			//! moment -- and silently deleting the latter is a one-way door,
+			//! whereas an unreferenced leftover chunk is inert and one call away
+			//! from gone.
+			//!
+			//! GATES: the E1 non-sampling-emitter gate and the R1c rasterizer
+			//! allowlist gate are BOTH evaluated against the CANDIDATE document
+			//! (delta-against-head, the same state-vs-delta rule
+			//! CheckNonSamplingEmitterGateForPatch's arm C applies), so this
+			//! creation path cannot bypass either.  Neither can fire through
+			//! THIS verb's own mutation as of R2 -- no geometry family emits a
+			//! rasterizer chunk, and no family emits or edits a `csg_object` --
+			//! but they are evaluated rather than argued away, so a future
+			//! family or a widened `target` domain cannot silently open a hole.
+			//!
+			//! AUTHORITY: unlike the InsertChunks-routed scaffolds, an
+			//! External-authority session does NOT stage this verb -- it is
+			//! REFUSED with an actionable message pointing at the two-call
+			//! route (insert_geometry_scaffold, then propose_patch on the
+			//! `geometry` slot), because a composite whole-document swap has no
+			//! representation in the AgentProposalKind set an Owner approves
+			//! card-by-card.  See the .cpp for the full rationale.
+			//!
+			//! AUTONOMY CAVEAT: identical to InsertGeometryScaffold's -- this
+			//! method has no autonomy gate at all; a WIRE caller running under
+			//! AgentAutonomy::Propose is refused with kAutonomyRefused BEFORE
+			//! reaching it, via the same MakeProposeAutonomyRefusedError branch,
+			//! mirrored for `m == "replace_geometry_scaffold"`.
+			AgentGeometryScaffoldResult ReplaceGeometryScaffold( const std::string& target,
+			                                                     const std::string& family,
+			                                                     const std::string& name,
+			                                                     double size,
+			                                                     double detail,
+			                                                     double aspect,
+			                                                     const std::string& points = std::string(),
+			                                                     double taper = 0.0,
+			                                                     const std::string& tone = std::string(),
+			                                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix

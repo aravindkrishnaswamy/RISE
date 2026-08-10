@@ -267,7 +267,9 @@ namespace RISE
 
 			//! Arc-75 slice S2.1: insert_material_scaffold's OWN annotation
 			//! under AgentAutonomy::Propose SPECIFICALLY.  It is a mutating
-			//! tool, but -- unlike the 5 tools kAutonomyProposeNote covers
+			//! tool, but -- unlike the 6 tools kAutonomyProposeNote covers
+			//! (R2 fix-round, 2026-08-10: recounted at the 6 actual use sites
+			//! -- the count had drifted to "5" since remove_chunks landed)
 			//! -- it is DELIBERATELY excluded from AgentRpc.cpp's
 			//! IsProposeSafeVerb (the ripple across dozens of "N mutating
 			//! verbs" prose restatements plus the two GUI client-side
@@ -305,7 +307,18 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 21 existing AgentRpc verbs,
+			//! R2 (2026-08-10): replace_geometry_scaffold's OWN annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- the third sibling
+			//! of the two notes above, same rationale (deliberately excluded
+			//! from IsProposeSafeVerb; refused under Propose exactly like
+			//! Read; deliberately contains neither magic substring the
+			//! per-note counters key on).
+			const std::string kReplaceGeometryScaffoldProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: replace_geometry_scaffold is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 23 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -698,6 +711,72 @@ namespace RISE
 						"call before any chunk is generated (document unchanged) -- reported as a tool error, "
 						"not a partial result. Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "insert_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// replace_geometry_scaffold (R2, 2026-08-10)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"The NAME of the standard_object whose geometry to replace -- the OBJECT, not the "
+						"geometry chunk." ) );
+					props.set( "family", StringProp(
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain. "
+						"(volume_bank is NOT available here -- it emits its own standard_object.)" ) );
+					props.set( "name", StringProp(
+						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
+						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
+					props.set( "size", NumberProp( "Overall scale, > 0 (for blended_chain: base radius at the FIRST point)." ) );
+					props.set( "detail", NumberProp(
+						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / "
+						"node density, per family." ) );
+					props.set( "aspect", NumberProp(
+						"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for "
+						"every family EXCEPT blended_chain." ) );
+					props.set( "points", StringProp(
+						"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \"x y z\" triplets, e.g. "
+						"\"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the spine path; the first/last node lands exactly on "
+						"the first/last triplet." ) );
+					props.set( "taper", NumberProp(
+						"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "target" ); required.push_back( "family" ); required.push_back( "name" );
+					required.push_back( "size" ); required.push_back( "detail" );
+					// replace_geometry_scaffold is Commit-only, the SAME posture
+					// as its two scaffold siblings (see
+					// kReplaceGeometryScaffoldProposeRefusedNote's doc) -- and,
+					// unlike them, an External-authority session cannot stage it
+					// either (it is one composite document swap, not a chunk edit
+					// an Owner approves card-by-card).
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kReplaceGeometryScaffoldProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"REPLACE THE FORM of a part already in the scene: expand a geometry family template exactly "
+						"as insert_geometry_scaffold does, and rebind an EXISTING object's geometry to it, in ONE "
+						"call. Reach for this whenever a rendered shape reads as too plain or the wrong form -- it "
+						"costs the same single call a colour tweak costs. `target` names the standard_object (NOT "
+						"the geometry chunk -- passing a geometry name is refused with the names of the objects "
+						"that use it). The object's position, orientation, scale, material and every other "
+						"parameter are PRESERVED byte-for-byte; only `geometry` changes, so placement stays put "
+						"across a form change. Families and their per-family required params are IDENTICAL to "
+						"insert_geometry_scaffold's, with ONE exception: \"volume_bank\" is not available here "
+						"(it emits its own standard_object -- use insert_geometry_scaffold for it). The old "
+						"geometry chunk is REMOVED when nothing else references it; when something does, it is "
+						"RETAINED and the referrers are named in the result. Chunks left unreferenced one hop "
+						"deeper (e.g. the noise source that only fed the old displaced geometry) are REPORTED in "
+						"`orphans` for removal with remove_chunks -- never deleted silently. ATOMIC: one head "
+						"version bump, one undo step, and on ANY refusal (unknown or ambiguous target, name "
+						"collision, a stale baseHeadVersion conflict, a candidate that would not derive, or a "
+						"transient busy/in-progress reject) NOTHING changes -- check `status`: \"applied\" is "
+						"the only outcome where anything landed. The ONE exception is \"diagnosed\": the "
+						"Document WAS mutated (the new geometry landed and the object's slot was rebound) but "
+						"the re-derive still emitted diagnostics, so `previousGeometry`/`orphans` describe "
+						"something real, not a discarded plan -- look at the log before touching this part "
+						"again. Returns {applied,total,results:[...],status,retriable,headVersion,target,"
+						"geometry:{name,kind},previousGeometry:{name,kind,removed,referrers},orphans,message} "
+						"-- every `results` element carries the SAME verdict, because the call is ONE mutation, "
+						"not a batch. Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "replace_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -1129,14 +1208,16 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 22 tool names this adapter recognizes --
+			//! The list of the 23 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-					"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+					"insert_material_scaffold", "insert_geometry_scaffold",
+					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
+					"remove_chunk",
 					"remove_chunks",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
@@ -1286,7 +1367,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 19 verbs as MCP tools.
+				// tools/list -> the 23 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

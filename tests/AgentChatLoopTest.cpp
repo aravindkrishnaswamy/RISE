@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 17, "body carries seventeen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 18, "body carries eighteen OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -474,6 +474,8 @@ static void TestOpenAIRequestShape()
 	bool sawMaterialScaffold = false;
 	// Arc-75 slice S3b: its geometry sibling, same rationale.
 	bool sawGeometryScaffold = false;
+	// R2 (2026-08-10): the replace form, same rationale.
+	bool sawReplaceGeometryScaffold = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i );
 		if( fn.get( "name" ).asString() == "read_document" ) {
@@ -509,10 +511,26 @@ static void TestOpenAIRequestShape()
 			       "(family/name/size/detail; aspect/points/taper/tone are family-conditional, "
 			       "enforced by the handler, not this schema)" );
 		}
+		if( fn.get( "name" ).asString() == "replace_geometry_scaffold" ) {
+			sawReplaceGeometryScaffold = true;
+			const JsonValue& params = fn.get( "parameters" );
+			Check( params.isObject(), "replace_geometry_scaffold OpenAI tool carries a parameters object" );
+			const JsonValue& required = params.get( "required" );
+			// R2 (2026-08-10): the SAME four family-universal params as the
+			// insert form, PLUS `target` -- the one param that is universal
+			// here and absent there.
+			Check( required.isArray() && required.size() == 5,
+			       "replace_geometry_scaffold declares target + the four family-universal params required" );
+			bool sawTargetRequired = false;
+			for( std::size_t r = 0; r < required.size(); ++r )
+				if( required.at( r ).asString() == "target" ) sawTargetRequired = true;
+			Check( sawTargetRequired, "replace_geometry_scaffold requires `target`" );
+		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );
 	Check( sawMaterialScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_material_scaffold" );
 	Check( sawGeometryScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_geometry_scaffold" );
+	Check( sawReplaceGeometryScaffold, "OpenAI tool list (the eval-harness tool roster) includes replace_geometry_scaffold" );
 }
 
 //----------------------------------------------------------------------
@@ -548,8 +566,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 17,
-		       "xAI body carries the same seventeen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 18,
+		       "xAI body carries the same eighteen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -814,7 +832,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 17, "body carries seventeen tools" );
+	Check( tools.isArray() && tools.size() == 18, "body carries eighteen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1754,7 +1772,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 17, "seventeen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 18, "eighteen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -2323,7 +2341,11 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	{
 		const char* const kMutatingVerbs[] = {
 			"insert_chunk", "insert_chunks", "insert_material_scaffold",
-			"insert_geometry_scaffold", "propose_patch", "propose_patches",
+			"insert_geometry_scaffold",
+			// R2 (2026-08-10): ONE replace_geometry_scaffold call is ONE blind
+			// mutation -- one composite document swap, one head bump.
+			"replace_geometry_scaffold",
+			"propose_patch", "propose_patches",
 			"remove_chunk",
 			// R1a (2026-08-09): ONE remove_chunks call is ONE blind mutation,
 			// exactly like one batched insert_chunks -- N chunks leave the

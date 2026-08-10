@@ -674,6 +674,34 @@ namespace RISE
 			const std::vector<String>& kinds,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate
+		//! document the caller computed off a head snapshot -- through the SAME critical section as
+		//! ApplyAgentRemoveChunks (mTxnOpen refusal -> cancel-and-park under mMutex -> conflict gate -> the
+		//! Job primitive -> rebind -> MarkCstHeadDirty -> ONE history push -> re-render kick -> post-commit
+		//! head read).  `objectName` is the `standard_object` whose `geometry` slot the candidate rebinds --
+		//! used for the history record, the dirty mark, and the result echo, never for resolution (the
+		//! candidate text already IS the resolved outcome).
+		//!
+		//! ATOMIC and ONE head bump: Job::ApplyCstReplaceDocumentText re-parses the text and hands it to the
+		//! SAME dry-run-guarded re-derive every chunk-CRUD verb ends in, so a candidate that would not derive
+		//! leaves Document + live scene byte-identical.
+		//!
+		//! `baseVersionOrNull` is NOT optional in practice for this verb even though the parameter is
+		//! nullable: the candidate was computed OUTSIDE this lock, so committing it without proving the head
+		//! has not moved would silently CLOBBER a concurrent co-editor's edit (a whole-document swap
+		//! overwrites everything, unlike a targeted param edit).  AgentSession::ReplaceGeometryScaffold
+		//! therefore always passes the head version its own snapshot read, and the conflict gate below is
+		//! what makes the snapshot-then-commit sequence safe.  A null base is still honoured (no gate) for
+		//! the benefit of a direct in-process caller that has externally serialized itself.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentReplaceGeometry) is pushed, carrying the
+		//! byte-exact PRE text (captured under this same lock hold) and the byte-exact POST text, so one
+		//! Cmd-Z restores the pre-call document and one Cmd-Shift-Z reinstalls the post-call one.
+		AgentCommitResult ApplyAgentReplaceGeometry(
+			const String& objectName,
+			const String& candidateDocText,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
 		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
 		//! on approval.  Mirrors the three existing agent commit entry points
 		//! 1:1 -- there is no fourth kind because those are the only three
@@ -3442,6 +3470,17 @@ namespace RISE
 		AgentCommitResult ApplyAgentRemoveChunksCrud_(
 			const std::vector<String>& targets,
 			const std::vector<String>& kinds,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): the whole critical section for
+		//! ApplyAgentReplaceGeometry (see that method's doc).  Kept SEPARATE from ApplyAgentRemoveChunksCrud_
+		//! for the same reason that one is separate from ApplyAgentChunkCrud_: it takes a whole-document text
+		//! rather than a target list, calls a different Job primitive, and pushes a different history op.
+		//! Caller holds mRenderAdmissionMutex and has already cleared the agent-render gate; this takes
+		//! mMutex itself.
+		AgentCommitResult ApplyAgentReplaceGeometryCrud_(
+			const String& objectName,
+			const String& candidateDocText,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
 		AgentCommitResult ApplyAgentChunkCrud_(

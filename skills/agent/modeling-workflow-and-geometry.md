@@ -347,6 +347,34 @@ regardless of `size`/`taper`/`detail`.  Unlike the other families,
 `blended_chain` takes `points` and `taper` INSTEAD of `aspect` -- the
 path itself is this family's creative essence.
 
+**Revising a part's FORM is ONE call, exactly like revising its
+colour.**  When a render shows you that a shape is too plain, or the
+wrong form entirely -- the "wings" you built as a thin box, the
+"faceted crystal" that came out a smooth ellipsoid -- do NOT leave it
+and go tune the material instead.  `replace_geometry_scaffold
+{target:"wing_l", family:"blended_chain", name:"wing2", points:"0 0 0;
+0.6 0.3 -0.2; 1.1 0.1 -0.5", size:0.18, taper:0.8, detail:0.6}`
+expands the SAME graph `insert_geometry_scaffold` would and rebinds
+`wing_l`'s `geometry` slot to it, in one call.  `target` is the
+`standard_object`'s name, NOT the geometry chunk's.  The object's
+`position`, `orientation`, `scale`, `material` and every other
+parameter are preserved exactly -- placement you tuned by LOOKING
+survives the new form -- and the old geometry chunk is removed for you
+when nothing else references it (when something does, it is kept and
+the result names what).  Chunks the removal leaves unreferenced one
+hop deeper (e.g. the noise source that only fed the old displaced
+geometry) come back in `orphans` for you to clear with `remove_chunks`
+if you want them gone.  Families are the same five, minus
+`volume_bank` (that one emits its own object, so there is nothing to
+rebind -- use `insert_geometry_scaffold` for it).  The whole thing is
+one atomic edit: one undo step, and nothing changes at all if it is
+refused (check `status`: `"applied"` is the only outcome where
+anything landed).  The one exception is `"diagnosed"`: the Document
+WAS mutated -- the new geometry landed and the slot was rebound -- but
+the re-derive still emitted diagnostics, so `previousGeometry`/
+`orphans` describe something real, not a discarded plan; look at the
+log before touching that part again.
+
 **One override to "reach for the analytic primitives first": turned
 forms.**  If an object's silhouette is a solid of revolution -- bottle,
 jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,

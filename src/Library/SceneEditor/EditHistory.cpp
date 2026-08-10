@@ -133,6 +133,7 @@ namespace
 		case SceneEdit::AgentInsertChunk:       return "Agent Insert Chunk";
 		case SceneEdit::AgentRemoveChunk:       return "Agent Remove Chunk";
 		case SceneEdit::AgentRemoveChunks:      return "Agent Remove Chunks";   // R1a: one label for the whole batch
+		case SceneEdit::AgentReplaceGeometry:   return "Agent Replace Geometry";   // R2: one label for the whole composite
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}

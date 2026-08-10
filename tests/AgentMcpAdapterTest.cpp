@@ -216,7 +216,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 22, "id:null tools/list result carries all 22 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 23, "id:null tools/list result carries all 23 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -290,12 +290,14 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 22, "tools/list returns EXACTLY the 22 agent verbs" );
+		Check( toolsList.size() == 23, "tools/list returns EXACTLY the 23 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-			"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+			"insert_material_scaffold", "insert_geometry_scaffold",
+			"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
+			"remove_chunk",
 			"remove_chunks",   // R1a (2026-08-09): the ATOMIC batch remove
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
@@ -670,7 +672,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 22, "no-head tools/list still lists all 22 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 23, "no-head tools/list still lists all 23 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

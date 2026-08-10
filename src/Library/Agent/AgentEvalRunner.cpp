@@ -6715,7 +6715,7 @@ namespace RISE
 									//   * THIS list answers "did the MODEL mutate the
 									//     document, and when?".  resolve_proposal is an
 									//     OWNER-authority verb: it is not in the model's
-									//     14-tool chat table at all (AgentChatCodecs.cpp
+									//     18-tool chat table at all (AgentChatCodecs.cpp
 									//     -- the eval runner's only source of
 									//     `toolRecords`), and even on the MCP surface it
 									//     is refused at the dispatcher under BOTH Read
@@ -6744,6 +6744,11 @@ namespace RISE
 										// geometry sibling, SAME InsertChunks path, SAME
 										// membership rationale.
 										"insert_geometry_scaffold",
+										// R2 (2026-08-10): replace_geometry_scaffold mutates the
+										// document too -- ONE composite swap of a part's form.
+										// Omitting it would let a run that re-formed the scene
+										// before asking VACUOUSLY PASS askUserBeforeMutation.
+										"replace_geometry_scaffold",
 										"propose_patch", "propose_patches", "remove_chunk",
 										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
 										// remove -- ONE call removes N chunks, so it is very

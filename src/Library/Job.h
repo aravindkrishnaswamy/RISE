@@ -2963,7 +2963,8 @@ namespace RISE
 		//! and realize it through the shared dry-run-guarded full re-derive tail.  Contract documented on the
 		//! IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (refused; nothing changed).  Never 1.
 		int ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
-		                                 char* outDiag, unsigned int diagMax );
+		                                 char* outDiag, unsigned int diagMax,
+		                                 const char* diagContext = nullptr );
 
 		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
 		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex` (GLUE-SAFE per round-1 P1-B: a

@@ -261,11 +261,12 @@ namespace RISE
 			//! zero; a mutating tools/call increments it -- the counted set is
 			//! IsMutatingMcpToolCall's in the .cpp: the mutating verbs
 			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-			//! insert_material_scaffold/insert_geometry_scaffold/remove_chunk/remove_chunks)
+			//! insert_material_scaffold/insert_geometry_scaffold/
+			//! replace_geometry_scaffold/remove_chunk/remove_chunks)
 			//! PLUS resolve_proposal --
 			//! NOT the same set as AgentRpc.cpp's IsProposeSafeVerb (that one
 			//! excludes insert_material_scaffold, insert_geometry_scaffold,
-			//! and resolve_proposal all three; see AgentMcpAdapter.cpp's
+			//! replace_geometry_scaffold, and resolve_proposal all four; see AgentMcpAdapter.cpp's
 			//! kScaffoldProposeRefusedNote / kGeometryScaffoldProposeRefusedNote
 			//! docs for why).  The
 			//! BATCH forms carry MORE leverage per call, not less, so they are

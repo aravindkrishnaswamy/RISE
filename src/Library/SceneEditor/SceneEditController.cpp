@@ -5627,6 +5627,191 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	return r;
 }
 
+// R2 (2026-08-10, replace_geometry_scaffold): the whole-document composite commit -- see the header doc.
+// Structurally identical to ApplyAgentRemoveChunksCrud_ above (same refusal order, same conflict gate, same
+// rebind-on-2/3, same one-history-push + kick tail); the differences are the Job primitive, the undo/redo
+// payload pair, and the code fold's wording.
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometryCrud_(
+	const String& objectName,
+	const String& candidateDocText,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	r.chunkName    = objectName;
+	r.chunkKeyword = String( "standard_object" );
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent geometry replacement refused while an editor transaction/gesture is open." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( candidateDocText.size() <= 1 )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "candidate document text must be non-empty" );
+		return r;
+	}
+
+	// Optimistic-concurrency CONFLICT precondition, under the lock -- identical rule and wording to
+	// ApplyAgentRemoveChunksCrud_'s.  LOAD-BEARING for this verb specifically: the candidate was computed
+	// against a head snapshot taken OUTSIDE this lock, so without the gate a concurrent co-editor's edit
+	// would be silently overwritten by the whole-document swap (see the header doc).
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// UNDO capture: the byte-exact serialization of the Document as it stands RIGHT NOW, taken under this
+	// same mMutex hold as the swap itself, so there is no TOCTOU (the SAME discipline
+	// ApplyAgentRemoveChunksCrud_'s capture follows).
+	std::string priorDocText;
+	if( const RISE::Cst::Document* doc = mJob.GetCstDocument() )
+		priorDocText = RISE::Cst::SerializeCst( *doc );
+
+	char diagBuf[512]; diagBuf[0] = '\0';
+	// `restoreActiveRasterizer` TRUE: the candidate never adds or removes a `*_rasterizer` chunk (the caller
+	// gates on exactly that), so the pre-swap active rasterizer is still the one a reload would activate.
+	const int code = mJob.ApplyCstReplaceDocumentText( candidateDocText.c_str(),
+	                                                    /*restoreActiveRasterizer*/ true,
+	                                                    diagBuf, sizeof( diagBuf ),
+	                                                    "replace_geometry_scaffold" );
+
+	// A whole-document swap that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's
+	// cached pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	r.rawCode = ( code < 0 ) ? 0 : code;
+	switch( code )
+	{
+		case 2:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = String( "geometry replaced via a single full re-derive (Scene + managers were replaced)" );
+			break;
+		case 3:
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			r.message = String( "geometry replacement NOT a clean success: the Document was mutated and the live managers "
+			                    "were replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			break;
+		case 0:
+		default:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = "geometry replacement rejected (NOTHING changed): the candidate document would not derive "
+			                "-- head unchanged";
+			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			r.message = String( m.c_str() );
+			break;
+		}
+	}
+
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	if( code == 2 || code == 3 )
+	{
+		mEditor.MarkCstHeadDirty( objectName.c_str(), "standard_object" );
+
+		// ONE history record for the WHOLE composite -- the headline property of this verb.  A capture
+		// failure (no retained Document at capture time) should be impossible here: the capture ran under
+		// this same lock hold against the SAME Document the swap just replaced.  A defensive skip-with-log
+		// guards against ever pushing an empty, un-restorable payload.
+		if( !priorDocText.empty() )
+		{
+			mEditor.PushAgentReplaceGeometryEdit( objectName,
+			                                      String( priorDocText.c_str() ),
+			                                      candidateDocText );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent geometry replacement on `%s` applied (code %d) but the prior-document "
+				"capture was empty -- NO undo history record was pushed (should not happen: the capture ran under "
+				"the same lock hold as the swap).",
+				objectName.c_str(), code );
+		}
+
+		// The entity set changed (chunks were added and one was erased) -- bump the epoch live GUI outliners
+		// cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometry(
+	const String& objectName,
+	const String& candidateDocText,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// Latched-vs-transient split (C4) and the current-head report (C3) -- see ApplyAgentInsertChunk
+			// for the full rationale; identical here.
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Secure-MCP slice 5a: proposal staging + owner-approval state machine.
 //

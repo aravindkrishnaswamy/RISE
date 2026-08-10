@@ -974,6 +974,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// R2 (2026-08-10): replace_geometry_scaffold is the third
+					// scaffold verb, excluded from IsProposeSafeVerb for the SAME
+					// reason -- and, for this one, additionally because a
+					// composite whole-document swap has no AgentProposalKind an
+					// Owner could approve card-by-card (see
+					// AgentSession::ReplaceGeometryScaffold's authority note).
+					if( m == "replace_geometry_scaffold" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; replace_geometry_scaffold "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 
@@ -1915,6 +1929,204 @@ namespace RISE
 						object.set( "name", JsonValue::MakeString( sr.objectName ) );
 						object.set( "kind", JsonValue::MakeString( sr.objectKind ) );
 						result.set( "object", object );
+					}
+					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// replace_geometry_scaffold {target, family, name, ..., baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
+				//       status, retriable, headVersion,
+				//       family, name, target, geometry:{name,kind},
+				//       previousGeometry:{name,kind,removed,referrers[]},
+				//       orphans:[...], message}
+				//   R2 (2026-08-10): the SAME six-family expansion
+				//   insert_geometry_scaffold performs (identical params, identical
+				//   validation, identical generators -- one shared code path),
+				//   but instead of leaving the model to wire the result it
+				//   REBINDS an EXISTING standard_object's `geometry` slot to the
+				//   new chunk, preserves every other param on that object
+				//   (position/orientation/scale/material -- placement tuned by
+				//   LOOKING survives a form change), and removes the old geometry
+				//   chunk when nothing else references it.  ONE call = ONE head
+				//   bump = ONE undo step; all-or-nothing on any refusal.
+				//   `target` (string) is REQUIRED and names the object, NOT the
+				//   geometry; `family` volume_bank is refused (it emits its own
+				//   object -- see AgentSession::ReplaceGeometryScaffold's doc).
+				//   Target resolution, the geometry-chunk-instead-of-object
+				//   diagnosis, orphan policy, the E1/R1c candidate gates and the
+				//   External-authority refusal all live in
+				//   AgentSession::ReplaceGeometryScaffold; this handler only
+				//   extracts params and serializes the result.
+				//   R2 fix-round (2026-08-10, P1): top-level `status`/`retriable`/
+				//   `headVersion` carry the composite commit's ACTUAL disposition --
+				//   "applied" / "rejected" / "conflict" / "diagnosed" -- mirroring
+				//   remove_chunks' identically-named fields.  EVERY outcome that
+				//   reached a commit attempt returns MakeSuccess with these fields
+				//   set (including a conflict, a transient-retriable reject, and a
+				//   diagnosed-but-mutated code-3, none of which are "the request was
+				//   invalid"); MakeError is reserved for genuine pre-commit request
+				//   failures (bad/missing params, unknown family, the volume_bank
+				//   refusal, target-resolution failure, name collision, no retained
+				//   Document, the External-authority hard refusal).
+				//--------------------------------------------------------------
+				if( m == "replace_geometry_scaffold" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* targetVal = params.find( "target" );
+					if( !targetVal || !targetVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'target' (string) is required -- the name of the standard_object "
+							"whose geometry slot to rebind" );
+					}
+					const JsonValue* familyVal = params.find( "family" );
+					if( !familyVal || !familyVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
+							"sweep_rail, blended_vessel, sdf_column, blended_chain" );
+					}
+					const std::string familyStr = familyVal->asString();
+					// Same rule as insert_geometry_scaffold's own P3 fix: resolve
+					// `family` against the known list BEFORE any per-family
+					// required-param check, so an unrecognized family never comes
+					// back as a misleading "'aspect' is required".  volume_bank IS
+					// in the known list here (so it gets the specific "that family
+					// emits its own object" refusal from the session, not a
+					// generic "unknown family" that would send the model hunting
+					// for a typo it did not make).
+					static const char* const kKnownGeometryScaffoldFamiliesR2[] = {
+						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
+						"blended_chain", "volume_bank",
+					};
+					bool familyKnownR2 = false;
+					for( const char* f : kKnownGeometryScaffoldFamiliesR2 ) {
+						if( familyStr == f ) { familyKnownR2 = true; break; }
+					}
+					if( !familyKnownR2 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain "
+							"(volume_bank emits its own standard_object and cannot rebind an existing one -- "
+							"use insert_geometry_scaffold for it)" );
+					}
+					const bool isChainR2 = ( familyStr == "blended_chain" );
+					const bool isBankR2  = ( familyStr == "volume_bank" );
+
+					const JsonValue* nameVal = params.find( "name" );
+					if( !nameVal || !nameVal->isString() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
+					}
+					const JsonValue* sizeVal = params.find( "size" );
+					if( !sizeVal || !sizeVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
+					}
+					const JsonValue* detailVal = params.find( "detail" );
+					if( !detailVal || !detailVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+					}
+
+					double aspectNumR2 = 1.0;   // placeholder for blended_chain, which ignores it
+					std::string pointsStrR2;
+					double taperNumR2 = 0.0;
+					std::string toneStrR2;
+
+					if( isChainR2 ) {
+						const JsonValue* pointsVal = params.find( "points" );
+						if( !pointsVal || !pointsVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'points' (string, 2-6 semicolon-separated \"x y z\" triplets) "
+								"is required for family blended_chain" );
+						}
+						pointsStrR2 = pointsVal->asString();
+						const JsonValue* taperVal = params.find( "taper" );
+						if( !taperVal || !taperVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
+						}
+						taperNumR2 = taperVal->asNumber();
+					} else {
+						const JsonValue* aspectVal = params.find( "aspect" );
+						if( !aspectVal || !aspectVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+						}
+						aspectNumR2 = aspectVal->asNumber();
+						if( isBankR2 ) {
+							const JsonValue* toneVal = params.find( "tone" );
+							if( toneVal && toneVal->isString() ) toneStrR2 = toneVal->asString();
+							// A missing `tone` is NOT diagnosed here: volume_bank is refused outright by the
+							// session below, and demanding a param for a family that cannot be used would
+							// bury the real reason under a param error.
+						}
+					}
+
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentGeometryScaffoldResult sr = s->ReplaceGeometryScaffold(
+						targetVal->asString(), familyStr, nameVal->asString(),
+						sizeVal->asNumber(), detailVal->asNumber(), aspectNumR2,
+						pointsStrR2, taperNumR2, toneStrR2,
+						( b == 1 ) ? &base : nullptr );
+
+					// R2 fix-round (P1): `sr.ok` now means "reached a commit-stage disposition" (see
+					// AgentGeometryScaffoldResult::ok's doc) -- false ONLY for a genuine pre-commit refusal
+					// (bad/missing params, unknown family, the volume_bank refusal, target-resolution
+					// failure, name collision, no retained Document, the External-authority hard refusal).
+					// EVERY commit-stage outcome -- applied, rejected, conflict, diagnosed, or a transient
+					// retriable reject -- is `ok==true` and returns MakeSuccess below, carrying `status`/
+					// `retriable`/`headVersion` so a caller can tell them apart without string-matching
+					// `message`.  Before this fix, ALL of those non-applied commit outcomes were folded into
+					// this one `MakeError( kInvalidParams, ... )` -- a code that is factually wrong (the
+					// params were fine) and gave a caller no field to branch on; see `remove_chunks` above for
+					// the identical envelope shape this now matches.
+					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
+
+					// P3 fix-round: NO queueFull check here (unlike insert_chunk(s)/remove_chunk(s)) --
+					// this verb has no staging path at all (see ReplaceGeometryScaffold's AUTHORITY doc):
+					// an External-authority session is refused with kInvalidParams above, BEFORE any commit
+					// is built, so `AgentChunkResult::queueFull` can never be set on a result that reaches
+					// this line.  (A prior revision of this handler looped `sr.chunkResults` checking it --
+					// dead code, removed.)
+					std::size_t appliedCountR2 = 0;
+					JsonValue resultsArrR2 = JsonValue::MakeArray();
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.applied ) ++appliedCountR2;
+						resultsArrR2.push_back( ChunkResultJson( cr ) );
+					}
+					JsonValue geometryR2 = JsonValue::MakeObject();
+					geometryR2.set( "name", JsonValue::MakeString( sr.geometryName ) );
+					geometryR2.set( "kind", JsonValue::MakeString( sr.geometryKind ) );
+					JsonValue prevGeom = JsonValue::MakeObject();
+					prevGeom.set( "name",    JsonValue::MakeString( sr.previousGeometryName ) );
+					prevGeom.set( "kind",    JsonValue::MakeString( sr.previousGeometryKind ) );
+					prevGeom.set( "removed", JsonValue::MakeBool( sr.previousGeometryRemoved ) );
+					if( !sr.previousGeometryReferrers.empty() ) {
+						JsonValue refs = JsonValue::MakeArray();
+						for( const std::string& rname : sr.previousGeometryReferrers )
+							refs.push_back( JsonValue::MakeString( rname ) );
+						prevGeom.set( "referrers", refs );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",   JsonValue::MakeNumber( static_cast<double>( appliedCountR2 ) ) );
+					result.set( "total",     JsonValue::MakeNumber( static_cast<double>( sr.chunkResults.size() ) ) );
+					result.set( "results",   resultsArrR2 );
+					// R2 fix-round (P1): the composite-commit disposition, mirroring remove_chunks' own
+					// top-level status/retriable/headVersion fields (see AgentGeometryScaffoldResult's doc).
+					result.set( "status",     JsonValue::MakeString( sr.status ) );
+					result.set( "retriable",  JsonValue::MakeBool( sr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( sr.headVersion ) );
+					result.set( "family",   JsonValue::MakeString( sr.family ) );
+					result.set( "name",     JsonValue::MakeString( nameVal->asString() ) );
+					result.set( "target",   JsonValue::MakeString( sr.replacedObject ) );
+					result.set( "geometry", geometryR2 );
+					result.set( "previousGeometry", prevGeom );
+					if( !sr.reportedOrphans.empty() ) {
+						JsonValue orphans = JsonValue::MakeArray();
+						for( const std::string& o : sr.reportedOrphans )
+							orphans.push_back( JsonValue::MakeString( o ) );
+						result.set( "orphans", orphans );
 					}
 					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
 					return MakeSuccess( idValue, result );

@@ -424,6 +424,11 @@ namespace RISE
 				return v == "insert_chunk" || v == "insert_chunks" ||
 				       v == "insert_material_scaffold" ||
 				       v == "insert_geometry_scaffold" ||
+				       // R2 (2026-08-10): ONE replace_geometry_scaffold call is
+				       // ONE blind mutation -- it is deliberately ONE head bump,
+				       // ONE history entry and ONE undo step, so it must count
+				       // exactly once here too, no more and no less.
+				       v == "replace_geometry_scaffold" ||
 				       v == "propose_patch" || v == "propose_patches" ||
 				       v == "remove_chunk" ||
 				       // R1a (2026-08-09): ONE remove_chunks call is ONE
@@ -1246,6 +1251,7 @@ namespace RISE
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
 			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
 			//!   4b. name == "remove_chunks"                -> "<removed>/<total> removed" (all-or-nothing: `applied` is a BOOL here, counts ride in removed/total)
+			//!   4c. name == "replace_geometry_scaffold"   -> "`<target>` -> <geometryKind> (old geometry removed|kept)" (R2: ONE atomic mutation, so an N/M count would misreport it as a best-effort batch)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1321,6 +1327,22 @@ namespace RISE
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
+				}
+
+				// 4c. R2 (2026-08-10) replace_geometry_scaffold: it carries the SAME
+				// {applied,total,results} FIELDS, but the call is ONE atomic mutation --
+				// "3/3 applied" would misreport a composite as a best-effort batch, and
+				// it is not the fact the user needs anyway.  Report what actually
+				// happened to the scene: which object got which new form, and whether
+				// the old geometry chunk went with it.
+				if( call.name == "replace_geometry_scaffold" ) {
+					const std::string tgt  = result.get( "target" ).asString();
+					const std::string gkind = result.get( "geometry" ).get( "kind" ).asString();
+					const bool removed = result.get( "previousGeometry" ).get( "removed" ).asBool();
+					std::string s = tgt.empty() ? std::string( "geometry replaced" )
+					                            : ( "`" + tgt + "` -> " + ( gkind.empty() ? std::string( "new geometry" ) : gkind ) );
+					s += removed ? " (old geometry removed)" : " (old geometry kept)";
+					return s;
 				}
 
 				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so

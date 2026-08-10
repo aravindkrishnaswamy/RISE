@@ -279,7 +279,8 @@ namespace
 	//! True iff `body` is an MCP `tools/call` request naming one of the
 	//! mutating verbs this rate limiter counts against
 	//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-	//! insert_material_scaffold/insert_geometry_scaffold/remove_chunk/
+	//! insert_material_scaffold/insert_geometry_scaffold/
+	//! replace_geometry_scaffold/remove_chunk/
 	//! remove_chunks/resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
@@ -330,6 +331,10 @@ namespace
 		    // Arc-75 slice S3b: insert_geometry_scaffold is the geometry
 		    // sibling, SAME InsertChunks path, SAME rate-limit membership.
 		    name == "insert_geometry_scaffold" ||
+		    // R2 (2026-08-10): replace_geometry_scaffold expands a chunk graph
+		    // AND rewrites the whole document in one call -- at least as much
+		    // per-call leverage as its insert sibling, same membership.
+		    name == "replace_geometry_scaffold" ||
 		    name == "remove_chunk"   ||
 		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
 		    // strictly MORE per-call leverage than the singular verb, so it

@@ -341,6 +341,21 @@ public:
 		if( mForceCodeThree && base == 2 ) return 3;
 		return base;
 	}
+	// R2 fix-round (2026-08-10, Test-Diagnosed): replace_geometry_scaffold's headless AND
+	// controller-attached commit paths both bottom out in Job::ApplyCstReplaceDocumentText (a
+	// whole-document swap -- see AgentSession::ReplaceGeometryScaffold / SceneEditController::
+	// ApplyAgentReplaceGeometryCrud_).  Same 2 -> 3 rewrite technique as every override above: the
+	// base call performs a REAL full re-derive (Scene + managers really replaced), only the
+	// reported code is corrupted to 3, so the diagnosed-but-mutated contract is exercised against a
+	// genuinely-replaced live Scene.
+	int ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
+	                                 char* outDiag, unsigned int diagMax,
+	                                 const char* diagContext = nullptr ) override
+	{
+		const int base = Job::ApplyCstReplaceDocumentText( fullText, restoreActiveRasterizer, outDiag, diagMax, diagContext );
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
 private:
 	bool mForceCodeThree;
 };
@@ -2959,6 +2974,424 @@ static const char* kU2SceneWithRasterizer =
 	"lambertian_material\n{\nname matB\nreflectance white\n}\n"
 	"sphere_geometry\n{\nname s\nradius 1\n}\n"
 	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+//////////////////////////////////////////////////////////////////////
+// Test 23d (R2, 2026-08-10): replace_geometry_scaffold through the LIVE
+// controller -- ONE head bump for the whole composite, ONE Cmd-Z back to
+// the byte-exact pre-call Document, ONE Cmd-Shift-Z forward to the
+// byte-exact post-call one, and the object's transform preserved across
+// all three.
+//////////////////////////////////////////////////////////////////////
+static const char* kR2Scene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"lambertian_material\n{\nname matA\nreflectance white\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\nposition 0.5 -0.25 1.5\n}\n";
+
+static void TestReplaceGeometryScaffoldLiveUndoRedo()
+{
+	std::cout << "Test 23d: replace_geometry_scaffold (live) -- ONE head bump, ONE Undo restores byte-exactly, "
+	             "ONE Redo reapplies (R2)..." << std::endl;
+
+	const char* tmp = "agentlive_r2_replacegeom.RISEscene";
+	Job* pJob = LoadScene( kR2Scene, tmp );
+	Check( pJob != nullptr, "R2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+		Check( preDoc.find( "position 0.5 -0.25 1.5" ) != std::string::npos,
+		       "the fixture object carries a non-default transform to preserve" );
+
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "liveA", 1.0, 0.5, 1.0 );
+		if( !sr.ok ) std::cout << "    (live replace message: " << sr.message << ")" << std::endl;
+		Check( sr.ok, "the live replace applies" );
+		Check( pJob->GetCstHeadVersion().revision == preVersion.revision + 1,
+		       "R2 MONEY: the WHOLE composite (new chunk + slot rebind + old-geometry erase) bumped the "
+		       "revision by EXACTLY ONE" );
+		Check( c.HasUnsavedChanges(), "the composite marks the editor dirty" );
+
+		const std::string postDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDoc.find( sr.geometryName ) != std::string::npos, "the new geometry chunk is in the Document" );
+		Check( postDoc.find( "name s\n" ) == std::string::npos, "the orphaned old geometry `s` is gone" );
+		Check( postDoc.find( "position 0.5 -0.25 1.5" ) != std::string::npos,
+		       "R2 MONEY: the object's transform survived the form change" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) != nullptr,
+		       "the derived scene resolved the new geometry" );
+
+		// THE headline: ONE Cmd-Z restores the byte-exact pre-call document.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc == preDoc,
+		       "R2 MONEY: a SINGLE Undo restores the FULL Document BYTE-IDENTICAL to pre-call -- the new "
+		       "chunk gone, the slot rebound back, the old geometry back, from ONE history entry" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "s" ) != nullptr,
+		       "the derived scene has the original geometry again after the single Undo" );
+		Check( pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) == nullptr,
+		       "the derived scene no longer carries the scaffold geometry after the Undo" );
+
+		// And ONE Redo reinstalls the post-call document byte-exactly.
+		c.Redo();
+		const std::string postRedoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRedoDoc == postDoc,
+		       "R2 MONEY: a SINGLE Redo reinstalls the post-composite Document BYTE-EXACTLY" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( sr.geometryName.c_str() ) != nullptr,
+		       "the derived scene carries the scaffold geometry again after the single Redo" );
+
+		sess.reset();
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 23e (R2 fix-round, P1, 2026-08-10): replace_geometry_scaffold's
+// CONFLICT outcome -- a stale caller-supplied baseHeadVersion -- reaches a
+// commit-stage disposition and must return a MakeSuccess envelope carrying
+// status=="conflict", NOT a MakeError.  Before this fix round,
+// AgentSession::ReplaceGeometryScaffold's step-(2) baseOrNull-mismatch check
+// populated only `message` (ok stayed false, `status`/`retriable`/
+// `headVersion` did not exist), so AgentRpc.cpp's `if(!sr.ok) return
+// MakeError(idValue,kInvalidParams,sr.message)` turned this into an
+// "invalid params" JSON-RPC ERROR -- factually wrong (the request was
+// well-formed; it was refused by a concurrency PRECONDITION, the exact same
+// shape ProposePatch's identical stale-base check reports as
+// status=="conflict") and left a wire caller no field to branch on.
+//
+// RED-PROVE (C++ leg): reverting FIX 1's step-(2) change makes `sr.ok`
+// false and `sr.status` empty here.
+// RED-PROVE (wire leg): reverting FIX 1's AgentRpc.cpp change makes the
+// wire response carry a top-level JSON-RPC "error" object (JsonResultObj
+// returns false) instead of a "result" object with "status":"conflict".
+//////////////////////////////////////////////////////////////////////
+static void TestReplaceGeometryScaffoldConflictIsSuccessEnvelope()
+{
+	std::cout << "Test 23e: replace_geometry_scaffold CONFLICT -- MakeSuccess envelope, "
+	             "status==\"conflict\" (R2 fix-round, P1)..." << std::endl;
+
+	const char* tmp = "agentlive_r2_replacegeom_conflict.RISEscene";
+	Job* pJob = LoadScene( kR2Scene, tmp );
+	Check( pJob != nullptr, "R2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+
+		RISE::Cst::CstHeadVersion staleBase = preVersion;
+		staleBase.revision += 100;   // definitely not the current head
+
+		//------------------------------------------------------------------
+		// C++ leg: AgentSession::ReplaceGeometryScaffold directly.
+		//------------------------------------------------------------------
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "conflictA", 1.0, 0.5, 1.0,
+			                               std::string(), 0.0, std::string(), &staleBase );
+		std::cout << "    [C++] ok=" << sr.ok << " status=\"" << sr.status << "\" retriable=" << sr.retriable
+		          << " message=\"" << sr.message << "\"" << std::endl;
+		Check( sr.ok, "MONEY RED-PROVE: a stale-baseHeadVersion conflict reports ok=true -- it used to report "
+		              "ok=false, indistinguishable from a bad-params refusal" );
+		Check( sr.status == "conflict", "MONEY RED-PROVE: status is \"conflict\"" );
+		Check( !sr.retriable, "a conflict does NOT set retriable -- its own status IS the retry signal "
+		                      "(re-read/rebase/re-propose), not verbatim resubmission" );
+		Check( sr.headVersion == preVersion, "the reported headVersion is the CURRENT head (the one that "
+		                                     "refused the stale base), not the stale one supplied" );
+		Check( sr.chunkResults.empty(), "no chunk graph was even generated -- the conflict is caught before "
+		                                "any candidate is built" );
+		Check( pJob->GetCstHeadVersion() == preVersion, "the head did NOT bump" );
+		const std::string postDocCpp = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDocCpp == preDoc, "the document is BYTE-IDENTICAL after the C++-leg conflict" );
+
+		//------------------------------------------------------------------
+		// Wire leg: the SAME conflict through AgentRpcDispatcher::HandleLine --
+		// asserts MakeSuccess (a "result" object), not MakeError (an "error"
+		// object), and that "status":"conflict" reaches the JSON.
+		//------------------------------------------------------------------
+		std::unique_ptr<Agent::AgentSession> wireSess = Agent::AgentSession::WrapJob( pJob );
+		Check( wireSess != nullptr, "wire session wraps the live Job" );
+		if( wireSess ) wireSess->AttachController( &c );
+		Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ) );
+		char line[400];
+		std::snprintf( line, sizeof( line ),
+			"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj\",\"family\":\"blended_vessel\",\"name\":\"conflictB\",\"size\":1.0,"
+			"\"detail\":0.5,\"aspect\":1.0,\"baseHeadVersion\":{\"uuid\":%llu,\"revision\":%llu}}}",
+			static_cast<unsigned long long>( preVersion.uuid ),
+			static_cast<unsigned long long>( preVersion.revision + 100 ) );
+		const std::string wireResp = wireDisp.HandleLine( line );
+		std::cout << "    [wire] resp=" << wireResp << std::endl;
+		Agent::JsonValue wireResult;
+		Check( JsonResultObj( wireResp, wireResult ),
+		       "MONEY RED-PROVE: the wire response is a MakeSuccess \"result\" object, NOT a JSON-RPC "
+		       "\"error\" -- before the fix this parse would fail (an error has no \"result\" key)" );
+		const Agent::JsonValue* wStatus = wireResult.find( "status" );
+		Check( wStatus && wStatus->isString() && wStatus->asString() == "conflict",
+		       "MONEY: the wire result carries \"status\":\"conflict\"" );
+		const Agent::JsonValue* wRetriable = wireResult.find( "retriable" );
+		Check( wRetriable && wRetriable->isBool() && !wRetriable->asBool(),
+		       "the wire result carries \"retriable\":false" );
+		const Agent::JsonValue* wApplied = wireResult.find( "applied" );
+		Check( wApplied && wApplied->isNumber() && wApplied->asNumber() == 0.0,
+		       "the wire result's numeric \"applied\" count is 0 -- nothing landed" );
+		const std::string postDocWire = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDocWire == preDoc, "the document is STILL byte-identical after the wire-leg conflict" );
+
+		sess.reset();
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 23f (R2 fix-round, P1, 2026-08-10): replace_geometry_scaffold's
+// TRANSIENT-BLOCK outcome -- an open editor transaction/gesture -- also
+// reaches a commit-stage disposition (status=="rejected", retriable=true)
+// and must return MakeSuccess, not MakeError.  Mirrors the txn leg of
+// TestMidTransactionAgentCommitRefused / TestTransientResolveLeavesProposalPending
+// (grep this file for "BeginTransaction" for the established pattern) --
+// SceneEditController::ApplyAgentReplaceGeometryCrud_'s mTxnOpen guard
+// (SceneEditController.cpp ~5644-5655) is the SAME transient reject every
+// other agent commit verb honours; before this fix round it was folded into
+// AgentGeometryScaffoldResult's single `ok=false` bucket exactly like a
+// permanent refusal, so a caller could not tell "retry me" from "do not
+// retry" without string-matching `message`.
+//
+// RED-PROVE: reverting FIX 1 makes `sr.ok` false / `sr.status` empty here
+// (C++ leg) and turns the wire response into a JSON-RPC "error" instead of
+// a "result" carrying "retriable":true (wire leg).
+//////////////////////////////////////////////////////////////////////
+static void TestReplaceGeometryScaffoldTransientBlockIsSuccessEnvelope()
+{
+	std::cout << "Test 23f: replace_geometry_scaffold TRANSIENT BLOCK (open txn) -- MakeSuccess "
+	             "envelope, retriable==true (R2 fix-round, P1)..." << std::endl;
+
+	const char* tmp = "agentlive_r2_replacegeom_txn.RISEscene";
+	Job* pJob = LoadScene( kR2Scene, tmp );
+	Check( pJob != nullptr, "R2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+
+		Check( c.BeginTransaction(), "transaction opens" );
+		Check( c.IsTransactionOpen(), "transaction reports open" );
+
+		//------------------------------------------------------------------
+		// C++ leg.
+		//------------------------------------------------------------------
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "txnA", 1.0, 0.5, 1.0 );
+		std::cout << "    [C++] ok=" << sr.ok << " status=\"" << sr.status << "\" retriable=" << sr.retriable
+		          << " message=\"" << sr.message << "\"" << std::endl;
+		Check( sr.ok, "MONEY RED-PROVE: a mid-transaction block reports ok=true -- it used to report "
+		              "ok=false, indistinguishable from a permanent refusal" );
+		Check( sr.status == "rejected", "the status is honestly \"rejected\" (NOT a faked conflict)" );
+		Check( sr.retriable, "MONEY RED-PROVE: retriable is true -- the SAME call can succeed once the "
+		                     "transaction closes, with no change to the request" );
+		Check( sr.message.find( "transaction" ) != std::string::npos,
+		       "the message names the transaction that is actually blocking" );
+		Check( sr.chunkResults.size() >= 1, "the graph WAS generated (the block is a commit-stage refusal, "
+		                                    "not a pre-flight validation failure) -- chunkResults reports it" );
+		if( !sr.chunkResults.empty() ) {
+			Check( !sr.chunkResults[0].applied && sr.chunkResults[0].status == "rejected"
+			    && sr.chunkResults[0].retriable,
+			       "each chunkResults entry mirrors the SAME commit verdict" );
+		}
+		Check( pJob->GetCstHeadVersion() == preVersion, "the head did NOT bump" );
+		const std::string postDocCpp = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDocCpp == preDoc, "the document is BYTE-IDENTICAL after the transient block" );
+
+		//------------------------------------------------------------------
+		// Wire leg, mid-transaction (SAME transaction still open).
+		//------------------------------------------------------------------
+		std::unique_ptr<Agent::AgentSession> wireSess = Agent::AgentSession::WrapJob( pJob );
+		if( wireSess ) wireSess->AttachController( &c );
+		Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ) );
+		const std::string wireResp = wireDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj\",\"family\":\"blended_vessel\",\"name\":\"txnB\",\"size\":1.0,"
+			"\"detail\":0.5,\"aspect\":1.0}}" );
+		std::cout << "    [wire] resp=" << wireResp << std::endl;
+		Agent::JsonValue wireResult;
+		Check( JsonResultObj( wireResp, wireResult ),
+		       "MONEY RED-PROVE: the wire response is a MakeSuccess \"result\" object, NOT a JSON-RPC error" );
+		const Agent::JsonValue* wStatus = wireResult.find( "status" );
+		Check( wStatus && wStatus->isString() && wStatus->asString() == "rejected",
+		       "the wire result carries \"status\":\"rejected\"" );
+		const Agent::JsonValue* wRetriable = wireResult.find( "retriable" );
+		Check( wRetriable && wRetriable->isBool() && wRetriable->asBool(),
+		       "MONEY: the wire result carries \"retriable\":true" );
+
+		Check( c.RollbackTransaction(), "transaction rolls back" );
+		Check( !c.IsTransactionOpen(), "transaction reports closed after rollback" );
+
+		// Control: the SAME commit applies cleanly once the transaction closes --
+		// the refusal was transaction-scoped, not a broken path.
+		const Agent::AgentSession::AgentGeometryScaffoldResult retry =
+			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "txnC", 1.0, 0.5, 1.0 );
+		Check( retry.ok && retry.status == "applied",
+		       "the identical shape of call applies cleanly once the transaction is closed" );
+		Check( !retry.retriable, "a clean apply carries retriable=false" );
+
+		sess.reset();
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 23g (R2 fix-round, P1+P2, 2026-08-10): replace_geometry_scaffold's
+// DIAGNOSED (code-3) outcome.  Drives CodeThreeJob's new
+// ApplyCstReplaceDocumentText override (2 -> 3) to force a genuinely-mutated-
+// but-diagnosed commit, and asserts BOTH halves of this fix round:
+//   * P1: the envelope is MakeSuccess with status=="diagnosed" (not
+//     MakeError) -- same "reached a commit-stage disposition" contract as
+//     the conflict/transient-block tests above.
+//   * P2: the disposition fields (geometryName/geometryKind and the
+//     previousGeometry* trio) are POPULATED, describing what actually
+//     landed -- NOT cleared as if nothing happened.  Before this fix round,
+//     AgentSession.cpp's `if(!commit.applied)` branch unconditionally
+//     cleared previousGeometryRemoved/previousGeometryReferrers/
+//     reportedOrphans and never set geometryName/geometryKind, even though
+//     code 3 mutates the Document (chunks inserted, the slot rebound, the
+//     old geometry's disposition computed in step (5) against the SPLICED
+//     document, RebindEditorToJob run, a real undo record pushed).
+//
+// RED-PROVE (P1): reverting the AgentRpc.cpp change makes the wire response
+// an "error" instead of a "result" with "status":"diagnosed".
+// RED-PROVE (P2): reverting the AgentSession.cpp change makes
+// sr.geometryName/sr.geometryKind empty and sr.previousGeometryRemoved false
+// with sr.previousGeometryReferrers/sr.reportedOrphans cleared, even though
+// the Document (asserted below) actually carries the new geometry and no
+// longer carries the old one.
+//////////////////////////////////////////////////////////////////////
+static void TestReplaceGeometryScaffoldDiagnosedPopulatesDisposition()
+{
+	std::cout << "Test 23g: replace_geometry_scaffold DIAGNOSED (code 3) -- MakeSuccess envelope, "
+	             "disposition fields POPULATED, not cleared (R2 fix-round, P1+P2)..." << std::endl;
+
+	const char* tmp = "agentlive_r2_replacegeom_diag.RISEscene";
+	// CodeThreeJob: the 2->3 rewrite technique (see Tests 6/14/20 for the pattern) -- the base call
+	// performs a REAL D2 full re-derive (Scene + managers genuinely replaced), only the reported code
+	// is corrupted to 3, so the "mutated but diagnosed" contract is exercised against a genuinely-
+	// replaced live Scene, not a synthetic result.
+	{ std::ofstream o( tmp ); o << kR2Scene; }
+	CodeThreeJob* pJob = new CodeThreeJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "R2 fixture scene loads into CodeThreeJob via the CST path" );
+	if( !pJob ) { std::remove( tmp ); return; }
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+		Check( RISE::Cst::SerializeCst( *pJob->GetCstDocument() ).find( "name s\n" ) != std::string::npos,
+		       "PRECONDITION: the original geometry `s` is present before the call" );
+
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj", "blended_vessel", "diagA", 1.0, 0.5, 1.0 );
+		std::cout << "    [C++] ok=" << sr.ok << " status=\"" << sr.status << "\" retriable=" << sr.retriable
+		          << " message=\"" << sr.message << "\"" << std::endl;
+
+		Check( sr.ok, "MONEY RED-PROVE (P1): a diagnosed (code-3) commit reports ok=true" );
+		Check( sr.status == "diagnosed", "MONEY RED-PROVE: status is \"diagnosed\"" );
+		Check( !sr.retriable, "a diagnosed outcome is not a transient reject" );
+		Check( sr.headVersion == pJob->GetCstHeadVersion(),
+		       "the reported headVersion is the head AFTER the diagnosed commit (it DID bump -- the "
+		       "Document was mutated)" );
+		Check( pJob->GetCstHeadVersion().revision == preVersion.revision + 1,
+		       "the head bumped by exactly one -- the diagnosed commit is a real mutation, not a no-op" );
+
+		// P2 MONEY: the disposition fields describe REALITY, not a discarded plan.
+		Check( !sr.geometryName.empty() && sr.geometryName.find( "diagA" ) != std::string::npos,
+		       "MONEY RED-PROVE (P2): geometryName is POPULATED (was empty before the fix)" );
+		Check( !sr.geometryKind.empty(),
+		       "MONEY RED-PROVE (P2): geometryKind is POPULATED (was empty before the fix)" );
+
+		const std::string postDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDoc.find( sr.geometryName ) != std::string::npos,
+		       "the new geometry chunk IS in the Document -- the disposition fields describe what really "
+		       "landed" );
+		Check( postDoc.find( "name s\n" ) == std::string::npos,
+		       "the old geometry `s` is GONE from the Document (the diagnosed commit really removed it)" );
+		Check( sr.previousGeometryRemoved,
+		       "MONEY RED-PROVE (P2): previousGeometryRemoved is TRUE, matching the Document above -- before "
+		       "the fix this was unconditionally cleared to false on any !applied outcome, contradicting the "
+		       "Document" );
+		Check( sr.previousGeometryReferrers.empty(),
+		       "no referrers remain (the old geometry was removed, not retained)" );
+
+		//------------------------------------------------------------------
+		// Wire leg: MakeSuccess, "status":"diagnosed", results[] carry
+		// applied=false/status="diagnosed" (ChunkResultJson already mirrors
+		// the commit per element -- this is the P1 half at the wire).
+		//------------------------------------------------------------------
+		std::unique_ptr<Agent::AgentSession> wireSess = Agent::AgentSession::WrapJob( pJob );
+		if( wireSess ) wireSess->AttachController( &c );
+		Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ) );
+		const std::string wireResp = wireDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"replace_geometry_scaffold\",\"params\":"
+			"{\"target\":\"obj\",\"family\":\"blended_vessel\",\"name\":\"diagB\",\"size\":1.0,"
+			"\"detail\":0.5,\"aspect\":1.0}}" );
+		std::cout << "    [wire] resp=" << wireResp << std::endl;
+		Agent::JsonValue wireResult;
+		Check( JsonResultObj( wireResp, wireResult ),
+		       "MONEY RED-PROVE: the wire response is a MakeSuccess \"result\" object, NOT a JSON-RPC error" );
+		const Agent::JsonValue* wStatus = wireResult.find( "status" );
+		Check( wStatus && wStatus->isString() && wStatus->asString() == "diagnosed",
+		       "MONEY: the wire result carries \"status\":\"diagnosed\"" );
+		const Agent::JsonValue* wResults = wireResult.find( "results" );
+		Check( wResults && wResults->isArray() && wResults->size() >= 1,
+		       "the wire result's `results` array is non-empty -- the graph WAS generated and landed" );
+		if( wResults && wResults->isArray() && wResults->size() >= 1 ) {
+			const Agent::JsonValue& first = wResults->at( 0 );
+			const Agent::JsonValue* rApplied = first.find( "applied" );
+			const Agent::JsonValue* rStatus = first.find( "status" );
+			Check( rApplied && rApplied->isBool() && !rApplied->asBool(),
+			       "each wire results[] element carries applied:false" );
+			Check( rStatus && rStatus->isString() && rStatus->asString() == "diagnosed",
+			       "each wire results[] element carries status:\"diagnosed\"" );
+		}
+
+		sess.reset();
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
 
 //////////////////////////////////////////////////////////////////////
 // Test 23c (FIX 2, P2, R1 fix round, 2026-08-09): a remove_chunks batch that
@@ -6040,6 +6473,10 @@ int main()
 	TestChunkRemoveMiddleUndoRedo();
 	TestChunkRemoveChunksBatchUndoRedo();
 	TestChunkRemoveChunksBatchRasterizerTargetRefused();
+	TestReplaceGeometryScaffoldLiveUndoRedo();
+	TestReplaceGeometryScaffoldConflictIsSuccessEnvelope();
+	TestReplaceGeometryScaffoldTransientBlockIsSuccessEnvelope();
+	TestReplaceGeometryScaffoldDiagnosedPopulatesDisposition();
 	TestChunkInsertThenParamEditInterleavedLifo();
 	TestUndoInsertRefusedWhenReferenced();
 	TestRasterizerInsertUndoMatchesReload();
