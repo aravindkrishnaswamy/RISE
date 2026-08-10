@@ -210,9 +210,9 @@ The canonical artifact.
 
 ```cpp
 enum class ChannelId : uint32_t {
-    Beauty,         // RISEPel, ROMM RGB linear, always present
+    Beauty,         // RISEPel, Rec.709 RGB linear (D65), always present
     Alpha,          // float, [0,1]
-    Albedo,         // RISEPel, ROMM RGB linear (denoiser AOV / export)
+    Albedo,         // RISEPel, Rec.709 RGB linear (D65; denoiser AOV / export)
     Normal,         // Vector3, world space, unit length
     Depth,          // float, camera-space distance
     ObjectId,       // uint32_t
@@ -342,12 +342,12 @@ struct ViewTransform {
 Pipeline ordering (immutable contract, encoded in `FrameStore::Render`):
 
 ```
-ROMM-linear pixel  → exposure (multiply by 2^EV)
-                   → white balance (3×3 matrix in ROMM)
-                   → ROMM → target color space matrix    [from TargetFormat]
-                   → tone curve                          [iff TargetFormat is LDR-fixed]
-                   → output transfer (sRGB / PQ / Linear) [from TargetFormat]
-                   → quantise into TargetFormat pixel layout
+Rec.709-linear D65 pixel  → exposure (multiply by 2^EV)
+                          → white balance (3×3 matrix in RISEPel working space)
+                          → Rec.709 D65 → target color space matrix [from TargetFormat]
+                          → tone curve                    [iff TargetFormat is LDR-fixed]
+                          → output transfer (sRGB / PQ / Linear) [from TargetFormat]
+                          → quantise into TargetFormat pixel layout
 ```
 
 ### 3.4 `TargetFormat` and `ColorSpace`

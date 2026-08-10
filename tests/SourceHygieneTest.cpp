@@ -984,10 +984,16 @@ int main()
 			repoRoot/"src"/"Library"/"Rendering"/"ProgressiveFilm.h");
 		const std::string targetFormatHeader = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"TargetFormat.h");
+		const std::string frameStoreDesign = slurp(
+			repoRoot/"docs"/"FRAMESTORE_DESIGN.md");
 		Check(viewTransformHeader.find("ROMM-linear pixel") == std::string::npos &&
 			viewTransformHeader.find("ROMM → target") == std::string::npos &&
 			progressiveFilmHeader.find("RISEPel ROMM RGB") == std::string::npos &&
-			targetFormatHeader.find("ROMM→BT.2020") == std::string::npos,
+			targetFormatHeader.find("ROMM→BT.2020") == std::string::npos &&
+			frameStoreDesign.find("RISEPel, ROMM RGB linear") == std::string::npos &&
+			frameStoreDesign.find("ROMM-linear pixel") == std::string::npos &&
+			frameStoreDesign.find("matrix in ROMM") == std::string::npos &&
+			frameStoreDesign.find("ROMM → target color space") == std::string::npos,
 			"output pipeline contracts name the Rec.709-linear RISEPel working space" );
 		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
 			frameEncoders.find("toneCurveStrength > 0.0f") != std::string::npos,
