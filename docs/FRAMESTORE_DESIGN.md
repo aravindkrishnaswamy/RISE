@@ -99,7 +99,7 @@ The implementation matches the original design intent in §3–§7, with these m
 
 1. **Reference convention everywhere**: all new refcounted types (`FrameStore`, `BeautyRasterImageView`, encoders) use RISE's intrusive `Reference` base instead of `std::shared_ptr`. Construction is `new T(...)` (refcount starts at 1); release via `safe_release()` or `t->release()`. Matches the rest of the library.
 2. **Tile-level `std::shared_mutex` instead of atomic seqlock**: the original design called for an atomic-seqlock with explicit memory fences. L1 round 2 review (P1) flagged this as UB on non-atomic pixel storage per the C++ memory model, regardless of fence correctness. The fix is per-tile `std::shared_mutex` — N readers + 1 writer, C++-standard data-race-free. See §4.
-3. **Observer dispatch with in-flight counter + thread-local depth**: the snapshot-then-iterate pattern from §3.6 is augmented with (a) `observerDispatchInFlight_` + `observerDispatchDone_` cv so cross-thread `RemoveObserver` waits for in-flight callbacks before returning (P2), (b) thread-local depth counter so same-thread self-detach skips the wait without deadlock (P2), (c) per-iteration recheck of `observers_` in the dispatch loop so observer A removing-and-destroying observer B in the same snapshot doesn't UAF on B's freed pointer (P2 round 3).
+3. **Serialized observer dispatch with per-observer lifetime tracking**: each FrameStore serializes its raw-pointer callbacks, snapshots the registration list, and rechecks registration immediately before claiming each callback. Per-observer in-flight counts let an external `RemoveObserver` wait for precisely the removed observer; same-thread self-detach excludes only its own active callback. A callback-side removal that would wait for a different active callback fails before mutation, and recursive publication fails before metadata or generation changes. Independent FrameStores may dispatch concurrently.
 4. **`ChannelTraits<Alpha>::Type = Chel`**, not `float`: the original design said float, but L2 review HIGH-1 found that the double→float→double roundtrip breaks byte-identity for non-1.0 alpha values. Now stored as Chel (double); 4-byte-per-pixel cost is acceptable.
 5. **`TransferFunction::Linear` is true identity**: original design had it Sanitise-clamped (NaN/Inf/negatives → 0), which is wrong for HDR archival. L1 round 2 P3 fixed this — Linear now passes through bit-identically; sanitise responsibility shifts to the LDR-fixed quantisation step in `EncodePixel`.
 6. **Two new `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` for true bit-identical scene-referred archival in RISE's native ROMM primaries (the existing `*_Linear` variants use sRGB primaries, the industry-default for EXR archival).
@@ -141,7 +141,7 @@ The implementation matches the original design intent in §3–§7, with these m
 │         │ notifies                  │  │ Channel<RISEPel> albedo? │   │ │
 │         │  (no data)                │  │ Channel<float>   depth?  │   │ │
 │         ▼                           │  └──────────────────────────┘   │ │
-│  ┌─────────────────┐                │  + tile-seqlock concurrency     │ │
+│  ┌─────────────────┐                │  + tile shared-mutex locking    │ │
 │  │ IRenderObserver │                │  + Render(fmt, xform) readback  │ │
 │  │  list           │                │  + Snapshot<T>(channel)         │ │
 │  └─────┬───────────┘                └────────┬───────────┬─────────────┘ │
@@ -298,7 +298,7 @@ public:
 **Design decisions baked in:**
 
 - **SoA storage.** Each channel has its own buffer; AOVs allocate iff requested. `Channel<T>` is `T*`-contiguous so encoders that walk a single channel get cache-line-friendly access.
-- **Tile-aligned coordinates.** Tile size lives in `Spec`. Rasterizers pick the tile size; FrameStore mirrors it. This lets the seqlock be tile-granular and avoids per-pixel atomics.
+- **Tile-aligned coordinates.** Tile size lives in `Spec`. Rasterizers pick the tile size; FrameStore mirrors it. This keeps reader/writer exclusion tile-granular instead of imposing a whole-frame lock.
 - **Beauty channel is mandatory; others optional.** Rasterizer factories declare which channels they populate; FrameStore allocates only those.
 - **Metadata is part of the artifact.** Sample count, scene name, camera info, render time — used by EXR multichannel attrs and any future "render history" feature. Read-write so the rasterizer can update sample counts during render.
 - **`AsBeautyRasterImage()` is an explicit, scoped back-compat shim.** It lets the existing OIDN denoiser path (which takes `IRasterImage`) and the existing per-format `IRasterImageWriter` instances keep working unchanged in Phase 1. Phase 2 deletes this method.
@@ -474,56 +474,51 @@ public:
 
 Crucially, observer callbacks pass *no pixel data* — observers consume `FrameStore` directly. This means:
 
-- The render thread never blocks on observer work.
-- Observers can be slow (file write, network send) without back-pressuring the render.
-- The seqlock model lets observers and the rasterizer run concurrently with no mutex.
+- Callbacks are synchronous on the publishing render thread and serialized within one FrameStore. A slow callback therefore back-pressures that producer; viewport and network observers must enqueue bounded work and return promptly.
+- Frame-complete file observers intentionally keep the producer until their transactional publication finishes.
+- Pixel reads are safe because callbacks run only after the relevant tile lock has been released. Independent FrameStores do not share a dispatch lock and may publish concurrently.
 
 ---
 
-## 4. Concurrency model — tile seqlock
+## 4. Concurrency model — per-tile shared mutex
 
-Each tile has an atomic sequence counter. Writers bump it odd-then-even around their write; readers retry if the counter changed mid-read.
+Each tile owns a `std::shared_mutex`. Writers take its exclusive lock for the complete write window; readers take a shared lock while copying that tile. This replaced the original atomic-seqlock proposal because reading non-atomic pixels concurrently with a writer is a C++ data race even when sequence counters detect the tear afterward.
 
 ```cpp
 // Inside FrameStore:
-struct TileMeta {
-    std::atomic<uint64_t> seq{0};   // even = stable; odd = being written
-    Rect rect;
+struct TileLock {
+    std::shared_mutex mutex;
 };
-std::vector<TileMeta>     tiles_;
+std::unique_ptr<TileLock[]> tileLocks_;
 std::atomic<uint64_t>     globalGen_{0};
 
 void BeginTile(size_t tx, size_t ty) {
-    auto& t = tiles_[ty * tileCountX_ + tx];
-    t.seq.fetch_add(1, std::memory_order_acq_rel);   // → odd
+    tileLocks_[ty * tileCountX_ + tx].mutex.lock();
 }
 
 void EndTile(size_t tx, size_t ty) {
-    auto& t = tiles_[ty * tileCountX_ + tx];
-    t.seq.fetch_add(1, std::memory_order_acq_rel);   // → even
-    globalGen_.fetch_add(1, std::memory_order_release);
+    tileLocks_[ty * tileCountX_ + tx].mutex.unlock();
+    const uint64_t generation =
+        globalGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    NotifyTileComplete(tx, ty, generation);
 }
 
 // Reader inside Render():
 for each tile in roi {
-    uint64_t s1, s2;
-    do {
-        s1 = tile.seq.load(std::memory_order_acquire);
-        if (s1 & 1) { std::this_thread::yield(); continue; }
-        copy_tile_pixels_through_transform(tile, dst, fmt, xform);
-        s2 = tile.seq.load(std::memory_order_acquire);
-    } while (s1 != s2);
+    std::shared_lock<std::shared_mutex> lock(tile.mutex);
+    copy_tile_pixels_through_transform(tile, dst, fmt, xform);
 }
 ```
 
 Properties:
 
-- **Writer never blocks on readers.** A repaint spinning on a busy tile yields, but the rasterizer never spins waiting for a reader. The render thread's worst case is reading one extra cache line per tile.
-- **Reader retries are rare.** A repaint touches each tile ~once; collision probability ≈ (tile-write-time / repaint-period) per tile. For 32×32 tiles taking microseconds and a 16ms repaint loop, retries are sub-1%.
-- **No mutex.** Eliminates the rwlock contention that would otherwise grow with channel count.
-- **Memory ordering.** `acq_rel` on `EndTile`'s increment establishes happens-before with the reader's acquire load; reader sees all writes to that tile.
+- **C++-standard data-race freedom.** Shared/exclusive lock ownership provides the required happens-before relation for every channel in the tile.
+- **Concurrent readers.** Multiple viewport, encoder, and diagnostic readers may hold shared locks on the same tile.
+- **Bounded exclusion.** A writer can wait for readers and a reader can wait for a writer, but only on overlapping tiles. Read and write paths acquire tiles in row-major order.
+- **Callbacks observe unlocked pixels.** `EndTile` releases the exclusive lock before incrementing generation and dispatching `OnTileComplete`, so an observer may read the completed tile without self-deadlock.
+- **Bulk writes unlock before notification.** Resolve, denoise, clear, and AOV propagation acquire every affected tile; their scope guard releases every lock before emitting any tile callback. Observer exceptions are contained during this noexcept teardown.
 
-For "snapshot the entire frame for an encoder" (file save), use the same per-tile retry loop. If the rasterizer is mid-render, the encoder gets a *consistent-per-tile* snapshot — some tiles converged, some not, none torn. (Saving mid-render is an explicit feature; use case: "save an in-progress preview to share.")
+For "snapshot the entire frame for an encoder" (file save), readers acquire all tile shared locks in row-major order for the duration of the dump. The snapshot is untorn and writers wait until the dump completes. Production Save-As additionally uses the render/publication lease rules described by the output-provenance contract; it is not an unrestricted mid-render operation.
 
 For Phase 1 only, where `FrameSink::OutputIntermediateImage` does the writes from the rasterizer thread, the same Begin/EndTile bracketing protects the bulk-copy from `IRasterImage` into the FrameStore's beauty channel.
 
@@ -930,10 +925,10 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
    Value type (POD-ish struct, ~40 bytes). Cheap to pass by const ref into `Render`. Recommend value.
 
 5. **`Render` thread-safety — is it required to be callable from multiple threads concurrently?**
-   The seqlock makes it *safe*, but is it useful? Use case: viewport repaints + an Auto-Save thread + a network mirror thread, all reading independently. Recommend yes — costs nothing extra.
+   **Resolved:** yes. Per-tile shared locks allow viewport repaints, an encoder, and diagnostics to read concurrently. Readers contend only with writers or an exclusive full-frame stage on overlapping tiles.
 
 6. **Tile size: rasterizer-driven or FrameStore-driven?**
-   Today the rasterizer picks. If FrameStore stores at a different tile size, the seqlock granularity mismatches the rasterizer's actual write granularity (false sharing). Recommend: FrameStore::Spec accepts a `tileEdge` and the rasterizer factory queries it; or the factory passes its preferred tile size into `Spec`.
+   **Resolved:** `FrameStore::Spec` carries `tileEdge`; the bound rasterizer and FrameStore use that common tile partition so lock granularity matches actual write granularity.
 
 7. **`IRenderObserver` callbacks — main-thread dispatch or render-thread dispatch?**
    Render-thread is simpler (today's `IRasterizerOutput` works that way). Each platform's GUI bridge already marshals to the UI thread via Qt signals / `dispatch_async` / Compose `LaunchedEffect`. Recommend: render-thread dispatch, document loud-and-clear.
@@ -951,7 +946,7 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
 ## 13. Risks
 
 - **Performance regression in Phase 1 from the redundant copy.** Worst case is ~one frame's worth of memory bandwidth per tile completion. On a 4K beauty-only render (~32MB) at 100ms tiles that's ~320 MB/s — manageable, but measure on Sponza-class scenes before committing. The [performance-work-with-baselines](skills/performance-work-with-baselines.md) skill applies.
-- **Tile-seqlock subtleties.** Reader spin-yield can starve under heavy contention; mitigation is the read-side `std::this_thread::yield()` and the fact that writes are short. Adversarial-review the FrameStore concurrency carefully (L1 gate).
+- **Tile-lock contention.** Long readers delay writers and long writers delay viewport/file readers on overlapping tiles. Keep per-tile write windows short, acquire multi-tile ranges in row-major order, and never dispatch observers while holding tile locks. Adversarial-review the FrameStore concurrency carefully (L1 gate).
 - **ABI break in Phase 2 affects all `RISE_API_*` callers.** The DRISE client, all three GUI apps, and any out-of-tree tools all rebuild. Stage carefully; bump API version explicitly. The `abi-preserving-api-evolution` skill is the playbook.
 - **Color-space round-trip bugs.** The conversion matrix table is correctness-sensitive. L0 has explicit per-target round-trip tests for a reason — don't skip.
 - **`IRasterizerOutput`-using third-party code.** If any out-of-tree integration uses `IRasterizerOutput` directly, Phase 2 breaks them. Phase 1's compatibility shim should be retained for at least one release after Phase 2 lands.

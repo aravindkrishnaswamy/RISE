@@ -1017,6 +1017,10 @@ int main()
 			repoRoot/"src"/"Library"/"Rendering"/"TargetFormat.h");
 		const std::string frameStoreDesign = slurp(
 			repoRoot/"docs"/"FRAMESTORE_DESIGN.md");
+		const std::string renderObserverHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRenderObserver.h");
+		const std::string frameStoreHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FrameStore.h");
 		Check(viewTransformHeader.find("ROMM-linear pixel") == std::string::npos &&
 			viewTransformHeader.find("ROMM → target") == std::string::npos &&
 			progressiveFilmHeader.find("RISEPel ROMM RGB") == std::string::npos &&
@@ -1026,6 +1030,18 @@ int main()
 			frameStoreDesign.find("matrix in ROMM") == std::string::npos &&
 			frameStoreDesign.find("ROMM → target color space") == std::string::npos,
 			"output pipeline contracts name the Rec.709-linear RISEPel working space" );
+		Check(frameStoreDesign.find("Concurrency model — tile seqlock") ==
+				std::string::npos &&
+			frameStoreDesign.find("The render thread never blocks on observer work") ==
+				std::string::npos &&
+			frameStoreDesign.find("without back-pressuring the render") ==
+				std::string::npos &&
+			frameStoreDesign.find("Reader spin-yield") == std::string::npos &&
+			renderObserverHeader.find("the seqlock model") == std::string::npos &&
+			frameStoreHeader.find("Observers MUST NOT throw") == std::string::npos &&
+			frameStoreHeader.find("Observer failures are contained") !=
+				std::string::npos,
+			"FrameStore contracts describe shared tile locks and synchronous contained callbacks" );
 		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
 			frameEncoders.find("toneCurveStrength > 0.0f") != std::string::npos,
 			"LDR encoders consume white balance and tone-curve strength" );

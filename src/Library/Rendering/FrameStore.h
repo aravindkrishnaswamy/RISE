@@ -646,13 +646,11 @@ namespace RISE
 		// rect, so a bulk-bracket holder waits cleanly behind any
 		// in-progress per-block writers (or vice versa).
 		//
-		// Each `EndTile` fires `OnTileComplete` to observers + bumps the
-		// global generation counter, so a full-image bulk write produces
-		// one observer notification per FrameStore tile (same fan-out as
-		// a fully-rendered per-block frame).  Observers MUST NOT throw
-		// from `OnTileComplete` — the destructor is implicitly
-		// `noexcept` and a throw during stack unwinding would call
-		// `std::terminate`.
+		// After every tile lock has been released, the guard bumps the
+		// global generation counter and emits one `OnTileComplete` per
+		// FrameStore tile (same fan-out as a fully-rendered per-block
+		// frame). Observer failures are contained so a noexcept scope guard
+		// cannot terminate an otherwise recoverable render unwind.
 		//
 		// IMPORTANT: do NOT construct nested inside an active per-tile
 		// bracket window — `std::shared_mutex` is non-recursive, so a
