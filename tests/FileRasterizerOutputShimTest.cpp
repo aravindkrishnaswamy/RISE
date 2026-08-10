@@ -143,6 +143,41 @@ namespace
 		return f.good() || f.eof();
 	}
 
+	bool ValidateTestMovieArtifact(
+		const std::string& path,
+		const FireFrameSequenceEncoding encoding,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int framesPerSecond,
+		const std::vector<FireFramePrimary>& frames,
+		std::string& error )
+	{
+		std::vector<unsigned char> bytes;
+		if( !ReadFileAllBytes(path,bytes) || bytes.empty() || width != 16u ||
+			height != 16u || framesPerSecond != 30u || frames.size() != 2u ) {
+			error = "test movie validator rejected finalized artifact facts";
+			return false;
+		}
+		const bool knownEncoding =
+			encoding == FireFrameSequenceEncoding::AppleProRes4444_12Bit ||
+			encoding == FireFrameSequenceEncoding::HevcMain10_10Bit;
+		if( !knownEncoding ) error = "test movie validator rejected encoding";
+		return knownEncoding;
+	}
+
+	bool RejectTestMovieArtifact(
+		const std::string&,
+		FireFrameSequenceEncoding,
+		unsigned int,
+		unsigned int,
+		unsigned int,
+		const std::vector<FireFramePrimary>&,
+		std::string& error )
+	{
+		error = "test movie decoder rejected corrupt bytes";
+		return false;
+	}
+
 	RISECBOR64::Value ReplaceMapMember( const RISECBOR64::Value& map,
 		const std::string& name, const RISECBOR64::Value& replacement )
 	{
@@ -2592,7 +2627,7 @@ namespace
 		const bool moviePublished = PublishFireFrameSequenceFileTransaction(
 			movieMetadata,FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 			movieTemporary,movieFile,16u,16u,30u,2u,
-			movieFrames,movieError);
+			movieFrames,ValidateTestMovieArtifact,movieError);
 		std::vector<unsigned char> movieBytes, movieSidecar;
 		RISECBOR64::Value movieEnvelope;
 		const bool movieDecoded = moviePublished &&
@@ -2762,7 +2797,8 @@ namespace
 		}
 		const bool hevcPublished = PublishFireFrameSequenceFileTransaction(
 			movieMetadata,FireFrameSequenceEncoding::HevcMain10_10Bit,
-			hevcTemporary,hevcFile,16u,16u,30u,2u,movieFrames,movieError);
+			hevcTemporary,hevcFile,16u,16u,30u,2u,movieFrames,
+			ValidateTestMovieArtifact,movieError);
 		std::vector<unsigned char> hevcSidecar;
 		RISECBOR64::Value hevcEnvelope;
 		const bool hevcDecoded = hevcPublished &&
@@ -2806,6 +2842,40 @@ namespace
 			hevcEncoding->Find("conversion_saturation")->GetIntegerArgument() == 65536u,
 			"[fire provenance] HEVC encoding-v1 ratchets rate control, HDR, mux, and conversion settings" );
 
+		const std::string unvalidatedMovieTemporary =
+			MakeTempPathWithoutExt()+"_unvalidated_movie.closed";
+		const std::string unvalidatedMovieFile =
+			MakeTempPathWithoutExt()+"_unvalidated_movie.mov";
+		{
+			std::ofstream movie(unvalidatedMovieTemporary,std::ios::binary);
+			movie.write("unvalidated",11);
+		}
+		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+				unvalidatedMovieTemporary,unvalidatedMovieFile,16u,16u,30u,2u,
+				movieFrames,nullptr,movieError) &&
+			movieError.find("decoder validation is unavailable") != std::string::npos &&
+			!std::filesystem::exists(unvalidatedMovieTemporary) &&
+			!std::filesystem::exists(unvalidatedMovieFile),
+			"[fire provenance] movie publication fails closed without an authored decoder" );
+
+		const std::string corruptMovieTemporary =
+			MakeTempPathWithoutExt()+"_corrupt_movie.closed";
+		const std::string corruptMovieFile =
+			MakeTempPathWithoutExt()+"_corrupt_movie.mov";
+		{
+			std::ofstream movie(corruptMovieTemporary,std::ios::binary);
+			movie.write("corrupt",7);
+		}
+		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
+				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+				corruptMovieTemporary,corruptMovieFile,16u,16u,30u,2u,
+				movieFrames,RejectTestMovieArtifact,movieError) &&
+			movieError.find("decoder rejected corrupt bytes") != std::string::npos &&
+			!std::filesystem::exists(corruptMovieTemporary) &&
+			!std::filesystem::exists(corruptMovieFile),
+			"[fire provenance] decoder rejection leaves no movie artifact or sidecar" );
+
 		const std::string badMovieTemporary = MakeTempPathWithoutExt()+"_bad_movie.closed";
 		const std::string badMovieFile = MakeTempPathWithoutExt()+"_bad_movie.mov";
 		{
@@ -2815,7 +2885,8 @@ namespace
 		movieFrames[1].frameIndex = 7u;
 		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
 				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
-				badMovieTemporary,badMovieFile,16u,16u,30u,2u,movieFrames,movieError) &&
+				badMovieTemporary,badMovieFile,16u,16u,30u,2u,movieFrames,
+				ValidateTestMovieArtifact,movieError) &&
 			!std::filesystem::exists(badMovieFile),
 			"[fire provenance] movie transaction rejects a noncontiguous frame-link mutation" );
 
@@ -2832,7 +2903,8 @@ namespace
 		Check( !PublishFireFrameSequenceFileTransaction(movieMetadata,
 				FireFrameSequenceEncoding::AppleProRes4444_12Bit,
 				blockedMovieTemporary,blockedMovieFile,16u,16u,30u,2u,
-				movieFrames,movieError) && !std::filesystem::exists(blockedMovieFile),
+				movieFrames,ValidateTestMovieArtifact,movieError) &&
+			!std::filesystem::exists(blockedMovieFile),
 			"[fire provenance] movie sidecar failure leaves no unlabeled MOV artifact" );
 
 		const std::string plainMovieTemporary =

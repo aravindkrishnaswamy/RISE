@@ -53,6 +53,16 @@ namespace RISE
 			HevcMain10_10Bit
 		};
 
+		typedef bool (*FireFrameSequenceArtifactValidator)(
+			const std::string& closedArtifactFilename,
+			FireFrameSequenceEncoding encoding,
+			unsigned int width,
+			unsigned int height,
+			unsigned int framesPerSecond,
+			const std::vector<FireFramePrimary>& frames,
+			std::string& error
+			);
+
 		struct FireFrameSequenceEncodingDescriptor
 		{
 			unsigned int schemaVersion = 1u;
@@ -122,6 +132,8 @@ namespace RISE
 		//! Publish an already-closed display movie and its authoritative
 		//! frame-sequence provenance sidecar as one artifact transaction.
 		//! The temporary movie is consumed on success and removed on failure.
+		//! Publication requires the authored backend to decode every frame and
+		//! bind the finalized container facts to the supplied expectations.
 		bool PublishFireFrameSequenceFileTransaction(
 			const FrameStoreOutput::Metadata& metadata,
 			FireFrameSequenceEncoding encoding,
@@ -132,6 +144,7 @@ namespace RISE
 			unsigned int framesPerSecond,
 			unsigned int encodedFrameCount,
 			const std::vector<FireFramePrimary>& frames,
+			FireFrameSequenceArtifactValidator validateArtifact,
 			std::string& error
 			);
 

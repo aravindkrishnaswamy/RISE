@@ -662,6 +662,16 @@ int main()
 			windowsVideoSource.find("constbooltrailerWritten=flushed&&av_write_trailer(m_formatCtx)>=0;") !=
 				std::string::npos,
 			"Windows movie success requires frame, packet, flush, and trailer completion" );
+		Check( windowsVideoSource.find("avformat_open_input(&rawFormat") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_find_decoder(expectedCodec)") !=
+				std::string::npos &&
+			windowsVideoSource.find("av_read_frame(format.get(),packet.get())") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_receive_frame(codec.get(),frame.get())") !=
+				std::string::npos &&
+			windowsVideoSource.find("decoded!=frames.size()") != std::string::npos,
+			"Windows movie publication decodes and counts the finalized frame sequence" );
 
 		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
 			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
@@ -694,6 +704,14 @@ int main()
 			movieSource.find("MovieVideoSettings(_encodingDescriptor") !=
 				std::string::npos,
 			"macOS movie writer consumes the shared encoding descriptor" );
+		Check( movieSource.find("AVAssetReaderTrackOutput") != std::string::npos &&
+			movieSource.find("copyNextSampleBuffer") != std::string::npos &&
+			movieSource.find("CMTimeCompare(actualTime,expectedTime)") !=
+				std::string::npos &&
+			movieSource.find("reader.status != AVAssetReaderStatusCompleted") !=
+				std::string::npos &&
+			movieSource.find("decoded != frames.size()") != std::string::npos,
+			"macOS movie publication decodes and counts the finalized frame sequence" );
 		const std::string compactBridge = withoutWhitespace(bridgeSource);
 		Check( compactBridge.find(
 			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=

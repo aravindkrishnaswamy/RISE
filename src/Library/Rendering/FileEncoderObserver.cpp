@@ -2041,12 +2041,18 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	const unsigned int framesPerSecond,
 	const unsigned int encodedFrameCount,
 	const std::vector<FireFramePrimary>& frames,
+	const FireFrameSequenceArtifactValidator validateArtifact,
 	std::string& error )
 {
 	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
 	error.clear();
-	if( encodedFrameCount != frames.size() ) {
+	if( encodedFrameCount != frames.size() || frames.empty() ) {
 		error = "encoded movie frame count does not match the primary-link array";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	if( width == 0u || height == 0u || framesPerSecond == 0u ) {
+		error = "encoded movie dimensions and frame rate must be nonzero";
 		std::remove(closedTemporaryArtifactFilename.c_str());
 		return false;
 	}
@@ -2054,6 +2060,17 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	if( !ReadArtifact(closedTemporaryArtifactFilename.c_str(),artifactBytes) ||
 		artifactBytes.empty() ) {
 		error = "closed temporary movie is missing or empty";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	if( !validateArtifact ) {
+		error = "authored movie decoder validation is unavailable";
+		std::remove(closedTemporaryArtifactFilename.c_str());
+		return false;
+	}
+	if( !validateArtifact(closedTemporaryArtifactFilename,encoding,width,height,
+		framesPerSecond,frames,error) ) {
+		if( error.empty() ) error = "authored movie decoder rejected the finalized artifact";
 		std::remove(closedTemporaryArtifactFilename.c_str());
 		return false;
 	}

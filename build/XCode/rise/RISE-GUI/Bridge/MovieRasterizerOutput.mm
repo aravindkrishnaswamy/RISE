@@ -18,6 +18,7 @@
 #include "Rendering/FrameEncoders.h"
 #include "Utilities/RISECBOR64.h"
 
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 
@@ -183,6 +184,137 @@ static bool ProbeMovieDerivativeAvailability(
     }
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     return available;
+}
+
+static bool ValidateClosedMovieArtifact(
+    const std::string& path,
+    const RISE::Implementation::FireFrameSequenceEncoding encoding,
+    const unsigned int width,
+    const unsigned int height,
+    const unsigned int framesPerSecond,
+    const std::vector<RISE::Implementation::FireFramePrimary>& frames,
+    std::string& error)
+{
+    error.clear();
+    if (encoding != RISE::Implementation::FireFrameSequenceEncoding::
+            AppleProRes4444_12Bit || width == 0u || height == 0u ||
+        framesPerSecond == 0u || frames.empty()) {
+        error = "AVFoundation movie validation received inconsistent expectations";
+        return false;
+    }
+    std::ifstream file(path,std::ios::binary);
+    unsigned char brandHeader[12] = {};
+    file.read(reinterpret_cast<char*>(brandHeader),sizeof(brandHeader));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(brandHeader)) ||
+        std::memcmp(brandHeader+4,"ftyp",4u) != 0 ||
+        std::memcmp(brandHeader+8,"qt  ",4u) != 0) {
+        error = "finalized ProRes artifact is not a QuickTime MOV container";
+        return false;
+    }
+
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:@{
+        AVURLAssetPreferPreciseDurationAndTimingKey: @YES
+    }];
+    __block NSArray<AVAssetTrack*>* videoTracks = nil;
+    __block NSArray<AVAssetTrack*>* audioTracks = nil;
+    __block NSError* trackError = nil;
+    dispatch_group_t trackGroup = dispatch_group_create();
+    dispatch_group_enter(trackGroup);
+    [asset loadTracksWithMediaType:AVMediaTypeVideo
+        completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
+            videoTracks = tracks;
+            if (loadError) trackError = loadError;
+            dispatch_group_leave(trackGroup);
+        }];
+    dispatch_group_enter(trackGroup);
+    [asset loadTracksWithMediaType:AVMediaTypeAudio
+        completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
+            audioTracks = tracks;
+            if (loadError && !trackError) trackError = loadError;
+            dispatch_group_leave(trackGroup);
+        }];
+    dispatch_group_wait(trackGroup,DISPATCH_TIME_FOREVER);
+    if (trackError || videoTracks.count != 1u || audioTracks.count != 0u) {
+        error = "finalized MOV does not contain exactly one video track and no audio";
+        return false;
+    }
+
+    AVAssetTrack* track = videoTracks.firstObject;
+    NSArray* descriptions = track.formatDescriptions;
+    if (descriptions.count != 1u) {
+        error = "finalized MOV has an ambiguous video format description";
+        return false;
+    }
+    CMFormatDescriptionRef description =
+        (__bridge CMFormatDescriptionRef)descriptions.firstObject;
+    const CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(description);
+    const CFDictionaryRef extensions = CMFormatDescriptionGetExtensions(description);
+    const auto matchesExtension = [extensions](const CFStringRef key,
+        const CFStringRef expected) {
+        const CFTypeRef actual = extensions ? CFDictionaryGetValue(extensions,key) : nullptr;
+        return actual && CFEqual(actual,expected);
+    };
+    if (CMFormatDescriptionGetMediaSubType(description) !=
+            kCMVideoCodecType_AppleProRes4444 ||
+        dimensions.width != static_cast<int32_t>(width) ||
+        dimensions.height != static_cast<int32_t>(height) ||
+        !matchesExtension(kCMFormatDescriptionExtension_ColorPrimaries,
+            kCMFormatDescriptionColorPrimaries_ITU_R_2020) ||
+        !matchesExtension(kCMFormatDescriptionExtension_TransferFunction,
+            kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ) ||
+        !matchesExtension(kCMFormatDescriptionExtension_YCbCrMatrix,
+            kCMFormatDescriptionYCbCrMatrix_ITU_R_2020)) {
+        error = "finalized MOV codec, dimensions, or HDR color tags differ from authoring";
+        return false;
+    }
+
+    NSError* readerError = nil;
+    AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset error:&readerError];
+    NSDictionary* outputSettings = @{
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+    };
+    AVAssetReaderTrackOutput* output = [AVAssetReaderTrackOutput
+        assetReaderTrackOutputWithTrack:track outputSettings:outputSettings];
+    output.alwaysCopiesSampleData = NO;
+    if (!reader || readerError || ![reader canAddOutput:output]) {
+        error = "AVFoundation cannot configure a full movie decode";
+        return false;
+    }
+    [reader addOutput:output];
+    if (![reader startReading]) {
+        error = "AVFoundation cannot start decoding the finalized MOV";
+        return false;
+    }
+    std::size_t decoded = 0u;
+    CMTime previousTime = kCMTimeInvalid;
+    for (;;) {
+        CMSampleBufferRef sample = [output copyNextSampleBuffer];
+        if (!sample) break;
+        const CVImageBufferRef image = CMSampleBufferGetImageBuffer(sample);
+        const CMTime actualTime = CMSampleBufferGetPresentationTimeStamp(sample);
+        const CMTime expectedTime = decoded == 0u ? actualTime :
+            CMTimeAdd(previousTime,CMTimeMake(1,framesPerSecond));
+        const bool valid = image && decoded < frames.size() &&
+            (decoded == 0u || frames[decoded].frameIndex ==
+                frames[decoded-1u].frameIndex+1u) &&
+            CVPixelBufferGetWidth(image) == width &&
+            CVPixelBufferGetHeight(image) == height && CMTIME_IS_NUMERIC(actualTime) &&
+            CMTimeCompare(actualTime,expectedTime) == 0;
+        previousTime = actualTime;
+        CFRelease(sample);
+        if (!valid) {
+            [reader cancelReading];
+            error = "decoded MOV frames differ from authored dimensions, order, or cadence";
+            return false;
+        }
+        ++decoded;
+    }
+    if (reader.status != AVAssetReaderStatusCompleted || decoded != frames.size()) {
+        error = "AVFoundation did not decode the complete authored frame sequence";
+        return false;
+    }
+    return true;
 }
 
 MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
@@ -735,6 +867,7 @@ bool MovieRasterizerOutput::finalize(bool publish)
                 [_writerPath UTF8String], [_outputPath UTF8String],
                 static_cast<unsigned int>(_width), static_cast<unsigned int>(_height),
                 static_cast<unsigned int>(_fps), _framesReceived, _framePrimaries,
+                ValidateClosedMovieArtifact,
                 publishError);
             if (!_succeeded) {
                 _derivativeFailed = true;

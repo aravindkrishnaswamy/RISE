@@ -64,6 +64,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/log.h>
 #include <libavutil/error.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 
@@ -194,6 +195,153 @@ static bool validateAuthoredDescriptor(
             "crf=20:hdr10-opt=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):max-cll=0,0" &&
         descriptor.codecTag == "hvc1" && descriptor.muxerFlags == "+faststart" &&
         descriptor.conversionDestinationRange == "limited";
+}
+
+static bool validateClosedMovieArtifact(
+    const std::string& path,
+    const RISE::Implementation::FireFrameSequenceEncoding encoding,
+    const unsigned int width,
+    const unsigned int height,
+    const unsigned int framesPerSecond,
+    const std::vector<RISE::Implementation::FireFramePrimary>& frames,
+    std::string& error)
+{
+    error.clear();
+    const bool proRes = encoding == RISE::Implementation::
+        FireFrameSequenceEncoding::AppleProRes4444_10Bit;
+    const bool hevc = encoding == RISE::Implementation::
+        FireFrameSequenceEncoding::HevcMain10_10Bit;
+    if ((!proRes && !hevc) || width == 0u || height == 0u ||
+        framesPerSecond == 0u || framesPerSecond > static_cast<unsigned int>(INT_MAX) ||
+        frames.empty()) {
+        error = "FFmpeg movie validation received inconsistent expectations";
+        return false;
+    }
+    std::ifstream file(path,std::ios::binary);
+    unsigned char brandHeader[12] = {};
+    file.read(reinterpret_cast<char*>(brandHeader),sizeof(brandHeader));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(brandHeader)) ||
+        std::memcmp(brandHeader+4,"ftyp",4u) != 0 ||
+        (proRes && std::memcmp(brandHeader+8,"qt  ",4u) != 0) ||
+        (hevc && std::memcmp(brandHeader+8,"qt  ",4u) == 0)) {
+        error = "finalized movie container brand differs from authored MOV/MP4";
+        return false;
+    }
+
+    AVFormatContext* rawFormat = nullptr;
+    if (avformat_open_input(&rawFormat,path.c_str(),nullptr,nullptr) < 0 || !rawFormat) {
+        if (rawFormat) avformat_close_input(&rawFormat);
+        error = "FFmpeg cannot open the finalized movie container";
+        return false;
+    }
+    const auto closeFormat = [](AVFormatContext* value) {
+        avformat_close_input(&value);
+    };
+    std::unique_ptr<AVFormatContext,decltype(closeFormat)> format(rawFormat,closeFormat);
+    if (avformat_find_stream_info(format.get(),nullptr) < 0) {
+        error = "FFmpeg cannot read finalized movie stream information";
+        return false;
+    }
+    AVStream* video = nullptr;
+    for (unsigned int i = 0u; i < format->nb_streams; ++i) {
+        AVStream* stream = format->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ||
+            (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video)) {
+            error = "finalized movie does not contain exactly one video track and no audio";
+            return false;
+        }
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) video = stream;
+    }
+    if (!video) {
+        error = "finalized movie contains no video track";
+        return false;
+    }
+    AVCodecParameters* parameters = video->codecpar;
+    const AVCodecID expectedCodec = proRes ? AV_CODEC_ID_PRORES : AV_CODEC_ID_HEVC;
+    const unsigned int expectedTag = proRes ? MKTAG('a','p','4','h') : MKTAG('h','v','c','1');
+    const int expectedProfile = proRes ? AV_PROFILE_PRORES_4444 : AV_PROFILE_HEVC_MAIN_10;
+    const AVPixelFormat expectedPixelFormat = proRes ?
+        AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV420P10LE;
+    const AVColorRange expectedRange = proRes ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    const AVRational guessedRate = av_guess_frame_rate(format.get(),video,nullptr);
+    if (parameters->codec_id != expectedCodec || parameters->codec_tag != expectedTag ||
+        parameters->profile != expectedProfile || parameters->format != expectedPixelFormat ||
+        parameters->width != static_cast<int>(width) ||
+        parameters->height != static_cast<int>(height) ||
+        parameters->color_primaries != AVCOL_PRI_BT2020 ||
+        parameters->color_trc != AVCOL_TRC_SMPTE2084 ||
+        parameters->color_space != AVCOL_SPC_BT2020_NCL ||
+        parameters->color_range != expectedRange ||
+        guessedRate.num <= 0 || guessedRate.den <= 0 ||
+        av_cmp_q(guessedRate,AVRational{
+            static_cast<int>(framesPerSecond),1}) != 0) {
+        error = "finalized movie codec, profile, dimensions, cadence, or HDR tags differ from authoring";
+        return false;
+    }
+
+    const AVCodec* decoder = avcodec_find_decoder(expectedCodec);
+    AVCodecContext* rawDecoder = decoder ? avcodec_alloc_context3(decoder) : nullptr;
+    if (!rawDecoder || avcodec_parameters_to_context(rawDecoder,parameters) < 0 ||
+        avcodec_open2(rawDecoder,decoder,nullptr) < 0) {
+        if (rawDecoder) avcodec_free_context(&rawDecoder);
+        error = "FFmpeg cannot configure a full decode of the finalized movie";
+        return false;
+    }
+    const auto closeDecoder = [](AVCodecContext* value) {
+        avcodec_free_context(&value);
+    };
+    std::unique_ptr<AVCodecContext,decltype(closeDecoder)> codec(rawDecoder,closeDecoder);
+    const auto freePacket = [](AVPacket* value) { av_packet_free(&value); };
+    const auto freeFrame = [](AVFrame* value) { av_frame_free(&value); };
+    std::unique_ptr<AVPacket,decltype(freePacket)> packet(av_packet_alloc(),freePacket);
+    std::unique_ptr<AVFrame,decltype(freeFrame)> frame(av_frame_alloc(),freeFrame);
+    if (!packet || !frame) {
+        error = "FFmpeg cannot allocate movie decode buffers";
+        return false;
+    }
+
+    std::size_t decoded = 0u;
+    int64_t firstTimestamp = AV_NOPTS_VALUE;
+    auto receiveFrames = [&]() {
+        for (;;) {
+            const int receive = avcodec_receive_frame(codec.get(),frame.get());
+            if (receive == AVERROR(EAGAIN) || receive == AVERROR_EOF) return true;
+            if (receive < 0) return false;
+            const int64_t timestamp = frame->best_effort_timestamp;
+            if (decoded == 0u) firstTimestamp = timestamp;
+            if (decoded >= frames.size() ||
+                frame->width != static_cast<int>(width) ||
+                frame->height != static_cast<int>(height) ||
+                frame->format != expectedPixelFormat ||
+                timestamp == AV_NOPTS_VALUE || firstTimestamp == AV_NOPTS_VALUE ||
+                (decoded != 0u && frames[decoded].frameIndex !=
+                    frames[decoded-1u].frameIndex+1u) ||
+                av_compare_ts(timestamp-firstTimestamp,video->time_base,
+                    static_cast<int64_t>(decoded),AVRational{
+                        1,static_cast<int>(framesPerSecond)}) != 0) return false;
+            ++decoded;
+            av_frame_unref(frame.get());
+        }
+    };
+    int readResult = 0;
+    while ((readResult = av_read_frame(format.get(),packet.get())) >= 0) {
+        bool accepted = true;
+        if (packet->stream_index == video->index) {
+            accepted = avcodec_send_packet(codec.get(),packet.get()) >= 0 &&
+                receiveFrames();
+        }
+        av_packet_unref(packet.get());
+        if (!accepted) {
+            error = "FFmpeg rejected or misdecoded a finalized movie packet";
+            return false;
+        }
+    }
+    if (readResult != AVERROR_EOF || avcodec_send_packet(codec.get(),nullptr) < 0 ||
+        !receiveFrames() || decoded != frames.size()) {
+        error = "FFmpeg did not decode the complete authored frame sequence";
+        return false;
+    }
+    return true;
 }
 
 static bool configureAuthoredCodecContext(
@@ -1155,7 +1303,7 @@ void VideoEncoder::finalize(const bool publish)
             m_writerPath, m_outputPath,
             static_cast<unsigned int>(m_width), static_cast<unsigned int>(m_height),
             static_cast<unsigned int>(m_fps), m_framesReceived,
-            m_framePrimaries, publicationError);
+            m_framePrimaries, validateClosedMovieArtifact, publicationError);
         if (!m_succeeded) failDerivative(publicationError.c_str());
     } else {
         m_succeeded = Implementation::PublishUnprovenancedFileTransaction(
