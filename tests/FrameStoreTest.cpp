@@ -55,6 +55,7 @@ using namespace RISE;
 using namespace RISE::FrameStoreOutput;
 using RISE::Implementation::AOVBuffers;
 using RISE::Implementation::FrameStore;
+using RISE::Implementation::FrameStoreBulkBracket;
 using RISE::Implementation::MakeAOVPlan;
 using RISE::Implementation::PropagateAOVsToFrameStore;
 
@@ -740,6 +741,7 @@ namespace
 		bool firstEntered = false;
 		bool continueFirst = false;
 		bool secondReturned = false;
+		bool removalRejected = false;
 
 		void OnTileComplete( const Rect&, uint64_t ) override
 		{
@@ -752,7 +754,11 @@ namespace
 				return;
 			}
 			lock.unlock();
-			removeFrom->RemoveObserver(this);
+			try {
+				removeFrom->RemoveObserver(this);
+			} catch( const std::runtime_error& ) {
+				removalRejected = true;
+			}
 			lock.lock();
 			secondReturned = true;
 			condition.notify_all();
@@ -790,9 +796,11 @@ namespace
 		}
 		firstDispatch.join();
 		secondDispatch.join();
-		Check(!overlapped && observer.fires == 2u && observer.secondReturned,
-			"shared observer removal on another store waits behind its active callback" );
+		Check(overlapped && observer.fires == 2u && observer.secondReturned &&
+			observer.removalRejected,
+			"callback removal fails closed instead of waiting on another store callback" );
 
+		firstStore->RemoveObserver(&observer);
 		secondStore->RemoveObserver(&observer);
 		firstStore->release();
 		secondStore->release();
@@ -803,11 +811,23 @@ namespace
 		FrameStore* victimStore = nullptr;
 		IRenderObserver* victim = nullptr;
 		std::atomic<unsigned int> fires{0u};
+		std::atomic<unsigned int> rejections{0u};
+		std::mutex* startMutex = nullptr;
+		std::condition_variable* startCondition = nullptr;
+		unsigned int* entered = nullptr;
 
 		void OnTileComplete( const Rect&, uint64_t ) override
 		{
 			fires.fetch_add(1u);
-			victimStore->RemoveObserver(victim);
+			{
+				std::unique_lock<std::mutex> lock(*startMutex);
+				++*entered;
+				startCondition->notify_all();
+				startCondition->wait_for(lock,std::chrono::milliseconds(500),
+					[this]() { return *entered == 2u; });
+			}
+			try { victimStore->RemoveObserver(victim); }
+			catch( const std::runtime_error& ) { rejections.fetch_add(1u); }
 		}
 	};
 
@@ -821,6 +841,12 @@ namespace
 		firstObserver.victim = &secondObserver;
 		secondObserver.victimStore = firstStore;
 		secondObserver.victim = &firstObserver;
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		unsigned int entered = 0u;
+		firstObserver.startMutex = secondObserver.startMutex = &callbackMutex;
+		firstObserver.startCondition = secondObserver.startCondition = &callbackCondition;
+		firstObserver.entered = secondObserver.entered = &entered;
 		firstStore->AddObserver(&firstObserver);
 		secondStore->AddObserver(&secondObserver);
 
@@ -848,8 +874,9 @@ namespace
 		}
 		firstDispatch.join();
 		secondDispatch.join();
-		Check(firstObserver.fires.load()+secondObserver.fires.load() == 1u,
-			"cross-store mutual removal serializes before a wait cycle can form" );
+		Check(firstObserver.fires.load()+secondObserver.fires.load() == 2u &&
+			firstObserver.rejections.load()+secondObserver.rejections.load() == 2u,
+			"cross-store mutual removal fails closed instead of forming a wait cycle" );
 
 		firstStore->RemoveObserver(&firstObserver);
 		secondStore->RemoveObserver(&secondObserver);
@@ -879,9 +906,119 @@ namespace
 		store->AddObserver(&observer);
 		store->BeginTile(0,0);
 		store->EndTile(0,0);
-		Check(observer.rejected,
-			"observer callback reentrant publication fails closed without deadlock" );
+		Check(observer.rejected && store->Generation() == 1u && store->Meta().frame == 0u,
+			"observer callback reentrant publication preserves frame metadata and generation" );
 		store->RemoveObserver(&observer);
+		store->release();
+	}
+
+	struct CrossThreadPublishingObserver : public IRenderObserver
+	{
+		FrameStore* other = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool startWorker = false;
+		bool workerDone = false;
+		bool completedWhileCallbackActive = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			startWorker = true;
+			condition.notify_all();
+			completedWhileCallbackActive = condition.wait_for(
+				lock,std::chrono::milliseconds(500),[this]() { return workerDone; });
+		}
+	};
+
+	void TestCrossThreadCrossStorePublicationDoesNotDeadlock()
+	{
+		FrameStore* first = MakeStore(8,8,8);
+		FrameStore* second = MakeStore(8,8,8);
+		CrossThreadPublishingObserver observer;
+		observer.other = second;
+		first->AddObserver(&observer);
+		std::thread worker([&]() {
+			{
+				std::unique_lock<std::mutex> lock(observer.mutex);
+				observer.condition.wait(lock,[&]() { return observer.startWorker; });
+			}
+			second->MarkFrameComplete(3u);
+			{
+				std::lock_guard<std::mutex> lock(observer.mutex);
+				observer.workerDone = true;
+			}
+			observer.condition.notify_all();
+		});
+		first->BeginTile(0,0);
+		first->EndTile(0,0);
+		worker.join();
+		Check(observer.completedWhileCallbackActive && second->Meta().frame == 3u,
+			"cross-store publication on another thread is not globally serialized" );
+		first->RemoveObserver(&observer);
+		first->release();
+		second->release();
+	}
+
+	struct BulkReadObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		std::thread reader;
+		bool started = false;
+		bool done = false;
+		bool completedBeforeCallbackReturned = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			if( started ) return;
+			started = true;
+			reader = std::thread([this]() {
+				std::vector<unsigned char> pixels(store->Width()*store->Height()*4u);
+				store->Render(pixels.data(),store->Width()*4u,
+					Rect(0,0,static_cast<unsigned int>(store->Height()),
+						static_cast<unsigned int>(store->Width())),
+					TargetFormat::RGBA8_sRGB,ViewTransform::Identity());
+				{
+					std::lock_guard<std::mutex> lock(mutex);
+					done = true;
+				}
+				condition.notify_all();
+			});
+			std::unique_lock<std::mutex> lock(mutex);
+			completedBeforeCallbackReturned = condition.wait_for(
+				lock,std::chrono::milliseconds(500),[this]() { return done; });
+		}
+	};
+
+	struct ThrowingTileObserver : public IRenderObserver
+	{
+		unsigned int fires = 0u;
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			++fires;
+			throw std::runtime_error("injected bulk observer failure");
+		}
+	};
+
+	void TestBulkBracketReleasesAllTilesBeforeNotification()
+	{
+		FrameStore* store = MakeStore(16,8,8);
+		BulkReadObserver reader;
+		ThrowingTileObserver thrower;
+		reader.store = store;
+		store->AddObserver(&reader);
+		store->AddObserver(&thrower);
+		{
+			FrameStoreBulkBracket bracket(store,store->AsBeautyRasterImage());
+		}
+		if( reader.reader.joinable() ) reader.reader.join();
+		Check(reader.completedBeforeCallbackReturned && thrower.fires == 2u &&
+			store->Generation() == 2u,
+			"bulk bracket unlocks every tile before callbacks and contains observer failures" );
+		store->RemoveObserver(&reader);
+		store->RemoveObserver(&thrower);
 		store->release();
 	}
 
@@ -1522,6 +1659,8 @@ int main()
 	TestSharedObserverCrossStoreRemovalIsSerialized();
 	TestCrossStoreMutualRemovalCannotDeadlock();
 	TestReentrantObserverDispatchFailsClosed();
+	TestCrossThreadCrossStorePublicationDoesNotDeadlock();
+	TestBulkBracketReleasesAllTilesBeforeNotification();
 	TestConcurrentSeqlock();
 	TestConcurrentFrameMetadata();
 	TestRenderReadback();

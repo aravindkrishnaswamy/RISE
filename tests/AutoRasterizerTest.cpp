@@ -157,6 +157,28 @@ protected:
 	~FrameStoreNotificationOutput() override {}
 };
 
+class ReentrantDestructorOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	ReentrantDestructorOutput( IRasterizer& rasterizer, bool& destroyed ) :
+		rasterizer_(rasterizer), destroyed_(destroyed) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+
+protected:
+	~ReentrantDestructorOutput() override
+	{
+		destroyed_ = true;
+		rasterizer_.FreeRasterizerOutputs();
+	}
+
+private:
+	IRasterizer& rasterizer_;
+	bool& destroyed_;
+};
+
 class FailingFrameStoreNotificationOutput : public FrameStoreNotificationOutput
 {
 public:
@@ -1887,6 +1909,51 @@ static void TestRetainedOutputSnapshots()
 	std::remove(path.c_str());
 }
 
+static void TestOutputDestructionReentryDoesNotHoldTopologyLock()
+{
+	const std::string label = "output destruction runs outside the topology lock";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"reentrant_output_destructor") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	if( !concrete ) {
+		Check(false,"fixture exposes concrete rasterizer: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+
+	bool removeDestroyed = false;
+	ReentrantDestructorOutput* removeOutput =
+		new ReentrantDestructorOutput(*rasterizer,removeDestroyed);
+	IRasterizerOutput* removeRaw = removeOutput;
+	rasterizer->AddRasterizerOutput(removeOutput);
+	safe_release(removeOutput);
+	concrete->RemoveRasterizerOutput(removeRaw);
+	Check(removeDestroyed,
+		"RemoveRasterizerOutput permits last-release destructor reentry: "+label);
+
+	bool freeDestroyed = false;
+	ReentrantDestructorOutput* freeOutput =
+		new ReentrantDestructorOutput(*rasterizer,freeDestroyed);
+	rasterizer->AddRasterizerOutput(freeOutput);
+	safe_release(freeOutput);
+	rasterizer->FreeRasterizerOutputs();
+	Check(freeDestroyed,
+		"FreeRasterizerOutputs permits last-release destructor reentry: "+label);
+
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestTransactionalDelegateReplay()
 {
 	const std::string label = "delegate replay publishes one reentrant state snapshot";
@@ -3220,6 +3287,7 @@ int main( const int argc, const char* const argv[] )
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
 	TestRetainedOutputSnapshots();
+	TestOutputDestructionReentryDoesNotHoldTopologyLock();
 	TestTransactionalDelegateReplay();
 	TestTransactionalFrameStoreReplay();
 	TestConcurrentOutputRegistrationRejectsFrameStoreSwap();

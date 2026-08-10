@@ -627,21 +627,27 @@ bool Rasterizer::UnregisterRasterizerOutput( IRasterizerOutput* ro )
 {
 	if( !ro ) return false;
 
-	std::lock_guard<std::mutex> lock( outsMutex );
-	if( mFireOutputTopologyLeaseCount ) {
-		throw std::runtime_error(
-			"output_provenance_unavailable: fire render output topology is leased");
-	}
-	for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
-		if( *i == ro ) {
-			IRasterizerOutput* removed = *i;
-			outs.erase( i );
-			mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
-			safe_release( removed );
-			return true;
+	IRasterizerOutput* removed = nullptr;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		if( mFireOutputTopologyLeaseCount ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: fire render output topology is leased");
+		}
+		for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
+			if( *i == ro ) {
+				removed = *i;
+				outs.erase( i );
+				mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
+				break;
+			}
 		}
 	}
-	return false;
+	// Last-reference destruction is arbitrary client code and may re-enter
+	// output mutation, so it must run after outsMutex is released.
+	const bool found = removed != nullptr;
+	safe_release( removed );
+	return found;
 }
 
 void Rasterizer::FreeRasterizerOutputs( )
@@ -651,19 +657,22 @@ void Rasterizer::FreeRasterizerOutputs( )
 
 bool Rasterizer::ReleaseRasterizerOutputs()
 {
-	std::lock_guard<std::mutex> lock( outsMutex );
-	if( mFireOutputTopologyLeaseCount ) {
-		throw std::runtime_error(
-			"output_provenance_unavailable: fire render output topology is leased");
+	RasterizerOutputListType removed;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		if( mFireOutputTopologyLeaseCount ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: fire render output topology is leased");
+		}
+		removed.swap(outs);
+		if( !removed.empty() ) {
+			mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
+		}
 	}
-	const bool released = !outs.empty();
-	RasterizerOutputListType::iterator	i, e;
-	for( i=outs.begin(), e=outs.end(); i!=e; i++ ) {
-		safe_release( (*i) );
+	for( IRasterizerOutput*& output : removed ) {
+		safe_release(output);
 	}
-	outs.clear();
-	if( released ) mFireOutputTopologyGeneration.fetch_add(1u,std::memory_order_release);
-	return released;
+	return !removed.empty();
 }
 
 void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const

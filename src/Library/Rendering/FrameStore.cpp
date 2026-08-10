@@ -38,7 +38,13 @@ namespace
 	};
 
 	thread_local ObserverCallbackFrame* g_observerCallbackFrame = nullptr;
-	std::mutex g_observerCallbackDispatchMutex;
+
+	void RejectReentrantObserverPublication()
+	{
+		if( g_observerCallbackFrame ) {
+			throw std::runtime_error("FrameStore observer dispatch is reentrant");
+		}
+	}
 
 	unsigned int ObserverActiveCountOnThisThread(
 		const RISE::Implementation::FrameStore* store,
@@ -1316,6 +1322,7 @@ namespace RISE
 
 		void FrameStore::BeginTile( size_t tileX, size_t tileY )
 		{
+			RejectReentrantObserverPublication();
 			// Acquire the tile's exclusive lock.  Subsequent pixel
 			// writes happen under this lock; readers (Render) take
 			// the shared lock and block until the writer releases.
@@ -1336,6 +1343,12 @@ namespace RISE
 			// the acquire load on the reader side.
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
+			NotifyTileComplete(tileX,tileY,gen);
+		}
+
+		void FrameStore::NotifyTileComplete(
+			size_t tileX, size_t tileY, uint64_t generation )
+		{
 			// Compute the tile rect for the observer callback.
 			const unsigned int x0 = static_cast<unsigned int>( tileX * tileEdge_ );
 			const unsigned int y0 = static_cast<unsigned int>( tileY * tileEdge_ );
@@ -1359,7 +1372,7 @@ namespace RISE
 			// is cheap (vector of pointers) compared to even one
 			// modest observer callback.  See L1 adversarial review HIGH-4.
 			DispatchObservers( [&]( IRenderObserver* obs ) {
-				obs->OnTileComplete( roi, gen );
+				obs->OnTileComplete( roi, generation );
 			} );
 		}
 
@@ -1406,6 +1419,7 @@ namespace RISE
 
 		void FrameStore::MarkFrameComplete( unsigned frame )
 		{
+			RejectReentrantObserverPublication();
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				completedFrame_.store(frame,std::memory_order_relaxed);
@@ -1420,6 +1434,7 @@ namespace RISE
 
 		void FrameStore::MarkPreDenoiseComplete( unsigned frame )
 		{
+			RejectReentrantObserverPublication();
 			// Update meta so observers reading Meta().frame inside
 			// the callback see the current frame, not whatever the
 			// previous MarkFrameComplete left.  See L1 adversarial
@@ -1438,6 +1453,7 @@ namespace RISE
 
 		void FrameStore::MarkDenoiseComplete( unsigned frame )
 		{
+			RejectReentrantObserverPublication();
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				completedFrame_.store(frame,std::memory_order_relaxed);
@@ -1538,30 +1554,20 @@ namespace RISE
 			// forever → process-wide deadlock.  Track per-tile
 			// progress and release-in-reverse on any throw before
 			// rethrowing.  See L6e-1.1 final adversarial review P0.
-			size_t acquiredTx = 0, acquiredTy = 0;  // (tx,ty) of NEXT to acquire
+			size_t acquired = 0;
 			try {
 				for( size_t ty = 0; ty < nty; ++ty ) {
 					for( size_t tx = 0; tx < ntx; ++tx ) {
 						fs->BeginTile( tx, ty );
-						acquiredTx = tx + 1;
-						acquiredTy = ty;
+						++acquired;
 					}
-					acquiredTx = 0;
-					acquiredTy = ty + 1;
 				}
 			} catch( ... ) {
-				// Walk the prefix of acquired tiles in reverse and
-				// release.  We use `EndTile` (not `unlock` directly)
-				// so the bookkeeping stays inside FrameStore.  Note:
-				// this fires `OnTileComplete` for half the tiles
-				// during a throw — observer behaviour is "best
-				// effort" in the partial-failure case, which is the
-				// least-bad option (deadlock is worse).
-				for( size_t ty = acquiredTy + 1; ty-- > 0; ) {
-					const size_t txEnd = ( ty == acquiredTy ) ? acquiredTx : ntx;
-					for( size_t tx = txEnd; tx-- > 0; ) {
-						fs->EndTile( tx, ty );
-					}
+				// Construction never exposed a writable guard, so unwind the
+				// acquired prefix without publishing false tile completions.
+				while( acquired > 0u ) {
+					--acquired;
+					fs->TileLockAt(acquired%ntx,acquired/ntx).mtx.unlock();
 				}
 				throw;
 			}
@@ -1573,12 +1579,23 @@ namespace RISE
 			if( !mFs ) return;
 			const size_t ntx = mFs->TileCountX();
 			const size_t nty = mFs->TileCountY();
-			// Release order matches acquire — irrelevant for correctness
-			// (per-tile mutexes are independent), preserved for
-			// readability + observer-fire ordering.
+			// A bulk observer may read the whole image. Release every lock
+			// before the first callback so that read cannot self-deadlock.
 			for( size_t ty = 0; ty < nty; ++ty ) {
 				for( size_t tx = 0; tx < ntx; ++tx ) {
-					mFs->EndTile( tx, ty );
+					mFs->TileLockAt(tx,ty).mtx.unlock();
+				}
+			}
+			for( size_t ty = 0; ty < nty; ++ty ) {
+				for( size_t tx = 0; tx < ntx; ++tx ) {
+					const uint64_t generation =
+						mFs->globalGeneration_.fetch_add(1,std::memory_order_release)+1;
+					try {
+						mFs->NotifyTileComplete(tx,ty,generation);
+					} catch( ... ) {
+						GlobalLog()->PrintEasyError(
+							"FrameStore bulk tile observer threw; notification was contained" );
+					}
 				}
 			}
 		}
@@ -1662,8 +1679,8 @@ namespace RISE
 			return plan;
 		}
 
-		// Serialize raw-pointer observer callbacks across all FrameStores,
-		// snapshot this store's list, then claim each callback under the
+		// Serialize raw-pointer observer callbacks within this FrameStore,
+		// snapshot its list, then claim each callback under the
 		// store mutex immediately before invocation.
 		//
 		// IMPORTANT — per-iteration recheck against observers_:
@@ -1675,12 +1692,11 @@ namespace RISE
 		// the next iteration.  We re-acquire the mutex briefly per
 		// iteration to verify the observer is still registered;
 		// remove-during-dispatch entries are silently skipped.
-		// Cross-thread removal waits on the claimed observer's own
-		// callback count. Global serialization is required because
-		// callbacks may synchronously remove and destroy other raw-pointer
-		// observers: allowing callbacks to overlap permits an unavoidable
-		// A-removes-B / B-removes-A wait cycle. Reentrant publication is
-		// rejected for the corresponding same-thread lifetime hazard.
+		// External cross-thread removal waits on the claimed observer's own
+		// callback count. A removal attempted from any observer callback
+		// fails before mutation when another callback owns the target; this
+		// prevents A-removes-B / B-removes-A cycles while allowing independent
+		// stores to publish concurrently. Reentrant publication is rejected.
 		//
 		// This protocol guarantees:
 		//   1. No recursive lock: observers can call AddObserver /
@@ -1689,15 +1705,12 @@ namespace RISE
 		//   3. No UAF on freed observers: per-iteration recheck.
 		//   4. Cross-thread RemoveObserver-then-destroy is safe: the
 		//      wait pairs with the removed observer's callback count.
-		//   5. Same-observer and mutual-removal callbacks cannot overlap.
-		// See L1 adversarial review P2 (rounds 2, 3, and 29).
+		//   5. Callback-side cross-store removal cannot block in a cycle.
 		template <typename Fn>
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
-			if( g_observerCallbackFrame ) {
-				throw std::runtime_error("FrameStore observer dispatch is reentrant");
-			}
-			std::lock_guard<std::mutex> dispatchLock(g_observerCallbackDispatchMutex);
+			RejectReentrantObserverPublication();
+			std::lock_guard<std::mutex> dispatchLock(observerCallbackDispatchMutex_);
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
@@ -1762,11 +1775,6 @@ namespace RISE
 		{
 			if ( !observer ) return;
 			std::unique_lock<std::mutex> lock( observerMutex_ );
-			auto it = std::find( observers_.begin(), observers_.end(), observer );
-			if ( it != observers_.end() ) {
-				observers_.erase( it );
-			}
-
 			// Wait for callbacks that have already claimed precisely
 			// this observer.  Snapshot-only pointers are harmless: every
 			// dispatcher rechecks registration before it claims a call.
@@ -1776,6 +1784,14 @@ namespace RISE
 			// store cannot exempt an active callback on another store.
 			const unsigned int localCallbacks =
 				ObserverActiveCountOnThisThread(this,observer);
+			const auto activeBeforeRemoval = observerCallbacksInFlight_.find(observer);
+			if( g_observerCallbackFrame && activeBeforeRemoval != observerCallbacksInFlight_.end() &&
+				activeBeforeRemoval->second > localCallbacks ) {
+				throw std::runtime_error(
+					"FrameStore observer removal would wait on another callback" );
+			}
+			auto it = std::find( observers_.begin(), observers_.end(), observer );
+			if ( it != observers_.end() ) observers_.erase( it );
 			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
 				const auto active = observerCallbacksInFlight_.find(observer);
 				return active == observerCallbacksInFlight_.end() ||

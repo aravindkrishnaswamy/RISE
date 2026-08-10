@@ -61,6 +61,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class FrameStore;  // forward for the back-compat shim below
+		class FrameStoreBulkBracket;
 		class PixelBasedRasterizerHelper;
 		class Rasterizer;
 	}
@@ -445,6 +446,8 @@ namespace RISE
 			virtual ~FrameStore();
 
 		private:
+			friend class FrameStoreBulkBracket;
+
 			friend class PixelBasedRasterizerHelper;
 			friend class Rasterizer;
 			//! Freezes the identity-bearing fire envelope while a rasterizer is
@@ -548,14 +551,14 @@ namespace RISE
 			// AddObserver/RemoveObserver from inside their own
 			// callbacks).
 			//
-			// Per-observer callback counts let RemoveObserver wait for
-			// precisely the removed observer. Callback invocation is
-			// serialized across FrameStores because observers are raw
-			// pointers and may synchronously remove and destroy each
-			// other; concurrent callback execution cannot make that
-			// lifetime contract both blocking and cycle-free.
+			// Per-observer callback counts let an external RemoveObserver
+			// wait for precisely the removed observer. Callback invocation is
+			// serialized per store. A callback-side removal that would need to
+			// wait for another active callback fails closed, avoiding raw-pointer
+			// lifetime cycles without globally serializing independent stores.
 			std::vector<IRenderObserver*>     observers_;
 			mutable std::mutex                observerMutex_;
+			std::mutex                        observerCallbackDispatchMutex_;
 			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
 			mutable std::condition_variable   observerDispatchDone_;
 
@@ -603,6 +606,7 @@ namespace RISE
 			//! only used inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
+			void NotifyTileComplete( size_t tileX, size_t tileY, uint64_t generation );
 
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
@@ -686,12 +690,9 @@ namespace RISE
 		{
 		public:
 			FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image );
-			// `noexcept` is explicit — the destructor calls
-			// `EndTile` on every tile, which fires `OnTileComplete`
-			// observers; observers MUST NOT throw (a throw during
-			// stack unwinding from a noexcept dtor calls
-			// `std::terminate`).  Marking explicit makes that
-			// contract self-documenting at the declaration site.
+			// Releases every tile before notifying observers. Observer
+			// failures are contained because a scope guard must not terminate
+			// an otherwise recoverable render unwind.
 			~FrameStoreBulkBracket() noexcept;
 
 			// Non-copyable, non-movable — strict scope semantics.
