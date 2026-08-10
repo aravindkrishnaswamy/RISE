@@ -3567,7 +3567,7 @@ namespace
 			};
 			const Scalar nm = 500.0;
 			const unsigned int samples =
-				extendedStatistics ? 2000000u : 500000u;
+				extendedStatistics ? 2000000u : 100000u;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			StabilityConfig config;
@@ -4036,7 +4036,7 @@ namespace
 				unsigned int positive;
 			};
 			const unsigned int samples =
-				extendedStatistics ? 2000000u : 500000u;
+				extendedStatistics ? 2000000u : 100000u;
 			const Scalar nm = 500.0;
 			const RasterizerState rast = {0,0};
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
@@ -4381,7 +4381,7 @@ namespace
 			rrOneIntegrator && rrIntermediateIntegrator && rrZeroIntegrator ) {
 			const Scalar nm = 500.0;
 			const unsigned int samples =
-				extendedStatistics ? 320000u : 160000u;
+				extendedStatistics ? 320000u : 40000u;
 			const Ray ray(Point3(0,0,-1),Vector3(0,0,1));
 			const RasterizerState rast = {0,0};
 			auto meanPT = [&]( PathTracingIntegrator& integrator,
@@ -9903,18 +9903,35 @@ int main( const int argc, const char* const argv[] )
 {
 	bool extendedMatrix = false;
 	bool previewMatrixOnly = false;
+	bool phaseBMatrixOnly = false;
+	bool coreOnly = false;
 	for( int i=1; i<argc; ++i ) {
 		if( std::string(argv[i])=="--extended-matrix" ) {
 			extendedMatrix = true;
 		} else if( std::string(argv[i])=="--preview-matrix-only" ) {
 			previewMatrixOnly = true;
+		} else if( std::string(argv[i])=="--phase-b-matrix-only" ) {
+			phaseBMatrixOnly = true;
+		} else if( std::string(argv[i])=="--core-only" ) {
+			coreOnly = true;
 		} else {
 			std::cerr << "unknown argument: " << argv[i] << std::endl;
 			return 2;
 		}
 	}
+	if( static_cast<unsigned int>(previewMatrixOnly) +
+		static_cast<unsigned int>(phaseBMatrixOnly) +
+		static_cast<unsigned int>(coreOnly) > 1u ) {
+		std::cerr << "only one focused test selection may be requested" << std::endl;
+		return 2;
+	}
 	if( previewMatrixOnly ) {
 		TestPreviewContainmentConfigurationMatrix(extendedMatrix);
+		std::cout << passed << " passed, " << failed << " failed" << std::endl;
+		return failed == 0 ? 0 : 1;
+	}
+	if( phaseBMatrixOnly ) {
+		TestPhaseBConfigurationMatrix(extendedMatrix);
 		std::cout << passed << " passed, " << failed << " failed" << std::endl;
 		return failed == 0 ? 0 : 1;
 	}
@@ -9924,21 +9941,25 @@ int main( const int argc, const char* const argv[] )
 	TestEquiangularBoundednessAndCollinearFallback();
 	TestUnboundedGlobalMediumDisablesEquiangularBeforeTechniqueRoll();
 	TestFlameOnlySceneActivatesCombinedEquiangularSampler();
-	TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
-	TestThinEmitterSheetAtGrazingAngles(extendedMatrix);
-	TestCameraPrimaryDirectViewKeepsWeightOne();
-	TestFlameBehindGlassIsMarchOnly(extendedMatrix);
-	TestPrimaryScatteringEventHonorsVolumeCapAfterEmission(extendedMatrix);
-	TestIsolatedSmokeConfigurationReplay(extendedMatrix);
+	if( extendedMatrix ) {
+		TestImmersedReceiverDeltaTrackingCarriesDistanceMixture();
+		TestThinEmitterSheetAtGrazingAngles(true);
+		TestCameraPrimaryDirectViewKeepsWeightOne();
+		TestFlameBehindGlassIsMarchOnly(true);
+		TestPrimaryScatteringEventHonorsVolumeCapAfterEmission(true);
+		TestIsolatedSmokeConfigurationReplay(true);
+	}
 	TestSurfaceVolumeNEEProductionRoutes();
 	TestUnsupportedMaterialVolumeNEEFallback();
-	TestOrenNayarSurfaceVolumeNEEEquality();
-	TestIsotropicPhongSurfaceVolumeNEEEquality();
-	TestNullBoundaryMixtureSurvivalEquality();
-	TestHollowCavityFullSphereVolumeNEEEquality();
-	TestPointLightFlameThreeStrategyEquality();
-	TestNonNullSurfaceClearsMediumMarchCompetition();
-	TestCollisionEmissionConsumesMarchCompetitionState();
+	if( extendedMatrix ) {
+		TestOrenNayarSurfaceVolumeNEEEquality();
+		TestIsotropicPhongSurfaceVolumeNEEEquality();
+		TestNullBoundaryMixtureSurvivalEquality();
+		TestHollowCavityFullSphereVolumeNEEEquality();
+		TestPointLightFlameThreeStrategyEquality();
+		TestNonNullSurfaceClearsMediumMarchCompetition();
+		TestCollisionEmissionConsumesMarchCompetitionState();
+	}
 	TestPelGreyStructuralIdentity();
 	TestDirectPelEntryRunsFirePreview();
 	TestPelTerminalSegmentsCollectThermalSourceBeforeContinuationGates();
@@ -9952,10 +9973,14 @@ int main( const int argc, const char* const argv[] )
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
 	TestZeroSootChemOnlyLineEstimator();
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
-	TestSSSBSSRDFPreviewContainment(extendedMatrix);
 	TestNestedSSSShaderOpContainment();
-	TestPhaseBConfigurationMatrix(extendedMatrix);
-	TestPreviewContainmentConfigurationMatrix(extendedMatrix);
+	if( extendedMatrix ) {
+		TestSSSBSSRDFPreviewContainment(true);
+		if( !coreOnly ) {
+			TestPhaseBConfigurationMatrix(true);
+			TestPreviewContainmentConfigurationMatrix(true);
+		}
+	}
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;
 }

@@ -14,9 +14,14 @@ make -C build/make/rise tests
 ```
 
 The normal suite uses deterministic fast tiers for the two render-heavy fire
-experiments. Run their original high-sample matrices explicitly for nightly or
-pre-release validation; the runner keeps them sequential because each render
-already consumes the worker pool:
+experiments. `PathTracingThermalEmissionTest` keeps exact estimator-density,
+routing, cache-refresh, Pel-preview, and constituent-closure gates in the
+default binary; its exhaustive Monte Carlo equality and topology matrices run
+under `--extended-matrix`. `AutoRasterizerTest` keeps the paired seed-42
+Pel/spectral projection bound by default; its five-seed magnitude/tilt
+factorial runs under `--extended-fire-ablation`. Run both extended experiments
+for nightly or pre-release validation; the runner keeps them sequential
+because each render already consumes the worker pool:
 
 ```sh
 ./run_extended_tests.sh

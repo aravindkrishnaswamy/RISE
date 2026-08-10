@@ -869,28 +869,36 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 		const ImageStats spectral = RenderFireReferencePreview(
 			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
 			"pathtracing_spectral_rasterizer", seed );
-		const ImageStats fixture = RenderFireReferencePreview(
-			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
-			"pathtracing_spectral_rasterizer", seed,
-			MultichannelHeterogeneousMedium::FixtureMagnitudeBaseline );
-		const ImageStats magnitude = RenderFireReferencePreview(
-			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
-			"pathtracing_spectral_rasterizer", seed,
-			MultichannelHeterogeneousMedium::PresetMagnitudeOnly );
-		const ImageStats tilt = RenderFireReferencePreview(
-			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
-			"pathtracing_spectral_rasterizer", seed,
-			MultichannelHeterogeneousMedium::PresetTiltOnly );
-		allValid = allValid && pel.valid && spectral.valid && fixture.valid &&
-			magnitude.valid && tilt.valid;
-		if( !pel.valid || !spectral.valid || !fixture.valid ||
-			!magnitude.valid || !tilt.valid ) continue;
+		ImageStats fixture{};
+		ImageStats magnitude{};
+		ImageStats tilt{};
+		if( extendedAblation ) {
+			fixture = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::FixtureMagnitudeBaseline );
+			magnitude = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::PresetMagnitudeOnly );
+			tilt = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::PresetTiltOnly );
+		}
+		allValid = allValid && pel.valid && spectral.valid &&
+			(!extendedAblation ||
+				(fixture.valid && magnitude.valid && tilt.valid));
+		if( !pel.valid || !spectral.valid ||
+			(extendedAblation &&
+				(!fixture.valid || !magnitude.valid || !tilt.valid)) ) continue;
 		double divergence[3] = {0.0,0.0,0.0};
 		for( unsigned int channel = 0; channel < 3u; ++channel ) {
 			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
 			divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
 			maximumDivergence[channel] = std::max(
 				maximumDivergence[channel], divergence[channel] );
+			if( !extendedAblation ) continue;
 			const double fixtureScale = std::max(
 				std::fabs(fixture.mean[channel]),1e-12);
 			const double magnitudeDelta =
@@ -921,41 +929,41 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	Check( allValid,
 		"Phase-A Pel and spectral reference scenes render for every selected seed" );
 	if( !allValid ) return;
-	const double seedCount = static_cast<double>(seedEnd-seedBegin);
-	std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
-	for( unsigned int channel=0; channel<3u; ++channel ) {
-		std::cout << " c" << channel << " magnitude="
-			<< magnitudeDeltaSum[channel]/seedCount << "["
-			<< magnitudeDeltaMin[channel] << "," << magnitudeDeltaMax[channel]
-			<< "] tilt=" << tiltDeltaSum[channel]/seedCount << "["
-			<< tiltDeltaMin[channel] << "," << tiltDeltaMax[channel]
-			<< "] interaction="
-			<< interactionDeltaSum[channel]/seedCount << " full="
-			<< fullDeltaSum[channel]/seedCount << "[" << fullDeltaMin[channel]
-			<< "," << fullDeltaMax[channel] << "]";
-	}
-	std::cout << std::endl;
-	const double magnitudeMean[3] = {
-		magnitudeDeltaSum[0]/seedCount, magnitudeDeltaSum[1]/seedCount,
-		magnitudeDeltaSum[2]/seedCount
-	};
-	const double tiltMean[3] = {
-		tiltDeltaSum[0]/seedCount, tiltDeltaSum[1]/seedCount,
-		tiltDeltaSum[2]/seedCount
-	};
-	const double interactionMean[3] = {
-		interactionDeltaSum[0]/seedCount, interactionDeltaSum[1]/seedCount,
-		interactionDeltaSum[2]/seedCount
-	};
-	const double fullMean[3] = {
-		fullDeltaSum[0]/seedCount, fullDeltaSum[1]/seedCount,
-		fullDeltaSum[2]/seedCount
-	};
-	// The default suite runs seed 42 at the original 256 spp; it is the
-	// representative full-confidence factorial.  --extended-fire-ablation runs
-	// the complete five-seed experiment whose measured ranges are recorded
-	// below.  Both tiers render all five optical variants for every selected
-	// seed, so the default still catches a missing magnitude, tilt, or coupling.
+	if( extendedAblation ) {
+		const double seedCount = static_cast<double>(seedEnd-seedBegin);
+		std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
+		for( unsigned int channel=0; channel<3u; ++channel ) {
+			std::cout << " c" << channel << " magnitude="
+				<< magnitudeDeltaSum[channel]/seedCount << "["
+				<< magnitudeDeltaMin[channel] << "," << magnitudeDeltaMax[channel]
+				<< "] tilt=" << tiltDeltaSum[channel]/seedCount << "["
+				<< tiltDeltaMin[channel] << "," << tiltDeltaMax[channel]
+				<< "] interaction="
+				<< interactionDeltaSum[channel]/seedCount << " full="
+				<< fullDeltaSum[channel]/seedCount << "[" << fullDeltaMin[channel]
+				<< "," << fullDeltaMax[channel] << "]";
+		}
+		std::cout << std::endl;
+		const double magnitudeMean[3] = {
+			magnitudeDeltaSum[0]/seedCount, magnitudeDeltaSum[1]/seedCount,
+			magnitudeDeltaSum[2]/seedCount
+		};
+		const double tiltMean[3] = {
+			tiltDeltaSum[0]/seedCount, tiltDeltaSum[1]/seedCount,
+			tiltDeltaSum[2]/seedCount
+		};
+		const double interactionMean[3] = {
+			interactionDeltaSum[0]/seedCount, interactionDeltaSum[1]/seedCount,
+			interactionDeltaSum[2]/seedCount
+		};
+		const double fullMean[3] = {
+			fullDeltaSum[0]/seedCount, fullDeltaSum[1]/seedCount,
+			fullDeltaSum[2]/seedCount
+		};
+	// The extended tier runs the complete five-seed factorial whose measured
+	// ranges are recorded below.  The default tier keeps the independent
+	// Pel-versus-spectral projection tripwire at seed 42 without paying for the
+	// three coefficient ablation renders.
 	// Controlled paired-seed factorial against the synthetic record's E=0.26:
 	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
@@ -986,6 +994,7 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 		interactionMean[2] > 0.04 && interactionMean[2] < 0.09 &&
 		fullMean[2] > 0.54 && fullMean[2] < 0.63,
 		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
+	}
 
 	// Measured single-thread against preset-v1 record
 	// 2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137
