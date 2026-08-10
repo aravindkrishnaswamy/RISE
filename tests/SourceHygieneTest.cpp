@@ -959,6 +959,8 @@ int main()
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.h");
 		const std::string renderViewModel = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"RenderViewModel.swift");
+		const std::string metalEDRView = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"MetalEDRView.swift");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
@@ -986,12 +988,19 @@ int main()
 		Check(!regionUpdate.empty() &&
 			regionUpdate.find("Data(pixelBuffer)") == std::string::npos &&
 			regionUpdate.find("NSImage(") == std::string::npos &&
-			imageCoalescer.find("imageQueue.async") != std::string::npos &&
+			regionUpdate.find("lock.try()") != std::string::npos &&
+			regionUpdate.find("isFullFrame") != std::string::npos &&
+			imageCoalescer.find("imageQueue.asyncAfter") != std::string::npos &&
 			imageCoalescer.find("buffer.makeImage()") != std::string::npos &&
+			imageCoalescer.find("while true") == std::string::npos &&
 			firstRegionCopy != std::string::npos && secondRegionCopy != std::string::npos &&
 			firstCoalescedRequest != std::string::npos &&
 			secondCoalescedRequest != std::string::npos,
-			"worker tile callbacks do region-only work before off-worker image coalescing" );
+			"worker tiles use nonblocking staging before cadence-limited image construction" );
+		Check(metalEDRView.find("else if !stagingLock.try()") != std::string::npos &&
+			metalEDRView.find("DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0)") !=
+				std::string::npos,
+			"HDR worker tiles skip staging contention and presentation is cadence-limited" );
 		for( const std::string& member : allDataMembers(
 			encoderHeader,"struct EncodeOpts","EncodeOpts") ) {
 			const bool transactionInternal = member == "useMetadataSnapshot" ||

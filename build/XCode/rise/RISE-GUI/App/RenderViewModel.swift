@@ -64,12 +64,19 @@ final class RenderImageBuffer: @unchecked Sendable {
         width: UInt32, height: UInt32,
         rcTop: UInt32, rcLeft: UInt32,
         rcBottom: UInt32, rcRight: UInt32
-    ) {
+    ) -> Bool {
         let w = Int(width)
         let h = Int(height)
+        guard w > 0, h > 0 else { return false }
         let totalBytes = w * h * 4
-
-        lock.lock()
+        let isFullFrame = rcTop == 0 && rcLeft == 0
+            && Int(rcBottom) >= h - 1 && Int(rcRight) >= w - 1
+        if isFullFrame {
+            lock.lock()
+        } else if !lock.try() {
+            return false
+        }
+        defer { lock.unlock() }
 
         // Initialize on first call or dimension change
         if self.width != w || self.height != h {
@@ -83,6 +90,7 @@ final class RenderImageBuffer: @unchecked Sendable {
         let left = Int(rcLeft)
         let bottom = min(Int(rcBottom), h - 1)
         let right = min(Int(rcRight), w - 1)
+        guard top <= bottom, left <= right else { return false }
 
         for y in top...bottom {
             for x in left...right {
@@ -94,7 +102,7 @@ final class RenderImageBuffer: @unchecked Sendable {
             }
         }
 
-        lock.unlock()
+        return true
     }
 
     /// Takes one coherent full-frame snapshot and builds the display image.
@@ -191,6 +199,8 @@ final class CoalescedImageDelivery: @unchecked Sendable {
         label: "rise.display-image-coalescer", qos: .userInteractive)
     private var pending = false
     private var drainScheduled = false
+    private var lastDrainStart: UInt64 = 0
+    private let minimumIntervalNanoseconds: UInt64 = 33_333_333
 
     func request(
         buffer: RenderImageBuffer,
@@ -203,9 +213,19 @@ final class CoalescedImageDelivery: @unchecked Sendable {
             return
         }
         drainScheduled = true
+        scheduleDrain(buffer: buffer, publish: publish)
         lock.unlock()
+    }
 
-        imageQueue.async { [weak self] in
+    private func scheduleDrain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let earliest = lastDrainStart &+ minimumIntervalNanoseconds
+        let delay = earliest > now ? earliest - now : 0
+        imageQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
+            [weak self] in
             self?.drain(buffer: buffer, publish: publish)
         }
     }
@@ -214,24 +234,22 @@ final class CoalescedImageDelivery: @unchecked Sendable {
         buffer: RenderImageBuffer,
         publish: @escaping @MainActor (NSImage) -> Void
     ) {
-        while true {
-            lock.lock()
-            pending = false
-            lock.unlock()
+        lock.lock()
+        pending = false
+        lastDrainStart = DispatchTime.now().uptimeNanoseconds
+        lock.unlock()
 
-            if let image = buffer.makeImage() {
-                DispatchQueue.main.sync { publish(image) }
-            }
-
-            lock.lock()
-            if pending {
-                lock.unlock()
-                continue
-            }
-            drainScheduled = false
-            lock.unlock()
-            return
+        if let image = buffer.makeImage() {
+            DispatchQueue.main.sync { publish(image) }
         }
+
+        lock.lock()
+        if pending {
+            scheduleDrain(buffer: buffer, publish: publish)
+        } else {
+            drainScheduled = false
+        }
+        lock.unlock()
     }
 }
 
@@ -1572,12 +1590,12 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            buffer.updateOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
-            )
+            ) else { return }
             imageDelivery.request(buffer: buffer) { [weak self] image in
                 self?.renderedImage = image
             }
@@ -1771,12 +1789,12 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            buffer.updateOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
-            )
+            ) else { return }
             imageDelivery.request(buffer: buffer) { [weak self] image in
                 self?.renderedImage = image
             }

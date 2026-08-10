@@ -197,7 +197,14 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
                         width: Int, height: Int,
                         top: Int, left: Int,
                         bottom: Int, right: Int) {
-        stagingLock.lock()
+        guard width > 0, height > 0 else { return }
+        let isFullFrame = top == 0 && left == 0
+            && bottom >= height - 1 && right >= width - 1
+        if isFullFrame {
+            stagingLock.lock()
+        } else if !stagingLock.try() {
+            return
+        }
         // Resize staging buffer on first call / dim change.
         let need = width * height * 4
         if stagingWidth != width
@@ -227,16 +234,17 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         }
         stagingLock.unlock()
 
-        // Coalesce — schedule at most one main-thread present per
-        // burst of uploads.  Multiple worker fires set the flag to
-        // true; only the first dispatches.  `present()` clears the
-        // flag at its start so the next burst gets a fresh dispatch.
+        // Coalesce and cadence-limit full-frame GPU presentation. Partial
+        // worker uploads never wait on a main-thread texture replacement;
+        // the generation poll or final full-frame callback catches skipped
+        // regions.
         presentScheduled.lock()
         let needSchedule = !presentInFlight
         presentInFlight = true
         presentScheduled.unlock()
         if needSchedule {
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0) {
+                [weak self] in
                 self?.present()
             }
         }
