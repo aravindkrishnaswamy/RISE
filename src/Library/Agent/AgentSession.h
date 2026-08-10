@@ -682,6 +682,56 @@ namespace RISE
 			//! evaluate scene lighting at all, matching the quality/samples/
 			//! xray-ignored precedent used throughout this struct.
 			std::string          light;
+			//! G1 (2026-08-10, "the isolated part look"): OPTIONAL
+			//! single-object isolation -- "" (default) = no isolation, the
+			//! whole scene renders exactly as today.  A non-empty name is
+			//! resolved against the scene's OBJECT manager (a
+			//! `standard_object` name, the same name space `objectmap`'s
+			//! legend and `query_object_at` report) and makes that object
+			//! the ONLY geometry in the frame for THIS render: every other
+			//! object is transiently marked world-invisible, so it is
+			//! intersected by no camera, secondary, or shadow ray, and --
+			//! because a fresh caster's LuminaryManager collects luminaries
+			//! through the SAME world-visible filter -- an emissive object
+			//! that is hidden also stops acting as a light.  Explicit
+			//! `*_light` chunks and the environment are UNTOUCHED, so a
+			//! scene lit by real lights still lights the isolated part; a
+			//! scene lit ONLY by other objects' emissive materials
+			//! isolates DARK (this is why the tool text points at
+			//! `mode:"normals"` / `mode:"facets"`, which read form with no
+			//! lighting at all).
+			//!
+			//! CAMERA: absent an explicit `camera` override AND an explicit
+			//! `view`, the camera is AUTO-FRAMED on the object's world
+			//! bounding box -- a fixed three-quarter vantage (35 deg
+			//! azimuth off +Z toward +X, 25 deg elevation) at the distance
+			//! that fits the object's whole world AABB into 85% of BOTH
+			//! frame half-extents (the exact 8-corner fit -- see
+			//! AgentSession.cpp's IsolateFitDistance).  A caller-supplied `camera` or
+			//! `view` WINS (no auto-framing at all), reported honestly via
+			//! AgentRenderResult::isolateAutoFramed.
+			//!
+			//! Composes with EVERY render target (beauty, objectmap, the
+			//! false-colour data modes, the BeautyVariant transport modes)
+			//! and with `quality:"draft"` -- isolation is Scene-level
+			//! object state, not rasterizer-specific, so unlike `light` it
+			//! is never "silently ignored" anywhere.  An unresolvable name,
+			//! an ambiguous generator prefix (e.g. "grid" when the scene
+			//! only has "grid[0,0]"...), a name that is not an object at
+			//! all, or an object that is not independently renderable (a
+			//! CSG operand) FAILS the render (res.ok=false) with the
+			//! available-name list in res.message -- the same
+			//! fail-loud contract `view` and `light` already use.
+			//!
+			//! EPHEMERAL: the prior world-visible flag of EVERY object is
+			//! captured and restored on every exit path including an
+			//! exception (see AgentSession.cpp's ObjectSoloRestoreGuard),
+			//! and the Scene's light-topology generation is bumped on both
+			//! the apply and the restore so no caster is left holding a
+			//! luminary list built against the isolated set.  Nothing is
+			//! written to the document, the GUI viewport, or the user's
+			//! camera.
+			std::string          isolate;
 			//! Opt-in for direct C++ callers.  The JSON-RPC/MCP render verb
 			//! defaults this to true for production beauty renders, requesting
 			//! albedo+normal+depth sidecars without changing beauty pixels.
@@ -991,6 +1041,73 @@ namespace RISE
 			unsigned int               filmWidth = 0;
 			unsigned int               filmHeight = 0;
 			bool                       agentSamplesCapped = false;
+			//! G1 (2026-08-10): the measured facts about an `isolate` render.
+			//! ALL default to the "no isolation happened" values and stay
+			//! there for every render that did not pass `isolate` (and for
+			//! one that passed it but FAILED to resolve -- that render
+			//! returns ok=false with the reason in `message`, and reports no
+			//! numbers it did not actually measure).
+			//!
+			//! `isolateApplied` is true iff the named object resolved AND
+			//! every other object was actually hidden for this render.
+			//! `isolateObject` echoes the RESOLVED object name (identical to
+			//! the request today -- resolution is exact-name -- but echoed so
+			//! a caller never has to assume that).
+			//! `isolateBBoxUsable` (G1 fix-round, 2026-08-10) is true iff the
+			//! object's world bbox is finite with non-negative, bounded
+			//! extents and a positive diagonal.  False is reachable ONLY via
+			//! a caller-supplied `camera` (an isolate render with no caller
+			//! camera refuses up front on a degenerate/unbounded box -- see
+			//! the render() refusal path); when false, `isolateBBoxMin`/
+			//! `isolateBBoxMax`/`isolateLongestEdge` are left at their
+			//! default-constructed 0/0/0 values, which are NOT measurements
+			//! -- AgentRpc.cpp omits all three wire fields in that case
+			//! (same convention as `isolateBBoxCoverage`'s -1.0 sentinel)
+			//! rather than serializing NaN/Inf-clamped-to-0 numbers that
+			//! would look like a genuinely point-sized object.
+			//! `isolateBBoxMin`/`isolateBBoxMax` are the object's WORLD
+			//! bounding box, in scene units, AFTER Realize() (so a displaced
+			//! or otherwise deferred geometry reports its real baked extent,
+			//! not a zero box); `isolateLongestEdge` is the longest of the
+			//! three box edges -- the single number that says how big the
+			//! part actually is.  Both are meaningful ONLY when
+			//! `isolateBBoxUsable` is true.
+			//! `isolateAutoFramed` is true iff THIS call computed the
+			//! three-quarter framing camera; false means the caller's own
+			//! `camera`/`view` was used instead (it wins -- see
+			//! AgentRenderParams::isolate).
+			//! `isolateBBoxCoverage` is the fraction of the frame [0,1]
+			//! covered by the object's projected world bounding box: the 8
+			//! corners projected through the render's actual camera pose,
+			//! FOV and aspect ratio, axis-aligned in screen space and
+			//! clipped to the frame -- ONLY when the ACTIVE camera is a
+			//! PinholeCamera (the projection this formula assumes); a
+			//! caller-supplied `camera` overrides POSE on the already-active
+			//! camera (CameraIntrospection::SetProperty never re-types it),
+			//! so a thin-lens/fisheye/orthographic active camera still
+			//! renders through ITS OWN projection regardless of what pose
+			//! the caller or the auto-framer supplied, and this tan-based
+			//! formula would be the WRONG projection model for it, not an
+			//! approximation.  It is an UPPER BOUND on the object's
+			//! silhouette coverage, not a per-pixel hit count -- deliberately
+			//! so, because it is exact, deterministic and identical across
+			//! every render mode, whereas a pixel count would be a different
+			//! (and in some modes unavailable) measurement per mode.  For an
+			//! EXACT per-pixel count, render `mode:"objectmap"` and read the
+			//! legend's `pixelCount`.  -1.0 means "not computed"; ALL the
+			//! sources of that sentinel: no isolation; a degenerate/unusable
+			//! bbox (`!isolateBBoxUsable`); part of the box lies behind the
+			//! camera plane so a screen-space area is undefined; or the
+			//! active camera is not a pinhole (see above) -- the message
+			//! accompanying the render states which one applied.
+			bool                       isolateApplied = false;
+			std::string                isolateObject;
+			bool                       isolateBBoxUsable = false;
+			double                     isolateBBoxMin[3] = { 0.0, 0.0, 0.0 };
+			double                     isolateBBoxMax[3] = { 0.0, 0.0, 0.0 };
+			double                     isolateLongestEdge = 0.0;
+			bool                       isolateAutoFramed = false;
+			double                     isolateBBoxCoverage = -1.0;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the

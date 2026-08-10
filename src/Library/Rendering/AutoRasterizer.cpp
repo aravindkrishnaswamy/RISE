@@ -874,6 +874,21 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 	} );
 }
 
+//! G1 fix-round (2026-08-10).  The public, narrowly-named trigger for the
+//! one-time resolution above; see AutoRasterizer.h for the full rationale.
+//! It is a verbatim forward on purpose -- the agent's `render{isolate:}`
+//! path needs to control only WHEN resolution runs (before it hides every
+//! non-isolated object, so the visibility-filtered Tier-1 scans see the
+//! FULL scene), never what it decides.  Deliberately does NOT touch
+//! SyncDelegateFrameStore(): the caller is pre-resolving, not rendering,
+//! and every render-time entry point syncs the delegate's FrameStore on
+//! its own -- as does AutoRasterizer::SetFrameStore, which is what the
+//! agent's FrameStore isolation guard drives afterwards.
+void AutoRasterizer::PreResolveIntegrator( const IScene* scene ) const
+{
+	EnsureResolved( scene );
+}
+
 void AutoRasterizer::SyncDelegateFrameStore() const
 {
 	if( !mDelegate ) {

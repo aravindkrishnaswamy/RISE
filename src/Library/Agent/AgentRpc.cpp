@@ -590,6 +590,45 @@ namespace RISE
 				// objectmap/view-mode render).
 				if( !rr.note.empty() )
 					result.set( "note", JsonValue::MakeString( rr.note ) );
+				// G1 (2026-08-10) `render{isolate:}`: the measured facts about
+				// an isolated render, under ONE nested key.  CONDITIONAL --
+				// present ONLY when isolation actually applied AND the render
+				// itself succeeded (same omit-when-absent convention as
+				// `legend`/`note`/`agentRenderCap` above), so every existing
+				// render result is byte-identical.  The `rr.ok` check matters:
+				// `isolateApplied` is set as soon as object-solo framing
+				// happens, but a LATER stage of the same render (e.g. a
+				// `light:` resolution/support failure) can still flip
+				// `rr.ok` to false -- without this check the result would
+				// carry a full isolate block (bbox/framing) describing an
+				// image that was never produced, contradicting the
+				// `AgentRpc.h` and `AgentMcpAdapter.cpp` docs, which both
+				// promise the block only on a SUCCESSFUL isolate render.
+				// G1 fix-round (2026-08-10).
+				if( rr.ok && rr.isolateApplied ) {
+					JsonValue iso = JsonValue::MakeObject();
+					iso.set( "object", JsonValue::MakeString( rr.isolateObject ) );
+					// FIX 4 (G1 fix-round, 2026-08-10): bboxMin/bboxMax/
+					// longestEdge are OMITTED (not sent as measured-looking
+					// zeros) when the box is degenerate/unusable -- see
+					// AgentRenderResult::isolateBBoxUsable's doc.  Same
+					// sentinel-then-omit convention as `bboxCoverage` below.
+					if( rr.isolateBBoxUsable ) {
+						JsonValue bmin = JsonValue::MakeArray();
+						JsonValue bmax = JsonValue::MakeArray();
+						for( int a = 0; a < 3; ++a ) {
+							bmin.push_back( JsonValue::MakeNumber( rr.isolateBBoxMin[a] ) );
+							bmax.push_back( JsonValue::MakeNumber( rr.isolateBBoxMax[a] ) );
+						}
+						iso.set( "bboxMin", bmin );
+						iso.set( "bboxMax", bmax );
+						iso.set( "longestEdge", JsonValue::MakeNumber( rr.isolateLongestEdge ) );
+					}
+					iso.set( "autoFramed", JsonValue::MakeBool( rr.isolateAutoFramed ) );
+					if( rr.isolateBBoxCoverage >= 0.0 )
+						iso.set( "bboxCoverage", JsonValue::MakeNumber( rr.isolateBBoxCoverage ) );
+					result.set( "isolate", iso );
+				}
 				return result;
 			}
 
@@ -2633,6 +2672,23 @@ namespace RISE
 						}
 						else if( !lv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'light' must be a string" );
+					}
+
+					// G1 (2026-08-10) `render{isolate:}` ADDITIVE param:
+					// {"isolate":"<standard_object name>"} ->
+					// AgentRenderParams::isolate.  Valid with EVERY mode and
+					// with quality:"draft" -- see AgentRenderParams::isolate's
+					// doc.  Any non-string, non-null value is a clean -32602;
+					// an unresolvable/ambiguous name is NOT rejected here
+					// (that needs a live Job to check against) --
+					// AgentSession::RenderCore_ fails the render itself with
+					// the available-name list, same contract as `view`/`light`.
+					if( const JsonValue* iv = params.find( "isolate" ) ) {
+						if( iv->isString() ) {
+							rparams.isolate = iv->asString();
+						}
+						else if( !iv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'isolate' must be a string" );
 					}
 
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")

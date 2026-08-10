@@ -175,6 +175,37 @@ namespace RISE
 			//! Number of candidate renders the probe issued (0 if it didn't run).
 			unsigned int LastProbeRenders() const { return mLastProbeRenders; }
 
+			//! G1 fix-round (2026-08-10): run the ONE-TIME integrator
+			//! resolution NOW, against `scene` exactly as it currently
+			//! stands, instead of lazily at the first render-time entry.
+			//!
+			//! WHY THIS EXISTS -- resolution is `std::call_once`, so it runs
+			//! exactly once for the lifetime of this dispatcher, and BOTH
+			//! Tier-1 static signals read the scene through
+			//! `IObjectManager::EnumerateObjects`, which FILTERS on
+			//! `IObject::IsWorldVisible()`.  The agent's
+			//! `render{isolate:"x"}` surface hides every other object for the
+			//! duration of ONE render.  If that isolated render is the first
+			//! one issued on this dispatcher, resolution would see a
+			//! one-object scene, lock in the choice that scene implies, and
+			//! keep it -- with a confident but WRONG `ResolveReason()` -- for
+			//! every later full-scene render, including the user's own
+			//! production renders.  Restoring visibility cannot undo it:
+			//! nothing invalidates `mResolveOnce`.
+			//!
+			//! The isolate path therefore calls this BEFORE it hides
+			//! anything, which is the same "pre-build the visibility-
+			//! dependent cache against the full set first" shape it already
+			//! uses for the TLAS (`IObjectManager::PrepareForRendering`) and
+			//! the luminary list (`Scene::BumpLightTopologyGeneration`).
+			//!
+			//! Deliberately changes only WHEN resolution happens, never WHAT
+			//! it decides: it forwards verbatim to the same `EnsureResolved`
+			//! every render-time entry point calls, exposes no setter for the
+			//! resolved choice, and is idempotent -- a second call, or the
+			//! render's own `EnsureResolved`, is a no-op.
+			void PreResolveIntegrator( const IScene* scene ) const;
+
 			//! Test-only visibility for the delegated FrameStore identity.  Agent
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;

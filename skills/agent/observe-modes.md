@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:}, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -33,6 +33,7 @@ table, and "Transport modes" for all four additions.
 | "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false`.  There are SEVEN reasons and they split into three groups (the full table is under "Hard warnings" item 3).  RETRIABLE, clears on its own: `editor_transaction_in_progress`, `render_in_progress`, `editor_interaction_finalize_failed`.  RESOLVES but not by retrying: `no_frame_yet` (viewport exists but hasn't drawn yet).  PERMANENT: `no_controller` (headless session -- there is no viewport and never will be), `editor_shutting_down`, `editor_interaction_unrecoverable` (a latched editor failure that never clears).  Falling back to `render` fixes `no_controller`/`no_frame_yet`; for the OTHER FOUR refusal reasons -- `editor_transaction_in_progress`, `editor_interaction_finalize_failed`, `editor_shutting_down`, `editor_interaction_unrecoverable` -- `render` hits the SAME gate and is refused too.  `render_in_progress` is the one split case, and even there `render` is a POOR fallback: a plain `render {}` BLOCKS up to 30 s on the render slot and only succeeds if the occupant finishes inside that window (the user's own production render, which shares that slot, usually does not), and it is refused with NO wait when a direct parked render holds the gate; a render with a `width`+`height` or `camera`/`view` override is always refused immediately.  Retry the FREE `read_viewport` instead of paying that block |
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
+| "Is THIS PART's shape right?" (a small, dark, or occluded object you just built) | `render {isolate:"<object>", mode:"normals"}` (or `"facets"`) | One render of that mode, at the same fidelity it always costs | The part's silhouette and proportions, auto-framed to fill the frame instead of the dozen pixels it occupies in the wide shot; the result's `isolate` block reports its real world bbox and longest edge | The part IN CONTEXT -- isolate deletes the rest of the scene, so scale relative to neighbours, occlusion, and any lighting cast BY another object are all gone (a scene lit only by other objects' emissive materials isolates dark) |
 | "Does it actually look right -- and what geometry/material cues explain it?" | `render {imageMaxEdge:N}` (no `quality`, i.e. production) when appearance alone is enough -- the PNG rides back in that ONE call; add a following `read_image {representation:"perception"}` only when you want the atlas | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
 | "I am BUILDING a scene from scratch." | One cheap look after EACH object group you place -- `render {quality:"draft", width:192, height:192}` or `render {imageMaxEdge:192}` -- not one look at the end | Cheap, and paid once per group rather than once per chunk | Keeping placement honest while a mistake is still one edit to fix.  Four looks across a six-object scene is too few; blind construction is the failure mode, not over-rendering | Skipping the looks to save turns -- batching chunks into one `insert_chunks` call is where round-trips are saved, NOT here |
@@ -312,6 +313,44 @@ Recipe: **"Which light is casting that shadow / that colour cast?"**
 -- solo each candidate light in turn (`light:"keylight"`,
 `light:"filllight"`, ...) and compare; the offending light is the one
 whose solo render reproduces the shadow/cast you're chasing.
+
+## The `isolate` param: looking at ONE part on its own
+
+`isolate` is an optional string param on `render` naming ONE
+`standard_object`. That object is rendered alone -- every other object
+is hidden for that single render (no camera, bounce, or shadow ray
+reaches it) -- and the camera is auto-framed on its bounding box, a
+three-quarter view filling most of the frame:
+
+```json
+{"method": "render", "params": {"isolate": "dragon_wing", "mode": "normals"}}
+```
+
+It exists because a part is often too small, too dark, or too occluded
+in the full frame to evaluate: a wing that occupies twenty dim pixels
+in a wide night shot carries no information about its shape. Isolating
+it makes the silhouette and proportions readable, which is what makes
+a form defect fixable rather than invisible.
+
+`mode:"normals"` and `mode:"facets"` read FORM best under `isolate` --
+surface direction and raw tessellation, with no material or lighting
+in the read. `mode:"beauty"` composes too; note that a hidden emissive
+OBJECT also stops acting as a light, so a scene lit only by other
+objects' emissive materials isolates dark. Explicit light chunks and
+the environment are unaffected. `isolate` composes with every `mode`
+and with `quality:"draft"`; it is never silently ignored.
+
+A `camera` or `view` you pass yourself WINS -- no auto-framing then.
+The result's `isolate` object reports what happened: `object`,
+`bboxMin`/`bboxMax`, `longestEdge`, `autoFramed`, and `bboxCoverage`
+(the fraction of the frame the object's projected bounding box covers
+-- an upper bound on its silhouette; for an exact per-pixel count use
+`mode:"objectmap"` and read the legend's `pixelCount`). An unknown
+name, a generator name covering several instances, a CSG operand, or
+an object with a degenerate/unbounded bounding box FAILS the render
+(`ok:false`) with the available names in `message`, the same contract
+`view` and `light` use. Nothing is written to the document, the
+viewport, or the user's camera.
 
 ## Escalation ladder (cost, cheapest first)
 

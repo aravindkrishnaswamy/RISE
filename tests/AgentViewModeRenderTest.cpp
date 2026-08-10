@@ -3499,6 +3499,1258 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 	pJob->release();
 }
 
+//======================================================================
+// G1 (2026-08-10) `render{isolate:}` -- "the isolated part look".
+//
+// Fixture reuse: kSceneMeshAndSphere already holds TWO well-separated
+// objects (mesh_obj on the left, sph_obj on the right) at a 96x72 film,
+// so an objectmap render gives an EXACT per-object pixel tally to
+// measure isolation and framing against -- no MC noise, no thresholds
+// pulled out of the air.  Two extra fixtures below cover the two
+// name-resolution failures the mesh+sphere scene cannot express (a
+// generator prefix; a CSG operand) and one covers the R1b agent caps
+// (a film above the 256px cap + an authored sample count above 16).
+//======================================================================
+
+// A 2x2 instance_array -> grid[0,0]/grid[1,0]/grid[0,1]/grid[1,1]: the
+// AMBIGUOUS-name case (`isolate:"grid"` names four objects, not one).
+// Mirrors tests/AgentObjectMapTest.cpp's kSceneInstances.
+static const char* const kSceneIsolateInstances =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 7\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
+	"instance_array\n{\n\tname grid\n\ttemplate geo\n\tcount_u 2\n\tcount_v 2\n\tmaterial mat\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
+
+// TWO CSG unions, each consuming a DIFFERENT pair of operands
+// (op_a/op_b under csg_root; op_c/op_d under csg_second) -- both pairs
+// are ObjectManager items but are world-INVISIBLE by construction, the
+// NON-RENDERABLE-name case.  Base fixture mirrors tests/
+// AgentObjectMapTest.cpp's kSceneCsg; the SECOND composite is a G1
+// fix-round (2026-08-10, FIX 6) addition so the operand-failure test
+// below is DISCRIMINATING -- a single-composite fixture can't tell a
+// message that names the RIGHT composite apart from one that just
+// lists every renderable object in the scene (which happens to be a
+// list of one).  op_c/op_d sit far from op_a/op_b so the two pairs'
+// bounding boxes never overlap.
+static const char* const kSceneIsolateCsg =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname op_a\n\tgeometry geo\n\tmaterial mat\n\tposition -0.4 0 0\n}\n\n"
+	"standard_object\n{\n\tname op_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0.4 0 0\n}\n\n"
+	"csg_object\n{\n\tname csg_root\n\tobja op_a\n\tobjb op_b\n\toperation union\n\tmaterial mat\n}\n\n"
+	"sphere_geometry\n{\n\tname geo2\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname op_c\n\tgeometry geo2\n\tmaterial mat\n\tposition -20.4 0 0\n}\n\n"
+	"standard_object\n{\n\tname op_d\n\tgeometry geo2\n\tmaterial mat\n\tposition -19.6 0 0\n}\n\n"
+	"csg_object\n{\n\tname csg_second\n\tobja op_c\n\tobjb op_d\n\toperation union\n\tmaterial mat\n}\n";
+
+// G1 fix-round (2026-08-10, FIX 5): a NORMAL object (`sph_obj`) plus a
+// DEGENERATE one (`degen_obj`, geometry radius 0 -- collapses its LOCAL
+// bbox to a single point BEFORE any transform is applied, so the
+// object's world bbox is a point too: ext[a]==0 on every axis, and the
+// isolate path's `diag > 0.0` check makes `bboxUsable` false).  Radius
+// 0 (not a zero object-level `scale`) deliberately keeps the object's
+// own transform matrix well-formed and invertible -- a singular
+// (zero-scale) transform would make ray-local-space intersection maths
+// divide by zero, which is a DIFFERENT bug this fixture must not
+// accidentally exercise; a radius-0 sphere's own intersection quadratic
+// (c = |o-center|^2 - 0) is perfectly well-defined and simply never
+// hits (bar a ray through the exact centre), so `degen_obj` renders
+// safely wherever it stays world-visible.
+static const char* const kSceneIsolateDegenerate =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"sphere_geometry\n{\n\tname geo_point\n\tradius 0\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry geo\n\tmaterial mat\n\tposition -0.6 0 0\n}\n\n"
+	"standard_object\n{\n\tname degen_obj\n\tgeometry geo_point\n\tmaterial mat\n\tposition 0.6 0 0\n}\n\n";
+
+// A film ABOVE the 256px agent cap and an authored sample count ABOVE the
+// 16spp cap, so an isolate render made through the agent surface
+// (fromAgentSurface) can be checked to still obey BOTH R1b caps.
+static const char* const kSceneIsolateOversize =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 400\n\theight 300\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_geo\n\tradius 0.9\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 1.3 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// An EMISSIVE object lighting a separate, non-emissive object.  Isolating
+// the lit object HIDES the emitter, which (via the world-visible filter
+// the LuminaryManager collects through) also removes it as a light -- so
+// this fixture is what proves the light-topology bump on RESTORE actually
+// puts the emitter back for the NEXT render.  Without that bump the
+// post-isolate render stays dark forever.
+//
+// The lamp sits OFF-SCREEN (x=-5, outside the frustum at its depth): a
+// directly-visible emitter would dominate the frame mean and the test
+// would stay green even with the luminary list broken -- verified by
+// mutation probe, which is exactly how the earlier on-screen version of
+// this fixture was caught being vacuous.  With it off-screen the only
+// light in the frame is what it casts onto `lit`.
+static const char* const kSceneIsolateMeshEmitter =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit\n\tcolor 600 600 600\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit\n\tmaterial mat\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname lamp_geo\n\tradius 0.8\n}\n\n"
+	"sphere_geometry\n{\n\tname lit_geo\n\tradius 0.9\n}\n\n"
+	"standard_object\n{\n\tname lamp\n\tgeometry lamp_geo\n\tmaterial lampmat\n\tposition -5 0 1.5\n}\n\n"
+	"standard_object\n{\n\tname lit\n\tgeometry lit_geo\n\tmaterial mat\n\tposition 0.6 0 0\n}\n";
+
+// G1 fix-round (2026-08-10, FIX 2): a scene whose ACTIVE camera is
+// `orthographic_camera` -- the simplest non-pinhole camera the scene
+// language supports (no `fov` field at all, so it cannot accidentally
+// carry one).  Used to prove `bboxCoverage` is SUPPRESSED (not computed
+// with an assumed 45 deg FOV against the wrong -- parallel-projection --
+// model) whenever the active camera isn't a PinholeCamera, in BOTH the
+// auto-framed and the caller-supplied-camera isolate paths.
+static const char* const kSceneIsolateOrtho =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"orthographic_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// THE MOTIVATING CASE, as a fixture: a SMALL part (a 0.6-unit box) off to
+// one side of a wide scene whose backdrop fills the entire frame.  At the
+// scene's own camera the part is ~0.2% of the frame -- about a dozen
+// pixels, which is exactly the "a form composed blind and never actually
+// looked at" situation `isolate` exists for.  Deliberately NOT
+// kSceneMeshAndSphere: that fixture's camera already frames its two
+// objects tightly, so it cannot demonstrate (or regress-guard) the
+// framing gain.
+static const char* const kSceneIsolateSmallPart =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 96\n\theight 72\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname backdrop_geo\n\twidth 24\n\theight 18\n\tdepth 0.4\n}\n\n"
+	"standard_object\n{\n\tname backdrop\n\tgeometry backdrop_geo\n\tmaterial mat\n\tposition 0 0 -3\n}\n\n"
+	"box_geometry\n{\n\tname part_geo\n\twidth 0.6\n\theight 0.6\n\tdepth 0.6\n}\n\n"
+	"standard_object\n{\n\tname part\n\tgeometry part_geo\n\tmaterial mat\n\tposition 3 1.5 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 12.0\n\tcolor 1 1 1\n\tposition 0 4 8\n}\n";
+
+// Count pixels whose RGB bytes exactly equal `rgb` (the objectmap identity
+// test); ScanBBoxForColor already returns that count, this is the terse form.
+static unsigned int CountColor( const Decoded& d, const unsigned char rgb[3] )
+{
+	return ScanBBoxForColor( d, rgb ).found;
+}
+
+// Fraction of pixels that are NOT the objectmap/view-mode background
+// (exact black).  Used for the view modes, which carry no legend.
+static double NonBlackFraction( const Decoded& d )
+{
+	if( d.px.empty() ) return 0.0;
+	std::size_t n = 0;
+	for( std::size_t i = 0; i < d.px.size(); ++i ) {
+		const Px& q = d.px[i];
+		if( q[0] != 0 || q[1] != 0 || q[2] != 0 ) ++n;
+	}
+	return (double)n / (double)d.px.size();
+}
+
+//----------------------------------------------------------------------
+// (G1-a) PIXEL EVIDENCE that isolate renders ONLY the named object.
+//
+// Renders the SAME camera twice through the objectmap pipeline (an EXACT
+// 1-spp identity render -- no MC noise), once whole-scene and once with
+// isolate:"sph_obj" plus an explicit camera pinned to the scene camera so
+// the two frames are pixel-comparable.  The assertion is not "ok:true":
+// it is that EVERY pixel the whole-scene frame attributed to mesh_obj is
+// BACKGROUND in the isolated frame, and every pixel it attributed to
+// sph_obj still resolves to an object.  A no-op `isolate` fails this.
+//----------------------------------------------------------------------
+static void RunIsolateOnlyNamedObjectRendersTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-a) isolate renders ONLY the named object (objectmap pixel evidence) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_only.RISEscene", kSceneMeshAndSphere );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "isolate-only scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "isolate-only session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams fullP;
+	fullP.renderTarget = AgentRenderTarget::ObjectMap;
+	const AgentRenderResult fullR = session->Render( fullP );
+	Check( fullR.ok, "whole-scene objectmap renders" );
+	Check( fullR.legend.size() == 2, "whole-scene objectmap legend has BOTH objects" );
+	Check( !fullR.isolateApplied, "a render with no `isolate` reports isolateApplied=false" );
+	const LegendEntry* fullMesh = FindLegend( fullR, "mesh_obj" );
+	const LegendEntry* fullSph  = FindLegend( fullR, "sph_obj" );
+	Check( fullMesh && fullMesh->pixelCount > 0, "whole-scene: mesh_obj covers pixels" );
+	Check( fullSph  && fullSph->pixelCount  > 0, "whole-scene: sph_obj covers pixels" );
+	Decoded fullD;
+	Check( DecodePng( fullR.png, fullD ), "whole-scene objectmap PNG decodes" );
+	if( !fullMesh || !fullSph || fullD.px.empty() ) { pJob->release(); return; }
+	unsigned char fullMeshRgb[3], fullSphRgb[3];
+	Check( HexToBytes( fullMesh->colorHex, fullMeshRgb ), "mesh_obj colorHex parses" );
+	Check( HexToBytes( fullSph->colorHex,  fullSphRgb  ), "sph_obj colorHex parses" );
+
+	// Same camera as the scene's own, supplied explicitly so NO auto-framing
+	// happens and the two frames are directly comparable pixel-for-pixel.
+	AgentRenderParams isoP;
+	isoP.renderTarget = AgentRenderTarget::ObjectMap;
+	isoP.isolate = "sph_obj";
+	isoP.camera.hasLocation = true; isoP.camera.location = "0 0 6";
+	isoP.camera.hasLookAt   = true; isoP.camera.lookAt   = "0 0 0";
+	isoP.camera.hasUp       = true; isoP.camera.up       = "0 1 0";
+	const AgentRenderResult isoR = session->Render( isoP );
+	Check( isoR.ok, std::string( "isolated objectmap renders: " ) + isoR.message );
+	Check( isoR.isolateApplied, "isolated render reports isolateApplied=true" );
+	Check( isoR.isolateObject == "sph_obj", "result echoes the resolved object name" );
+	Check( !isoR.isolateAutoFramed, "an explicit camera WINS -- no auto-framing" );
+	Check( isoR.message.find( "framed by the camera you supplied" ) != std::string::npos,
+	       "the message says the caller's camera was used, not an auto-frame" );
+	Check( isoR.legend.size() == 1 && isoR.legend[0].name == "sph_obj",
+	       "MONEY ASSERTION (G1-a1): the isolated objectmap legend lists EXACTLY ONE object -- "
+	       "mesh_obj is not merely dark, it is not in the scene the caster saw" );
+	Decoded isoD;
+	Check( DecodePng( isoR.png, isoD ), "isolated objectmap PNG decodes" );
+	if( isoR.legend.size() != 1 || isoD.w != fullD.w || isoD.h != fullD.h ) { pJob->release(); return; }
+	unsigned char isoSphRgb[3];
+	Check( HexToBytes( isoR.legend[0].colorHex, isoSphRgb ), "isolated legend colorHex parses" );
+
+	// Every pixel the WHOLE-SCENE frame attributed to mesh_obj must be
+	// BACKGROUND now; every pixel it attributed to sph_obj must still carry
+	// an object identity.
+	unsigned int meshPixelsNowBackground = 0, meshPixelsStillLit = 0;
+	unsigned int sphPixelsStillObject = 0, sphPixelsLost = 0;
+	for( unsigned int y = 0; y < fullD.h; ++y ) {
+		for( unsigned int x = 0; x < fullD.w; ++x ) {
+			const Px& f = fullD.at( x, y );
+			const Px& i = isoD.at( x, y );
+			const bool isoBackground = ( i[0] == 0 && i[1] == 0 && i[2] == 0 );
+			if( f[0] == fullMeshRgb[0] && f[1] == fullMeshRgb[1] && f[2] == fullMeshRgb[2] ) {
+				if( isoBackground ) ++meshPixelsNowBackground; else ++meshPixelsStillLit;
+			} else if( f[0] == fullSphRgb[0] && f[1] == fullSphRgb[1] && f[2] == fullSphRgb[2] ) {
+				if( !isoBackground ) ++sphPixelsStillObject; else ++sphPixelsLost;
+			}
+		}
+	}
+	std::printf( "  mesh: %u -> background, %u still hit;  sph: %u kept, %u lost\n",
+		meshPixelsNowBackground, meshPixelsStillLit, sphPixelsStillObject, sphPixelsLost );
+	Check( meshPixelsNowBackground == fullMesh->pixelCount && meshPixelsStillLit == 0,
+	       "MONEY ASSERTION (G1-a2): EVERY pixel the whole-scene frame attributed to mesh_obj is "
+	       "BACKGROUND in the isolated frame (no camera ray reaches the hidden object)" );
+	Check( sphPixelsLost == 0 && sphPixelsStillObject == fullSph->pixelCount,
+	       "MONEY ASSERTION (G1-a3): every pixel that was sph_obj is STILL an object -- isolation "
+	       "removed the others without disturbing the kept one" );
+	Check( CountColor( isoD, isoSphRgb ) == isoR.legend[0].pixelCount,
+	       "the isolated legend's pixelCount matches the scanned identity pixels exactly" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G1-b) AUTO-FRAMING actually frames.  Measured with the objectmap
+// pixel tally (exact, not a proxy): sph_obj's share of the frame must
+// jump from a few percent whole-scene to a large fraction isolated.
+// Also pins the reported bbox/longest-edge against the fixture's known
+// geometry (a radius-0.9 sphere centred at x=1.3).
+//----------------------------------------------------------------------
+static void RunIsolateAutoFramingTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-b) auto-framing raises the part's frame coverage ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_frame.RISEscene", kSceneIsolateSmallPart );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "isolate-framing scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "isolate-framing session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams fullP;
+	fullP.renderTarget = AgentRenderTarget::ObjectMap;
+	const AgentRenderResult fullR = session->Render( fullP );
+	Check( fullR.ok, "whole-scene objectmap renders" );
+	const LegendEntry* fullSph = FindLegend( fullR, "part" );
+	Check( fullSph != nullptr, "whole-scene legend carries the small part" );
+	if( !fullSph || fullR.width == 0 || fullR.height == 0 ) { pJob->release(); return; }
+	const double fullCoverage = (double)fullSph->pixelCount / (double)( fullR.width * fullR.height );
+
+	AgentRenderParams isoP;
+	isoP.renderTarget = AgentRenderTarget::ObjectMap;
+	isoP.isolate = "part";
+	const AgentRenderResult isoR = session->Render( isoP );
+	Check( isoR.ok, std::string( "auto-framed isolated objectmap renders: " ) + isoR.message );
+	Check( isoR.isolateAutoFramed, "with no camera/view supplied the render IS auto-framed" );
+	Check( isoR.message.find( "auto-framed three-quarter view" ) != std::string::npos,
+	       "the message reports the auto-framed three-quarter view" );
+	Check( isoR.legend.size() == 1, "auto-framed isolated objectmap legend has one entry" );
+	if( isoR.legend.empty() || isoR.width == 0 || isoR.height == 0 ) { pJob->release(); return; }
+	const double isoCoverage = (double)isoR.legend[0].pixelCount / (double)( isoR.width * isoR.height );
+	std::printf( "  part frame coverage: whole-scene %.4f -> isolated %.4f (reported bboxCoverage %.3f)\n",
+		fullCoverage, isoCoverage, isoR.isolateBBoxCoverage );
+
+	Check( fullCoverage > 0.0 && fullCoverage < 0.01,
+	       "sanity: whole-scene, the part is under 1% of the frame -- about a dozen pixels "
+	       "(the problem `isolate` exists to fix)" );
+	Check( isoCoverage > 0.15,
+	       "MONEY ASSERTION (G1-b1): auto-framed, the isolated part fills a LARGE fraction of the "
+	       "frame (>15% of ALL pixels -- a silhouette you can actually read), measured by the exact "
+	       "objectmap tally, not a proxy" );
+	Check( isoCoverage > fullCoverage * 20.0,
+	       "MONEY ASSERTION (G1-b2): auto-framing raises the part's REAL pixel coverage by more than 20x" );
+	Check( isoR.isolateBBoxCoverage > 0.25 && isoR.isolateBBoxCoverage <= 1.0,
+	       "the REPORTED projected-bbox coverage is a large fraction too (it bounds the silhouette above)" );
+
+	// The reported bbox must be the fixture's actual geometry: a 0.6-unit
+	// box centred at (3, 1.5, 0).
+	Check( std::fabs( isoR.isolateBBoxMin[0] - 2.7 ) < 1e-6 &&
+	       std::fabs( isoR.isolateBBoxMax[0] - 3.3 ) < 1e-6 &&
+	       std::fabs( isoR.isolateBBoxMin[1] - 1.2 ) < 1e-6 &&
+	       std::fabs( isoR.isolateBBoxMax[1] - 1.8 ) < 1e-6,
+	       "the reported world bbox matches the fixture's part (a 0.6 box at (3,1.5,0))" );
+	Check( std::fabs( isoR.isolateLongestEdge - 0.6 ) < 1e-6,
+	       "the reported longest bbox edge is the part's real size" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G1-c) isolate COMPOSES with mode:"normals"/"facets", objectmap and
+// quality:"draft" -- object visibility is Scene state, so unlike `light`
+// it is never "ignored under mode X".  Each mode must both SUCCEED and
+// show the part enlarged (non-black fraction well above the whole-scene
+// render's, which contains BOTH objects small).
+//----------------------------------------------------------------------
+static void RunIsolateComposesWithModesTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-c) isolate composes with normals/facets/draft/objectmap ===\n" );
+	// The small-part fixture again, because its backdrop FILLS the frame:
+	// a view-mode render that ignored `isolate` would come back ~100%
+	// non-black, so "the backdrop is gone AND the part is large" is a
+	// single, unambiguous pixel assertion per mode.
+	const std::string scenePath = WriteTemp( "rise_isolate_modes.RISEscene", kSceneIsolateSmallPart );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "isolate-modes scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "isolate-modes session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	struct ModeCase { Implementation::ViewportRenderMode mode; const char* name; };
+	const ModeCase cases[] = {
+		{ Implementation::ViewportRenderMode::Normals, "normals" },
+		{ Implementation::ViewportRenderMode::Facets,  "facets"  },
+	};
+	for( const ModeCase& c : cases ) {
+		AgentRenderParams fullP;
+		fullP.renderTarget = AgentRenderTarget::ViewMode;
+		fullP.viewMode     = c.mode;
+		const AgentRenderResult fullR = session->Render( fullP );
+		Check( fullR.ok, std::string( "whole-scene " ) + c.name + " renders" );
+		Decoded fullD; Check( DecodePng( fullR.png, fullD ), std::string( c.name ) + " whole-scene PNG decodes" );
+
+		AgentRenderParams isoP;
+		isoP.renderTarget = AgentRenderTarget::ViewMode;
+		isoP.viewMode     = c.mode;
+		isoP.isolate      = "part";
+		const AgentRenderResult isoR = session->Render( isoP );
+		Check( isoR.ok, std::string( "isolated " ) + c.name + " renders: " + isoR.message );
+		Check( isoR.isolateApplied && isoR.isolateAutoFramed,
+		       std::string( "isolated " ) + c.name + " reports applied + auto-framed" );
+		Check( isoR.renderMode == c.name,
+		       std::string( "isolated render still echoes renderMode \"" ) + c.name + "\"" );
+		Decoded isoD; Check( DecodePng( isoR.png, isoD ), std::string( c.name ) + " isolated PNG decodes" );
+		const double fullFrac = NonBlackFraction( fullD );
+		const double isoFrac  = NonBlackFraction( isoD );
+		std::printf( "  %s: whole-scene non-black %.3f -> isolated %.3f\n", c.name, fullFrac, isoFrac );
+		Check( fullFrac > 0.95,
+		       std::string( "sanity: whole-scene " ) + c.name + " fills the frame (the backdrop is everywhere)" );
+		Check( isoFrac > 0.15 && isoFrac < 0.75,
+		       std::string( "MONEY ASSERTION (G1-c): under mode:\"" ) + c.name + "\" the isolated frame "
+		       "holds ONLY the part -- the frame-filling backdrop is GONE (non-black dropped from ~1.0) "
+		       "and the part itself now covers a readable fraction.  The ephemeral view-mode pipeline "
+		       "honours isolate, not just beauty" );
+	}
+
+	// draft (the ephemeral studio-preview pipeline) and beauty.
+	AgentRenderParams draftP;
+	draftP.quality = AgentRenderQuality::Draft;
+	draftP.isolate = "part";
+	const AgentRenderResult draftR = session->Render( draftP );
+	Check( draftR.ok, std::string( "isolated draft renders: " ) + draftR.message );
+	Check( draftR.renderMode == "draft" && draftR.isolateApplied,
+	       "isolate composes with quality:\"draft\" (renderMode stays \"draft\")" );
+	Check( draftR.isolateObject == "part" && draftR.isolateLongestEdge > 0.0,
+	       "the draft isolate render reports the part's real (post-Realize) extent" );
+
+	AgentRenderParams beautyP;
+	beautyP.isolate = "part";
+	const AgentRenderResult beautyR = session->Render( beautyP );
+	Check( beautyR.ok, std::string( "isolated beauty renders: " ) + beautyR.message );
+	Check( beautyR.renderMode == "production" && beautyR.isolateApplied,
+	       "isolate composes with the default production beauty render" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G1-d) HONEST FAILURES: unknown name, ambiguous generator name, and a
+// CSG operand.  Each must fail the render with a message that NAMES the
+// problem and lists what IS available -- and must leave the scene
+// untouched (a following ordinary render still sees everything).
+//----------------------------------------------------------------------
+static void RunIsolateNameFailureTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-d) unresolvable / ambiguous / non-renderable isolate names ===\n" );
+
+	// (d1) unknown name -- and the scene survives the refusal.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_unknown.RISEscene", kSceneMeshAndSphere );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "unknown-name scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "unknown-name session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "no_such_object";
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "an unknown isolate name FAILS the render" );
+		Check( r.message.find( "unknown object \"no_such_object\"" ) != std::string::npos,
+		       "the failure names the unresolvable object" );
+		Check( r.message.find( "\"mesh_obj\"" ) != std::string::npos &&
+		       r.message.find( "\"sph_obj\"" ) != std::string::npos,
+		       "MONEY ASSERTION (G1-d1): the failure LISTS the available object names" );
+		Check( !r.isolateApplied, "a failed isolate reports no isolation and no measurements" );
+
+		AgentRenderParams plainP;
+		plainP.renderTarget = AgentRenderTarget::ObjectMap;
+		const AgentRenderResult after = session->Render( plainP );
+		Check( after.ok && after.legend.size() == 2,
+		       "the scene is UNTOUCHED by the refusal -- the next objectmap still sees both objects" );
+		pJob->release();
+	}
+
+	// (d2) an instance_array generator name covers FOUR objects.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_ambig.RISEscene", kSceneIsolateInstances );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "instance-array scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "instance-array session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "grid";
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "a generator name FAILS the render rather than picking an instance" );
+		Check( r.message.find( "AMBIGUOUS" ) != std::string::npos &&
+		       r.message.find( "grid[0,0]" ) != std::string::npos,
+		       "MONEY ASSERTION (G1-d2): the failure says AMBIGUOUS and names the real instances" );
+
+		// ...and one instance BY ITS FULL NAME resolves cleanly.
+		AgentRenderParams okP;
+		okP.renderTarget = AgentRenderTarget::ObjectMap;
+		okP.isolate = "grid[0,0]";
+		const AgentRenderResult okR = session->Render( okP );
+		Check( okR.ok && okR.legend.size() == 1 && okR.legend[0].name == "grid[0,0]",
+		       "one instance's FULL name isolates exactly that instance" );
+		pJob->release();
+	}
+
+	// (d3) a CSG operand is an ObjectManager item but is never hit alone.
+	// G1 fix-round (2026-08-10, FIX 6): the fixture now has TWO composites
+	// consuming DIFFERENT operand pairs, so this is DISCRIMINATING -- it
+	// proves the failure names the operand's OWN composite, not just
+	// whatever renderable object happens to be in the scene (the old
+	// single-composite fixture passed this even when the message merely
+	// listed every renderable object, since there was only one to list).
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_csg.RISEscene", kSceneIsolateCsg );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "csg scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "csg session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "op_a";
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "a CSG operand FAILS the render" );
+		Check( r.message.find( "not independently renderable" ) != std::string::npos &&
+		       r.message.find( "consumed by" ) != std::string::npos &&
+		       r.message.find( "\"csg_root\"" ) != std::string::npos,
+		       "the operand failure is its OWN message (not \"unknown object\") and names a composite" );
+		Check( r.message.find( "csg_second" ) == std::string::npos,
+		       "MONEY ASSERTION (G1-d3, discriminating): op_a's failure names ONLY its real parent "
+		       "csg_root -- the unrelated csg_second (a different composite, consuming different "
+		       "operands) does not leak into the message" );
+
+		AgentRenderParams p2;
+		p2.renderTarget = AgentRenderTarget::ObjectMap;
+		p2.isolate = "op_c";
+		const AgentRenderResult r2 = session->Render( p2 );
+		Check( !r2.ok, "the second CSG's operand FAILS the render too" );
+		Check( r2.message.find( "\"csg_second\"" ) != std::string::npos,
+		       "op_c's failure names its real parent csg_second" );
+		Check( r2.message.find( "csg_root" ) == std::string::npos,
+		       "MONEY ASSERTION (G1-d3, discriminating): op_c's failure does NOT name the unrelated "
+		       "csg_root -- proves the lookup is PER-OPERAND (CSGObject::GetOperandA/B identity), not "
+		       "a first-match or list-everything shortcut.  This assertion goes RED if FIX 6 is "
+		       "reverted to FormatRenderableObjectNames(), which lists BOTH composites regardless of "
+		       "which operand was isolated." );
+
+		AgentRenderParams rootP;
+		rootP.renderTarget = AgentRenderTarget::ObjectMap;
+		rootP.isolate = "csg_root";
+		const AgentRenderResult rootR = session->Render( rootP );
+		Check( rootR.ok && rootR.isolateApplied, "the CSG composite itself isolates fine" );
+		pJob->release();
+	}
+
+	// (d4) G1 fix-round (2026-08-10, FIX 5): a degenerate (point) bbox
+	// with NO caller-supplied camera refuses honestly -- names the
+	// problem AND the remedy -- and the refusal fires BEFORE
+	// ApplyObjectSolo, so nothing is hidden.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_degenerate.RISEscene", kSceneIsolateDegenerate );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "degenerate-bbox scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "degenerate-bbox session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "degen_obj";
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "a degenerate-bbox isolate with no caller camera FAILS the render" );
+		Check( r.message.find( "degen_obj" ) != std::string::npos &&
+		       ( r.message.find( "degenerate" ) != std::string::npos ||
+		         r.message.find( "unbounded" ) != std::string::npos ),
+		       "the failure NAMES THE PROBLEM: the object and its degenerate/unbounded extent" );
+		Check( r.message.find( "explicit `camera`" ) != std::string::npos ||
+		       r.message.find( "explicit camera" ) != std::string::npos,
+		       "MONEY ASSERTION (G1-d4): the failure also names THE REMEDY -- supply an explicit "
+		       "camera to isolate it anyway" );
+		Check( !r.isolateApplied, "a failed isolate reports no isolation and no measurements" );
+
+		// Nothing was hidden: verify the refusal fires BEFORE
+		// ApplyObjectSolo, not merely that isolateApplied reads false
+		// (which a bug could get wrong independently of what actually
+		// happened to the Scene's world-visible flags).  A plain
+		// (non-isolate) objectmap render right after must still see
+		// BOTH objects -- if ApplyObjectSolo had actually run for
+		// `degen_obj` before this refusal, `sph_obj` would still be
+		// hidden here.
+		AgentRenderParams plainP;
+		plainP.renderTarget = AgentRenderTarget::ObjectMap;
+		const AgentRenderResult after = session->Render( plainP );
+		Check( after.ok && after.legend.size() == 2,
+		       "MONEY ASSERTION (G1-d4): the scene is UNTOUCHED by the refusal -- the next objectmap "
+		       "still sees BOTH objects, proving ApplyObjectSolo never ran for the failed attempt" );
+
+		// And the NORMAL object still isolates fine afterward -- a second,
+		// independent proof that `sph_obj`'s world-visible flag was never
+		// perturbed by the failed attempt on its sibling.
+		AgentRenderParams okP;
+		okP.isolate = "sph_obj";
+		const AgentRenderResult okR = session->Render( okP );
+		Check( okR.ok && okR.isolateApplied, "the NORMAL object still isolates fine after the refusal" );
+
+		// (d5) G1 fix-round (2026-08-10, FIX 4): the OTHER half of the
+		// degenerate-bbox contract, which (d4) cannot reach because it
+		// supplies no camera.  The refusal in (d4) tells the caller to
+		// "supply an explicit camera to isolate it anyway" -- so take
+		// that remedy, and prove the render then reports NO fabricated
+		// measurements.  Before FIX 4 this path copied the raw bbox
+		// unconditionally, so a degenerate object came back with
+		// bboxMin/bboxMax [0,0,0] and longestEdge 0.0 -- values
+		// INDISTINGUISHABLE from "this object is genuinely a point",
+		// and NaN/Inf silently clamped to literal 0 by SerializeNumber.
+		// This project has measured that models ACT on task-specific
+		// facts in a tool result, so a fabricated zero is worse than an
+		// absent field.
+		AgentRenderParams camP;
+		camP.renderTarget = AgentRenderTarget::ObjectMap;
+		camP.isolate = "degen_obj";
+		camP.camera.hasLocation = true;  camP.camera.location = "0 0 4";
+		camP.camera.hasLookAt   = true;  camP.camera.lookAt   = "0.6 0 0";
+		const AgentRenderResult camR = session->Render( camP );
+		Check( camR.ok && camR.isolateApplied,
+		       "the documented remedy WORKS: an explicit camera isolates a degenerate object" );
+		Check( !camR.isolateBBoxUsable,
+		       "MONEY ASSERTION (G1-d5): the degenerate bbox is reported as UNUSABLE, so the wire "
+		       "layer omits bboxMin/bboxMax/longestEdge instead of emitting measured-looking zeros" );
+		Check( camR.isolateLongestEdge == 0.0,
+		       "the unusable longest edge stays at its default sentinel (never a fabricated measurement)" );
+		Check( camR.message.find( "degenerate" ) != std::string::npos ||
+		       camR.message.find( "unbounded" ) != std::string::npos,
+		       "MONEY ASSERTION (G1-d5): the message SAYS the extent is degenerate/unbounded and the "
+		       "measurements were omitted -- the fact is disclosed, not silently dropped" );
+		pJob->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (G1-f3) G1 fix-round (2026-08-10, FIX 2): `bboxCoverage` is SUPPRESSED
+// -- not computed against an assumed 45 deg pinhole FOV -- whenever the
+// ACTIVE camera is not a PinholeCamera, in BOTH the auto-framed path
+// (no caller camera) and the caller-supplied-camera path.  Before this
+// fix only `!poseResolvable || !haveActiveSnapshot` forced the -1.0
+// sentinel in the caller-supplied branch, so a caller-supplied camera
+// over a non-pinhole active camera fell through to a NUMBER computed
+// with the WRONG projection model (a real distinct-from-approximate
+// bug, not just an undisclosed caveat) and nothing said so.
+//----------------------------------------------------------------------
+static void RunIsolateNonPinholeCoverageSuppressedTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-f3) bboxCoverage suppressed for a non-pinhole active camera ===\n" );
+
+	// Auto-framed path: no caller camera.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_ortho_auto.RISEscene", kSceneIsolateOrtho );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ortho scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "ortho session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "sph_obj";
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.isolateApplied, std::string( "the ortho-camera isolate render itself succeeds: " ) + r.message );
+		Check( r.isolateAutoFramed, "no caller camera was supplied -- auto-framing applied" );
+		Check( r.isolateBBoxCoverage < 0.0,
+		       "MONEY ASSERTION (G1-f3 auto-framed): bboxCoverage is the -1.0 sentinel -- NOT computed "
+		       "against the assumed 45 deg FOV -- because the active camera is orthographic, not pinhole" );
+		Check( r.message.find( "not a pinhole" ) != std::string::npos,
+		       "the message states WHY: the active camera is not a pinhole" );
+		pJob->release();
+	}
+
+	// Caller-supplied-camera path (location+lookat only, no fov -- fov on
+	// a non-pinhole active camera is REFUSED by SetProperty and would
+	// fail the whole render, which is a different, already-covered
+	// contract; this test is specifically about the coverage-suppression
+	// gate when the render otherwise SUCCEEDS).
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_ortho_caller.RISEscene", kSceneIsolateOrtho );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ortho caller-camera scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "ortho caller-camera session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.isolate = "sph_obj";
+		p.camera.hasLocation = true; p.camera.location = "0 0 5";
+		p.camera.hasLookAt   = true; p.camera.lookAt   = "0 0 0";
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.isolateApplied,
+		       std::string( "the ortho-camera isolate render with a caller camera succeeds: " ) + r.message );
+		Check( !r.isolateAutoFramed, "the caller-supplied camera won -- no auto-framing" );
+		Check( r.isolateBBoxCoverage < 0.0,
+		       "MONEY ASSERTION (G1-f3 caller-supplied): bboxCoverage is the -1.0 sentinel here too -- "
+		       "this is the branch that used to fall through to a WRONG-PROJECTION-MODEL number with "
+		       "nothing disclosing it, since only `!poseResolvable || !haveActiveSnapshot` forced the "
+		       "sentinel before this fix" );
+		Check( r.message.find( "not a pinhole" ) != std::string::npos,
+		       "MONEY ASSERTION (G1-f3 caller-supplied): the message states WHY, on the branch that "
+		       "PREVIOUSLY disclosed nothing at all (the honesty tail only checked the auto-framed "
+		       "branch before this fix)" );
+		pJob->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (G1-e) THE GUARD'S REGRESSION TEST: an isolate render must leave the
+// scene EXACTLY as found.  Two independent probes:
+//   (e1) geometry + camera + film: an objectmap render before and after
+//        an isolate render must be pixel-identical (objectmap is exact
+//        1-spp, so "identical" is literal, and it would fail if either
+//        the hidden objects or the auto-framed camera were left applied).
+//   (e2) LIGHTING: on a mesh-emitter fixture, isolating the LIT object
+//        hides the emitter -- which also removes it as a luminary.  The
+//        beauty render AFTER that must be as bright as the one BEFORE,
+//        which only holds if the restore bumps the light-topology
+//        generation so the caster rebuilds its luminary list.
+//----------------------------------------------------------------------
+static void RunIsolateRestoresSceneTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-e) an isolate render leaves the scene exactly as found ===\n" );
+
+	// (e1) geometry / camera / film.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_restore.RISEscene", kSceneMeshAndSphere );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "restore scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "restore session wraps" ); return; }
+
+		AgentRenderParams mapP;
+		mapP.renderTarget = AgentRenderTarget::ObjectMap;
+		const AgentRenderResult before = session->Render( mapP );
+		Check( before.ok, "pre-isolate objectmap renders" );
+		Decoded beforeD; Check( DecodePng( before.png, beforeD ), "pre-isolate PNG decodes" );
+
+		AgentRenderParams isoP;
+		isoP.isolate = "sph_obj";
+		const AgentRenderResult isoR = session->Render( isoP );
+		Check( isoR.ok, std::string( "the isolate render itself succeeds: " ) + isoR.message );
+
+		const AgentRenderResult after = session->Render( mapP );
+		Check( after.ok, "post-isolate objectmap renders" );
+		Decoded afterD; Check( DecodePng( after.png, afterD ), "post-isolate PNG decodes" );
+
+		Check( after.legend.size() == before.legend.size() && after.legend.size() == 2,
+		       "post-isolate legend has BOTH objects again" );
+		bool identical = ( beforeD.w == afterD.w && beforeD.h == afterD.h && !beforeD.px.empty() );
+		if( identical ) {
+			for( std::size_t i = 0; i < beforeD.px.size() && identical; ++i )
+				identical = ( beforeD.px[i] == afterD.px[i] );
+		}
+		Check( identical,
+		       "MONEY ASSERTION (G1-e1): the objectmap AFTER an isolate render is PIXEL-IDENTICAL to the "
+		       "one before it -- world-visible flags, the auto-framed camera, and the film dims were all "
+		       "restored (this is ObjectSoloRestoreGuard's regression test)" );
+
+		// The Film the Document reports is untouched too.
+		const IFilm* film = pJob->GetScene() ? pJob->GetScene()->GetFilm() : nullptr;
+		Check( film && film->GetWidth() == 96 && film->GetHeight() == 72,
+		       "the scene's authored Film dims survive an isolate render" );
+		pJob->release();
+	}
+
+	// (e2) lighting: the light-topology bump on restore.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_emitter.RISEscene", kSceneIsolateMeshEmitter );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "mesh-emitter scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "mesh-emitter session wraps" ); return; }
+
+		auto meanOf = [&]( const AgentRenderResult& r ) { return ( r.meanR + r.meanG + r.meanB ) / 3.0; };
+
+		AgentRenderParams beautyP;
+		const AgentRenderResult before = session->Render( beautyP );
+		Check( before.ok, "pre-isolate beauty renders" );
+		const double beforeMean = meanOf( before );
+		Check( beforeMean > 1e-3, "sanity: the OFF-SCREEN mesh emitter actually lights `lit`" );
+
+		// The frame mean must come from the LIT object, not from a visible
+		// emitter -- otherwise this test could not distinguish "the luminary
+		// list was restored" from "the emitter is back on screen".  Proven
+		// by isolating `lamp` itself: with the emitter the only object left,
+		// an off-screen emitter yields a black frame.
+		{
+			AgentRenderParams lampOnlyP;
+			lampOnlyP.isolate = "lamp";
+			lampOnlyP.camera.hasLocation = true; lampOnlyP.camera.location = "0 0 6";
+			lampOnlyP.camera.hasLookAt   = true; lampOnlyP.camera.lookAt   = "0 0 0";
+			const AgentRenderResult lampOnly = session->Render( lampOnlyP );
+			Check( lampOnly.ok && meanOf( lampOnly ) < beforeMean * 0.05,
+			       "fixture check: at the scene camera the emitter itself is OFF-SCREEN, so the frame "
+			       "mean measures light CAST on `lit`, not the emitter's own pixels" );
+		}
+
+		AgentRenderParams isoP;
+		isoP.isolate = "lit";                 // hides `lamp`, the ONLY light source
+		const AgentRenderResult isoR = session->Render( isoP );
+		Check( isoR.ok, std::string( "isolating the lit object succeeds: " ) + isoR.message );
+
+		const AgentRenderResult after = session->Render( beautyP );
+		Check( after.ok, "post-isolate beauty renders" );
+		const double afterMean = meanOf( after );
+		std::printf( "  mesh-emitter scene mean: before %.6f -> after %.6f\n", beforeMean, afterMean );
+		Check( afterMean > beforeMean * 0.5,
+		       "MONEY ASSERTION (G1-e2): the scene is just as bright AFTER an isolate render that hid the "
+		       "only emitter -- the restore bumps the light-topology generation, so the caster rebuilds "
+		       "its luminary list instead of keeping the isolated one forever" );
+		pJob->release();
+	}
+}
+
+// SIX objects -- above ObjectManager's default nMaxObjectsPerNode (4), so
+// this scene actually BUILDS a top-level BVH.  That matters because
+// ObjectManager::CreateBVH filters its element list on IsWorldVisible and
+// then CACHES the result: a TLAS first built while the scene is isolated
+// would hold ONE object and survive the restore, silently deleting the
+// other five from every later render.  See ObjectSoloRestoreGuard's
+// invariant 1 (PrepareForRendering BEFORE hiding anything).
+static const char* const kSceneIsolateSixObjects =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 96\n\theight 72\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 12\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname o1\n\tgeometry geo\n\tmaterial mat\n\tposition -4 1 0\n}\n\n"
+	"standard_object\n{\n\tname o2\n\tgeometry geo\n\tmaterial mat\n\tposition -2 1 0\n}\n\n"
+	"standard_object\n{\n\tname o3\n\tgeometry geo\n\tmaterial mat\n\tposition  0 1 0\n}\n\n"
+	"standard_object\n{\n\tname o4\n\tgeometry geo\n\tmaterial mat\n\tposition  2 1 0\n}\n\n"
+	"standard_object\n{\n\tname o5\n\tgeometry geo\n\tmaterial mat\n\tposition  4 1 0\n}\n\n"
+	"standard_object\n{\n\tname o6\n\tgeometry geo\n\tmaterial mat\n\tposition  0 -1 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 12.0\n\tcolor 1 1 1\n\tposition 0 4 8\n}\n";
+
+//----------------------------------------------------------------------
+// (G1-e3) THE TLAS INVARIANT: an isolate render must be safe as the FIRST
+// render on a head.  ObjectManager caches the BVH it builds and filters
+// that build on IsWorldVisible, so hiding before the first build would
+// bake a one-object acceleration structure that OUTLIVES the restore.
+// The probe is deliberately ordered isolate-FIRST, on a scene with more
+// objects than the manager's leaf cap (so a BVH is genuinely built), and
+// then asserts every object is back.
+//----------------------------------------------------------------------
+static void RunIsolateFirstRenderTlasTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-e3) an isolate render FIRST does not bake a one-object TLAS ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_tlas.RISEscene", kSceneIsolateSixObjects );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "six-object scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "six-object session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	// FIRST render on this head is the isolated one -- nothing has built a
+	// TLAS yet at this point.
+	AgentRenderParams isoP;
+	isoP.renderTarget = AgentRenderTarget::ObjectMap;
+	isoP.isolate = "o3";
+	const AgentRenderResult isoR = session->Render( isoP );
+	Check( isoR.ok, std::string( "the first-ever render, isolated, succeeds: " ) + isoR.message );
+	Check( isoR.legend.size() == 1 && isoR.legend[0].name == "o3",
+	       "the isolated first render sees exactly one object" );
+
+	AgentRenderParams mapP;
+	mapP.renderTarget = AgentRenderTarget::ObjectMap;
+	const AgentRenderResult after = session->Render( mapP );
+	Check( after.ok, "the following whole-scene objectmap renders" );
+	Check( after.legend.size() == 6,
+	       "MONEY ASSERTION (G1-e3a): all SIX objects are back in the legend" );
+	unsigned int litObjects = 0;
+	for( std::size_t i = 0; i < after.legend.size(); ++i )
+		if( after.legend[i].pixelCount > 0 ) ++litObjects;
+	std::printf( "  objects actually hit after an isolate-first render: %u / %u\n",
+		litObjects, (unsigned int)after.legend.size() );
+	Check( litObjects == 6,
+	       "MONEY ASSERTION (G1-e3b): every one of the six objects is actually HIT by camera rays "
+	       "afterwards -- the top-level acceleration structure was built over the FULL object set, "
+	       "not over the isolated one (ObjectSoloRestoreGuard invariant 1)" );
+
+	pJob->release();
+}
+
+// G1 fix-round (2026-08-10) fixture for (G1-e4).  An `auto_rasterizer`
+// with NO author pin -- so the dispatcher's Tier-1 static analysis
+// actually runs -- over a scene whose FULL-SCENE analysis and whose
+// ISOLATED-object analysis disagree:
+//   full scene  -> a dielectric (`glass`, CouldLightPassThrough()==true)
+//                  PLUS a positional omni light  =>  VCM,
+//                  reason "dielectric + positional light"
+//   `plain` alone -> one opaque lambertian, no transmissive material
+//                  =>  PT, reason "no caustic/strong-indirect signal"
+// Both Tier-1 scans read the scene through IObjectManager::
+// EnumerateObjects, which filters on IsWorldVisible -- which is exactly
+// what `isolate` manipulates.  `probe` stays off (the default), so the
+// decision here is the deterministic static tier, not the sampled
+// Tier-2 probe.
+static const char* const kSceneIsolateAutoDielectric =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"auto_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"dielectric_material\n{\n\tname glassmat\n\ttau 1.0\n\tior 1.5\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname plain\n\tgeometry geo\n\tmaterial mat\n\tposition -1.6 0 0\n}\n\n"
+	"standard_object\n{\n\tname glass\n\tgeometry geo\n\tmaterial glassmat\n\tposition  1.6 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 12.0\n\tcolor 1 1 1\n\tposition 0 4 6\n}\n";
+
+//----------------------------------------------------------------------
+// (G1-e4) THE AUTO-DISPATCHER INVARIANT (G1 fix-round, 2026-08-10): an
+// isolate render must be safe as the FIRST render on a head whose
+// production rasterizer is an `auto_rasterizer`.
+//
+// AutoRasterizer resolves its concrete integrator inside a
+// std::call_once -- ONCE per dispatcher object, permanently -- and its
+// Tier-1 scan enumerates objects through the SAME IsWorldVisible filter
+// `isolate` manipulates.  Before the fix, an isolate-first render locked
+// the dispatcher onto the integrator implied by the ONE visible object
+// and every later full-scene render (including the user's own) silently
+// inherited it, with a confidently WRONG ResolveReason().  Nothing in
+// the restore path could undo it: the visibility flags and the light
+// topology are restored, but mResolveOnce is not resettable.
+//
+// The probe is deliberately ordered isolate-FIRST and compares against a
+// second, independent head that renders the SAME scene WITHOUT isolate
+// -- so the assertion is "the isolate-first head resolved to what the
+// ordinary path resolves to", not a hardcoded expectation.
+//----------------------------------------------------------------------
+static void RunIsolateFirstRenderAutoIntegratorTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-e4) an isolate render FIRST does not poison auto-integrator resolution ===\n" );
+
+	// (1) BASELINE head: no isolate anywhere.  This is also the "the
+	//     ordinary, non-isolate resolution path is unchanged" assertion.
+	std::string baseName, baseReason;
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_auto_base.RISEscene", kSceneIsolateAutoDielectric );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "auto-dispatcher baseline scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "auto-dispatcher baseline session wraps" ); return; }
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast && rast->IsAutoDispatcher(),
+		       "fixture check: the production rasterizer IS the auto dispatcher" );
+		if( !rast ) { pJob->release(); return; }
+		Check( std::string( rast->ResolvedIntegratorName() ) == "auto",
+		       "fixture check: nothing has resolved the dispatcher yet (still \"auto\")" );
+
+		AgentRenderParams p;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok, std::string( "the baseline whole-scene beauty render succeeds: " ) + r.message );
+
+		baseName   = rast->ResolvedIntegratorName();
+		baseReason = rast->ResolveReason();
+		std::printf( "  baseline (no isolate) resolved: %s (%s)\n", baseName.c_str(), baseReason.c_str() );
+		Check( baseName == "vcm" && baseReason == "dielectric + positional light",
+		       "fixture check: the FULL scene's Tier-1 analysis routes to VCM for the dielectric + "
+		       "positional-light reason -- if this ever changes, the whole probe below is vacuous" );
+		pJob->release();
+	}
+
+	// (2) ISOLATE-FIRST head: the very first render on this Job is a
+	//     PRODUCTION BEAUTY render isolated to the one OPAQUE object,
+	//     whose own Tier-1 analysis would say PT.
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_auto_first.RISEscene", kSceneIsolateAutoDielectric );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "auto-dispatcher isolate-first scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "auto-dispatcher isolate-first session wraps" ); return; }
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		if( !rast ) { pJob->release(); Check( false, "isolate-first head has a rasterizer" ); return; }
+		Check( std::string( rast->ResolvedIntegratorName() ) == "auto",
+		       "the isolate-first head starts unresolved too" );
+
+		AgentRenderParams isoP;
+		isoP.isolate = "plain";               // the opaque object; `glass` gets hidden
+		const AgentRenderResult isoR = session->Render( isoP );
+		Check( isoR.ok, std::string( "the first-ever render, isolated, succeeds: " ) + isoR.message );
+		Check( isoR.isolateApplied && isoR.renderMode == "production",
+		       "the probe really is a PRODUCTION beauty render with isolation applied" );
+
+		const std::string isoName   = rast->ResolvedIntegratorName();
+		const std::string isoReason = rast->ResolveReason();
+		std::printf( "  after an isolate-FIRST render, resolved: %s (%s)\n", isoName.c_str(), isoReason.c_str() );
+
+		Check( isoName == baseName,
+		       "MONEY ASSERTION (G1-e4a): an isolate render issued FIRST resolves the auto dispatcher to "
+		       "the SAME integrator the ordinary whole-scene path resolves to (\"" + baseName + "\").  "
+		       "Resolution is std::call_once and its Tier-1 scans filter on IsWorldVisible, so without "
+		       "pre-resolving against the FULL scene before hiding, this head is locked onto the "
+		       "one-visible-object answer forever" );
+		Check( isoReason == baseReason,
+		       "MONEY ASSERTION (G1-e4b): ResolveReason() is the FULL scene's reason (\"" + baseReason +
+		       "\"), not a confidently-wrong justification derived from the isolated object" );
+
+		// ...and it stays right for the user's own later whole-scene render.
+		AgentRenderParams fullP;
+		const AgentRenderResult fullR = session->Render( fullP );
+		Check( fullR.ok, std::string( "the following whole-scene beauty render succeeds: " ) + fullR.message );
+		Check( std::string( rast->ResolvedIntegratorName() ) == baseName &&
+		       std::string( rast->ResolveReason() ) == baseReason,
+		       "MONEY ASSERTION (G1-e4c): the whole-scene render AFTER the isolate render still runs the "
+		       "correct integrator -- the poisoning would be permanent and silent, since nothing "
+		       "invalidates the once-only resolution on restore" );
+		pJob->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (G1-f) The R1b agent-surface caps still apply under isolate: an
+// agent-surface render with no explicit dims/samples on an oversize film
+// must still come back at or under 256px / 16spp.
+//----------------------------------------------------------------------
+static void RunIsolateRespectsAgentCapsTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-f) the R1b agent caps still apply under isolate ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_caps.RISEscene", kSceneIsolateOversize );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "oversize scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "oversize session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams p;
+	p.isolate = "sph_obj";
+	p.fromAgentSurface = true;   // exactly what AgentRpc.cpp's render handler sets
+	const AgentRenderResult r = session->Render( p );
+	Check( r.ok, std::string( "capped isolate render succeeds: " ) + r.message );
+	Check( r.isolateApplied && r.isolateAutoFramed, "the capped render is still isolated + auto-framed" );
+	Check( r.width <= kAgentSurfaceMaxRenderEdge && r.height <= kAgentSurfaceMaxRenderEdge,
+	       "MONEY ASSERTION (G1-f1): an isolate render is still bounded by the 256px agent long-edge cap" );
+	Check( r.agentResolutionCapped && r.filmWidth == 400 && r.filmHeight == 300,
+	       "the resolution cap is reported honestly, naming the authored Film it reduced" );
+	Check( r.effectiveSamples > 0 && r.effectiveSamples <= kAgentSurfaceMaxSamples,
+	       "MONEY ASSERTION (G1-f2): an isolate render is still bounded by the 16spp agent cap" );
+	Check( r.agentSamplesCapped, "the sample cap is reported honestly" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G1-g) SCHEMA PARITY for the new param: the hand-synced chat-codec
+// schema and the hand-authored MCP schema must BOTH carry `isolate`
+// (a param that reaches only one of the two model-facing surfaces is
+// invisible on the other).
+//----------------------------------------------------------------------
+static void RunIsolateSchemaParityTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-g) `isolate` is present on BOTH model-facing render schemas ===\n" );
+
+	{
+		AnthropicChatCodec codec;
+		const ChatHttpRequest req = codec.BuildRequest(
+			"claude-test-model", /*apiKey*/std::string(), "system prompt", std::vector<std::string>() );
+		JsonValue root; std::string perr;
+		Check( JsonParse( req.body, root, perr ), "chat-codec request body parses" );
+		const JsonValue& tools = root.get( "tools" );
+		JsonValue renderTool = JsonValue::MakeNull();
+		for( std::size_t i = 0; i < tools.size(); ++i )
+			if( tools.at( i ).get( "name" ).asString() == "render" ) { renderTool = tools.at( i ); break; }
+		Check( renderTool.isObject(), "found the chat-codec render tool" );
+		if( renderTool.isObject() ) {
+			const JsonValue& iso = renderTool.get( "input_schema" ).get( "properties" ).get( "isolate" );
+			Check( iso.isObject() && iso.get( "type" ).asString() == "string",
+			       "chat-codec render schema declares isolate as a string param" );
+			const std::string desc = iso.get( "description" ).asString();
+			Check( desc.find( "normals" ) != std::string::npos && desc.find( "facets" ) != std::string::npos,
+			       "the chat-codec isolate description states which modes read FORM best" );
+			// G1 fix-round FIX 3 (2026-08-10): the shared kToolDefs text is
+			// the HIGHEST-TRAFFIC model-facing surface (sent with every API
+			// call across all chat-codec providers) -- it must carry the
+			// same bboxCoverage upper-bound caveat AgentMcpAdapter.cpp and
+			// skills/agent/observe-modes.md already carry: it can overstate
+			// a thin/diagonal silhouette, and mode:"objectmap"'s legend
+			// pixelCount is the exact-count alternative.  Before this fix
+			// the description only said "the projected-bbox frame coverage"
+			// with none of that, so it would previously have failed this.
+			Check( desc.find( "OVERSTATE" ) != std::string::npos && desc.find( "pixelCount" ) != std::string::npos,
+			       "MONEY ASSERTION (G1 fix-round FIX 3): the chat-codec isolate description discloses "
+			       "bboxCoverage's upper-bound overstatement risk AND points at objectmap's pixelCount "
+			       "for an exact count" );
+		}
+	}
+
+	{
+		const std::string scenePath = WriteTemp( "rise_isolate_mcp.RISEscene", kSceneMeshAndSphere );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "mcp isolate-parity scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		if( !session ) { pJob->release(); Check( false, "mcp isolate-parity session wraps" ); return; }
+		AgentMcpAdapter mcp( std::move( session ) );
+
+		JsonValue req = JsonValue::MakeObject();
+		req.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		req.set( "id", JsonValue::MakeNumber( 1 ) );
+		req.set( "method", JsonValue::MakeString( "tools/list" ) );
+		req.set( "params", JsonValue::MakeObject() );
+		JsonValue env; std::string perr;
+		Check( JsonParse( mcp.HandleLine( JsonSerialize( req ) ), env, perr ), "tools/list parses" );
+		const JsonValue& toolsList = env.get( "result" ).get( "tools" );
+		JsonValue renderTool = JsonValue::MakeNull();
+		for( std::size_t i = 0; i < toolsList.size(); ++i )
+			if( toolsList.at( i ).get( "name" ).asString() == "render" ) { renderTool = toolsList.at( i ); break; }
+		Check( renderTool.isObject(), "found the MCP render tool" );
+		if( renderTool.isObject() ) {
+			const JsonValue& iso = renderTool.get( "inputSchema" ).get( "properties" ).get( "isolate" );
+			Check( iso.isObject() && iso.get( "type" ).asString() == "string",
+			       "MCP render schema declares isolate as a string param" );
+			const std::string desc = iso.get( "description" ).asString();
+			Check( desc.find( "normals" ) != std::string::npos && desc.find( "facets" ) != std::string::npos,
+			       "the MCP isolate description states which modes read FORM best" );
+			// G1 fix-round FIX 3 (2026-08-10): same discriminating check as
+			// the chat-codec block above, on the OTHER model-facing surface
+			// -- proves the two cannot silently drift apart again.
+			Check( desc.find( "OVERSTATE" ) != std::string::npos && desc.find( "pixelCount" ) != std::string::npos,
+			       "MONEY ASSERTION (G1 fix-round FIX 3): the MCP isolate description discloses "
+			       "bboxCoverage's upper-bound overstatement risk AND points at objectmap's pixelCount "
+			       "for an exact count" );
+		}
+		pJob->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (G1-h) The RPC surface: `isolate` parses, a non-string is a clean
+// -32602, and a SUCCESSFUL isolate render carries the nested `isolate`
+// result object (absent on an ordinary render).
+//----------------------------------------------------------------------
+static void RunIsolateRpcSurfaceTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-h) the RPC `isolate` param + result object ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_rpc.RISEscene", kSceneMeshAndSphere );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "rpc isolate scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "rpc isolate session wraps" );
+	if( !session ) { pJob->release(); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	// A non-string is a clean -32602.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"isolate\":7}}" ), env, perr ),
+			"non-string isolate response parses" );
+		Check( env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "a non-string `isolate` is a clean -32602" );
+	}
+
+	// An ordinary render carries NO `isolate` result object.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"width\":64,\"height\":48}}" ), env, perr ),
+			"plain render response parses" );
+		Check( !env.get( "result" ).has( "isolate" ),
+		       "a render WITHOUT isolate omits the `isolate` result object entirely (strictly additive)" );
+	}
+
+	// An isolate render carries the full fact block.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"isolate\":\"sph_obj\",\"mode\":\"normals\"}}" ),
+			env, perr ), "isolate render response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), std::string( "the RPC isolate render succeeds: " )
+			+ result.get( "message" ).asString() );
+		const JsonValue& iso = result.get( "isolate" );
+		Check( iso.isObject(), "the result carries the nested `isolate` object" );
+		Check( iso.get( "object" ).asString() == "sph_obj", "isolate.object echoes the resolved name" );
+		Check( iso.get( "bboxMin" ).isArray() && iso.get( "bboxMin" ).size() == 3 &&
+		       iso.get( "bboxMax" ).isArray() && iso.get( "bboxMax" ).size() == 3,
+		       "isolate.bboxMin/bboxMax are 3-vectors" );
+		Check( std::fabs( iso.get( "longestEdge" ).asNumber() - 1.8 ) < 1e-6, "isolate.longestEdge is the real extent" );
+		Check( iso.get( "autoFramed" ).asBool(), "isolate.autoFramed is true with no camera supplied" );
+		Check( iso.has( "bboxCoverage" ) && iso.get( "bboxCoverage" ).asNumber() > 0.3,
+		       "isolate.bboxCoverage reports a large framed fraction" );
+	}
+
+	// An unresolvable name is a FAILED render (ok:false), not a -32602:
+	// resolution needs the live scene, so it belongs to the render, not the parser.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"isolate\":\"nope\"}}" ), env, perr ),
+			"unresolvable isolate response parses" );
+		Check( !env.has( "error" ), "an unresolvable name is NOT a parse error" );
+		Check( !env.get( "result" ).get( "ok" ).asBool(), "it is a FAILED render" );
+		Check( env.get( "result" ).get( "message" ).asString().find( "unknown object" ) != std::string::npos,
+		       "with the honest reason in `message`" );
+		Check( !env.get( "result" ).has( "isolate" ),
+		       "a FAILED isolate render reports no measurements it did not take" );
+	}
+
+	// G1 fix-round (2026-08-10, FIX 1): a VALID isolate combined with a
+	// FAILING `light` must NOT carry the `isolate` block.  `isolateApplied`
+	// is set as soon as object-solo framing succeeds -- BEFORE the
+	// production branch resolves `light` -- so an unresolvable light name
+	// flips `ok` to false on a render that HAD, moments earlier, applied
+	// isolation successfully.  Both AgentRpc.h's and AgentMcpAdapter.cpp's
+	// docs promise the `isolate` object ONLY on a SUCCESSFUL isolate
+	// render; before this fix the RPC layer gated solely on
+	// `rr.isolateApplied`, so this combination shipped a full isolate
+	// block (bbox/framing) describing an image that was never produced.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{\"isolate\":\"sph_obj\",\"light\":\"typo_light\"}}" ),
+			env, perr ), "isolate+bad-light response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "ok" ).asBool(), "the render FAILS -- the light name never resolves" );
+		Check( result.get( "message" ).asString().find( "typo_light" ) != std::string::npos,
+		       "the failure names the unresolvable light" );
+		Check( !result.has( "isolate" ),
+		       "MONEY ASSERTION (G1 fix-round FIX 1): a FAILING light on an otherwise-valid isolate "
+		       "means NO `isolate` result object at all -- ok:false never carries the framing facts "
+		       "for an image that was never produced.  This assertion goes RED if the RpcJson gate "
+		       "reverts to `if( rr.isolateApplied )` without the `rr.ok &&`." );
+	}
+
+	pJob->release();
+
+	// G1 fix-round (2026-08-10, FIX 4) AT THE WIRE.  The C++-level check
+	// in (G1-d5) proves AgentRenderResult::isolateBBoxUsable is false for
+	// a degenerate object; this proves the consequence the MODEL actually
+	// sees -- AgentRpc OMITS the three measurement keys rather than
+	// serializing fabricated zeros (SerializeNumber silently clamps a
+	// NaN/Inf bbox to literal 0, so a populated field here would read as
+	// a real measurement of a real point).  The omission, not the flag,
+	// is the contract; asserting only the flag would leave the defect's
+	// actual surface untested.
+	{
+		const std::string degenPath = WriteTemp( "rise_isolate_rpc_degen.RISEscene", kSceneIsolateDegenerate );
+		Job* pDegenJob = new Job();
+		Check( pDegenJob->LoadAsciiSceneViaCst( degenPath.c_str() ), "degenerate rpc scene loads" );
+		std::unique_ptr<AgentSession> degenSession = AgentSession::WrapJob( pDegenJob );
+		if( !degenSession ) { pDegenJob->release(); Check( false, "degenerate rpc session wraps" ); return; }
+		AgentRpcDispatcher degenRpc( std::move( degenSession ) );
+
+		JsonValue env; std::string perr;
+		Check( JsonParse( degenRpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"render\",\"params\":{\"isolate\":\"degen_obj\","
+			"\"mode\":\"objectmap\",\"camera\":{\"location\":\"0 0 4\",\"lookat\":\"0.6 0 0\"}}}" ),
+			env, perr ), "degenerate isolate-with-camera response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), "the documented remedy works at the wire too" );
+		Check( result.has( "isolate" ), "a SUCCEEDING isolate render still carries the isolate object" );
+		const JsonValue& iso = result.get( "isolate" );
+		Check( !iso.has( "bboxMin" ) && !iso.has( "bboxMax" ) && !iso.has( "longestEdge" ),
+		       "MONEY ASSERTION (G1 fix-round FIX 4, wire level): a degenerate/unbounded extent OMITS "
+		       "bboxMin/bboxMax/longestEdge entirely.  Goes RED if AgentRpc reverts to emitting them "
+		       "unconditionally -- which shipped `[0,0,0]` + longestEdge 0.0, indistinguishable from a "
+		       "genuine point measurement." );
+		Check( iso.get( "object" ).asString() == "degen_obj",
+		       "the facts that ARE knowable (the resolved name) are still reported" );
+		pDegenJob->release();
+	}
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -3531,6 +4783,18 @@ int main()
 	RunIndirectModeMirrorReflectsLightTest();
 	RunIndirectModeMirrorKeepsEnvReflectionTest();
 	RunIndirectModeDiffuseUnderEnvSuppressedTest();
+	// G1 (2026-08-10) `render{isolate:}`
+	RunIsolateOnlyNamedObjectRendersTest();
+	RunIsolateAutoFramingTest();
+	RunIsolateComposesWithModesTest();
+	RunIsolateNameFailureTest();
+	RunIsolateNonPinholeCoverageSuppressedTest();
+	RunIsolateRestoresSceneTest();
+	RunIsolateFirstRenderTlasTest();
+	RunIsolateFirstRenderAutoIntegratorTest();
+	RunIsolateRespectsAgentCapsTest();
+	RunIsolateSchemaParityTest();
+	RunIsolateRpcSurfaceTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -72,6 +72,9 @@
 #include "../Rendering/PathTracingSpectralRasterizer.h"  // review-p2d P1-2: spectral twin
 #include "../Rendering/RayCaster.h"   // GUI render modes P2b (light solo): concrete RayCaster::SetSoloLightByName/ClearSoloLight
 #include "../Rendering/PixelBasedRasterizerHelper.h"   // GUI render modes P2b (light solo): reach the production rasterizer's RayCaster, mirroring Job::SetActiveRasterizerRadianceScale
+#include "../Rendering/AutoRasterizer.h"   // G1 fix-round (2026-08-10, render{isolate:}): concrete AutoRasterizer::PreResolveIntegrator -- the object-solo apply must pre-resolve the once-only integrator choice against the FULL scene (invariant 3)
+#include "../Objects/CSGObject.h"   // G1 fix-round (2026-08-10, FIX 6): concrete CSGObject::GetOperandA/GetOperandB -- the real parent-composite lookup for ResolveIsolateObject's CSG-operand failure message
+#include "../Scene.h"   // G1 (2026-08-10, render{isolate:}): concrete Scene::BumpLightTopologyGeneration -- the luminary-list rebuild trigger the object-solo apply/restore pair needs (not on IScenePriv; same downcast RayCaster.cpp's SceneLightGeneration uses)
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -7139,6 +7142,100 @@ namespace RISE
 				bool                              mArmed;
 			};
 
+			//! G1 (2026-08-10) `render{isolate:}` surface: RAII restore of
+			//! the SCENE's per-object world-visible flags, the sibling of
+			//! LightSoloRestoreGuard above and the same Arm/restore-on-
+			//! every-exit house shape.
+			//!
+			//! WHY world-visible is the mechanism: every ray path in the
+			//! renderer already consults it -- ObjectManager's three
+			//! RayElementIntersection overloads (primary/secondary and the
+			//! shadow-only one), both linear-loop fallbacks, and the shadow
+			//! cache's stale-entry recheck -- so hiding an object removes it
+			//! from camera, secondary AND shadow rays with no new per-object
+			//! state and no change to any hot path.  Nothing else in the
+			//! tree writes this flag during a render (CSGObject writes it
+			//! ONCE at AssignObjects time to hide its operands), so a
+			//! capture/restore of the flag is exact.
+			//!
+			//! TWO invariants the caller MUST have established before Arm():
+			//!   1. The object manager's TLAS is already built over the FULL
+			//!      object set (PrepareForRendering()).  ObjectManager::
+			//!      CreateBVH filters its element list on IsWorldVisible and
+			//!      then CACHES the result -- a BVH first built while the
+			//!      scene is isolated would contain ONE object and survive
+			//!      the restore, silently deleting every other object from
+			//!      all later renders.  Building first (idempotent) makes
+			//!      the isolated render reuse the full-set BVH and reject
+			//!      hidden objects at the LEAF test, which is both correct
+			//!      and free -- no invalidation, no rebuild, in either
+			//!      direction.
+			//!   2. The Scene's light-topology generation is bumped on BOTH
+			//!      the apply and the restore (this guard does the restore
+			//!      half).  A caster's LuminaryManager is rebuilt from
+			//!      ObjectManager::EnumerateObjects, which ALSO filters on
+			//!      world-visible; without the bump, a caster that happened
+			//!      to (re)build its luminary list during the isolated
+			//!      render would keep that reduced list for every later
+			//!      render of the same Scene pointer (RayCaster::AttachScene
+			//!      only rebuilds when the generation moved).
+			//!
+			//! `mPrior` holds the pre-isolate flag of EVERY object the
+			//! manager reported, so a CSG operand (already world-invisible)
+			//! is restored to invisible, not blanket-true.
+			class ObjectSoloRestoreGuard
+			{
+			public:
+				explicit ObjectSoloRestoreGuard( IScenePriv* scene )
+					: mScene( scene ), mArmed( false )
+				{
+				}
+
+				//! Takes ownership of the captured (object, priorVisible)
+				//! list and makes the destructor's restore live.  Called
+				//! only once the hide pass has actually run.
+				void Arm( std::vector<std::pair<IObjectPriv*, bool> >&& prior )
+				{
+					mPrior = std::move( prior );
+					mArmed = true;
+				}
+
+				~ObjectSoloRestoreGuard()
+				{
+					if( !mArmed ) return;
+					try {
+						for( std::size_t i = 0; i < mPrior.size(); ++i ) {
+							if( mPrior[i].first ) mPrior[i].first->SetWorldVisible( mPrior[i].second );
+						}
+						// Invariant 2 (see the class doc): force every caster
+						// to rebuild its luminary list against the restored,
+						// full object set.
+						if( RISE::Implementation::Scene* concrete =
+								dynamic_cast<RISE::Implementation::Scene*>( mScene ) ) {
+							concrete->BumpLightTopologyGeneration();
+						}
+					}
+					catch( ... ) {
+						// NEVER rethrow from a destructor (would terminate()
+						// if already unwinding from Rasterize()'s own
+						// exception).  Log so a future throw here is at least
+						// diagnosable -- this one is load-bearing: a skipped
+						// restore leaves the SCENE showing one object.
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the object-isolate "
+							"restore -- the scene may be left with only one visible object" );
+					}
+				}
+
+			private:
+				ObjectSoloRestoreGuard( const ObjectSoloRestoreGuard& );             // deleted
+				ObjectSoloRestoreGuard& operator=( const ObjectSoloRestoreGuard& );  // deleted
+
+				IScenePriv*     mScene;
+				std::vector<std::pair<IObjectPriv*, bool> > mPrior;
+				bool            mArmed;
+			};
+
 			//! Offscreen isolation for agent/LLM renders: RAII restore of the
 			//! active rasterizer's FrameStore IDENTITY, matching the SAME
 			//! house shape as RenderOverrideRestoreGuard / ProgressRestoreGuard
@@ -7706,6 +7803,347 @@ namespace RISE
 			return true;
 		}
 
+		// ---- G1 (2026-08-10) `render{isolate:}` surface -------------------
+		//
+		// Sibling of the light-solo block above: resolve a NAME against the
+		// scene, apply a transient solo, and let a RAII guard restore it.
+		// The three helpers below are the resolve / apply / frame steps;
+		// ObjectSoloRestoreGuard (declared with the other render guards) is
+		// the restore step.
+
+		//! Collect every object name the manager knows, in the manager's own
+		//! deterministic (sorted, std::map) order.
+		std::vector<std::string> CollectObjectNames( IObjectManager* objMgr )
+		{
+			struct NameCollector : public IEnumCallback<const char*>
+			{
+				std::vector<std::string> names;
+				bool operator()( const char* const& n ) override
+				{
+					if( n ) names.push_back( std::string( n ) );
+					return true;
+				}
+			} collector;
+			if( objMgr ) objMgr->EnumerateItemNames( collector );
+			return collector.names;
+		}
+
+		//! Format a quoted, comma-separated list of the INDEPENDENTLY
+		//! RENDERABLE object names (world-visible ones -- a CSG operand is an
+		//! ObjectManager item but is never hit on its own, exactly the filter
+		//! BuildObjectMapPalette applies for the objectmap legend, so the two
+		//! surfaces name the same set).
+		std::string FormatRenderableObjectNames( IObjectManager* objMgr )
+		{
+			const std::vector<std::string> names = CollectObjectNames( objMgr );
+			std::string out;
+			for( std::size_t i = 0; i < names.size(); ++i ) {
+				IObjectPriv* obj = objMgr ? objMgr->GetItem( names[i].c_str() ) : 0;
+				if( !obj || !static_cast<const IObject*>( obj )->IsWorldVisible() ) continue;
+				if( !out.empty() ) out += ", ";
+				out += "\"";
+				out += names[i];
+				out += "\"";
+			}
+			return out;
+		}
+
+		//! G1 fix-round (2026-08-10, FIX 6): find the CSGObject composite (if
+		//! any) that consumes `operand` as one of its two operands, by
+		//! walking every object the manager knows and checking
+		//! CSGObject::GetOperandA/GetOperandB for an identity match.  Real
+		//! lookup, not a guess: CSGObject already exposes both accessors
+		//! (used by the CST incremental-apply path to detect a re-pointed
+		//! operand), so there is no need to infer the parent from the
+		//! renderable-names list the way the caller used to.  Returns "" if
+		//! no composite in the manager claims `operand` -- shouldn't happen
+		//! for a genuinely CSG-hidden object (AssignObjects is the only
+		//! in-tree writer of world-invisible), but the caller falls back to
+		//! a generic message rather than asserting.
+		std::string FindCsgParentName( IObjectManager* objMgr, IObjectPriv* operand )
+		{
+			if( !objMgr || !operand ) return std::string();
+			const std::vector<std::string> names = CollectObjectNames( objMgr );
+			for( std::size_t i = 0; i < names.size(); ++i ) {
+				IObjectPriv* candidate = objMgr->GetItem( names[i].c_str() );
+				if( !candidate ) continue;
+				if( RISE::Implementation::CSGObject* csg =
+						dynamic_cast<RISE::Implementation::CSGObject*>( candidate ) ) {
+					if( csg->GetOperandA() == operand || csg->GetOperandB() == operand )
+						return names[i];
+				}
+			}
+			return std::string();
+		}
+
+		//! Resolve `name` to the single object an `isolate` render should
+		//! keep.  Fails LOUDLY (false + a specific `outMessage`) rather than
+		//! guessing, mirroring ApplyLightSoloByName's unresolved-name
+		//! contract.  Four distinguishable failures, each with its own
+		//! actionable text:
+		//!   * no object manager at all (no scene loaded);
+		//!   * the name is a GENERATOR PREFIX -- the scene has "<name>[i,j]"
+		//!     instances but no object literally called "<name>" (the
+		//!     instance_array case objectmap's legend already warns about);
+		//!   * the name resolves to an object that is NOT independently
+		//!     renderable (a CSGObject operand, world-invisible by
+		//!     construction) -- name the SPECIFIC composite that consumes it
+		//!     (FindCsgParentName above), since "unknown object" would be a
+		//!     lie and a list of every renderable object in the scene would
+		//!     be a claim of precision the old message didn't back up;
+		//!   * the name is unknown -- list what IS available.
+		bool ResolveIsolateObject( IObjectManager* objMgr, const std::string& name,
+		                            IObjectPriv*& outObj, std::string& outMessage )
+		{
+			outObj = 0;
+			if( !objMgr ) {
+				outMessage = "isolate \"" + name + "\" could not be applied -- the scene has no object manager";
+				return false;
+			}
+
+			IObjectPriv* obj = objMgr->GetItem( name.c_str() );
+			if( obj ) {
+				if( !static_cast<const IObject*>( obj )->IsWorldVisible() ) {
+					// World-invisible means "no ray ever lands on this object
+					// directly".  The only in-tree writer of that flag (outside
+					// this feature's own transient solo) is
+					// CSGObject::AssignObjects on its operands, so naming the
+					// composite case is accurate rather than a guess -- but the
+					// message leads with the OBSERVED fact, not the inferred
+					// cause, so it stays honest if a future producer of
+					// world-invisible objects appears.
+					outMessage = "isolate \"" + name + "\" is not independently renderable -- it is marked "
+						"world-invisible, so no ray lands on it directly.";
+					const std::string parentName = FindCsgParentName( objMgr, obj );
+					if( !parentName.empty() ) {
+						outMessage += "  It is a CSG operand consumed by \"" + parentName +
+							"\" -- isolate \"" + parentName + "\" instead.";
+					} else {
+						outMessage += "  In-tree that means a CSG object consumed it as an operand, but "
+							"the specific composite could not be identified.  Available: "
+							+ FormatRenderableObjectNames( objMgr );
+					}
+					return false;
+				}
+				outObj = obj;
+				return true;
+			}
+
+			// Generator prefix?  ("grid" when the scene holds "grid[0,0]", ...)
+			const std::vector<std::string> names = CollectObjectNames( objMgr );
+			std::string instances;
+			unsigned int instanceCount = 0;
+			for( std::size_t i = 0; i < names.size(); ++i ) {
+				if( names[i].size() > name.size() + 1 &&
+					names[i].compare( 0, name.size(), name ) == 0 &&
+					names[i][ name.size() ] == '[' )
+				{
+					++instanceCount;
+					if( instanceCount <= 8 ) {
+						if( !instances.empty() ) instances += ", ";
+						instances += "\"";
+						instances += names[i];
+						instances += "\"";
+					}
+				}
+			}
+			if( instanceCount > 0 ) {
+				char tail[64];
+				std::snprintf( tail, sizeof( tail ), " (%u instance%s in total)",
+					instanceCount, instanceCount == 1 ? "" : "s" );
+				outMessage = "isolate \"" + name + "\" is AMBIGUOUS -- it is a generator name, not a single "
+					"object; the scene holds " + instances + tail +
+					".  Isolate ONE instance by its full name.";
+				return false;
+			}
+
+			const std::string available = FormatRenderableObjectNames( objMgr );
+			outMessage = "unknown object \"" + name + "\"";
+			outMessage += available.empty()
+				? std::string( " -- the scene has no renderable objects" )
+				: ( " -- available: " + available );
+			return false;
+		}
+
+		//! Hide every object EXCEPT `keep`, returning the (object, prior
+		//! world-visible) list the restore guard needs.  Reports how many
+		//! objects were actually hidden.  Assumes the caller has already
+		//! built the full-set TLAS -- see ObjectSoloRestoreGuard's invariant 1.
+		std::vector<std::pair<IObjectPriv*, bool> > ApplyObjectSolo(
+			IObjectManager* objMgr, IObjectPriv* keep, unsigned int& outHiddenCount )
+		{
+			std::vector<std::pair<IObjectPriv*, bool> > prior;
+			outHiddenCount = 0;
+			if( !objMgr ) return prior;
+			const std::vector<std::string> names = CollectObjectNames( objMgr );
+			prior.reserve( names.size() );
+			for( std::size_t i = 0; i < names.size(); ++i ) {
+				IObjectPriv* obj = objMgr->GetItem( names[i].c_str() );
+				if( !obj ) continue;
+				const bool wasVisible = static_cast<const IObject*>( obj )->IsWorldVisible();
+				prior.push_back( std::make_pair( obj, wasVisible ) );
+				if( obj != keep && wasVisible ) {
+					obj->SetWorldVisible( false );
+					++outHiddenCount;
+				}
+			}
+			return prior;
+		}
+
+		//! The auto-framing vantage.  A FIXED three-quarter direction --
+		//! 35 deg of azimuth off the +Z axis toward +X, 25 deg of elevation
+		//! -- expressed as the unit vector FROM the box centre TOWARD the
+		//! eye.  +Z is "front" by RISE scene convention (docs/
+		//! SCENE_CONVENTIONS.md: a camera at +Z looking at the origin);
+		//! 35/25 is the classic product-shot three-quarter, far enough off
+		//! axis that two faces and the silhouette's depth both read, and far
+		//! enough below the pole that a world +Y up vector is never
+		//! degenerate.  Deliberately FIXED rather than derived from the box's
+		//! own proportions: a stable vantage means two isolate renders of the
+		//! same part before and after an edit are directly comparable.
+		void IsolateThreeQuarterOffset( double out[3] )
+		{
+			static const double kPi      = 3.14159265358979323846;
+			static const double kAzimuth = 35.0 * kPi / 180.0;
+			static const double kElev    = 25.0 * kPi / 180.0;
+			out[0] = std::sin( kAzimuth ) * std::cos( kElev );
+			out[1] = std::sin( kElev );
+			out[2] = std::cos( kAzimuth ) * std::cos( kElev );
+		}
+
+		//! The fraction of each frame half-extent the object's bounding BOX is
+		//! allowed to fill -- i.e. a 15% margin on every side, so the
+		//! silhouette never touches the frame edge.
+		const double kIsolateFrameFill = 0.85;
+
+		//! Solve the eye distance (along `dir`, the unit vector from the box
+		//! centre toward the eye) that fits the WHOLE world AABB inside
+		//! kIsolateFrameFill of the frame, for a pinhole of vertical half-tangent
+		//! `tanHalfV` and aspect `aspect`.
+		//!
+		//! Deliberately the EXACT box fit, not the cheaper bounding-SPHERE fit:
+		//! a sphere circumscribing an AABB has 1.73x the box's half-extent, so
+		//! the sphere fit pushes the eye far enough back that a compact part
+		//! ends up filling well under half the frame it was supposed to fill --
+		//! which defeats the entire point of framing it.  Per corner, the
+		//! perspective constraint |screenOffset| <= tan*fill * depth with
+		//! depth = distance - dot(corner-centre, dir) rearranges to a LOWER
+		//! BOUND on distance; the answer is the max of those 16 bounds (8
+		//! corners x 2 axes).  A floor keeps the eye outside the box even for a
+		//! flat/degenerate one (where some bound can be <= the nearest corner's
+		//! own offset).
+		double IsolateFitDistance( const double bbMin[3], const double bbMax[3],
+		                            const double center[3], const double dir[3],
+		                            const double upHint[3],
+		                            const double tanHalfV, const double aspect )
+		{
+			// Eye-space basis for the FIXED vantage: forward is -dir.
+			const double f[3] = { -dir[0], -dir[1], -dir[2] };
+			double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+			                f[2]*upHint[0] - f[0]*upHint[2],
+			                f[0]*upHint[1] - f[1]*upHint[0] };
+			const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+			if( !( rl > 1e-12 ) ) return 0.0;   // caller falls back
+			r[0] /= rl; r[1] /= rl; r[2] /= rl;
+			const double u[3] = { r[1]*f[2] - r[2]*f[1],
+			                      r[2]*f[0] - r[0]*f[2],
+			                      r[0]*f[1] - r[1]*f[0] };
+
+			const double limV = tanHalfV * kIsolateFrameFill;
+			const double limH = tanHalfV * aspect * kIsolateFrameFill;
+			if( !( limV > 1e-9 ) || !( limH > 1e-9 ) ) return 0.0;
+
+			double dist = 0.0, maxTowardEye = 0.0;
+			for( int c = 0; c < 8; ++c ) {
+				const double p[3] = {
+					( ( c & 1 ) ? bbMax[0] : bbMin[0] ) - center[0],
+					( ( c & 2 ) ? bbMax[1] : bbMin[1] ) - center[1],
+					( ( c & 4 ) ? bbMax[2] : bbMin[2] ) - center[2] };
+				// Depth of this corner = dist - toward (it sits `toward`
+				// nearer the eye than the centre plane does).
+				const double toward = p[0]*dir[0] + p[1]*dir[1] + p[2]*dir[2];
+				const double a = std::fabs( p[0]*r[0] + p[1]*r[1] + p[2]*r[2] );
+				const double b = std::fabs( p[0]*u[0] + p[1]*u[1] + p[2]*u[2] );
+				const double needH = a / limH + toward;
+				const double needV = b / limV + toward;
+				if( needH > dist ) dist = needH;
+				if( needV > dist ) dist = needV;
+				if( toward > maxTowardEye ) maxTowardEye = toward;
+			}
+
+			// Never place the eye inside (or on) the box: keep at least a
+			// tenth of the diagonal of clearance ahead of the nearest corner.
+			const double ext[3] = { bbMax[0]-bbMin[0], bbMax[1]-bbMin[1], bbMax[2]-bbMin[2] };
+			const double diag = std::sqrt( ext[0]*ext[0] + ext[1]*ext[1] + ext[2]*ext[2] );
+			const double floorDist = maxTowardEye + diag * 0.1;
+			return dist > floorDist ? dist : floorDist;
+		}
+
+		//! Screen-space coverage of a world AABB through an explicit camera.
+		//! Projects the 8 corners, takes their axis-aligned screen-space
+		//! bounds, clips to the frame, and returns area/(W*H) in [0,1].  An
+		//! UPPER BOUND on silhouette coverage (an AABB is not the object) --
+		//! see AgentRenderResult::isolateBBoxCoverage for why that, rather
+		//! than a per-pixel count, is the reported number.  Returns -1 when
+		//! any corner lies at or behind the camera plane (a screen-space area
+		//! is then undefined) or the inputs are degenerate -- never a guess.
+		//! `tanHalfVFov` is tan(fov/2) with fov the FULL VERTICAL field of
+		//! view: PinholeCamera::ComputeScaleFromFOV stretches y by
+		//! 2*tan(fov/2)/H and x by the same times W/H*pixelAR, so the
+		//! vertical half-extent at unit depth is exactly tan(fov/2) and the
+		//! horizontal one is that times `aspect`.
+		double ProjectedBBoxCoverage( const double bbMin[3], const double bbMax[3],
+		                               const double eye[3], const double target[3],
+		                               const double upHint[3],
+		                               const double tanHalfVFov, const double aspect )
+		{
+			if( !( tanHalfVFov > 0.0 ) || !( aspect > 0.0 ) ) return -1.0;
+
+			double f[3] = { target[0]-eye[0], target[1]-eye[1], target[2]-eye[2] };
+			double fl = std::sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
+			if( !( fl > 0.0 ) ) return -1.0;
+			f[0] /= fl; f[1] /= fl; f[2] /= fl;
+
+			double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+			                f[2]*upHint[0] - f[0]*upHint[2],
+			                f[0]*upHint[1] - f[1]*upHint[0] };
+			double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+			if( !( rl > 1e-12 ) ) return -1.0;   // view direction parallel to the up hint
+			r[0] /= rl; r[1] /= rl; r[2] /= rl;
+
+			const double u[3] = { r[1]*f[2] - r[2]*f[1],
+			                      r[2]*f[0] - r[0]*f[2],
+			                      r[0]*f[1] - r[1]*f[0] };
+
+			double minX = 1e300, maxX = -1e300, minY = 1e300, maxY = -1e300;
+			for( int c = 0; c < 8; ++c ) {
+				const double p[3] = {
+					( c & 1 ) ? bbMax[0] : bbMin[0],
+					( c & 2 ) ? bbMax[1] : bbMin[1],
+					( c & 4 ) ? bbMax[2] : bbMin[2] };
+				const double v[3] = { p[0]-eye[0], p[1]-eye[1], p[2]-eye[2] };
+				const double z = v[0]*f[0] + v[1]*f[1] + v[2]*f[2];
+				if( !( z > 1e-9 ) ) return -1.0;   // at/behind the camera plane
+				const double sx = ( v[0]*r[0] + v[1]*r[1] + v[2]*r[2] ) / ( z * tanHalfVFov * aspect );
+				const double sy = ( v[0]*u[0] + v[1]*u[1] + v[2]*u[2] ) / ( z * tanHalfVFov );
+				if( sx < minX ) minX = sx;
+				if( sx > maxX ) maxX = sx;
+				if( sy < minY ) minY = sy;
+				if( sy > maxY ) maxY = sy;
+			}
+
+			// Clip the [-1,1]x[-1,1] normalized frame.
+			if( minX < -1.0 ) minX = -1.0;
+			if( maxX >  1.0 ) maxX =  1.0;
+			if( minY < -1.0 ) minY = -1.0;
+			if( maxY >  1.0 ) maxY =  1.0;
+			const double w = maxX - minX;
+			const double h = maxY - minY;
+			if( !( w > 0.0 ) || !( h > 0.0 ) ) return 0.0;   // entirely off-frame
+			const double coverage = ( w * 0.5 ) * ( h * 0.5 );
+			return coverage > 1.0 ? 1.0 : coverage;
+		}
+
 		bool DecodePngRgbAt( const std::vector<unsigned char>& png,
 		                     unsigned int x, unsigned int y,
 		                     unsigned char& outR, unsigned char& outG, unsigned char& outB )
@@ -8265,6 +8703,13 @@ namespace RISE
 			// render failure.
 			bool viewFovSkippedActiveNonPinhole = false;
 
+			// G1 (2026-08-10) `render{isolate:}`: set when the auto-framing
+			// distance had to assume a field of view because the ACTIVE
+			// camera is not a pinhole (only a PinholeCamera reports one) --
+			// the framing is then approximate, and the tail says so rather
+			// than reporting a clean auto-frame.  Never a render failure.
+			bool isolateFovAssumed = false;
+
 			// ROUTING-ONLY signal (P1 fix): choosing which controller entry
 			// point parks this render (RunPreviewRenderParked, when a
 			// film/camera override is in play, vs. the plain
@@ -8279,8 +8724,13 @@ namespace RISE
 			// request through the override-aware entry point, which is
 			// harmless -- the actual failure message doRenderWork produces is
 			// unaffected by which entry point ran it.
+			// G1 (2026-08-10): an `isolate` request is treated the same
+			// CONSERVATIVE way -- absent a caller-supplied camera it always
+			// resolves to an auto-framed pose (location/lookat/up), so this
+			// is never a false negative; when the caller DID supply one, the
+			// camera terms below already fire.
 			const bool wantCameraOverrideForRouting =
-				!params.view.empty() ||
+				!params.view.empty() || !params.isolate.empty() ||
 				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
 					effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
 					effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
@@ -9352,6 +9802,350 @@ namespace RISE
 							viewFovSkippedActiveNonPinhole = true;
 						}
 					}
+				}
+
+				// ---- G1 (2026-08-10) `render{isolate:}`: resolve the object,
+				// auto-frame the camera on it, and hide everything else for
+				// the duration of THIS render.
+				//
+				// Placed AFTER the `view` block (so "did the caller supply a
+				// camera?" is already settled, including a resolved view's
+				// pose) and BEFORE `wantCameraOverride` below (so an
+				// auto-framed pose flows through the SAME applyCameraOverride
+				// machinery every other override uses -- no parallel
+				// mechanism), and BEFORE the branch dispatch (so isolation
+				// covers beauty, objectmap, the data view modes, the
+				// BeautyVariant transports and draft identically -- object
+				// visibility is Scene state, not rasterizer state).
+				//
+				// `isolateGuard` is declared at THIS scope so it outlives
+				// every branch below -- including their early `return`s and
+				// an exception unwinding out of Rasterize() -- and destructs
+				// LAST relative to the production branch's fsGuard/
+				// restoreGuard/sampleGuard (declared later, destructed
+				// first).  Its restore touches only per-object flags and the
+				// Scene's light generation, so it has no ordering
+				// relationship with those three.
+				ObjectSoloRestoreGuard isolateGuard( mJob->GetScene() );
+				if( !params.isolate.empty() )
+				{
+					IObjectManager* objMgrForIsolate = mJob->GetObjects();
+					IObjectPriv* isolateObj = nullptr;
+					std::string isolateMessage;
+					if( !ResolveIsolateObject( objMgrForIsolate, params.isolate, isolateObj, isolateMessage ) ) {
+						res.ok = false;
+						res.message = isolateMessage;
+						specificFailureReported = true;
+						return;
+					}
+
+					// Invariant 1 (see ObjectSoloRestoreGuard's doc): build
+					// the TLAS over the FULL object set BEFORE hiding
+					// anything, so the cached BVH can never be built from the
+					// isolated set and outlive the restore.  Idempotent, and
+					// it also runs RealizeAllObjects() -- which is what makes
+					// the bounding box read below the object's REAL baked
+					// extent rather than a deferred geometry's zero box.
+					if( objMgrForIsolate ) objMgrForIsolate->PrepareForRendering();
+
+					// Invariant 3 (G1 fix-round, 2026-08-10): the THIRD
+					// visibility-dependent cache, closed with the SAME
+					// pre-build-against-the-full-scene shape as invariant 1.
+					//
+					// AutoRasterizer resolves `auto_rasterizer`'s concrete
+					// integrator inside a std::call_once -- ONCE per
+					// dispatcher object, by design -- and its Tier-1 static
+					// scan (SceneHasTransmissiveMaterial) walks
+					// IObjectManager::EnumerateObjects, which filters on
+					// IsWorldVisible.  If an `isolate` render were the FIRST
+					// render on this Job, that one-and-only resolution would
+					// see a ONE-OBJECT scene: a glass-plus-point-light scene
+					// isolated down to an opaque part resolves to PT with the
+					// reason "no caustic/strong-indirect signal", and NOTHING
+					// invalidates mResolveOnce afterwards -- the restore below
+					// puts the objects back but every later render, INCLUDING
+					// the user's own full-scene production renders, keeps the
+					// wrong integrator and the confidently-wrong reason.
+					// (Missing caustic energy with no diagnostic pointing at
+					// the cause; per docs/UNIFIED_INTEGRATOR_DECISION.md, VCM
+					// is the only integrator that reaches some of it.)
+					//
+					// Forcing the resolution HERE -- full object set still
+					// visible, before ApplyObjectSolo -- makes the isolated
+					// render reuse the CORRECT resolution and leaves the
+					// restore with nothing to undo, exactly like the TLAS.
+					// Chosen over re-resolving on a topology change (that
+					// would change AutoRasterizer's once-only contract, and
+					// its per-render probe cost, for every host in the tree)
+					// and over refusing `isolate` on an unresolved auto
+					// rasterizer (a real capability lost to an internal
+					// caching detail).
+					//
+					// Gated on isProductionBeauty because that is the ONLY
+					// branch below that renders through the production
+					// rasterizer: doDraftRenderWork / doObjectMapRenderWork /
+					// doViewModeRenderWork / doBeautyVariantRenderWork each
+					// build their OWN throwaway pipeline and never touch it,
+					// so they cannot poison it and must not pay a probe's
+					// cost.  Keep this gate in step if that ever changes.
+					// The dynamic_cast is the SAME rasterizer-identity idiom
+					// RasterizerSupportsLightSolo uses; a non-auto rasterizer
+					// (or a null one) costs one failed cast and nothing else.
+					// KNOWN, ACCEPTED ORDERING CAVEAT (G1 review round 3, P2).
+					// This fires BEFORE applyFilmOverride() and the sample-count
+					// override further down, whereas the BASELINE (non-isolate)
+					// path resolves lazily inside mJob->Rasterize(), i.e. AFTER
+					// both.  The Tier-2 PROBE reads the film's dimensions when it
+					// runs, so on the isolate path it can see the scene's authored
+					// dims rather than this request's effective (agent-capped)
+					// ones.  Left as-is deliberately: the probe is opt-in
+					// (`probe` default off) AND needs samples >= its activation
+					// threshold AND needs the isolate render to be the FIRST on
+					// this dispatcher, while the correct reordering would mean
+					// hiding objects after the overrides -- restructuring render
+					// setup, which is a larger risk than the narrow case it
+					// closes.  Tier-1 (static scene analysis, the common path) is
+					// unaffected: it reads materials and lights, not film dims.
+					// The sample-count override is a non-issue either way --
+					// AutoRasterizer does not implement Set/GetSampleCountOverride,
+					// so the probe's activation gate reads the authored count
+					// regardless of ordering.
+					if( isProductionBeauty ) {
+						if( RISE::Implementation::AutoRasterizer* autoRast =
+								dynamic_cast<RISE::Implementation::AutoRasterizer*>( rast ) ) {
+							autoRast->PreResolveIntegrator( mJob->GetScene() );
+						}
+					}
+
+					const BoundingBox bb = static_cast<const IObject*>( isolateObj )->getBoundingBox();
+					const double bbMin[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
+					const double bbMax[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
+					double ext[3] = { bbMax[0]-bbMin[0], bbMax[1]-bbMin[1], bbMax[2]-bbMin[2] };
+					bool bboxUsable = true;
+					for( int a = 0; a < 3; ++a ) {
+						if( !RISE::IsFiniteDouble( bbMin[a] ) || !RISE::IsFiniteDouble( bbMax[a] ) ||
+							!( ext[a] >= 0.0 ) || ext[a] > 1.0e12 ) {
+							bboxUsable = false;
+						}
+					}
+					const double diag = bboxUsable
+						? std::sqrt( ext[0]*ext[0] + ext[1]*ext[1] + ext[2]*ext[2] ) : 0.0;
+					if( bboxUsable && !( diag > 0.0 ) ) bboxUsable = false;
+
+					// The caller's own camera (an explicit `camera` override,
+					// or a resolved `view`) WINS -- no auto-framing at all.
+					const bool callerSuppliedCamera =
+						effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
+						effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
+						effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov;
+
+					if( !callerSuppliedCamera && !bboxUsable ) {
+						char box[224];
+						std::snprintf( box, sizeof( box ),
+							" -- its world bounding box is (%.6g %.6g %.6g) .. (%.6g %.6g %.6g)",
+							bbMin[0], bbMin[1], bbMin[2], bbMax[0], bbMax[1], bbMax[2] );
+						res.ok = false;
+						res.message = "isolate \"" + params.isolate + "\" cannot be auto-framed: the object has a "
+							"degenerate or unbounded extent" + box +
+							".  Supply an explicit `camera` to isolate it anyway.";
+						specificFailureReported = true;
+						return;
+					}
+
+					// The ACTIVE camera's own pose/FOV: the baseline the
+					// coverage projection below measures against, and the FOV
+					// the auto-framing distance is solved for (so an isolate
+					// render keeps the scene's own lens rather than imposing
+					// one).  Only a PinholeCamera reports a FOV; for anything
+					// else assume 45 deg and say so (isolateFovAssumed).
+					static const double kDefaultVFovRad = 45.0 * 3.14159265358979323846 / 180.0;
+					double camEye[3]    = { 0.0, 0.0, 0.0 };
+					double camTarget[3] = { 0.0, 0.0, -1.0 };
+					double camUp[3]     = { 0.0, 1.0, 0.0 };
+					double camVFovRad   = kDefaultVFovRad;
+					bool   haveActiveSnapshot = false;
+					if( ICameraManager* camsForIsolate = mJob->GetCameras() ) {
+						const std::string activeNameForIsolate = mJob->GetActiveCameraName();
+						const ICamera* activeCamForIsolate = !activeNameForIsolate.empty()
+							? camsForIsolate->GetItem( activeNameForIsolate.c_str() ) : nullptr;
+						CameraSnapshot snap;
+						if( activeCamForIsolate && CameraIntrospection::CaptureCameraSnapshot( *activeCamForIsolate, snap ) ) {
+							haveActiveSnapshot = true;
+							for( int a = 0; a < 3; ++a ) {
+								camEye[a]    = snap.location[a];
+								camTarget[a] = snap.lookat[a];
+								camUp[a]     = snap.up[a];
+							}
+							if( snap.type == RISE::CameraSnapshot::Pinhole && snap.fov > 0.0 ) {
+								camVFovRad = snap.fov;   // CameraSnapshot::fov is RADIANS (CameraIntrospection's convention)
+							} else {
+								isolateFovAssumed = true;
+							}
+						}
+					}
+					if( !haveActiveSnapshot ) isolateFovAssumed = true;
+
+					// The aspect ratio THIS render will actually use: an
+					// explicit width/height pair when given, else the live
+					// Film's -- every implicit path (the agent-surface
+					// absent-dims default, the BeautyVariant divisor)
+					// preserves the Film's ratio, so the Film is the right
+					// fallback for all of them.
+					double renderAspect = 1.0;
+					{
+						unsigned int aspW = params.width, aspH = params.height;
+						double pixAR = 1.0;
+						const IScenePriv* scenePrivForAspect = mJob->GetScene();
+						const IFilm* filmForAspect = scenePrivForAspect ? scenePrivForAspect->GetFilm() : nullptr;
+						if( filmForAspect ) {
+							pixAR = filmForAspect->GetPixelAR();
+							if( !( aspW > 0 && aspH > 0 ) ) {
+								aspW = filmForAspect->GetWidth();
+								aspH = filmForAspect->GetHeight();
+							}
+						}
+						if( aspW > 0 && aspH > 0 && RISE::IsFiniteDouble( pixAR ) && pixAR > 0.0 ) {
+							renderAspect = ( static_cast<double>( aspW ) / static_cast<double>( aspH ) ) * pixAR;
+						}
+					}
+
+					if( !callerSuppliedCamera )
+					{
+						// Solve the eye distance that fits the object's whole
+						// world AABB into kIsolateFrameFill of the frame from
+						// the fixed three-quarter vantage -- see
+						// IsolateFitDistance for the derivation (and for why
+						// the exact box fit, not a bounding sphere).
+						double offset[3];
+						IsolateThreeQuarterOffset( offset );
+						const double center[3] = { ( bbMin[0]+bbMax[0] ) * 0.5,
+						                            ( bbMin[1]+bbMax[1] ) * 0.5,
+						                            ( bbMin[2]+bbMax[2] ) * 0.5 };
+						const double worldUp[3] = { 0.0, 1.0, 0.0 };
+						const double tanHalfV   = std::tan( camVFovRad * 0.5 );
+						double distance = IsolateFitDistance( bbMin, bbMax, center, offset,
+						                                       worldUp, tanHalfV, renderAspect );
+						if( !( distance > 0.0 ) ) distance = diag * 2.0;   // degenerate basis/FOV -- a sane, non-zero fallback
+						for( int a = 0; a < 3; ++a ) {
+							camTarget[a] = center[a];
+							camEye[a]    = center[a] + offset[a] * distance;
+						}
+						camUp[0] = worldUp[0]; camUp[1] = worldUp[1]; camUp[2] = worldUp[2];
+
+						// Feed the SAME AgentCameraOverride fields `camera`
+						// and `view` use, so applyCameraOverride restores the
+						// active camera afterwards with no extra machinery.
+						// FOV is deliberately NOT overridden: the framing was
+						// solved FOR the active camera's own lens, and setting
+						// "fov" would fail-loud on a non-pinhole active camera.
+						effectiveCamera.hasLocation = true;
+						effectiveCamera.location    = Vec3ToOverrideStr( camEye );
+						effectiveCamera.hasLookAt   = true;
+						effectiveCamera.lookAt      = Vec3ToOverrideStr( camTarget );
+						effectiveCamera.hasUp       = true;
+						effectiveCamera.up          = Vec3ToOverrideStr( camUp );
+						res.isolateAutoFramed = true;
+					}
+					else
+					{
+						// Caller-supplied pose: read the numbers back out of
+						// the SAME override fields the render will apply, so
+						// the coverage below is measured against the camera
+						// that actually renders -- not the pre-override
+						// active camera.  A pose expressed ONLY as an
+						// orientation (no location/lookat pair) cannot be
+						// resolved to an eye/target here, so coverage is
+						// honestly left unavailable in that case.
+						auto parseVec3 = []( const std::string& s, double out[3] ) -> bool {
+							return std::sscanf( s.c_str(), "%lf %lf %lf", &out[0], &out[1], &out[2] ) == 3;
+						};
+						bool poseResolvable = true;
+						if( effectiveCamera.hasLocation && !parseVec3( effectiveCamera.location, camEye ) ) poseResolvable = false;
+						if( effectiveCamera.hasLookAt   && !parseVec3( effectiveCamera.lookAt,   camTarget ) ) poseResolvable = false;
+						if( effectiveCamera.hasUp       && !parseVec3( effectiveCamera.up,       camUp ) ) poseResolvable = false;
+						if( effectiveCamera.hasFov ) {
+							const double fovDeg = std::strtod( effectiveCamera.fov.c_str(), nullptr );
+							if( fovDeg > 0.0 && fovDeg < 180.0 ) {
+								camVFovRad = fovDeg * 3.14159265358979323846 / 180.0;
+								isolateFovAssumed = false;
+							}
+						}
+						if( ( effectiveCamera.hasOrientation || effectiveCamera.hasTargetOrientation ) &&
+							!( effectiveCamera.hasLocation && effectiveCamera.hasLookAt ) ) {
+							poseResolvable = false;
+						}
+						if( !poseResolvable || !haveActiveSnapshot ) {
+							// Signal "coverage unavailable" to the projection below.
+							camVFovRad = -1.0;
+						}
+					}
+
+					// The measured facts (see AgentRenderResult's docs).
+					res.isolateObject = params.isolate;
+					// FIX 4 (G1 fix-round, 2026-08-10): only publish bbox/
+					// longestEdge when the box is actually USABLE.  A
+					// degenerate/unbounded bbox is reachable here despite the
+					// refusal above -- that refusal only fires when the
+					// caller did NOT supply their own camera; a caller who
+					// supplies an explicit `camera` can still isolate an
+					// object whose box fails the finite/non-negative-extent
+					// checks.  Copying raw bb.ll/bb.ur unconditionally would
+					// report NaN/Inf, which SerializeNumber (Json.cpp) clamps
+					// to a literal 0 -- indistinguishable from "the object is
+					// genuinely a point".  Mirror bboxCoverage's own
+					// sentinel-then-omit convention instead: leave the
+					// default-constructed 0/0/0 values but gate the
+					// STRUCTURED FIELD on isolateBBoxUsable (see AgentRpc.cpp)
+					// so the RPC layer omits bboxMin/bboxMax/longestEdge
+					// entirely rather than emitting fabricated-looking zeros.
+					res.isolateBBoxUsable = bboxUsable;
+					if( bboxUsable ) {
+						for( int a = 0; a < 3; ++a ) {
+							res.isolateBBoxMin[a] = bbMin[a];
+							res.isolateBBoxMax[a] = bbMax[a];
+						}
+						res.isolateLongestEdge = std::max( ext[0], std::max( ext[1], ext[2] ) );
+					}
+					// FIX 2 (G1 fix-round, 2026-08-10): SUPPRESS bboxCoverage
+					// entirely -- rather than caveat it -- whenever the
+					// projection model isn't a pinhole (isolateFovAssumed).
+					// applyCameraOverride can only SetProperty fields on the
+					// ALREADY-active camera (it never re-types it), so a
+					// thin-lens/fisheye/orthographic active camera renders
+					// with ITS OWN (non-tan-based) projection regardless of
+					// what pose/fov the caller or the auto-framer computed;
+					// ProjectedBBoxCoverage's formula is a pinhole tan(fov/2)
+					// model, so applying it there wouldn't be "approximate",
+					// it would be the WRONG projection model entirely.  A
+					// wrong-model number that looks clean is worse than an
+					// absent one -- this project has measured that payload
+					// facts get acted on by the calling model.  Applies in
+					// EVERY branch (auto-framed and caller-supplied alike);
+					// previously only `!poseResolvable || !haveActiveSnapshot`
+					// forced the sentinel, so a caller-supplied camera over a
+					// non-pinhole active camera fell through to a computed
+					// (wrong-model) number with nothing disclosing it.
+					res.isolateBBoxCoverage = ( bboxUsable && !isolateFovAssumed && camVFovRad > 0.0 )
+						? ProjectedBBoxCoverage( bbMin, bbMax, camEye, camTarget, camUp,
+						                          std::tan( camVFovRad * 0.5 ), renderAspect )
+						: -1.0;
+
+					// Apply the isolation LAST, once every read of the
+					// unmodified scene above is done, and arm the restore in
+					// the same breath.  The light-generation bump is the
+					// apply half of ObjectSoloRestoreGuard's invariant 2: any
+					// caster that (re)builds during this render must see the
+					// ISOLATED luminary set, and the guard's matching bump on
+					// restore forces the full set back afterwards.
+					unsigned int hiddenCount = 0;
+					std::vector<std::pair<IObjectPriv*, bool> > priorVisibility =
+						ApplyObjectSolo( objMgrForIsolate, isolateObj, hiddenCount );
+					isolateGuard.Arm( std::move( priorVisibility ) );
+					if( RISE::Implementation::Scene* concreteSceneForIsolate =
+							dynamic_cast<RISE::Implementation::Scene*>( mJob->GetScene() ) ) {
+						concreteSceneForIsolate->BumpLightTopologyGeneration();
+					}
+					res.isolateApplied = true;
 				}
 
 				wantCameraOverride =
@@ -10596,6 +11390,56 @@ namespace RISE
 					res.message += what;
 					res.message += " -- no scene lighting is evaluated)";
 				}
+			}
+
+			// G1 (2026-08-10) `render{isolate:}`: the honest note.  Unlike
+			// `light`, isolation applies to EVERY render target (it is Scene
+			// object state, not rasterizer state), so there is no
+			// "ignored under mode X" branch here -- only the framing fact,
+			// plus the qualifiers that would otherwise leave the caller
+			// guessing: a caller-supplied camera beat the auto-frame; the
+			// active camera is not a pinhole (G1 fix-round FIX 2 -- affects
+			// BOTH the auto-framed distance solve, where it's an
+			// approximation caveat, and bboxCoverage, which is SUPPRESSED
+			// rather than caveated -- see the isolateFovAssumed comment
+			// above); the bbox itself is degenerate/unusable (G1 fix-round
+			// FIX 4 -- only reachable with a caller-supplied camera, since
+			// the render() refusal path already rejects this case
+			// otherwise).  An unresolvable/ambiguous/degenerate-with-no-
+			// caller-camera `isolate` already failed the render loudly
+			// inside doRenderWork, so this block only runs when it resolved.
+			if( res.ok && res.isolateApplied ) {
+				char isoNote[512];
+				if( !res.isolateBBoxUsable ) {
+					// Degenerate/unbounded bbox, reached only via an explicit
+					// caller camera (see the refusal above) -- bboxMin/
+					// bboxMax/longestEdge/bboxCoverage are all omitted on
+					// the wire (FIX 4); say so instead of silently reporting
+					// nothing, which would look like the render just forgot.
+					std::snprintf( isoNote, sizeof( isoNote ),
+						" (isolate: \"%s\" is the only object rendered; its bounding box is degenerate "
+						"or unbounded, so bboxMin/bboxMax/longestEdge/bboxCoverage are not reported; "
+						"framed by the camera you supplied, not auto-framed)",
+						res.isolateObject.c_str() );
+				} else if( res.isolateAutoFramed ) {
+					std::snprintf( isoNote, sizeof( isoNote ),
+						" (isolate: \"%s\" is the only object rendered; longest bbox edge %.6g; %s)",
+						res.isolateObject.c_str(), res.isolateLongestEdge,
+						isolateFovAssumed
+							? "auto-framed three-quarter view, distance APPROXIMATE -- the active camera "
+							  "is not a pinhole, so a 45 deg vertical FOV was assumed; bboxCoverage was "
+							  "not computed for the same reason"
+							: "auto-framed three-quarter view" );
+				} else {
+					std::snprintf( isoNote, sizeof( isoNote ),
+						" (isolate: \"%s\" is the only object rendered; longest bbox edge %.6g; framed "
+						"by the camera you supplied, not auto-framed%s)",
+						res.isolateObject.c_str(), res.isolateLongestEdge,
+						isolateFovAssumed
+							? "; bboxCoverage was not computed because the active camera is not a pinhole"
+							: "" );
+				}
+				res.message += isoNote;
 			}
 
 			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2,

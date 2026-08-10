@@ -330,11 +330,11 @@
 //                                            the singular verb.  `results` is one entry
 //                                            per UNIQUE target, first-occurrence order.)
 //      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
-//                    imageMaxEdge?}
+//                    light?,isolate?,imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
-//                                            legend?,png_base64?,byteLength?,imageWidth?,imageHeight?}
+//                                            legend?,isolate?,png_base64?,byteLength?,imageWidth?,imageHeight?}
 //                                           (`imageMaxEdge` (OPTIONAL number,
 //                                            clamped [16,1024]) returns the
 //                                            rendered PNG INLINE so an ordinary
@@ -421,7 +421,43 @@
 //                                            THIS render only, composing with EVERY
 //                                            mode -- see AgentSession::
 //                                            AgentRenderParams::view's doc for the
-//                                            resolution order.)
+//                                            resolution order.
+//                                            G1 (2026-08-10) adds `isolate` (OPTIONAL
+//                                            string): render ONE named
+//                                            standard_object alone, with the camera
+//                                            auto-framed on its bounding box (a
+//                                            caller-supplied `camera`/`view` wins).
+//                                            Every other object is transiently
+//                                            world-hidden, so it contributes to no
+//                                            camera/secondary/shadow ray and -- being
+//                                            invisible to the luminary collector --
+//                                            stops acting as a light too; explicit
+//                                            lights and the environment are
+//                                            untouched.  Composes with EVERY mode and
+//                                            with quality:"draft" (object visibility
+//                                            is Scene state, never rasterizer state),
+//                                            so unlike `light` it is never silently
+//                                            ignored.  Unresolvable / ambiguous
+//                                            (a generator prefix) / non-renderable
+//                                            (a CSG operand) / un-auto-framable-
+//                                            without-a-caller-camera (degenerate or
+//                                            unbounded bbox) names FAIL the render
+//                                            with the available-name list, matching
+//                                            `view`/`light`.  A SUCCESSFUL isolate
+//                                            render (rr.ok == true) adds a nested
+//                                            `isolate` result object
+//                                            {object,bboxMin[3]?,bboxMax[3]?,
+//                                            longestEdge?,autoFramed,bboxCoverage?}
+//                                            -- see AgentSession::AgentRenderResult's
+//                                            isolate* fields for exactly what
+//                                            `bboxCoverage` measures and why it (and,
+//                                            separately, bboxMin/bboxMax/longestEdge)
+//                                            can be OMITTED even on a successful
+//                                            isolate render (G1 fix-round,
+//                                            2026-08-10: a degenerate/unbounded bbox
+//                                            reached via a caller-supplied camera
+//                                            omits the bbox trio; a non-pinhole
+//                                            active camera omits bboxCoverage).)
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
