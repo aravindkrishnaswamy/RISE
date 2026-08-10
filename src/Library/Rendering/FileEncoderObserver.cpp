@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -463,7 +464,8 @@ namespace
 		if( !encoder.SupportsHDR() || format == "HDR10_PNG" ) reasons.insert("integer_output");
 		if( opts.viewTransform.exposureEV != 0.0f ||
 			(!encoder.SupportsHDR() && metadata.cameraExposureEV != 0.0) ||
-			opts.viewTransform.toneCurve != eDisplayTransform_None ||
+			(opts.viewTransform.toneCurve != eDisplayTransform_None &&
+			 opts.viewTransform.toneCurveStrength > 0.0f) ||
 			opts.colorSpace == eColorSpace_sRGB ||
 			opts.colorSpace == eColorSpace_ProPhotoRGB ) {
 			reasons.insert("display_transform_enabled");
@@ -490,6 +492,48 @@ namespace
 	{
 		effective = requested;
 		const std::string format = encoder.FormatName();
+		switch( requested.colorSpace ) {
+		case eColorSpace_sRGB:
+		case eColorSpace_Rec709RGB_Linear:
+		case eColorSpace_ROMMRGB_Linear:
+		case eColorSpace_ProPhotoRGB:
+			break;
+		default:
+			error = "authored color space is outside the fixed enum";
+			return false;
+		}
+		switch( requested.viewTransform.toneCurve ) {
+		case eDisplayTransform_None:
+		case eDisplayTransform_Reinhard:
+		case eDisplayTransform_ACES:
+		case eDisplayTransform_AgX:
+		case eDisplayTransform_Hable:
+			break;
+		default:
+			error = "authored tone curve is outside the fixed enum";
+			return false;
+		}
+		const FrameStoreOutput::ViewTransform& view = requested.viewTransform;
+		if( !std::isfinite(view.exposureEV) ) {
+			error = "authored exposure must be finite";
+			return false;
+		}
+		if( !std::isfinite(view.toneCurveStrength) ||
+			view.toneCurveStrength < 0.0f || view.toneCurveStrength > 1.0f ) {
+			error = "authored tone curve strength must be finite and within [0, 1]";
+			return false;
+		}
+		const double balance[] = {
+			view.whiteBalance._00,view.whiteBalance._01,view.whiteBalance._02,
+			view.whiteBalance._10,view.whiteBalance._11,view.whiteBalance._12,
+			view.whiteBalance._20,view.whiteBalance._21,view.whiteBalance._22
+		};
+		for( const double component : balance ) {
+			if( !std::isfinite(component) ) {
+				error = "authored white balance must contain only finite values";
+				return false;
+			}
+		}
 		if( requested.includeAOVs || !requested.aovChannels.empty() ) {
 			if( !encoder.SupportsAOVs() ) {
 				error = "authored encoder does not support AOV channels";
@@ -504,7 +548,6 @@ namespace
 			error = "authored encoder does not support custom attributes";
 			return false;
 		}
-		const FrameStoreOutput::ViewTransform& view = requested.viewTransform;
 		const bool identityView = view.exposureEV == 0.0f &&
 			view.toneCurve == eDisplayTransform_None && view.toneCurveStrength == 1.0f &&
 			view.whiteBalance._00 == 1.0 && view.whiteBalance._01 == 0.0 &&
@@ -540,6 +583,10 @@ namespace
 			effective.colorSpace = eColorSpace_ROMMRGB_Linear;
 			effective.viewTransform = FrameStoreOutput::ViewTransform();
 		} else if( format == "HDR10_PNG" ) {
+			if( requested.viewTransform.toneCurve != eDisplayTransform_None ) {
+				error = "HDR10_PNG does not apply an authored tone curve";
+				return false;
+			}
 			effective.bpp = 16u;
 			effective.exrWithAlpha = false;
 		} else if( format == "TIFF" || format == "HDR" ||
@@ -987,6 +1034,12 @@ namespace
 				return false;
 			}
 		}
+		const double toneCurveStrength =
+			output->Find("view_tone_curve_strength")->GetFloat();
+		if( toneCurveStrength < 0.0 || toneCurveStrength > 1.0 ) {
+			error = "fire provenance output tone curve strength is outside [0, 1]";
+			return false;
+		}
 		for( const char* key : { "frame_index", "view_tone_curve" } ) {
 			if( output->Find(key)->GetType() != Value::UnsignedInteger ) {
 				error = "fire provenance output integer has the wrong type";
@@ -1031,8 +1084,9 @@ namespace
 				expectedReasons.insert("lossy_output");
 			}
 			if( output->Find("view_exposure_ev")->GetFloat() != 0.0 ||
-				output->Find("view_tone_curve")->GetIntegerArgument() !=
-					static_cast<std::uint64_t>(eDisplayTransform_None) ||
+				(output->Find("view_tone_curve")->GetIntegerArgument() !=
+					static_cast<std::uint64_t>(eDisplayTransform_None) &&
+				 output->Find("view_tone_curve_strength")->GetFloat() > 0.0) ||
 				colorSpace == "srgb" || colorSpace == "prophoto_rgb" ) {
 				expectedReasons.insert("display_transform_enabled");
 			}

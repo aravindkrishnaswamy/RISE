@@ -2054,6 +2054,84 @@ namespace
 			pngDigest && pngDigest->GetText() == RISECBOR64::SHA256Hex(pngBytes),
 			"[fire provenance] display derivative links to the finalized preview primary" );
 
+		const std::string identityPng = MakeTempPathWithoutExt()+"_identity.png";
+		const std::string zeroStrengthPng =
+			MakeTempPathWithoutExt()+"_zero_strength.png";
+		EncodeOpts identityPngOpts = opts;
+		identityPngOpts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		identityPngOpts.viewTransform.toneCurve = eDisplayTransform_None;
+		identityPngOpts.viewTransform.toneCurveStrength = 1.0f;
+		EncodeOpts zeroStrengthOpts = identityPngOpts;
+		zeroStrengthOpts.viewTransform.toneCurve = eDisplayTransform_ACES;
+		zeroStrengthOpts.viewTransform.toneCurveStrength = 0.0f;
+		const bool identityWritten = EncodeFrameStoreFileTransaction(
+			*store,*png,identityPngOpts,identityPng,transactionError);
+		const bool zeroStrengthWritten = EncodeFrameStoreFileTransaction(
+			*store,*png,zeroStrengthOpts,zeroStrengthPng,transactionError);
+		std::vector<unsigned char> identityBytes, zeroStrengthBytes, zeroStrengthSidecar;
+		RISECBOR64::Value zeroStrengthEnvelope;
+		const bool zeroStrengthDecoded = identityWritten && zeroStrengthWritten &&
+			ReadFileAllBytes(identityPng,identityBytes) &&
+			ReadFileAllBytes(zeroStrengthPng,zeroStrengthBytes) &&
+			ReadFileAllBytes(zeroStrengthPng+".provenance.cbor",zeroStrengthSidecar) &&
+			RISECBOR64::DecodeCanonical(zeroStrengthSidecar,zeroStrengthEnvelope,
+				&transactionError);
+		const RISECBOR64::Value* zeroStrengthPayload = zeroStrengthDecoded ?
+			zeroStrengthEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* zeroStrengthReasons = zeroStrengthPayload ?
+			zeroStrengthPayload->Find("artifact_reason_codes") : nullptr;
+		Check(zeroStrengthReasons && identityBytes == zeroStrengthBytes &&
+			zeroStrengthReasons->GetArray().size() == 2u &&
+			zeroStrengthReasons->GetArray()[0].GetText() == "integer_output" &&
+			zeroStrengthReasons->GetArray()[1].GetText() == "lossy_output",
+			"[fire provenance] zero-strength tone curve is byte-identical and has no transform reason" );
+
+		auto rejectsAuthoredOptions = [&]( IFrameEncoder& target,
+			const EncodeOpts& rejectedOpts, const std::string& suffix,
+			const std::string& errorFragment ) {
+			const std::string rejectedFile = MakeTempPathWithoutExt()+suffix;
+			std::string rejectedError;
+			const bool rejected = !EncodeFrameStoreFileTransaction(
+				*store,target,rejectedOpts,rejectedFile,rejectedError);
+			Check(rejected && !std::filesystem::exists(rejectedFile) &&
+				!std::filesystem::exists(rejectedFile+".provenance.cbor") &&
+				rejectedError.find(errorFragment) != std::string::npos,
+				"[fire provenance] invalid authored option rejects transactionally: "+suffix);
+		};
+		EncodeOpts invalidOpts = identityPngOpts;
+		invalidOpts.colorSpace = static_cast<COLOR_SPACE>(99);
+		rejectsAuthoredOptions(*png,invalidOpts,"_invalid_color.png","color space");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.toneCurve = static_cast<DISPLAY_TRANSFORM>(99);
+		rejectsAuthoredOptions(*png,invalidOpts,"_invalid_curve.png","tone curve");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.exposureEV =
+			std::numeric_limits<float>::infinity();
+		rejectsAuthoredOptions(*png,invalidOpts,"_infinite_exposure.png","finite");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.toneCurveStrength =
+			std::numeric_limits<float>::quiet_NaN();
+		rejectsAuthoredOptions(*png,invalidOpts,"_nan_strength.png","within [0, 1]");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.toneCurveStrength = -0.01f;
+		rejectsAuthoredOptions(*png,invalidOpts,"_negative_strength.png","within [0, 1]");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.toneCurveStrength = 1.01f;
+		rejectsAuthoredOptions(*png,invalidOpts,"_large_strength.png","within [0, 1]");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.whiteBalance._12 =
+			std::numeric_limits<double>::infinity();
+		rejectsAuthoredOptions(*png,invalidOpts,"_infinite_balance.png","finite values");
+		IFrameEncoder* hdr10 = FrameEncoderRegistry::Get().ByFormatName("HDR10_PNG");
+		invalidOpts = identityPngOpts;
+		invalidOpts.viewTransform.toneCurve = eDisplayTransform_ACES;
+		if( hdr10 ) {
+			rejectsAuthoredOptions(*hdr10,invalidOpts,"_ignored_curve.png",
+				"does not apply an authored tone curve");
+		} else {
+			Check(false,"[fire provenance] HDR10 encoder exists for authored-option validation");
+		}
+
 		FrameStore* cameraStore = MakeFireFidelityStore(1.0);
 		FrameStore* zeroCameraStore = MakeFireFidelityStore(0.0);
 		EncodeOpts cameraPrimaryOpts;
@@ -2138,6 +2216,10 @@ namespace
 				primaryBeforeDerivativeFailure.primaryArtifactFidelity,
 			"[fire provenance] failed display derivative preserves the finalized primary" );
 		std::filesystem::remove(failedDerivativeSidecar);
+		std::remove(identityPng.c_str());
+		std::remove((identityPng+".provenance.cbor").c_str());
+		std::remove(zeroStrengthPng.c_str());
+		std::remove((zeroStrengthPng+".provenance.cbor").c_str());
 		std::remove(pngFile.c_str());
 		std::remove(pngSidecar.c_str());
 		std::remove(signedZeroFile.c_str());
