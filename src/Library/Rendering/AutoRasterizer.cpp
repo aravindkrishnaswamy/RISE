@@ -622,10 +622,9 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	} probeSamplerGuard{ probeSampler };
 	probeSampler->SetNumSamples( cfg.spp );
 
-	// Shrink the film for the duration of the probe.  Safe: the probe runs
-	// single-threaded inside the
-	// exclusive resolution selection, strictly BEFORE the real render's worker
-	// threads spawn (ResizeFilm's concurrency contract).
+	// Shrink the film for the duration of the probe. The resolution owner is
+	// exclusive, and each candidate render joins its workers before the next
+	// resize or restoration (ResizeFilm's concurrency contract).
 	struct FilmRestoreGuard
 	{
 		IScenePriv& scene;
@@ -851,6 +850,9 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 
 IRasterizer* AutoRasterizer::BuildDelegate( AutoIntegratorChoice choice ) const
 {
+	if( mReturnNullDelegateForTest.exchange(false,std::memory_order_acq_rel) ) {
+		return nullptr;
+	}
 	// The real delegate: canonical sampler + canonical FrameStore + the
 	// wrapper's own denoise / guiding / adaptive configs.  This is the
 	// construction the concrete chunk parsers perform, so pinning `auto`
@@ -1054,13 +1056,8 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		IRasterizer* candidate = BuildDelegate( choice );
 
 		if( !candidate ) {
-			{
-				std::lock_guard<std::mutex> lock(mResolutionStateMutex);
-				mResolved = choice;
-			}
-			GlobalLog()->PrintEasyError(
-				"AutoRasterizer:: failed to build the chosen delegate rasterizer" );
-			return;
+			throw std::runtime_error(
+				"output_provenance_unavailable: Auto failed to build the chosen delegate rasterizer" );
 		}
 
 		// The resolution coordinator retries the body after an exception. Keep the candidate
@@ -1169,6 +1166,11 @@ void AutoRasterizer::ForTest_ThrowInsideProbe( const IScene& scene ) const
 unsigned int AutoRasterizer::ForTest_LiveProbeCaptureCount() const
 {
 	return gProbeCapturesLive.load(std::memory_order_acquire);
+}
+
+void AutoRasterizer::ForTest_ReturnNullDelegateOnce() const
+{
+	mReturnNullDelegateForTest.store(true,std::memory_order_release);
 }
 
 IRasterizer* AutoRasterizer::RetainDelegate() const

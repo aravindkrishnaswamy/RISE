@@ -194,6 +194,7 @@ namespace RISE
 			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
 			void ForTest_ThrowInsideProbe( const IScene& scene ) const;
 			unsigned int ForTest_LiveProbeCaptureCount() const;
+			void ForTest_ReturnNullDelegateOnce() const;
 
 		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
@@ -351,6 +352,7 @@ namespace RISE
 			mutable bool					mResolutionComplete;
 			mutable std::mutex				mResolutionStateMutex;
 			mutable std::atomic<bool>		mFailProbeForTest { false };
+			mutable std::atomic<bool>		mReturnNullDelegateForTest { false };
 
 			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
 			// when the probe is inactive).

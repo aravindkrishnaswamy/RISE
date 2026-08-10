@@ -2584,6 +2584,40 @@ static void TestProbeFailureRestoresFilmAndReferences()
 	std::remove(path.c_str());
 }
 
+static void TestNullDelegateBuildFailsClosedAndRetries()
+{
+	const std::string label =
+		"Auto null delegate construction fails closed without publishing completion";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"null_delegate_retry") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	bool rejected = false;
+	if( rasterizer ) {
+		rasterizer->ForTest_ReturnNullDelegateOnce();
+		try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("failed to build") !=
+				std::string::npos;
+		}
+	}
+	const bool unpublished = rasterizer &&
+		rasterizer->ForTest_GetDelegateFrameStore() == nullptr;
+	const bool retried = rasterizer &&
+		rasterizer->ResolveForFirePreflight(*job->GetScene());
+	Check(rejected && unpublished && retried &&
+		rasterizer->ForTest_GetDelegateFrameStore() == rasterizer->GetFrameStore(),
+		"null construction rejects, leaves no delegate, and permits a later retry: "+label);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestReplayAddRefFailurePreservesRetains()
 {
 	const std::string label =
@@ -3170,6 +3204,7 @@ int main()
 	TestCrossThreadResolutionCycleFailsClosed();
 	TestCrossThreadCallbackMutationFailsClosed();
 	TestProbeFailureRestoresFilmAndReferences();
+	TestNullDelegateBuildFailsClosedAndRetries();
 	TestReplayAddRefFailurePreservesRetains();
 	TestReplayNonConvergenceIsBounded();
 	TestSyncReplayTracksReentrantRemoval();
