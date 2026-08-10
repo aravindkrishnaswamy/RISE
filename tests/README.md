@@ -13,6 +13,15 @@ make -C build/make/rise tests
 ./run_all_tests.sh
 ```
 
+The normal suite uses deterministic fast tiers for the two render-heavy fire
+experiments. Run their original high-sample matrices explicitly for nightly or
+pre-release validation; the runner keeps them sequential because each render
+already consumes the worker pool:
+
+```sh
+./run_extended_tests.sh
+```
+
 Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links it against the core library.
 
 ### Windows
@@ -27,6 +36,8 @@ cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 .\run_all_tests.ps1 -Config Debug                # Debug
 .\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
 .\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
+.\run_extended_tests.ps1                         # High-sample fire matrices
+.\run_extended_tests.ps1 -Config Debug           # Debug high-sample matrices
 ```
 
 Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cmake/rise-tests/CMakeLists.txt). CMake globs every `tests/*.cpp` into its own per-test executable, links against the existing `RISE.lib` produced by the VS2022 Library project, and stages the OpenEXR + OIDN runtime DLLs alongside each test exe.
