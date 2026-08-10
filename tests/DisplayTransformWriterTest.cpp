@@ -3,8 +3,8 @@
 // source IRasterImage iteration and the inner writer receiving the pixel.
 //
 // Uses a recording mock writer that captures every WriteColor call.
-// We then check the captured colours against expected (curve(input *
-// 2^EV)) values.
+// We then check the captured Rec.709-linear colours against the complete
+// exposure, white-balance, target-primaries, and curve pipeline.
 
 #include <cassert>
 #include <cmath>

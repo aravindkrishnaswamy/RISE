@@ -76,7 +76,7 @@ namespace RISE
 			// need uint16 samples.
 			//
 			// Pipeline through `FrameStore::EncodePixel`:
-			//     ROMM linear → exposure → ROMM→BT.2020 matrix
+			//     Rec.709 linear → exposure → Rec.709→BT.2020 matrix
 			//       → (NO tone curve; isLDRFixed=false)
 			//       → ApplyPQTransfer (encoded → [0, 1])
 			//       → quantise to uint16 ([0, 65535])

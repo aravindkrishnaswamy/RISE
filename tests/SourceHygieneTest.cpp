@@ -980,6 +980,15 @@ int main()
 		Check(viewTransformHeader.find("white balance) is a placeholder") == std::string::npos &&
 			viewTransformHeader.find("Stage 2 (reserved)") == std::string::npos,
 			"ViewTransform contract describes active white-balance application" );
+		const std::string progressiveFilmHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ProgressiveFilm.h");
+		const std::string targetFormatHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"TargetFormat.h");
+		Check(viewTransformHeader.find("ROMM-linear pixel") == std::string::npos &&
+			viewTransformHeader.find("ROMM → target") == std::string::npos &&
+			progressiveFilmHeader.find("RISEPel ROMM RGB") == std::string::npos &&
+			targetFormatHeader.find("ROMM→BT.2020") == std::string::npos,
+			"output pipeline contracts name the Rec.709-linear RISEPel working space" );
 		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
 			frameEncoders.find("toneCurveStrength > 0.0f") != std::string::npos,
 			"LDR encoders consume white balance and tone-curve strength" );

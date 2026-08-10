@@ -5,10 +5,10 @@
 //
 //  Pipeline (see docs/FRAMESTORE_DESIGN.md §3.3):
 //
-//    ROMM-linear pixel
+//    Rec.709-linear pixel (RISEPel working space)
 //      → exposure        (multiply by 2^exposureEV)        [Stage 1]
 //      → white balance   (3x3 matrix in RISEPel space)       [Stage 2]
-//      → primaries       (ROMM → target via TargetFormat)   [Stage 3]
+//      → primaries       (Rec.709 → target via TargetFormat) [Stage 3]
 //      → tone curve      (iff TargetFormat.isLDRFixed)      [Stage 4]
 //      → output transfer (sRGB / PQ / Linear via TargetFormat) [Stage 5]
 //      → quantise        (target-format pixel layout)       [Stage 6]
