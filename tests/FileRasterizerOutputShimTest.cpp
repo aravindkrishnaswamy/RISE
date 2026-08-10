@@ -1433,6 +1433,9 @@ namespace
 		rejectsOutputMutation("exr_compression",RISECBOR64::Value::String("invalid_zip"),
 			"compression is outside",
 			"[fire provenance] verifier rejects an unknown EXR compression enum" );
+		rejectsOutputMutation("exr_pixel_aspect_ratio",RISECBOR64::Value::Float(2.0),
+			"pixel aspect ratio",
+			"[fire provenance] verifier binds the resolved output pixel aspect to the film and header" );
 		rejectsOutputMutation("view_tone_curve",RISECBOR64::Value::Unsigned(5u),
 			"tone curve is outside",
 			"[fire provenance] verifier rejects an unknown tone-curve enum" );

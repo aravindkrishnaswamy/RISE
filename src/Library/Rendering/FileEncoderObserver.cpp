@@ -609,6 +609,7 @@ namespace
 			{ "denoised_derivative", Value::Bool(opts.denoisedDerivative) },
 			{ "exr_compression", Value::String(outputFormat == "EXR" ?
 				EXRCompressionName(opts.exrCompression) : "not_applicable") },
+			{ "exr_pixel_aspect_ratio", Value::Float(opts.exrPixelAspectRatio) },
 			{ "exr_with_alpha", Value::Bool(outputFormat == "EXR" && opts.exrWithAlpha) },
 			{ "format", Value::String(encoder.FormatName()) },
 			{ "frame_index", Value::Unsigned(opts.frame) },
@@ -849,7 +850,8 @@ namespace
 			configId->GetType() != Value::Text || !output ||
 			!ExactKeys(*output,{ "aov_channels", "attributes", "bits_per_channel",
 				"color_space", "compression_level", "denoised_derivative",
-				"exr_compression", "exr_with_alpha", "format", "frame_index",
+				"exr_compression", "exr_pixel_aspect_ratio", "exr_with_alpha",
+				"format", "frame_index",
 				"include_aovs", "view_exposure_ev", "view_tone_curve",
 				"view_tone_curve_strength", "view_white_balance" }) ) {
 			error = "fire provenance resolved output configuration is outside schema-v1";
@@ -865,6 +867,7 @@ namespace
 		const Value* bits = output->Find("bits_per_channel");
 		const Value* aovChannels = output->Find("aov_channels");
 		const Value* attributes = output->Find("attributes");
+		const Value* pixelAspectRatio = output->Find("exr_pixel_aspect_ratio");
 		const Value* whiteBalance = output->Find("view_white_balance");
 		if( !format || format->GetType() != Value::Text || format->GetText() != "EXR" ||
 			!bits || bits->GetType() != Value::UnsignedInteger ||
@@ -872,7 +875,10 @@ namespace
 			!aovChannels || aovChannels->GetType() != Value::Array || !attributes ||
 			attributes->GetType() != Value::Array || !whiteBalance ||
 			whiteBalance->GetType() != Value::Array ||
-			whiteBalance->GetArray().size() != 9u ) {
+			whiteBalance->GetArray().size() != 9u || !pixelAspectRatio ||
+			pixelAspectRatio->GetType() != Value::Float64 ||
+			!std::isfinite(pixelAspectRatio->GetFloat()) ||
+			pixelAspectRatio->GetFloat() <= 0.0 ) {
 			error = "fire provenance EXR output surface is outside schema-v1";
 			return false;
 		}
@@ -1674,8 +1680,11 @@ namespace
 			error = "OpenEXR image windows do not match the resolved film dimensions";
 			return false;
 		}
-		if( facts.pixelAspectRatio != static_cast<float>(
-			film->Find("pixel_aspect_ratio")->GetFloat()) ) {
+		const float configuredPixelAspectRatio = static_cast<float>(
+			output->Find("exr_pixel_aspect_ratio")->GetFloat());
+		if( configuredPixelAspectRatio != static_cast<float>(
+			film->Find("pixel_aspect_ratio")->GetFloat()) ||
+			facts.pixelAspectRatio != configuredPixelAspectRatio ) {
 			error = "OpenEXR pixel aspect ratio does not match the resolved film claim";
 			return false;
 		}
