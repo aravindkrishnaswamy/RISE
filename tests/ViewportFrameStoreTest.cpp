@@ -1830,6 +1830,113 @@ namespace
 		replacement->release();
 	}
 
+	void TestFailedBindStillDrainsNewerRequest()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* failing = new FrameStore(spec);
+		auto* newest = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool failingReady = false;
+		bool failingMayThrow = false;
+		bool hookReleaseObserved = false;
+		std::atomic<unsigned int> registrations(0u);
+		vfs->BindFrameStore(source);
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ||
+				registrations.fetch_add(1u) != 0u ) return;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			failingReady = true;
+			gateCondition.notify_all();
+			hookReleaseObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
+				[&]() { return failingMayThrow; });
+			throw std::runtime_error("injected bind failure");
+		});
+		bool firstRejected = false;
+		std::thread firstBinder([&]() {
+			try {
+				vfs->BindFrameStore(failing);
+			} catch( const std::runtime_error& error ) {
+				firstRejected = std::string(error.what()) == "injected bind failure";
+			}
+		});
+		bool failingStageObserved = false;
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			failingStageObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
+				[&]() { return failingReady; });
+		}
+		vfs->BindFrameStore(newest);
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			failingMayThrow = true;
+		}
+		gateCondition.notify_all();
+		firstBinder.join();
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(failingStageObserved && hookReleaseObserved && firstRejected &&
+			vfs->GetFrameStore() == newest &&
+			vfs->IsExternallyBound() && registrations.load() == 2u,
+			"a failed active bind still drains and commits its newer queued request" );
+		vfs->release();
+		source->release();
+		failing->release();
+		newest->release();
+	}
+
+	void TestExposureUpdateWinsConcurrentBindCommit()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool replacementReady = false;
+		bool replacementMayCommit = false;
+		bool hookReleaseObserved = false;
+		vfs->SetCameraExposureCompensationEV(1.0);
+		vfs->BindFrameStore(source);
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			replacementReady = true;
+			gateCondition.notify_all();
+			hookReleaseObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
+				[&]() { return replacementMayCommit; });
+		});
+		std::thread binder([&]() { vfs->BindFrameStore(replacement); });
+		bool replacementStageObserved = false;
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			replacementStageObserved = gateCondition.wait_for(lock,
+				std::chrono::seconds(5),[&]() { return replacementReady; });
+		}
+		vfs->SetCameraExposureCompensationEV(2.5);
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			replacementMayCommit = true;
+		}
+		gateCondition.notify_all();
+		binder.join();
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(replacementStageObserved && hookReleaseObserved &&
+			vfs->GetFrameStore() == replacement &&
+			replacement->Meta().cameraExposureEV == 2.5,
+			"a concurrent exposure update is applied to the newly committed binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
 	void TestInternalConstructionFailuresPreserveExistingChain()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -2093,6 +2200,8 @@ int main()
 	TestBindTeardownKeepsOldChainPublished();
 	TestRejectedCrossStoreBindPreservesExistingChain();
 	TestBindConstructionFailuresPreserveExistingChain();
+	TestFailedBindStillDrainsNewerRequest();
+	TestExposureUpdateWinsConcurrentBindCommit();
 	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();

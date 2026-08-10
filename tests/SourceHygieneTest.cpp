@@ -987,12 +987,30 @@ int main()
 			repoRoot/"src"/"Library"/"Rendering"/"ViewportFrameStore.cpp");
 		const std::string exposureSetter = braceBody(viewportSource,
 			"void ViewportFrameStore::SetCameraExposureCompensationEV(");
+		const std::string bindApply = braceBody(viewportSource,
+			"void ViewportFrameStore::ApplyBindFrameStore(");
 		const std::size_t exposureLock = exposureSetter.find(
 			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
 		const std::size_t exposureWrite = exposureSetter.find("cameraExposureEV_ = ev");
+		const std::size_t bindCommitLock = bindApply.find(
+			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
+		const std::size_t bindExposureWrite = bindApply.find(
+			"newStore->SetCameraExposureEV(");
 		Check(exposureLock != std::string::npos && exposureWrite != std::string::npos &&
-			exposureLock < exposureWrite,
+			exposureLock < exposureWrite && bindCommitLock != std::string::npos &&
+			bindExposureWrite != std::string::npos && bindCommitLock < bindExposureWrite,
 			"camera exposure publication is serialized with viewport binding" );
+		const std::string windowsRenderHeader = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.h");
+		const std::string androidBridgeHeader = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.h");
+		Check(windowsRenderHeader.find("std::atomic<bool> m_sizeDetected") !=
+				std::string::npos &&
+			windowsRenderHeader.find("std::atomic<uint64_t> m_lastSeenGeneration") !=
+				std::string::npos &&
+			androidBridgeHeader.find("std::atomic<uint64_t>") != std::string::npos &&
+			androidBridgeHeader.find("m_lastSeenGeneration{0}") != std::string::npos,
+			"Windows and Android callback/poll sentinels are atomic" );
 		const std::string riseBridge = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");
 		const std::string riseBridgeHeader = slurp(

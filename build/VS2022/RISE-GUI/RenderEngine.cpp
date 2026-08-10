@@ -707,7 +707,7 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
     m_regionProductionRender = regionOnly;
     setState(Rendering);
     m_cancelFlag = false;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
     m_lastAnimationSummary.clear();  // still render: no video outputs to report
 
     // Install progress callback.  Model-B F2 slice S4: when a
@@ -843,7 +843,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     m_regionProductionRender = false;
     setState(Rendering);
     m_cancelFlag = false;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
     m_lastAnimationSummary.clear();  // repopulated on completion below
 
     // Install progress callback.  Model-B F2 slice S4: same "skip the
@@ -1070,7 +1070,7 @@ void RenderEngine::clearScene()
     m_hdrPixelBuffer.clear();  // L5b — drop the binary16 cache too
     m_imageWidth = 0;
     m_imageHeight = 0;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
 
     emit imageUpdated(QImage());
     // Empty HDR signal so HDRRenderWidget can clear its swap chain.
@@ -1193,7 +1193,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         const int byteCount = static_cast<int>(needHDR * sizeof(uint16_t));
         QByteArray halfFloats(reinterpret_cast<const char*>(m_hdrPixelBuffer.data()),
                               byteCount);
-        bool firstTime = !m_sizeDetected;
+        const bool firstTime = !m_sizeDetected.load(std::memory_order_acquire);
         QPointer<RenderEngine> guard(this);
         QMetaObject::invokeMethod(this, [guard, halfFloats, firstTime, W, H]() {
             if (!guard) return;
@@ -1201,7 +1201,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
                                         static_cast<int>(W),
                                         static_cast<int>(H));
             if (firstTime) {
-                guard->m_sizeDetected = true;
+                guard->m_sizeDetected.store(true, std::memory_order_release);
                 emit guard->sceneSizeDetected(static_cast<int>(W),
                                               static_cast<int>(H));
             }
@@ -1222,7 +1222,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
 
     QImage image = buildImageFromBuffer();
-    bool firstTime = !m_sizeDetected;
+    const bool firstTime = !m_sizeDetected.load(std::memory_order_acquire);
 
     // L4 round-6 P1 — QPointer guard.  This is the VFS-tile-callback
     // fan-out (rasterizer worker → UI thread); if the engine is
@@ -1233,7 +1233,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         if (!guard) return;
         emit guard->imageUpdated(image);
         if (firstTime) {
-            guard->m_sizeDetected = true;
+            guard->m_sizeDetected.store(true, std::memory_order_release);
             emit guard->sceneSizeDetected(static_cast<int>(W), static_cast<int>(H));
         }
     }, Qt::QueuedConnection);
@@ -1249,7 +1249,8 @@ void RenderEngine::onProductionVFSFrameComplete()
     renderViewportToBufferAndEmit_locked(W, H);  // full image
     // L8 round 9 — sync the poll sentinel so a subsequent
     // pollProductionVFS doesn't redo the same work.
-    m_lastSeenGeneration = m_productionVFS->Generation();
+    m_lastSeenGeneration.store(
+        m_productionVFS->Generation(), std::memory_order_release);
 }
 
 void RenderEngine::pollProductionVFS()
@@ -1273,7 +1274,7 @@ void RenderEngine::pollProductionVFS()
     // image when it advances.  Workers never block on the UI side.
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
-    if (gen == m_lastSeenGeneration) return;  // no new pixels
+    if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;
 
     unsigned int W = 0, H = 0;
     m_productionVFS->GetDimensions(W, H);
@@ -1283,7 +1284,7 @@ void RenderEngine::pollProductionVFS()
     // prevents the Qt GUI thread from beachballing when workers
     // hold a slow per-pixel block's tile exclusive.
     renderViewportToBufferAndEmit_locked(W, H, /*nonBlocking=*/true);
-    m_lastSeenGeneration = gen;
+    m_lastSeenGeneration.store(gen, std::memory_order_release);
 }
 
 void RenderEngine::ensureProductionVFSInitialized()

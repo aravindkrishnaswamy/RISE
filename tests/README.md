@@ -51,8 +51,7 @@ Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
 
 ## Test Map
 
-There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not
-maintain a hand-counted filename inventory here: the CST, editor, GUI,
+Do not maintain a hand-counted filename inventory here: the CST, editor, GUI,
 FrameStore, agent, and eval work adds tests often enough that such lists become
 wrong within days. The filesystem and build globs are authoritative:
 

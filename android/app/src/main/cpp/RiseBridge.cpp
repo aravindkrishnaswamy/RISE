@@ -409,14 +409,11 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
     }
 }
 
-// L4d — VFS-driven production-render path.
-// VFS observer callbacks fire from rasterizer worker threads.  We
-// take m_fbMutex (the same mutex writeDirtyRegion takes), call
-// ViewportFrameStore::RenderToBuffer at RGBA8_sRGB directly into
-// m_framebuffer, then notify Kotlin via the same onRegionInvalidated
-// JNI hop the legacy path used.  Net change: no RGBA16 staging
-// buffer, no per-pixel `>> 8` walk in the bridge — the LDR path
-// runs once inside RenderToBuffer.
+// L4d — VFS-driven production-render path.  Progressive display is
+// generation-polled by Choreographer; only frame-complete callbacks enter
+// synchronously from the rasterizer thread.  Both routes render RGBA8_sRGB
+// directly into m_framebuffer under m_fbMutex and notify Kotlin through the
+// legacy onRegionInvalidated JNI hop.
 void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
     if (!m_job) return;
     RISE::IRasterizer* rasterizer = m_job->GetRasterizer();
@@ -568,7 +565,8 @@ void RiseBridge::onProductionVFSFrameComplete() {
     // L8 round 9 — sync the poll sentinel so a subsequent
     // pollProductionVFS doesn't redo the same work.
     if (m_productionVFS) {
-        m_lastSeenGeneration = m_productionVFS->Generation();
+        m_lastSeenGeneration.store(
+            m_productionVFS->Generation(), std::memory_order_release);
     }
 }
 
@@ -588,12 +586,12 @@ void RiseBridge::pollProductionVFS() {
     // generation counter inside `FrameStore` via `EndTile`.
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
-    if (gen == m_lastSeenGeneration) return;  // no new pixels
+    if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;
     // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
     // prevents the Choreographer / poll path from blocking on a
     // slow worker block's tile exclusive.
     onProductionVFSTileComplete(nullptr, /*nonBlocking=*/true);
-    m_lastSeenGeneration = gen;
+    m_lastSeenGeneration.store(gen, std::memory_order_release);
 }
 
 // L5a round-5 — interactive VFS lazy-create.  ONLY frame-complete

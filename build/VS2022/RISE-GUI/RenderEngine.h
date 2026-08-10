@@ -304,7 +304,7 @@ private:
     std::mutex m_bufferMutex;
     int m_imageWidth = 0;
     int m_imageHeight = 0;
-    bool m_sizeDetected = false;
+    std::atomic<bool> m_sizeDetected{false};
 
     // Elapsed time tracking
     QTimer* m_elapsedTimer = nullptr;
@@ -402,12 +402,10 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
 
-    // L8 round 9 — sentinel for the lockless polling path.  Read +
-    // written ONLY on the Qt main thread (the `m_progressivePollTimer`
-    // tick handler).  Compares `vfs->Generation()` so a poll that
-    // catches no new pixels returns immediately.  See
-    // `pollProductionVFS` impl.
-    uint64_t m_lastSeenGeneration = 0;
+    // L8 round 9 — sentinel for the lockless polling path.  Frame-complete
+    // callbacks write it on the render thread while the Qt poll reads it;
+    // atomic access keeps that handoff data-race-free.
+    std::atomic<uint64_t> m_lastSeenGeneration{0};
     // 30 Hz timer driving the progressive-update poll.  Started in
     // `startRender` / `startAnimationRender`, stopped in the finish
     // path of each.

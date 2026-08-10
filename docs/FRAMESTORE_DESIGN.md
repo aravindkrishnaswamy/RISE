@@ -16,7 +16,9 @@ chronological design/landing record; later status rows supersede early
 
 ## Implementation status
 
-**Total: 563 test assertions, 0 failures, 0 warnings on `-O3 -flto -ffast-math -Wall -pedantic`.**
+Current validation is tracked by the standalone test suite and the make,
+Deployment, and Opto warning gates; the historical per-layer counts below
+record their landing slices rather than the current aggregate.
 
 | Layer | Status | Test count | Files |
 |---|---|---|---|
@@ -36,7 +38,8 @@ chronological design/landing record; later status rows supersede early
 
 ### L4 platform integration pattern
 
-Each GUI platform (macOS SwiftUI, Windows Qt, Android Compose) follows the same recipe to integrate `ViewportFrameStore`:
+Each GUI platform uses the same canonical `ViewportFrameStore`, with a
+platform-specific presentation policy:
 
 ```cpp
 // Bridge layer (RISEBridge.mm / RenderEngine.cpp / RiseBridge.cpp):
@@ -44,22 +47,26 @@ Each GUI platform (macOS SwiftUI, Windows Qt, Android Compose) follows the same 
 // 1. Construct ONCE, per scene/Job lifetime:
 auto* vfs = new ViewportFrameStore();   // Reference: refcount = 1
 
-// 2. Wire callbacks BEFORE attaching to a rasterizer.  These fire
-//    from rasterizer worker threads — platform code marshals to UI
-//    thread (Qt signals / dispatch_async / Compose LaunchedEffect):
-vfs->SetTileCompleteCallback(
-    []( const Rect& roi, uint64_t gen ) {
-        platformMarshalToUIThread( [=]{ requestRepaint( roi, gen ); } );
-    } );
+// 2. Frame completion guarantees the final coherent image on every platform.
 vfs->SetFrameCompleteCallback(
     []( unsigned frame, uint64_t gen ) {
         platformMarshalToUIThread( [=]{ requestRepaint( /*full*/, gen ); } );
     } );
 
-// 3. Attach to the active rasterizer (rasterizer's outputs list addrefs):
+// 3. Progressive delivery is deliberately platform-specific:
+//    macOS: a synchronous worker callback try-locks staging, converts only
+//           its completed tile, and hands presentation to a cadence-limited
+//           coalescer.  It skips rather than blocking when staging is busy.
+//    Windows/Android: no tile callback is installed.  The UI display clock
+//           polls FrameStore::Generation() and performs a nonblocking
+//           full-frame refresh only when the generation advances.
+
+// 4. Attach to the active rasterizer (rasterizer's outputs list addrefs).
+//    Canonical rasterizers immediately publish their external FrameStore;
+//    the internal FrameSink path is only a fallback for legacy producers:
 vfs->Attach( rasterizer );
 
-// 4. On UI-thread display refresh, render into platform-native pixel buffer:
+// 5. On UI-thread display refresh, render into platform-native pixel buffer:
 const ViewTransform xf = viewportIsHDR
     ? ViewTransform::ForHDRDisplay( exposureSliderEV )
     : ViewTransform::ForLDRDisplay( exposureSliderEV, ACES );
@@ -70,7 +77,7 @@ vfs->RenderToBuffer(
     platformBuffer, platformStride, viewportRect, fmt, xf );
 // platform code commits the buffer to its display surface
 
-// 5. On Save-As menu pick:
+// 6. On Save-As menu pick:
 IFrameEncoder* enc =
     FrameEncoderRegistry::Get().AcquireByExtension( pickedExtension );
 EncodeOpts opts;
@@ -79,7 +86,7 @@ opts.viewTransform = ViewTransform::ForLDRDisplay( exposureSliderEV, ACES );
 vfs->SaveAs( pickedPath, enc, opts );
 safe_release( enc );
 
-// 6. On rasterizer swap (PT → BDPT in UI):
+// 7. On rasterizer swap (PT → BDPT in UI):
 //    Keep the ViewportFrameStore and its UI callbacks, free the old
 //    rasterizer's output reference, then attach to the new rasterizer.
 //    AddRasterizerOutput publishes the new rasterizer's canonical
@@ -89,11 +96,15 @@ oldRasterizer->FreeRasterizerOutputs();   // see Detach() doc
 vfs->Attach( newRasterizer );
 //    The VFS callbacks persist; the FrameStore follows the producer.
 
-// 7. Teardown (scene unload, app exit):
+// 8. Teardown (scene unload, app exit):
 vfs->release();
 ```
 
-The platform-specific work is purely the marshaling layer (Qt signals / dispatch_async / Compose remember-state), the exposure slider widget, and the Save-As menu. The pixel pipeline, lifetime semantics, and rasterizer-swap behavior are all encapsulated in `ViewportFrameStore`.
+The platform-specific work is the bounded presentation policy (tile-region
+try-lock/coalescing on macOS or generation polling on Windows/Android), UI
+marshaling, the exposure slider, and Save-As.  The pixel pipeline, lifetime
+semantics, and rasterizer-swap behavior remain encapsulated in
+`ViewportFrameStore`.
 
 ### L0–L2 deviations from the original design
 

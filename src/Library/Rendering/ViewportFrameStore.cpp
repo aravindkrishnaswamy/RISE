@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <exception>
 #include <mutex>
 #include <shared_mutex>
 
@@ -330,39 +331,30 @@ namespace RISE
 					{ active.fetch_add(1u,std::memory_order_acq_rel); }
 				~BindActivity() { active.fetch_sub(1u,std::memory_order_acq_rel); }
 			} bindActivity(bindTransactionsInFlight_);
-			try {
-				for( ;; ) {
-					FrameStore* requested = nullptr;
-					uint64_t requestRevision = 0u;
-					{
-						std::lock_guard<std::mutex> lock(bindRequestMutex_);
-						if( !pendingBindValid_ ) {
-							bindDrainActive_ = false;
-							break;
-						}
-						requested = pendingBind_;
-						requestRevision = pendingBindRevision_;
-						pendingBind_ = nullptr;
-						pendingBindRevision_ = 0u;
-						pendingBindValid_ = false;
+			std::exception_ptr firstFailure;
+			for( ;; ) {
+				FrameStore* requested = nullptr;
+				uint64_t requestRevision = 0u;
+				{
+					std::lock_guard<std::mutex> lock(bindRequestMutex_);
+					if( !pendingBindValid_ ) {
+						bindDrainActive_ = false;
+						break;
 					}
-					try {
-						ApplyBindFrameStore(requested,requestRevision);
-					} catch ( ... ) {
-						safe_release(requested);
-						throw;
-					}
-					safe_release(requested);
+					requested = pendingBind_;
+					requestRevision = pendingBindRevision_;
+					pendingBind_ = nullptr;
+					pendingBindRevision_ = 0u;
+					pendingBindValid_ = false;
 				}
-			} catch ( ... ) {
-				std::lock_guard<std::mutex> lock(bindRequestMutex_);
-				if( pendingBindValid_ ) safe_release(pendingBind_);
-				pendingBind_ = nullptr;
-				pendingBindRevision_ = 0u;
-				pendingBindValid_ = false;
-				bindDrainActive_ = false;
-				throw;
+				try {
+					ApplyBindFrameStore(requested,requestRevision);
+				} catch ( ... ) {
+					if( !firstFailure ) firstFailure = std::current_exception();
+				}
+				safe_release(requested);
 			}
+			if( firstFailure ) std::rethrow_exception(firstFailure);
 		}
 
 		void ViewportFrameStore::ApplyBindFrameStore(
@@ -380,8 +372,6 @@ namespace RISE
 					if( chainConstructionTestHook_ ) {
 						chainConstructionTestHook_("bind_after_retain");
 					}
-					newStore->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
 					newObserver = new BridgeObserver(*this);
 					if( chainConstructionTestHook_ ) {
 						chainConstructionTestHook_("bind_after_observer_allocation");
@@ -426,6 +416,10 @@ namespace RISE
 				if( !external && !externalFrameStore_ && !framestore_ && !framesink_ &&
 					!observer_ && dormant_.empty() ) {
 					return;
+				}
+				if( newStore ) {
+					newStore->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
 				}
 
 				// Snapshot ownership without changing the published chain.  The

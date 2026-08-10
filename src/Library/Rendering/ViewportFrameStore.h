@@ -7,14 +7,16 @@
 //
 //    macOS SwiftUI / Windows Qt / Android Compose
 //                    │
-//                    │  (1) attach as IRasterizerOutput on whatever
-//                    │      rasterizer is current; rasterizer feeds
-//                    │      pixels into the embedded FrameStore via
-//                    │      the embedded FrameSink
+//                    │  (1) attach as IRasterizerOutput on the current
+//                    │      rasterizer; canonical producers bind their
+//                    │      external FrameStore immediately.  The embedded
+//                    │      FrameSink remains a legacy fallback only.
 //                    │
-//                    │  (2) on tile / frame completion callbacks,
-//                    │      platform code marshals to its UI thread
-//                    │      and triggers a repaint
+//                    │  (2) choose a platform delivery policy: macOS uses
+//                    │      nonblocking tile-region callbacks plus bounded
+//                    │      coalescing; Windows and Android generation-poll
+//                    │      at display cadence.  Frame completion always
+//                    │      guarantees the final coherent image.
 //                    │
 //                    │  (3) on UI-thread display refresh, calls
 //                    │      RenderToBuffer(target_format, view_xform)
@@ -42,13 +44,10 @@
 //  callbacks stay on this facade; the pixel store follows the active
 //  rasterizer rather than persisting independently across the swap.
 //
-//  Lazy allocation: the FrameStore + FrameSink + BridgeObserver
-//  are constructed on the FIRST IRasterizerOutput callback, when
-//  the rasterizer's image dimensions become known.  Subsequent
-//  output calls reuse the chain.  Resolution changes (rare but
-//  possible, e.g. camera-resolution swap mid-session) trigger a
-//  reallocate-and-reattach — same pattern as
-//  FileRasterizerOutput::EnsureChain (L3).
+//  Lazy allocation applies only to legacy producers that do not push a
+//  canonical FrameStore.  Canonical rasterizers bind their store during
+//  Attach(), before pixel callbacks.  A later producer store replacement is
+//  transactionally rebound through OnRasterizerFrameStoreChanged().
 //
 //  Lifetime: ViewportFrameStore inherits from Reference per the
 //  RISE convention.  Platform code creates with `new`, registers

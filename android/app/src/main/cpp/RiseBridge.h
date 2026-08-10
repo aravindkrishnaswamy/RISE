@@ -336,8 +336,8 @@ private:
     // L5a round-5 — TWO independent ViewportFrameStores, mirroring
     // the macOS architecture (see
     // build/XCode/rise/RISE-GUI/Bridge/RISEBridge.mm for the full
-    // rationale).  Production VFS receives per-tile + per-frame
-    // updates from the production rasterizer (rasterize() call).
+    // rationale).  Production VFS receives frame-complete callbacks and is
+    // generation-polled at display cadence for progressive updates.
     // Interactive VFS receives ONLY frame-complete fires from the
     // SceneEditController-driven live-preview rasterizer (no
     // per-tile observer wiring → no DrawToggles flash, no
@@ -348,14 +348,9 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
-    // L8 round 9 — sentinel for the lockless progressive-update
-    // polling path.  Read + written ONLY from `pollProductionVFS`
-    // (Kotlin Choreographer thread; see MainActivity JNI wiring)
-    // and from `onProductionVFSFrameComplete` (rasterizer main
-    // thread, fires once per render).  These do not overlap in
-    // practice — the Choreographer poll quiesces well before
-    // OnFrameComplete fires the final emit — so no atomic is needed.
-    uint64_t                                  m_lastSeenGeneration = 0;
+    // L8 round 9 — sentinel shared by the Choreographer poll and the
+    // render-thread frame-complete callback.
+    std::atomic<uint64_t>                     m_lastSeenGeneration{0};
     std::atomic<double>                       m_viewExposureEV{0.0};
 
     // L5e — LDR view tone curve.  Default 2 = ACES; matches the
