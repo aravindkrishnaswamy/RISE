@@ -241,12 +241,10 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Safe to call at any rate; the no-change short-circuit means
 /// over-polling is cheap.
 ///
-/// Workers fire NO synchronous bridge callbacks per tile in this
-/// design — `setImageOutputBlock` / `setInteractiveImageOutputBlock`
-/// (and their HDR siblings) ONLY fire from polling here and from
-/// the end-of-render `OnFrameComplete` event.  See round-9 commit
-/// message + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
-/// rationale in RISEBridge.mm for the full architecture.
+/// Production workers may synchronously emit a just-completed tile through
+/// a try-lock path so short-lived toggle markers remain visible. Polling is
+/// the bounded ordinary-refinement path, and frame completion guarantees the
+/// final coherent image. Swift coalesces full-image construction off-worker.
 - (void)pollProductionVFS;
 - (void)pollInteractiveVFS;
 
@@ -256,9 +254,9 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// case-insensitively by the FrameEncoderRegistry).  `ev` applies
 /// to the LDR-fixed encoders (PNG/TIFF/TGA/PPM) where the tone curve
 /// + sRGB transfer is applied; HDR encoders ignore it (scene-referred
-/// linear).  Returns YES on success.  Safe to call mid-render — the
-/// encoder walks the FrameStore under the per-tile shared_mutex so
-/// concurrent writes are correctly synchronised (L4 round-1 fix).
+/// linear). Returns YES on success. Active production renders reject Save As
+/// before encoding: publication requires a stable metadata/output lease, not
+/// merely data-race-free tile reads.
 - (BOOL)saveAs:(NSString *)path
         format:(NSString *)formatName
     exposureEV:(double)ev;

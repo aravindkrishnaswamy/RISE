@@ -955,12 +955,43 @@ int main()
 			"camera exposure publication is serialized with viewport binding" );
 		const std::string riseBridge = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");
+		const std::string riseBridgeHeader = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.h");
+		const std::string renderViewModel = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"RenderViewModel.swift");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
 			riseBridge.find("workers no longer take it during their hot path") ==
-				std::string::npos,
+				std::string::npos &&
+			riseBridgeHeader.find("Workers fire NO synchronous bridge callbacks") ==
+				std::string::npos &&
+			renderViewModel.find("Timer is the sole driver") == std::string::npos,
 			"GUI bridge comments retain the bounded worker tile-callback contract" );
+		Check(riseBridgeHeader.find("Safe to call mid-render") == std::string::npos &&
+			riseBridgeHeader.find("Active production renders reject Save As") !=
+				std::string::npos,
+			"macOS public Save As contract matches its production render lease" );
+		const std::string regionUpdate = braceBody(renderViewModel,"func updateOutput(");
+		const std::string imageCoalescer = braceBody(
+			renderViewModel,"final class CoalescedImageDelivery");
+		const std::size_t firstRegionCopy = renderViewModel.find("buffer.updateOutput(");
+		const std::size_t secondRegionCopy = renderViewModel.find(
+			"buffer.updateOutput(",firstRegionCopy == std::string::npos ? 0u : firstRegionCopy+1u);
+		const std::size_t firstCoalescedRequest = renderViewModel.find(
+			"imageDelivery.request(buffer: buffer)");
+		const std::size_t secondCoalescedRequest = renderViewModel.find(
+			"imageDelivery.request(buffer: buffer)",
+			firstCoalescedRequest == std::string::npos ? 0u : firstCoalescedRequest+1u);
+		Check(!regionUpdate.empty() &&
+			regionUpdate.find("Data(pixelBuffer)") == std::string::npos &&
+			regionUpdate.find("NSImage(") == std::string::npos &&
+			imageCoalescer.find("imageQueue.async") != std::string::npos &&
+			imageCoalescer.find("buffer.makeImage()") != std::string::npos &&
+			firstRegionCopy != std::string::npos && secondRegionCopy != std::string::npos &&
+			firstCoalescedRequest != std::string::npos &&
+			secondCoalescedRequest != std::string::npos,
+			"worker tile callbacks do region-only work before off-worker image coalescing" );
 		for( const std::string& member : allDataMembers(
 			encoderHeader,"struct EncodeOpts","EncodeOpts") ) {
 			const bool transactionInternal = member == "useMetadataSnapshot" ||

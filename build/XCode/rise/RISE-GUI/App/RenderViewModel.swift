@@ -57,13 +57,14 @@ final class RenderImageBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Called from the render thread. Converts RGBA16 region to RGBA8 and builds an NSImage.
-    func handleOutput(
+    /// Called synchronously by the bridge. Copies and converts only the
+    /// updated region while the bridge-owned source pointer is valid.
+    func updateOutput(
         pImageData: UnsafePointer<UInt16>,
         width: UInt32, height: UInt32,
         rcTop: UInt32, rcLeft: UInt32,
         rcBottom: UInt32, rcRight: UInt32
-    ) -> NSImage? {
+    ) {
         let w = Int(width)
         let h = Int(height)
         let totalBytes = w * h * 4
@@ -93,7 +94,20 @@ final class RenderImageBuffer: @unchecked Sendable {
             }
         }
 
-        // Build CGImage from current buffer state
+        lock.unlock()
+    }
+
+    /// Takes one coherent full-frame snapshot and builds the display image.
+    /// CoalescedImageDelivery calls this on its private queue, never on a
+    /// raster worker or the main actor.
+    func makeImage() -> NSImage? {
+        lock.lock()
+        let w = width
+        let h = height
+        guard w > 0, h > 0 else {
+            lock.unlock()
+            return nil
+        }
         let data = Data(pixelBuffer)
         lock.unlock()
 
@@ -167,28 +181,57 @@ final class CoalescedProgressDelivery: @unchecked Sendable {
     }
 }
 
-/// Same coalescing contract as `CoalescedProgressDelivery`, but for display
-/// images produced by the background VFS polling queue.
+/// Coalesces image construction as well as MainActor publication. Bridge
+/// callbacks do only bounded region conversion; the single private queue
+/// snapshots the latest complete buffer and constructs at most one NSImage
+/// per drain iteration.
 final class CoalescedImageDelivery: @unchecked Sendable {
     private let lock = NSLock()
-    private var latest: NSImage? = nil
-    private var deliveryScheduled = false
+    private let imageQueue = DispatchQueue(
+        label: "rise.display-image-coalescer", qos: .userInteractive)
+    private var pending = false
+    private var drainScheduled = false
 
-    func submit(_ image: NSImage) -> Bool {
+    func request(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
         lock.lock()
-        latest = image
-        defer { lock.unlock() }
-        guard !deliveryScheduled else { return false }
-        deliveryScheduled = true
-        return true
+        pending = true
+        guard !drainScheduled else {
+            lock.unlock()
+            return
+        }
+        drainScheduled = true
+        lock.unlock()
+
+        imageQueue.async { [weak self] in
+            self?.drain(buffer: buffer, publish: publish)
+        }
     }
 
-    func takeLatest() -> NSImage? {
-        lock.lock()
-        defer { lock.unlock() }
-        deliveryScheduled = false
-        defer { latest = nil }
-        return latest
+    private func drain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        while true {
+            lock.lock()
+            pending = false
+            lock.unlock()
+
+            if let image = buffer.makeImage() {
+                DispatchQueue.main.sync { publish(image) }
+            }
+
+            lock.lock()
+            if pending {
+                lock.unlock()
+                continue
+            }
+            drainScheduled = false
+            lock.unlock()
+            return
+        }
     }
 }
 
@@ -791,19 +834,18 @@ final class RenderViewModel: ObservableObject {
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
-    /// L8 round 9 / 16 — drives the lockless progressive-update path.
-    /// Worker threads no longer fire per-tile observer callbacks
-    /// into the bridge; instead this Timer polls the production
-    /// VFS's atomic generation counter at ~30 Hz.  When the counter
-    /// advances the bridge emits one full-image refresh.  Started
+    /// Drives the bounded progressive-update path. The timer polls the
+    /// production VFS at ~30 Hz for ordinary refinement; synchronous
+    /// try-lock tile callbacks additionally capture short-lived toggle
+    /// markers. Both feed the same image-construction coalescer. Started
     /// in startRender / start*Render, invalidated in finishRender
     /// + cancel paths.
     ///
     /// Round 16 — the Timer fires on the main run loop (cheap;
     /// just checks `pollInFlight` atomic + dispatches to
     /// `pollQueue`), but the actual poll work (`pollProductionVFS`
-    /// → RenderToBuffer → handleOutput → NSImage create) runs on
-    /// `pollQueue`, a serial `.userInteractive` background queue.
+    /// → RenderToBuffer → region copy) runs on `pollQueue`; full-image
+    /// construction runs on CoalescedImageDelivery's private queue.
     /// Pre-round-16 the whole poll ran on the main thread —
     /// ~20 ms / tick × 30 Hz = 60% main-thread utilisation, which
     /// felt like a perf regression (UI jitter) even though workers
@@ -811,7 +853,7 @@ final class RenderViewModel: ObservableObject {
     private var progressivePollTimer: Timer? = nil
 
     /// L8 round 16 — serial background queue for the heavy poll
-    /// work.  Serial so only one poll runs at a time
+    /// work. Serial so only one poll runs at a time
     /// (`pollProductionVFS` is internally re-entrant-safe via
     /// `bufferMutex_`, but funnelling through a serial queue
     /// avoids needing to skip-on-busy at the dispatch level).
@@ -1449,14 +1491,12 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        // L8 round 9 — progressive-update Timer.  Drives the
-        // lockless polling path: every ~33 ms (30 Hz) we call
+        // Progressive-update Timer: every ~33 ms (30 Hz) we call
         // `bridge.pollProductionVFS`, which checks the production
         // VFS's atomic generation counter and emits a full-image
         // refresh only when workers have produced new pixels.
-        // Workers no longer fire per-tile observer callbacks into
-        // the bridge (round-9 design), so this Timer is the sole
-        // driver of progressive updates during a render.
+        // Worker tile callbacks independently capture short-lived toggle
+        // markers; the shared coalescer bounds full-image construction.
         //
         // Timer fires on the main run loop — fine for the polling
         // (atomic load + compare is ~10 ns when nothing has changed,
@@ -1532,18 +1572,14 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            guard let nsImage = buffer.handleOutput(
+            buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
-            ) else { return }
-
-            if imageDelivery.submit(nsImage) {
-                Task { @MainActor [weak self] in
-                    guard let image = imageDelivery.takeLatest() else { return }
-                    self?.renderedImage = image
-                }
+            )
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 
@@ -1735,18 +1771,14 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            guard let nsImage = buffer.handleOutput(
+            buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
-            ) else { return }
-
-            if imageDelivery.submit(nsImage) {
-                Task { @MainActor [weak self] in
-                    guard let image = imageDelivery.takeLatest() else { return }
-                    self?.renderedImage = image
-                }
+            )
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 

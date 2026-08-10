@@ -288,8 +288,9 @@ public:
     // only cost the user the progressive "toggle" markers — the poll can't
     // catch the microsecond EndTile→BeginTile toggle window.  Restored so
     // toggles are visible again.  MainActor flooding (the removal's stated
-    // concern) is now bounded by CoalescedImageDelivery on the Swift side,
-    // and the worker side is self-limited by the try_lock below.
+    // concern) is bounded by CoalescedImageDelivery on the Swift side, which
+    // now coalesces full-image construction as well as MainActor publication.
+    // The worker side is self-limited by the try_lock below.
     void OnTileComplete(Implementation::ViewportFrameStore* vfs,
                         const RISE::Rect& halfOpenRoi,
                         uint64_t          /*generation*/) {
@@ -327,10 +328,9 @@ public:
     //     (the bg poll will catch the FINAL pixels at its next
     //     tick).  Probability of catching the toggle is roughly
     //     (33 - bg_poll_duration) / 33, typically 60-85%.
-    //   * Workers don't block.  Per-tile observer cost is
-    //     ~bufferMutex_ try_lock + EmitRegion_locked (~50-100 µs
-    //     per tile) only when the lock is acquired; near-zero
-    //     when skipped.
+    //   * Workers don't block on bufferMutex_. An accepted callback performs
+    //     one O(tile-area) encode and region copy. Full-frame Data/CGImage/
+    //     NSImage construction runs later on the Swift coalescer queue.
     //
     // Why this doesn't re-introduce the round-1 lock inversion:
     //   * The inversion required Worker A (in observer, holding
@@ -356,9 +356,8 @@ public:
 
     // Render a sub-region of the FrameStore into the matching slice
     // of the staging buffer + fire the block with inclusive bounds.
-    // Per-tile work is O(tile-area) for the encode; FireBlock_locked's
-    // Swift receiver rebuilds a full NSImage (see RenderImageBuffer),
-    // but CoalescedImageDelivery collapses that to one MainActor drain.
+    // Per-tile work is O(tile-area) for the encode and Swift region copy.
+    // CoalescedImageDelivery performs full-image construction off-worker.
     void EmitRegion_locked(Implementation::ViewportFrameStore* vfs,
                            const RISE::Rect& halfOpenRoi) {
         unsigned int W = 0, H = 0;
@@ -1239,8 +1238,8 @@ private:
     // against the event-loop starvation the earlier removal feared:
     // OnTileCompleteTry try_locks bufferMutex_ (skips when the bg poll owns
     // it, so workers never block), and CoalescedImageDelivery on the Swift
-    // side bounds MainActor delivery to one drain at a time regardless of the
-    // producer rate.  The frame-complete / denoise callbacks below still
+    // side bounds both full-image construction and MainActor delivery.
+    // The frame-complete / denoise callbacks below still
     // guarantee the final coherent image.
     vfs->SetTileCompleteCallback(
         [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
