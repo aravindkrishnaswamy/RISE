@@ -2943,7 +2943,7 @@ final class RenderViewModel: ObservableObject {
             return
         }
 
-        let ok = bridge.save(as: url.path, format: formatName, exposureEV: 0.0)
+		let ok = bridge.save(as: url.path, format: formatName, exposureEV: viewExposureEV)
         if !ok {
             let alert = NSAlert()
             alert.messageText = "Save Failed"

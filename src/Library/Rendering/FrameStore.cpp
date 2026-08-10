@@ -1396,6 +1396,7 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = false;
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
@@ -1413,6 +1414,7 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = false;
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
@@ -1426,6 +1428,7 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
 				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = true;
 			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 

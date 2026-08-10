@@ -766,6 +766,35 @@ namespace
 			exrFrame && exrFrame->GetIntegerArgument() == 17u,
 			"GUI EXR sidecar hashes stripped bytes and binds the finalized FrameStore frame" );
 
+		fireStore->MarkDenoiseComplete(17u);
+		const std::string denoisedExrPath = MakeTempPath() + "_gui_fire_denoised.exr";
+		Check( vfs->SaveAs(denoisedExrPath,exr,opts),
+			"GUI EXR SaveAs treats the current denoised FrameStore as a derivative" );
+		std::vector<unsigned char> denoisedSidecarBytes;
+		RISECBOR64::Value denoisedEnvelope;
+		const bool denoisedDecoded =
+			ReadFileAllBytes(denoisedExrPath+".provenance.cbor",denoisedSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(denoisedSidecarBytes,denoisedEnvelope,&decodeError);
+		const RISECBOR64::Value* denoisedPayload = denoisedDecoded ?
+			denoisedEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* denoisedFidelity = denoisedPayload ?
+			denoisedPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* denoisedConfig = denoisedPayload ?
+			denoisedPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* denoisedOutput = denoisedConfig ?
+			denoisedConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* denoisedPrimary = denoisedPayload ?
+			denoisedPayload->Find("derived_from_primary") : nullptr;
+		Check( denoisedFidelity && denoisedFidelity->GetText() == "display_derivative" &&
+			denoisedOutput && denoisedOutput->Find("denoised_derivative") &&
+			denoisedOutput->Find("denoised_derivative")->GetBoolean() &&
+			denoisedPrimary && denoisedPrimary->Find("provenance_id") &&
+			denoisedPrimary->Find("provenance_id")->GetText() ==
+				fireStore->Meta().primaryProvenanceId,
+			"GUI denoised EXR is a linked display derivative, never a raw primary" );
+		std::remove(denoisedExrPath.c_str());
+		std::remove((denoisedExrPath+".provenance.cbor").c_str());
+
 		opts.colorSpace = eColorSpace_sRGB;
 		opts.bpp = 8;
 		opts.viewTransform = ViewTransform::ForLDRDisplay();
@@ -1541,6 +1570,23 @@ namespace
 		replacement->release();
 	}
 
+	void TestNullBindTearsDownInternalChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* image = MakeTestImage();
+		vfs->OutputImage(*image,nullptr,0u);
+		Check(vfs->GetFrameStore() != nullptr && !vfs->IsExternallyBound(),
+			"internal chain exists before explicit null bind" );
+		vfs->BindFrameStore(nullptr);
+		Check(vfs->GetFrameStore() == nullptr && !vfs->IsExternallyBound(),
+			"explicit null bind tears down active and dormant internal chains" );
+		vfs->OutputImage(*image,nullptr,1u);
+		Check(vfs->GetFrameStore() != nullptr && !vfs->IsExternallyBound(),
+			"internal chain can be allocated again after explicit teardown" );
+		image->release();
+		vfs->release();
+	}
+
 	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
 	//
 	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
@@ -1714,6 +1760,7 @@ int main()
 	TestConcurrentExternalBindsPublishNewestOnly();
 	TestDelayedOlderBindCannotClearNewerBinding();
 	TestBindTeardownGapRejectsInternalChainCreation();
+	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();
 	TestObserverRetainsUnregisteredEncoder();
 

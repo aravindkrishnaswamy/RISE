@@ -89,6 +89,7 @@ namespace RISE
 			uint64_t    sampleCount  = 0;      ///< samples-per-pixel converged so far
 			double      cameraExposureEV = 0.0;///< from ICamera::GetExposureCompensationEV
 			unsigned    frame        = 0;      ///< animation frame index
+			bool        denoisedContent = false; ///< current beauty pixels passed through denoising
 			std::string renderFidelityStatus;  ///< empty for non-fire; otherwise derived status
 			std::vector<std::string> renderReasonCodes; ///< sorted unique schema-v1 fire reasons
 			std::vector<std::string> activeFireOpticsRecordIds; ///< sorted unique exact-byte IDs

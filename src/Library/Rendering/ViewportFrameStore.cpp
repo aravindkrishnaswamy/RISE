@@ -329,9 +329,11 @@ namespace RISE
 				// Idempotent — re-binding the same pointer is a no-op,
 				// avoids tearing down + re-registering an observer that
 				// would point at the same store.
-				if ( external == externalFrameStore_ ) {
+				if ( external && external == externalFrameStore_ ) {
 					return;
 				}
+				if( !external && !externalFrameStore_ && !framestore_ && !framesink_ &&
+					!observer_ && dormant_.empty() ) return;
 
 				// Snapshot member state into locals + clear members.
 				oldExternal = externalFrameStore_;
@@ -570,6 +572,8 @@ namespace RISE
 			};
 			transactionOpts.useMetadataSnapshot = true;
 			transactionOpts.frame = transactionOpts.metadataSnapshot.frame;
+			transactionOpts.denoisedDerivative =
+				transactionOpts.metadataSnapshot.denoisedContent;
 			std::string error;
 			bool success = false;
 			{
