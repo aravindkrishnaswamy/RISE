@@ -61,6 +61,7 @@ namespace RISE
 			}
 			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter) ) {
 				exr->SetStringAttributes(opts.attrs);
+				exr->SetPixelAspectRatio(opts.exrPixelAspectRatio);
 			}
 
 			// Decide whether to wrap in DisplayTransformWriter.

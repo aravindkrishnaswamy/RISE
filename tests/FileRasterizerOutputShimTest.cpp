@@ -282,6 +282,17 @@ namespace
 			(static_cast<std::uint32_t>(bytes[offset+3u]) << 24u);
 	}
 
+	std::uint64_t ReadTestLE64(
+		const std::vector<unsigned char>& bytes,
+		const std::size_t offset )
+	{
+		std::uint64_t value = 0u;
+		for( unsigned int i=0u; i<8u; ++i ) {
+			value |= static_cast<std::uint64_t>(bytes[offset+i]) << (i*8u);
+		}
+		return value;
+	}
+
 	void WriteTestLE32(
 		std::vector<unsigned char>& bytes,
 		const std::size_t offset,
@@ -1523,6 +1534,54 @@ namespace
 			return true;
 		},"offset table is not contiguous",
 			"[fire provenance] verifier rejects a chunk offset equal to EOF" );
+		std::vector<unsigned char> corruptPixels = exrBytes;
+		std::size_t corruptHeaderEnd = 0u;
+		bool corruptPrepared = FindEXRHeaderEnd(corruptPixels,corruptHeaderEnd) &&
+			corruptHeaderEnd+8u <= corruptPixels.size();
+		std::uint64_t corruptChunk = 0u;
+		std::uint32_t corruptPackedBytes = 0u;
+		if( corruptPrepared ) {
+			corruptChunk = ReadTestLE64(corruptPixels,corruptHeaderEnd);
+			corruptPrepared = corruptChunk+8u <= corruptPixels.size();
+		}
+		if( corruptPrepared ) {
+			corruptPackedBytes = ReadTestLE32(corruptPixels,
+				static_cast<std::size_t>(corruptChunk)+4u);
+			corruptPrepared = corruptPackedBytes > 1u &&
+				corruptChunk+8u+corruptPackedBytes == corruptPixels.size();
+		}
+		if( corruptPrepared ) {
+			corruptPixels.pop_back();
+			WriteTestLE32(corruptPixels,static_cast<std::size_t>(corruptChunk)+4u,
+				corruptPackedBytes-1u);
+		}
+		std::vector<unsigned char> corruptStripped;
+		std::string corruptError;
+		corruptPrepared = corruptPrepared && StripFireProvenanceEXRAttributes(
+			corruptPixels,corruptStripped,corruptError);
+		const std::string corruptDigest = corruptPrepared ?
+			RISECBOR64::SHA256Hex(corruptStripped) : std::string();
+		RISECBOR64::Value corruptPayload = ReplaceMapMember(*exrPayload,
+			"artifact_sha256",RISECBOR64::Value::String(corruptDigest));
+		RISECBOR64::Bytes corruptPayloadBytes;
+		corruptPrepared = corruptPrepared && RISECBOR64::Encode(
+			corruptPayload,corruptPayloadBytes,&corruptError);
+		const std::string corruptId = corruptPrepared ?
+			RISECBOR64::SHA256Hex(corruptPayloadBytes) : std::string();
+		RISECBOR64::Bytes corruptSidecar;
+		corruptPrepared = corruptPrepared && RISECBOR64::Encode(
+			RISECBOR64::Value::MapValue({
+				{ "payload", corruptPayload },
+				{ "provenance_id", RISECBOR64::Value::String(corruptId) }
+			}),corruptSidecar,&corruptError) &&
+			ReplaceBytesAfter(corruptPixels,"riseFireProv_artifact_sha256",
+				"\""+exrDigest->GetText()+"\"","\""+corruptDigest+"\"") &&
+			ReplaceBytesAfter(corruptPixels,"riseFireProv_provenance_id",
+				"\""+exrProvenanceId->GetText()+"\"","\""+corruptId+"\"");
+		Check( corruptPrepared && !VerifyFireProvenanceEXR(
+			corruptPixels,corruptSidecar,corruptError) &&
+			corruptError.find("pixel decode failed") != std::string::npos,
+			"[fire provenance] verifier decodes every self-consistently hashed EXR pixel chunk" );
 		auto rejectsSelfConsistentSemanticMutation = [&]( const std::string& key,
 			const RISECBOR64::Value& replacement, const std::string& expectedError,
 			const std::string& label ) {
@@ -1626,6 +1685,45 @@ namespace
 		Check( channelsMatch && exrOutput && exrOutput->Find("bits_per_channel") &&
 			exrOutput->Find("bits_per_channel")->GetIntegerArgument() == 32u,
 			"[fire provenance] emitted EXR channel types equal the effective precision claim" );
+		const FrameStore::Metadata squareMetadata = store->Meta();
+		RISECBOR64::Value nonsquareCore;
+		bool nonsquarePrepared = RISECBOR64::DecodeCanonical(
+			squareMetadata.resolvedRenderConfigCoreV1,nonsquareCore,&verifyError);
+		if( nonsquarePrepared ) {
+			const RISECBOR64::Value nonsquareFilm = ReplaceMapMember(
+				*nonsquareCore.Find("film"),"pixel_aspect_ratio",
+				RISECBOR64::Value::Float(2.0));
+			nonsquareCore = ReplaceMapMember(nonsquareCore,"film",nonsquareFilm);
+		}
+		FrameStore::Metadata nonsquareMetadata = squareMetadata;
+		nonsquareMetadata.primaryProvenanceId.clear();
+		nonsquareMetadata.primaryArtifactSha256.clear();
+		nonsquareMetadata.primaryArtifactFidelity.clear();
+		nonsquarePrepared = nonsquarePrepared && RISECBOR64::Encode(
+			nonsquareCore,nonsquareMetadata.resolvedRenderConfigCoreV1,&verifyError);
+		const std::string nonsquareFile = MakeTempPathWithoutExt()+"_nonsquare.exr";
+		bool nonsquareWritten = false;
+		if( nonsquarePrepared ) {
+			store->SetMetadata(nonsquareMetadata);
+			nonsquareWritten = EncodeFrameStoreFileTransaction(
+				*store,*exr,opts,nonsquareFile,verifyError);
+		}
+		bool nonsquareHeader = false;
+		try {
+			Imf::InputFile input(nonsquareFile.c_str());
+			nonsquareHeader = input.header().pixelAspectRatio() == 2.0f;
+		} catch( ... ) {
+			nonsquareHeader = false;
+		}
+		std::vector<unsigned char> nonsquareBytes, nonsquareSidecar;
+		Check( nonsquareWritten && nonsquareHeader &&
+			ReadFileAllBytes(nonsquareFile,nonsquareBytes) &&
+			ReadFileAllBytes(nonsquareFile+".provenance.cbor",nonsquareSidecar) &&
+			VerifyFireProvenanceEXR(nonsquareBytes,nonsquareSidecar,verifyError),
+			"[fire provenance] non-square fire film pixel aspect is encoded and verified" );
+		store->SetMetadata(squareMetadata);
+		std::remove(nonsquareFile.c_str());
+		std::remove((nonsquareFile+".provenance.cbor").c_str());
 		auto rejectsDivergentPublication = [&]( const DivergentEXREncoder::Mode mode,
 			const std::string& expectedError, const std::string& label ) {
 			DivergentEXREncoder* divergent = new DivergentEXREncoder(*exr,mode);
@@ -1774,12 +1872,16 @@ namespace
 			denoisedEnvelope.Find("payload") : nullptr;
 		const RISECBOR64::Value* denoisedFidelity = denoisedPayload ?
 			denoisedPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* denoisedReasons = denoisedPayload ?
+			denoisedPayload->Find("artifact_reason_codes") : nullptr;
 		const RISECBOR64::Value* denoisedConfig = denoisedPayload ?
 			denoisedPayload->Find("resolved_render_configuration_v1") : nullptr;
 		const RISECBOR64::Value* denoisedOutput = denoisedConfig ?
 			denoisedConfig->Find("output") : nullptr;
 		Check( denoisedFidelity &&
 			denoisedFidelity->GetText() == "display_derivative" &&
+			denoisedReasons && denoisedReasons->GetArray().size() == 1u &&
+			denoisedReasons->GetArray()[0].GetText() == "lossy_output" &&
 			denoisedOutput && denoisedOutput->Find("frame_index") &&
 			denoisedOutput->Find("frame_index")->GetIntegerArgument() == 12u &&
 			denoisedOutput->Find("denoised_derivative") &&

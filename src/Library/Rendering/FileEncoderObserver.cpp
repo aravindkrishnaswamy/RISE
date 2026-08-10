@@ -10,7 +10,9 @@
 #include "FileEncoderObserver.h"
 #include "FrameStore.h"
 
+#include "../RasterImages/EXRReader.h"
 #include "../Utilities/DiskFileWriteBuffer.h"
+#include "../Utilities/MemoryBuffer.h"
 #include "../Utilities/RISECBOR64.h"
 #include "../Interfaces/ILog.h"
 
@@ -454,7 +456,7 @@ namespace
 		if( primary ) return std::vector<std::string>();
 		std::set<std::string> reasons;
 		const std::string format = encoder.FormatName();
-		if( format != "EXR" || opts.bpp < 32u ||
+		if( format != "EXR" || opts.bpp < 32u || opts.denoisedDerivative ||
 			opts.exrCompression == eExrCompression_Dwaa ) reasons.insert("lossy_output");
 		if( !encoder.SupportsHDR() || format == "HDR10_PNG" ) reasons.insert("integer_output");
 		if( opts.viewTransform.exposureEV != 0.0f ||
@@ -520,6 +522,11 @@ namespace
 		} else if( format == "EXR" ) {
 			effective.bpp = requested.bpp >= 32u ? 32u : 16u;
 			effective.viewTransform = FrameStoreOutput::ViewTransform();
+			if( !std::isfinite(requested.exrPixelAspectRatio) ||
+				requested.exrPixelAspectRatio <= 0.0f ) {
+				error = "EXR pixel aspect ratio must be positive and finite";
+				return false;
+			}
 			if( requested.exrCompression < eExrCompression_None ||
 				requested.exrCompression > eExrCompression_Dwaa ) {
 				error = "EXR compression is outside the authored enum";
@@ -960,7 +967,8 @@ namespace
 			}
 		} else {
 			std::set<std::string> expectedReasons;
-			if( bits->GetIntegerArgument() < 32u || exrCompression == "dwaa" ) {
+			if( bits->GetIntegerArgument() < 32u || exrCompression == "dwaa" ||
+				output->Find("denoised_derivative")->GetBoolean() ) {
 				expectedReasons.insert("lossy_output");
 			}
 			if( output->Find("view_exposure_ev")->GetFloat() != 0.0 ||
@@ -1529,6 +1537,79 @@ namespace
 		return true;
 	}
 
+	bool ValidateEXRPixelDecode(
+		const RISECBOR64::Bytes& encoded,
+		const EXRHeaderFacts& facts,
+		std::string& error )
+	{
+#ifndef NO_EXR_SUPPORT
+		if( encoded.empty() || encoded.size() >
+			static_cast<std::size_t>(std::numeric_limits<int>::max()) ) {
+			error = "OpenEXR artifact is outside the in-memory decoder size range";
+			return false;
+		}
+		MemoryBuffer* buffer = new MemoryBuffer(static_cast<unsigned int>(encoded.size()));
+		bool decoded = false;
+		try {
+			if( !buffer->setBytes(encoded.data(),static_cast<unsigned int>(encoded.size())) ||
+				!buffer->seek(IBuffer::START,0) ) {
+				error = "OpenEXR artifact could not be staged for authoritative decode";
+			} else {
+				EXRReader reader(*buffer,eColorSpace_Rec709RGB_Linear);
+				unsigned int width = 0u;
+				unsigned int height = 0u;
+				reader.BeginRead(width,height);
+				reader.EndRead();
+				const std::uint64_t expectedWidth = static_cast<std::uint64_t>(
+					static_cast<std::int64_t>(facts.dataWindow[2])-
+					static_cast<std::int64_t>(facts.dataWindow[0])+1);
+				const std::uint64_t expectedHeight = static_cast<std::uint64_t>(
+					static_cast<std::int64_t>(facts.dataWindow[3])-
+					static_cast<std::int64_t>(facts.dataWindow[1])+1);
+				decoded = width == expectedWidth && height == expectedHeight;
+				if( !decoded ) error = "OpenEXR decoded dimensions do not match its data window";
+			}
+		}
+		catch( const std::exception& ex ) {
+			error = std::string("OpenEXR pixel decode failed: ")+ex.what();
+		}
+		catch( ... ) {
+			error = "OpenEXR pixel decode failed with a nonstandard exception";
+		}
+		buffer->release();
+		return decoded;
+#else
+		(void)encoded;
+		(void)facts;
+		error = "OpenEXR pixel decode support is unavailable";
+		return false;
+#endif
+	}
+
+	bool ResolveFireEXRPixelAspectRatio(
+		const FrameStore::Metadata& metadata,
+		float& ratio,
+		std::string& error )
+	{
+		using RISECBOR64::Value;
+		Value config;
+		if( !RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
+			config,&error) || config.GetType() != Value::Map ) {
+			error = "resolved fire configuration is unavailable for EXR pixel aspect ratio: "+error;
+			return false;
+		}
+		const Value* film = config.Find("film");
+		const Value* encodedRatio = film ? film->Find("pixel_aspect_ratio") : nullptr;
+		if( !encodedRatio || encodedRatio->GetType() != Value::Float64 ||
+			!std::isfinite(encodedRatio->GetFloat()) || encodedRatio->GetFloat() <= 0.0 ||
+			encodedRatio->GetFloat() > std::numeric_limits<float>::max() ) {
+			error = "resolved fire configuration has no encodable pixel aspect ratio";
+			return false;
+		}
+		ratio = static_cast<float>(encodedRatio->GetFloat());
+		return true;
+	}
+
 	bool ValidateEXRHeaderAgainstPayload(
 		const EXRHeaderFacts& facts,
 		const RISECBOR64::Value& payload,
@@ -1728,7 +1809,8 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 	EXRHeaderFacts facts;
 	if( !ReadEXRHeaderFacts(encodedArtifact,facts,error) ||
 		!ValidateEXRScanlineStructure(encodedArtifact,facts,error) ||
-		!ValidateEXRHeaderAgainstPayload(facts,*payload,error) ) return false;
+		!ValidateEXRHeaderAgainstPayload(facts,*payload,error) ||
+		!ValidateEXRPixelDecode(encodedArtifact,facts,error) ) return false;
 	RISECBOR64::Bytes stripped;
 	if( !StripFireProvenanceEXRAttributes(encodedArtifact,stripped,error) ||
 		artifactDigest->GetText() != RISECBOR64::SHA256Hex(stripped) ) {
@@ -1878,6 +1960,10 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 		transactionOpts.metadataSnapshot = store.Meta();
 		transactionOpts.useMetadataSnapshot = true;
 	}
+	if( encoder.FormatName() == "EXR" &&
+		!transactionOpts.metadataSnapshot.renderFidelityStatus.empty() &&
+		!ResolveFireEXRPixelAspectRatio(transactionOpts.metadataSnapshot,
+			transactionOpts.exrPixelAspectRatio,error) ) return false;
 	for( std::size_t i=0; i<transactionOpts.attrs.size(); ++i ) {
 		if( transactionOpts.attrs[i].first.compare(0u,
 			std::strlen(kFireAttributePrefix),kFireAttributePrefix) == 0 ) {

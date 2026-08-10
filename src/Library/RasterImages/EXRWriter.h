@@ -86,6 +86,7 @@ namespace RISE
 			EXR_COMPRESSION			compression;
 			bool					with_alpha;
 			bool					write_float;	///< true => 32-bit FLOAT channels (no FP16 65504 clamp); false => half
+			float					pixel_aspect_ratio;
 			std::vector<std::pair<std::string, std::string> > string_attributes;
 			unsigned int			horzpixels;
 			unsigned int			scanlines;
@@ -151,6 +152,11 @@ namespace RISE
 				const std::vector<std::pair<std::string, std::string> >& attributes )
 			{
 				string_attributes = attributes;
+			}
+
+			void SetPixelAspectRatio( const float ratio )
+			{
+				pixel_aspect_ratio = ratio;
 			}
 
 			void	BeginWrite( const unsigned int width, const unsigned int height );

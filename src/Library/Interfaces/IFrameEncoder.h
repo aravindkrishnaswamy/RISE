@@ -76,6 +76,7 @@ namespace RISE
 		//! EXR-specific knobs (ignored for other formats).
 		EXR_COMPRESSION exrCompression = eExrCompression_Piz;
 		bool            exrWithAlpha   = true;
+		float           exrPixelAspectRatio = 1.0f;
 
 		//! Animation frame index — passed to file consumers that
 		//! template filenames; the encoder itself doesn't use it.

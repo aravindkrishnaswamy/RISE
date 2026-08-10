@@ -51,6 +51,7 @@ EXRWriter::EXRWriter(
   compression( compression_ ),
   with_alpha( with_alpha_ ),
   write_float( write_float_ ),
+  pixel_aspect_ratio( 1.0f ),
   horzpixels( 0 ),
   scanlines( 0 )
 {
@@ -68,6 +69,7 @@ EXRWriter::EXRWriter(
   compression( compression_ ),
   with_alpha( with_alpha_ ),
   write_float( write_float_ ),
+  pixel_aspect_ratio( 1.0f ),
   horzpixels( 0 ),
   scanlines( 0 )
 {
@@ -129,7 +131,7 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 
 	// Write the header
 	Imf::Header header( width, height,
-						1.0,
+						pixel_aspect_ratio,
 						Imath::V2f (0, 0),
 						1,
 						Imf::INCREASING_Y,
