@@ -571,6 +571,12 @@ int main()
 		const std::string macViewModel = withoutWhitespace(std::string(
 			std::istreambuf_iterator<char>(macViewModelFile),
 			std::istreambuf_iterator<char>()));
+		Check( windowsMain.find(
+			"m_engine->saveAs(path,formatName,m_engine->viewExposureEV())") !=
+				std::string::npos &&
+			macViewModel.find("exposureEV:viewExposureEV") != std::string::npos &&
+			macViewModel.find("nosliderexposedyet") == std::string::npos,
+			"desktop GUI SaveAs forwards the live viewport exposure" );
 		Check( windowsMain.find("else{QMessageBox::warning(this,\"UnsupportedImageFormat\"") !=
 				std::string::npos &&
 			windowsMain.find("elseformatName=\"EXR\"") == std::string::npos &&

@@ -796,11 +796,13 @@ namespace RISE
 
 		void ViewportFrameStore::SetCameraExposureCompensationEV( Scalar ev )
 		{
-			cameraExposureEV_ = ev;
-			// Snapshot framestore_ under chain-mutex shared lock
-			// so a concurrent reallocation (which holds unique_lock)
-			// can't race the meta write.
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			FrameStore* snap = nullptr;
+			{
+				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+				cameraExposureEV_ = ev;
+				snap = framestore_;
+				if( snap ) snap->addref();
+			}
 			if ( snap ) {
 				snap->SetCameraExposureEV(static_cast<double>(ev));
 				snap->release();

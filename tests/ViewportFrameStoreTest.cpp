@@ -1673,6 +1673,30 @@ namespace
 		Check( vfs->GetFrameStore()->Meta().cameraExposureEV == -0.5,
 			"cameraEV preserved across FrameStore reallocation" );
 
+		FrameStore::Spec spec;
+		spec.width = 8;
+		spec.height = 8;
+		auto* externalA = new FrameStore( spec );
+		auto* externalB = new FrameStore( spec );
+		std::thread updater( [&]() {
+			for( unsigned int i=0; i<128; ++i ) {
+				vfs->SetCameraExposureCompensationEV(
+					static_cast<Scalar>(i)/Scalar(16));
+			}
+		});
+		for( unsigned int i=0; i<128; ++i ) {
+			vfs->BindFrameStore( (i & 1u) ? externalA : externalB );
+		}
+		updater.join();
+		vfs->SetCameraExposureCompensationEV( 2.25 );
+		vfs->BindFrameStore( externalA );
+		Check( vfs->GetFrameStore() == externalA &&
+			externalA->Meta().cameraExposureEV == 2.25,
+			"cameraEV publication is serialized with concurrent external binding" );
+		vfs->BindFrameStore( nullptr );
+		safe_release( externalA );
+		safe_release( externalB );
+
 		safe_release( img2 );
 		safe_release( img );
 		vfs->release();

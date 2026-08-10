@@ -1132,7 +1132,7 @@ void MainWindow::onSaveRenderedImage()
         return;
     }
 
-    const bool ok = m_engine->saveAs(path, formatName, /*ev=*/0.0);
+    const bool ok = m_engine->saveAs(path, formatName, m_engine->viewExposureEV());
     if (ok) {
         statusBar()->showMessage(
             QString("Saved %1 (%2)").arg(QFileInfo(path).fileName(), formatName),

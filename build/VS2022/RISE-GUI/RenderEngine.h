@@ -189,6 +189,7 @@ public slots:
     // "PPM" (case-insensitive).  Both no-op until the first render
     // has produced output.  See docs/FRAMESTORE_DESIGN.md §11 L4c.
     void setViewExposureEV(double ev);
+    double viewExposureEV() const { return m_viewExposureEV.load(); }
     bool saveAs(const QString& path, const QString& formatName, double ev);
 
     // L5b — toggle HDR display path on/off.  When ON, every emit
