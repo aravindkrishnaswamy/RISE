@@ -91,32 +91,38 @@ namespace RISE
 		{
 		public:
 			explicit BridgeObserver( ViewportFrameStore& parent )
-				: parent_( parent )
+				: parent_( parent ), active_( false )
 			{
 			}
+			void Activate() { active_.store(true,std::memory_order_release); }
 
 			void OnTileComplete( const Rect& roi, uint64_t generation ) override
 			{
+				if( !active_.load(std::memory_order_acquire) ) return;
 				if ( parent_.tileCb_ ) parent_.tileCb_( roi, generation );
 			}
 
 			void OnFrameComplete( unsigned int frame, uint64_t generation ) override
 			{
+				if( !active_.load(std::memory_order_acquire) ) return;
 				if ( parent_.frameCb_ ) parent_.frameCb_( frame, generation );
 			}
 
 			void OnPreDenoiseComplete( unsigned int frame, uint64_t generation ) override
 			{
+				if( !active_.load(std::memory_order_acquire) ) return;
 				if ( parent_.preDenoiseCb_ ) parent_.preDenoiseCb_( frame, generation );
 			}
 
 			void OnDenoiseComplete( unsigned int frame, uint64_t generation ) override
 			{
+				if( !active_.load(std::memory_order_acquire) ) return;
 				if ( parent_.denoiseCb_ ) parent_.denoiseCb_( frame, generation );
 			}
 
 		private:
 			ViewportFrameStore& parent_;
+			std::atomic<bool> active_;
 		};
 
 		// ─────────────────────────────────────────────────────────────
@@ -126,6 +132,7 @@ namespace RISE
 		ViewportFrameStore::ViewportFrameStore()
 			: cameraExposureEV_( Scalar( 0 ) )
 		{
+			dormant_.reserve(kMaxDormantChains);
 		}
 
 		ViewportFrameStore::~ViewportFrameStore()
@@ -361,14 +368,48 @@ namespace RISE
 		void ViewportFrameStore::ApplyBindFrameStore(
 			FrameStore* external, const uint64_t requestRevision )
 		{
+			std::vector<DormantChain> oldDormant;
+			oldDormant.reserve(kMaxDormantChains);
+			FrameStore* newStore = nullptr;
+			BridgeObserver* newObserver = nullptr;
+			bool newObserverRegistered = false;
+			if( external ) {
+				external->addref();
+				newStore = external;
+				try {
+					if( chainConstructionTestHook_ ) {
+						chainConstructionTestHook_("bind_after_retain");
+					}
+					newStore->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
+					newObserver = new BridgeObserver(*this);
+					if( chainConstructionTestHook_ ) {
+						chainConstructionTestHook_("bind_after_observer_allocation");
+					}
+					newStore->AddObserver(newObserver);
+					newObserverRegistered = true;
+					if( chainConstructionTestHook_ ) {
+						chainConstructionTestHook_("bind_after_observer_registration");
+					}
+				} catch ( ... ) {
+					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
+					delete newObserver;
+					safe_release(newStore);
+					throw;
+				}
+			}
+
 			FrameStore*     oldExternal = nullptr;
 			FrameStore*     oldFs       = nullptr;
 			FrameSink*      oldSink     = nullptr;
 			BridgeObserver* oldObs      = nullptr;
-			std::vector<DormantChain> oldDormant;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 				if( bindRevision_.load(std::memory_order_acquire) != requestRevision ) {
+					lock.unlock();
+					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
+					delete newObserver;
+					safe_release(newStore);
 					return;
 				}
 
@@ -376,22 +417,25 @@ namespace RISE
 				// avoids tearing down + re-registering an observer that
 				// would point at the same store.
 				if ( external && external == externalFrameStore_ ) {
+					lock.unlock();
+					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
+					delete newObserver;
+					safe_release(newStore);
 					return;
 				}
 				if( !external && !externalFrameStore_ && !framestore_ && !framesink_ &&
-					!observer_ && dormant_.empty() ) return;
+					!observer_ && dormant_.empty() ) {
+					return;
+				}
 
-				// Snapshot member state into locals + clear members.
+				// Snapshot ownership without changing the published chain.  The
+				// replacement was already constructed above; a construction failure
+				// therefore leaves every current reader and observer untouched.
 				oldExternal = externalFrameStore_;
 				oldFs       = framestore_;
 				oldSink     = framesink_;
 				oldObs      = observer_;
-				oldDormant.swap( dormant_ );
-
-				externalFrameStore_ = nullptr;
-				framestore_         = nullptr;
-				framesink_          = nullptr;
-				observer_           = nullptr;
+				oldDormant = dormant_;
 			}
 
 			bool oldObserverDetached = false;
@@ -415,15 +459,20 @@ namespace RISE
 						oldDormant[i].fs->AddObserver(oldDormant[i].obs);
 					}
 				}
-				{
-					std::unique_lock<std::shared_mutex> lock(chainMutex_);
-					externalFrameStore_ = oldExternal;
-					framestore_ = oldFs;
-					framesink_ = oldSink;
-					observer_ = oldObs;
-					dormant_.swap(oldDormant);
-				}
+				if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
+				delete newObserver;
+				safe_release(newStore);
 				throw;
+			}
+
+			{
+				std::unique_lock<std::shared_mutex> lock(chainMutex_);
+				externalFrameStore_ = newStore;
+				framestore_ = newStore;
+				framesink_ = nullptr;
+				observer_ = newObserver;
+				dormant_.clear();
+				if( newObserver ) newObserver->Activate();
 			}
 
 			delete oldObs;
@@ -443,27 +492,7 @@ namespace RISE
 				safe_release( d.fs );
 			}
 
-			if ( external ) {
-				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
-				if( bindRevision_.load(std::memory_order_acquire) != requestRevision ) {
-					return;
-				}
-				BridgeObserver* newObserver = nullptr;
-				external->addref();
-				try {
-					external->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
-					newObserver = new BridgeObserver(*this);
-					external->AddObserver(newObserver);
-				} catch ( ... ) {
-					delete newObserver;
-					safe_release(external);
-					throw;
-				}
-				externalFrameStore_ = external;
-				framestore_ = external;
-				observer_ = newObserver;
-
+			if ( newStore ) {
 				// L8 round-18d — eLog_Info (was eLog_Event).  With the
 				// interactive preview-scale path firing this message on
 				// every dim transition (4 -> 8 -> 4 -> 2 -> 1 across a
@@ -475,8 +504,8 @@ namespace RISE
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: bound to "
 					"external FrameStore %ux%u",
-					static_cast<unsigned int>( external->Width() ),
-					static_cast<unsigned int>( external->Height() ) );
+					static_cast<unsigned int>( newStore->Width() ),
+					static_cast<unsigned int>( newStore->Height() ) );
 			} else if( bindRevision_.load(std::memory_order_acquire) == requestRevision ) {
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: unbound — "
@@ -494,6 +523,12 @@ namespace RISE
 			std::function<void(uint64_t)> hook )
 		{
 			bindPhaseOneTestHook_ = std::move(hook);
+		}
+
+		void ViewportFrameStore::ForTest_SetChainConstructionHook(
+			std::function<void(const char*)> hook )
+		{
+			chainConstructionTestHook_ = std::move(hook);
 		}
 
 		// L6e-2b — Notification override.  `Rasterizer::SetFrameStore`
@@ -944,6 +979,7 @@ namespace RISE
 			// down post-lock.  Same dormant cache semantics; fewer
 			// deadlock paths.
 			DormantChain evicted;
+			DormantChain replacement;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 				if( bindTransactionsInFlight_.load(std::memory_order_acquire) != 0u ||
@@ -961,65 +997,63 @@ namespace RISE
 					return;
 				}
 
-				// L5a round-8 — preview-scale oscillation reuse.  Park
-				// the current active (if any) into dormant_ rather than
-				// destroying it.  A subsequent pass at the same dims
-				// (very common during interactive drag adaptation; see
-				// SceneEditController::DoOneRenderPass scale ramp)
-				// reactivates the parked entry instead of paying the
-				// allocation + observer-registration cost.  LRU
-				// eviction on overflow returns an entry to evict; we
-				// tear it down OUTSIDE the lock below.
-				ParkActiveAsDormant_locked( evicted );
-
-				// Look for a dormant entry that matches the requested
-				// dims.  Iterate front-to-back so a hit on the most-
-				// recently-parked entry is also the cheapest.
-				bool reactivated = false;
+				// Select or fully construct the replacement before parking the
+				// active chain.  Every throwing allocation and observer-registration
+				// step therefore has the strong guarantee: the currently published
+				// FrameStore remains intact.
 				for ( auto it = dormant_.begin(); it != dormant_.end(); ++it ) {
 					if ( it->w == width && it->h == height ) {
-						framestore_ = it->fs;
-						framesink_  = it->sink;
-						observer_   = it->obs;
+						replacement = *it;
 						dormant_.erase( it );
-						// Camera EV may have changed while this chain
-						// was parked — re-apply the latest snapshot so
-						// encoders / RenderToBuffer see current state.
-						framestore_->SetCameraExposureEV(
-							static_cast<double>(cameraExposureEV_));
-						reactivated = true;
 						break;
 					}
 				}
 
-				if ( !reactivated ) {
-					// Cache miss — allocate fresh chain at the new dims.
-					// Logged at info level so the interactive preview-
-					// scale sweep doesn't spam warnings (unlike the
-					// previous unconditional reallocate-and-warn path).
+				if ( !replacement.fs ) {
 					GlobalLog()->PrintEx( eLog_Info,
 						"ViewportFrameStore:: allocating new FrameStore "
 						"chain for %ux%u (dormant cache size %zu).",
 						width, height, dormant_.size() );
-
-					FrameStore::Spec spec;
-					spec.width    = width;
-					spec.height   = height;
-					spec.tileEdge = 32;  // match rasterizer tile size; not load-bearing
-					framestore_ = new FrameStore( spec );  // refcount = 1
-					framestore_->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
-
-					framesink_ = new FrameSink( framestore_ );
-
-					// Build observer + register on the FrameStore.
-					// `new` because BridgeObserver doesn't extend
-					// Reference (it's an internal-only lifecycle
-					// managed by us).  AddObserver is a brief
-					// lock-and-push — safe to call under chainMutex_.
-					observer_ = new BridgeObserver( *this );
-					framestore_->AddObserver( observer_ );
+					try {
+						FrameStore::Spec spec;
+						spec.width    = width;
+						spec.height   = height;
+						spec.tileEdge = 32;
+						replacement.fs = new FrameStore(spec);
+						replacement.w = width;
+						replacement.h = height;
+						replacement.fs->SetCameraExposureEV(
+							static_cast<double>(cameraExposureEV_));
+						if( chainConstructionTestHook_ ) {
+							chainConstructionTestHook_("ensure_after_store");
+						}
+						replacement.sink = new FrameSink(replacement.fs);
+						if( chainConstructionTestHook_ ) {
+							chainConstructionTestHook_("ensure_after_sink");
+						}
+						replacement.obs = new BridgeObserver(*this);
+						if( chainConstructionTestHook_ ) {
+							chainConstructionTestHook_("ensure_after_observer_allocation");
+						}
+						replacement.fs->AddObserver(replacement.obs);
+						if( chainConstructionTestHook_ ) {
+							chainConstructionTestHook_("ensure_after_observer_registration");
+						}
+					} catch ( ... ) {
+						lock.unlock();
+						TeardownDormant_unlocked(replacement);
+						throw;
+					}
 				}
+
+				ParkActiveAsDormant_locked(evicted);
+				framestore_ = replacement.fs;
+				framesink_ = replacement.sink;
+				observer_ = replacement.obs;
+				replacement = DormantChain();
+				framestore_->SetCameraExposureEV(
+					static_cast<double>(cameraExposureEV_));
+				observer_->Activate();
 			}  // chainMutex_ released here
 
 			// Post-lock teardown of the LRU eviction (if any).  Same

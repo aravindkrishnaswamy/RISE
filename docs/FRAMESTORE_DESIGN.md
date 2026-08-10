@@ -80,12 +80,14 @@ vfs->SaveAs( pickedPath, enc, opts );
 safe_release( enc );
 
 // 6. On rasterizer swap (PT → BDPT in UI):
-//    Old rasterizer is destroyed (or its outputs freed); the
-//    ViewportFrameStore + FrameStore + callbacks ALL persist.
-//    Just attach to the new one:
+//    Keep the ViewportFrameStore and its UI callbacks, free the old
+//    rasterizer's output reference, then attach to the new rasterizer.
+//    AddRasterizerOutput publishes the new rasterizer's canonical
+//    FrameStore through OnRasterizerFrameStoreChanged; the VFS moves
+//    its observer transactionally:
 oldRasterizer->FreeRasterizerOutputs();   // see Detach() doc
 vfs->Attach( newRasterizer );
-//    No re-binding of callbacks, no FrameStore reallocation.
+//    The VFS callbacks persist; the FrameStore follows the producer.
 
 // 7. Teardown (scene unload, app exit):
 vfs->release();
@@ -447,7 +449,7 @@ This is the one cleanly back-compatible step: existing writers don't change at a
 
 Replaces `IRasterizerOutput` for *notification*. `IRasterizerOutput` survives in Phase 1 as the data path; in Phase 2 it's retired or kept as a deprecated shim.
 
-**Observers attach to the `FrameStore`, NOT to the rasterizer.** The FrameStore is the persistent artifact; the rasterizer is its current producer. The user changes the active rasterizer in the UI (e.g., PT → BDPT, or "Render" with different settings) → a new rasterizer is constructed against the same FrameStore → all attached observers (scene-declared file outputs, UI viewport) survive the swap and observe the new render's output without reattachment. See §7.5.
+**Observers attach to the `FrameStore`, NOT to the rasterizer.** Each rasterizer publishes its canonical FrameStore to newly attached outputs. Long-lived facades such as `ViewportFrameStore` keep their user callbacks, then transactionally move an internal observer when `OnRasterizerFrameStoreChanged` reports a different store. Observers installed directly on one FrameStore remain tied to that artifact and must be installed on a replacement explicitly. See §7.5.
 
 ```cpp
 class IRenderObserver {
@@ -654,30 +656,17 @@ Phase 1: keeps working (the helper still owns its `RISERasterImage`; the FrameSt
 
 ### 7.5 Rasterizer-swap and FrameStore-replacement behavior
 
-The observer-on-FrameStore (rather than observer-on-rasterizer) attachment model means observers survive most lifecycle transitions automatically:
+The observer-on-FrameStore model keeps notifications tied to the artifact whose pixels they describe. The current implementation publishes a rasterizer's canonical store to every newly attached `IRasterizerOutput`; `ViewportFrameStore` then moves its internal observer transactionally while preserving its UI callbacks.
 
 | Transition | FrameStore | Observers | Notes |
 |---|---|---|---|
 | User clicks Render again, same scene + same rasterizer | reused | reused | Trivial; new frame in same buffer. |
-| User picks a different rasterizer (PT → BDPT) in UI | reused | reused | New rasterizer constructed against the existing FrameStore. Scene-declared file outputs and the viewport observer stay attached and emit on the new render's frames. **This is the user-visible benefit of attaching to the artifact rather than the producer.** |
-| User changes camera resolution | replaced | re-attached by Job | FrameStore is sized at construction; resolution change → allocate new FrameStore. The Job re-runs the scene-side observer attachment for the new store. The UI viewport observer subscribes on a `Job::OnFrameStoreReplaced` signal. The one transition where observer migration is non-automatic. |
+| User picks a different rasterizer (PT → BDPT) in UI | follows the new rasterizer | VFS observer moved; UI callbacks reused | `Attach(newRasterizer)` calls `AddRasterizerOutput`, which immediately sends the new canonical store through `OnRasterizerFrameStoreChanged`. The VFS prepares the replacement observer first, detaches the old observer outside its chain lock, and commits the new binding atomically. |
+| User changes camera resolution | replaced by rasterizer/Job | VFS observer moved; store-local observers rebuilt | `Rasterizer::SetFrameStore` notifies attached outputs. VFS forwards that notification to the same transactional bind path. Observers owned by scene/file routes are installed on the replacement store by their owning construction path. |
 | User loads a different scene | replaced | rebuilt from new scene | Wholly new Job state; new scene's `file_rasterizeroutput` chunks build their own observer set. |
 | User adds a temporary render-to-file mid-session ("Save As…" with auto-rerender) | reused | observer added then removed | UI attaches a one-shot `FileEncoderObserver` for the next `OnFrameComplete`, then removes it. |
 
-The *only* lifecycle event that requires re-attaching observers is FrameStore replacement, which is also the only event that genuinely invalidates the buffer's contents anyway. Attaching observers at the Job/scene level (rather than to a transient rasterizer) means rasterizer construction stays cheap and stateless from the observer's point of view.
-
-**Implementation note.** `Job` (or whatever owns the current `FrameStore`) provides:
-
-```cpp
-class IJob /* …existing methods… */ {
-public:
-    virtual std::shared_ptr<FrameStore> GetFrameStore() const = 0;
-    using FrameStoreReplacedCallback = std::function<void(std::shared_ptr<FrameStore>)>;
-    virtual void OnFrameStoreReplaced(FrameStoreReplacedCallback) = 0;
-};
-```
-
-The UI viewport binds to `OnFrameStoreReplaced`; on fire, it removes its observer from the old store and registers it on the new one. Scene-declared file observers are reattached by `Job` itself when it builds the new FrameStore (the original observer construction lives in the chunk parser's `Finalize`; on resolution change Job re-invokes the equivalent).
+FrameStore replacement is the lifecycle boundary that requires observer migration. There is no `Job::OnFrameStoreReplaced` callback and no `std::shared_ptr` ownership path. The implemented notification boundary is `IRasterizerOutput::OnRasterizerFrameStoreChanged(FrameStore*)`, driven by `Rasterizer::AddRasterizerOutput` and `Rasterizer::SetFrameStore`. `ViewportFrameStore::BindFrameStore` uses the repository's intrusive references and provides the strong guarantee: a replacement construction or registration failure leaves the previous published chain usable.
 
 ---
 

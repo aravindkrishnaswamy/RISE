@@ -1367,10 +1367,11 @@ namespace RISE
 			// avoids two failure modes: (a) an observer that
 			// self-detaches (calls RemoveObserver(this)) inside its
 			// callback would otherwise deadlock on the non-recursive
-			// mutex; (b) a slow observer would otherwise block the
-			// writer for the full callback duration.  The snapshot
-			// is cheap (vector of pointers) compared to even one
-			// modest observer callback.  See L1 adversarial review HIGH-4.
+			// mutex.  Callbacks remain synchronous, so a slow observer
+			// still back-pressures the publishing writer by contract.  The
+			// snapshot also lets registration changes proceed while the
+			// callback is running; per-observer lifetime tracking below
+			// keeps those raw pointers safe.
 			DispatchObservers( [&]( IRenderObserver* obs ) {
 				obs->OnTileComplete( roi, generation );
 			} );

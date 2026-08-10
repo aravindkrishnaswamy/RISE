@@ -34,13 +34,13 @@
 //                          └── internal BridgeObserver (fans Mark*
 //                              events out to user-supplied callbacks)
 //
-//  Rasterizer-swap behaviour (per design doc §7.5): the FrameStore
-//  is owned by THIS class, not by any specific rasterizer.  When
-//  the user changes the active rasterizer in the UI, the platform
-//  code calls Detach(oldRasterizer) + Attach(newRasterizer); the
-//  FrameStore + observer + tile/frame callbacks all survive
-//  unchanged.  The new rasterizer's first OutputImage refills the
-//  same FrameStore.  No reattachment of observers required.
+//  Rasterizer-swap behaviour (per design doc §7.5): Attach() adds
+//  this facade as an output, and Rasterizer::AddRasterizerOutput
+//  immediately publishes that rasterizer's canonical FrameStore via
+//  OnRasterizerFrameStoreChanged().  The VFS transactionally moves
+//  its BridgeObserver from the old store to the new one.  User
+//  callbacks stay on this facade; the pixel store follows the active
+//  rasterizer rather than persisting independently across the swap.
 //
 //  Lazy allocation: the FrameStore + FrameSink + BridgeObserver
 //  are constructed on the FIRST IRasterizerOutput callback, when
@@ -210,6 +210,8 @@ namespace RISE
 			void BindFrameStore( FrameStore* external );
 			void ForTest_SetBindPhaseOneHook(
 				std::function<void(uint64_t)> hook );
+			void ForTest_SetChainConstructionHook(
+				std::function<void(const char*)> hook );
 
 			//! Whether this VFS is currently bound to an external
 			//! FrameStore via `BindFrameStore`.  Diagnostic — most
@@ -432,6 +434,7 @@ namespace RISE
 			std::atomic<uint64_t> bindRevision_{ 0u };
 			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
 			std::function<void(uint64_t)> bindPhaseOneTestHook_;
+			std::function<void(const char*)> chainConstructionTestHook_;
 			Implementation::FrameStore* pendingBind_ = nullptr;
 			uint64_t pendingBindRevision_ = 0u;
 			bool pendingBindValid_ = false;

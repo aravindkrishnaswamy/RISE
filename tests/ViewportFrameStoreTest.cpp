@@ -14,8 +14,8 @@
 //       direct path (transitivity → byte-identical to legacy
 //       FileRasterizerOutput per L2's regression).
 //    5. Rasterizer-swap simulation: register VFS on rasterizer A,
-//       detach, register on B; FrameStore + observer + tile-callback
-//       state survive across the swap.
+//       detach, register on B; UI callbacks persist while the VFS
+//       follows the new rasterizer's canonical FrameStore.
 //    6. Resolution change triggers chain reallocation + observers
 //       still fire on the new chain.
 //    7. Multi-frame reuse: two OutputImage calls populate the
@@ -263,14 +263,14 @@ namespace
 		return RISEColor( RISEPel( r, g, b ), 1.0 );
 	}
 
-	// Build a 16x16 IRasterImage with the test pattern.
-	RasterImage_Template<RISEPel>* MakeTestImage()
+	RasterImage_Template<RISEPel>* MakeTestImage(
+		unsigned int width = kImgW, unsigned int height = kImgH )
 	{
 		auto* img = new RasterImage_Template<RISEPel>(
-			kImgW, kImgH, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
-		for ( unsigned int y = 0; y < kImgH; ++y ) {
-			for ( unsigned int x = 0; x < kImgW; ++x ) {
-				img->SetPEL( x, y, PatternPixel( x, y ) );
+			width, height, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+		for ( unsigned int y = 0; y < height; ++y ) {
+			for ( unsigned int x = 0; x < width; ++x ) {
+				img->SetPEL( x, y, PatternPixel( x%kImgW, y%kImgH ) );
 			}
 		}
 		return img;
@@ -1537,6 +1537,8 @@ namespace
 		std::condition_variable callbackCondition;
 		bool callbackEntered = false;
 		bool callbackMayReturn = false;
+		bool replacementReady = false;
+		bool replacementMayProceed = false;
 		std::atomic<unsigned int> callbacks(0u);
 		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
 			++callbacks;
@@ -1556,31 +1558,39 @@ namespace
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			callbackCondition.wait(lock,[&]() { return callbackEntered; });
 		}
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			replacementReady = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return replacementMayProceed; });
+		});
 		std::thread firstBinder([&]() { vfs->BindFrameStore(first); });
-		const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(2);
-		while( vfs->IsExternallyBound() && std::chrono::steady_clock::now() < deadline ) {
-			std::this_thread::yield();
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return replacementReady; });
 		}
-		const bool firstReachedTeardown = !vfs->IsExternallyBound();
-		if( firstReachedTeardown ) vfs->BindFrameStore(second);
-		const bool secondQueuedDuringTeardown =
-			firstReachedTeardown && vfs->GetFrameStore() == nullptr;
+		vfs->BindFrameStore(second);
+		const bool oldStayedPublishedWhileSecondQueued =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
 		{
 			std::lock_guard<std::mutex> lock(callbackMutex);
+			replacementMayProceed = true;
 			callbackMayReturn = true;
 		}
 		callbackCondition.notify_all();
 		dispatcher.join();
 		firstBinder.join();
+		vfs->ForTest_SetChainConstructionHook({});
 		const bool newestRetained = vfs->GetFrameStore() == second;
 		vfs->release();
 		first->BeginTile(0u,0u);
 		first->EndTile(0u,0u);
 		second->BeginTile(0u,0u);
 		second->EndTile(0u,0u);
-		Check(firstReachedTeardown && secondQueuedDuringTeardown && newestRetained &&
+		Check(oldStayedPublishedWhileSecondQueued && newestRetained &&
 			callbacks.load() == 1u,
-			"concurrent external binds queue the newest store until teardown is safe" );
+			"concurrent external binds keep the old store visible and commit the newest" );
 		source->release();
 		first->release();
 		second->release();
@@ -1635,7 +1645,7 @@ namespace
 		second->release();
 	}
 
-	void TestBindTeardownGapRejectsInternalChainCreation()
+	void TestBindTeardownKeepsOldChainPublished()
 	{
 		auto* vfs = new ViewportFrameStore();
 		FrameStore::Spec spec;
@@ -1649,6 +1659,8 @@ namespace
 		std::condition_variable callbackCondition;
 		bool callbackEntered = false;
 		bool callbackMayReturn = false;
+		bool replacementReady = false;
+		bool replacementMayProceed = false;
 		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			callbackEntered = true;
@@ -1664,24 +1676,33 @@ namespace
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			callbackCondition.wait(lock,[&]() { return callbackEntered; });
 		}
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			replacementReady = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return replacementMayProceed; });
+		});
 		std::thread binder([&]() { vfs->BindFrameStore(replacement); });
-		const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(2);
-		while( vfs->IsExternallyBound() && std::chrono::steady_clock::now() < deadline ) {
-			std::this_thread::yield();
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return replacementReady; });
 		}
-		const bool enteredGap = !vfs->IsExternallyBound();
-		if( enteredGap ) vfs->OutputImage(*image,nullptr,0u);
-		const bool noInternalChainPublished = vfs->GetFrameStore() == nullptr;
+		vfs->OutputImage(*image,nullptr,0u);
+		const bool oldChainStayedPublished =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
 		{
 			std::lock_guard<std::mutex> lock(callbackMutex);
+			replacementMayProceed = true;
 			callbackMayReturn = true;
 		}
 		callbackCondition.notify_all();
 		dispatcher.join();
 		binder.join();
-		Check(enteredGap && noInternalChainPublished &&
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(oldChainStayedPublished &&
 			vfs->GetFrameStore() == replacement && vfs->IsExternallyBound(),
-			"EnsureChain cannot publish a dormant internal chain during bind teardown" );
+			"external replacement keeps the old chain published until commit" );
 		vfs->release();
 		image->release();
 		source->release();
@@ -1756,6 +1777,102 @@ namespace
 		source->release();
 		replacement->release();
 		trigger->release();
+	}
+
+	void TestBindConstructionFailuresPreserveExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) { ++callbacks; });
+		vfs->BindFrameStore(source);
+		const std::vector<const char*> stages = {
+			"bind_after_retain",
+			"bind_after_observer_allocation",
+			"bind_after_observer_registration"
+		};
+		bool allPreserved = true;
+		for( const char* stage : stages ) {
+			const unsigned int callbacksBefore = callbacks.load();
+			bool hookCalled = false;
+			vfs->ForTest_SetChainConstructionHook([stage,&hookCalled]( const char* observed ) {
+				if( std::strcmp(stage,observed) == 0 ) {
+					hookCalled = true;
+					throw std::runtime_error(stage);
+				}
+			});
+			bool rejected = false;
+			try {
+				vfs->BindFrameStore(replacement);
+			} catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()) == stage;
+			}
+			vfs->ForTest_SetChainConstructionHook({});
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+			replacement->BeginTile(0u,0u);
+			replacement->EndTile(0u,0u);
+			const bool stagePreserved = hookCalled && rejected &&
+				vfs->GetFrameStore() == source && vfs->IsExternallyBound() &&
+				callbacks.load() == callbacksBefore+1u;
+			Check(stagePreserved,std::string("external construction failure preserves binding at ")+stage);
+			allPreserved = allPreserved && stagePreserved;
+		}
+		Check(allPreserved,
+			"every external replacement construction failure preserves the old binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestInternalConstructionFailuresPreserveExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* originalImage = MakeTestImage();
+		vfs->OutputImage(*originalImage,nullptr,0u);
+		FrameStore* originalStore = vfs->GetFrameStore();
+		const std::vector<const char*> stages = {
+			"ensure_after_store",
+			"ensure_after_sink",
+			"ensure_after_observer_allocation",
+			"ensure_after_observer_registration"
+		};
+		bool allPreserved = true;
+		for( size_t i=0; i<stages.size(); ++i ) {
+			const char* stage = stages[i];
+			bool hookCalled = false;
+			auto* resized = MakeTestImage(
+				static_cast<unsigned int>(kImgW+1u+i), kImgH+1u);
+			vfs->ForTest_SetChainConstructionHook([stage,&hookCalled]( const char* observed ) {
+				if( std::strcmp(stage,observed) == 0 ) {
+					hookCalled = true;
+					throw std::runtime_error(stage);
+				}
+			});
+			bool rejected = false;
+			try {
+				vfs->OutputImage(*resized,nullptr,1u);
+			} catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()) == stage;
+			}
+			vfs->ForTest_SetChainConstructionHook({});
+			vfs->OutputImage(*originalImage,nullptr,2u);
+			const bool stagePreserved = hookCalled && rejected &&
+				vfs->GetFrameStore() == originalStore &&
+				vfs->GetFrameStore()->Width() == kImgW;
+			Check(stagePreserved,std::string("internal construction failure preserves binding at ")+stage);
+			allPreserved = allPreserved && stagePreserved;
+			resized->release();
+		}
+		Check(allPreserved,
+			"every internal replacement construction failure preserves a usable old chain" );
+		originalImage->release();
+		vfs->release();
 	}
 
 	void TestNullBindTearsDownInternalChain()
@@ -1973,8 +2090,10 @@ int main()
 	TestExternalBind_L6e2a();
 	TestConcurrentExternalBindsPublishNewestOnly();
 	TestDelayedOlderBindCannotClearNewerBinding();
-	TestBindTeardownGapRejectsInternalChainCreation();
+	TestBindTeardownKeepsOldChainPublished();
 	TestRejectedCrossStoreBindPreservesExistingChain();
+	TestBindConstructionFailuresPreserveExistingChain();
+	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();
 	TestObserverRetainsUnregisteredEncoder();
