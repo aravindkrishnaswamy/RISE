@@ -821,9 +821,12 @@ static ImageStats RenderFireReferencePreview(
 	return result;
 }
 
-static void TestFirePelPreviewDivergence()
+static void TestFirePelPreviewDivergence( const bool extendedAblation )
 {
 	const unsigned int seeds[] = { 1u, 7u, 42u, 314159u, 0xdeadbeefu };
+	const size_t seedBegin = extendedAblation ? 0u : 2u;
+	const size_t seedEnd = extendedAblation ?
+		sizeof(seeds)/sizeof(seeds[0]) : seedBegin+1u;
 	double maximumDivergence[3] = {0.0,0.0,0.0};
 	double magnitudeDeltaSum[3] = {0.0,0.0,0.0};
 	double tiltDeltaSum[3] = {0.0,0.0,0.0};
@@ -836,7 +839,8 @@ static void TestFirePelPreviewDivergence()
 	double fullDeltaMin[3] = {1e30,1e30,1e30};
 	double fullDeltaMax[3] = {-1e30,-1e30,-1e30};
 	bool allValid = true;
-	for( const unsigned int seed : seeds ) {
+	for( size_t seedIndex=seedBegin; seedIndex<seedEnd; ++seedIndex ) {
+		const unsigned int seed = seeds[seedIndex];
 		const ImageStats pel = RenderFireReferencePreview(
 			"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene",
 			"pathtracing_pel_rasterizer", seed );
@@ -893,9 +897,9 @@ static void TestFirePelPreviewDivergence()
 			<< divergence[1] << "," << divergence[2] << ")" << std::endl;
 	}
 	Check( allValid,
-		"Phase-A Pel and spectral reference scenes render for every recorded seed" );
+		"Phase-A Pel and spectral reference scenes render for every selected seed" );
 	if( !allValid ) return;
-	const double seedCount = static_cast<double>(sizeof(seeds)/sizeof(seeds[0]));
+	const double seedCount = static_cast<double>(seedEnd-seedBegin);
 	std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
 	for( unsigned int channel=0; channel<3u; ++channel ) {
 		std::cout << " c" << channel << " magnitude="
@@ -925,12 +929,18 @@ static void TestFirePelPreviewDivergence()
 		fullDeltaSum[0]/seedCount, fullDeltaSum[1]/seedCount,
 		fullDeltaSum[2]/seedCount
 	};
+	// The default suite runs seed 42 at the original 256 spp; it is the
+	// representative full-confidence factorial.  --extended-fire-ablation runs
+	// the complete five-seed experiment whose measured ranges are recorded
+	// below.  Both tiers render all five optical variants for every selected
+	// seed, so the default still catches a missing magnitude, tilt, or coupling.
 	// Controlled paired-seed factorial against the synthetic record's E=0.26:
 	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
 	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
 	// constituent, baked field, proposal, and seed is held fixed.  Measured on
-	// the operational values now hashed by record 2cdd0045... at this test's five
-	// seeds, repeated in the full suite and standalone, the blue image-mean
+	// the operational values now hashed by record 2cdd0045... at the extended
+	// tier's five seeds, repeated in the full suite and standalone, the blue
+	// image-mean
 	// increase is +58.49%: +38.00 points (65.0%) from magnitude, +14.21 (24.3%)
 	// from tilt, and +6.28 (10.7%) from nonlinear coupling.  Per-seed blue
 	// ranges are 35.28-44.12%, 11.78-15.83%, and 50.93-62.72% for magnitude,
@@ -959,8 +969,8 @@ static void TestFirePelPreviewDivergence()
 	// 2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137
 	// (metadata-complete canonicalization e3a3392b; tripwire recorded by cdb1aad4;
 	// schema-v3 operational projection e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9)
-	// over the paired seeds above, repeated byte-for-byte in the full suite and
-	// standalone: red 0.60-3.46%, green 0.27-3.30%, and blue 3.73-13.00%
+	// over the extended tier's paired seeds, repeated byte-for-byte in the full
+	// suite and standalone: red 0.60-3.46%, green 0.27-3.30%, and blue 3.73-13.00%
 	// (five-seed blue mean 9.44%).  The
 	// coefficient change explains the blue shift: E_eff rises from the
 	// fixture's constant 0.26 to 0.420169 at 550 nm (+61.6%; +76.9% at
@@ -3140,8 +3150,20 @@ static void TestAutoParamPassThrough()
 	std::remove( p.c_str() );
 }
 
-int main()
+int main( const int argc, const char* const argv[] )
 {
+	bool extendedFireAblation = false;
+	bool firePreviewOnly = false;
+	for( int i=1; i<argc; ++i ) {
+		if( std::string(argv[i])=="--extended-fire-ablation" ) {
+			extendedFireAblation = true;
+		} else if( std::string(argv[i])=="--fire-preview-only" ) {
+			firePreviewOnly = true;
+		} else {
+			std::cerr << "unknown argument: " << argv[i] << std::endl;
+			return 2;
+		}
+	}
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
 	// pointing GlobalOptions at a temp file that drops the activation gate
 	// to 1 and sets a cheap probe (spp 4, half-res).  MUST be set before any
@@ -3172,7 +3194,13 @@ int main()
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
 	std::cout << std::endl;
 	std::cout << "--- Fire Pel preview consistency ---" << std::endl;
-	TestFirePelPreviewDivergence();
+	TestFirePelPreviewDivergence(extendedFireAblation);
+	if( firePreviewOnly ) {
+		std::cout << std::endl;
+		std::cout << "Passed: " << passCount << std::endl;
+		std::cout << "Failed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	// Pinned delegations: auto(X) must resolve to X and match X_pel_rasterizer.
 	CheckDelegation( "pin pt   -> pathtracing_pel", kAutoPT,   "auto_pt",   kRefPT,   "ref_pt",   AutoIntegratorChoice::PT );
