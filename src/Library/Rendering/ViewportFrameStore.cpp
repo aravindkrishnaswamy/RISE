@@ -550,12 +550,16 @@ namespace RISE
 			}
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
+			struct StoreReference
+			{
+				FrameStore* store;
+				~StoreReference() { store->release(); }
+			} storeReference { snap };
 
 			EncodeOpts transactionOpts = opts;
-			bool fireMetadataLeased = false;
+			bool artifactMetadataLeased = false;
 			if( !snap->AcquireExternalArtifactMetadataSnapshot(
-				transactionOpts.metadataSnapshot,fireMetadataLeased) ) {
-				snap->release();
+				transactionOpts.metadataSnapshot,artifactMetadataLeased) ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': "
 					"fire render is not finalized",path.c_str() );
@@ -577,11 +581,10 @@ namespace RISE
 			std::string error;
 			bool success = false;
 			{
-				FireMetadataLease fireMetadataLease { snap,fireMetadataLeased };
+				FireMetadataLease fireMetadataLease { snap,artifactMetadataLeased };
 				success = EncodeFrameStoreFileTransaction(
 					*snap,*encoder,transactionOpts,path,error );
 			}
-			snap->release();
 			if( !success ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': %s",
@@ -601,14 +604,34 @@ namespace RISE
 			if ( !encoder ) return false;
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
-			if( !snap->Meta().renderFidelityStatus.empty() ) {
-				snap->release();
+			struct StoreReference
+			{
+				FrameStore* store;
+				~StoreReference() { store->release(); }
+			} storeReference { snap };
+			FrameStoreOutput::Metadata metadataSnapshot;
+			bool artifactMetadataLeased = false;
+			if( !snap->AcquireExternalArtifactMetadataSnapshot(
+				metadataSnapshot,artifactMetadataLeased) ) {
+				GlobalLog()->PrintEasyError(
+					"ViewportFrameStore::SaveTo: output metadata is unavailable" );
+				return false;
+			}
+			struct ArtifactMetadataLease
+			{
+				FrameStore* store;
+				bool active;
+				~ArtifactMetadataLease()
+				{
+					if( active ) store->ReleaseExternalArtifactMetadataLease();
+				}
+			} metadataLease { snap,artifactMetadataLeased };
+			if( !metadataSnapshot.renderFidelityStatus.empty() ) {
 				GlobalLog()->PrintEasyError(
 					"ViewportFrameStore::SaveTo: fire output requires a provenance-capable sink" );
 				return false;
 			}
 			encoder->Encode( *snap, dst, opts );
-			snap->release();
 			return true;
 		}
 

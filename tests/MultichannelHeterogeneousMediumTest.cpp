@@ -277,7 +277,7 @@ namespace
 			}
 			catch( const std::runtime_error& error ) {
 				rejected_ = std::string(error.what()).find(
-					"fire render metadata is leased") != std::string::npos;
+					"output metadata is leased") != std::string::npos;
 				throw;
 			}
 		}
@@ -3602,7 +3602,7 @@ namespace
 			}
 			catch( const std::runtime_error& error ) {
 				rejected = std::string(error.what()).find(
-					"fire render metadata is leased") != std::string::npos;
+					"output metadata is leased") != std::string::npos;
 			}
 			Check( output && rejected && output->Attempted() && output->Rejected() &&
 				SameFrameMetadata(store->Meta(),before),

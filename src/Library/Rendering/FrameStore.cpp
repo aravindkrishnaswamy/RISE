@@ -30,14 +30,24 @@
 
 namespace
 {
-	// Thread-local depth counter so RemoveObserver can detect
-	// self-detach (observer calling RemoveObserver inside its
-	// own callback on the same thread) and skip the wait — a
-	// self-waiting thread would deadlock.  Lives in an anonymous
-	// namespace at TU scope so DispatchObservers (template, in
-	// FrameStore.cpp) and RemoveObserver (member, also in
-	// FrameStore.cpp) share it.  See L1 adversarial review P2.
-	thread_local int g_observerDispatchDepth = 0;
+	struct ObserverCallbackFrame
+	{
+		RISE::IRenderObserver* observer;
+		ObserverCallbackFrame* prior;
+	};
+
+	thread_local ObserverCallbackFrame* g_observerCallbackFrame = nullptr;
+
+	unsigned int ObserverActiveCountOnThisThread(
+		const RISE::IRenderObserver* observer )
+	{
+		unsigned int count = 0u;
+		for( ObserverCallbackFrame* frame = g_observerCallbackFrame;
+			frame; frame = frame->prior ) {
+			if( frame->observer == observer ) ++count;
+		}
+		return count;
+	}
 }
 
 using namespace RISE;
@@ -1649,10 +1659,8 @@ namespace RISE
 			return plan;
 		}
 
-		// Snapshot the observer list under the mutex, increment the
-		// in-flight counter, release the mutex, invoke callbacks
-		// without the mutex held, then decrement and notify any
-		// thread waiting in RemoveObserver.
+		// Snapshot the observer list under the mutex, then claim each
+		// callback under that same mutex immediately before invocation.
 		//
 		// IMPORTANT — per-iteration recheck against observers_:
 		// the same-thread RemoveObserver path skips the wait-for-
@@ -1663,10 +1671,9 @@ namespace RISE
 		// the next iteration.  We re-acquire the mutex briefly per
 		// iteration to verify the observer is still registered;
 		// remove-during-dispatch entries are silently skipped.
-		// (Cross-thread removal is already handled by the wait
-		// protocol in RemoveObserver, but the per-iteration check
-		// is a single uniform rule that handles both.)  See L1
-		// adversarial review round 3 P2.
+		// Cross-thread removal waits on the claimed observer's own
+		// callback count.  An unrelated callback on the removing
+		// thread therefore cannot bypass the victim's lifetime gate.
 		//
 		// Cost: one mutex acquire/release per snapshot entry, which
 		// is negligible compared to the cost of an observer
@@ -1677,84 +1684,53 @@ namespace RISE
 		//      RemoveObserver inside their callbacks.
 		//   2. No iterator invalidation: we iterate a stack copy.
 		//   3. No UAF on freed observers: per-iteration recheck.
-		//   4. Cross-thread RemoveObserver-then-destroy is safe:
-		//      the wait inside RemoveObserver pairs with the in-flight
-		//      counter so the caller knows no dispatch is mid-callback
-		//      on the just-removed observer when RemoveObserver
-		//      returns.
+		//   4. Cross-thread RemoveObserver-then-destroy is safe: the
+		//      wait pairs with the removed observer's callback count.
 		// See L1 adversarial review P2 (rounds 2 and 3).
 		template <typename Fn>
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
-			// L8 review round 4 — RAII guards on the in-flight counter
-			// + thread-local depth.  Pre-fix: if `fn(obs)` threw, the
-			// `--observerDispatchInFlight_` and `--g_observerDispatchDepth`
-			// at the bottom were skipped → the counter stayed at +1
-			// forever → every subsequent `RemoveObserver` waited
-			// forever (the cv predicate `inflight == 0` never became
-			// true).  This manifests as the hang on second render
-			// after scene reload reported by the user: anything that
-			// called `RemoveObserver` (e.g. `BindFrameStore` Phase 3,
-			// `~ViewportFrameStore`, `ParkActiveAsDormant_locked`
-			// eviction) blocked indefinitely.
-			//
-			// Bridge tile callbacks DO call into Cocoa / Obj-C blocks;
-			// any thrown Obj-C exception unwinds through C++ as
-			// `std::terminate` on macOS by default, but if the user's
-			// block uses `@try`/`@catch` mid-stack and re-throws as
-			// C++, or if any std::function copy/move throws on heap
-			// exhaustion, we reach the unguarded path.  Also: a
-			// `system_error` from `std::shared_mutex::lock` (resource
-			// exhaustion, EAGAIN) inside `RenderToBuffer` is on the
-			// observer-callback path and would propagate out.  Cheap
-			// to harden against; correctness consequence of NOT
-			// hardening is exactly the user-visible hang.
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
 				snapshot = observers_;
-				++observerDispatchInFlight_;
 			}
-			++g_observerDispatchDepth;
-
-			try {
-				for ( IRenderObserver* obs : snapshot ) {
-					// Recheck registration before invoking.  An earlier
-					// callback in this same dispatch may have removed
-					// (and possibly destroyed) `obs` since the snapshot
-					// was taken.
-					bool stillRegistered;
-					{
-						std::lock_guard<std::mutex> lock( observerMutex_ );
-						stillRegistered = std::find( observers_.begin(),
-						                             observers_.end(),
-						                             obs ) != observers_.end();
-					}
-					if ( stillRegistered ) {
-						fn( obs );
-					}
-				}
-			} catch ( ... ) {
-				// Decrement the counter + depth, notify waiters, then
-				// rethrow.  Rethrowing preserves the original behaviour
-				// (callers / std::terminate diagnostics see the same
-				// exception type); the only behavioural change is that
-				// the counter no longer leaks on the unwind path.
-				--g_observerDispatchDepth;
+			for ( IRenderObserver* obs : snapshot ) {
+				bool claimed = false;
 				{
 					std::lock_guard<std::mutex> lock( observerMutex_ );
-					--observerDispatchInFlight_;
+					if( std::find(observers_.begin(),observers_.end(),obs) !=
+						observers_.end() ) {
+						++observerCallbacksInFlight_[obs];
+						claimed = true;
+					}
+				}
+				if( !claimed ) continue;
+
+				ObserverCallbackFrame callbackFrame { obs,g_observerCallbackFrame };
+				g_observerCallbackFrame = &callbackFrame;
+				try {
+					fn( obs );
+				} catch ( ... ) {
+					g_observerCallbackFrame = callbackFrame.prior;
+					{
+						std::lock_guard<std::mutex> lock( observerMutex_ );
+						auto active = observerCallbacksInFlight_.find(obs);
+						if( active != observerCallbacksInFlight_.end() &&
+							--active->second == 0u ) observerCallbacksInFlight_.erase(active);
+					}
+					observerDispatchDone_.notify_all();
+					throw;
+				}
+				g_observerCallbackFrame = callbackFrame.prior;
+				{
+					std::lock_guard<std::mutex> lock( observerMutex_ );
+					auto active = observerCallbacksInFlight_.find(obs);
+					if( active != observerCallbacksInFlight_.end() &&
+						--active->second == 0u ) observerCallbacksInFlight_.erase(active);
 				}
 				observerDispatchDone_.notify_all();
-				throw;
 			}
-
-			--g_observerDispatchDepth;
-			{
-				std::lock_guard<std::mutex> lock( observerMutex_ );
-				--observerDispatchInFlight_;
-			}
-			observerDispatchDone_.notify_all();
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -1783,29 +1759,19 @@ namespace RISE
 				observers_.erase( it );
 			}
 
-			// Wait for any in-flight dispatch whose snapshot may
-			// still hold the just-removed observer pointer to
-			// finish — otherwise the caller could legally destroy
-			// `observer` immediately after this returns, but a
-			// dispatcher thread already partway through invoking
-			// observer.OnXxx() would dereference freed memory.
+			// Wait for callbacks that have already claimed precisely
+			// this observer.  Snapshot-only pointers are harmless: every
+			// dispatcher rechecks registration before it claims a call.
 			//
-			// Self-detach (observer calls RemoveObserver from
-			// inside its own callback ON THE SAME THREAD) skips
-			// the wait: the dispatcher IS this thread, and waiting
-			// on g_observerDispatchDepth to reach 0 would deadlock
-			// because only this thread can decrement it (after
-			// returning from the callback).  In that case the
-			// caller is mid-callback and the observer is implicitly
-			// kept alive by the call stack until the callback
-			// returns; the caller's responsibility is not to
-			// destroy `this` until they return.  See L1 adversarial
-			// review P2.
-			if ( g_observerDispatchDepth == 0 ) {
-				observerDispatchDone_.wait( lock, [this]{
-					return observerDispatchInFlight_ == 0;
-				} );
-			}
+			// Self-detach cannot wait for callbacks on this stack, but it
+			// must still drain concurrent callbacks on other threads.
+			const unsigned int localCallbacks =
+				ObserverActiveCountOnThisThread(observer);
+			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
+				const auto active = observerCallbacksInFlight_.find(observer);
+				return active == observerCallbacksInFlight_.end() ||
+					active->second <= localCallbacks;
+			} );
 		}
 
 		// ─────────────────────────────────────────────────────────────

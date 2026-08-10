@@ -31,9 +31,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -597,6 +599,154 @@ namespace
 		stopWriter.store( true );
 		writer.join();
 
+		store->release();
+	}
+
+	struct CrossThreadVictim : public IRenderObserver
+	{
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool entered = false;
+		bool continueCallback = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			entered = true;
+			condition.notify_all();
+			condition.wait(lock,[this]() { return continueCallback; });
+		}
+	};
+
+	struct CrossThreadRemover : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		IRenderObserver* victim = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool started = false;
+		bool returned = false;
+
+		void OnFrameComplete( unsigned int, uint64_t ) override
+		{
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				started = true;
+				condition.notify_all();
+			}
+			store->RemoveObserver(victim);
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				returned = true;
+				condition.notify_all();
+			}
+		}
+	};
+
+	void TestObserverRemovalFromUnrelatedCallbackWaitsForVictim()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		CrossThreadRemover remover;
+		CrossThreadVictim victim;
+		remover.store = store;
+		remover.victim = &victim;
+		store->AddObserver(&remover);
+		store->AddObserver(&victim);
+
+		std::thread tileDispatch([&]() {
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		});
+		{
+			std::unique_lock<std::mutex> lock(victim.mutex);
+			victim.condition.wait(lock,[&]() { return victim.entered; });
+		}
+		std::thread frameDispatch([&]() { store->MarkFrameComplete(1u); });
+		bool removeStarted = false;
+		bool removeReturnedEarly = false;
+		{
+			std::unique_lock<std::mutex> lock(remover.mutex);
+			removeStarted = remover.condition.wait_for(lock,
+				std::chrono::seconds(2),[&]() { return remover.started; });
+			removeReturnedEarly = remover.returned;
+		}
+		{
+			std::lock_guard<std::mutex> lock(victim.mutex);
+			victim.continueCallback = true;
+			victim.condition.notify_all();
+		}
+		tileDispatch.join();
+		frameDispatch.join();
+		Check(removeStarted && !removeReturnedEarly && remover.returned,
+			"observer A removal waits for observer B active on another dispatch thread" );
+
+		store->RemoveObserver(&remover);
+		store->release();
+	}
+
+	struct ConcurrentSelfRemovingObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool tileEntered = false;
+		bool continueTile = false;
+		bool removeStarted = false;
+		bool removeReturned = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			tileEntered = true;
+			condition.notify_all();
+			condition.wait(lock,[this]() { return continueTile; });
+		}
+
+		void OnFrameComplete( unsigned int, uint64_t ) override
+		{
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				removeStarted = true;
+				condition.notify_all();
+			}
+			store->RemoveObserver(this);
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				removeReturned = true;
+				condition.notify_all();
+			}
+		}
+	};
+
+	void TestConcurrentSelfRemovalDrainsOtherThreads()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		ConcurrentSelfRemovingObserver observer;
+		observer.store = store;
+		store->AddObserver(&observer);
+		std::thread tileDispatch([&]() {
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		});
+		{
+			std::unique_lock<std::mutex> lock(observer.mutex);
+			observer.condition.wait(lock,[&]() { return observer.tileEntered; });
+		}
+		std::thread frameDispatch([&]() { store->MarkFrameComplete(1u); });
+		bool removeStarted = false;
+		bool returnedEarly = false;
+		{
+			std::unique_lock<std::mutex> lock(observer.mutex);
+			removeStarted = observer.condition.wait_for(lock,std::chrono::seconds(2),
+				[&]() { return observer.removeStarted; });
+			returnedEarly = observer.removeReturned;
+			observer.continueTile = true;
+			observer.condition.notify_all();
+		}
+		tileDispatch.join();
+		frameDispatch.join();
+		Check(removeStarted && !returnedEarly && observer.removeReturned,
+			"self-removal drains concurrent callbacks while exempting its current stack" );
 		store->release();
 	}
 
@@ -1232,6 +1382,8 @@ int main()
 	TestObserverSelfDetach();
 	TestObserverCascadeRemovalNoUAF();
 	TestObserverRemoveWaitsForInFlight();
+	TestObserverRemovalFromUnrelatedCallbackWaitsForVictim();
+	TestConcurrentSelfRemovalDrainsOtherThreads();
 	TestConcurrentSeqlock();
 	TestConcurrentFrameMetadata();
 	TestRenderReadback();

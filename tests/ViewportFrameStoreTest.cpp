@@ -928,6 +928,63 @@ namespace
 		vfs->release();
 	}
 
+	void TestNonFireSavesLeaseOutputClassification()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		EncodeOpts opts;
+
+		BlockingPNGEncoder* fileEncoder = new BlockingPNGEncoder();
+		const std::string path = MakeTempPath()+"_nonfire_classification.png";
+		bool fileSaved = false;
+		std::thread fileSaver([&]() {
+			fileSaved = vfs->SaveAs(path,fileEncoder,opts);
+		});
+		fileEncoder->WaitUntilEntered();
+		bool filePreflightRejected = false;
+		try {
+			SetFireFidelityMetadata(*store);
+		} catch( const std::runtime_error& error ) {
+			filePreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
+		fileEncoder->Continue();
+		fileSaver.join();
+		Check(fileSaved && filePreflightRejected &&
+			store->Meta().renderFidelityStatus.empty() &&
+			!std::filesystem::exists(path+".provenance.cbor"),
+			"nonfire SaveAs leases classification before concurrent fire preflight" );
+
+		BlockingPNGEncoder* bufferEncoder = new BlockingPNGEncoder();
+		MemoryBuffer* buffer = new MemoryBuffer();
+		bool bufferSaved = false;
+		std::thread bufferSaver([&]() {
+			bufferSaved = vfs->SaveTo(*buffer,bufferEncoder,opts);
+		});
+		bufferEncoder->WaitUntilEntered();
+		bool bufferPreflightRejected = false;
+		try {
+			SetFireFidelityMetadata(*store);
+		} catch( const std::runtime_error& error ) {
+			bufferPreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
+		bufferEncoder->Continue();
+		bufferSaver.join();
+		Check(bufferSaved && buffer->getCurPos() > 0u && bufferPreflightRejected &&
+			store->Meta().renderFidelityStatus.empty(),
+			"nonfire SaveTo leases classification before concurrent fire preflight" );
+
+		std::remove(path.c_str());
+		fileEncoder->release();
+		bufferEncoder->release();
+		buffer->release();
+		safe_release(img);
+		vfs->release();
+	}
+
 	void TestPreparedFireFrameCannotPublish()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -1772,6 +1829,7 @@ int main()
 	TestSaveAsByteIdenticalToL2();
 	TestSaveAsFireProvenanceAndTransaction();
 	TestSaveAsUsesOneMetadataSnapshot();
+	TestNonFireSavesLeaseOutputClassification();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestMultiFrameReuse();

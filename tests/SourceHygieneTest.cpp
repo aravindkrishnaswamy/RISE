@@ -943,6 +943,24 @@ int main()
 			}),windowsMovieWriter.end());
 		const std::string frameEncoders = slurp(
 			repoRoot/"src"/"Library"/"Rendering"/"FrameEncoders.cpp");
+		const std::string viewportSource = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ViewportFrameStore.cpp");
+		const std::string exposureSetter = braceBody(viewportSource,
+			"void ViewportFrameStore::SetCameraExposureCompensationEV(");
+		const std::size_t exposureLock = exposureSetter.find(
+			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
+		const std::size_t exposureWrite = exposureSetter.find("cameraExposureEV_ = ev");
+		Check(exposureLock != std::string::npos && exposureWrite != std::string::npos &&
+			exposureLock < exposureWrite,
+			"camera exposure publication is serialized with viewport binding" );
+		const std::string riseBridge = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");
+		Check(riseBridge.find("production tile notifications never enter this helper") ==
+				std::string::npos &&
+			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
+			riseBridge.find("workers no longer take it during their hot path") ==
+				std::string::npos,
+			"GUI bridge comments retain the bounded worker tile-callback contract" );
 		for( const std::string& member : allDataMembers(
 			encoderHeader,"struct EncodeOpts","EncodeOpts") ) {
 			const bool transactionInternal = member == "useMetadataSnapshot" ||

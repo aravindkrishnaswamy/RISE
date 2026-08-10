@@ -144,13 +144,14 @@ public:
 // while opening up live exposure scrubbing and multi-format Save-As
 // without re-rendering.
 //
-// Threading: production tile notifications never enter this helper.
-// A bounded Swift polling queue notices the FrameStore generation at
-// display cadence and calls `PollAndEmitIfDirty`; frame-complete
-// notifications still deliver a final coherent image.  The helper
-// serialises staging-buffer access with `bufferMutex_`, and invokes
-// the Swift block while holding that lock so its input pointer remains
-// valid for the duration of the call.
+// Threading: production tile notifications enter only the bounded
+// `OnTileCompleteTry` path.  It never waits for `bufferMutex_`; a busy
+// polling emit causes the tile notification to skip.  A Swift polling
+// queue also notices FrameStore generations at display cadence, and
+// frame-complete notifications deliver a final coherent image.  The
+// helper serialises staging-buffer access with `bufferMutex_`, and
+// invokes the Swift block while holding that lock so its input pointer
+// remains valid for the duration of the call.
 //
 // Lifetime: bridge owns this helper; lambda captures pass a raw
 // pointer.  The bridge tears down by (a) releasing its
@@ -238,15 +239,14 @@ public:
     // overhead from observer serialisation even when no inversion
     // fired.
     //
-    // Post round-9: workers no longer call into the bridge from
-    // `EndTile`.  Instead, the UI thread polls `vfs->Generation()`
+    // The UI path polls `vfs->Generation()`
     // (a `std::atomic<uint64_t>` already bumped on every EndTile)
     // at its own cadence — typically a 30 Hz `NSTimer` driven from
     // the Swift `RenderViewModel`.  When the generation advances,
     // `PollAndEmitIfDirty` does a single full-frame
     // `EmitFullImage_locked` on the UI thread.  Net properties:
-    //   * Workers: zero `bufferMutex_` contention; render time is
-    //     independent of bridge / Swift / Cocoa observer work.
+    //   * Workers: a non-blocking try_lock and one tile emit only when
+    //     acquired; they skip immediately when the polling path is busy.
     //   * UI thread: bounded ~15% utilisation during render
     //     (~5 ms × 30 Hz emit cost); idle when generation hasn't
     //     advanced.
@@ -1158,15 +1158,15 @@ private:
 //   * No-ops if the generation matches the last-emitted sentinel —
 //     workers haven't produced new pixels since the previous poll.
 //   * Otherwise acquires `bufferMutex_` (uncontended in this design
-//     — workers no longer take it during their hot path), emits one
+//     — tile workers use only a non-blocking try_lock), emits one
 //     full-image RenderToBuffer + block dispatch, updates the
 //     sentinel.
 //
 // The work happens on whatever thread Swift calls from — typically
-// the main run loop driving the display Timer.  Workers never wait
-// on the bridge for observer dispatch, so wall-clock render time is
-// independent of UI / Cocoa work.  See `PollAndEmitIfDirty` header
-// doc for the architecture rationale.
+// the main run loop driving the display Timer.  Tile workers may enter
+// the bounded try-only regional emit, but never wait for the polling
+// path's bridge mutex.  See `PollAndEmitIfDirty` and
+// `OnTileCompleteTry` for the two paths.
 - (void)pollProductionVFS {
     _productionVFSCallbacks->PollAndEmitIfDirty(_productionVFS);
 }

@@ -35,6 +35,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -312,9 +313,9 @@ namespace RISE
 			void SetMetadata( const Metadata& metadata )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				if( fireMetadataLeaseCount_ ) {
+				if( outputMetadataLeaseCount_ ) {
 					throw std::runtime_error(
-						"output_provenance_unavailable: fire render metadata is leased");
+						"output_provenance_unavailable: output metadata is leased");
 				}
 				meta_ = metadata;
 				fireRenderPublicationBlocked_ = false;
@@ -341,9 +342,9 @@ namespace RISE
 				)
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				if( fireMetadataLeaseCount_ ) {
+				if( outputMetadataLeaseCount_ ) {
 					throw std::runtime_error(
-						"output_provenance_unavailable: fire render metadata is leased");
+						"output_provenance_unavailable: output metadata is leased");
 				}
 				meta_.renderFidelityStatus = status;
 				meta_.renderReasonCodes = reasons;
@@ -368,9 +369,9 @@ namespace RISE
 				const std::string& rendererBuildId )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				if( fireMetadataLeaseCount_ ) {
+				if( outputMetadataLeaseCount_ ) {
 					throw std::runtime_error(
-						"output_provenance_unavailable: fire render metadata is leased");
+						"output_provenance_unavailable: output metadata is leased");
 				}
 				meta_.renderFidelityStatus = status;
 				meta_.renderReasonCodes = reasons;
@@ -393,17 +394,18 @@ namespace RISE
 
 			bool AcquireExternalArtifactMetadataSnapshot(
 				Metadata& snapshot,
-				bool& fireLease )
+				bool& metadataLease )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				fireLease = false;
+				metadataLease = false;
 				if( !meta_.renderFidelityStatus.empty() ) {
-					if( fireRenderPublicationBlocked_ || fireMetadataLeaseCount_ ) return false;
-					++fireMetadataLeaseCount_;
-					fireLease = true;
+					if( fireRenderPublicationBlocked_ || outputMetadataLeaseCount_ ) return false;
 				}
-				snapshot = meta_;
-				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				Metadata prepared = meta_;
+				prepared.frame = completedFrame_.load(std::memory_order_relaxed);
+				++outputMetadataLeaseCount_;
+				metadataLease = true;
+				snapshot = std::move(prepared);
 				return true;
 			}
 
@@ -451,23 +453,23 @@ namespace RISE
 			Metadata AcquireFireMetadataLeaseAndSnapshot()
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				++fireMetadataLeaseCount_;
 				Metadata snapshot = meta_;
 				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				++outputMetadataLeaseCount_;
 				return snapshot;
 			}
 
 			void ReleaseFireMetadataLease()
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				if( fireMetadataLeaseCount_ ) --fireMetadataLeaseCount_;
+				if( outputMetadataLeaseCount_ ) --outputMetadataLeaseCount_;
 			}
 
 			void UpdateAnimatedFireMetadata(
 				const std::vector<unsigned char>& renderConfig )
 			{
 				std::lock_guard<std::mutex> lock(metadataMutex_);
-				if( !fireMetadataLeaseCount_ || meta_.renderFidelityStatus.empty() ) {
+				if( !outputMetadataLeaseCount_ || meta_.renderFidelityStatus.empty() ) {
 					throw std::runtime_error(
 						"output_provenance_unavailable: animated fire metadata update is unauthorized");
 				}
@@ -546,24 +548,16 @@ namespace RISE
 			// AddObserver/RemoveObserver from inside their own
 			// callbacks).
 			//
-			// observerDispatchInFlight_ tracks how many dispatches
-			// have snapshots that may still hold pointers to
-			// observers in the list; RemoveObserver waits for this
-			// to reach zero before returning, so callers may safely
-			// destroy the observer immediately after RemoveObserver
-			// returns.  Self-detach (observer calls RemoveObserver
-			// from inside its own callback) is detected via the
-			// thread_local g_dispatchDepth flag in FrameStore.cpp;
-			// in that case RemoveObserver does NOT wait, since the
-			// caller is the dispatcher and waiting on itself would
-			// deadlock.  See L1 adversarial review P2.
+			// Per-observer callback counts let RemoveObserver wait for
+			// precisely the removed observer without deadlocking on an
+			// unrelated callback in the caller's dispatch.
 			std::vector<IRenderObserver*>     observers_;
 			mutable std::mutex                observerMutex_;
-			int                               observerDispatchInFlight_{ 0 };
+			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
 			mutable std::condition_variable   observerDispatchDone_;
 
 			mutable std::mutex metadataMutex_;
-			unsigned int fireMetadataLeaseCount_ = 0u;
+			unsigned int outputMetadataLeaseCount_ = 0u;
 			bool fireRenderPublicationBlocked_ = false;
 			std::atomic<unsigned int> completedFrame_;
 			Metadata meta_;
