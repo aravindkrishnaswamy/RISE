@@ -342,7 +342,8 @@ namespace RISE
 			mutable std::recursive_mutex	mDelegateMutationMutex;
 			std::atomic<bool>			mFrameStoreReplayInProgress { false };
 			mutable AutoIntegratorChoice	mResolved;
-			mutable std::once_flag			mResolveOnce;
+			mutable bool					mResolutionInProgress;
+			mutable bool					mResolutionComplete;
 			mutable std::mutex				mResolutionStateMutex;
 
 			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0

@@ -323,6 +323,117 @@ private:
 	const IScene& scene_;
 };
 
+class ResolutionBarrier
+{
+public:
+	void ArriveAndWait()
+	{
+		std::unique_lock<std::mutex> lock(mutex_);
+		++arrivals_;
+		condition_.notify_all();
+		condition_.wait(lock,[this]() { return arrivals_ == 2u; });
+	}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable condition_;
+	unsigned int arrivals_ = 0u;
+};
+
+class CrossThreadResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadResolveOutput(
+		AutoRasterizer& target,
+		const IScene& scene,
+		ResolutionBarrier& barrier ) :
+		target_(target), scene_(scene), barrier_(barrier) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		barrier_.ArriveAndWait();
+		try {
+			resolved = target_.ResolveForFirePreflight(scene_);
+		}
+		catch( const std::runtime_error& error ) {
+			rejectedCycle = std::string(error.what()).find("cross-thread cycle") !=
+				std::string::npos;
+		}
+	}
+
+	bool resolved = false;
+	bool rejectedCycle = false;
+
+protected:
+	~CrossThreadResolveOutput() override {}
+
+private:
+	AutoRasterizer& target_;
+	const IScene& scene_;
+	ResolutionBarrier& barrier_;
+};
+
+class CrossThreadRemoveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadRemoveOutput( AutoRasterizer& rasterizer, IRasterizerOutput& target ) :
+		rasterizer_(rasterizer), target_(target) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 1u ) return;
+		std::thread worker([this]() {
+			try {
+				rasterizer_.RemoveRasterizerOutput(&target_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("reentrant or concurrent") !=
+					std::string::npos;
+			}
+		});
+		worker.join();
+	}
+
+	bool rejected = false;
+
+protected:
+	~CrossThreadRemoveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	IRasterizerOutput& target_;
+};
+
+class ThrowingAddRefOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmThrowOnAddRef( const unsigned int call ) const
+	{
+		addRefCalls_.store(0u);
+		throwAt_.store(call);
+	}
+	void Disarm() const { throwAt_.store(0u); }
+
+	void addref() const override
+	{
+		const unsigned int call = addRefCalls_.fetch_add(1u)+1u;
+		if( throwAt_.load() == call ) {
+			throw std::runtime_error("injected addref failure");
+		}
+		Reference::addref();
+	}
+
+protected:
+	~ThrowingAddRefOutput() override {}
+
+private:
+	mutable std::atomic<unsigned int> addRefCalls_ { 0u };
+	mutable std::atomic<unsigned int> throwAt_ { 0u };
+};
+
 class ReentrantRemoveOutput : public FrameStoreNotificationOutput
 {
 public:
@@ -1599,6 +1710,62 @@ public:
 	virtual void SetTitle( const char* ) override { titleCalls++; }
 };
 
+class MutatingReplayOutput : public FrameStoreNotificationOutput
+{
+public:
+	MutatingReplayOutput(
+		AutoRasterizer& rasterizer,
+		IProgressCallback& first,
+		IProgressCallback& second ) :
+		rasterizer_(rasterizer), first_(first), second_(second) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( !armed ) return;
+		rasterizer_.SetProgressCallback(useFirst_ ? &first_ : &second_);
+		useFirst_ = !useFirst_;
+		++mutations;
+	}
+
+	bool armed = false;
+	unsigned int mutations = 0u;
+
+protected:
+	~MutatingReplayOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	IProgressCallback& first_;
+	IProgressCallback& second_;
+	bool useFirst_ = true;
+};
+
+class PersistentDelegateRemovalOutput : public FrameStoreNotificationOutput
+{
+public:
+	explicit PersistentDelegateRemovalOutput( AutoRasterizer& rasterizer ) :
+		rasterizer_(rasterizer) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( armed ) {
+			++removals;
+			rasterizer_.ForTest_FreeDelegateRasterizerOutputs();
+		}
+	}
+
+	bool armed = false;
+	unsigned int removals = 0u;
+
+protected:
+	~PersistentDelegateRemovalOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+};
+
 static bool LoadAutoLifecycleJob(
 	IJobPriv*& job,
 	std::string& path,
@@ -1863,7 +2030,7 @@ static void TestConcurrentOutputRegistrationRejectsFrameStoreSwap()
 
 static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
 {
-	const std::string label = "Auto output Add/Remove is one wrapper-delegate transaction";
+	const std::string label = "Auto output Add/Remove rejects overlap before reconciliation";
 	std::cout << "Testing " << label << std::endl;
 	IJobPriv* job = nullptr;
 	std::string path;
@@ -1880,25 +2047,30 @@ static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
 		new BlockingFrameStoreNotificationOutput();
 	std::atomic<bool> addFailed(false);
 	std::atomic<bool> removeFinished(false);
+	std::atomic<bool> removeRejected(false);
 	std::thread adder([&]() {
 		try { rasterizer->AddRasterizerOutput(blocking); }
 		catch( ... ) { addFailed.store(true); }
 	});
 	blocking->WaitUntilEntered();
 	std::thread remover([&]() {
-		rasterizer->RemoveRasterizerOutput(blocking);
+		try { rasterizer->RemoveRasterizerOutput(blocking); }
+		catch( const std::runtime_error& error ) {
+			removeRejected.store(std::string(error.what()).find("reentrant or concurrent") !=
+				std::string::npos);
+		}
 		removeFinished.store(true);
 	});
 	std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	const bool removeWaitedForTransaction = !removeFinished.load();
+	const bool removeFailedClosed = removeFinished.load() && removeRejected.load();
 	blocking->Continue();
 	adder.join();
 	remover.join();
-	Check(resolved && !addFailed.load() && removeWaitedForTransaction &&
-		removeFinished.load() &&
+	rasterizer->RemoveRasterizerOutput(blocking);
+	Check(resolved && !addFailed.load() && removeFailedClosed &&
 		!rasterizer->ForTest_WrapperContainsOutput(blocking) &&
 		!rasterizer->ForTest_DelegateContainsOutput(blocking),
-		"concurrent inverse mutation leaves neither topology split: "+label);
+		"overlap rejects promptly and a quiescent retry removes both topologies: "+label);
 	safe_release(blocking);
 	safe_release(job);
 	std::remove(path.c_str());
@@ -1906,7 +2078,7 @@ static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
 
 static void TestSyncAndFrameStoreSwapAreSerialized()
 {
-	const std::string label = "Auto delegate sync serializes with FrameStore swaps";
+	const std::string label = "Auto delegate sync rejects overlapping FrameStore swaps";
 	std::cout << "Testing " << label << std::endl;
 	IJobPriv* job = nullptr;
 	std::string path;
@@ -1936,19 +2108,25 @@ static void TestSyncAndFrameStoreSwapAreSerialized()
 	});
 	blocking->WaitUntilEntered();
 	std::atomic<bool> swapFinished(false);
+	std::atomic<bool> swapRejected(false);
 	std::thread swapper([&]() {
-		rasterizer->SetFrameStore(replacement);
+		try { rasterizer->SetFrameStore(replacement); }
+		catch( const std::runtime_error& error ) {
+			swapRejected.store(std::string(error.what()).find("reentrant or concurrent") !=
+				std::string::npos);
+		}
 		swapFinished.store(true);
 	});
 	std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	const bool swapWaitedForSync = !swapFinished.load();
+	const bool swapFailedClosed = swapFinished.load() && swapRejected.load();
 	blocking->Continue();
 	synchronizer.join();
 	swapper.join();
-	Check(initiallyResolved && synchronized && swapWaitedForSync && swapFinished.load() &&
+	rasterizer->SetFrameStore(replacement);
+	Check(initiallyResolved && synchronized && swapFailedClosed &&
 		rasterizer->GetFrameStore() == replacement &&
 		rasterizer->ForTest_GetDelegateFrameStore() == replacement,
-		"stale sync cannot overwrite a newer wrapper FrameStore: "+label);
+		"overlapping swap rejects promptly and a quiescent retry reaches both stores: "+label);
 	rasterizer->FreeRasterizerOutputs();
 	safe_release(blocking);
 	safe_release(delegateOnly);
@@ -2129,6 +2307,274 @@ static void TestResolutionCallbackCycleFailsClosed()
 	safe_release(secondJob);
 	std::remove(firstPath.c_str());
 	std::remove(secondPath.c_str());
+}
+
+static void TestCrossThreadResolutionCycleFailsClosed()
+{
+	const std::string label =
+		"two resolver threads reject an Auto wait-for cycle without call_once deadlock";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* firstJob = nullptr;
+	IJobPriv* secondJob = nullptr;
+	std::string firstPath, secondPath;
+	if( !LoadAutoLifecycleJob(firstJob,firstPath,"cross_thread_resolution_a") ||
+		!LoadAutoLifecycleJob(secondJob,secondPath,"cross_thread_resolution_b") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		if( !firstPath.empty() ) std::remove(firstPath.c_str());
+		if( !secondPath.empty() ) std::remove(secondPath.c_str());
+		return;
+	}
+	AutoRasterizer* first = dynamic_cast<AutoRasterizer*>(firstJob->GetRasterizer());
+	AutoRasterizer* second = dynamic_cast<AutoRasterizer*>(secondJob->GetRasterizer());
+	firstJob->RemoveRasterizerOutputs();
+	secondJob->RemoveRasterizerOutputs();
+	ResolutionBarrier barrier;
+	CrossThreadResolveOutput* firstOutput = first && second ?
+		new CrossThreadResolveOutput(*second,*secondJob->GetScene(),barrier) : nullptr;
+	CrossThreadResolveOutput* secondOutput = first && second ?
+		new CrossThreadResolveOutput(*first,*firstJob->GetScene(),barrier) : nullptr;
+	if( !firstOutput || !secondOutput ) {
+		Check(false,"two Auto rasterizers available: "+label);
+		safe_release(firstOutput);
+		safe_release(secondOutput);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		std::remove(firstPath.c_str());
+		std::remove(secondPath.c_str());
+		return;
+	}
+	first->AddRasterizerOutput(firstOutput);
+	second->AddRasterizerOutput(secondOutput);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	unsigned int completed = 0u;
+	bool firstResolved = false;
+	bool secondResolved = false;
+	auto resolve = [&]( AutoRasterizer& rasterizer, const IScene& scene, bool& result ) {
+		try { result = rasterizer.ResolveForFirePreflight(scene); }
+		catch( ... ) { result = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			++completed;
+		}
+		completionCondition.notify_all();
+	};
+	std::thread firstThread(resolve,std::ref(*first),
+		std::cref(*firstJob->GetScene()),std::ref(firstResolved));
+	std::thread secondThread(resolve,std::ref(*second),
+		std::cref(*secondJob->GetScene()),std::ref(secondResolved));
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed == 2u; }) ) {
+			std::cerr << "FAIL: cross-thread Auto cycle exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	firstThread.join();
+	secondThread.join();
+	Check(firstResolved && secondResolved &&
+		(firstOutput->rejectedCycle != secondOutput->rejectedCycle) &&
+		(firstOutput->resolved != secondOutput->resolved),
+		"one wait edge rejects while the peer completes and releases the cycle: "+label);
+	first->FreeRasterizerOutputs();
+	second->FreeRasterizerOutputs();
+	safe_release(firstOutput);
+	safe_release(secondOutput);
+	safe_release(firstJob);
+	safe_release(secondJob);
+	std::remove(firstPath.c_str());
+	std::remove(secondPath.c_str());
+}
+
+static void TestCrossThreadCallbackMutationFailsClosed()
+{
+	const std::string label =
+		"output callback cross-thread mutation fails closed instead of waiting on Auto";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"cross_thread_callback_mutation") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	FrameStoreNotificationOutput* target = new FrameStoreNotificationOutput();
+	CrossThreadRemoveOutput* callback = rasterizer ?
+		new CrossThreadRemoveOutput(*rasterizer,*target) : nullptr;
+	if( !rasterizer || !callback ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(callback);
+		safe_release(target);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(target);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool addSucceeded = false;
+	std::thread adder([&]() {
+		try {
+			rasterizer->AddRasterizerOutput(callback);
+			addSucceeded = true;
+		}
+		catch( ... ) {
+			addSucceeded = false;
+		}
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: cross-thread callback mutation exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	adder.join();
+	Check(resolved && addSucceeded && callback->rejected &&
+		rasterizer->ForTest_WrapperContainsOutput(target) &&
+		rasterizer->ForTest_DelegateContainsOutput(target) &&
+		rasterizer->ForTest_WrapperContainsOutput(callback) &&
+		rasterizer->ForTest_DelegateContainsOutput(callback),
+		"worker rejection returns to the callback and preserves both topologies: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(callback);
+	safe_release(target);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestReplayAddRefFailurePreservesRetains()
+{
+	const std::string label =
+		"final Auto replay snapshot exception releases each retained output exactly once";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"replay_addref_failure") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	ThrowingAddRefOutput* output = new ThrowingAddRefOutput();
+	rasterizer->AddRasterizerOutput(output);
+	const unsigned int retainedBefore = output->refcount();
+	output->ArmThrowOnAddRef(3u);
+	bool rejected = false;
+	try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	output->Disarm();
+	Check(resolved && rejected && output->refcount() == retainedBefore &&
+		rasterizer->ForTest_WrapperContainsOutput(output) &&
+		rasterizer->ForTest_DelegateContainsOutput(output),
+		"throwing final retain leaves wrapper, delegate, and caller references balanced: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(output);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestReplayNonConvergenceIsBounded()
+{
+	const std::string label = "Auto replay rejects repeated callback mutation in bounded passes";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* candidateJob = nullptr;
+	std::string candidatePath;
+	if( !LoadAutoLifecycleJob(candidateJob,candidatePath,"candidate_nonconvergence") ) {
+		Check(false,"candidate fixture setup: "+label);
+		safe_release(candidateJob);
+		if( !candidatePath.empty() ) std::remove(candidatePath.c_str());
+		return;
+	}
+	AutoRasterizer* candidate =
+		dynamic_cast<AutoRasterizer*>(candidateJob->GetRasterizer());
+	candidateJob->RemoveRasterizerOutputs();
+	CountingProgressCallback firstProgress, secondProgress;
+	MutatingReplayOutput* mutator = candidate ? new MutatingReplayOutput(
+		*candidate,firstProgress,secondProgress) : nullptr;
+	if( !candidate || !mutator ) {
+		Check(false,"candidate Auto available: "+label);
+		safe_release(mutator);
+		safe_release(candidateJob);
+		std::remove(candidatePath.c_str());
+		return;
+	}
+	candidate->AddRasterizerOutput(mutator);
+	mutator->armed = true;
+	bool candidateRejected = false;
+	try { candidate->ResolveForFirePreflight(*candidateJob->GetScene()); }
+	catch( const std::runtime_error& error ) {
+		candidateRejected = std::string(error.what()).find("did not converge") !=
+			std::string::npos;
+	}
+	mutator->armed = false;
+	const bool candidateRecovered =
+		candidate->ResolveForFirePreflight(*candidateJob->GetScene());
+	Check(candidateRejected && mutator->mutations == 2u && candidateRecovered,
+		"candidate publication rejects a second mutation and can retry after quiescence: "+label);
+	candidate->FreeRasterizerOutputs();
+	safe_release(mutator);
+	safe_release(candidateJob);
+	std::remove(candidatePath.c_str());
+
+	IJobPriv* syncJob = nullptr;
+	std::string syncPath;
+	if( !LoadAutoLifecycleJob(syncJob,syncPath,"sync_nonconvergence") ) {
+		Check(false,"sync fixture setup: "+label);
+		safe_release(syncJob);
+		if( !syncPath.empty() ) std::remove(syncPath.c_str());
+		return;
+	}
+	AutoRasterizer* sync = dynamic_cast<AutoRasterizer*>(syncJob->GetRasterizer());
+	syncJob->RemoveRasterizerOutputs();
+	const bool syncResolved = syncJob->Rasterize();
+	PersistentDelegateRemovalOutput* remover = sync ?
+		new PersistentDelegateRemovalOutput(*sync) : nullptr;
+	if( !sync || !remover ) {
+		Check(false,"sync Auto available: "+label);
+		safe_release(remover);
+		safe_release(syncJob);
+		std::remove(syncPath.c_str());
+		return;
+	}
+	sync->AddRasterizerOutput(remover);
+	remover->armed = true;
+	sync->ForTest_FreeDelegateRasterizerOutputs();
+	bool syncRejected = false;
+	try { sync->ResolveForFirePreflight(*syncJob->GetScene()); }
+	catch( const std::runtime_error& error ) {
+		syncRejected = std::string(error.what()).find("topology could not be replayed") !=
+			std::string::npos;
+	}
+	remover->armed = false;
+	const bool syncRecovered = sync->ResolveForFirePreflight(*syncJob->GetScene());
+	Check(syncResolved && syncRejected && remover->removals == 2u && syncRecovered &&
+		sync->ForTest_WrapperContainsOutput(remover) &&
+		sync->ForTest_DelegateContainsOutput(remover),
+		"post-resolution reconciliation rejects repeated removal and later converges: "+label);
+	sync->FreeRasterizerOutputs();
+	safe_release(remover);
+	safe_release(syncJob);
+	std::remove(syncPath.c_str());
 }
 
 static void TestSyncReplayTracksReentrantRemoval()
@@ -2595,6 +3041,10 @@ int main()
 	TestSyncFailureReplaysWrapperTopology();
 	TestResolutionCallbackReentryFailsClosed();
 	TestResolutionCallbackCycleFailsClosed();
+	TestCrossThreadResolutionCycleFailsClosed();
+	TestCrossThreadCallbackMutationFailsClosed();
+	TestReplayAddRefFailurePreservesRetains();
+	TestReplayNonConvergenceIsBounded();
 	TestSyncReplayTracksReentrantRemoval();
 	TestPersistentRollbackDetachesBothTopologies();
 	TestResolutionPublicationTracksConcurrentFrameStoreSwap();

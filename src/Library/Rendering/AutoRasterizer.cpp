@@ -38,7 +38,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
+#include <map>
+#include <mutex>
 #include <vector>
 
 using namespace RISE;
@@ -47,6 +50,20 @@ using namespace RISE::Implementation;
 namespace
 {
 	thread_local std::vector<const AutoRasterizer*> gResolvingAutoRasterizers;
+	std::mutex gAutoResolutionMutex;
+	std::condition_variable gAutoResolutionChanged;
+	std::map<const AutoRasterizer*,const AutoRasterizer*> gAutoResolutionWaits;
+
+	std::unique_lock<std::recursive_mutex> AcquireAutoMutationLock(
+		std::recursive_mutex& mutex )
+	{
+		std::unique_lock<std::recursive_mutex> lock(mutex,std::try_to_lock);
+		if( !lock.owns_lock() ) {
+			throw std::runtime_error(
+				"output_provenance_unavailable: Auto delegate mutation is reentrant or concurrent");
+		}
+		return lock;
+	}
 
 	//! Lowercase scene-language spelling of an integrator choice; used
 	//! only for the diagnostic log line that surfaces the runtime pick.
@@ -393,6 +410,8 @@ AutoRasterizer::AutoRasterizer(
 	,mDelegate( 0 )
 	,mReplayRevision( 0 )
 	,mResolved( AutoIntegratorChoice::Auto )
+	,mResolutionInProgress( false )
+	,mResolutionComplete( false )
 	,mLastProbeSeconds( 0.0 )
 	,mLastProbeRenders( 0 )
 {
@@ -950,7 +969,47 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		throw std::runtime_error(
 			"output_provenance_unavailable: Auto delegate resolution is reentrant");
 	}
-	std::call_once( mResolveOnce, [this, scene]() {
+	const AutoRasterizer* const waitingFrom = gResolvingAutoRasterizers.empty() ?
+		nullptr : gResolvingAutoRasterizers.back();
+	{
+		std::unique_lock<std::mutex> lock(gAutoResolutionMutex);
+		for( ;; ) {
+			if( mResolutionComplete ) return;
+			if( !mResolutionInProgress ) {
+				mResolutionInProgress = true;
+				break;
+			}
+			if( waitingFrom ) {
+				gAutoResolutionWaits[waitingFrom] = this;
+				const AutoRasterizer* cursor = this;
+				bool cycle = false;
+				for( std::size_t traversed=0u;
+					cursor && traversed<=gAutoResolutionWaits.size(); ++traversed ) {
+					if( cursor == waitingFrom ) {
+						cycle = true;
+						break;
+					}
+					const auto edge = gAutoResolutionWaits.find(cursor);
+					cursor = edge == gAutoResolutionWaits.end() ? nullptr : edge->second;
+				}
+				if( cycle ) {
+					gAutoResolutionWaits.erase(waitingFrom);
+					throw std::runtime_error(
+						"output_provenance_unavailable: Auto delegate resolution has a cross-thread cycle");
+				}
+				gAutoResolutionChanged.wait(lock,[this]() {
+					return !mResolutionInProgress || mResolutionComplete;
+				});
+				gAutoResolutionWaits.erase(waitingFrom);
+			} else {
+				gAutoResolutionChanged.wait(lock,[this]() {
+					return !mResolutionInProgress || mResolutionComplete;
+				});
+			}
+		}
+	}
+	try {
+		[&]() {
 		struct ResolutionActivity
 		{
 			std::vector<const AutoRasterizer*>& active;
@@ -972,7 +1031,7 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			return;
 		}
 
-		// call_once retries the body after an exception. Keep the candidate
+		// The resolution coordinator retries the body after an exception. Keep the candidate
 		// private and owned until every replay/configuration step succeeds so a
 		// throwing output registration cannot publish or leak a half-resolved
 		// delegate before that retry.
@@ -996,6 +1055,7 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		// arbitrary sinks. Every wrapper mutation advances mReplayRevision. If a
 		// callback changes progress or output state, discard the candidate's staged
 		// state and replay a fresh authoritative snapshot before publication.
+		bool replayedAfterMutation = false;
 		for( ;; ) {
 			std::vector<IRasterizerOutput*> snapshot;
 			IProgressCallback* progress = nullptr;
@@ -1030,7 +1090,14 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			for( IRasterizerOutput* output : snapshot ) output->release();
 			{
 				std::lock_guard<std::mutex> lock( outsMutex );
-				if( revision != mReplayRevision ) continue;
+				if( revision != mReplayRevision ) {
+					if( replayedAfterMutation ) {
+						throw std::runtime_error(
+							"output_provenance_unavailable: Auto delegate replay did not converge");
+					}
+					replayedAfterMutation = true;
+					continue;
+				}
 				mDelegate = candidate;
 				candidate = nullptr;
 				{
@@ -1041,7 +1108,22 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			}
 		}
 
-	} );
+		}();
+	}
+	catch( ... ) {
+		{
+			std::lock_guard<std::mutex> lock(gAutoResolutionMutex);
+			mResolutionInProgress = false;
+		}
+		gAutoResolutionChanged.notify_all();
+		throw;
+	}
+	{
+		std::lock_guard<std::mutex> lock(gAutoResolutionMutex);
+		mResolutionComplete = true;
+		mResolutionInProgress = false;
+	}
+	gAutoResolutionChanged.notify_all();
 }
 
 IRasterizer* AutoRasterizer::RetainDelegate() const
@@ -1082,7 +1164,7 @@ bool AutoRasterizer::ResolveForFirePreflight( const IScene& scene ) const
 
 void AutoRasterizer::SyncDelegateFrameStore() const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* delegate = nullptr;
 	FrameStore* mine = nullptr;
 	{
@@ -1138,7 +1220,7 @@ void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 		throw std::runtime_error(
 			"output_provenance_unavailable: Auto FrameStore replay is reentrant");
 	}
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	bool expected = false;
 	if( !mFrameStoreReplayInProgress.compare_exchange_strong(
 		expected,true,std::memory_order_acq_rel) ) {
@@ -1204,7 +1286,7 @@ void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
 
 FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* retained = RetainDelegate();
 	Rasterizer* delegate = dynamic_cast<Rasterizer*>(retained);
 	FrameStore* frameStore = delegate ? delegate->GetFrameStore() : nullptr;
@@ -1214,7 +1296,7 @@ FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const
 
 void AutoRasterizer::ForTest_SetDelegateFrameStore( FrameStore* frameStore )
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* retained = RetainDelegate();
 	Rasterizer* delegate = dynamic_cast<Rasterizer*>(retained);
 	if( delegate ) delegate->SetFrameStore(frameStore);
@@ -1223,7 +1305,7 @@ void AutoRasterizer::ForTest_SetDelegateFrameStore( FrameStore* frameStore )
 
 void AutoRasterizer::ForTest_FreeDelegateRasterizerOutputs()
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* retained = RetainDelegate();
 	if( retained ) retained->FreeRasterizerOutputs();
 	safe_release(retained);
@@ -1231,14 +1313,14 @@ void AutoRasterizer::ForTest_FreeDelegateRasterizerOutputs()
 
 bool AutoRasterizer::ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	std::lock_guard<std::mutex> lock(outsMutex);
 	return std::find(outs.begin(),outs.end(),output) != outs.end();
 }
 
 bool AutoRasterizer::ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* retained = RetainDelegate();
 	Rasterizer* concrete = dynamic_cast<Rasterizer*>(retained);
 	std::vector<IRasterizerOutput*> outputs = concrete ?
@@ -1285,6 +1367,7 @@ bool AutoRasterizer::ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegat
 {
 	Rasterizer* concrete = dynamic_cast<Rasterizer*>(delegate);
 	if( !concrete ) return false;
+	bool replayedAfterMutation = false;
 	for( ;; ) {
 		std::vector<IRasterizerOutput*> wrapperOutputs;
 		std::vector<IRasterizerOutput*> delegateOutputs;
@@ -1316,9 +1399,15 @@ bool AutoRasterizer::ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegat
 		}
 		for( IRasterizerOutput* output : wrapperOutputs ) output->release();
 		for( IRasterizerOutput* output : delegateOutputs ) output->release();
+		wrapperOutputs.clear();
+		delegateOutputs.clear();
 		{
 			std::lock_guard<std::mutex> lock(outsMutex);
-			if( revision != mReplayRevision ) continue;
+			if( revision != mReplayRevision ) {
+				if( replayedAfterMutation ) return false;
+				replayedAfterMutation = true;
+				continue;
+			}
 		}
 
 		try {
@@ -1339,6 +1428,8 @@ bool AutoRasterizer::ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegat
 		for( IRasterizerOutput* output : wrapperOutputs ) output->release();
 		for( IRasterizerOutput* output : delegateOutputs ) output->release();
 		if( equal ) return true;
+		if( replayedAfterMutation ) return false;
+		replayedAfterMutation = true;
 	}
 }
 
@@ -1392,7 +1483,7 @@ void AutoRasterizer::DetachFromScene( const IScene* pScene )
 //
 void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* delegate = nullptr;
 	{
 		std::lock_guard<std::mutex> lock( outsMutex );
@@ -1409,7 +1500,7 @@ void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 
 void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	const bool wrapperAdded = RegisterRasterizerOutput( ro );
 	IRasterizer* delegate = nullptr;
 	bool wrapperContains = false;
@@ -1445,7 +1536,7 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 
 void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	const bool wrapperRemoved = UnregisterRasterizerOutput( ro );
 	IRasterizer* delegate = nullptr;
 	{
@@ -1462,7 +1553,7 @@ void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
 
 void AutoRasterizer::FreeRasterizerOutputs()
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	const bool wrapperReleased = ReleaseRasterizerOutputs();
 	IRasterizer* delegate = nullptr;
 	{
@@ -1562,7 +1653,7 @@ bool AutoRasterizer::AuthorizeFireDelegatePreflight(
 	const IScene& scene,
 	const FireRenderPreflightAuthorization authorization ) const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* delegate = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(outsMutex);
@@ -1583,7 +1674,7 @@ bool AutoRasterizer::AuthorizeFireDelegatePreflight(
 
 void AutoRasterizer::ClearFireDelegatePreflight() const
 {
-	std::lock_guard<std::recursive_mutex> transaction(mDelegateMutationMutex);
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
 	IRasterizer* delegate = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(outsMutex);
