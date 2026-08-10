@@ -959,6 +959,12 @@ int main()
 			Check( encoderConfigWriter.find("opts.viewTransform."+member) != std::string::npos,
 				"output provenance consumes ViewTransform::"+member );
 		}
+		Check(viewTransformHeader.find("white balance) is a placeholder") == std::string::npos &&
+			viewTransformHeader.find("Stage 2 (reserved)") == std::string::npos,
+			"ViewTransform contract describes active white-balance application" );
+		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
+			frameEncoders.find("toneCurveStrength > 0.0f") != std::string::npos,
+			"LDR encoders consume white balance and tone-curve strength" );
 		for( const std::string& member : allDataMembers(sequenceHeader,
 			"struct FireFrameSequenceEncodingDescriptor",
 			"FireFrameSequenceEncodingDescriptor") ) {

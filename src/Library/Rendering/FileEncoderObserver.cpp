@@ -452,6 +452,7 @@ namespace
 	std::vector<std::string> ArtifactReasons(
 		const IFrameEncoder& encoder,
 		const EncodeOpts& opts,
+		const FrameStore::Metadata& metadata,
 		const bool primary )
 	{
 		if( primary ) return std::vector<std::string>();
@@ -461,6 +462,7 @@ namespace
 			opts.exrCompression == eExrCompression_Dwaa ) reasons.insert("lossy_output");
 		if( !encoder.SupportsHDR() || format == "HDR10_PNG" ) reasons.insert("integer_output");
 		if( opts.viewTransform.exposureEV != 0.0f ||
+			(!encoder.SupportsHDR() && metadata.cameraExposureEV != 0.0) ||
 			opts.viewTransform.toneCurve != eDisplayTransform_None ||
 			opts.colorSpace == eColorSpace_sRGB ||
 			opts.colorSpace == eColorSpace_ProPhotoRGB ) {
@@ -573,6 +575,14 @@ namespace
 			!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
 				resolvedConfig,&error) || resolvedConfig.GetType() != Value::Map ) {
 			error = "resolved render configuration is unavailable or noncanonical: "+error;
+			return false;
+		}
+		const Value* resolvedCamera = resolvedConfig.Find("camera");
+		const Value* resolvedCameraEV = resolvedCamera ?
+			resolvedCamera->Find("exposure_compensation_ev") : nullptr;
+		if( !resolvedCameraEV || resolvedCameraEV->GetType() != Value::Float64 ||
+			resolvedCameraEV->GetFloat() != metadata.cameraExposureEV ) {
+			error = "resolved camera exposure does not match the encoded frame snapshot";
 			return false;
 		}
 		if( metadata.rendererBuildV1.empty() ||
@@ -2130,7 +2140,8 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 			(transactionOpts.metadataSnapshot.renderFidelityStatus == "predictive" ?
 				"predictive_primary" : "preview_primary") : "display_derivative";
 		const std::vector<std::string> artifactReasons =
-			ArtifactReasons(encoder,transactionOpts,primary);
+			ArtifactReasons(encoder,transactionOpts,
+				transactionOpts.metadataSnapshot,primary);
 		RISECBOR64::Bytes sidecarBytes;
 		std::vector<std::pair<std::string,std::string> > fireAttributes;
 		if( !BuildFireProvenance(transactionOpts.metadataSnapshot,encoder,

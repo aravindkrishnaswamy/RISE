@@ -13,8 +13,8 @@
 //    2. Encode via the new path:
 //         IFrameEncoder::Encode(store, memBufA, opts)
 //    3. Encode via the legacy path:
-//         RasterImage_Template + same writer + same DisplayTransformWriter
-//         (mirrors FileRasterizerOutput::WriteImageToFile)
+//         RasterImage_Template + same writer + complete DisplayTransformWriter
+//         (mirrors the production IFrameEncoder transform path)
 //         → memBufB
 //    4. Compare memBufA == memBufB byte-for-byte.
 //
@@ -216,12 +216,19 @@ namespace
 		IRasterImageWriter* effective = w;
 		DisplayTransformWriter* dtw = nullptr;
 		if ( !isHDR ) {
-			const Scalar totalEV = static_cast<Scalar>( opts.viewTransform.exposureEV );
+			const Matrix3& balance = opts.viewTransform.whiteBalance;
+			const bool identityBalance =
+				balance._00 == 1.0 && balance._01 == 0.0 && balance._02 == 0.0 &&
+				balance._10 == 0.0 && balance._11 == 1.0 && balance._12 == 0.0 &&
+				balance._20 == 0.0 && balance._21 == 0.0 && balance._22 == 1.0;
 			const bool useDt =
-				   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
-				|| ( totalEV != Scalar( 0 ) );
+				   opts.viewTransform.exposureEV != 0.0f
+				|| !identityBalance
+				|| ( opts.viewTransform.toneCurve != eDisplayTransform_None &&
+					opts.viewTransform.toneCurveStrength > 0.0f );
 			if ( useDt ) {
-				dtw = new DisplayTransformWriter( *w, totalEV, opts.viewTransform.toneCurve );
+				dtw = new DisplayTransformWriter(
+					*w,opts.viewTransform,opts.colorSpace );
 				effective = dtw;
 			}
 		}
@@ -360,6 +367,15 @@ namespace
 		pngWithTone.colorSpace    = eColorSpace_sRGB;
 		pngWithTone.bpp           = 8;
 		DiffOneFormat( "PNG", pngWithTone );
+		EncodeOpts pngCompleteTransform;
+		pngCompleteTransform.colorSpace = eColorSpace_sRGB;
+		pngCompleteTransform.bpp = 8;
+		pngCompleteTransform.viewTransform.toneCurve = eDisplayTransform_Reinhard;
+		pngCompleteTransform.viewTransform.toneCurveStrength = 0.25f;
+		pngCompleteTransform.viewTransform.whiteBalance._00 = 1.10;
+		pngCompleteTransform.viewTransform.whiteBalance._11 = 0.90;
+		pngCompleteTransform.viewTransform.whiteBalance._22 = 1.05;
+		DiffOneFormat( "PNG", pngCompleteTransform );
 
 		// PNG 16-bpp.
 		EncodeOpts png16;

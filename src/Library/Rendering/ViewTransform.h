@@ -7,7 +7,7 @@
 //
 //    ROMM-linear pixel
 //      → exposure        (multiply by 2^exposureEV)        [Stage 1]
-//      → white balance   (3x3 matrix in ROMM)               [Stage 2 — reserved]
+//      → white balance   (3x3 matrix in RISEPel space)       [Stage 2]
 //      → primaries       (ROMM → target via TargetFormat)   [Stage 3]
 //      → tone curve      (iff TargetFormat.isLDRFixed)      [Stage 4]
 //      → output transfer (sRGB / PQ / Linear via TargetFormat) [Stage 5]
@@ -17,10 +17,6 @@
 //  The split is deliberate: ViewTransform is a value type the user
 //  edits live (exposure slider, tone-curve picker), TargetFormat is a
 //  near-static contract per output sink (Mac EDR layer, PNG file, etc.).
-//
-//  Stage 2 (white balance) is a placeholder — it's threaded through
-//  the API as Matrix3 but treated as identity by Apply.  Wire-through
-//  comes when a chromatic adaptation feature is added.
 //
 //  Author: design landing L0
 //  License: see LICENSE.TXT
@@ -62,11 +58,9 @@ namespace RISE
 			//! 0 = no scaling; +1 = double brightness; -1 = half.
 			float exposureEV = 0.0f;
 
-			//! Stage 2 (reserved).  3x3 matrix applied in ROMM space
-			//! BEFORE primaries conversion.  Identity by default;
-			//! placeholder for future chromatic-adaptation support.
-			//! Currently passed through Apply() but treated as identity
-			//! when bit-equal to the identity matrix (cheap fast-path).
+			//! Stage 2. 3x3 matrix applied in RISEPel space before primaries
+			//! conversion. Identity is a bit-exact fast path; every other
+			//! matrix is applied to the output values.
 			Matrix3 whiteBalance;
 
 			//! Stage 4.  Perceptual tone curve.  Skipped on HDR float

@@ -65,8 +65,7 @@ namespace RISE
 			}
 
 			// Decide whether to wrap in DisplayTransformWriter.
-			// Mirrors the gate in FileRasterizerOutput.cpp:232 —
-			// LDR-only AND non-default exposure or tone curve.
+			// LDR-only and any non-identity output transform.
 			//
 			// Total EV is the sum of the caller-supplied static
 			// exposure (from opts.viewTransform.exposureEV — UI
@@ -78,17 +77,22 @@ namespace RISE
 			IRasterImageWriter* pEffective = pWriter;
 			DisplayTransformWriter* pDtw = nullptr;
 			if ( !IsHDRFormat() ) {
-				const Scalar staticEV =
-					static_cast<Scalar>( opts.viewTransform.exposureEV );
-				const Scalar cameraEV =
-					static_cast<Scalar>( metadata.cameraExposureEV );
-				const Scalar totalEV = staticEV + cameraEV;
+				FrameStoreOutput::ViewTransform effectiveTransform = opts.viewTransform;
+				effectiveTransform.exposureEV +=
+					static_cast<float>(metadata.cameraExposureEV);
+				const Matrix3& balance = effectiveTransform.whiteBalance;
+				const bool identityBalance =
+					balance._00 == 1.0 && balance._01 == 0.0 && balance._02 == 0.0 &&
+					balance._10 == 0.0 && balance._11 == 1.0 && balance._12 == 0.0 &&
+					balance._20 == 0.0 && balance._21 == 0.0 && balance._22 == 1.0;
 				const bool useDt =
-					   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
-					|| ( totalEV != Scalar( 0 ) );
+					   effectiveTransform.exposureEV != 0.0f
+					|| !identityBalance
+					|| ( effectiveTransform.toneCurve != eDisplayTransform_None &&
+						effectiveTransform.toneCurveStrength > 0.0f );
 				if ( useDt ) {
 					pDtw = new DisplayTransformWriter(
-						*pWriter, totalEV, opts.viewTransform.toneCurve );
+						*pWriter,effectiveTransform,opts.colorSpace );
 					GlobalLog()->PrintNew(
 						pDtw, __FILE__, __LINE__, "DisplayTransformWriter" );
 					pEffective = pDtw;

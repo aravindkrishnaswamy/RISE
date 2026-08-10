@@ -1012,7 +1012,7 @@ namespace
 		safe_release( img );
 	}
 
-	FrameStore* MakeFireFidelityStore()
+	FrameStore* MakeFireFidelityStore( const double cameraExposureEV = 0.0 )
 	{
 		FrameStore::Spec spec;
 		spec.width = kImgW;
@@ -1059,7 +1059,7 @@ namespace
 			{ "aov", Value::MapValue({
 				{ "channels", Value::ArrayValue({ Value::String("beauty") }) } }) },
 			{ "camera", Value::MapValue({
-				{ "exposure_compensation_ev", Value::Float(0.0) },
+				{ "exposure_compensation_ev", Value::Float(cameraExposureEV) },
 				{ "exposure_time", Value::Float(0.0) },
 				{ "kind", Value::String("none") },
 				{ "location", Value::ArrayValue({}) },
@@ -1270,6 +1270,7 @@ namespace
 			{ "pel_transport", "producer_unqualified", "requested_preview" },
 			medium.opticalRecordIds,{ medium },configBytes,buildBytes,
 			RISECBOR64::SHA256Hex(buildBytes));
+		store->SetCameraExposureEV(cameraExposureEV);
 		return store;
 	}
 
@@ -2052,6 +2053,63 @@ namespace
 			derived->Find("provenance_id")->GetText() == exrProvenanceId->GetText() &&
 			pngDigest && pngDigest->GetText() == RISECBOR64::SHA256Hex(pngBytes),
 			"[fire provenance] display derivative links to the finalized preview primary" );
+
+		FrameStore* cameraStore = MakeFireFidelityStore(1.0);
+		FrameStore* zeroCameraStore = MakeFireFidelityStore(0.0);
+		EncodeOpts cameraPrimaryOpts;
+		cameraPrimaryOpts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		cameraPrimaryOpts.bpp = 32u;
+		EncodeOpts cameraDerivativeOpts;
+		cameraDerivativeOpts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		cameraDerivativeOpts.bpp = 8u;
+		const std::string cameraPrimaryFile =
+			MakeTempPathWithoutExt()+"_camera_primary.exr";
+		const std::string zeroCameraPrimaryFile =
+			MakeTempPathWithoutExt()+"_zero_camera_primary.exr";
+		const std::string cameraDerivativeFile =
+			MakeTempPathWithoutExt()+"_camera_derivative.png";
+		const std::string zeroCameraDerivativeFile =
+			MakeTempPathWithoutExt()+"_zero_camera_derivative.png";
+		std::string cameraError;
+		const bool cameraPrimaryWritten = EncodeFrameStoreFileTransaction(
+			*cameraStore,*exr,cameraPrimaryOpts,cameraPrimaryFile,cameraError);
+		const bool zeroCameraPrimaryWritten = EncodeFrameStoreFileTransaction(
+			*zeroCameraStore,*exr,cameraPrimaryOpts,zeroCameraPrimaryFile,cameraError);
+		const bool cameraDerivativeWritten = cameraPrimaryWritten &&
+			EncodeFrameStoreFileTransaction(*cameraStore,*png,cameraDerivativeOpts,
+				cameraDerivativeFile,cameraError);
+		const bool zeroCameraDerivativeWritten = zeroCameraPrimaryWritten &&
+			EncodeFrameStoreFileTransaction(*zeroCameraStore,*png,cameraDerivativeOpts,
+				zeroCameraDerivativeFile,cameraError);
+		std::vector<unsigned char> cameraArtifact;
+		std::vector<unsigned char> zeroCameraArtifact;
+		std::vector<unsigned char> cameraSidecar;
+		RISECBOR64::Value cameraEnvelope;
+		const bool cameraDecoded = cameraDerivativeWritten && zeroCameraDerivativeWritten &&
+			ReadFileAllBytes(cameraDerivativeFile,cameraArtifact) &&
+			ReadFileAllBytes(zeroCameraDerivativeFile,zeroCameraArtifact) &&
+			ReadFileAllBytes(cameraDerivativeFile+".provenance.cbor",cameraSidecar) &&
+			RISECBOR64::DecodeCanonical(cameraSidecar,cameraEnvelope,&cameraError);
+		const RISECBOR64::Value* cameraPayload = cameraDecoded ?
+			cameraEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* cameraReasons = cameraPayload ?
+			cameraPayload->Find("artifact_reason_codes") : nullptr;
+		Check(cameraReasons && cameraReasons->GetArray().size() == 3u &&
+			cameraReasons->GetArray()[0].GetText() == "display_transform_enabled" &&
+			cameraReasons->GetArray()[1].GetText() == "integer_output" &&
+			cameraReasons->GetArray()[2].GetText() == "lossy_output" &&
+			cameraArtifact != zeroCameraArtifact,
+			"[fire provenance] LDR camera EV changes pixels and requires its exact artifact reason" );
+		std::remove(cameraPrimaryFile.c_str());
+		std::remove((cameraPrimaryFile+".provenance.cbor").c_str());
+		std::remove(zeroCameraPrimaryFile.c_str());
+		std::remove((zeroCameraPrimaryFile+".provenance.cbor").c_str());
+		std::remove(cameraDerivativeFile.c_str());
+		std::remove((cameraDerivativeFile+".provenance.cbor").c_str());
+		std::remove(zeroCameraDerivativeFile.c_str());
+		std::remove((zeroCameraDerivativeFile+".provenance.cbor").c_str());
+		safe_release(cameraStore);
+		safe_release(zeroCameraStore);
 
 		const FrameStoreOutput::Metadata primaryBeforeDerivativeFailure = store->Meta();
 		const std::string failedDerivativeBase =

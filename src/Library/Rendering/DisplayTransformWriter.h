@@ -1,14 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  DisplayTransformWriter.h - IRasterImageWriter wrapper that
-//  applies an exposure scale and a tone-curve display transform
-//  to every WriteColor before forwarding to an inner writer.
+//  applies the complete ViewTransform to every WriteColor before
+//  forwarding to an inner writer.
 //
 //  Design rationale
 //  ----------------
 //  The inner writer (PNG / TGA / PPM / TIFF / etc.) already applies
 //  the per-pixel primaries conversion + OETF + integerisation in
-//  its own WriteColor.  Threading exposure / tone curve into every
+//  its own WriteColor.  Threading exposure / white balance / tone curve into every
 //  inner writer would duplicate the chain across seven file
 //  formats.  Wrapping the writer interposes the chain in one place;
 //  inner writers stay unchanged and ignorant of tone-mapping.
@@ -42,7 +42,7 @@
 
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Utilities/Reference.h"
-#include "DisplayTransform.h"
+#include "ViewTransform.h"
 
 namespace RISE
 {
@@ -54,8 +54,8 @@ namespace RISE
 		{
 		protected:
 			IRasterImageWriter&		inner;			///< Inner format writer; addref'd in ctor, released in dtor
-			const Scalar			exposureMul;	///< Pre-computed pow(2, exposureEV)
-			const DISPLAY_TRANSFORM	dt;				///< Tone curve to apply
+			const FrameStoreOutput::ViewTransform viewTransform;
+			const COLOR_SPACE		targetColorSpace;
 
 			virtual ~DisplayTransformWriter();
 
@@ -69,6 +69,14 @@ namespace RISE
 				IRasterImageWriter&  innerWriter,
 				Scalar               exposureEV,
 				DISPLAY_TRANSFORM    displayXform
+				);
+
+			//! Complete output transform. The tone curve runs in the requested
+			//! target primaries before the legacy writer applies its transfer.
+			DisplayTransformWriter(
+				IRasterImageWriter& innerWriter,
+				const FrameStoreOutput::ViewTransform& viewTransform,
+				COLOR_SPACE targetColorSpace
 				);
 
 			void BeginWrite( const unsigned int width, const unsigned int height ) override;

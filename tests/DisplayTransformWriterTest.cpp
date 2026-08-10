@@ -1,7 +1,6 @@
-// DisplayTransformWriterTest.cpp - Unit test for the writer wrapper
-// added in Landing 1.  Verifies that exposure + tone curve are
-// applied between source IRasterImage iteration and the inner writer
-// receiving the pixel.
+// DisplayTransformWriterTest.cpp - Unit test for the writer wrapper.
+// Verifies that the complete output ViewTransform is applied between
+// source IRasterImage iteration and the inner writer receiving the pixel.
 //
 // Uses a recording mock writer that captures every WriteColor call.
 // We then check the captured colours against expected (curve(input *
@@ -208,6 +207,49 @@ static void TestRefcountHoldsInner()
     std::cout << "  Passed!" << std::endl;
 }
 
+static void TestCompleteViewTransformMatchesSharedPipeline()
+{
+    std::cout << "TestCompleteViewTransformMatchesSharedPipeline..." << std::endl;
+    const float strengths[] = { 0.0f, 0.25f, 1.0f };
+    for( const float strength : strengths ) {
+        FrameStoreOutput::ViewTransform transform;
+        transform.exposureEV = 0.5f;
+        transform.whiteBalance._00 = 1.10;
+        transform.whiteBalance._01 = 0.05;
+        transform.whiteBalance._02 = 0.00;
+        transform.whiteBalance._10 = 0.00;
+        transform.whiteBalance._11 = 0.90;
+        transform.whiteBalance._12 = 0.05;
+        transform.whiteBalance._20 = 0.02;
+        transform.whiteBalance._21 = 0.00;
+        transform.whiteBalance._22 = 1.08;
+        transform.toneCurve = eDisplayTransform_Reinhard;
+        transform.toneCurveStrength = strength;
+
+        RecordingWriter* mock = new RecordingWriter;
+        DisplayTransformWriter* writer = new DisplayTransformWriter(
+            *mock,transform,eColorSpace_sRGB );
+        const RISEPel input(0.20,0.45,0.70);
+        writer->WriteColor(RISEColor(input,0.6),0,0);
+
+        double expectedR = 0.0;
+        double expectedG = 0.0;
+        double expectedB = 0.0;
+        FrameStoreOutput::ApplyViewTransformLinear(
+            transform,FrameStoreOutput::FSColorSpace::sRGB_Linear,true,
+            input.r,input.g,input.b,expectedR,expectedG,expectedB);
+        assert(mock->writes.size() == 1u);
+        assert(IsClose(mock->writes[0].c.base.r,expectedR));
+        assert(IsClose(mock->writes[0].c.base.g,expectedG));
+        assert(IsClose(mock->writes[0].c.base.b,expectedB));
+        assert(IsClose(mock->writes[0].c.a,0.6));
+
+        safe_release(writer);
+        safe_release(mock);
+    }
+    std::cout << "  Passed!" << std::endl;
+}
+
 int main()
 {
     TestBeginEndPassThrough();
@@ -216,6 +258,7 @@ int main()
     TestExposureThenCurve();
     TestACESThroughWrapper();
     TestRefcountHoldsInner();
+    TestCompleteViewTransformMatchesSharedPipeline();
     std::cout << "All DisplayTransformWriter tests passed!" << std::endl;
     return 0;
 }
