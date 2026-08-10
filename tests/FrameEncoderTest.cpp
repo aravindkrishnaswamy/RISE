@@ -27,6 +27,7 @@
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,75 @@ namespace
 			std::cerr << "FAIL: " << label << "\n";
 		}
 	}
+
+	enum class WriterThrowPoint
+	{
+		Begin,
+		Color,
+		End
+	};
+
+	class ThrowingWriter :
+		public virtual IRasterImageWriter,
+		public virtual Reference
+	{
+	public:
+		ThrowingWriter( IWriteBuffer& output, WriterThrowPoint point,
+			bool& destroyed ) : output_(output), point_(point), destroyed_(destroyed)
+		{
+			output_.addref();
+		}
+
+		void BeginWrite( unsigned int, unsigned int ) override
+		{
+			if( point_ == WriterThrowPoint::Begin ) throw std::runtime_error("begin");
+		}
+
+		void WriteColor( const RISEColor&, unsigned int, unsigned int ) override
+		{
+			if( point_ == WriterThrowPoint::Color ) throw std::runtime_error("color");
+		}
+
+		void EndWrite() override
+		{
+			if( point_ == WriterThrowPoint::End ) throw std::runtime_error("end");
+		}
+
+	protected:
+		~ThrowingWriter() override
+		{
+			output_.release();
+			destroyed_ = true;
+		}
+
+	private:
+		IWriteBuffer& output_;
+		WriterThrowPoint point_;
+		bool& destroyed_;
+	};
+
+	class ThrowingFrameEncoder : public FrameEncoderBase
+	{
+	public:
+		ThrowingFrameEncoder( WriterThrowPoint point, bool& destroyed ) :
+			point_(point), destroyed_(destroyed) {}
+		std::string FormatName() const override { return "THROWING"; }
+		std::vector<std::string> Extensions() const override { return { "throw" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+
+	protected:
+		~ThrowingFrameEncoder() override {}
+		IRasterImageWriter* CreateWriter(
+			IWriteBuffer& output, const EncodeOpts& ) const override
+		{
+			return new ThrowingWriter(output,point_,destroyed_);
+		}
+
+	private:
+		WriterThrowPoint point_;
+		bool& destroyed_;
+	};
 
 	// ─── Pixel pattern ────────────────────────────────────────────
 	// Small (16x16) image with values that exercise:
@@ -934,6 +1004,40 @@ void TestHDR10PNGEncoder_L5c()
 	store->release();
 }
 
+void TestWriterFailureReleasesAllReferences()
+{
+	FrameStoreOutput::FrameStoreSpec spec;
+	spec.width = 1u;
+	spec.height = 1u;
+	spec.tileEdge = 1u;
+	FrameStore* store = new FrameStore(spec);
+	const WriterThrowPoint points[] = {
+		WriterThrowPoint::Begin,WriterThrowPoint::Color,WriterThrowPoint::End
+	};
+	for( const WriterThrowPoint point : points ) {
+		for( unsigned int transformed = 0u; transformed < 2u; ++transformed ) {
+			MemoryBuffer* output = new MemoryBuffer();
+			const unsigned int outputRefs = output->refcount();
+			bool writerDestroyed = false;
+			ThrowingFrameEncoder* encoder =
+				new ThrowingFrameEncoder(point,writerDestroyed);
+			EncodeOpts opts;
+			if( transformed ) opts.viewTransform.exposureEV = 1.0f;
+			bool threw = false;
+			try { encoder->Encode(*store,*output,opts); }
+			catch( const std::runtime_error& ) { threw = true; }
+			Check(threw && writerDestroyed && output->refcount() == outputRefs,
+				std::string("writer failure releases wrapper, writer, and output at ")+
+				(point == WriterThrowPoint::Begin ? "BeginWrite" :
+				 point == WriterThrowPoint::Color ? "WriteColor" : "EndWrite")+
+				(transformed ? " with display transform" : " without display transform"));
+			encoder->release();
+			output->release();
+		}
+	}
+	store->release();
+}
+
 int main()
 {
 	std::cout << "FrameEncoderTest L2 — IFrameEncoder byte-identical regression\n";
@@ -948,6 +1052,7 @@ int main()
 	TestEdgeDimensions();
 	TestHDRExposureOnlyIgnored();
 	TestHDR10PNGEncoder_L5c();
+	TestWriterFailureReleasesAllReferences();
 
 	std::cout << "------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

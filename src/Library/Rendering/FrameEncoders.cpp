@@ -38,6 +38,29 @@ using namespace RISE;
 using namespace RISE::Implementation;
 using namespace RISE::FrameStoreOutput;
 
+namespace
+{
+	template <typename T>
+	class LoggedReference
+	{
+	public:
+		explicit LoggedReference( T* ptr = nullptr ) : ptr_(ptr) {}
+		~LoggedReference()
+		{
+			if( ptr_ ) {
+				GlobalLog()->PrintDelete(ptr_,__FILE__,__LINE__);
+				ptr_->release();
+			}
+		}
+		LoggedReference( const LoggedReference& ) = delete;
+		LoggedReference& operator=( const LoggedReference& ) = delete;
+		void reset( T* ptr ) { ptr_ = ptr; }
+
+	private:
+		T* ptr_;
+	};
+}
+
 namespace RISE
 {
 	namespace Implementation
@@ -59,6 +82,7 @@ namespace RISE
 					FormatName().c_str() );
 				return;
 			}
+			LoggedReference<IRasterImageWriter> writerReference(pWriter);
 			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter) ) {
 				exr->SetStringAttributes(opts.attrs);
 				exr->SetPixelAspectRatio(opts.exrPixelAspectRatio);
@@ -76,6 +100,7 @@ namespace RISE
 			// adversarial review HIGH-2.
 			IRasterImageWriter* pEffective = pWriter;
 			DisplayTransformWriter* pDtw = nullptr;
+			LoggedReference<DisplayTransformWriter> transformReference;
 			if ( !IsHDRFormat() ) {
 				FrameStoreOutput::ViewTransform effectiveTransform = opts.viewTransform;
 				effectiveTransform.exposureEV +=
@@ -93,6 +118,7 @@ namespace RISE
 				if ( useDt ) {
 					pDtw = new DisplayTransformWriter(
 						*pWriter,effectiveTransform,opts.colorSpace );
+					transformReference.reset(pDtw);
 					GlobalLog()->PrintNew(
 						pDtw, __FILE__, __LINE__, "DisplayTransformWriter" );
 					pEffective = pDtw;
@@ -107,14 +133,8 @@ namespace RISE
 			// for the same input.
 			store.AsBeautyRasterImage().DumpImage( pEffective );
 
-			// Release wrapper before inner writer (match
-			// FileRasterizerOutput.cpp:268-277 ordering).
-			if ( pDtw ) {
-				GlobalLog()->PrintDelete( pDtw, __FILE__, __LINE__ );
-				safe_release( pDtw );
-			}
-			GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
-			safe_release( pWriter );
+			// Scoped references release the wrapper before the inner writer
+			// on both success and exception unwind.
 		}
 
 		// ─────────────────────────────────────────────────────────────
