@@ -798,6 +798,93 @@ namespace
 		secondStore->release();
 	}
 
+	struct MutualRemovingObserver : public IRenderObserver
+	{
+		FrameStore* victimStore = nullptr;
+		IRenderObserver* victim = nullptr;
+		std::atomic<unsigned int> fires{0u};
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			fires.fetch_add(1u);
+			victimStore->RemoveObserver(victim);
+		}
+	};
+
+	void TestCrossStoreMutualRemovalCannotDeadlock()
+	{
+		FrameStore* firstStore = MakeStore(8,8,8);
+		FrameStore* secondStore = MakeStore(8,8,8);
+		MutualRemovingObserver firstObserver;
+		MutualRemovingObserver secondObserver;
+		firstObserver.victimStore = secondStore;
+		firstObserver.victim = &secondObserver;
+		secondObserver.victimStore = firstStore;
+		secondObserver.victim = &firstObserver;
+		firstStore->AddObserver(&firstObserver);
+		secondStore->AddObserver(&secondObserver);
+
+		std::mutex startMutex;
+		std::condition_variable startCondition;
+		unsigned int ready = 0u;
+		bool start = false;
+		auto dispatch = [&]( FrameStore* store ) {
+			{
+				std::unique_lock<std::mutex> lock(startMutex);
+				++ready;
+				startCondition.notify_all();
+				startCondition.wait(lock,[&]() { return start; });
+			}
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		};
+		std::thread firstDispatch(dispatch,firstStore);
+		std::thread secondDispatch(dispatch,secondStore);
+		{
+			std::unique_lock<std::mutex> lock(startMutex);
+			startCondition.wait(lock,[&]() { return ready == 2u; });
+			start = true;
+			startCondition.notify_all();
+		}
+		firstDispatch.join();
+		secondDispatch.join();
+		Check(firstObserver.fires.load()+secondObserver.fires.load() == 1u,
+			"cross-store mutual removal serializes before a wait cycle can form" );
+
+		firstStore->RemoveObserver(&firstObserver);
+		secondStore->RemoveObserver(&secondObserver);
+		firstStore->release();
+		secondStore->release();
+	}
+
+	struct ReentrantDispatchObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		bool rejected = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			try { store->MarkFrameComplete(1u); }
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("reentrant") != std::string::npos;
+			}
+		}
+	};
+
+	void TestReentrantObserverDispatchFailsClosed()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		ReentrantDispatchObserver observer;
+		observer.store = store;
+		store->AddObserver(&observer);
+		store->BeginTile(0,0);
+		store->EndTile(0,0);
+		Check(observer.rejected,
+			"observer callback reentrant publication fails closed without deadlock" );
+		store->RemoveObserver(&observer);
+		store->release();
+	}
+
 	// ─── Section 5: Render readback identity & exposure ───────────
 	void TestConcurrentFrameMetadata()
 	{
@@ -1433,6 +1520,8 @@ int main()
 	TestObserverRemovalFromUnrelatedCallbackWaitsForVictim();
 	TestConcurrentSelfRemovalDrainsOtherThreads();
 	TestSharedObserverCrossStoreRemovalIsSerialized();
+	TestCrossStoreMutualRemovalCannotDeadlock();
+	TestReentrantObserverDispatchFailsClosed();
 	TestConcurrentSeqlock();
 	TestConcurrentFrameMetadata();
 	TestRenderReadback();
