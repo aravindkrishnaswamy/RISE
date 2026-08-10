@@ -227,3 +227,44 @@ What earned recording here:
   three slices interleave within the same functions and their tests
   cross-reference; three commits would not have built independently, so
   bisectability was better served by one documented commit.
+
+## 6. Post-arc R2 (2026-08-10) — process notes
+
+Slice record is [75-expressive-surface-arc.md](75-expressive-surface-arc.md)
+§7 "POST-ARC R2" (`4b9da97c`).  What earned recording here:
+
+- **Decode the render, don't just read the call log.**  The census said
+  "9 of 12 primitives"; LOOKING at the trajectory's own `png_base64`
+  said "the wizard is a traffic cone".  The second is what made the
+  finding legible and is a step the supervisor can always take — the
+  bytes are already in the trajectory.  We ask agents to close a
+  looking loop; the supervisor should close it too.
+- **The revision histogram is a better instrument than the build
+  census.**  Counting what the model CHANGED after each render (13
+  position / 10 power / 6 color / 0 geometry) localized the constraint
+  far more sharply than counting what it built.  For any "why didn't it
+  fix X" question, census the REVISIONS, not the artifact.
+- **A correct-looking idiom transplanted across a boundary is now a
+  two-instance pattern.**  R1b's sample cap was correct for every value
+  except the sentinel; R2's `if(!ok) return MakeError(...)` was correct
+  in the sibling verb whose `ok` means only "bad request".  Both passed
+  their own tests.  Standing review question, worth adding to briefs:
+  *what invariant does this idiom depend on, and does it hold here?*
+- **Extending a fix to a sibling site is half the job.**  The fix round
+  correctly propagated the conflict CLASSIFICATION to a third site the
+  brief hadn't named (good, audit-by-bug-pattern), but not the
+  field-CLEARING that goes with it — creating a path that reported
+  "document unchanged" beside `previousGeometry.removed:true`.  When
+  propagating, propagate the whole behaviour, not the branch you came
+  for.
+- **A test can encode the bug.**  RG7 asserted `!stale.ok` — the old,
+  wrong contract — and had to be corrected as part of the fix.  A
+  green test is evidence about consistency, not about correctness.
+- **Say what a slice does NOT do, in the commit.**  R2 removes the COST
+  of form revision; it cannot make a model NOTICE a plank-shaped wing.
+  Writing that into the commit and the arc record before measuring
+  keeps the pending result honest either way.
+- **The user declined a proposed scaffold family as too scene-specific**
+  — the anti-overfit mandate applied to the supervisor's own proposal.
+  Evidence from one scene justifies a MECHANISM (cost removal), not a
+  taxonomy entry.

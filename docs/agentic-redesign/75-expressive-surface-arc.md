@@ -508,6 +508,75 @@ the gap, and R1 only removed the friction around it.
 **Named follow-on arc (user, 2026-08-09): creative lighting, with
 area lights as the centre of gravity** — sequenced AFTER E4-lite.
 
+**POST-ARC R2 (2026-08-10, `4b9da97c`): the shapes-vs-textures
+asymmetry, and one-call form revision.**  User observation on the
+first post-R1 run ("creative with textures, the shapes are very
+sadly simple") — confirmed by census of
+`20260810T025245Z-58d17373` (gemini-3.5-flash) and by LOOKING at the
+render, which the supervisor did by decoding the trajectory's own
+`png_base64`.  Materials: worley3d + perlin3d painters, 4
+pbr_metallic_roughness, dielectric, luminaires.  Geometry: **9 of 12
+authored chunks are bare primitives**; the 3 `sdf_geometry` chunks
+are 1–2 real parts each plus an identical boilerplate `box subtract`
+ground-clip, so the wizard's robe is ONE roundcone and renders as a
+traffic cone.  "Bat-like wings" → `box 0.6 × 0.01 × 0.4`; the intake
+manifest's "**faceted** crystal" → a smooth ellipsoid (the one
+adjective in the brief that specifies FORM is the one dropped).
+**The decisive datapoint is the revision histogram.**  R1's cheap
+renders bought REAL iteration — 4 renders, exposure climbing meanR
+0.069 → 0.337, corrections between each; the looking loop the mermaid
+run never ran.  But every revision was **13 position, 10 power, 6
+color, 2 metallic, 2 roughness, 2 orientation, 1 width, 1 depth —
+and ZERO geometry replacements**.  The model revises what a
+ONE-PARAMETER PATCH can revise.  A rich material is one chunk bound
+to a slot; a rich shape was a multi-chunk composition — so form was
+never revisited.  This is the mechanism law at a NEW site: not "does
+the model know better" but "what does revision cost".
+**Second finding — scaffold retrieval is NAME-TRIGGERED.**
+`blended_chain` was used exactly once, for the *tail* — the part
+whose noun maps onto the family concept.  Wings, neck, robe, beard
+are all equally chain-able and got primitives.  E3's measured
+boundary was family COVERAGE; this is different and new —
+*retrieval*: the family existed and fit, the words didn't line up.
+**Shipped (R2):** `replace_geometry_scaffold` — expand a family
+through the SAME generator, rebind the object's `geometry` slot,
+remove the orphaned old geometry, in ONE atomic commit (one head
+bump / undo step / E4 mutation).  The object's TRANSFORM is
+preserved, so placement earned by looking survives a form change.
+Orphan policy is tri-state and honest (removed / retained+referrers /
+deeper-orphans reported, never silently deleted).  `volume_bank`
+refused (owns its object); External authority refused (no proposal
+kind fits a whole-document swap) — a recorded capability gap.
+**A membrane/faceted FAMILY was proposed and DECLINED by the user as
+too scene-specific** — correctly: it would have encoded a subject,
+which the E3 anti-overfit mandate forbids.  Family breadth needs
+evidence from more than one scene.
+**Review record:** round 1 found a P1 — the handler collapsed every
+commit-stage outcome (conflict / diagnosed / transient-retriable)
+into `MakeError(kInvalidParams)`.  The idiom was copied from
+`insert_geometry_scaffold`, where it is CORRECT because that verb's
+`ok` only means "bad request"; R2's `ok` also gated the commit.
+**This is the second defect in two slices born of a correct-looking
+pattern transplanted across a boundary where its precondition did not
+hold** (the first: R1b's sample cap, correct for every value except
+the `-1` sentinel).  Worth a standing review question: *what
+invariant does this idiom depend on, and does it hold here?*  Round 2
+(fresh) found no P1 and confirmed the riskiest part safe (the
+redefined `ok` on a struct shared with `insert_geometry_scaffold`
+never escapes two TUs), but caught the same clearing-bug one site
+further on.
+**MEASUREMENT PENDING — stop rules pre-committed before any result:**
+(a) *fires and helps* — ≥1 post-render geometry replacement in a
+majority of runs AND the primitive share of figure parts drops →
+bank; (b) *fires but doesn't help* — replacements happen but parts
+stay primitive-equivalent → the boundary is family FIT, and a
+membrane-type family becomes evidence-justified rather than
+scene-specific; (c) *never fires* → call cost was never the binding
+constraint on REVISION, and the next lever is making the form defect
+a FACT the model receives — never a better-worded description, which
+the law prices at zero.  Counterweight `build_ambiguous_scene` in the
+batch; more than one subject, so a win is not a dragons artifact.
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's
