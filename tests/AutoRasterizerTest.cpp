@@ -65,6 +65,7 @@
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
 #include "../src/Library/Materials/HomogeneousMedium.h"
@@ -357,56 +358,40 @@ private:
 	const IScene& scene_;
 };
 
-class ResolutionBarrier
+class CrossThreadOtherAutoResolveOutput : public FrameStoreNotificationOutput
 {
 public:
-	void ArriveAndWait()
-	{
-		std::unique_lock<std::mutex> lock(mutex_);
-		++arrivals_;
-		condition_.notify_all();
-		condition_.wait(lock,[this]() { return arrivals_ == 2u; });
-	}
-
-private:
-	std::mutex mutex_;
-	std::condition_variable condition_;
-	unsigned int arrivals_ = 0u;
-};
-
-class CrossThreadResolveOutput : public FrameStoreNotificationOutput
-{
-public:
-	CrossThreadResolveOutput(
-		AutoRasterizer& target,
-		const IScene& scene,
-		ResolutionBarrier& barrier ) :
-		target_(target), scene_(scene), barrier_(barrier) {}
+	CrossThreadOtherAutoResolveOutput(
+		AutoRasterizer& target, const IScene& scene ) :
+		target_(target), scene_(scene) {}
 
 	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
 	{
 		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
 		if( notifications != 2u ) return;
-		barrier_.ArriveAndWait();
-		try {
-			resolved = target_.ResolveForFirePreflight(scene_);
-		}
-		catch( const std::runtime_error& error ) {
-			rejectedCycle = std::string(error.what()).find("cross-thread cycle") !=
-				std::string::npos;
-		}
+		attempted = true;
+		std::thread worker([this]() {
+			try {
+				resolved = target_.ResolveForFirePreflight(scene_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejectedConcurrent = std::string(error.what()).find(
+					"resolution is concurrent") != std::string::npos;
+			}
+		});
+		worker.join();
 	}
 
+	bool attempted = false;
 	bool resolved = false;
-	bool rejectedCycle = false;
+	bool rejectedConcurrent = false;
 
 protected:
-	~CrossThreadResolveOutput() override {}
+	~CrossThreadOtherAutoResolveOutput() override {}
 
 private:
 	AutoRasterizer& target_;
 	const IScene& scene_;
-	ResolutionBarrier& barrier_;
 };
 
 class CrossThreadRemoveOutput : public FrameStoreNotificationOutput
@@ -2082,6 +2067,8 @@ static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
 	std::atomic<bool> addFailed(false);
 	std::atomic<bool> removeFinished(false);
 	std::atomic<bool> removeRejected(false);
+	std::mutex removeCompletionMutex;
+	std::condition_variable removeCompletionCondition;
 	std::thread adder([&]() {
 		try { rasterizer->AddRasterizerOutput(blocking); }
 		catch( ... ) { addFailed.store(true); }
@@ -2094,9 +2081,15 @@ static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
 				std::string::npos);
 		}
 		removeFinished.store(true);
+		removeCompletionCondition.notify_all();
 	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	const bool removeFailedClosed = removeFinished.load() && removeRejected.load();
+	bool removeFinishedPromptly = false;
+	{
+		std::unique_lock<std::mutex> lock(removeCompletionMutex);
+		removeFinishedPromptly = removeCompletionCondition.wait_for(
+			lock,std::chrono::seconds(2),[&]() { return removeFinished.load(); });
+	}
+	const bool removeFailedClosed = removeFinishedPromptly && removeRejected.load();
 	blocking->Continue();
 	adder.join();
 	remover.join();
@@ -2143,6 +2136,8 @@ static void TestSyncAndFrameStoreSwapAreSerialized()
 	blocking->WaitUntilEntered();
 	std::atomic<bool> swapFinished(false);
 	std::atomic<bool> swapRejected(false);
+	std::mutex swapCompletionMutex;
+	std::condition_variable swapCompletionCondition;
 	std::thread swapper([&]() {
 		try { rasterizer->SetFrameStore(replacement); }
 		catch( const std::runtime_error& error ) {
@@ -2150,9 +2145,15 @@ static void TestSyncAndFrameStoreSwapAreSerialized()
 				std::string::npos);
 		}
 		swapFinished.store(true);
+		swapCompletionCondition.notify_all();
 	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	const bool swapFailedClosed = swapFinished.load() && swapRejected.load();
+	bool swapFinishedPromptly = false;
+	{
+		std::unique_lock<std::mutex> lock(swapCompletionMutex);
+		swapFinishedPromptly = swapCompletionCondition.wait_for(
+			lock,std::chrono::seconds(2),[&]() { return swapFinished.load(); });
+	}
+	const bool swapFailedClosed = swapFinishedPromptly && swapRejected.load();
 	blocking->Continue();
 	synchronizer.join();
 	swapper.join();
@@ -2401,7 +2402,7 @@ static void TestResolutionCallbackCycleFailsClosed()
 static void TestCrossThreadResolutionCycleFailsClosed()
 {
 	const std::string label =
-		"two resolver threads reject an Auto wait-for cycle without coordinator deadlock";
+		"callback worker handoff cannot hide an A-to-B-to-A Auto dependency";
 	std::cout << "Testing " << label << std::endl;
 	IJobPriv* firstJob = nullptr;
 	IJobPriv* secondJob = nullptr;
@@ -2419,11 +2420,10 @@ static void TestCrossThreadResolutionCycleFailsClosed()
 	AutoRasterizer* second = dynamic_cast<AutoRasterizer*>(secondJob->GetRasterizer());
 	firstJob->RemoveRasterizerOutputs();
 	secondJob->RemoveRasterizerOutputs();
-	ResolutionBarrier barrier;
-	CrossThreadResolveOutput* firstOutput = first && second ?
-		new CrossThreadResolveOutput(*second,*secondJob->GetScene(),barrier) : nullptr;
-	CrossThreadResolveOutput* secondOutput = first && second ?
-		new CrossThreadResolveOutput(*first,*firstJob->GetScene(),barrier) : nullptr;
+	CrossThreadOtherAutoResolveOutput* firstOutput = first && second ?
+		new CrossThreadOtherAutoResolveOutput(*second,*secondJob->GetScene()) : nullptr;
+	ReentrantResolveOutput* secondOutput = first && second ?
+		new ReentrantResolveOutput(*first,*firstJob->GetScene()) : nullptr;
 	if( !firstOutput || !secondOutput ) {
 		Check(false,"two Auto rasterizers available: "+label);
 		safe_release(firstOutput);
@@ -2438,37 +2438,32 @@ static void TestCrossThreadResolutionCycleFailsClosed()
 	second->AddRasterizerOutput(secondOutput);
 	std::mutex completionMutex;
 	std::condition_variable completionCondition;
-	unsigned int completed = 0u;
+	bool completed = false;
 	bool firstResolved = false;
-	bool secondResolved = false;
-	auto resolve = [&]( AutoRasterizer& rasterizer, const IScene& scene, bool& result ) {
-		try { result = rasterizer.ResolveForFirePreflight(scene); }
-		catch( ... ) { result = false; }
+	std::thread firstThread([&]() {
+		try { firstResolved = first->ResolveForFirePreflight(*firstJob->GetScene()); }
+		catch( ... ) { firstResolved = false; }
 		{
 			std::lock_guard<std::mutex> lock(completionMutex);
-			++completed;
+			completed = true;
 		}
 		completionCondition.notify_all();
-	};
-	std::thread firstThread(resolve,std::ref(*first),
-		std::cref(*firstJob->GetScene()),std::ref(firstResolved));
-	std::thread secondThread(resolve,std::ref(*second),
-		std::cref(*secondJob->GetScene()),std::ref(secondResolved));
+	});
 	{
 		std::unique_lock<std::mutex> lock(completionMutex);
 		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
-			[&]() { return completed == 2u; }) ) {
-			std::cerr << "FAIL: cross-thread Auto cycle exceeded the watchdog: "
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: callback-worker Auto handoff exceeded the watchdog: "
 				<< label << std::endl;
 			std::_Exit(1);
 		}
 	}
 	firstThread.join();
-	secondThread.join();
-	Check(firstResolved && secondResolved &&
-		(firstOutput->rejectedCycle != secondOutput->rejectedCycle) &&
-		(firstOutput->resolved != secondOutput->resolved),
-		"one wait edge rejects while the peer completes and releases the cycle: "+label);
+	const bool secondResolved = second->ResolveForFirePreflight(*secondJob->GetScene());
+	Check(firstResolved && firstOutput->attempted && !firstOutput->resolved &&
+		firstOutput->rejectedConcurrent && secondOutput->attempted &&
+		!secondOutput->rejected && secondResolved,
+		"the worker B is rejected while A is active, then B resolves after A completes: "+label);
 	first->FreeRasterizerOutputs();
 	second->FreeRasterizerOutputs();
 	safe_release(firstOutput);
@@ -2544,6 +2539,47 @@ static void TestCrossThreadCallbackMutationFailsClosed()
 	rasterizer->FreeRasterizerOutputs();
 	safe_release(callback);
 	safe_release(target);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestProbeFailureRestoresFilmAndReferences()
+{
+	const std::string label =
+		"Auto probe unwind restores film dimensions and owned references";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"probe_unwind") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	const IFilm* film = job->GetScene() ? job->GetScene()->GetFilm() : nullptr;
+	const unsigned int width = film ? film->GetWidth() : 0u;
+	const unsigned int height = film ? film->GetHeight() : 0u;
+	const Scalar pixelAR = film ? film->GetPixelAR() : Scalar(0);
+	const unsigned int capturesBefore = rasterizer ?
+		rasterizer->ForTest_LiveProbeCaptureCount() : 0u;
+	bool rejected = false;
+	if( rasterizer && film ) {
+		try {
+			rasterizer->ForTest_ThrowInsideProbe(*job->GetScene());
+		}
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("injected Auto probe failure") !=
+				std::string::npos;
+		}
+	}
+	film = job->GetScene() ? job->GetScene()->GetFilm() : nullptr;
+	const bool recovered = rasterizer && film ?
+		rasterizer->ResolveForFirePreflight(*job->GetScene()) : false;
+	Check(rejected && film && film->GetWidth() == width && film->GetHeight() == height &&
+		film->GetPixelAR() == pixelAR && rasterizer->ForTest_LiveProbeCaptureCount() ==
+		capturesBefore && recovered,
+		"throwing after candidate output registration restores film, capture, and retry: "+label);
 	safe_release(job);
 	std::remove(path.c_str());
 }
@@ -3133,6 +3169,7 @@ int main()
 	TestResolutionCallbackCycleFailsClosed();
 	TestCrossThreadResolutionCycleFailsClosed();
 	TestCrossThreadCallbackMutationFailsClosed();
+	TestProbeFailureRestoresFilmAndReferences();
 	TestReplayAddRefFailurePreservesRetains();
 	TestReplayNonConvergenceIsBounded();
 	TestSyncReplayTracksReentrantRemoval();

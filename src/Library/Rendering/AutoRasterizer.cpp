@@ -42,6 +42,7 @@
 #include <cstdio>
 #include <map>
 #include <mutex>
+#include <set>
 #include <vector>
 
 using namespace RISE;
@@ -53,6 +54,8 @@ namespace
 	std::mutex gAutoResolutionMutex;
 	std::condition_variable gAutoResolutionChanged;
 	std::map<const AutoRasterizer*,const AutoRasterizer*> gAutoResolutionWaits;
+	std::set<const AutoRasterizer*> gAutoResolutionsActive;
+	std::atomic<unsigned int> gProbeCapturesLive(0u);
 
 	std::unique_lock<std::recursive_mutex> AcquireAutoMutationLock(
 		std::recursive_mutex& mutex )
@@ -199,10 +202,16 @@ namespace
 		unsigned int width;
 		unsigned int height;
 
-		ProbeCaptureOutput() : width( 0 ), height( 0 ) {}
+		ProbeCaptureOutput() : width( 0 ), height( 0 )
+		{
+			gProbeCapturesLive.fetch_add(1u,std::memory_order_relaxed);
+		}
 
 	protected:
-		virtual ~ProbeCaptureOutput() {}
+		virtual ~ProbeCaptureOutput()
+		{
+			gProbeCapturesLive.fetch_sub(1u,std::memory_order_relaxed);
+		}
 
 	public:
 		virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
@@ -606,12 +615,25 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	if( !probeSampler ) {
 		return out;
 	}
+	struct ProbeSamplerGuard
+	{
+		ISampling2D*& sampler;
+		~ProbeSamplerGuard() { safe_release(sampler); }
+	} probeSamplerGuard{ probeSampler };
 	probeSampler->SetNumSamples( cfg.spp );
 
-	// Shrink the film for the duration of the probe; restore on every exit
-	// path below.  Safe: the probe runs single-threaded inside the
+	// Shrink the film for the duration of the probe.  Safe: the probe runs
+	// single-threaded inside the
 	// exclusive resolution selection, strictly BEFORE the real render's worker
 	// threads spawn (ResizeFilm's concurrency contract).
+	struct FilmRestoreGuard
+	{
+		IScenePriv& scene;
+		unsigned int width;
+		unsigned int height;
+		Scalar pixelAR;
+		~FilmRestoreGuard() { scene.ResizeFilm(width,height,pixelAR); }
+	} filmRestore{ *scenePriv, origW, origH, origAR };
 	scenePriv->ResizeFilm( probeW, probeH, origAR );
 
 	const unsigned int nRenders = needVariance ? cfg.varianceRenders : 1u;
@@ -638,9 +660,22 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 		if( !d ) {
 			break;
 		}
+		struct ProbeDelegateGuard
+		{
+			IRasterizer*& delegate;
+			~ProbeDelegateGuard() { safe_release(delegate); }
+		} probeDelegateGuard{ d };
 		ProbeCaptureOutput* cap = new ProbeCaptureOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "probe capture output" );
+		struct ProbeOutputGuard
+		{
+			ProbeCaptureOutput*& output;
+			~ProbeOutputGuard() { safe_release(output); }
+		} probeOutputGuard{ cap };
 		d->AddRasterizerOutput( cap );
+		if( mFailProbeForTest.exchange(false,std::memory_order_acq_rel) ) {
+			throw std::runtime_error("injected Auto probe failure after output registration");
+		}
 
 		// MUST be multi-threaded: the QMC sample stream is deterministic
 		// (HashCombine(x,y) seed), so the per-pixel variance signal comes
@@ -656,14 +691,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 			anyValid = true;
 		}
 
-		safe_release( cap );
-		safe_release( d );
 	}
-
-	// Restore the production film dims (+ re-sync cameras) before returning,
-	// so the real render proceeds at full resolution.
-	scenePriv->ResizeFilm( origW, origH, origAR );
-	safe_release( probeSampler );
 
 	if( anyValid ) {
 		out.valid      = true;
@@ -976,7 +1004,12 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		for( ;; ) {
 			if( mResolutionComplete ) return;
 			if( !mResolutionInProgress ) {
+				if( !waitingFrom && !gAutoResolutionsActive.empty() ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: Auto delegate resolution is concurrent");
+				}
 				mResolutionInProgress = true;
+				gAutoResolutionsActive.insert(this);
 				break;
 			}
 			if( waitingFrom ) {
@@ -1113,6 +1146,7 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		{
 			std::lock_guard<std::mutex> lock(gAutoResolutionMutex);
 			mResolutionInProgress = false;
+			gAutoResolutionsActive.erase(this);
 		}
 		gAutoResolutionChanged.notify_all();
 		throw;
@@ -1121,8 +1155,20 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		std::lock_guard<std::mutex> lock(gAutoResolutionMutex);
 		mResolutionComplete = true;
 		mResolutionInProgress = false;
+		gAutoResolutionsActive.erase(this);
 	}
 	gAutoResolutionChanged.notify_all();
+}
+
+void AutoRasterizer::ForTest_ThrowInsideProbe( const IScene& scene ) const
+{
+	mFailProbeForTest.store(true,std::memory_order_release);
+	ProbeCandidate(&scene,AutoIntegratorChoice::PT,ReadProbeConfig(),false);
+}
+
+unsigned int AutoRasterizer::ForTest_LiveProbeCaptureCount() const
+{
+	return gProbeCapturesLive.load(std::memory_order_acquire);
 }
 
 IRasterizer* AutoRasterizer::RetainDelegate() const

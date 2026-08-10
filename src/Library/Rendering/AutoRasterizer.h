@@ -18,7 +18,9 @@
 //    *assembled* scene to pick the integrator per-scene.  The assembled
 //    scene only exists at `RasterizeScene` time, so the dispatcher
 //    defers building its delegate until then (guarded by an exclusive,
-//    fail-closed resolution coordinator)
+//    fail-closed resolution coordinator). A top-level resolution rejects
+//    while any other Auto is active; only same-thread nested resolution is
+//    admitted, so callback-created worker handoffs cannot hide wait cycles.
 //    rather than at parse/construction.  The wrapper stores everything
 //    needed to build ANY of the three delegates and resolves exactly one
 //    lazily; Phase 4 replaces the body of `SelectIntegrator` with the
@@ -190,6 +192,8 @@ namespace RISE
 			void ForTest_FreeDelegateRasterizerOutputs();
 			bool ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const;
 			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
+			void ForTest_ThrowInsideProbe( const IScene& scene ) const;
+			unsigned int ForTest_LiveProbeCaptureCount() const;
 
 		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
@@ -346,6 +350,7 @@ namespace RISE
 			mutable bool					mResolutionInProgress;
 			mutable bool					mResolutionComplete;
 			mutable std::mutex				mResolutionStateMutex;
+			mutable std::atomic<bool>		mFailProbeForTest { false };
 
 			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
 			// when the probe is inactive).
