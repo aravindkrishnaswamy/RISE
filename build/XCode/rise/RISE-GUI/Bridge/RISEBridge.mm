@@ -1326,12 +1326,10 @@ private:
     // rasterizer's mFrameStore directly — no VFS-internal FrameStore
     // allocation, no FrameSink cross-store copy.
     //
-    // Caveat: MLT integrators (`mlt_rasterizer`, `mlt_spectral_rasterizer`)
-    // override `Rasterizer::AcceptsFrameStorePush()` to false (per
-    // L6e-1.1), so Job never pushes a FrameStore to them and
-    // `rasterizer->GetFrameStore()` returns null at Attach time.  VFS
-    // stays in legacy FrameSink-copy mode for those rasterizers
-    // until L6d-2 migrates MLT to multi-round-aware FrameStore writes.
+    // The legacy FrameSink-copy mode remains only for a future or
+    // noncanonical producer that does not accept the FrameStore push;
+    // current PT, BDPT, VCM, MLT, and interactive rasterizers all publish
+    // their canonical FrameStore.
     //
     // Note: the EXTERNAL FrameStore bind survives `FreeRasterizerOutputs`
     // (rasterizer drops its ref to VFS but VFS still holds the addref

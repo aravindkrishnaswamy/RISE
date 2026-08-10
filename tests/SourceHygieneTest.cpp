@@ -995,7 +995,7 @@ int main()
 		const std::size_t bindCommitLock = bindApply.find(
 			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
 		const std::size_t bindExposureWrite = bindApply.find(
-			"newStore->SetCameraExposureEV(");
+			"candidate.store->SetCameraExposureEV(");
 		Check(exposureLock != std::string::npos && exposureWrite != std::string::npos &&
 			exposureLock < exposureWrite && bindCommitLock != std::string::npos &&
 			bindExposureWrite != std::string::npos && bindCommitLock < bindExposureWrite,
@@ -1004,12 +1004,26 @@ int main()
 			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.h");
 		const std::string androidBridgeHeader = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.h");
-		Check(windowsRenderHeader.find("std::atomic<bool> m_sizeDetected") !=
+		std::string compactWindowsRenderHeader = windowsRenderHeader;
+		compactWindowsRenderHeader.erase(std::remove_if(
+			compactWindowsRenderHeader.begin(),compactWindowsRenderHeader.end(),
+			[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),compactWindowsRenderHeader.end());
+		std::string compactAndroidBridgeHeader = androidBridgeHeader;
+		compactAndroidBridgeHeader.erase(std::remove_if(
+			compactAndroidBridgeHeader.begin(),compactAndroidBridgeHeader.end(),
+			[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),compactAndroidBridgeHeader.end());
+		Check(compactWindowsRenderHeader.find("std::atomic<bool>m_sizeDetected") !=
 				std::string::npos &&
-			windowsRenderHeader.find("std::atomic<uint64_t> m_lastSeenGeneration") !=
+			compactWindowsRenderHeader.find(
+				"std::atomic<uint64_t>m_lastSeenGeneration{0};") !=
 				std::string::npos &&
-			androidBridgeHeader.find("std::atomic<uint64_t>") != std::string::npos &&
-			androidBridgeHeader.find("m_lastSeenGeneration{0}") != std::string::npos,
+			compactAndroidBridgeHeader.find(
+				"std::atomic<uint64_t>m_lastSeenGeneration{0};") !=
+				std::string::npos,
 			"Windows and Android callback/poll sentinels are atomic" );
 		const std::string riseBridge = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");

@@ -22,9 +22,9 @@
 #include "../Interfaces/ILog.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cctype>
-#include <exception>
 #include <mutex>
 #include <shared_mutex>
 
@@ -144,22 +144,18 @@ namespace RISE
 			// destructs (typically by Detach()-ing first AND
 			// joining any rasterizer threads).
 			//
-			// L8 review round 3 — DEADLOCK FIX: route through the
-			// phased BindFrameStore(nullptr) path rather than holding
-			// chainMutex_ unique_lock around `TeardownChain()`'s
-			// `RemoveObserver` wait.  BindFrameStore's Phase 1
-			// snapshots + clears under the lock, Phase 2/3 tear
-			// down OUTSIDE the lock (so observer dispatches that
-			// re-enter chainMutex_ via vfs->RenderToBuffer can
-			// complete), Phase 4 is a no-op for external==nullptr.
+			// Route through BindFrameStore(nullptr) rather than holding
+			// chainMutex_ around RemoveObserver.  The bind transaction
+			// leaves the old chain published while it detaches observers
+			// outside the lock, then clears the chain only at commit.
 			// See BindFrameStore comment for the full rationale.
 			//
 			// Snapshot semantics for in-flight readers: same as
 			// pre-fix.  Reader threads that already captured an
 			// addref'd `framestore_` snapshot continue to hold it
-			// alive past Phase 1's clear; their work completes
-			// against the captured pointer; they release.  Phase 3
-			// then drops the VFS reference; the last retained reader
+			// alive past the commit; their work completes against the
+			// captured pointer; they release.  Cleanup then drops the
+			// VFS reference; the last retained reader
 			// snapshot destroys the FrameStore when its work completes.
 			BindFrameStore( nullptr );
 		}
@@ -173,8 +169,8 @@ namespace RISE
 		// deadlock against `RemoveObserver`'s wait protocol.
 		//
 		// Replacement: `BindFrameStore(nullptr)` does the same
-		// teardown work via the phased pattern (snapshot + drop
-		// lock + RemoveObserver + cleanup + nothing-to-install).
+		// teardown work via snapshot, unlocked observer removal,
+		// atomic pointer commit, and cleanup.
 		// The dtor uses it; `EnsureChain` still uses
 		// `ParkActiveAsDormant_locked` for dim changes (which
 		// doesn't call `RemoveObserver`).  No other in-tree caller
@@ -299,62 +295,38 @@ namespace RISE
 
 		void ViewportFrameStore::BindFrameStore( FrameStore* external )
 		{
-			const uint64_t bindRevision =
-				bindRevision_.fetch_add(1u,std::memory_order_acq_rel)+1u;
-			if( bindPhaseOneTestHook_ ) bindPhaseOneTestHook_(bindRevision);
-			if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
-				return;
-			}
-			if( external ) external->addref();
-			bool drainRequests = false;
+			uint64_t bindRevision = 0u;
 			{
 				std::lock_guard<std::mutex> lock(bindRequestMutex_);
-				if( bindRevision_.load(std::memory_order_acquire) != bindRevision ) {
-					safe_release(external);
-					return;
+				if( bindDrainActive_ ) {
+					throw std::runtime_error(
+						"ViewportFrameStore bind transaction already active");
 				}
-				if( pendingBindValid_ ) safe_release(pendingBind_);
-				pendingBind_ = external;
-				pendingBindRevision_ = bindRevision;
-				pendingBindValid_ = true;
-				if( !bindDrainActive_ ) {
-					bindDrainActive_ = true;
-					drainRequests = true;
-				}
+				bindDrainActive_ = true;
+				bindRevision = bindRevision_.fetch_add(
+					1u,std::memory_order_acq_rel)+1u;
 			}
-			if( !drainRequests ) return;
 
 			struct BindActivity
 			{
+				std::mutex& mutex;
+				bool& draining;
 				std::atomic<unsigned int>& active;
-				explicit BindActivity( std::atomic<unsigned int>& count ) : active(count)
+				BindActivity( std::mutex& requestMutex, bool& drainActive,
+					std::atomic<unsigned int>& count )
+					: mutex(requestMutex), draining(drainActive), active(count)
 					{ active.fetch_add(1u,std::memory_order_acq_rel); }
-				~BindActivity() { active.fetch_sub(1u,std::memory_order_acq_rel); }
-			} bindActivity(bindTransactionsInFlight_);
-			std::exception_ptr firstFailure;
-			for( ;; ) {
-				FrameStore* requested = nullptr;
-				uint64_t requestRevision = 0u;
+				~BindActivity()
 				{
-					std::lock_guard<std::mutex> lock(bindRequestMutex_);
-					if( !pendingBindValid_ ) {
-						bindDrainActive_ = false;
-						break;
+					{
+						std::lock_guard<std::mutex> lock(mutex);
+						draining = false;
 					}
-					requested = pendingBind_;
-					requestRevision = pendingBindRevision_;
-					pendingBind_ = nullptr;
-					pendingBindRevision_ = 0u;
-					pendingBindValid_ = false;
+					active.fetch_sub(1u,std::memory_order_acq_rel);
 				}
-				try {
-					ApplyBindFrameStore(requested,requestRevision);
-				} catch ( ... ) {
-					if( !firstFailure ) firstFailure = std::current_exception();
-				}
-				safe_release(requested);
-			}
-			if( firstFailure ) std::rethrow_exception(firstFailure);
+			} bindActivity(bindRequestMutex_,bindDrainActive_,bindTransactionsInFlight_);
+			if( bindPhaseOneTestHook_ ) bindPhaseOneTestHook_(bindRevision);
+			ApplyBindFrameStore(external,bindRevision);
 		}
 
 		void ViewportFrameStore::ApplyBindFrameStore(
@@ -362,33 +334,6 @@ namespace RISE
 		{
 			std::vector<DormantChain> oldDormant;
 			oldDormant.reserve(kMaxDormantChains);
-			FrameStore* newStore = nullptr;
-			BridgeObserver* newObserver = nullptr;
-			bool newObserverRegistered = false;
-			if( external ) {
-				external->addref();
-				newStore = external;
-				try {
-					if( chainConstructionTestHook_ ) {
-						chainConstructionTestHook_("bind_after_retain");
-					}
-					newObserver = new BridgeObserver(*this);
-					if( chainConstructionTestHook_ ) {
-						chainConstructionTestHook_("bind_after_observer_allocation");
-					}
-					newStore->AddObserver(newObserver);
-					newObserverRegistered = true;
-					if( chainConstructionTestHook_ ) {
-						chainConstructionTestHook_("bind_after_observer_registration");
-					}
-				} catch ( ... ) {
-					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
-					delete newObserver;
-					safe_release(newStore);
-					throw;
-				}
-			}
-
 			FrameStore*     oldExternal = nullptr;
 			FrameStore*     oldFs       = nullptr;
 			FrameSink*      oldSink     = nullptr;
@@ -396,10 +341,6 @@ namespace RISE
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 				if( bindRevision_.load(std::memory_order_acquire) != requestRevision ) {
-					lock.unlock();
-					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
-					delete newObserver;
-					safe_release(newStore);
 					return;
 				}
 
@@ -407,24 +348,14 @@ namespace RISE
 				// avoids tearing down + re-registering an observer that
 				// would point at the same store.
 				if ( external && external == externalFrameStore_ ) {
-					lock.unlock();
-					if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
-					delete newObserver;
-					safe_release(newStore);
 					return;
 				}
 				if( !external && !externalFrameStore_ && !framestore_ && !framesink_ &&
 					!observer_ && dormant_.empty() ) {
 					return;
 				}
-				if( newStore ) {
-					newStore->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
-				}
-
-				// Snapshot ownership without changing the published chain.  The
-				// replacement was already constructed above; a construction failure
-				// therefore leaves every current reader and observer untouched.
+				// Snapshot every potentially-allocating old-chain value before a
+				// candidate observer is created or any observer is detached.
 				oldExternal = externalFrameStore_;
 				oldFs       = framestore_;
 				oldSink     = framesink_;
@@ -432,8 +363,43 @@ namespace RISE
 				oldDormant = dormant_;
 			}
 
+			struct BindCandidate
+			{
+				FrameStore* store = nullptr;
+				BridgeObserver* observer = nullptr;
+				~BindCandidate()
+				{
+					delete observer;
+					safe_release(store);
+				}
+				void Commit()
+				{
+					store = nullptr;
+					observer = nullptr;
+				}
+			} candidate;
+			if( external ) {
+				external->addref();
+				candidate.store = external;
+				if( chainConstructionTestHook_ ) {
+					chainConstructionTestHook_("bind_after_retain");
+				}
+				candidate.observer = new BridgeObserver(*this);
+				if( chainConstructionTestHook_ ) {
+					chainConstructionTestHook_("bind_after_observer_allocation");
+				}
+			}
+
 			bool oldObserverDetached = false;
-			std::vector<bool> dormantObserverDetached(oldDormant.size(),false);
+			std::array<bool,kMaxDormantChains> dormantObserverDetached{};
+			const auto restoreDetachedObservers = [&]() {
+				if( oldObserverDetached ) oldFs->AddObserver(oldObs);
+				for( size_t i=0; i<oldDormant.size(); ++i ) {
+					if( dormantObserverDetached[i] ) {
+						oldDormant[i].fs->AddObserver(oldDormant[i].obs);
+					}
+				}
+			};
 			try {
 				if ( oldFs && oldObs ) {
 					oldFs->RemoveObserver( oldObs );
@@ -447,26 +413,41 @@ namespace RISE
 					}
 				}
 			} catch ( ... ) {
-				if( oldObserverDetached ) oldFs->AddObserver(oldObs);
-				for( size_t i=0; i<oldDormant.size(); ++i ) {
-					if( dormantObserverDetached[i] ) {
-						oldDormant[i].fs->AddObserver(oldDormant[i].obs);
-					}
-				}
-				if( newObserverRegistered ) newStore->RemoveObserver(newObserver);
-				delete newObserver;
-				safe_release(newStore);
+				restoreDetachedObservers();
 				throw;
 			}
 
-			{
+			FrameStore* committedStore = candidate.store;
+			try {
+				if( candidate.store ) {
+					{
+						std::unique_lock<std::shared_mutex> lock(chainMutex_);
+						candidate.store->SetCameraExposureEV(
+							static_cast<double>(cameraExposureEV_));
+						candidate.store->AddObserver(candidate.observer);
+					}
+					if( chainConstructionTestHook_ ) {
+						chainConstructionTestHook_("bind_after_observer_registration");
+					}
+				}
 				std::unique_lock<std::shared_mutex> lock(chainMutex_);
-				externalFrameStore_ = newStore;
-				framestore_ = newStore;
+				if( candidate.store ) {
+					candidate.store->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
+				}
+				externalFrameStore_ = candidate.store;
+				framestore_ = candidate.store;
 				framesink_ = nullptr;
-				observer_ = newObserver;
+				observer_ = candidate.observer;
 				dormant_.clear();
-				if( newObserver ) newObserver->Activate();
+				if( candidate.observer ) candidate.observer->Activate();
+				candidate.Commit();
+			} catch ( ... ) {
+				if( candidate.store && candidate.observer ) {
+					candidate.store->RemoveObserver(candidate.observer);
+				}
+				restoreDetachedObservers();
+				throw;
 			}
 
 			delete oldObs;
@@ -486,7 +467,7 @@ namespace RISE
 				safe_release( d.fs );
 			}
 
-			if ( newStore ) {
+			if ( committedStore ) {
 				// L8 round-18d — eLog_Info (was eLog_Event).  With the
 				// interactive preview-scale path firing this message on
 				// every dim transition (4 -> 8 -> 4 -> 2 -> 1 across a
@@ -498,8 +479,8 @@ namespace RISE
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: bound to "
 					"external FrameStore %ux%u",
-					static_cast<unsigned int>( newStore->Width() ),
-					static_cast<unsigned int>( newStore->Height() ) );
+					static_cast<unsigned int>( committedStore->Width() ),
+					static_cast<unsigned int>( committedStore->Height() ) );
 			} else if( bindRevision_.load(std::memory_order_acquire) == requestRevision ) {
 				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: unbound — "

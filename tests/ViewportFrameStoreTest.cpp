@@ -36,6 +36,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -76,6 +77,30 @@ namespace
 {
 	int gFailCount = 0;
 	int gPassCount = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		ProcessWatchdog() : completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed]() {
+				std::this_thread::sleep_for(std::chrono::seconds(30));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fputs("FAIL: ViewportFrameStoreTest exceeded 30-second watchdog\n",stderr);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 
 	void Check( bool cond, const std::string& label )
 	{
@@ -278,13 +303,9 @@ namespace
 
 	std::string MakeTempPath()
 	{
-		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir ) tmpdir = "/tmp/";
 		std::ostringstream os;
-		os << tmpdir;
-		if ( os.str().back() != '/' ) os << '/';
 		os << "rise_l4_vfs_" << ::getpid();
-		return os.str();
+		return (std::filesystem::temp_directory_path()/os.str()).string();
 	}
 
 	bool ReadFileAllBytes( const std::string& path, std::vector<unsigned char>& out )
@@ -1523,7 +1544,7 @@ namespace
 		safe_release( extFs );
 	}
 
-	void TestConcurrentExternalBindsPublishNewestOnly()
+	void TestConcurrentExternalBindRejectsSynchronously()
 	{
 		auto* vfs = new ViewportFrameStore();
 		FrameStore::Spec spec;
@@ -1559,7 +1580,7 @@ namespace
 			callbackCondition.wait(lock,[&]() { return callbackEntered; });
 		}
 		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			replacementReady = true;
 			callbackCondition.notify_all();
@@ -1570,8 +1591,14 @@ namespace
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			callbackCondition.wait(lock,[&]() { return replacementReady; });
 		}
-		vfs->BindFrameStore(second);
-		const bool oldStayedPublishedWhileSecondQueued =
+		bool secondRejected = false;
+		try {
+			vfs->BindFrameStore(second);
+		} catch( const std::runtime_error& error ) {
+			secondRejected = std::string(error.what()) ==
+				"ViewportFrameStore bind transaction already active";
+		}
+		const bool oldStayedPublishedWhileSecondRejected =
 			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
 		{
 			std::lock_guard<std::mutex> lock(callbackMutex);
@@ -1582,21 +1609,22 @@ namespace
 		dispatcher.join();
 		firstBinder.join();
 		vfs->ForTest_SetChainConstructionHook({});
-		const bool newestRetained = vfs->GetFrameStore() == second;
+		const bool firstRetained = vfs->GetFrameStore() == first;
 		vfs->release();
 		first->BeginTile(0u,0u);
 		first->EndTile(0u,0u);
 		second->BeginTile(0u,0u);
 		second->EndTile(0u,0u);
-		Check(oldStayedPublishedWhileSecondQueued && newestRetained &&
+		Check(secondRejected && oldStayedPublishedWhileSecondRejected &&
+			firstRetained &&
 			callbacks.load() == 1u,
-			"concurrent external binds keep the old store visible and commit the newest" );
+			"a concurrent external bind rejects synchronously without disturbing the active transaction" );
 		source->release();
 		first->release();
 		second->release();
 	}
 
-	void TestDelayedOlderBindCannotClearNewerBinding()
+	void TestPhaseOneConcurrentBindRejectsSynchronously()
 	{
 		auto* vfs = new ViewportFrameStore();
 		FrameStore::Spec spec;
@@ -1624,8 +1652,13 @@ namespace
 			std::unique_lock<std::mutex> lock(gateMutex);
 			gateCondition.wait(lock,[&]() { return firstEntered; });
 		}
-		vfs->BindFrameStore(second);
-		const bool newerInstalled = vfs->GetFrameStore() == second;
+		bool secondRejected = false;
+		try {
+			vfs->BindFrameStore(second);
+		} catch( const std::runtime_error& error ) {
+			secondRejected = std::string(error.what()) ==
+				"ViewportFrameStore bind transaction already active";
+		}
 		{
 			std::lock_guard<std::mutex> lock(gateMutex);
 			firstMayContinue = true;
@@ -1637,9 +1670,9 @@ namespace
 		first->EndTile(0u,0u);
 		second->BeginTile(0u,0u);
 		second->EndTile(0u,0u);
-		Check(newerInstalled && vfs->GetFrameStore() == second &&
-			hookCalls.load() == 2u && callbacks.load() == 1u,
-			"a delayed pre-phase-one bind cannot clear the newer committed binding" );
+		Check(secondRejected && vfs->GetFrameStore() == first &&
+			hookCalls.load() == 1u && callbacks.load() == 1u,
+			"a phase-one concurrent bind reports rejection to its own caller" );
 		vfs->release();
 		first->release();
 		second->release();
@@ -1677,7 +1710,7 @@ namespace
 			callbackCondition.wait(lock,[&]() { return callbackEntered; });
 		}
 		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
 			std::unique_lock<std::mutex> lock(callbackMutex);
 			replacementReady = true;
 			callbackCondition.notify_all();
@@ -1830,65 +1863,6 @@ namespace
 		replacement->release();
 	}
 
-	void TestFailedBindStillDrainsNewerRequest()
-	{
-		auto* vfs = new ViewportFrameStore();
-		FrameStore::Spec spec;
-		spec.width = kImgW;
-		spec.height = kImgH;
-		spec.tileEdge = 8;
-		auto* source = new FrameStore(spec);
-		auto* failing = new FrameStore(spec);
-		auto* newest = new FrameStore(spec);
-		std::mutex gateMutex;
-		std::condition_variable gateCondition;
-		bool failingReady = false;
-		bool failingMayThrow = false;
-		bool hookReleaseObserved = false;
-		std::atomic<unsigned int> registrations(0u);
-		vfs->BindFrameStore(source);
-		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ||
-				registrations.fetch_add(1u) != 0u ) return;
-			std::unique_lock<std::mutex> lock(gateMutex);
-			failingReady = true;
-			gateCondition.notify_all();
-			hookReleaseObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
-				[&]() { return failingMayThrow; });
-			throw std::runtime_error("injected bind failure");
-		});
-		bool firstRejected = false;
-		std::thread firstBinder([&]() {
-			try {
-				vfs->BindFrameStore(failing);
-			} catch( const std::runtime_error& error ) {
-				firstRejected = std::string(error.what()) == "injected bind failure";
-			}
-		});
-		bool failingStageObserved = false;
-		{
-			std::unique_lock<std::mutex> lock(gateMutex);
-			failingStageObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
-				[&]() { return failingReady; });
-		}
-		vfs->BindFrameStore(newest);
-		{
-			std::lock_guard<std::mutex> lock(gateMutex);
-			failingMayThrow = true;
-		}
-		gateCondition.notify_all();
-		firstBinder.join();
-		vfs->ForTest_SetChainConstructionHook({});
-		Check(failingStageObserved && hookReleaseObserved && firstRejected &&
-			vfs->GetFrameStore() == newest &&
-			vfs->IsExternallyBound() && registrations.load() == 2u,
-			"a failed active bind still drains and commits its newer queued request" );
-		vfs->release();
-		source->release();
-		failing->release();
-		newest->release();
-	}
-
 	void TestExposureUpdateWinsConcurrentBindCommit()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -1906,7 +1880,7 @@ namespace
 		vfs->SetCameraExposureCompensationEV(1.0);
 		vfs->BindFrameStore(source);
 		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_observer_registration") != 0 ) return;
+			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
 			std::unique_lock<std::mutex> lock(gateMutex);
 			replacementReady = true;
 			gateCondition.notify_all();
@@ -2174,6 +2148,7 @@ namespace
 
 int main()
 {
+	ProcessWatchdog watchdog;
 	std::cout << "ViewportFrameStoreTest L4 — GUI-viewport facade\n";
 	std::cout << "------------------------------------------------------\n";
 
@@ -2195,12 +2170,11 @@ int main()
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
-	TestConcurrentExternalBindsPublishNewestOnly();
-	TestDelayedOlderBindCannotClearNewerBinding();
+	TestConcurrentExternalBindRejectsSynchronously();
+	TestPhaseOneConcurrentBindRejectsSynchronously();
 	TestBindTeardownKeepsOldChainPublished();
 	TestRejectedCrossStoreBindPreservesExistingChain();
 	TestBindConstructionFailuresPreserveExistingChain();
-	TestFailedBindStillDrainsNewerRequest();
 	TestExposureUpdateWinsConcurrentBindCommit();
 	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();

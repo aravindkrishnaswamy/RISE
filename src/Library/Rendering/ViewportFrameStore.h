@@ -434,9 +434,6 @@ namespace RISE
 			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
 			std::function<void(uint64_t)> bindPhaseOneTestHook_;
 			std::function<void(const char*)> chainConstructionTestHook_;
-			Implementation::FrameStore* pendingBind_ = nullptr;
-			uint64_t pendingBindRevision_ = 0u;
-			bool pendingBindValid_ = false;
 			bool bindDrainActive_ = false;
 
 			FrameStore*        framestore_ = nullptr;
