@@ -692,6 +692,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// See BDPTStrategyBalanceTest / INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
+		if( !std::isfinite(cov) || !std::isfinite(c.base.r) ||
+			!std::isfinite(c.base.g) || !std::isfinite(c.base.b) ) {
+			return s;
+		}
 		ch[0].push_back( c.base.r * cov );
 		ch[1].push_back( c.base.g * cov );
 		ch[2].push_back( c.base.b * cov );
@@ -703,6 +707,8 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 		s.mean[c] = sum / double(ch[c].size());
 		s.p99[c]  = Percentile( ch[c], 0.99 );
 		s.max[c]  = ch[c].back();   // after sort
+		if( !std::isfinite(s.mean[c]) || !std::isfinite(s.p99[c]) ||
+			!std::isfinite(s.max[c]) ) return s;
 	}
 	s.valid = true;
 	return s;
@@ -1021,10 +1027,25 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 static bool ChannelsAgree( const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
+		if( !std::isfinite(a[c]) || !std::isfinite(b[c]) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
-		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
+		const double relativeError = std::fabs(a[c] - b[c]) / denom;
+		if( !std::isfinite(relativeError) || relativeError > relTol ) return false;
 	}
 	return true;
+}
+
+static void TestNonFiniteImageStatisticsFailClosed()
+{
+	auto* capture = new CapturingRasterizerOutput();
+	capture->pixels.push_back(RISEColor(
+		RISEPel(std::nan(""),1.0,1.0),1.0));
+	const ImageStats stats = ComputeStats(*capture);
+	capture->release();
+	const double finite[3] = { 1.0,1.0,1.0 };
+	const double nonFinite[3] = { 1.0,std::nan(""),1.0 };
+	Check(!stats.valid && !ChannelsAgree(finite,nonFinite,0.1,1e-12),
+		"non-finite image data invalidates statistics and channel comparisons" );
 }
 
 static void PrintStats( const char* label, const ImageStats& s )
@@ -3229,6 +3250,14 @@ static void TestAutoParamPassThrough()
 
 int main( const int argc, const char* const argv[] )
 {
+	struct TempOptionsCleanup
+	{
+		std::string path;
+		~TempOptionsCleanup()
+		{
+			if( !path.empty() ) std::remove(path.c_str());
+		}
+	} tempOptions;
 	bool extendedFireAblation = false;
 	bool firePreviewOnly = false;
 	for( int i=1; i<argc; ++i ) {
@@ -3252,6 +3281,7 @@ int main( const int argc, const char* const argv[] )
 		optFilename << "auto_probe_test_opts_" << ::getpid() << ".txt";
 		const std::string optPath = (std::filesystem::temp_directory_path()/
 			optFilename.str()).string();
+		tempOptions.path = optPath;
 		std::ofstream ofs( optPath );
 		ofs << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
@@ -3271,6 +3301,7 @@ int main( const int argc, const char* const argv[] )
 
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
 	std::cout << std::endl;
+	TestNonFiniteImageStatisticsFailClosed();
 	std::cout << "--- Fire Pel preview consistency ---" << std::endl;
 	TestFirePelPreviewDivergence(extendedFireAblation);
 	if( firePreviewOnly ) {
