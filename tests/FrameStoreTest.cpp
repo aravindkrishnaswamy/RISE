@@ -667,7 +667,7 @@ namespace
 		{
 			std::unique_lock<std::mutex> lock(remover.mutex);
 			removeStarted = remover.condition.wait_for(lock,
-				std::chrono::seconds(2),[&]() { return remover.started; });
+				std::chrono::milliseconds(100),[&]() { return remover.started; });
 			removeReturnedEarly = remover.returned;
 		}
 		{
@@ -677,8 +677,8 @@ namespace
 		}
 		tileDispatch.join();
 		frameDispatch.join();
-		Check(removeStarted && !removeReturnedEarly && remover.returned,
-			"observer A removal waits for observer B active on another dispatch thread" );
+		Check(!removeStarted && !removeReturnedEarly && remover.returned,
+			"observer callbacks serialize before unrelated removal can overlap a victim" );
 
 		store->RemoveObserver(&remover);
 		store->release();
@@ -687,34 +687,12 @@ namespace
 	struct ConcurrentSelfRemovingObserver : public IRenderObserver
 	{
 		FrameStore* store = nullptr;
-		std::mutex mutex;
-		std::condition_variable condition;
-		bool tileEntered = false;
-		bool continueTile = false;
-		bool removeStarted = false;
-		bool removeReturned = false;
+		std::atomic<unsigned int> fires{0u};
 
 		void OnTileComplete( const Rect&, uint64_t ) override
 		{
-			std::unique_lock<std::mutex> lock(mutex);
-			tileEntered = true;
-			condition.notify_all();
-			condition.wait(lock,[this]() { return continueTile; });
-		}
-
-		void OnFrameComplete( unsigned int, uint64_t ) override
-		{
-			{
-				std::lock_guard<std::mutex> lock(mutex);
-				removeStarted = true;
-				condition.notify_all();
-			}
+			fires.fetch_add(1u);
 			store->RemoveObserver(this);
-			{
-				std::lock_guard<std::mutex> lock(mutex);
-				removeReturned = true;
-				condition.notify_all();
-			}
 		}
 	};
 
@@ -724,30 +702,100 @@ namespace
 		ConcurrentSelfRemovingObserver observer;
 		observer.store = store;
 		store->AddObserver(&observer);
-		std::thread tileDispatch([&]() {
+		std::mutex startMutex;
+		std::condition_variable startCondition;
+		unsigned int ready = 0u;
+		bool start = false;
+		auto dispatch = [&]() {
+			{
+				std::unique_lock<std::mutex> lock(startMutex);
+				++ready;
+				startCondition.notify_all();
+				startCondition.wait(lock,[&]() { return start; });
+			}
 			store->BeginTile(0,0);
 			store->EndTile(0,0);
+		};
+		std::thread first(dispatch);
+		std::thread second(dispatch);
+		{
+			std::unique_lock<std::mutex> lock(startMutex);
+			startCondition.wait(lock,[&]() { return ready == 2u; });
+			start = true;
+			startCondition.notify_all();
+		}
+		first.join();
+		second.join();
+		Check(observer.fires.load() == 1u,
+			"concurrent dispatches serialize so a self-removing observer fires once" );
+		store->release();
+	}
+
+	struct SharedCrossStoreObserver : public IRenderObserver
+	{
+		FrameStore* removeFrom = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		unsigned int fires = 0u;
+		bool firstEntered = false;
+		bool continueFirst = false;
+		bool secondReturned = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			++fires;
+			if( fires == 1u ) {
+				firstEntered = true;
+				condition.notify_all();
+				condition.wait(lock,[this]() { return continueFirst; });
+				return;
+			}
+			lock.unlock();
+			removeFrom->RemoveObserver(this);
+			lock.lock();
+			secondReturned = true;
+			condition.notify_all();
+		}
+	};
+
+	void TestSharedObserverCrossStoreRemovalIsSerialized()
+	{
+		FrameStore* firstStore = MakeStore(8,8,8);
+		FrameStore* secondStore = MakeStore(8,8,8);
+		SharedCrossStoreObserver observer;
+		observer.removeFrom = firstStore;
+		firstStore->AddObserver(&observer);
+		secondStore->AddObserver(&observer);
+
+		std::thread firstDispatch([&]() {
+			firstStore->BeginTile(0,0);
+			firstStore->EndTile(0,0);
 		});
 		{
 			std::unique_lock<std::mutex> lock(observer.mutex);
-			observer.condition.wait(lock,[&]() { return observer.tileEntered; });
+			observer.condition.wait(lock,[&]() { return observer.firstEntered; });
 		}
-		std::thread frameDispatch([&]() { store->MarkFrameComplete(1u); });
-		bool removeStarted = false;
-		bool returnedEarly = false;
+		std::thread secondDispatch([&]() {
+			secondStore->BeginTile(0,0);
+			secondStore->EndTile(0,0);
+		});
+		bool overlapped = false;
 		{
 			std::unique_lock<std::mutex> lock(observer.mutex);
-			removeStarted = observer.condition.wait_for(lock,std::chrono::seconds(2),
-				[&]() { return observer.removeStarted; });
-			returnedEarly = observer.removeReturned;
-			observer.continueTile = true;
+			overlapped = observer.condition.wait_for(lock,std::chrono::milliseconds(100),
+				[&]() { return observer.fires > 1u || observer.secondReturned; });
+			observer.continueFirst = true;
 			observer.condition.notify_all();
 		}
-		tileDispatch.join();
-		frameDispatch.join();
-		Check(removeStarted && !returnedEarly && observer.removeReturned,
-			"self-removal drains concurrent callbacks while exempting its current stack" );
-		store->release();
+		firstDispatch.join();
+		secondDispatch.join();
+		Check(!overlapped && observer.fires == 2u && observer.secondReturned,
+			"shared observer removal on another store waits behind its active callback" );
+
+		secondStore->RemoveObserver(&observer);
+		firstStore->release();
+		secondStore->release();
 	}
 
 	// ─── Section 5: Render readback identity & exposure ───────────
@@ -1384,6 +1432,7 @@ int main()
 	TestObserverRemoveWaitsForInFlight();
 	TestObserverRemovalFromUnrelatedCallbackWaitsForVictim();
 	TestConcurrentSelfRemovalDrainsOtherThreads();
+	TestSharedObserverCrossStoreRemovalIsSerialized();
 	TestConcurrentSeqlock();
 	TestConcurrentFrameMetadata();
 	TestRenderReadback();

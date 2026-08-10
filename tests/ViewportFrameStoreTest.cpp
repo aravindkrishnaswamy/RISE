@@ -408,6 +408,55 @@ namespace
 		vfs->release();
 	}
 
+	void TestThrowingCallbacksReleaseRetainedSnapshots()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0u);
+		FrameStore* store = vfs->GetFrameStore();
+		const unsigned int baselineRefs = store->refcount();
+		auto throws = []() { throw std::runtime_error("callback failure"); };
+
+		vfs->SetTileCompleteCallback(
+			[&]( const Rect&, uint64_t ) { throws(); } );
+		bool intermediateThrew = false;
+		try { vfs->OutputIntermediateImage(*img,nullptr); }
+		catch( const std::runtime_error& ) { intermediateThrew = true; }
+		Check(intermediateThrew && store->refcount() == baselineRefs,
+			"throwing intermediate callback releases retained FrameStore snapshot" );
+
+		vfs->SetTileCompleteCallback({});
+		vfs->SetFrameCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool finalThrew = false;
+		try { vfs->OutputImage(*img,nullptr,1u); }
+		catch( const std::runtime_error& ) { finalThrew = true; }
+		Check(finalThrew && store->refcount() == baselineRefs,
+			"throwing final callback releases retained FrameSink snapshot" );
+
+		vfs->SetFrameCompleteCallback({});
+		vfs->SetPreDenoiseCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool preThrew = false;
+		try { vfs->OutputPreDenoisedImage(*img,nullptr,2u); }
+		catch( const std::runtime_error& ) { preThrew = true; }
+		Check(preThrew && store->refcount() == baselineRefs,
+			"throwing pre-denoise callback releases retained FrameSink snapshot" );
+
+		vfs->SetPreDenoiseCompleteCallback({});
+		vfs->SetDenoiseCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool denoiseThrew = false;
+		try { vfs->OutputDenoisedImage(*img,nullptr,3u); }
+		catch( const std::runtime_error& ) { denoiseThrew = true; }
+		Check(denoiseThrew && store->refcount() == baselineRefs,
+			"throwing denoise callback releases retained FrameSink snapshot" );
+
+		vfs->SetDenoiseCompleteCallback({});
+		img->release();
+		vfs->release();
+	}
+
 	// ─── Section 2b: intermediate region tile coverage ────────────
 	// When the rasterizer's region spans MULTIPLE FrameStore tiles,
 	// OnTileComplete should fire once per overlapping FrameStore
@@ -1824,6 +1873,7 @@ int main()
 
 	TestLazyAllocation();
 	TestCallbacks();
+	TestThrowingCallbacksReleaseRetainedSnapshots();
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();

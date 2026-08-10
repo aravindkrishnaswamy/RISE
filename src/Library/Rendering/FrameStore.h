@@ -549,8 +549,11 @@ namespace RISE
 			// callbacks).
 			//
 			// Per-observer callback counts let RemoveObserver wait for
-			// precisely the removed observer without deadlocking on an
-			// unrelated callback in the caller's dispatch.
+			// precisely the removed observer. Callback invocation is
+			// serialized across FrameStores because observers are raw
+			// pointers and may synchronously remove and destroy each
+			// other; concurrent callback execution cannot make that
+			// lifetime contract both blocking and cycle-free.
 			std::vector<IRenderObserver*>     observers_;
 			mutable std::mutex                observerMutex_;
 			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
@@ -594,8 +597,10 @@ namespace RISE
 			//! observer list, releases the mutex, then invokes fn
 			//! on each snapshot entry.  Avoids deadlocks on
 			//! observer self-detach + the writer-blocked-on-slow-
-			//! observer case.  Defined in FrameStore.cpp; only used
-			//! inside that TU.
+			//! observer case. Reentrant observer dispatch fails closed;
+			//! callbacks may mutate registration but may not recursively
+			//! publish another FrameStore event. Defined in FrameStore.cpp;
+			//! only used inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
 

@@ -36,6 +36,23 @@ namespace RISE
 	{
 		namespace
 		{
+			template <typename T>
+			class RetainedReference
+			{
+			public:
+				explicit RetainedReference( T* ptr ) : ptr_(ptr) {}
+				~RetainedReference() { if( ptr_ ) ptr_->release(); }
+				RetainedReference( const RetainedReference& ) = delete;
+				RetainedReference& operator=( const RetainedReference& ) = delete;
+				T* get() const { return ptr_; }
+				T* operator->() const { return ptr_; }
+				T& operator*() const { return *ptr_; }
+				explicit operator bool() const { return ptr_ != nullptr; }
+
+			private:
+				T* ptr_;
+			};
+
 			bool EncoderAcceptsPath( const IFrameEncoder& encoder,
 				const std::string& path )
 			{
@@ -134,7 +151,8 @@ namespace RISE
 			// addref'd `framestore_` snapshot continue to hold it
 			// alive past Phase 1's clear; their work completes
 			// against the captured pointer; they release.  Phase 3
-			// then sees zero refs and destroys the FrameStore.
+			// then drops the VFS reference; the last retained reader
+			// snapshot destroys the FrameStore when its work completes.
 			BindFrameStore( nullptr );
 		}
 
@@ -490,10 +508,10 @@ namespace RISE
 
 		uint64_t ViewportFrameStore::Generation() const
 		{
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return 0;
 			const uint64_t gen = snap->Generation();
-			snap->release();
 			return gen;
 		}
 
@@ -507,11 +525,11 @@ namespace RISE
 			// See L4 round-4 P2-D adversarial review.
 			outW = 0;
 			outH = 0;
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return;
 			outW = static_cast<unsigned int>( snap->Width() );
 			outH = static_cast<unsigned int>( snap->Height() );
-			snap->release();
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -526,10 +544,10 @@ namespace RISE
 			const FrameStoreOutput::ViewTransform& xform,
 			bool                 nonBlocking ) const
 		{
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return;
 			snap->Render( dst, dstStride, roi, fmt, xform, nonBlocking );
-			snap->release();
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -548,13 +566,9 @@ namespace RISE
 					path.c_str() );
 				return false;
 			}
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return false;
-			struct StoreReference
-			{
-				FrameStore* store;
-				~StoreReference() { store->release(); }
-			} storeReference { snap };
 
 			EncodeOpts transactionOpts = opts;
 			bool artifactMetadataLeased = false;
@@ -581,7 +595,7 @@ namespace RISE
 			std::string error;
 			bool success = false;
 			{
-				FireMetadataLease fireMetadataLease { snap,artifactMetadataLeased };
+				FireMetadataLease fireMetadataLease { snap.get(),artifactMetadataLeased };
 				success = EncodeFrameStoreFileTransaction(
 					*snap,*encoder,transactionOpts,path,error );
 			}
@@ -602,13 +616,9 @@ namespace RISE
 			const EncodeOpts& opts ) const
 		{
 			if ( !encoder ) return false;
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return false;
-			struct StoreReference
-			{
-				FrameStore* store;
-				~StoreReference() { store->release(); }
-			} storeReference { snap };
 			FrameStoreOutput::Metadata metadataSnapshot;
 			bool artifactMetadataLeased = false;
 			if( !snap->AcquireExternalArtifactMetadataSnapshot(
@@ -625,7 +635,7 @@ namespace RISE
 				{
 					if( active ) store->ReleaseExternalArtifactMetadataLease();
 				}
-			} metadataLease { snap,artifactMetadataLeased };
+			} metadataLease { snap.get(),artifactMetadataLeased };
 			if( !metadataSnapshot.renderFidelityStatus.empty() ) {
 				GlobalLog()->PrintEasyError(
 					"ViewportFrameStore::SaveTo: fire output requires a provenance-capable sink" );
@@ -669,7 +679,8 @@ namespace RISE
 			// BridgeObserver) — exactly what platform repaint
 			// loops listen for.  No MarkFrameComplete: this is
 			// progressive, not final.  See L4 round-2 review P1-1.
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			RetainedReference<FrameStore> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ) );
 			if ( !snap ) return;
 
 			const unsigned int srcW = pImage.GetWidth();
@@ -739,7 +750,6 @@ namespace RISE
 				}
 			}
 
-			snap->release();
 		}
 
 		void ViewportFrameStore::OutputImage(
@@ -770,10 +780,10 @@ namespace RISE
 			// from any thread (typically a UI thread post-L6e-2c),
 			// breaking the contract's assumption.  See L6e-2a
 			// adversarial review P1.
-			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			RetainedReference<FrameSink> sinkSnap(
+				SnapshotFrameSink( chainMutex_, framesink_ ) );
 			if ( sinkSnap ) {
 				sinkSnap->OutputImage( pImage, pRegion, frame );
-				sinkSnap->release();
 			}
 		}
 
@@ -790,10 +800,10 @@ namespace RISE
 			}
 
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
-			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			RetainedReference<FrameSink> sinkSnap(
+				SnapshotFrameSink( chainMutex_, framesink_ ) );
 			if ( sinkSnap ) {
 				sinkSnap->OutputPreDenoisedImage( pImage, pRegion, frame );
-				sinkSnap->release();
 			}
 		}
 
@@ -810,25 +820,25 @@ namespace RISE
 			}
 
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
-			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			RetainedReference<FrameSink> sinkSnap(
+				SnapshotFrameSink( chainMutex_, framesink_ ) );
 			if ( sinkSnap ) {
 				sinkSnap->OutputDenoisedImage( pImage, pRegion, frame );
-				sinkSnap->release();
 			}
 		}
 
 		void ViewportFrameStore::SetCameraExposureCompensationEV( Scalar ev )
 		{
-			FrameStore* snap = nullptr;
+			FrameStore* retained = nullptr;
 			{
 				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 				cameraExposureEV_ = ev;
-				snap = framestore_;
-				if( snap ) snap->addref();
+				retained = framestore_;
+				if( retained ) retained->addref();
 			}
+			RetainedReference<FrameStore> snap(retained);
 			if ( snap ) {
 				snap->SetCameraExposureEV(static_cast<double>(ev));
-				snap->release();
 			}
 		}
 

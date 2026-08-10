@@ -32,19 +32,22 @@ namespace
 {
 	struct ObserverCallbackFrame
 	{
+		const RISE::Implementation::FrameStore* store;
 		RISE::IRenderObserver* observer;
 		ObserverCallbackFrame* prior;
 	};
 
 	thread_local ObserverCallbackFrame* g_observerCallbackFrame = nullptr;
+	std::mutex g_observerCallbackDispatchMutex;
 
 	unsigned int ObserverActiveCountOnThisThread(
+		const RISE::Implementation::FrameStore* store,
 		const RISE::IRenderObserver* observer )
 	{
 		unsigned int count = 0u;
 		for( ObserverCallbackFrame* frame = g_observerCallbackFrame;
 			frame; frame = frame->prior ) {
-			if( frame->observer == observer ) ++count;
+			if( frame->store == store && frame->observer == observer ) ++count;
 		}
 		return count;
 	}
@@ -1659,8 +1662,9 @@ namespace RISE
 			return plan;
 		}
 
-		// Snapshot the observer list under the mutex, then claim each
-		// callback under that same mutex immediately before invocation.
+		// Serialize raw-pointer observer callbacks across all FrameStores,
+		// snapshot this store's list, then claim each callback under the
+		// store mutex immediately before invocation.
 		//
 		// IMPORTANT — per-iteration recheck against observers_:
 		// the same-thread RemoveObserver path skips the wait-for-
@@ -1672,12 +1676,11 @@ namespace RISE
 		// iteration to verify the observer is still registered;
 		// remove-during-dispatch entries are silently skipped.
 		// Cross-thread removal waits on the claimed observer's own
-		// callback count.  An unrelated callback on the removing
-		// thread therefore cannot bypass the victim's lifetime gate.
-		//
-		// Cost: one mutex acquire/release per snapshot entry, which
-		// is negligible compared to the cost of an observer
-		// callback (encoder writes, UI signals, etc.).
+		// callback count. Global serialization is required because
+		// callbacks may synchronously remove and destroy other raw-pointer
+		// observers: allowing callbacks to overlap permits an unavoidable
+		// A-removes-B / B-removes-A wait cycle. Reentrant publication is
+		// rejected for the corresponding same-thread lifetime hazard.
 		//
 		// This protocol guarantees:
 		//   1. No recursive lock: observers can call AddObserver /
@@ -1686,10 +1689,15 @@ namespace RISE
 		//   3. No UAF on freed observers: per-iteration recheck.
 		//   4. Cross-thread RemoveObserver-then-destroy is safe: the
 		//      wait pairs with the removed observer's callback count.
-		// See L1 adversarial review P2 (rounds 2 and 3).
+		//   5. Same-observer and mutual-removal callbacks cannot overlap.
+		// See L1 adversarial review P2 (rounds 2, 3, and 29).
 		template <typename Fn>
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
+			if( g_observerCallbackFrame ) {
+				throw std::runtime_error("FrameStore observer dispatch is reentrant");
+			}
+			std::lock_guard<std::mutex> dispatchLock(g_observerCallbackDispatchMutex);
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
@@ -1707,7 +1715,7 @@ namespace RISE
 				}
 				if( !claimed ) continue;
 
-				ObserverCallbackFrame callbackFrame { obs,g_observerCallbackFrame };
+				ObserverCallbackFrame callbackFrame { this,obs,g_observerCallbackFrame };
 				g_observerCallbackFrame = &callbackFrame;
 				try {
 					fn( obs );
@@ -1763,10 +1771,11 @@ namespace RISE
 			// this observer.  Snapshot-only pointers are harmless: every
 			// dispatcher rechecks registration before it claims a call.
 			//
-			// Self-detach cannot wait for callbacks on this stack, but it
-			// must still drain concurrent callbacks on other threads.
+			// Self-detach cannot wait for its current callback. The callback
+			// frame is keyed by both store and observer so a callback on one
+			// store cannot exempt an active callback on another store.
 			const unsigned int localCallbacks =
-				ObserverActiveCountOnThisThread(observer);
+				ObserverActiveCountOnThisThread(this,observer);
 			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
 				const auto active = observerCallbacksInFlight_.find(observer);
 				return active == observerCallbacksInFlight_.end() ||
