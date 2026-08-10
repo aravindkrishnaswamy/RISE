@@ -610,7 +610,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 
 	// Shrink the film for the duration of the probe; restore on every exit
 	// path below.  Safe: the probe runs single-threaded inside the
-	// std::call_once selection, strictly BEFORE the real render's worker
+	// exclusive resolution selection, strictly BEFORE the real render's worker
 	// threads spawn (ResizeFilm's concurrency contract).
 	scenePriv->ResizeFilm( probeW, probeH, origAR );
 
@@ -1002,9 +1002,8 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 				});
 				gAutoResolutionWaits.erase(waitingFrom);
 			} else {
-				gAutoResolutionChanged.wait(lock,[this]() {
-					return !mResolutionInProgress || mResolutionComplete;
-				});
+				throw std::runtime_error(
+					"output_provenance_unavailable: Auto delegate resolution is concurrent");
 			}
 		}
 	}

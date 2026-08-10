@@ -17,7 +17,8 @@
 //    Phase 4 adds a render-time PROBE — a cheap pre-render of the
 //    *assembled* scene to pick the integrator per-scene.  The assembled
 //    scene only exists at `RasterizeScene` time, so the dispatcher
-//    defers building its delegate until then (guarded by std::call_once)
+//    defers building its delegate until then (guarded by an exclusive,
+//    fail-closed resolution coordinator)
 //    rather than at parse/construction.  The wrapper stores everything
 //    needed to build ANY of the three delegates and resolves exactly one
 //    lazily; Phase 4 replaces the body of `SelectIntegrator` with the

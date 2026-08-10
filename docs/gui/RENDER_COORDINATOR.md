@@ -138,7 +138,7 @@ compose:
 | Production render | GUI_ROADMAP §11 | `Stop()` the viewport (join thread), render synchronously, `Start()` | correct, but the stop/restart logic is hand-rolled per call site |
 | Asset/material thumbnail | [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md) C2, [APPROACHABILITY_FOUNDATION.md](APPROACHABILITY_FOUNDATION.md) A5 | "render thumbnails" / "queue them" | no queue exists; would call `RasterizeScene` on the live film/pool |
 | Node-graph preview | [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md) C2 | per-node live thumbnails on a "budget" | no budget mechanism; same pool collision |
-| Auto-router probe | [AUTO_RASTERIZER_DESIGN.md](../AUTO_RASTERIZER_DESIGN.md), [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D5 | `ResizeFilm`-down → probe → `ResizeFilm`-up **on the live film** | safe ONLY because it runs inside the render's own `call_once`, pre-fan-out ([AutoRasterizer.cpp:486-490, 538-540](../../src/Library/Rendering/AutoRasterizer.cpp)); unsafe as a generic pattern |
+| Auto-router probe | [AUTO_RASTERIZER_DESIGN.md](../AUTO_RASTERIZER_DESIGN.md), [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D5 | `ResizeFilm`-down → probe → `ResizeFilm`-up **on the live film** | safe ONLY because it runs inside the render's exclusive resolution coordinator, pre-fan-out ([AutoRasterizer.cpp:486-490, 538-540](../../src/Library/Rendering/AutoRasterizer.cpp)); unsafe as a generic pattern |
 | RMSE reference | [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D5, variance-measurement skill | offline, high-spp, denoise-off | a *long* full-scene render; must not collide with the viewport |
 | Agent (AI) render | [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md), [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) | render-control tools "stop and restart the viewport" | re-implements the production stop/restart; can be invoked from a non-UI thread |
 | External MCP render | [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) | "reject if busy" | a flat reject is wrong for a thumbnail but right for a second production render — the policy depends on *type*, not a global busy bit |
@@ -152,7 +152,7 @@ them with a single priority + admission policy.
 `AutoRasterizer`'s live-film `ResizeFilm` round-trip is *correct in its current
 home* and the review flagged it precisely so it is **not** copied as a generic
 thumbnail/preview architecture. It is safe only because it runs single-threaded
-inside the dispatcher's `std::call_once`, **strictly before** the real render's
+inside the dispatcher's exclusive resolution coordinator, **strictly before** the real render's
 worker threads spawn, and restores the dims before returning
 ([AutoRasterizer.cpp:486-490](../../src/Library/Rendering/AutoRasterizer.cpp)).
 A thumbnail or node preview that did the same thing while the viewport thread was
@@ -389,8 +389,8 @@ starve them — the v1 defect (finding #2).
 ### 3.4 The probe is not a slot — it is part of a render
 
 The auto-router Tier-2 probe is explicitly **not** an independently scheduled
-consumer. It runs inside the owning render's `EnsureResolved` /
-`std::call_once` window, single-threaded, before that render's worker fan-out
+consumer. It runs inside the owning render's exclusive `EnsureResolved`
+window, single-threaded, before that render's worker fan-out
 ([AutoRasterizer.h:18-26](../../src/Library/Rendering/AutoRasterizer.h),
 [AutoRasterizer.cpp:486-540](../../src/Library/Rendering/AutoRasterizer.cpp)).
 Because the coordinator already guarantees that render holds the slot exclusively
@@ -739,7 +739,7 @@ A thumbnail or node preview is, by definition, something the user wants
 *alongside* a live viewport — exactly when the render thread is **not** stopped.
 Borrowing the live film would tear it, and submitting the preview's tiles into
 the global pool while the viewport's tiles are also in it violates I1/I2. The
-probe gets away with it only because of its unique pre-fan-out `call_once`
+probe gets away with it only because of its unique pre-fan-out resolution
 position (§3.4), which a thumbnail can never occupy.
 
 ### 5.2 Isolated job = held `SceneSnapshot` + private film (acquire → render → release)
@@ -863,7 +863,7 @@ no others — both are single-actor (the resizer *is* the only renderer) and
 single-slot-exclusive, so neither needs an isolated snapshot:
 
 1. **The auto-router probe** (§3.4) — runs pre-fan-out inside its owning render's
-   `std::call_once`, single-threaded, strictly before that render's worker fan-out
+   exclusive resolution window, single-threaded, strictly before that render's worker fan-out
    ([AutoRasterizer.cpp:486-540](../../src/Library/Rendering/AutoRasterizer.cpp));
    keep as-is.
 2. **The interactive viewport's own scale-down** — `SceneEditController`'s

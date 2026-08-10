@@ -79,7 +79,8 @@ architecture (a wrapper IRasterizer is idiomatic).
 derives from `Implementation::Rasterizer` (the same base every concrete
 PT/BDPT/VCM rasterizer uses) and **resolves its delegate lazily at the first
 render-time entry** (`RasterizeScene` / `PredictTimeToRasterizeScene` /
-`RasterizeSceneAnimation`), guarded by `std::call_once`. It stores every input
+`RasterizeSceneAnimation`), guarded by an exclusive, fail-closed resolution
+coordinator. It stores every input
 needed to build *any* of the three delegates, runs `SelectIntegrator(scene)`
 once, builds exactly one concrete rasterizer via `BuildDelegate`, and forwards
 all `IRasterizer` calls to it.
@@ -104,7 +105,7 @@ Why this shape (vs. a parse-time switch inside `Job::SetAutoRasterizer`):
   the canonical per-integrator defaults. So `auto_rasterizer integrator pt` is
   *identical construction* to `pathtracing_pel_rasterizer`, not a parallel
   re-implementation — that is what makes the equivalence verification meaningful.
-- **`mutable mDelegate` + `std::once_flag`:** `RasterizeScene` is `const` per the
+- **`mutable mDelegate` + resolution coordinator state:** `RasterizeScene` is `const` per the
   `IRasterizer` contract, yet it is the genuine render-time hook (`AttachToScene`
   is **not** called by the Job render path). The base already uses `mutable` for
   OIDN state reached from these same const methods, so this matches precedent
@@ -424,7 +425,7 @@ re-parse, BVH rebuild, or any touch to the real output:
    (the only resolution knob — the rasterizer reads render dims from
    `IScene::GetFilm()`, not the camera or FrameStore). The original dims are
    restored on every exit path. Safe because the probe runs single-threaded
-   inside the `std::call_once` selection, strictly *before* the real render's
+   inside the exclusive resolution selection, strictly *before* the real render's
    workers spawn — exactly `ResizeFilm`'s concurrency contract.
 2. **spp** is set on a `mSamples->Clone()` (never the shared canonical sampler)
    via `SetNumSamples(cfg.spp)`.

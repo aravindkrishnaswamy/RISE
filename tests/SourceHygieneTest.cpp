@@ -734,6 +734,19 @@ int main()
 			return std::string(std::istreambuf_iterator<char>(input),
 				std::istreambuf_iterator<char>());
 		};
+		const fs::path autoCoordinatorSurfaces[] = {
+			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.h",
+			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.cpp",
+			repoRoot/"docs"/"AUTO_RASTERIZER_DESIGN.md",
+			repoRoot/"docs"/"gui"/"APPROACHABILITY_FOUNDATION.md",
+			repoRoot/"docs"/"gui"/"RENDER_COORDINATOR.md",
+			repoRoot/"docs"/"gui"/"SPECTRAL_DIFFERENTIATORS.md"
+		};
+		for( const fs::path& surface : autoCoordinatorSurfaces ) {
+			Check( slurp(surface).find("call_once") == std::string::npos,
+				"Auto resolution documentation names the fail-closed coordinator: "+
+				surface.filename().string() );
+		}
 		auto braceBody = []( const std::string& source, const std::string& marker ) {
 			const std::string code = StripCommentsPreservingLayout(source);
 			const std::size_t markerAt = code.find(marker);

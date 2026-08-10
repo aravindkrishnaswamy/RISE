@@ -152,7 +152,7 @@ fall back to commit-on-release?"). Concrete guidance for the swatch:
   **Route that thumbnail render through the `RenderCoordinator` as a `NodePreview`/`Thumbnail`-class isolated job**
   ([RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) §3.1, §5.2) — a *snapshot scene + private `IFilm`*, queued and
   preempted by interactive edits. **Do NOT copy the auto-router probe's live-film `ResizeFilm` round-trip for
-  this**: that pattern is safe *only* inside the probe's pre-fan-out `call_once` window and tears the live film
+  this**: that pattern is safe *only* inside the probe's pre-fan-out exclusive resolution window and tears the live film
   for any other caller ([RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) §1.3, §5.1, §5.5). The coordinator's
   isolated-job model is the correct general mechanism the roadmap's A3 spike resolves to.
 - **Shared vs platform:** the swatch/curve/prism *computation* (spectrum → XYZ → RGB, Sellmeier eval, Abbe,

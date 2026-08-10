@@ -323,6 +323,40 @@ private:
 	const IScene& scene_;
 };
 
+class CrossThreadSameAutoResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadSameAutoResolveOutput( AutoRasterizer& rasterizer, const IScene& scene ) :
+		rasterizer_(rasterizer), scene_(scene) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		attempted = true;
+		std::thread worker([this]() {
+			try {
+				rasterizer_.ResolveForFirePreflight(scene_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("resolution is concurrent") !=
+					std::string::npos;
+			}
+		});
+		worker.join();
+	}
+
+	bool attempted = false;
+	bool rejected = false;
+
+protected:
+	~CrossThreadSameAutoResolveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	const IScene& scene_;
+};
+
 class ResolutionBarrier
 {
 public:
@@ -2234,6 +2268,61 @@ static void TestResolutionCallbackReentryFailsClosed()
 	std::remove(path.c_str());
 }
 
+static void TestCrossThreadSameAutoResolutionCallbackFailsClosed()
+{
+	const std::string label =
+		"same-Auto resolution callback worker fails closed without joining a wait";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"cross_thread_same_auto_resolution") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	CrossThreadSameAutoResolveOutput* reentrant = rasterizer ?
+		new CrossThreadSameAutoResolveOutput(*rasterizer,*job->GetScene()) : nullptr;
+	if( !reentrant ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(reentrant);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: same-Auto worker callback exceeded the deadlock watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && reentrant->attempted && reentrant->rejected,
+		"the concurrent worker is rejected while the owning resolution completes: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
 static void TestResolutionCallbackCycleFailsClosed()
 {
 	const std::string label =
@@ -2312,7 +2401,7 @@ static void TestResolutionCallbackCycleFailsClosed()
 static void TestCrossThreadResolutionCycleFailsClosed()
 {
 	const std::string label =
-		"two resolver threads reject an Auto wait-for cycle without call_once deadlock";
+		"two resolver threads reject an Auto wait-for cycle without coordinator deadlock";
 	std::cout << "Testing " << label << std::endl;
 	IJobPriv* firstJob = nullptr;
 	IJobPriv* secondJob = nullptr;
@@ -3040,6 +3129,7 @@ int main()
 	TestSyncAndFrameStoreSwapAreSerialized();
 	TestSyncFailureReplaysWrapperTopology();
 	TestResolutionCallbackReentryFailsClosed();
+	TestCrossThreadSameAutoResolutionCallbackFailsClosed();
 	TestResolutionCallbackCycleFailsClosed();
 	TestCrossThreadResolutionCycleFailsClosed();
 	TestCrossThreadCallbackMutationFailsClosed();
