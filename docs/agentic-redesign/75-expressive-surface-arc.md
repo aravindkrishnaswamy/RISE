@@ -430,6 +430,84 @@ a >10-min foreground block) — hour-scale jobs are supervisor-owned
 disk state (outputs + logs) without the dead context; recorded in
 the process memory alongside the yield-law occurrences.
 
+**POST-ARC R1 (2026-08-09, `e666f72d`): the harness stops charging
+the model for teardown, and stops letting it buy an hour-long
+render.**  Trajectory forensic first (the arc's own discipline):
+`20260809T210034Z-79026660` (gemini-3.6-flash, psychedelic
+dragon+wizard) spent **20 sequential `remove_chunk` calls — 40 of 93
+records** — tearing down and rebuilding the wizard and the dragon
+piece by piece, each call a full LLM roundtrip against an ~83k-token
+prompt, then ended by issuing `render {imageMaxEdge:512}`.  Both are
+HARNESS affordances, not model error: `remove_chunk` took one target
+while its siblings (`insert_chunks`, `propose_patches`) were plural,
+and `imageMaxEdge` only downscaled the returned PNG — it never
+bounded render cost, so the omitted width/height rendered at authored
+film resolution and authored spp.  **A clean mechanism-law datapoint
+fell out of the same trajectory**: the render tool's description
+ALREADY told the model to use `quality:"draft"` for cheap looks
+(AgentChatCodecs.cpp) — measured **0/5** in this run, all five
+renders production.  Our own tool docs are advice; the law does not
+exempt them.  Three slices shipped:
+**R1a `remove_chunks`** — batched, all-or-nothing, ONE head bump /
+history entry / undo step / E4-gate mutation.  The plural NAME is
+half the mechanism (E4 already showed this model batches the moment
+the tool allows it).  Atomicity is delivered at the Job layer
+(resolve-all-then-erase-descending-then-one-re-derive), which makes
+intra-batch references need no dependency sort at all.
+**R1b render caps** — 256px long edge / 16 spp on agent-surface
+production beauty renders, with the absent-dims default (the actual
+trajectory failure) scaled to the cap rather than film res.  Eval
+grading renders keep full fidelity **structurally** (they construct
+params in C++ and never enter the RPC path), so no bypass flag
+exists to be misused.
+**R1c rasterizer allowlist** — a mid-slice user directive ("agents
+should never touch MLT; PT and VCM only") became a blocking gate at
+all eight agent-reachable paths to activating a rasterizer, pure
+allowlist (a NEW rasterizer kind is blocked by default AND fails a
+coverage test), state-vs-delta per E1 so user-authored MLT/BDPT/auto
+scenes stay editable and renderable, and **no escape parameter** —
+E1 shipped one because glow-only is a legitimate intent; this
+directive is categorical, and a flag is the habituation surface E1's
+stop rule watches.
+**INSTRUMENT CHANGE**: post-R1 trajectories are not comparable to
+earlier batches on removal-heavy or render-heavy sessions — teardown
+now costs one call instead of N, and no agent render can cost more
+than a bounded frame.  Turn counts and wall-clock both move.
+**Review record (three rounds, the loop working as designed):**
+round 1 (3 orthogonal lenses) found ONE P1 — the sample cap silently
+never fired on rasterizers reporting an unknown count (`-1 > 16` is
+false), so the entire honesty apparatus stayed mute on exactly the
+rasterizers that cannot be capped; every test fixture had used a
+PT-family rasterizer, so nothing caught it.  The lesson generalizes:
+verify a predicate is TOTAL, not merely correct.  Round 2 (2 fresh
+lenses) found no P1s but caught a **supervisor error**: a
+misdiagnosis that `AutoRasterizer` forwards the sample-count override
+(it does not — zero references to the pair) had propagated from a log
+line into a worker brief and then into a code comment as fact; the
+real cause of that test failure was a one-word assertion mismatch
+(`"could NOT be applied"` is not a substring of the unknown case's
+`"could NOT be verified or applied"`).  Fresh-reviewer discipline
+caught a false claim that had already been written down twice.
+Round 2 also found a TOCTOU in the integrator pin, replaced by a
+stateless allowlist.  A `propose_patch` **value-splice** bypass (chunk
+smuggled as raw bytes inside a param value, structurally invisible
+until serialize+reparse) was found by the R1c implementer against its
+own first draft and closed with a round-trip comparison.
+**Residuals, recorded not hidden:** on a non-cappable rasterizer the
+sample/mutation axis stays unbounded (resolution still capped, and
+the payload says so honestly); `compare_to_reference`'s render
+resolution is intentionally uncapped because RMSE requires matching
+dims and the reference is host-registered, never model-chosen;
+`auto_rasterizer`'s `probe TRUE` stays ungated (the dispatcher's own
+runtime choice on a user-authored chunk is not the agent selecting an
+integrator); and the widened verb-count scanner does not cover
+`tests/`, where one further stale count was found by hand.
+**Named next lever, unchanged and now the priority:** the E4-lite
+objectmap pixel-coverage presence check — the looking gap is still
+the gap, and R1 only removed the friction around it.
+**Named follow-on arc (user, 2026-08-09): creative lighting, with
+area lights as the centre of gravity** — sequenced AFTER E4-lite.
+
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
 the document metric is the census for absence; even sdf, qwen's

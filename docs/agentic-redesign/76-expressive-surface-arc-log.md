@@ -178,3 +178,52 @@
   sharpened at that step at least five times (the gallery "silent
   failure", the S2 qwen reach question, the S3b cozy attribution,
   the degenerate-turn diagnosis, the perfect-group causal trace).
+
+## 5. Post-arc R1 (2026-08-09) — process notes
+
+Three slices (`e666f72d`) driven by a trajectory forensic rather than a
+hypothesis; design + measurement record is
+[75-expressive-surface-arc.md](75-expressive-surface-arc.md) §7 "POST-ARC R1".
+What earned recording here:
+
+- **Read the trajectory before proposing the lever.**  The user asked for
+  bulk removal and "never do a full render"; the forensic supplied the
+  numbers that made both concrete (20 removal calls / 40 of 93 records;
+  `imageMaxEdge` bounding only the returned PNG, never the render) and
+  turned "never do a full render" from an instruction — the one form
+  measured to zero at every exposure — into a structural cap.  The same
+  run supplied a free mechanism-law datapoint: our own render tool
+  description already advised `quality:"draft"`, and it measured 0/5.
+- **Workers pushing back with evidence beat workers complying.**  Three
+  arbitrated instructions were refused on grounds and the refusals were
+  right: a rasterizer-in-batch test (structurally unreachable — rasterizer
+  chunks have no `name`; the shipped tool text already says they are
+  unremovable), a diagnostic-string fix (the string is built only after
+  the failure path has returned), and an assertion wording (production
+  emits a distinct, more precise phrase for the unknown case).  Briefs
+  should invite this explicitly; two of the three refutations corrected a
+  reviewer's or the supervisor's premise, not the code.
+- **Verify a predicate is TOTAL, not merely correct.**  The round-1 P1 was
+  a cap that worked for every value it was tested with and silently did
+  nothing for the sentinel (`-1 > 16` is false).  Every fixture had used a
+  PT-family rasterizer.
+- **A supervisor misdiagnosis propagated two hops before review caught
+  it.**  A log line ("delegating to 'pt'") became a claim that
+  `AutoRasterizer` forwards the sample-count override, which became a
+  worker brief, which became a code comment asserting it as fact — while
+  two OTHER comments in the same round said the opposite.  The real cause
+  was a one-word assertion mismatch.  Fresh reviewers reading the header
+  beat three parties reasoning from a log line.
+- **Don't run a gate concurrently with an editing worker.**  A clean
+  rebuild + full suite was launched while a fix worker was still editing;
+  mixed object state invalidated the run and cost a full cycle.  Sequence:
+  workers report → tree verified stable → gate runs alone.
+- **A scanner extension proved itself inside the same session.**  Four
+  stale verb-count comments survived because the hygiene scanner's scope
+  excluded the GUI trees; the widened scanner then caught a planted fifth
+  by file and line, and a hand sweep found a sixth in `tests/` — a scope
+  the scanner still does not cover (recorded residual).
+- **Splitting a commit is only worth it if the pieces are green.**  R1's
+  three slices interleave within the same functions and their tests
+  cross-reference; three commits would not have built independently, so
+  bisectability was better served by one documented commit.
