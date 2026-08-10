@@ -1334,13 +1334,29 @@ static void RunStopCancelsInFlightAgentRenderTest()
 //     Rasterize() via the shared progress hook, exactly like Stop()'s
 //     P2-C fix (RunStopCancelsInFlightAgentRenderTest above).
 //////////////////////////////////////////////////////////////////////
+// R1b (2026-08-09): this scene used to rely SOLELY on `samples 4096` to stay
+// slow enough for the GREEN side below (a render_cancel sent through the
+// AgentRpcDispatcher wire, i.e. the real `render{"async":true}` RPC path) to
+// catch it mid-flight.  The agent-surface samples cap (AgentSession::
+// kAgentSurfaceMaxSamples) now force-caps ANY agent-RPC-driven render with no
+// explicit `samples` down to 16spp -- see AgentRenderParams::fromAgentSurface's
+// doc -- so 4096 authored samples no longer reaches the rasterizer at all
+// through this specific test's RPC-driven submission (the OTHER, direct-C++
+// RenderAsync() heavy-scene test just above this one is UNAFFECTED: it never
+// goes through AgentRpcDispatcher, so fromAgentSurface stays false and its own
+// samples=4096 is honoured exactly as before).  Replaced the flat albedo with
+// an expensive perlin3d_painter (many octaves) so each SHADE stays costly
+// independent of spp/resolution -- neither of which this RPC path can any
+// longer be coaxed above the agent-surface cap.
 static const char* const kHeavyCancelScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"pathtracing_pel_rasterizer\n{\n\tsamples 4096\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
 	"film\n{\n\twidth 96\n\theight 96\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
-	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_lo\n\tcolor 0.2 0.2 0.2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_hi\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_albedo\n\tcolora pnt_lo\n\tcolorb pnt_hi\n\toctaves 1200\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
 	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
 	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
@@ -6176,6 +6192,446 @@ static void RunRefusalCauseAttributionTest()
 	std::printf( "=== (refusal-cause) refusals name the right cause: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// R1b (2026-08-09, docs/agentic-redesign/75-expressive-surface-arc.md):
+// agent-surface render resolution/sample caps -- see AgentRenderParams::
+// fromAgentSurface's doc for the full mechanism.  Every case here drives
+// the REAL "render" RPC verb through AgentRpcDispatcher (never a direct
+// C++ AgentRenderParams construction, which would leave fromAgentSurface
+// false and bypass the caps entirely -- see that field's doc for why
+// every OTHER test in this file, which DOES construct AgentRenderParams
+// directly, is deliberately unaffected by this arc).
+//////////////////////////////////////////////////////////////////////
+
+// A wide (2:1) film, well over kAgentSurfaceMaxRenderEdge (256) on its long
+// edge, with an authored sample count well over kAgentSurfaceMaxSamples
+// (16) -- so a PLAIN render{} (no width/height/samples at all) exercises
+// BOTH implicit agent-surface defaults in one fixture.  Cheap geometry (the
+// same lit sphere as kScene) keeps the CAPPED 256x128@16spp render fast
+// despite the large authored film -- that boundedness is exactly the
+// property this arc exists to guarantee.
+static const char* const kWideBigFilmScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 200\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// FIX 1 (P1, 2026-08-09, R1 fix round): same wide/big-authored-film shape as
+// kWideBigFilmScene, but the rasterizer is `mlt_rasterizer` instead of
+// `pathtracing_pel_rasterizer`.  `MLTRasterizer` (and its spectral subclass)
+// derive from `Rasterizer`, NOT `PixelBasedRasterizerHelper` (the ONLY class
+// in the tree that overrides Get/SetSampleCountOverride) and neither
+// overrides the pair -- confirmed by reading MLTRasterizer.h/.cpp -- so it
+// inherits IRasterizer's base-class defaults: GetSampleCountOverride()
+// always returns -1 ("unknown/unsupported"), and SetSampleCountOverride()
+// always returns false.  This exercises the widened force-cap gate
+// (`origSamples < 0 || origSamples > kAgentSurfaceMaxSamples`) via the
+// UNKNOWN branch rather than the known-too-high branch that kWideBigFilmScene
+// already covers.  Using MLT in a test scene fixture is explicitly allowed
+// here (a separate upcoming slice blocks AGENTS from CREATING MLT
+// rasterizers, but an agent must still be able to honestly render a
+// user-authored scene that already contains one).  `bootstrap_samples`,
+// `chains`, and `mutations_per_pixel` are all pinned to their cheapest
+// meaningful values (totalMutations = mutations_per_pixel * width * height,
+// so mutations_per_pixel is the one knob that matters at the capped 256x128
+// resolution) to keep the render itself fast despite the wide authored film.
+//
+// FIX B (P2, round-3 fix, 2026-08-09): an EARLIER draft of this comment
+// claimed an `auto_rasterizer`-based twin of this fixture was "WITHDRAWN"
+// because "AutoRasterizer always resolves to and delegates through a real PT
+// rasterizer, so the sample-count override IS honoured via the delegate and
+// the cap applies normally; it is not an unknown/-1 case".  That claim is
+// FALSE and was supervisor-verified false: `grep -c SampleCountOverride
+// src/Library/Rendering/AutoRasterizer.{h,cpp}` returns 0 for BOTH files.
+// AutoRasterizer forwards an enumerated subset of IRasterizer and does NOT
+// forward the Get/SetSampleCountOverride pair, so -- exactly like
+// MLTRasterizer -- it inherits the base -1/false regardless of which
+// integrator it delegates to internally.  AutoRasterizer belongs in the SAME
+// unknown/unsupported bucket as MLT, not a separate honoured-override case.
+// (The real reason the original auto-based attempt at this test failed was
+// only an assertion-string mismatch: the unknown-case message is "could NOT
+// be verified or applied", which does not contain the substring "could NOT
+// be applied" that assertion was checking for.)  See kWideBigFilmSceneAuto
+// and case (f2) below, which now exercise AutoRasterizer through this exact
+// branch alongside MLT.
+static const char* const kWideBigFilmSceneMLT =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"mlt_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tbootstrap_samples 8\n\tchains 1\n\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// FIX B (P2, round-3 fix, 2026-08-09): the AutoRasterizer twin of
+// kWideBigFilmSceneMLT -- see the corrected comment above kWideBigFilmSceneMLT
+// for why AutoRasterizer belongs in the SAME unknown/unsupported
+// sample-count bucket as MLT (it inherits IRasterizer's base -1/false
+// Get/SetSampleCountOverride defaults; it does not forward the pair to
+// whichever integrator it delegates to).  `integrator pt` pins the
+// dispatcher's choice so the render is deterministic, and `samples` is
+// pinned LOW (4) -- unlike MLT, whose cost is bounded by
+// mutations_per_pixel regardless of the sample-override outcome,
+// AutoRasterizer's internal PT delegate spends wall-clock directly
+// proportional to `samples`, and since the override attempt on this
+// fixture is expected to fail (unsupported), the render actually runs at
+// the raw authored count -- so it must be authored cheap up front.
+static const char* const kWideBigFilmSceneAuto =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"auto_rasterizer\n{\n\tsamples 4\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+static std::string MakeR1bRenderReq( double id, const std::string& method, const JsonValue& params )
+{
+	JsonValue r = JsonValue::MakeObject();
+	r.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+	r.set( "id", JsonValue::MakeNumber( id ) );
+	r.set( "method", JsonValue::MakeString( method ) );
+	r.set( "params", params );
+	return JsonSerialize( r );
+}
+
+static void RunAgentSurfaceRenderCapTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: R1b agent-surface render resolution/sample caps ===\n" );
+
+	// --- (a) explicit width/height 512x512 -> clamped to 256x256, fact reported ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_explicit_dims.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(a): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(a): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "width",  JsonValue::MakeNumber( 512.0 ) );
+			params.set( "height", JsonValue::MakeNumber( 512.0 ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", params ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(a): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(a): render succeeded" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 256.0,
+			       "R1b(a) MONEY: an explicit 512x512 request renders at 256x256 (clamped, not rejected)" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(a) MONEY: the result carries an agentRenderCap fact" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(a): resolutionCapped is true" );
+			Check( cap.get( "maxEdge" ).asNumber( -1 ) == 256.0, "R1b(a): maxEdge echoes 256" );
+			Check( cap.get( "requestedWidth" ).asNumber( -1 ) == 512.0 && cap.get( "requestedHeight" ).asNumber( -1 ) == 512.0,
+			       "R1b(a): the fact echoes the caller's ORIGINAL (pre-clamp) 512x512 request" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (b) absent width/height on a wide, oversized authored Film ->
+	//     scaled to fit 256px on the long edge, aspect preserved; absent
+	//     samples on an authored 200spp scene -> capped to 16.  Both facts
+	//     land in ONE render.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_absent_dims.RISEscene", kWideBigFilmScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(b): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(b): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(b): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(b): render succeeded" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(b) MONEY: no width/height requested renders at the scene's own 2:1 aspect scaled to a 256px "
+			       "long edge (256x128), NEVER the scene's full authored 2048x1024" );
+			Check( result.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(b) MONEY: no samples requested on a 200spp-authored scene renders at 16spp (capped), not the full authored count" );
+			Check( result.get( "samplesOverridden" ).asBool(), "R1b(b): samplesOverridden is honestly true (the cap WAS applied)" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(b) MONEY: the result carries an agentRenderCap fact for the ABSENT-value defaults" );
+			Check( cap.get( "resolutionCapped" ).asBool() && cap.get( "samplesCapped" ).asBool(),
+			       "R1b(b): both resolutionCapped and samplesCapped are true" );
+			Check( cap.get( "filmWidth" ).asNumber( -1 ) == 2048.0 && cap.get( "filmHeight" ).asNumber( -1 ) == 1024.0,
+			       "R1b(b): the fact names the scene's UNCAPPED authored Film dims (2048x1024), so the caller can see what it did NOT get" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (c) explicit samples:64 -> clamped to 16, fact reported ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_explicit_samples.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(c): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(c): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "samples", JsonValue::MakeNumber( 64.0 ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", params ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(c): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(c): render succeeded" );
+			Check( result.get( "samplesOverridden" ).asBool() && result.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(c) MONEY: an explicit samples:64 request honestly overrides to 16 (clamped), not 64" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject() && cap.get( "samplesCapped" ).asBool(),
+			       "R1b(c): the result carries an agentRenderCap fact for the explicit samples clamp" );
+			Check( cap.get( "requestedSamples" ).asNumber( -1 ) == 64.0,
+			       "R1b(c): the fact echoes the caller's ORIGINAL (pre-clamp) samples:64 request" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (d) draft and objectmap renders are UNTOUCHED: no agentRenderCap
+	//     fact, and neither one's own pre-existing fixed fidelity changes.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_draft_objectmap.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(d): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(d): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+
+			JsonValue draftParams = JsonValue::MakeObject();
+			draftParams.set( "quality", JsonValue::MakeString( "draft" ) );
+			const std::string draftResp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", draftParams ) );
+			JsonValue draftEnv; std::string derr;
+			Check( JsonParse( draftResp, draftEnv, derr ), "R1b(d): draft response parses" );
+			const JsonValue& draftResult = draftEnv.get( "result" );
+			Check( draftResult.get( "ok" ).asBool(), "R1b(d): draft render succeeded" );
+			Check( !draftResult.has( "agentRenderCap" ),
+			       "R1b(d) MONEY: a draft render carries NO agentRenderCap fact (untouched by R1b -- draft has its own fixed cap)" );
+			Check( draftResult.get( "renderMode" ).asString() == "draft", "R1b(d): renderMode is draft" );
+
+			JsonValue omParams = JsonValue::MakeObject();
+			omParams.set( "mode", JsonValue::MakeString( "objectmap" ) );
+			const std::string omResp = rpc.HandleLine( MakeR1bRenderReq( 2.0, "render", omParams ) );
+			JsonValue omEnv; std::string oerr;
+			Check( JsonParse( omResp, omEnv, oerr ), "R1b(d): objectmap response parses" );
+			const JsonValue& omResult = omEnv.get( "result" );
+			Check( omResult.get( "ok" ).asBool(), "R1b(d): objectmap render succeeded" );
+			Check( !omResult.has( "agentRenderCap" ),
+			       "R1b(d) MONEY: an objectmap render carries NO agentRenderCap fact (diagnostic mode, untouched by R1b)" );
+			Check( omResult.get( "width" ).asNumber( -1 ) == 24.0 && omResult.get( "height" ).asNumber( -1 ) == 24.0,
+			       "R1b(d): objectmap with no explicit dims still renders at the scene's authored 24x24 -- the RESOLUTION "
+			       "cap only applies to BEAUTY production renders, never a diagnostic mode" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (e) async + pinned paths are capped IDENTICALLY to the sync path ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_async_pinned.RISEscene", kWideBigFilmScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(e): scene loads" );
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+		std::unique_ptr<AgentSession> ownedSession = AgentSession::WrapJob( pJob );
+		Check( ownedSession != nullptr, "R1b(e): session wraps" );
+		if( ownedSession )
+		{
+			ownedSession->AttachController( controller );
+			AgentSession* session = ownedSession.get();
+			AgentRpcDispatcher rpc( std::move( ownedSession ) );
+
+			// async, no dims/samples, no pinned.
+			JsonValue asyncParams = JsonValue::MakeObject();
+			asyncParams.set( "async", JsonValue::MakeBool( true ) );
+			const std::string submitResp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", asyncParams ) );
+			JsonValue submitEnv; std::string serr;
+			Check( JsonParse( submitResp, submitEnv, serr ), "R1b(e): async submit response parses" );
+			const double jobId = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+			Check( jobId > 0.0, "R1b(e): async submit accepted" );
+
+			bool waited = false;
+			JsonValue waitEnv;
+			RunWatchdogged( "R1b(e) render_wait for the capped async render", 10000, [&]() {
+				for( int i = 0; i < 200; ++i ) {
+					JsonValue waitParams = JsonValue::MakeObject();
+					waitParams.set( "renderJobId", JsonValue::MakeNumber( jobId ) );
+					waitParams.set( "timeoutMs", JsonValue::MakeNumber( 100.0 ) );
+					const std::string waitResp = rpc.HandleLine( MakeR1bRenderReq( 2.0, "render_wait", waitParams ) );
+					JsonValue thisWaitEnv; std::string werr;
+					if( !JsonParse( waitResp, thisWaitEnv, werr ) ) continue;
+					if( thisWaitEnv.get( "result" ).get( "completed" ).asBool() ) { waitEnv = thisWaitEnv; waited = true; break; }
+				}
+			} );
+			Check( waited, "R1b(e): the async render completed within the watchdog window" );
+			if( waited )
+			{
+				const JsonValue& asyncResult = waitEnv.get( "result" ).get( "result" );
+				Check( asyncResult.get( "ok" ).asBool(), "R1b(e): async render succeeded" );
+				Check( asyncResult.get( "width" ).asNumber( -1 ) == 256.0 && asyncResult.get( "height" ).asNumber( -1 ) == 128.0,
+				       "R1b(e) MONEY: the ASYNC path is capped IDENTICALLY to sync -- 256x128, never the full 2048x1024" );
+				Check( asyncResult.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+				       "R1b(e) MONEY: the ASYNC path's samples cap matches sync -- 16spp, never the authored 200" );
+				const JsonValue& cap = asyncResult.get( "agentRenderCap" );
+				Check( cap.isObject() && cap.get( "resolutionCapped" ).asBool() && cap.get( "samplesCapped" ).asBool(),
+				       "R1b(e): render_wait's echoed result carries the SAME agentRenderCap fact an equivalent sync render would" );
+			}
+
+			// pinned, no dims/samples -- same caps apply.
+			JsonValue pinnedParams = JsonValue::MakeObject();
+			pinnedParams.set( "pinned", JsonValue::MakeBool( true ) );
+			const std::string pinnedResp = rpc.HandleLine( MakeR1bRenderReq( 3.0, "render", pinnedParams ) );
+			JsonValue pinnedEnv; std::string perr;
+			Check( JsonParse( pinnedResp, pinnedEnv, perr ), "R1b(e): pinned sync response parses" );
+			const JsonValue& pinnedResult = pinnedEnv.get( "result" );
+			Check( pinnedResult.get( "ok" ).asBool(), "R1b(e): pinned render succeeded" );
+			Check( pinnedResult.get( "width" ).asNumber( -1 ) == 256.0 && pinnedResult.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(e) MONEY: a PINNED render is capped IDENTICALLY too -- 256x128, never the full 2048x1024" );
+			Check( pinnedResult.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(e): a pinned render's samples cap matches -- 16spp" );
+
+			session->AttachController( nullptr );
+		}
+		delete controller;
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (f) FIX 1 (P1, 2026-08-09): the implicit force-cap gate must also
+	//     fire when the active rasterizer's sample count is UNKNOWN
+	//     (GetSampleCountOverride() == -1), not just when it's known and
+	//     too high.  `mlt_rasterizer` (MLTRasterizer derives from
+	//     Rasterizer, not PixelBasedRasterizerHelper, and does not override
+	//     the Get/SetSampleCountOverride pair) always reports -1 and always
+	//     refuses SetSampleCountOverride -- before this fix, the old gate
+	//     (`origSamples > kAgentSurfaceMaxSamples`) was false for -1, so the
+	//     cap was never even ATTEMPTED and no honesty note fired at all.  A
+	//     plain render{} (no samples) on this MLT scene must: attempt the
+	//     cap, report honestly that it could NOT be applied (distinct
+	//     unknown-case wording, not the scene's authored count), still
+	//     render successfully, and still get its RESOLUTION capped (that
+	//     axis is independent of the sample-count override protocol).
+	//     See (f2) below for the `auto_rasterizer` twin of this exact case
+	//     (FIX B, round-3 fix, 2026-08-09) -- AutoRasterizer belongs in this
+	//     same unknown/unsupported bucket, not a separate honoured-override
+	//     one (see the corrected comment above kWideBigFilmSceneMLT).
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_unknown_samples_mlt.RISEscene", kWideBigFilmSceneMLT );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(f): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(f): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(f): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(f) MONEY: an unknown-sample-count rasterizer (mlt_rasterizer) still renders ok:true" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(f) MONEY: resolution is still capped to 256 on its long edge -- independent of the sample-count axis" );
+			Check( !result.get( "samplesOverridden" ).asBool(),
+			       "R1b(f): samplesOverridden is honestly FALSE -- the cap was attempted but could not be applied" );
+			const std::string msg = result.get( "message" ).asString();
+			// The unknown-count (-1) branch's actual wording, in
+			// AgentSession.cpp's `agentSamplesForceCapAttempted` handling
+			// (the `agentSamplesCapOrigValue < 0` arm), is "could NOT be
+			// verified or applied" -- distinct from the known-too-high
+			// arm's "could NOT be applied".  Assert against the wording
+			// production actually emits for THIS branch.
+			Check( msg.find( "could NOT be verified or applied" ) != std::string::npos,
+			       "R1b(f) MONEY: the result message honestly reports the cap could NOT be verified or applied (never silent)" );
+			Check( msg.find( "does not report its sample count" ) != std::string::npos,
+			       "R1b(f) MONEY: the unknown-case wording is distinct from the known-too-high wording (never prints a bogus \"-1\" authored count)" );
+			Check( msg.find( "authored sample count (-1)" ) == std::string::npos,
+			       "R1b(f): the message never prints the raw -1 sentinel as if it were a real authored count" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(f): the result still carries an agentRenderCap fact (resolution axis capped)" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(f): resolutionCapped is true" );
+			Check( !cap.get( "samplesCapped" ).asBool(),
+			       "R1b(f): samplesCapped is honestly false -- the sample axis cap did not actually land" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (f2) FIX B (P2, round-3 fix, 2026-08-09): the `auto_rasterizer`
+	//     twin of (f) -- see kWideBigFilmSceneAuto's doc and the corrected
+	//     comment above kWideBigFilmSceneMLT for why AutoRasterizer belongs
+	//     in the SAME unknown/unsupported sample-count bucket as MLT.  Same
+	//     assertions as (f), on the auto-rasterizer fixture; the fixture's
+	//     low authored `samples 4` keeps this cheap even though the
+	//     override attempt is expected to fail and the render actually runs
+	//     at the raw authored count.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_unknown_samples_auto.RISEscene", kWideBigFilmSceneAuto );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(f2): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(f2): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(f2): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(f2) MONEY: an unknown-sample-count rasterizer (auto_rasterizer) still renders ok:true" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(f2) MONEY: resolution is still capped to 256 on its long edge -- independent of the sample-count axis" );
+			Check( !result.get( "samplesOverridden" ).asBool(),
+			       "R1b(f2): samplesOverridden is honestly FALSE -- the cap was attempted but could not be applied" );
+			const std::string msg = result.get( "message" ).asString();
+			Check( msg.find( "could NOT be verified or applied" ) != std::string::npos,
+			       "R1b(f2) MONEY: the result message honestly reports the cap could NOT be verified or applied (never silent) -- "
+			       "AutoRasterizer takes the SAME unknown-case branch MLT does" );
+			Check( msg.find( "does not report its sample count" ) != std::string::npos,
+			       "R1b(f2) MONEY: the unknown-case wording is distinct from the known-too-high wording (never prints a bogus \"-1\" authored count)" );
+			Check( msg.find( "authored sample count (-1)" ) == std::string::npos,
+			       "R1b(f2): the message never prints the raw -1 sentinel as if it were a real authored count" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(f2): the result still carries an agentRenderCap fact (resolution axis capped)" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(f2): resolutionCapped is true" );
+			Check( !cap.get( "samplesCapped" ).asBool(),
+			       "R1b(f2): samplesCapped is honestly false -- the sample axis cap did not actually land" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== R1b agent-surface render caps: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -6224,6 +6680,7 @@ int main()
 	RunEphemeralGuardCtorWindowTest();
 	RunRefusalCauseAttributionTest();
 	RunPinnedFieldNotStaleAfterCompletionTest();
+	RunAgentSurfaceRenderCapTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

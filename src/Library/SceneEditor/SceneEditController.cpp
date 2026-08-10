@@ -5332,6 +5332,301 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	return r;
 }
 
+// R1a (2026-08-09, batched remove_chunks): split a '\n'-packed AgentProposal list field (see AgentProposal's
+// doc -- a RemoveChunks proposal packs its N target names into `target` and its N kinds into `entityKind`)
+// back into per-element Strings.  Deliberately preserves EMPTY entries: an empty kind element means "no kind
+// narrowing" for that target and must keep its positional alignment with the target list, so this is a plain
+// split on every separator, never a "skip blanks" tokenizer.  An empty input yields an empty vector.
+static void SplitPackedProposalList_( const String& packed, std::vector<String>& out )
+{
+	out.clear();
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( packed.size() <= 1 ) return;
+	const std::string text( packed.c_str() );
+	std::size_t at = 0;
+	for( ;; )
+	{
+		const std::size_t nl = text.find( '\n', at );
+		const std::string piece = text.substr( at, ( nl == std::string::npos ) ? std::string::npos : nl - at );
+		out.push_back( String( piece.c_str() ) );
+		if( nl == std::string::npos ) break;
+		at = nl + 1;
+	}
+}
+
+// R1a (2026-08-09, batched remove_chunks): the ATOMIC batch remove.  Structurally the SAME critical section
+// ApplyAgentChunkCrud_ runs (mTxnOpen refusal -> cancel-and-park under mMutex -> pre-flight -> conflict gate ->
+// ONE Job call -> rebind -> dirty -> ONE history push -> epoch bump -> kick), deliberately written out here
+// rather than folded into that helper: the batch takes a LIST (not one `a`/`b` pair), captures a WHOLE-document
+// undo payload (not a per-chunk bytes+index capture), and pushes a DIFFERENT history op -- a shared four-way
+// branch would obscure both paths.  Everything that IS shared -- the atomic resolve-then-erase, the
+// intra-batch reference behaviour, the all-or-nothing refusal -- lives one level down in
+// Job::ApplyCstRemoveChunks, so the two verbs cannot drift on the semantics that matter.
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunksCrud_(
+	const std::vector<String>& targets,
+	const std::vector<String>& kinds,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent batch chunk remove refused while an editor transaction/gesture is open." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	if( targets.empty() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "targets must be non-empty" );
+		return r;
+	}
+
+	// Optimistic-concurrency CONFLICT precondition, under the lock -- identical rule and wording to
+	// ApplyAgentChunkCrud_'s (a stale batch must never touch the Document).
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// Flatten the (target, kind) lists into the C arrays the Job primitive takes.  `kinds` may be shorter
+	// than `targets` (or carry empty entries) -- both mean "no kind narrowing" for that element, matching
+	// the singular verb's own empty-kind convention.
+	std::vector<std::string> targetStore, kindStore;
+	targetStore.reserve( targets.size() );
+	kindStore.reserve( targets.size() );
+	std::string displayList;      // comma-joined, for the result + the history record's label
+	std::string redoLines;        // "kind\tname" per line, for the history record's Redo descriptor
+	for( std::size_t i = 0; i < targets.size(); ++i )
+	{
+		// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+		targetStore.push_back( targets[i].size() > 1 ? std::string( targets[i].c_str() ) : std::string() );
+		const bool haveKind = ( i < kinds.size() && kinds[i].size() > 1 );
+		kindStore.push_back( haveKind ? std::string( kinds[i].c_str() ) : std::string() );
+		if( i ) { displayList += ", "; redoLines += '\n'; }
+		displayList += targetStore.back();
+		redoLines   += kindStore.back();
+		redoLines   += '\t';
+		redoLines   += targetStore.back();
+	}
+	std::vector<const char*> targetPtrs, kindPtrs;
+	targetPtrs.reserve( targetStore.size() );
+	kindPtrs.reserve( kindStore.size() );
+	for( std::size_t i = 0; i < targetStore.size(); ++i )
+	{
+		targetPtrs.push_back( targetStore[i].c_str() );
+		kindPtrs.push_back( kindStore[i].empty() ? nullptr : kindStore[i].c_str() );
+	}
+
+	// R1a UNDO capture: the byte-exact serialization of the Document as it stands RIGHT NOW, before the
+	// erase -- taken under this same mMutex hold as the erase itself, so there is no TOCTOU.  This is the
+	// whole undo payload (see SceneEdit::AgentRemoveChunks' doc for why the batch records the document
+	// rather than N per-chunk bytes+index captures).  Also note, for the history record's
+	// `restoreActiveRasterizer` inverse, whether ANY target is a `*_rasterizer` chunk -- computed from the
+	// PRE-erase Document, the only place that answer exists.
+	//! FIX 3 (P2, 2026-08-09 R1 fix round): this re-derives a SUBSET of `Job.cpp`'s (file-local, static)
+	//! `CstResolveRemoveTarget_` resolution rules -- a plain `DocFindByNameAnyRole` with `uniqueFallback=false`
+	//! -- rather than reusing that shared resolver, because the resolver isn't exposed outside Job.cpp and
+	//! this is a read-only PRE-erase lookup for the undo record's `restoreActiveRasterizer` inverse, not a
+	//! removal decision itself.  This CANNOT diverge from `CstResolveRemoveTarget_` today: every call site here
+	//! passes empty per-target `kinds` (bare names only, see targetStore/kindStore above), and a `*_rasterizer`
+	//! chunk is never `unnamedRepeatable` nor camera-positional, so the resolver's extra unique-fallback /
+	//! ambiguity-refusal machinery never engages for a rasterizer lookup either way.  DO NOT let that stay
+	//! true by accident: if `remove_chunks`'s per-target `kinds` ever become non-empty (kind narrowing wired
+	//! through to this verb), this lookup must be re-audited against `CstResolveRemoveTarget_`'s current rules
+	//! -- or replaced by a shared resolver -- before it can be trusted again.
+	std::string priorDocText;
+	bool anyWasRasterizer = false;
+	if( const RISE::Cst::Document* doc = mJob.GetCstDocument() )
+	{
+		priorDocText = RISE::Cst::SerializeCst( *doc );
+		for( std::size_t i = 0; i < targetStore.size(); ++i )
+		{
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+				*doc, targetStore[i], nullptr, kindStore[i], /*uniqueFallback*/ false );
+			if( id == 0 ) continue;
+			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+			if( !chunk ) continue;
+			const std::string& role = chunk->role;
+			if( role.size() > 11 && role.compare( role.size() - 11, 11, "_rasterizer" ) == 0 )
+				{ anyWasRasterizer = true; break; }
+		}
+	}
+
+	char kwBuf[1024];  kwBuf[0]   = '\0';
+	char diagBuf[512]; diagBuf[0] = '\0';
+	int  failIndex = -1;
+	const int code = mJob.ApplyCstRemoveChunks( &targetPtrs[0], &kindPtrs[0],
+	                                            static_cast<int>( targetPtrs.size() ),
+	                                            kwBuf, sizeof( kwBuf ),
+	                                            diagBuf, sizeof( diagBuf ), &failIndex );
+	r.chunkKeyword = String( kwBuf );            // '\n'-joined resolved keywords, one per INPUT target
+	r.chunkName    = String( displayList.c_str() );
+
+	// A chunk CRUD that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's cached
+	// pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	r.rawCode = ( code < 0 ) ? 0 : code;
+	switch( code )
+	{
+		case 2:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = String( "chunks removed via a single full re-derive (Scene + managers were replaced)" );
+			break;
+		case 3:
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			r.message = String( "batch remove NOT a clean success: the Document was mutated and the live managers were "
+			                    "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			break;
+		case -1:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = "batch remove rejected (NOTHING was removed): target";
+			if( failIndex >= 0 && failIndex < static_cast<int>( targetStore.size() ) )
+				m += " '" + targetStore[static_cast<std::size_t>( failIndex )] + "'";
+			m += diagBuf[0] ? std::string( " -- " ) + diagBuf : std::string( " was not found" );
+			m += " -- head unchanged";
+			r.message = String( m.c_str() );
+			break;
+		}
+		case -2:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = "batch remove rejected (NOTHING was removed): target";
+			if( failIndex >= 0 && failIndex < static_cast<int>( targetStore.size() ) )
+				m += " '" + targetStore[static_cast<std::size_t>( failIndex )] + "'";
+			m += " is ambiguous -- pass a `kind` for it";
+			if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
+			r.message = String( m.c_str() );
+			break;
+		}
+		case 0:
+		default:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			// Same honest two-cause wording the singular verb uses, restated for a batch: with EVERY target
+			// erased before the single derive ran, an intra-batch reference can NOT be the cause here -- so
+			// the referrer, if there is one, is necessarily OUTSIDE the batch.
+			std::string m = "batch remove rejected (NOTHING was removed): the remaining document would not derive "
+			                "(one of the targets is likely still REFERENCED by a chunk OUTSIDE this batch, or the "
+			                "remaining document no longer derives in order -- read_document and validate to inspect) "
+			                "-- head unchanged";
+			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			r.message = String( m.c_str() );
+			break;
+		}
+	}
+
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	if( code == 2 || code == 3 )
+	{
+		// Empty name -> the boolean CST-head dirty channel (the batch has no single addressable entity).
+		mEditor.MarkCstHeadDirty( "", nullptr );
+
+		// ONE history record for the WHOLE batch -- the headline property of this verb (one Cmd-Z restores
+		// everything).  A capture failure (no retained Document at capture time) should be impossible here:
+		// the capture ran under this same lock hold against the SAME Document the erase just mutated.  A
+		// defensive skip-with-log guards against ever pushing an empty, un-restorable payload.
+		if( !priorDocText.empty() )
+		{
+			mEditor.PushAgentRemoveChunksEdit( String( displayList.c_str() ),
+			                                   String( priorDocText.c_str() ),
+			                                   String( redoLines.c_str() ),
+			                                   anyWasRasterizer );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent batch chunk remove of `%s` applied (code %d) but the prior-document "
+				"capture was empty -- NO undo history record was pushed for this batch (should not happen: the "
+				"capture ran under the same lock hold as the erase).",
+				displayList.c_str(), code );
+		}
+
+		// The entity set changed -- bump the epoch live GUI outliners cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunks(
+	const std::vector<String>& targets,
+	const std::vector<String>& kinds,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// Latched-vs-transient split (C4) and the current-head report (C3) -- see
+			// ApplyAgentInsertChunk for the full rationale; identical here.
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		r = ApplyAgentRemoveChunksCrud_( targets, kinds, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Secure-MCP slice 5a: proposal staging + owner-approval state machine.
 //
@@ -5545,7 +5840,8 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	// against the head as it was then -- it cannot see this.
 	//
 	// Only ParamEdit and InsertChunk proposals can create this construct
-	// (RemoveChunk cannot introduce a new binding).  LOCK DISCIPLINE:
+	// (RemoveChunk -- and R1a's batch RemoveChunks -- cannot introduce a
+	// new binding; the E1 gate is creation-only).  LOCK DISCIPLINE:
 	// ReadAgentSceneSnapshot takes mMutex itself for a brief, non-
 	// reentrant read and releases before returning -- called here with
 	// ONLY mRenderAdmissionMutex held (a DIFFERENT, recursive mutex; see
@@ -5565,12 +5861,32 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 		ReadAgentSceneSnapshot( hasDoc, headText, headVer );
 		if( hasDoc )
 		{
-			const std::string clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
+			std::string clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
 				? RISE::Agent::CheckNonSamplingEmitterGateForPatch( headText,
 					std::string( snapshot.target.c_str() ), std::string( snapshot.entityKind.c_str() ),
 					std::string( snapshot.param.c_str() ), std::string( snapshot.value.c_str() ) )
 				: RISE::Agent::CheckNonSamplingEmitterGateForInsert( headText,
 					std::string( snapshot.chunkText.c_str() ) );
+			// R1c (2026-08-09, agent rasterizer allowlist): the SECOND re-check,
+			// for the SAME reason E1's exists and on the SAME two proposal kinds
+			// (RemoveChunk / RemoveChunks cannot introduce or re-activate a
+			// rasterizer -- a rasterizer chunk declares no `name`, so neither
+			// remove verb can even resolve one).  A proposal staged BEFORE this
+			// gate shipped, or staged while its own arm was innocent (an
+			// auto_rasterizer that was not yet pinned to bdpt when the world
+			// moved underneath it), must not slip through on approval.  Its
+			// arms are pure functions over `headText` with no derive at all,
+			// so the lock discipline documented above for the E1 pair applies
+			// unchanged and this adds no controller re-entry.
+			if( clause.empty() )
+			{
+				clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
+					? RISE::Agent::CheckRasterizerAllowlistGateForPatch( headText,
+						std::string( snapshot.target.c_str() ), std::string( snapshot.entityKind.c_str() ),
+						std::string( snapshot.param.c_str() ), std::string( snapshot.value.c_str() ) )
+					: RISE::Agent::CheckRasterizerAllowlistGateForInsert(
+						std::string( snapshot.chunkText.c_str() ) );
+			}
 			if( !clause.empty() )
 			{
 				gateRefused    = true;
@@ -5597,6 +5913,18 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 			case AgentProposalKind::RemoveChunk:
 				cr = ApplyAgentRemoveChunk( snapshot.target, snapshot.entityKind, &snapshot.baseVersion );
 				break;
+			case AgentProposalKind::RemoveChunks:
+			{
+				// R1a (2026-08-09): ONE proposal, WHOLE batch -- split the '\n'-packed target/kind lists
+				// back apart (see AgentProposal's doc) and replay through the ATOMIC batch verb, so an
+				// approval lands exactly the all-or-nothing edit the agent proposed rather than a partial
+				// one it never asked for.
+				std::vector<String> batchTargets, batchKinds;
+				SplitPackedProposalList_( snapshot.target,     batchTargets );
+				SplitPackedProposalList_( snapshot.entityKind, batchKinds );
+				cr = ApplyAgentRemoveChunks( batchTargets, batchKinds, &snapshot.baseVersion );
+				break;
+			}
 		}
 	}
 

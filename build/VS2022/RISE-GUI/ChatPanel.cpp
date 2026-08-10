@@ -297,7 +297,7 @@ namespace
     // Sum = 2250 ms across the four gaps between five attempts.
     const int kEditRetryBackoffMs[] = { 150, 300, 600, 1200 };
 
-    // The FIVE mutating verbs whose results carry the `applied` +
+    // The SIX mutating verbs whose results carry the `applied` +
     // `retriable` pair the gate below reads -- exactly the set
     // AgentRpc.cpp's IsProposeSafeVerb enumerates, and exactly the set
     // whose result JSON is built by ChunkResultJson / propose_patch's
@@ -313,7 +313,12 @@ namespace
                name == "propose_patches" ||
                name == "insert_chunk" ||
                name == "insert_chunks" ||
-               name == "remove_chunk";
+               name == "remove_chunk" ||
+               // R1a (2026-08-09): the ATOMIC batch remove.  Its envelope is a
+               // HYBRID -- a top-level BOOLEAN `applied` (all-or-nothing)
+               // alongside a `results` array -- so editRefusalIsWhollyUnapplied
+               // routes it down the SINGULAR arm, not the batch one.
+               name == "remove_chunks";
     }
 
     int editRetryBackoffMs(int attemptsSoFar)
@@ -326,7 +331,9 @@ namespace
     // Is this tool result a refusal with NOTHING applied -- the only
     // shape a client-side retry may re-issue?
     //
-    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk):
+    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk) -- and
+    // R1a's remove_chunks, which despite carrying a `results` array is
+    // ALL-OR-NOTHING and so reports ONE boolean verdict, exactly this shape:
     // applied == false AND retriable == true AND status == "rejected".
     // The rejection contract guarantees the head is byte-identical on a
     // reject (SceneEditController refuses BEFORE any mutation or park),
@@ -378,10 +385,19 @@ namespace
         const QJsonObject result = envelope.value("result").toObject();
 
         // BATCH FIRST -- see the BATCH-FIRST note above.
-        if (result.value("results").isArray()) {
+        //
+        // R1a (2026-08-09): the batch arm is now selected on the TYPE of the
+        // top-level `applied`, not merely on `results` being present.
+        // remove_chunks returns a HYBRID envelope -- a `results` array (one entry
+        // per unique target) alongside a BOOLEAN top-level `applied`, because it
+        // is ALL-OR-NOTHING and so has one verdict, not a count.  Its correct
+        // handling is the SINGULAR arm below, so a boolean in the count position
+        // must FALL THROUGH here rather than return false -- the pre-R1a shape
+        // check would have silently declined to retry a genuinely retriable
+        // remove_chunks refusal.  Mirrors the macOS sibling's `appliedIsCount`.
+        if (result.value("results").isArray() && result.value("applied").isDouble()) {
             const QJsonArray results = result.value("results").toArray();
             if (results.isEmpty()) return false;
-            if (!result.value("applied").isDouble()) return false;
             if (result.value("applied").toDouble() != 0.0) return false;
             for (const QJsonValue& element : results) {
                 if (!element.isObject()) return false;

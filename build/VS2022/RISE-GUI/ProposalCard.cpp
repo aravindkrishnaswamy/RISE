@@ -207,12 +207,29 @@ int ProposalCard::plusCount() const
         return n;
     }
     if (m_proposal.kind == QLatin1String("remove_chunk")) return 0;
+    if (m_proposal.kind == QLatin1String("remove_chunks")) return 0;
     return 1;   // param_edit
+}
+
+// R1a (2026-08-09): a remove_chunks proposal deletes N chunks in ONE atomic
+// edit -- `target` carries the '\n'-separated target-name list (see
+// SceneEditController::AgentProposal's doc).  Mirrors the macOS card's
+// `removeTargetNames`.
+QStringList ProposalCard::removeTargetNames() const
+{
+    QStringList out;
+    const QStringList parts = m_proposal.target.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (const QString& p : parts) {
+        if (!p.isEmpty()) out.append(p);
+    }
+    return out;
 }
 
 int ProposalCard::minusCount() const
 {
-    return m_proposal.kind == QLatin1String("remove_chunk") ? 1 : 0;
+    if (m_proposal.kind == QLatin1String("remove_chunk")) return 1;
+    if (m_proposal.kind == QLatin1String("remove_chunks")) return std::max(removeTargetNames().size(), 1);
+    return 0;
 }
 
 // ============================================================
@@ -290,6 +307,17 @@ void ProposalCard::buildBody(QVBoxLayout* root)
         QLabel* line = makeDiffLine(QStringLiteral("\xE2\x88\x92"), text, false);
         body->addWidget(line);
         m_diffRemovalLines.append(line);
+    } else if (m_proposal.kind == QLatin1String("remove_chunks")) {
+        // R1a (2026-08-09): ONE card for the WHOLE batch (approving it applies the
+        // batch atomically), so list every target on its own minus line -- the same
+        // per-line shape the multi-line insert_chunk card uses, and the same shape
+        // the macOS ProposalCard's "remove_chunks" branch renders.
+        const QStringList names = removeTargetNames();
+        for (const QString& n : names) {
+            QLabel* line = makeDiffLine(QStringLiteral("\xE2\x88\x92"), n, false);
+            body->addWidget(line);
+            m_diffRemovalLines.append(line);
+        }
     } else {
         // param_edit (default -- also the fallback for any unknown kind,
         // matching the Mac card's `default:` branch).

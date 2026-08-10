@@ -299,6 +299,41 @@ namespace RISE
 			//! active rasterizer restored over it).
 			AgentRemoveChunk,
 
+			//! R1a (2026-08-09, batched remove_chunks): an AGENT-originated BATCH chunk REMOVE
+			//! (SceneEditController::ApplyAgentRemoveChunks), pushed AFTER the mutation has already landed via
+			//! Job::ApplyCstRemoveChunks -- the SAME "forward already happened outside SceneEditor::Apply"
+			//! shape AgentRemoveChunk uses.  ONE of these records the WHOLE batch, so a single Cmd-Z restores
+			//! every removed chunk (the point of the verb: one head bump, one undo step).
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunk's own carriers rather than adding batch-only
+			//! members to every SceneEdit ever pushed):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the batch erase.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.  See that
+			//!                           virtual's doc for WHY the batch restores the whole document instead
+			//!                           of replaying N ApplyCstRestoreChunkAt splices: for ADJACENT targets
+			//!                           the per-chunk (bytes, index) record is not even well defined, since
+			//!                           Cst::DocEraseChunkTidy's trailing-separator collapse for chunk i
+			//!                           depends on whether chunk i+1 is still present -- which in a batch it
+			//!                           may not be.  Wholesale restore is byte-exact by construction for ANY
+			//!                           target set, and undo is LIFO so these bytes ARE the state the
+			//!                           immediately-preceding operation started from.
+			//!   * `prevPropertyValue` = the REDO descriptor: one line per removed target, `kind\tname`
+			//!                           ('\t' separator, '\n' between lines; an empty `kind` field means "no
+			//!                           kind narrowing", exactly as a null `kind` does at the Job call).
+			//!                           Redo re-runs Job::ApplyCstRemoveChunks over these -- deterministic
+			//!                           for the same reason AgentRemoveChunk's redo-by-name is: Undo restored
+			//!                           the pre-batch Document byte-identically first.
+			//!   * `objectName`        = a DISPLAY-ONLY comma-joined target list (logs); NOT an addressable
+			//!                           entity name, which is why `cstEntityKind` is left EMPTY -- that
+			//!                           routes MarkCstHeadDirty to its boolean CST-head channel rather than
+			//!                           inventing a per-entity dirty mark for a name that resolves to nothing.
+			//!   * `agentChunkWasRasterizer` = true iff ANY removed chunk was a `*_rasterizer` -- Undo passes
+			//!                           the inverse as ApplyCstReplaceDocumentText's `restoreActiveRasterizer`,
+			//!                           the SAME P1-B rasterizer-activation rule AgentRemoveChunk applies.
+			//!   * `agentChunkIndex`   = UNUSED (a batch has no single index); left at its default.
+			AgentRemoveChunks,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

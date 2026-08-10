@@ -141,10 +141,10 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
-			//! through beyond the read-safe allowlist above -- the 5 known-
-			//! mutating verbs (the 3 single-item verbs plus the 2 BATCH forms,
-			//! insert_chunks and propose_patches, which mutate through the very
-			//! same per-element delegates and so carry the identical posture).
+			//! through beyond the read-safe allowlist above -- the 6 known-
+			//! mutating verbs (the 3 single-item verbs plus the 3 BATCH forms,
+			//! insert_chunks, propose_patches and -- R1a (2026-08-09) --
+			//! remove_chunks, which carry the identical posture).
 			//! Dispatching them under Propose does NOT itself
 			//! commit anything: it only lets the call REACH AgentSession, whose
 			//! own Owner/External authority decides staging-vs-commit (see
@@ -165,7 +165,15 @@ namespace RISE
 				       // session's own Owner/External authority still decides
 				       // staging-vs-commit per element.
 				       method == "insert_chunks" ||
-				       method == "remove_chunk";
+				       method == "remove_chunk" ||
+				       // R1a (2026-08-09): remove_chunks is the BATCH form of
+				       // remove_chunk and carries the IDENTICAL posture -- letting
+				       // it reach AgentSession under Propose does not commit
+				       // anything; the session's own Owner/External authority still
+				       // decides staging-vs-commit.  Its one difference from
+				       // insert_chunks is WHAT gets staged: ONE proposal for the
+				       // whole batch (see AgentSession::RemoveChunks' doc), never N.
+				       method == "remove_chunks";
 			}
 
 			//! The severity token for a diagnostic.
@@ -268,8 +276,8 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 6: the queue-full refusal error envelope for
-			//! all 5 mutating verbs (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) -- built when the
+			//! all 6 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) -- built when the
 			//! wrapped AgentSession's result carries queueFull==true (see
 			//! AgentPatchResult::queueFull / AgentChunkResult::queueFull's
 			//! doc).  The BATCH forms raise it too, from the per-element
@@ -315,8 +323,8 @@ namespace RISE
 			}
 
 			//! Model-B F5 slice S2: parse the OPTIONAL `baseHeadVersion` param
-			//! shared by all 5 mutating verbs (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk).  Returns
+			//! shared by all 6 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks).  Returns
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
@@ -463,7 +471,7 @@ namespace RISE
 			//! remove_chunk) AND the inline result construction of
 			//! propose_patch and propose_patches below, so the
 			//! {param,value,reason,suggestions} shape can never drift across
-			//! the 5 mutating verbs that can emit it.
+			//! the 6 mutating verbs that can emit it.
 			JsonValue IssuesJson( const std::vector<AgentChunkIssue>& issues )
 			{
 				JsonValue arr = JsonValue::MakeArray();
@@ -583,6 +591,73 @@ namespace RISE
 				if( !rr.note.empty() )
 					result.set( "note", JsonValue::MakeString( rr.note ) );
 				return result;
+			}
+
+			//! R1b (2026-08-09): the RPC-layer-only half of the
+			//! `agentRenderCap` fact (see BuildAgentRenderCapJson below) --
+			//! the raw, PRE-clamp width/height/samples the caller actually
+			//! sent, for an EXPLICIT value the render `render` handler's own
+			//! ParseClampedUInt/samples parse reduced.  Only the RPC layer
+			//! (AgentRpc.cpp) ever sees these raw numbers -- by the time a
+			//! value reaches AgentSession it is already clamped -- so this is
+			//! computed and filled entirely inline in the `render` handler,
+			//! never inside AgentSession.  Default-constructed = "nothing was
+			//! explicitly clamped", matching every field's meaning.
+			struct AgentRenderCapFacts
+			{
+				bool         explicitWidthClamped = false;
+				unsigned int rawWidthRequested = 0;
+				bool         explicitHeightClamped = false;
+				unsigned int rawHeightRequested = 0;
+				bool         explicitSamplesClamped = false;
+				double       rawSamplesRequested = 0.0;
+			};
+
+			//! R1b (2026-08-09): the honest `agentRenderCap` fact -- see
+			//! AgentRenderParams::fromAgentSurface's doc for the full
+			//! mechanism this reports on.  Combines what AgentSession itself
+			//! resolved (`rr.agentResolutionCapped`/`filmWidth`/`filmHeight`/
+			//! `agentSamplesCapped` -- the two ABSENT-value implicit
+			//! defaults, live-Job-state-dependent, so only AgentSession can
+			//! know them) with what the RPC layer alone knows (`facts` -- an
+			//! EXPLICIT value this parser itself clamped, from the caller's
+			//! raw pre-clamp request).  Returns false (leaves `out`
+			//! untouched) when NEITHER happened -- the caller should omit the
+			//! `agentRenderCap` key entirely in that case, matching every
+			//! other conditional-key convention in this file (`legend`,
+			//! `note`, `issues`): when nothing was clamped, add nothing.
+			bool BuildAgentRenderCapJson( const AgentRenderResult& rr,
+			                             const AgentRenderCapFacts& facts, JsonValue& out )
+			{
+				const bool resolutionCapped = rr.agentResolutionCapped ||
+					facts.explicitWidthClamped || facts.explicitHeightClamped;
+				const bool samplesCapped = rr.agentSamplesCapped || facts.explicitSamplesClamped;
+				if( !resolutionCapped && !samplesCapped ) return false;
+
+				out = JsonValue::MakeObject();
+				out.set( "maxEdge",    JsonValue::MakeNumber(
+					static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) );
+				out.set( "maxSamples", JsonValue::MakeNumber(
+					static_cast<double>( kAgentSurfaceMaxSamples ) ) );
+				out.set( "resolutionCapped", JsonValue::MakeBool( resolutionCapped ) );
+				// `filmWidth`/`filmHeight` (the scene's authored Film dims --
+				// what an UNCAPPED absent-dims render would have produced)
+				// are populated ONLY for the implicit-default case; an
+				// explicit over-request needs no such echo -- the caller
+				// already knows exactly what it asked for.
+				if( rr.agentResolutionCapped ) {
+					out.set( "filmWidth",  JsonValue::MakeNumber( static_cast<double>( rr.filmWidth ) ) );
+					out.set( "filmHeight", JsonValue::MakeNumber( static_cast<double>( rr.filmHeight ) ) );
+				}
+				if( facts.explicitWidthClamped || facts.explicitHeightClamped ) {
+					out.set( "requestedWidth",  JsonValue::MakeNumber( static_cast<double>( facts.rawWidthRequested ) ) );
+					out.set( "requestedHeight", JsonValue::MakeNumber( static_cast<double>( facts.rawHeightRequested ) ) );
+				}
+				out.set( "samplesCapped", JsonValue::MakeBool( samplesCapped ) );
+				if( facts.explicitSamplesClamped ) {
+					out.set( "requestedSamples", JsonValue::MakeNumber( facts.rawSamplesRequested ) );
+				}
+				return true;
 			}
 
 			//! Parse a schema JSON STRING (from SchemaGen) into a JsonValue so
@@ -827,7 +902,7 @@ namespace RISE
 				// membership; a count or a copy of it here would just be one
 				// more thing to drift).  A verb that
 				// is not on the read-safe list is refused under Read -- this
-				// covers the 5 known-mutating verbs, resolve_proposal, AND any
+				// covers the 6 known-mutating verbs, resolve_proposal, AND any
 				// future verb that reaches dispatch without being consciously
 				// classified read-safe (the fail-closed property this
 				// hardening exists for).  Under AgentAutonomy::Read this is a
@@ -837,7 +912,7 @@ namespace RISE
 				// "conflict" success result.
 				//
 				// Secure-MCP slice 5b: AgentAutonomy::Propose extends the
-				// read-safe set with the 5 mutating verbs (IsProposeSafeVerb)
+				// read-safe set with the 6 mutating verbs (IsProposeSafeVerb)
 				// -- letting them REACH AgentSession, whose own Owner/External
 				// authority decides staging-vs-commit (see AgentRpc.h's file
 				// header).  resolve_proposal is deliberately excluded from
@@ -882,8 +957,8 @@ namespace RISE
 							"refused: this session runs with --agent-autonomy=propose; insert_material_scaffold "
 							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
 							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
-							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
-							"STAGE proposals as usual" );
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
 					}
 					// Arc-75 S3b: insert_geometry_scaffold is the geometry
 					// sibling of insert_material_scaffold above -- SAME
@@ -896,8 +971,8 @@ namespace RISE
 							"refused: this session runs with --agent-autonomy=propose; insert_geometry_scaffold "
 							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
 							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
-							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
-							"STAGE proposals as usual" );
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
 					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
@@ -1885,6 +1960,103 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
+				// remove_chunks {targets:[string,...], baseHeadVersion?}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,
+				//       removed:number,total:number,note?,results:[ChunkResultJson,...]}
+				//   R1a (2026-08-09): the ATOMIC BATCH form of remove_chunk (see
+				//   AgentSession::RemoveChunks' doc) -- delete N chunks in ONE
+				//   call, ONE head-version bump, ONE undo step, instead of N
+				//   round-trips.  DELIBERATELY UNLIKE insert_chunks, which is
+				//   sequential/best-effort: this is ALL-OR-NOTHING.  Every
+				//   target resolves and the remainder derives, or NOTHING is
+				//   removed and `headVersion` is the head the call started from
+				//   (a half-torn-down subassembly is a state the model never
+				//   reasoned about; a half-built one is at least coherent).
+				//   Intra-batch references need no ordering: a chunk referenced
+				//   ONLY by other chunks in the same batch is removable in any
+				//   listed order, and `still_referenced` fires only for
+				//   referrers OUTSIDE the batch (which it names).  Duplicate
+				//   names are deduped, not refused -- reported in `note`.
+				//   NO per-target `kind`: bare names only, so the sole-unnamed-
+				//   camera case (`remove_chunk kind:"camera"`) stays exclusive
+				//   to the singular verb, and an ambiguous name refuses the
+				//   batch naming itself.
+				//   `results` is one ChunkResultJson per UNIQUE target in
+				//   first-occurrence order (NOT one per input element -- match
+				//   by `name`); each carries the batch verdict plus, on a
+				//   refusal, the `issues` that localize the cause
+				//   ("unknown_target" / "still_referenced").  `removed` is the
+				//   number of chunks actually removed (0 on any refusal, else
+				//   `total`); `total` is the deduped target count.  `note` is a
+				//   CONDITIONAL key, omitted when there is nothing to report.
+				//   REQUIRES a head: no session -> error.
+				//--------------------------------------------------------------
+				if( m == "remove_chunks" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* tv = params.find( "targets" );
+					if( !tv || !tv->isArray() ) {
+						std::string msg = "Invalid params: 'targets' (array of strings) is required";
+						// See DescribeOtherParamKeys's doc (mirrors insert_chunks'
+						// identical guidance): name whatever the caller sent
+						// INSTEAD -- notably a singular 'target', the most likely
+						// slip for someone reaching for this verb -- so a
+						// wrong-key mistake is visible in the SAME round-trip.
+						const std::string other = DescribeOtherParamKeys(
+							params, { "targets", "baseHeadVersion" } );
+						if( !other.empty() )
+							msg += " (got " + other + " instead -- rename to 'targets'; "
+							       "remove_chunks takes an ARRAY, remove_chunk takes a single 'target')";
+						return MakeError( idValue, kInvalidParams, msg );
+					}
+					if( tv->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'targets' must be a non-empty array of chunk names" );
+					}
+					std::vector<std::string> targets;
+					targets.reserve( tv->size() );
+					for( std::size_t i = 0; i < tv->size(); ++i ) {
+						const JsonValue& item = tv->at( i );
+						if( !item.isString() ) {
+							char buf[128];
+							std::snprintf( buf, sizeof( buf ),
+								"Invalid params: 'targets[%zu]' must be a string", i );
+							return MakeError( idValue, kInvalidParams, buf );
+						}
+						targets.push_back( item.asString() );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const AgentSession::AgentRemoveBatchResult br =
+						s->RemoveChunks( targets, ( b == 1 ) ? &base : nullptr );
+					// Secure-MCP slice 6: see propose_patch's identical queue-full
+					// check.  ONE batch stages ONE proposal, so there is one flag
+					// to check, not a per-element scan like insert_chunks does.
+					if( br.queueFull ) return MakeProposalQueueFullError( idValue, "remove_chunks" );
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentChunkResult& tr : br.targetResults )
+						resultsArr.push_back( ChunkResultJson( tr ) );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",     JsonValue::MakeBool( br.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( br.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( br.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( br.retriable ) );
+					result.set( "headVersion", HeadVersionJson( br.headVersion ) );
+					result.set( "message",     JsonValue::MakeString( br.message ) );
+					// ALL-OR-NOTHING, restated numerically so a caller never has to
+					// infer it from the per-target array.
+					result.set( "removed", JsonValue::MakeNumber(
+						br.applied ? static_cast<double>( br.targetResults.size() ) : 0.0 ) );
+					result.set( "total",   JsonValue::MakeNumber( static_cast<double>( br.targetResults.size() ) ) );
+					// CONDITIONAL key (same back-compat posture as `issues`): a
+					// batch with nothing to remark on carries no `note` at all.
+					if( !br.note.empty() ) result.set( "note", JsonValue::MakeString( br.note ) );
+					result.set( "results", resultsArr );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
 				// render {samples?,width?,height?,camera?,imageMaxEdge?} ->
 				//   {ok,width,height,meanR,meanG,meanB,integrator,
 				//    previewWidth,previewHeight,cameraOverridden,message,
@@ -1901,7 +2073,10 @@ namespace RISE
 				//    `integrator` = the ACTIVE
 				//    rasterizer's chunk keyword, empty when none is active.
 				//    width/height/camera are the OPTIONAL preview-render
-				//    overrides -- absent = today's exact behaviour.
+				//    overrides -- `camera` absent = today's exact behaviour;
+				//    width/height absent = the R1b agent-surface resolution
+				//    default below, NOT "the scene's authored dims" (see the
+				//    R1b block further down this comment).
 				//    `renderJobId` (Model-B F2 slice S1, ADDITIVE) is a
 				//    monotonically increasing id for this render -- see
 				//    AgentRenderResult::renderJobId's doc for the LIVE
@@ -1923,10 +2098,74 @@ namespace RISE
 				//    attached" message rather than silently downgrading to
 				//    a synchronous render.  Use the non-async `render` verb
 				//    from `--agent-stdio`.)
+				//
+				//   R1b slice (2026-08-09, docs/agentic-redesign/
+				//   75-expressive-surface-arc.md): the agent RPC surface is
+				//   now STRUCTURALLY unable to trigger an expensive
+				//   production render.  Motivating trajectory: a live GUI
+				//   session called `render {imageMaxEdge:512}` with no
+				//   width/height -- `imageMaxEdge` only downscales the
+				//   RETURNED png, it never bounds render cost -- and the
+				//   call ran at the scene's FULL authored Film resolution
+				//   and FULL authored sample count, a very long render for
+				//   no reason the model could see coming.  Two caps, BOTH
+				//   production-beauty-only (draft/objectmap/view-mode/
+				//   BeautyVariant all keep their existing FIXED configs,
+				//   completely untouched -- see AgentSession::
+				//   kAgentSurfaceMaxRenderEdge / ::kAgentSurfaceMaxSamples's
+				//   doc and AgentRenderParams::fromAgentSurface's doc for
+				//   the full mechanism):
+				//     * RESOLUTION: explicit width/height are now clamped to
+				//       [16,kAgentSurfaceMaxRenderEdge] (was [16,512]); an
+				//       ABSENT pair no longer falls through to the scene's
+				//       full authored Film size -- it renders at the
+				//       scene's own aspect ratio, scaled so the long edge is
+				//       kAgentSurfaceMaxRenderEdge, resolved by AgentSession::
+				//       RenderCore_'s applyFilmOverride() (aspect-ratio
+				//       math needs the live Film, only safely readable
+				//       under the coordinator's park -- see that function's
+				//       own doc).
+				//     * SAMPLES: explicit `samples` is now clamped to
+				//       [1,kAgentSurfaceMaxSamples] (was [1,65536]); an
+				//       ABSENT override on a rasterizer whose scene-authored
+				//       sample count exceeds the cap is force-capped inside
+				//       RenderCore_'s doRenderWork, reusing the EXISTING
+				//       samplesOverridden/effectiveSamples honesty fields
+				//       (Model-B F2 slice S3) -- a caller reads the SAME two
+				//       fields regardless of whether an override was
+				//       REQUESTED or silently FORCED.  On a rasterizer that
+				//       does not support IRasterizer::SetSampleCountOverride
+				//       (MLT, photon-map-only, AutoRasterizer's outer
+				//       wrapper) the cap attempt is reported as honestly NOT
+				//       applied in `message`, never silently ignored, and
+				//       the render still runs (never refused).
+				//   Both caps report an ADDITIVE `agentRenderCap` result
+				//   key -- see BuildAgentRenderCapJson's doc above -- ONLY
+				//   when something actually got reduced below what an
+				//   uncapped call would have produced; omitted entirely
+				//   otherwise (the "when nothing was clamped, add nothing"
+				//   convention this file uses throughout).  `render_wait`'s
+				//   post-completion echo (RenderResultJson, shared with the
+				//   sync path here) carries the SAME fact for an async or
+				//   pinned submission, so the async/pinned/sync paths are
+				//   capped and REPORTED identically.
+				//   Gated on AgentRenderParams::fromAgentSurface, set true
+				//   ONLY by this handler (and nowhere else) -- CheckRenderKind's
+				//   eval-scoring grading renders (AgentEvalRunner.cpp) build
+				//   AgentRenderParams directly in C++ and never route
+				//   through this dispatcher, so they see FULL requested
+				//   fidelity, completely unaffected by either cap.
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					int samples = -1;
+					// R1b (2026-08-09): honest fact-reporting bookkeeping -- see
+					// AgentRenderCapFacts' doc below.  `explicitSamplesClamped`
+					// is true iff the raw request exceeded the cap BEFORE the
+					// clamp below reduced it; `rawSamplesRequested` keeps that
+					// raw value for the result's `agentRenderCap.requestedSamples`.
+					bool explicitSamplesClamped = false;
+					double rawSamplesRequested = 0.0;
 					if( const JsonValue* sm = params.find( "samples" ) ) {
 						if( sm->isNumber() ) {
 							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
@@ -1941,31 +2180,53 @@ namespace RISE
 							// Model-B F2 slice S3 (EffectiveRenderConfig): -1
 							// stays the "no override" sentinel (AgentRenderParams::
 							// samples doc); anything else is CLAMPED into
-							// [1,65536] rather than rejected (a caller's
-							// out-of-range guess still renders, just at the
-							// clamped count -- matches the width/height
-							// ParseClampedUInt convention just below).  65536 is
-							// a generous cap: no production RISE scene
-							// authors anywhere near that SPP, but the clamp
-							// exists to keep a hostile/typo'd huge value from
-							// ballooning a single render's cost unboundedly.
+							// [1,kAgentSurfaceMaxSamples] rather than rejected (a
+							// caller's out-of-range guess still renders, just at
+							// the clamped count -- matches the width/height
+							// ParseClampedUInt convention just below).
+							//
+							// R1b (2026-08-09): TIGHTENED from a generous
+							// [1,65536] to [1,kAgentSurfaceMaxSamples] -- the
+							// agent RPC surface must be STRUCTURALLY unable to
+							// trigger an expensive production render (a live
+							// GUI trajectory once requested a full-authored-spp
+							// render this way); see AgentSession::
+							// kAgentSurfaceMaxSamples's doc.  A caller that
+							// genuinely needs a higher-fidelity measurement
+							// renders from the GUI directly -- that path is
+							// untouched (this clamp lives ONLY on the agent RPC
+							// surface, never in AgentSession itself).
 							if( samples != -1 ) {
 								if( samples < 1 ) samples = 1;
-								else if( samples > 65536 ) samples = 65536;
+								else if( samples > kAgentSurfaceMaxSamples ) {
+									explicitSamplesClamped = true;
+									rawSamplesRequested = sv;
+									samples = kAgentSurfaceMaxSamples;
+								}
 							}
 						}
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
 					}
 
-					// Preview-render dims: width/height are CLAMPED to [16,512]
-					// (never rejected -- an out-of-range guess still renders,
-					// just at the clamped size) and must be supplied TOGETHER
-					// (one without the other is ambiguous: keep today's exact
-					// behaviour -- no override -- rather than guess an aspect
-					// ratio).
+					// Preview-render dims: width/height are CLAMPED to
+					// [16,kAgentSurfaceMaxRenderEdge] (never rejected -- an
+					// out-of-range guess still renders, just at the clamped
+					// size) and must be supplied TOGETHER (one without the
+					// other is ambiguous: keep today's exact behaviour -- no
+					// override -- rather than guess an aspect ratio).
+					//
+					// R1b (2026-08-09): TIGHTENED from [16,512] -- same
+					// rationale as the `samples` cap just above; see
+					// kAgentSurfaceMaxRenderEdge's doc.  ABSENT
+					// width/height on a production beauty render used to fall
+					// through to the scene's full authored Film resolution --
+					// closed below (`rparams.fromAgentSurface = true`, which
+					// gates RenderCore_'s implicit aspect-preserving default;
+					// see AgentRenderParams::fromAgentSurface's doc).
 					AgentRenderParams rparams;
 					rparams.samples = samples;
+					rparams.fromAgentSurface = true;
 					// Agent transports roll perception out by default; direct C++
 					// callers retain AgentRenderParams' opt-in false default.
 					rparams.perception = true;
@@ -1976,13 +2237,31 @@ namespace RISE
 					}
 					unsigned int width = 0, height = 0;
 					std::string dimErr;
-					const int wPresent = ParseClampedUInt( params, "width",  16, 512, width,  dimErr );
+					const int wPresent = ParseClampedUInt( params, "width",  16,
+						kAgentSurfaceMaxRenderEdge, width,  dimErr );
 					if( wPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
-					const int hPresent = ParseClampedUInt( params, "height", 16, 512, height, dimErr );
+					const int hPresent = ParseClampedUInt( params, "height", 16,
+						kAgentSurfaceMaxRenderEdge, height, dimErr );
 					if( hPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
+					// R1b: raw pre-clamp values, for the honest
+					// `agentRenderCap.requestedWidth/Height` fact below --
+					// ParseClampedUInt already validated these are finite and
+					// in double-range, so re-reading them here is safe.
+					bool explicitWidthClamped = false, explicitHeightClamped = false;
+					unsigned int rawWidthRequested = 0, rawHeightRequested = 0;
 					if( wPresent == 1 && hPresent == 1 ) {
 						rparams.width  = width;
 						rparams.height = height;
+						const double rawW = params.find( "width"  )->asNumber();
+						const double rawH = params.find( "height" )->asNumber();
+						if( rawW > static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) {
+							explicitWidthClamped = true;
+							rawWidthRequested = static_cast<unsigned int>( rawW );
+						}
+						if( rawH > static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) {
+							explicitHeightClamped = true;
+							rawHeightRequested = static_cast<unsigned int>( rawH );
+						}
 					}
 
 					AgentCameraOverride camOverride;
@@ -2214,6 +2493,28 @@ namespace RISE
 					// build inline -- factored out so render_wait's
 					// post-completion echo can return an IDENTICAL shape.
 					JsonValue renderResult = RenderResultJson( rr );
+					// R1b (2026-08-09): the honest `agentRenderCap` fact --
+					// see BuildAgentRenderCapJson's doc.  Combines what THIS
+					// handler alone knows (the caller's raw pre-clamp width/
+					// height/samples, captured above) with what AgentSession
+					// resolved inside `rr` (the two absent-value implicit
+					// defaults).  Only the SYNC path can report the explicit-
+					// clamp half -- the raw pre-clamp request never survives
+					// into an async submission's later render_wait echo (see
+					// that handler's own call to this same helper, with an
+					// all-false `facts`).  Omitted entirely when nothing was
+					// clamped.
+					{
+						AgentRenderCapFacts facts;
+						facts.explicitWidthClamped   = explicitWidthClamped;
+						facts.rawWidthRequested      = rawWidthRequested;
+						facts.explicitHeightClamped  = explicitHeightClamped;
+						facts.rawHeightRequested     = rawHeightRequested;
+						facts.explicitSamplesClamped = explicitSamplesClamped;
+						facts.rawSamplesRequested    = rawSamplesRequested;
+						JsonValue cap;
+						if( BuildAgentRenderCapJson( rr, facts, cap ) ) renderResult.set( "agentRenderCap", cap );
+					}
 					// The inline image rides under the SAME "png_base64" field
 					// name read_image and compare_to_reference use, so
 					// AgentChatCodecs' IsImageResult -- and every retention /
@@ -2328,7 +2629,25 @@ namespace RISE
 					result.set( "pinned", JsonValue::MakeBool( st.pinned ) );
 					if( completed ) {
 						const AgentSession::AgentLastAsyncRenderResult ar = s->LastAsyncRenderResult( jobId );
-						if( ar.found ) result.set( "result", RenderResultJson( ar.result ) );
+						if( ar.found ) {
+							JsonValue nested = RenderResultJson( ar.result );
+							// R1b (2026-08-09): the ABSENT-value half of the
+							// `agentRenderCap` fact -- see BuildAgentRenderCapJson's
+							// doc.  An async submission's raw pre-clamp explicit
+							// width/height/samples request (if any) was already
+							// clamped and does not survive to this later echo
+							// (the render's own `render{async:true}` submit
+							// call is the only place that saw it) -- an
+							// all-default AgentRenderCapFacts here means this
+							// reports ONLY what AgentSession itself resolved
+							// (`ar.result.agentResolutionCapped`/
+							// `agentSamplesCapped`), which is exactly the same
+							// information the SYNC path's `rr.*` half carries.
+							JsonValue cap;
+							if( BuildAgentRenderCapJson( ar.result, AgentRenderCapFacts(), cap ) )
+								nested.set( "agentRenderCap", cap );
+							result.set( "result", nested );
+						}
 					}
 					return MakeSuccess( idValue, result );
 				}
@@ -2691,6 +3010,18 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'visual' must be a boolean" );
 					}
 
+					// R1b (2026-08-09): TIGHTENED from a generous [1,65536] to
+					// [1,kAgentSurfaceMaxSamples] -- supplying `samples` here
+					// switches this comparison render to
+					// AgentRenderQuality::Production (see
+					// AgentCompareToReferenceParams' doc), the SAME production-
+					// beauty cost concern the `render` verb's own samples cap
+					// addresses; see kAgentSurfaceMaxSamples's doc.
+					// Does NOT affect AgentEvalRunner's own grading renders --
+					// those call AgentSession::Render/CheckRenderKind directly
+					// in C++, never through this RPC handler.
+					bool compareSamplesClamped = false;
+					double compareRawSamplesRequested = 0.0;
 					if( const JsonValue* sv = params.find( "samples" ) ) {
 						if( sv->isNumber() ) {
 							// Explicit finite-range guard.  NOTE: this is NOT
@@ -2708,7 +3039,11 @@ namespace RISE
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
 							int samples = static_cast<int>( sd );
 							if( samples < 1 ) samples = 1;
-							else if( samples > 65536 ) samples = 65536;
+							else if( samples > kAgentSurfaceMaxSamples ) {
+								compareSamplesClamped = true;
+								compareRawSamplesRequested = sd;
+								samples = kAgentSurfaceMaxSamples;
+							}
 							cparams.samples = samples;
 						}
 						else if( !sv->isNull() )
@@ -2791,6 +3126,21 @@ namespace RISE
 						split.set( "objectPixelFraction", JsonValue::MakeNumber( cr.split.objectPixelFraction ) );
 						split.set( "note",                JsonValue::MakeString( cr.split.note ) );
 						result.set( "split", split );
+					}
+					// R1b (2026-08-09): honest `agentRenderCap` fact -- see
+					// BuildAgentRenderCapJson's doc.  compare_to_reference has
+					// no width/height override at all (always the reference's
+					// own dims -- see AgentCompareToReferenceParams' doc), so
+					// only the samples half of the fact is ever meaningful
+					// here; omitted entirely when the request's `samples` (if
+					// any) was already within the cap.
+					if( compareSamplesClamped ) {
+						JsonValue cap = JsonValue::MakeObject();
+						cap.set( "maxSamples", JsonValue::MakeNumber(
+							static_cast<double>( kAgentSurfaceMaxSamples ) ) );
+						cap.set( "samplesCapped", JsonValue::MakeBool( true ) );
+						cap.set( "requestedSamples", JsonValue::MakeNumber( compareRawSamplesRequested ) );
+						result.set( "agentRenderCap", cap );
 					}
 					return MakeSuccess( idValue, result );
 				}

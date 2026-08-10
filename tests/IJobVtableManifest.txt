@@ -284,3 +284,5 @@ ClearProgressIfCurrent
 SetProgressIfCurrent
 ExchangeProgress
 ApplyCstCameraPoseEditWithBasis
+ApplyCstRemoveChunks
+ApplyCstReplaceDocumentText

@@ -699,7 +699,7 @@ public:
     ///   * Read    -> the read-safe allowlist dispatches (IsReadSafeVerb
     ///                in AgentRpc.cpp IS the membership list -- no copy
     ///                or count of it here);
-    ///                the 5 mutating verbs (and any
+    ///                the 6 mutating verbs (and any
     ///                other verb) are REFUSED (kAutonomyRefused,
     ///                -32011) — this is Owner authority under Read
     ///                autonomy, so even the refusal path never reaches
@@ -709,7 +709,7 @@ public:
     ///                authority AgentSession sharing the SAME live
     ///                SceneEditController `agentHandleLine()`'s
     ///                administrative session is attached to — so
-    ///                the 5 mutating verbs
+    ///                the 6 mutating verbs
     ///                (IsProposeSafeVerb) STAGE a real proposal
     ///                onto that controller's ONE queue (the exact queue
     ///                the existing proposals panel already reads via

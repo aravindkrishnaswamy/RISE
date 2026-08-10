@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 16, "body carries sixteen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 17, "body carries seventeen OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -548,8 +548,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 16,
-		       "xAI body carries the same sixteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 17,
+		       "xAI body carries the same seventeen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -814,11 +814,13 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 16, "body carries sixteen tools" );
+	Check( tools.isArray() && tools.size() == 17, "body carries seventeen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
+	                           // R1a (2026-08-09): the ATOMIC batch remove.
+	                           "remove_chunks",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
-	for( int t = 0; t < 13; ++t ) {
+	for( int t = 0; t < 14; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -1752,7 +1754,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 16, "sixteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 17, "seventeen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -2322,7 +2324,11 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		const char* const kMutatingVerbs[] = {
 			"insert_chunk", "insert_chunks", "insert_material_scaffold",
 			"insert_geometry_scaffold", "propose_patch", "propose_patches",
-			"remove_chunk"
+			"remove_chunk",
+			// R1a (2026-08-09): ONE remove_chunks call is ONE blind mutation,
+			// exactly like one batched insert_chunks -- N chunks leave the
+			// document with no visual observation in between.
+			"remove_chunks"
 		};
 		for( const char* verb : kMutatingVerbs ) {
 			AgentChatLoop mv;
@@ -2346,6 +2352,54 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 			Check( refused, std::string( "gate: " ) + verb +
 			       " COUNTS as a mutation -- 4 calls with no look trip the gate" );
 		}
+	}
+
+	// R1a (2026-08-09) remove_chunks specifics, on top of the generic
+	// "every mutating verb counts" loop above:
+	//   * ONE remove_chunks call is ONE increment, exactly like one batched
+	//     insert_chunks -- never one per removed chunk;
+	//   * the gate's OWN refusal never counts, so every refusal reports the
+	//     SAME streak until a look resets it (the general contract
+	//     GateRefusalResponse documents, red-proven here for the new verb).
+	{
+		AgentChatLoop rc;
+		rc.SetProvider( ChatProvider::Anthropic );
+		rc.SetBlindEditGateThreshold( 3 );
+		rc.AddUserMessage( "tear down the old lighting rig" );
+		const std::string rcFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_rc\",\"name\":\"remove_chunks\","
+			"\"input\":{\"targets\":[\"a\",\"b\",\"c\",\"d\",\"e\"]}}]", "tool_use" );
+		int rpcId = 1;
+		std::string lastGate;
+		// `applied` is a BOOL for this verb (all-or-nothing), and the counts ride in
+		// removed/total -- the SAME envelope AgentRpc.cpp's handler emits.
+		auto rcStep = [&]() -> bool {
+			ChatStepResult st = rc.HandleResponse( 200, rcFx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = rc.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { lastGate = gate; rc.AddToolResult( call, gate ); return true; }
+			rc.AddToolResult( call,
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\","
+				"\"removed\":5,\"total\":5,\"results\":[]}}" );
+			return false;
+		};
+		Check( !rcStep(), "gate/remove_chunks: call 1 (5 targets) -- ONE increment, not refused" );
+		Check( !rcStep(), "gate/remove_chunks: call 2 -- ONE increment, not refused" );
+		Check( !rcStep(), "gate/remove_chunks: call 3 -- ONE increment, reaching the threshold "
+		       "(RED-PROVE: a per-TARGET count would already be 15, far past threshold 3)" );
+		Check( rcStep(), "gate/remove_chunks: call 4 -- REFUSED, so remove_chunks really is in the "
+		       "counted-mutation set (a verb missing from IsMutatingToolName would never trip it)" );
+		const std::string firstRefusal = lastGate;
+		Check( rcStep(), "gate/remove_chunks: call 5 -- still refused" );
+		Check( !firstRefusal.empty() && lastGate.find( "\"id\":5" ) != std::string::npos,
+		       "gate/remove_chunks: the second refusal is a distinct envelope (id advanced)" );
+		// A REFUSAL NEVER COUNTS: both refusals must quote the SAME streak number.
+		// If the first refusal had advanced the streak, the second would say 4.
+		Check( firstRefusal.find( "3 document edits in a row" ) != std::string::npos &&
+		       lastGate.find( "3 document edits in a row" ) != std::string::npos,
+		       "gate/remove_chunks: a REFUSED remove_chunks does NOT advance the streak -- both refusals "
+		       "report the same count (nothing was removed, so nothing was blindly edited)" );
 	}
 
 	// Disable it entirely: threshold 0 -> never refuses no matter how many

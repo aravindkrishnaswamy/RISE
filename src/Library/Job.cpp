@@ -11039,22 +11039,26 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 	return code;
 }
 
-// Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name (+ optional kind
-// suffix narrowing, SAME rules as ApplyCstParamEdit incl. the sole-unnamed-camera positional fallback) via
-// the TRIVIA-PRESERVING Cst::DocEraseChunkTidy -- NEVER the clone-undo-only ApplyCstRemoveCameraChunk idiom,
-// whose unconditional idx-1 drop corrupts a FILE-AUTHORED chunk's neighbouring trivia -- then drop the
-// entity from the live scene via the shared dry-run-guarded D2 tail.  A still-referenced target fails the
-// dry-run (unresolved reference) and leaves Document + live scene byte-identical.
-int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
-                              char* outKeyword, unsigned int keywordMax,
-                              char* outDiag, unsigned int diagMax )
+// R1a (2026-08-09, batched remove_chunks): the SHARED target -> top-level-index resolver behind BOTH
+// Job::ApplyCstRemoveChunk and Job::ApplyCstRemoveChunks.  Extracted VERBATIM from ApplyCstRemoveChunk's own
+// pre-erase resolution block -- every guard and its rationale comment below is the original text, with the
+// Document, the active-camera name and the log prefix passed in rather than read off `this`.  The two verbs
+// now share ONE resolver precisely so the batch form can never drift from the singular one.
+//
+// Reads the Document ONLY (never mutates), which is what lets ApplyCstRemoveChunks resolve EVERY target
+// against the unmutated head before it erases anything -- the all-or-nothing precondition.
+//
+// Returns 0 on success (`outIdx` = the resolved top-level index, `outKeyword` = the chunk's keyword); -1 (not
+// found / no top-level index / resolved to a DIFFERENT kind than requested) or -2 (ambiguous) on refusal,
+// with `outDiag` carrying the reason where one exists -- the SAME code alphabet ApplyCstRemoveChunk returns.
+static int CstResolveRemoveTarget_( const RISE::Cst::Document& doc, const char* target, const char* kind,
+                                    const std::string& activeCameraName, const char* logCtx,
+                                    int& outIdx, std::string& outKeyword, std::string& outDiag )
 {
-	S2CopyOut( outKeyword, keywordMax, std::string() );
-	S2CopyOut( outDiag,    diagMax,    std::string() );
-	if( !pCstDocument || !target || !target[0] ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
-		return 0;
-	}
+	outIdx = -1;
+	outKeyword.clear();
+	outDiag.clear();
+
 	// APPEND-class unnamed kinds (descriptor `unnamedRepeatable`, e.g. timeline / keyframe): these carry no
 	// `name` param, so they are addressed by kind alone (target == keyword).  Two cases:
 	//   * exactly ONE unnamed instance -> resolvable by POSITION via the unique-in-kind fallback below
@@ -11081,7 +11085,7 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	bool targetNamesAChunk = false;
 	if( !( kind && kind[0] ) ) {
 		int occName = 0;
-		RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occName, "", false );
+		RISE::Cst::DocFindByNameAnyRole( doc, target, &occName, "", false );
 		targetNamesAChunk = occName > 0;   // any named-chunk hit (unique or ambiguous) means NAME, not keyword
 	}
 	const ChunkDescriptor* remDesc =
@@ -11089,9 +11093,9 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable && !targetNamesAChunk;
 	if( unnamedRepeatable ) {
 		int unnamedCount = 0;
-		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+		const int nHead = RISE::Cst::DocItemCount( doc );
 		for( int i = 0; i < nHead; ++i ) {
-			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
 			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == remDesc->keyword &&
 			    RISE::Cst::ChunkNamePath( it ).empty() )
 				++unnamedCount;
@@ -11101,9 +11105,9 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 			std::snprintf( d, sizeof( d ),
 				"ambiguous: %d unnamed `%s` chunks exist -- removal by kind alone would delete an arbitrary one; edit the scene text directly or address a named chunk",
 				unnamedCount, remDesc->keyword.c_str() );
-			S2CopyOut( outKeyword, keywordMax, remDesc->keyword );
-			S2CopyOut( outDiag,    diagMax,    d );
-			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: %s", d );
+			outKeyword = remDesc->keyword;
+			outDiag    = d;
+			GlobalLog()->PrintEx( eLog_Warning, "%s:: %s", logCtx, d );
 			return -2;
 		}
 	}
@@ -11116,11 +11120,11 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	// refuse rather than fall back to removing the sole unnamed camera.
 	const bool uniqueFallback =
 		( kind && std::string( kind ) == "camera"
-			? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, target, GetActiveCameraName() )
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, target, activeCameraName )
 			: false )
 		|| unnamedRepeatable;
 	int occ = 0;
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, target, &occ, kind ? kind : "", uniqueFallback );
 	if( id == 0 ) {
 		if( occ > 1 ) {
 			// Round-2 P3: carry the match count so the caller's ambiguity message can say how many
@@ -11128,20 +11132,20 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 			// the caller already narrowed).
 			char d[160];
 			std::snprintf( d, sizeof( d ), "%d chunks named `%s` match", occ, target );
-			S2CopyOut( outDiag, diagMax, d );
+			outDiag = d;
 		}
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` %s in the CST Document; remove rejected",
-		                      target, ( occ > 1 ) ? "is ambiguous" : "not found" );
+		GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` %s in the CST Document; remove rejected",
+		                      logCtx, target, ( occ > 1 ) ? "is ambiguous" : "not found" );
 		return ( occ > 1 ) ? -2 : -1;
 	}
-	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	const int idx = RISE::Cst::DocIndexOfNodeId( doc, id, nullptr );
 	if( idx < 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` resolved no top-level index; remove rejected", target );
+		GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` resolved no top-level index; remove rejected", logCtx, target );
 		return -1;
 	}
 	{
-		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
-		if( chunk ) S2CopyOut( outKeyword, keywordMax, chunk->role );
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+		if( chunk ) outKeyword = chunk->role;
 		// KIND VERIFICATION (review round 1 P2, the ApplyCstObjectMatrixEdit defensive pattern).
 		// HISTORICAL NOTE: pre round-6, DocFindByNameAnyRole's single-match path returned a uniquely-
 		// named chunk regardless of the kind suffix, so this check was load-bearing.  Since round 6
@@ -11156,18 +11160,188 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 			const std::string& role = chunk->role;
 			const bool roleMatches = RISE::Cst::RoleMatchesKindConstraint( role, k );
 			if( !roleMatches ) {
-				S2CopyOut( outDiag, diagMax, "'" + std::string( target ) + "' resolved to a `" + role + "`, not a `" + k + "`" );
-				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` resolved to a `%s`, not the requested kind `%s`; remove rejected", target, role.c_str(), kind );
+				outDiag = "'" + std::string( target ) + "' resolved to a `" + role + "`, not a `" + k + "`";
+				GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` resolved to a `%s`, not the requested kind `%s`; remove rejected", logCtx, target, role.c_str(), kind );
 				return -1;
 			}
 		}
 	}
+	outIdx = idx;
+	return 0;
+}
+// Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name (+ optional kind
+// suffix narrowing, SAME rules as ApplyCstParamEdit incl. the sole-unnamed-camera positional fallback) via
+// the TRIVIA-PRESERVING Cst::DocEraseChunkTidy -- NEVER the clone-undo-only ApplyCstRemoveCameraChunk idiom,
+// whose unconditional idx-1 drop corrupts a FILE-AUTHORED chunk's neighbouring trivia -- then drop the
+// entity from the live scene via the shared dry-run-guarded D2 tail.  A still-referenced target fails the
+// dry-run (unresolved reference) and leaves Document + live scene byte-identical.
+int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
+                              char* outKeyword, unsigned int keywordMax,
+                              char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	if( !pCstDocument || !target || !target[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
+		return 0;
+	}
+	// R1a (2026-08-09): the resolution block that used to live inline here now lives in the SHARED
+	// CstResolveRemoveTarget_ above (extracted verbatim, no behaviour change) so the batch verb
+	// ApplyCstRemoveChunks resolves IDENTICALLY -- see that helper for the coincidence guard, the
+	// unnamed-repeatable ambiguity guard, the gated camera positional fallback, and the destructive-verb
+	// kind verification, each with its original rationale comment.
+	int idx = -1;
+	std::string resKeyword, resDiag;
+	const int resCode = CstResolveRemoveTarget_( *pCstDocument, target, kind, GetActiveCameraName(),
+	                                             "Job::ApplyCstRemoveChunk", idx, resKeyword, resDiag );
+	if( !resKeyword.empty() ) S2CopyOut( outKeyword, keywordMax, resKeyword );
+	if( !resDiag.empty() )    S2CopyOut( outDiag,    diagMax,    resDiag );
+	if( resCode != 0 ) return resCode;
 
 	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
 	char ctx[300];
 	std::snprintf( ctx, sizeof( ctx ), "remove_chunk `%s`", target );
 	std::string firstDiag;
 	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// R1a (2026-08-09, batched remove_chunks): the ATOMIC batch form of ApplyCstRemoveChunk -- full contract on
+// the IJob virtual.  Two phases, and the split IS the atomicity guarantee: phase 1 resolves EVERY target
+// against the still-unmutated Document through the SAME CstResolveRemoveTarget_ the singular verb uses, and
+// bails on the first failure with nothing touched; phase 2 erases every resolved index (DESCENDING, so the
+// lower indices phase 1 recorded stay valid across the erases -- Cst::DocEraseChunkTidy only ever drops the
+// item AT `index` and, at most, the one that follows it, never a preceding one) on a WORKING COPY and hands
+// the whole result to ONE dry-run-guarded RederiveCstDocumentFull_.  A single re-derive is also what makes
+// INTRA-BATCH references free: every target has already left the Document by the time derivation runs, so a
+// producer referenced only by a consumer that is itself in the batch derives away cleanly no matter what
+// order the caller listed them in.
+int Job::ApplyCstRemoveChunks( const char* const* targets, const char* const* kinds, int count,
+                               char* outKeywords, unsigned int keywordsMax,
+                               char* outDiag, unsigned int diagMax,
+                               int* outFailIndex )
+{
+	S2CopyOut( outKeywords, keywordsMax, std::string() );
+	S2CopyOut( outDiag,     diagMax,     std::string() );
+	if( outFailIndex ) *outFailIndex = -1;
+	if( !pCstDocument || !targets || count <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: no retained CST Document or empty target list; remove rejected" );
+		return 0;
+	}
+
+	// --- Phase 1: resolve EVERY target first; mutate nothing. ---
+	std::vector<std::string> keywords( static_cast<std::size_t>( count ) );
+	std::vector<int>         indices;          // unique resolved top-level indices, first-occurrence order
+	indices.reserve( static_cast<std::size_t>( count ) );
+	int         failIdx  = -1;
+	int         failCode = 0;
+	std::string failDiag;
+	for( int i = 0; i < count; ++i )
+	{
+		const char* t = targets[i];
+		const char* k = kinds ? kinds[i] : nullptr;
+		if( !t || !t[0] ) {
+			// An empty target is a malformed REQUEST, not a resolution failure -- code 0 (the same code
+			// ApplyCstRemoveChunk returns for its own empty-target guard), with the offending index named.
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: target %d is empty; remove rejected", i );
+			if( outFailIndex ) *outFailIndex = i;
+			return 0;
+		}
+		int         idx = -1;
+		std::string kw, dg;
+		const int rc = CstResolveRemoveTarget_( *pCstDocument, t, k, GetActiveCameraName(),
+		                                        "Job::ApplyCstRemoveChunks", idx, kw, dg );
+		keywords[static_cast<std::size_t>( i )] = kw;
+		if( rc != 0 ) { failIdx = i; failCode = rc; failDiag = dg; break; }
+		// DUPLICATE COLLAPSE: two input elements naming the SAME chunk must erase it ONCE -- a second
+		// DocEraseChunkTidy at a now-stale index would erase an unrelated neighbour.  Collapsing is a
+		// CORRECTNESS requirement here; the honest "you listed it twice" reporting is the caller's job
+		// (AgentSession::RemoveChunks dedupes by name up front and says so).
+		bool alreadySeen = false;
+		for( std::size_t s = 0; s < indices.size(); ++s ) { if( indices[s] == idx ) { alreadySeen = true; break; } }
+		if( !alreadySeen ) indices.push_back( idx );
+	}
+
+	// Echo whatever keywords DID resolve (input order, '\n'-separated) even on a refusal -- the caller uses
+	// them to label its per-target results, and a partial set is more useful than none.
+	{
+		std::string joined;
+		for( std::size_t i = 0; i < keywords.size(); ++i ) {
+			if( i ) joined += '\n';
+			joined += keywords[i];
+		}
+		S2CopyOut( outKeywords, keywordsMax, joined );
+	}
+
+	if( failCode != 0 ) {
+		S2CopyOut( outDiag, diagMax, failDiag );
+		if( outFailIndex ) *outFailIndex = failIdx;
+		return failCode;
+	}
+	if( indices.empty() ) {
+		// Unreachable in practice (count > 0 and every element resolved), but a silent no-op re-derive
+		// would bump the head for nothing -- refuse honestly instead.
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: no resolved targets to erase; remove rejected" );
+		return 0;
+	}
+
+	// --- Phase 2: one Document mutation, one re-derive, one head-version bump. ---
+	std::sort( indices.begin(), indices.end(), std::greater<int>() );
+	RISE::Cst::Document work = RISE::Cst::DocEraseChunkTidy( *pCstDocument, indices[0] );
+	for( std::size_t i = 1; i < indices.size(); ++i )
+		work = RISE::Cst::DocEraseChunkTidy( work, indices[i] );
+
+	// FIX 6 (P3, 2026-08-09 R1 fix round): this is a LOG-ONLY diagnostic string (RederiveCstDocumentFull_'s
+	// diagContext, printed via GlobalLog()->PrintEx on a Phase-2 "would not derive" / "diagnosed" outcome --
+	// never returned to the caller, who already gets a precise, index-attributed cause via outFailIndex/
+	// outDiag for the -1/-2 Phase-1 resolve failures above).  Previously always named ONLY `targets[0]` even
+	// though a Phase-2 re-derive failure is a whole-DOCUMENT property that can be triggered by ANY of the
+	// batch's (deduped) erased targets -- singling out "first" misleadingly implied targets[0] was somehow
+	// the offender.  Name every unique target actually erased in this batch instead (capped to fit the
+	// buffer), so the log reflects the true scope of the mutation that failed to re-derive.
+	std::string targetList;
+	for( int i = 0; i < count; ++i ) {
+		if( !targets[i] || !targets[i][0] ) continue;
+		bool dup = false;
+		for( int j = 0; j < i; ++j ) { if( targets[j] && strcmp( targets[j], targets[i] ) == 0 ) { dup = true; break; } }
+		if( dup ) continue;
+		if( !targetList.empty() ) targetList += ", ";
+		targetList += '`';
+		targetList += targets[i];
+		targetList += '`';
+		if( targetList.size() > 220 ) { targetList += ", ..."; break; }
+	}
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "remove_chunks (%d target%s: %s)",
+	               count, count == 1 ? "" : "s", targetList.c_str() );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( work ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// R1a (2026-08-09, batched remove_chunks -- UNDO): whole-Document restore.  Full contract (including WHY the
+// batch's Undo restores text wholesale instead of replaying N ApplyCstRestoreChunkAt splices) on the IJob
+// virtual.  Deliberately thin: parse, sanity-check, and hand the parsed Document to the SAME
+// dry-run-guarded re-derive tail every other chunk-CRUD verb ends in, so a restore that would not derive
+// leaves the Document + live scene byte-identical exactly like every other refusal here.
+int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
+                                      char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || !fullText || !fullText[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocumentText:: no retained CST Document or empty text; restore rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::ParseToCst( std::string( fullText ) );
+	if( RISE::Cst::DocItemCount( d1 ) <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocumentText:: text parsed to no top-level item; restore rejected" );
+		return 0;
+	}
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), "restore document (agent remove_chunks undo)",
+	                                           &firstDiag, restoreActiveRasterizer );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
 	return code;
 }

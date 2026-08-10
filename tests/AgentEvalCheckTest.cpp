@@ -5192,8 +5192,15 @@ static void TestTrajectoryAskUserAssertions()
 	// kMutatingToolNames is read as NON-mutating, so this run looks like
 	// "ask_user with zero mutations" and VACUOUSLY PASSES the very ordering
 	// assertion the checkpoint exists to enforce -- a silent hole that makes
-	// the grader more permissive without any scenario file changing.  Both
-	// batch verbs are driven so adding one and forgetting the other is caught.
+	// the grader more permissive without any scenario file changing.  All
+	// THREE batch verbs are driven so adding one and forgetting the others is
+	// caught (FIX 5a, R1 fix round, 2026-08-09: remove_chunks joins
+	// propose_patches/insert_chunks here -- it was already correctly present
+	// in kMutatingToolNames itself, but this table hadn't exercised the
+	// tripwire for it).  The removal target need not actually SUCCEED --
+	// this checkpoint only reads the tool call's NAME, never its result --
+	// so `pnt_albedo` (still referenced by mat_diffuse in kScene) is fine to
+	// name here.
 	{
 		struct BatchMutation { const char* verb; JsonValue input; };
 		const BatchMutation kBatchMutations[] = {
@@ -5203,6 +5210,10 @@ static void TestTrajectoryAskUserAssertions()
 			                              "uniformcolor_painter\n{\n\tname pnt_b2\n\tcolor 0.2 0.3 0.4\n}" ) );
 			                          JsonValue in = JsonValue::MakeObject();
 			                          in.set( "chunks", arr ); return in; }() },
+			{ "remove_chunks",   [] { JsonValue arr = JsonValue::MakeArray();
+			                          arr.push_back( JsonValue::MakeString( "pnt_albedo" ) );
+			                          JsonValue in = JsonValue::MakeObject();
+			                          in.set( "targets", arr ); return in; }() },
 		};
 		for( const BatchMutation& bm : kBatchMutations ) {
 			const std::string r1 = AnthropicBody( "msg_1", "Building first.",

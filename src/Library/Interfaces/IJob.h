@@ -3753,6 +3753,83 @@ namespace RISE
 				orientation, targetOrientation );
 		}
 
+		//! R1a (2026-08-09, batched remove_chunks): the BATCH form of ApplyCstRemoveChunk -- remove `count`
+		//! chunks in ONE atomic operation (ONE Document mutation, ONE full re-derive, therefore ONE head-version
+		//! bump), instead of `count` separate ApplyCstRemoveChunk calls.  `targets[i]` / `kinds[i]` (kinds[i] may
+		//! be null or empty for "no kind narrowing") are resolved with the EXACT same rules ApplyCstRemoveChunk
+		//! uses -- both share one resolver, so the two verbs can never drift apart.
+		//!
+		//! ALL-OR-NOTHING.  Every target is resolved FIRST, against the unmutated Document; if ANY target fails
+		//! to resolve (unknown / ambiguous / resolved to a different kind), NOTHING is erased, the Document and
+		//! live scene are byte-identical, and `*outFailIndex` (nullable) reports which input element failed.
+		//! Only once every target resolved does the erase run -- Cst::DocEraseChunkTidy applied to each resolved
+		//! top-level index in DESCENDING index order (so earlier indices stay valid across the erases) on a
+		//! working copy -- followed by ONE dry-run-guarded full re-derive.  A batch whose REMAINDER would not
+		//! derive (a target still referenced from OUTSIDE the batch, or the remainder no longer derives in
+		//! document order) refuses as a whole with code 0, Document + live scene byte-identical.
+		//!
+		//! INTRA-BATCH REFERENCES resolve for free and need no ordering pass: all `count` chunks leave the
+		//! Document BEFORE the single re-derive runs, so a producer referenced ONLY by a consumer that is also
+		//! in the batch is removable regardless of the order the caller listed them in.  This is the property
+		//! `count` sequential ApplyCstRemoveChunk calls cannot offer at all.
+		//!
+		//! DUPLICATES: two input elements that resolve to the SAME chunk are collapsed (the chunk is erased
+		//! once) rather than refused -- an erase of an already-erased index would be a corruption, so this is a
+		//! correctness requirement, not a convenience.  The caller (AgentSession::RemoveChunks) additionally
+		//! dedupes by NAME up front so it can report the fact honestly.
+		//!
+		//! Out-params (all nullable): `outKeywords` receives the resolved keyword of each target, one per input
+		//! element, '\n'-separated in input order (empty entries for elements that never resolved), always
+		//! NUL-terminated and truncated to `keywordsMax`; `outDiag` the first dry-run diagnostic (code 0), the
+		//! match count (code -2), or a short refusal reason (code -1); `outFailIndex` the 0-based input index
+		//! that caused a -1/-2 refusal (-1 when the refusal is not attributable to one element).
+		//! Returns the SAME code alphabet as ApplyCstRemoveChunk: 2 = removed + clean full re-derive (Scene +
+		//! managers REPLACED -- caller MUST rebind); 3 = removed + replaced BUT the re-derive diagnosed;
+		//! 0 = refused, would-not-derive (nothing changed) -- ALSO for no retained CST Document / `count` <= 0 /
+		//! a null or empty target string; -1 = a target was not found (or resolved to a different kind);
+		//! -2 = a target was ambiguous.  Never 1.
+		//! Default no-op returning 0; see the Job override.  NB: appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstRemoveChunks( const char* const* /*targets*/, const char* const* /*kinds*/, int /*count*/,
+		                                  char* outKeywords, unsigned int keywordsMax,
+		                                  char* outDiag, unsigned int diagMax,
+		                                  int* outFailIndex = nullptr )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeywords && keywordsMax ) outKeywords[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			if( outFailIndex ) *outFailIndex = -1;
+			return 0;
+		}
+
+		//! R1a (2026-08-09, batched remove_chunks -- UNDO): replace the ENTIRE retained CST Document with
+		//! `fullText` (re-parsed via Cst::ParseToCst) and realize it through the SAME dry-run-guarded full
+		//! re-derive tail every chunk-CRUD verb uses.  Used ONLY by an agent `AgentRemoveChunks` op's Undo
+		//! (SceneEditor::ApplyRevertMutation), whose recorded payload is the byte-exact serialization of the
+		//! Document as it stood immediately BEFORE the batch erase.
+		//!
+		//! WHY a whole-document restore rather than N ApplyCstRestoreChunkAt splices: the batch erases N
+		//! scattered top-level indices in one shot, so the per-chunk "captured bytes + captured index" record
+		//! ApplyCstRestoreChunkAt consumes is not well defined for ADJACENT targets (Cst::DocEraseChunkTidy's
+		//! trailing-separator collapse for chunk i depends on whether chunk i+1 is still there, which for a
+		//! batch it may not be).  Restoring the recorded pre-batch text wholesale is byte-exact BY
+		//! CONSTRUCTION for any target set, and undo is LIFO so the recorded text is by definition the state
+		//! the immediately-preceding operation started from.
+		//!
+		//! `restoreActiveRasterizer` is forwarded to the shared re-derive tail: pass FALSE when the restored
+		//! text re-introduces a `*_rasterizer` chunk (mirroring ApplyCstRestoreChunkAt's own P1-B rule -- the
+		//! document's last-wins activation must be what a reload of the restored text would activate), TRUE
+		//! otherwise.  Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = restored + replaced BUT the re-derive diagnosed; 0 = refused (no retained CST Document, empty
+		//! `fullText`, text that parses to no top-level item, or a dry-run failure -- nothing changed).
+		//! Never 1.  Default no-op returning 0; see the Job override.  NB: appended at the IJob tail.
+		virtual int ApplyCstReplaceDocumentText( const char* /*fullText*/, bool /*restoreActiveRasterizer*/,
+		                                         char* outDiag, unsigned int diagMax )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
 	};
 
 

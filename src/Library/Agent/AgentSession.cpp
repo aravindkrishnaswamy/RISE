@@ -1208,6 +1208,285 @@ namespace RISE
 					"emitter with a real-geometry object (a standard_object) instead, or keep the "
 					"acknowledgment flag TRUE.";
 			}
+
+			//----------------------------------------------------------------
+			// R1c (2026-08-09): the agent rasterizer ALLOWLIST gate.  See
+			// AgentRasterizerPolicy in AgentSession.h for the policy itself
+			// and the derivation rules; this block holds the classification
+			// primitives and the two document-level comparisons the public
+			// gate functions below are built from.
+			//
+			// NO ESCAPE PARAMETER, deliberately.  E1 shipped
+			// `allow_non_sampling_emitter` because that construct has a rare
+			// but LEGITIMATE authoring intent (a glow-only csg) the agent can
+			// honestly disclose.  This directive is CATEGORICAL -- "agents may
+			// use PT and VCM only" -- so there is nothing for an agent to
+			// disclose, and an escape param would be exactly the habituation
+			// surface E1's stop rule watches for: a flag the model learns to
+			// set reflexively, turning a refusal into a two-call formality.
+			// The alternative is a HUMAN one and is named in every refusal
+			// message: the user selects any rasterizer they like.
+			//----------------------------------------------------------------
+
+			//! The FOUR integrator kinds an agent may select.
+			const char* const kAgentAllowedRasterizers_[] = {
+				"pathtracing_pel_rasterizer",
+				"pathtracing_spectral_rasterizer",
+				"vcm_pel_rasterizer",
+				"vcm_spectral_rasterizer",
+			};
+
+			//! DELIBERATELY UNGATED (supervisor decision): these are not
+			//! integrator choices, and `pixelpel_rasterizer` is REQUIRED for
+			//! alpha-mask scenes (docs/SCENE_CONVENTIONS.md).  The directive
+			//! concerns which INTEGRATOR an agent reaches for.
+			const char* const kAgentUngatedUtilityRasterizers_[] = {
+				"pixelpel_rasterizer",
+				"pixelintegratingspectral_rasterizer",
+			};
+
+			//! The rasterizer kinds this policy has EXPLICITLY considered and
+			//! blocked.  Runtime blocking does NOT read this list -- anything
+			//! that is a rasterizer and is in neither of the two sets above
+			//! blocks (allowlist semantics).  This list exists ONLY so
+			//! AgentRasterizerKindIsExplicitlyClassified can tell "blocked
+			//! because we decided to" apart from "blocked because nobody has
+			//! looked at it yet", which is what the coverage test asserts.
+			const char* const kAgentBlockedRasterizers_[] = {
+				"bdpt_pel_rasterizer",
+				"bdpt_spectral_rasterizer",
+				"mlt_rasterizer",
+				"mlt_spectral_rasterizer",
+				"auto_rasterizer",
+				"auto_spectral_rasterizer",
+			};
+
+			//! Is `kw` a real rasterizer CHUNK?  Two conditions, both from the
+			//! parser's own descriptor rather than any list here: the
+			//! descriptor's category is ChunkCategory::Rasterizer, AND the
+			//! keyword ends in `_rasterizer`.  The suffix test is load-bearing
+			//! and not cosmetic -- `light_rr_threshold` is registered under
+			//! ChunkCategory::Rasterizer but is a scalar knob, not a
+			//! rasterizer.  This is the SAME predicate pair
+			//! SceneEditController's entity-addressability switch uses ("a
+			//! real rasterizer kind, NOT light_rr_threshold").
+			bool IsRasterizerChunkKeyword_( const std::string& kw )
+			{
+				static const std::string suffix = "_rasterizer";
+				if( kw.size() <= suffix.size() ) return false;
+				if( kw.compare( kw.size() - suffix.size(), suffix.size(), suffix ) != 0 ) return false;
+				const ChunkDescriptor* d = DescriptorForKeyword( String( kw.c_str() ) );
+				return d && d->category == ChunkCategory::Rasterizer;
+			}
+
+			//! The rasterizer chunk keywords of `doc`, in DOCUMENT ORDER.  The
+			//! LAST entry is the one that will be ACTIVE after a load: "A scene
+			//! that declares two different rasterizer chunks ends up with both
+			//! in the registry; the last-declared one wins for active"
+			//! (IJob.h's rasterizer-registry contract).
+			std::vector<std::string> CollectRasterizerKeywords_( const Document& doc )
+			{
+				std::vector<std::string> out;
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					if( IsRasterizerChunkKeyword_( it->role ) ) out.push_back( it->role );
+				}
+				return out;
+			}
+
+			//! Lower-cased, quote-stripped form of an `integrator` pin value,
+			//! folded through the SAME synonym set the two auto_* chunk
+			//! parsers accept (`pt` / `pathtracing` / `path_tracing` all mean
+			//! PT).  Anything unrecognised comes back as-is.  R1c round-3
+			//! FIX A (2026-08-09): the caller now tests membership in the
+			//! full ALLOW set {auto,pt,vcm} (see IsAgentAllowedIntegratorPin_
+			//! below), so an unrecognised/garbage string IS refused here too
+			//! -- allowlist semantics, unclassified defaults to refused --
+			//! even though the PARSER itself would silently treat it as
+			//! `auto` (with a warning) at Finalize time.  A gate that let
+			//! garbage slide through on the theory that the parser would
+			//! sort it out later is not an allowlist.
+			std::string NormalizeAutoIntegratorPin_( const std::string& raw )
+			{
+				std::string v = raw;
+				// Strip surrounding quotes -- `integrator "vcm"` is accepted by
+				// the parser, so the gate must see through the quoted form too.
+				if( v.size() >= 2 && ( ( v[0] == '"' && v[v.size()-1] == '"' ) ||
+				                       ( v[0] == '\'' && v[v.size()-1] == '\'' ) ) )
+					v = v.substr( 1, v.size() - 2 );
+				for( std::size_t i = 0; i < v.size(); ++i )
+					v[i] = static_cast<char>( std::tolower( static_cast<unsigned char>( v[i] ) ) );
+				if( v == "pathtracing" || v == "path_tracing" ) return "pt";
+				return v;
+			}
+		}
+
+		AgentRasterizerPolicy ClassifyAgentRasterizerKind( const std::string& keyword )
+		{
+			if( !IsRasterizerChunkKeyword_( keyword ) ) return AgentRasterizerPolicy::NotARasterizer;
+			for( const char* k : kAgentAllowedRasterizers_ )
+				if( keyword == k ) return AgentRasterizerPolicy::Allowed;
+			for( const char* k : kAgentUngatedUtilityRasterizers_ )
+				if( keyword == k ) return AgentRasterizerPolicy::UngatedUtility;
+			// ALLOWLIST semantics: a rasterizer kind nobody has classified is
+			// BLOCKED, not admitted.  See kAgentBlockedRasterizers_'s doc.
+			return AgentRasterizerPolicy::Blocked;
+		}
+
+		bool AgentRasterizerKindIsExplicitlyClassified( const std::string& keyword )
+		{
+			for( const char* k : kAgentAllowedRasterizers_ )        if( keyword == k ) return true;
+			for( const char* k : kAgentUngatedUtilityRasterizers_ ) if( keyword == k ) return true;
+			for( const char* k : kAgentBlockedRasterizers_ )        if( keyword == k ) return true;
+			return false;
+		}
+
+		namespace
+		{
+			//! The actionable refusal clause for a BLOCKED rasterizer kind.
+			//! Names the rejected kind, names the allowed set EXPLICITLY, and
+			//! states the alternative (the user selects it themselves) -- the
+			//! same three obligations E1's refusal clauses carry.
+			std::string DescribeBlockedRasterizer_( const std::string& rejected )
+			{
+				std::string allowed;
+				const std::size_t n = sizeof( kAgentAllowedRasterizers_ ) / sizeof( kAgentAllowedRasterizers_[0] );
+				for( std::size_t i = 0; i < n; ++i ) {
+					if( i ) allowed += ( i + 1 == n ) ? " and " : ", ";
+					allowed += "`";
+					allowed += kAgentAllowedRasterizers_[i];
+					allowed += "`";
+				}
+				return "`" + rejected + "` is a SPECIALIZED rasterizer that a scene-editing agent may not "
+					"select. The only rasterizers this surface may select are " + allowed + " -- PT for "
+					"general scenes, VCM for caustic / refractive / dispersive transport. There is NO "
+					"override parameter on this refusal: if the scene genuinely needs `" + rejected + "`, "
+					"the USER selects it themselves (the GUI's rasterizer accordion, or by authoring the "
+					"chunk into the scene file), and the agent then keeps editing the scene around it "
+					"normally. The non-integrator utility rasterizers `pixelpel_rasterizer` and "
+					"`pixelintegratingspectral_rasterizer` are NOT gated -- `pixelpel_rasterizer` is "
+					"required for alpha-mask scenes.";
+			}
+
+			//! R1c round-3 FIX A (2026-08-09): the FULL accepted value domain
+			//! of the `integrator` enum on auto_rasterizer /
+			//! auto_spectral_rasterizer, per both chunks' descriptor in
+			//! ChunkParserRegistry.cpp (`p.enumValues =
+			//! {"auto","pt","bdpt","vcm"}`, identical on the two chunks --
+			//! verified by reading the descriptor, not guessed).  ALLOWLIST
+			//! semantics, mirroring kAgentAllowedRasterizers_ /
+			//! kAgentBlockedRasterizers_ above: the dispatcher's own choice
+			//! (`auto`) and the two agent-selectable integrators (`pt`,
+			//! `vcm`) are explicitly allowed; `bdpt` is explicitly blocked;
+			//! and a value the descriptor adds later that NEITHER list names
+			//! falls through to REFUSED (see IsAgentAllowedIntegratorPin_
+			//! below) -- a new accepted value defaults to refused, not
+			//! silently admitted.
+			const char* const kAgentAllowedIntegratorPins_[] = { "auto", "pt", "vcm" };
+
+			//! The pin values this policy has EXPLICITLY considered and
+			//! blocked -- exists ONLY so
+			//! AgentIntegratorPinIsExplicitlyClassified can tell "blocked
+			//! because we decided to" apart from "blocked because nobody has
+			//! looked at it yet" (same purpose as kAgentBlockedRasterizers_
+			//! above).
+			const char* const kAgentBlockedIntegratorPins_[] = { "bdpt" };
+
+			//! TRUE iff `pin` (already run through
+			//! NormalizeAutoIntegratorPin_) is in the explicit ALLOW set.
+			//! Anything else -- `bdpt`, a future descriptor addition this
+			//! policy hasn't named yet, or outright garbage -- is refused.
+			//! STATELESS: does not consult the head's current value (see
+			//! CheckRasterizerAllowlistGateForPatch's arm (a) for why the
+			//! prior state-comparing form was a TOCTOU hazard).
+			bool IsAgentAllowedIntegratorPin_( const std::string& pin )
+			{
+				for( const char* k : kAgentAllowedIntegratorPins_ ) if( pin == k ) return true;
+				return false;
+			}
+
+			//! The refusal clause for arm (a): pinning an auto_* rasterizer's
+			//! `integrator` to a non-allowed value.  A distinct message from
+			//! DescribeBlockedRasterizer_ because the causal story is "you
+			//! selected an integrator through a chunk that was already
+			//! here", not "you tried to add a chunk".
+			std::string DescribeBlockedIntegratorPin_( const std::string& autoKeyword, const std::string& rejectedPin )
+			{
+				return "pinning `" + autoKeyword + "`'s `integrator` to `" + rejectedPin + "` is refused. "
+					"On this chunk the agent-selectable pins are `pt` (path tracing), `vcm` (caustic / "
+					"refractive / dispersive transport), and `auto` (leaves the dispatcher's own choice in "
+					"place) -- EVERY other value, including `bdpt`, is refused UNCONDITIONALLY, regardless "
+					"of what the chunk is already pinned to (a stateless allowlist, not a delta against the "
+					"chunk's current value). There is NO override parameter on this refusal -- the USER pins "
+					"the rejected value themselves (the GUI, or by authoring the pin into the scene file). "
+					"Every OTHER parameter on this chunk remains freely editable.";
+			}
+
+			//! Arm (b): compare the candidate document against the head by
+			//! rasterizer-keyword MULTISET and by ACTIVE rasterizer, and return
+			//! the refusal clause for the first NEWLY introduced / NEWLY
+			//! activated blocked kind.  "" when the delta introduces none.
+			//!
+			//! Two independent conditions, both needed:
+			//!   * a blocked keyword whose COUNT goes up -- covers an added
+			//!     chunk however it got there (a value-splice injection, a
+			//!     wholesale chunk-text rewrite), including adding a SECOND
+			//!     copy to a scene that already had one;
+			//!   * the ACTIVE (last-declared) rasterizer flipping from
+			//!     non-blocked to blocked WITHOUT any count change -- covers a
+			//!     reordering/removal that re-activates a pre-existing blocked
+			//!     chunk.  No agent verb can do that today (rasterizer chunks
+			//!     declare no `name`, so remove_chunk/remove_chunks cannot
+			//!     resolve one and the unique-in-kind positional fallback fires
+			//!     only for `camera` and unnamedRepeatable kinds -- neither of
+			//!     which a rasterizer is), but the condition costs one string
+			//!     compare and closes the class rather than the instance.
+			std::string DescribeNewlyBlockedRasterizerDelta_( const Document& headDoc, const Document& candidateDoc )
+			{
+				const std::vector<std::string> headKw = CollectRasterizerKeywords_( headDoc );
+				const std::vector<std::string> candKw = CollectRasterizerKeywords_( candidateDoc );
+
+				std::map<std::string,int> headCounts;
+				for( const std::string& k : headKw ) ++headCounts[k];
+
+				std::map<std::string,int> candCounts;
+				for( const std::string& k : candKw ) ++candCounts[k];
+
+				for( const std::pair<const std::string,int>& kv : candCounts ) {
+					if( ClassifyAgentRasterizerKind( kv.first ) != AgentRasterizerPolicy::Blocked ) continue;
+					const std::map<std::string,int>::const_iterator h = headCounts.find( kv.first );
+					const int before = ( h == headCounts.end() ) ? 0 : h->second;
+					if( kv.second > before ) return DescribeBlockedRasterizer_( kv.first );
+				}
+
+				const std::string headActive = headKw.empty() ? std::string() : headKw.back();
+				const std::string candActive = candKw.empty() ? std::string() : candKw.back();
+				if( !candActive.empty() && candActive != headActive &&
+				    ClassifyAgentRasterizerKind( candActive ) == AgentRasterizerPolicy::Blocked &&
+				    ClassifyAgentRasterizerKind( headActive ) != AgentRasterizerPolicy::Blocked )
+					return DescribeBlockedRasterizer_( candActive );
+
+				return std::string();
+			}
+		}
+
+		//! R1c round-3 FIX A (2026-08-09).  TRUE iff `pin` (already run
+		//! through NormalizeAutoIntegratorPin_) appears in one of the TWO
+		//! hand-maintained integrator-pin policy sets (allowed / known-
+		//! blocked) above.  A pin value the descriptor accepts that this
+		//! policy never named comes back FALSE -- it still REFUSES at
+		//! runtime (allowlist semantics, IsAgentAllowedIntegratorPin_), but
+		//! a coverage test can fail so the omission is a decision someone
+		//! makes deliberately, mirroring
+		//! AgentRasterizerKindIsExplicitlyClassified above.
+		bool AgentIntegratorPinIsExplicitlyClassified( const std::string& pin )
+		{
+			for( const char* k : kAgentAllowedIntegratorPins_ ) if( pin == k ) return true;
+			for( const char* k : kAgentBlockedIntegratorPins_ ) if( pin == k ) return true;
+			return false;
 		}
 
 		//! Post-arc enforcement E1's creation gate, patch arm -- see the
@@ -1336,6 +1615,116 @@ namespace RISE
 				FindUnacknowledgedNullGeometryEmitters_( candidate, std::vector<std::string>( 1, touchedName ) );
 			if( hits.empty() ) return std::string();
 			return DescribeUnacknowledgedNullGeometryEmitters_( hits );
+		}
+
+		//! R1c (2026-08-09) -- see the declaration in AgentSession.h for the
+		//! contract.  A FREE function (external linkage) for the same
+		//! cross-TU reason E1's pair are: SceneEditController::ResolveProposal
+		//! re-runs the IDENTICAL check at approval time, so a proposal staged
+		//! before the head moved cannot slip a blocked rasterizer through on
+		//! approval (the E1 re-gate lesson).
+		//!
+		//! Cost: ONE CST parse of the (tiny) candidate chunk text plus one
+		//! descriptor lookup per top-level chunk.  No derive, no throwaway
+		//! Job -- unlike E1, this policy is answerable from the keyword alone.
+		std::string CheckRasterizerAllowlistGateForInsert( const std::string& chunkText )
+		{
+			const RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( chunkDoc );
+			for( int i = 0; i < n; ++i )
+			{
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				// EVERY top-level chunk, not just the first: insert_chunk's own
+				// one-chunk-per-call rule is enforced downstream, and a gate
+				// that trusted it would be a gate with a bypass.
+				if( ClassifyAgentRasterizerKind( it->role ) == AgentRasterizerPolicy::Blocked )
+					return DescribeBlockedRasterizer_( it->role );
+			}
+			return std::string();
+		}
+
+		//! R1c -- see the declaration in AgentSession.h.  Free function for the
+		//! same cross-TU reason as the insert arm above.
+		std::string CheckRasterizerAllowlistGateForPatch( const std::string& headText,
+		                                                  const std::string& target,
+		                                                  const std::string& kind,
+		                                                  const std::string& param,
+		                                                  const std::string& value )
+		{
+			// A patch with neither a target nor a kind addresses nothing; the
+			// normal machinery rejects it and there is no candidate to build.
+			if( target.empty() && kind.empty() ) return std::string();
+			if( param.empty() ) return std::string();
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( headText );
+
+			// Resolution mirrors Job::ApplyCstParamEditImpl_'s kind-addressed
+			// SINGLETON rule -- an EMPTY name with a non-empty kind resolves
+			// the sole chunk of that kind.  That rule is EXACTLY how the agent
+			// surface addresses the unnamed film / rasterizer chunks (rasterizer
+			// chunks declare no `name` param at all), so a gate that only
+			// handled named targets -- as E1's patch arm does, correctly, since
+			// a csg_object is always named -- would miss every rasterizer param
+			// edit.  The camera-specific DocCameraUniqueFallbackPermitted gate
+			// is deliberately NOT reproduced here: a camera is never a
+			// rasterizer, so the two rules can only differ on chunks this gate
+			// has nothing to say about.
+			const bool uniqueFallback = ( target.empty() && !kind.empty() );
+			const RISE::Cst::NodeId id =
+				RISE::Cst::DocFindByNameAnyRole( headDoc, target, nullptr, kind, uniqueFallback );
+			if( !id ) return std::string();
+			const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( headDoc, id );
+			if( !chunkItem ) return std::string();
+
+			// ---- Arm (a): the auto_* dispatcher's `integrator` pin ----------
+			// STATELESS ALLOWLIST (R1c round-3 FIX A, 2026-08-09): refuse
+			// any value outside {auto,pt,vcm} UNCONDITIONALLY -- no
+			// comparison against the head's current value.  The prior form
+			// read the head's EXISTING value and skipped the refusal when
+			// the head was already pinned to `bdpt` (treating the write as
+			// an inert no-op).  That state comparison is a TOCTOU hazard:
+			// when the caller omits baseHeadVersion, a co-editor can move
+			// the pin OFF `bdpt` between this gate check and
+			// ApplyAgentParamEdit's commit, so the "inert" write lands and
+			// actually RE-SELECTS BDPT.  Refusing a genuine no-op costs the
+			// agent nothing (the value is already what it would write); the
+			// stateless form is race-free by construction and keeps policy
+			// at this AgentSession choke point rather than pushed into the
+			// controller's critical section.
+			if( param == "integrator" &&
+			    ( chunkItem->role == "auto_rasterizer" || chunkItem->role == "auto_spectral_rasterizer" ) )
+			{
+				const std::string want = NormalizeAutoIntegratorPin_( value );
+				if( !IsAgentAllowedIntegratorPin_( want ) )
+					return DescribeBlockedIntegratorPin_( chunkItem->role, want );
+			}
+
+			// ---- Arm (b): the document-level delta --------------------------
+			// A param VALUE is spliced into the document as TEXT, so the only
+			// honest way to ask "did this edit add a rasterizer chunk" is to
+			// build the candidate and look.  This is what makes the arm
+			// generic: it does not have to recognise any particular injection
+			// shape, only the resulting document.
+			//
+			// ROUND-TRIP, and this is load-bearing, not defensive.
+			// DocSetOrAddParamValue writes `value` VERBATIM into the target
+			// param's value token: the in-memory candidate still has exactly
+			// the chunks the head had, no matter what the value string
+			// contains.  It is the SERIALIZED bytes -- the head an agent
+			// commits, and the bytes any later load re-parses -- where a value
+			// carrying `}` + a whole `mlt_rasterizer { ... }` block becomes a
+			// real second chunk.  So the comparison must be made against
+			// ParseToCst(SerializeCst(candidate)), i.e. against what the
+			// document WILL MEAN, not against the node tree the edit
+			// mechanically produced.  (The derive layer independently rejects
+			// most such splices -- a Double slot refuses a non-numeric token
+			// -- but "most" is not a gate.)
+			const RISE::Cst::Document candidate = RISE::Cst::DocSetOrAddParamValue( headDoc, id, param, 0, value );
+			const RISE::Cst::Document candidateAsBytes =
+				RISE::Cst::ParseToCst( RISE::Cst::SerializeCst( candidate ) );
+			return DescribeNewlyBlockedRasterizerDelta_( headDoc, candidateAsBytes );
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -1864,6 +2253,34 @@ namespace RISE
 				}
 			}
 
+			// R1c (2026-08-09, agent rasterizer allowlist): the SECOND
+			// engine-side creation gate, same choke point and same shape as
+			// E1's above -- ahead of the authority/mode branching so CLI, GUI
+			// and External-authority staging all inherit it identically, and
+			// SHARED with SceneEditController::ResolveProposal's re-check via
+			// CheckRasterizerAllowlistGateForPatch (AgentSession.h).  NOT
+			// folded into the block above because the target predicate
+			// differs: E1 requires a NAMED target (a csg_object always has a
+			// name), while the rasterizer chunks this gate polices have NO
+			// `name` param and are addressed as kind-addressed singletons
+			// (empty target + kind).
+			if( !patch.target.empty() || !patch.kind.empty() )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				if( snap.hasDocument ) {
+					const std::string clause = CheckRasterizerAllowlistGateForPatch(
+						snap.document, patch.target, patch.kind, patch.param, patch.value );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = snap.headVersion;
+						r.message     = "propose_patch refused: " + clause;
+						return r;
+					}
+				}
+			}
+
 			// Secure-MCP slice 5a: the authority gate, enforced HERE -- not
 			// trusted to any caller-side flag -- BEFORE the existing LIVE-mode
 			// commit branch below.  This is the choke point that closes the
@@ -2212,6 +2629,71 @@ namespace RISE
 						r.message = isInsert
 							? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
 							: "remove rejected: removing '" + target + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
+						if( diag && diag[0] ) { r.message += ": "; r.message += diag; }
+						break;
+				}
+			}
+
+			//! R1a (2026-08-09, batched remove_chunks): FoldChunkCode's batch sibling -- Job::ApplyCstRemoveChunks
+			//! returns the SAME 2/3/0/-1/-2 alphabet, so this fold mirrors the remove half of FoldChunkCode
+			//! with two batch-specific additions: every refusal message says explicitly that NOTHING was
+			//! removed (the all-or-nothing contract is the one thing a model must not have to infer), and a
+			//! -1/-2 names the OFFENDING TARGET by `failIndex` so the next call can fix that one element.
+			//! `unique` is the deduped target list `failIndex` indexes into.
+			void FoldRemoveBatchCode_( AgentSession::AgentRemoveBatchResult& r, int code, int failIndex,
+			                           const std::vector<std::string>& unique, const char* diag )
+			{
+				const bool haveOffender = ( failIndex >= 0 && failIndex < static_cast<int>( unique.size() ) );
+				const std::string offender = haveOffender ? ( " '" + unique[static_cast<std::size_t>( failIndex )] + "'" )
+				                                          : std::string();
+				r.rawCode = ( code < 0 ) ? 0 : code;
+				switch( code ) {
+					case 2:
+						r.applied = true;
+						r.status  = "applied";
+						{
+							char buf[160];
+							std::snprintf( buf, sizeof( buf ),
+								"%d chunk%s removed via a SINGLE full re-derive (one head-version bump, one undo step)",
+								static_cast<int>( unique.size() ), unique.size() == 1 ? "" : "s" );
+							r.message = buf;
+						}
+						break;
+					case 3:
+						r.applied = false;
+						r.status  = "diagnosed";
+						r.message = "batch remove NOT a clean success: the Document was mutated and the live managers "
+						            "were replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT "
+						            "treat as applied";
+						break;
+					case -1:
+						r.applied = false;
+						r.status  = "rejected";
+						r.message = "batch remove rejected -- NOTHING was removed, head unchanged: target" + offender;
+						if( diag && diag[0] ) { r.message += " -- "; r.message += diag; }
+						else                  { r.message += " was not found"; }
+						break;
+					case -2:
+						r.applied = false;
+						r.status  = "rejected";
+						// remove_chunks takes bare names only, so the escape hatch for an ambiguous name is
+						// the SINGULAR verb (which owns `kind`) -- say that, rather than "pass a kind" for a
+						// parameter this verb does not have.
+						r.message = "batch remove rejected -- NOTHING was removed, head unchanged: target" + offender
+						          + " is ambiguous; remove_chunks takes bare names only, so remove that one with a "
+						            "single remove_chunk call passing its `kind`";
+						if( diag && diag[0] ) { r.message += " ("; r.message += diag; r.message += ")"; }
+						break;
+					case 0:
+					default:
+						r.applied = false;
+						r.status  = "rejected";
+						// Both honest causes, restated for a batch.  An INTRA-batch reference is explicitly
+						// NOT one of them: every target leaves the Document before the single re-derive runs.
+						r.message = "batch remove rejected -- NOTHING was removed, head unchanged: the remaining "
+						            "document would not derive (a target is likely still REFERENCED by a chunk "
+						            "OUTSIDE this batch, or the remaining document no longer derives in order -- "
+						            "read_document and validate to inspect)";
 						if( diag && diag[0] ) { r.message += ": "; r.message += diag; }
 						break;
 				}
@@ -3107,6 +3589,124 @@ namespace RISE
 					r.message += " ACTIONABLE: " + clauses + ".";
 			}
 
+			//! R1a (2026-08-09, batched remove_chunks): the BATCH sibling of AttachRemoveRejectionIssues.
+			//! Runs ONCE over the whole (already-deduped) target list against the head Document a REFUSED
+			//! batch left byte-identical, and attaches at most one issue to each per-target result:
+			//!
+			//!   * "unknown_target"    -- the name does not resolve to any chunk (near-miss candidates ranked
+			//!                            by the SAME RankNearMisses/CollectTargetNameCandidates pair
+			//!                            AnalyzeRejectedParamEdit uses, so the two verbs suggest alike).
+			//!                            This EXTENDS "unknown_target" from the propose_patch-only group in
+			//!                            AgentChunkIssue's doc to remove_chunks -- the slug's meaning is
+			//!                            unchanged (a `target` that resolves to nothing).
+			//!   * "still_referenced"  -- the name resolves AND the reference graph names at least one
+			//!                            referrer that is NOT ITSELF IN THIS BATCH.  Subtracting the batch
+			//!                            is the whole difference from the singular analyser and it is the
+			//!                            honest thing to report: an intra-batch referrer does NOT block this
+			//!                            removal (every target leaves the Document before the single
+			//!                            re-derive runs), so naming one would send the model chasing a
+			//!                            referrer it already asked to delete.
+			//!
+			//! HONESTY, inherited verbatim from AnalyzeRejectedRemove: finding nothing is NOT exoneration --
+			//! a dynamic reference this static graph does not model could still exist, and the OTHER cause
+			//! (the remaining document no longer derives in order) produces no issue at all.  A target with
+			//! no attributable cause simply gets no issue and keeps the caller's hedged message.
+			void AttachRemoveBatchRejectionIssues( std::vector<AgentChunkResult>& perTarget,
+			                                       const RISE::Cst::Document& doc,
+			                                       const std::vector<std::string>& targets )
+			{
+				if( perTarget.size() != targets.size() ) return;   // defensive: the two are built in lockstep
+
+				// Resolve every target ONCE -- the ids double as the "is this referrer in the batch?" set.
+				// No kind narrowing and no camera positional fallback: remove_chunks takes bare names only
+				// (see AgentSession::RemoveChunks' NO PER-TARGET `kind` note).
+				std::vector<RISE::Cst::NodeId> ids( targets.size(), 0 );
+				std::vector<int>               occs( targets.size(), 0 );
+				std::set<RISE::Cst::NodeId>    inBatch;
+				for( std::size_t i = 0; i < targets.size(); ++i ) {
+					ids[i] = RISE::Cst::DocFindByNameAnyRole( doc, targets[i], &occs[i], "", false );
+					if( ids[i] != 0 ) inBatch.insert( ids[i] );
+				}
+
+				const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc, nullptr, nullptr );
+				for( std::size_t i = 0; i < targets.size(); ++i )
+				{
+					if( ids[i] == 0 ) {
+						// AMBIGUOUS (occ > 1), not unknown: the name DOES resolve to chunks, just not to
+						// ONE.  There is no "ambiguous" slug in AgentChunkIssue's closed reason set, and
+						// labelling it "unknown_target" would be a LIE that sends the model hunting for a
+						// typo it did not make.  Stay silent and let the caller's message -- which names
+						// the target and points at the singular verb's `kind` -- carry it.
+						if( occs[i] > 1 ) continue;
+						AgentChunkIssue issue;
+						issue.value       = targets[i];
+						issue.reason      = "unknown_target";
+						issue.suggestions = RankNearMisses( CollectTargetNameCandidates( doc, std::string() ), targets[i] );
+						perTarget[i].issues.push_back( issue );
+						continue;
+					}
+					const std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >::const_iterator dep =
+						graph.dependents.find( ids[i] );
+					if( dep == graph.dependents.end() || dep->second.empty() ) continue;   // HONESTY: no referrer -> stay silent
+
+					AgentChunkIssue issue;
+					issue.value  = targets[i];
+					issue.reason = "still_referenced";
+					for( const RISE::Cst::NodeId refId : dep->second )
+					{
+						if( inBatch.count( refId ) != 0 ) continue;   // an INTRA-BATCH referrer does not block
+						const RISE::Cst::NodeRef refItem = RISE::Cst::DocResolveNodeId( doc, refId );
+						if( !refItem ) continue;
+						const std::string namePath = RISE::Cst::ChunkNamePath( refItem );
+						std::string label = refItem->role;   // fallback for an unnamed referrer
+						if( !namePath.empty() ) {
+							const std::string prefix = refItem->role + "/";
+							if( namePath.size() > prefix.size() && namePath.compare( 0, prefix.size(), prefix ) == 0 )
+								label = namePath.substr( prefix.size() );
+						}
+						issue.suggestions.push_back( label );
+					}
+					// Every referrer was in the batch (or none produced a nameable label) -> this target is
+					// NOT blocked; emit nothing rather than an issue with an empty referrer list.
+					if( issue.suggestions.empty() ) continue;
+					perTarget[i].issues.push_back( issue );
+				}
+			}
+
+			//! R1a: fold the per-target issues attached above into ONE actionable clause for the batch-level
+			//! message -- the batch analogue of AttachRemoveRejectionIssues' own message tail.  Returns ""
+			//! when no issue was attributable to any target (HONESTY: the caller then leaves its hedged
+			//! message untouched).
+			std::string BuildRemoveBatchActionableClause( const std::vector<AgentChunkResult>& perTarget )
+			{
+				std::string clauses;
+				for( const AgentChunkResult& tr : perTarget ) {
+					for( const AgentChunkIssue& issue : tr.issues ) {
+						if( !clauses.empty() ) clauses += "; ";
+						if( issue.reason == "still_referenced" ) {
+							std::string refs;
+							for( const std::string& s : issue.suggestions ) {
+								if( !refs.empty() ) refs += ", ";
+								refs += "'" + s + "'";
+							}
+							clauses += "'" + issue.value + "' is still referenced from OUTSIDE this batch by " + refs;
+						} else if( issue.reason == "unknown_target" ) {
+							clauses += "'" + issue.value + "' does not name any chunk";
+							if( !issue.suggestions.empty() ) {
+								std::string cands;
+								for( const std::string& s : issue.suggestions ) {
+									if( !cands.empty() ) cands += ", ";
+									cands += "'" + s + "'";
+								}
+								clauses += " (did you mean " + cands + "?)";
+							}
+						}
+					}
+				}
+				if( clauses.empty() ) return std::string();
+				return " ACTIONABLE: " + clauses + ".";
+			}
+
 		}
 
 		std::vector<AgentPatchResult> AgentSession::ProposePatches( const std::vector<AgentSetPatch>& patches,
@@ -3168,6 +3768,41 @@ namespace RISE
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentChunkResult r;
+
+			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
+			// of the gate, FIRST -- before E1's and before the authority
+			// branching -- because it is the cheapest of the three (a CST parse
+			// and a descriptor lookup; no derive) and because a blocked
+			// rasterizer is refused unconditionally, so nothing later in this
+			// function can change the answer.  SHARED with
+			// SceneEditController::ResolveProposal's re-check via
+			// CheckRasterizerAllowlistGateForInsert (AgentSession.h).
+			{
+				const std::string clause = CheckRasterizerAllowlistGateForInsert( chunkText );
+				if( !clause.empty() ) {
+					// Identity echo even on refusal, the contract every other
+					// InsertChunk guard honours.  A rasterizer chunk has no
+					// `name`, so only `kind` is echoable -- and it is the one
+					// the model needs.
+					const RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it =
+							RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						if( ClassifyAgentRasterizerKind( it->role ) == AgentRasterizerPolicy::Blocked ) {
+							r.kind = it->role;
+							break;
+						}
+					}
+					r.applied     = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message     = "insert_chunk refused: " + clause;
+					return r;
+				}
+			}
 
 			// Post-arc enforcement E1: the InsertChunk sibling of ProposePatch's
 			// identical gate -- does inserting this chunk CREATE an
@@ -3375,6 +4010,46 @@ namespace RISE
 				return out;
 
 			out.reserve( chunkTexts.size() );
+
+			// R1c (2026-08-09, agent rasterizer allowlist): an UP-FRONT scan of
+			// EVERY element, before a single insert runs.  This is the one
+			// place R1c deviates from InsertChunks' documented SEQUENTIAL,
+			// BEST-EFFORT contract, deliberately: best-effort is right for a
+			// per-element AUTHORING failure (a partially-landed additive batch
+			// is a coherent, extendable state the model can reason about), but
+			// a POLICY refusal is not an authoring failure -- landing the first
+			// half of a batch and then refusing the integrator the rest of it
+			// was written for leaves a scene the model never asked for.  So a
+			// blocked rasterizer ANYWHERE in the batch refuses the WHOLE batch
+			// atomically, with the document byte-identical and the head version
+			// unbumped, matching R1a's all-or-nothing remove semantics.  Every
+			// element reports the SAME verdict; the message names the offending
+			// INDEX so the fix is one edit, not a hunt.
+			{
+				std::size_t offender = chunkTexts.size();
+				std::string clause;
+				for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+					clause = CheckRasterizerAllowlistGateForInsert( chunkTexts[i] );
+					if( !clause.empty() ) { offender = i; break; }
+				}
+				if( offender < chunkTexts.size() ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ),
+						"insert_chunks refused: NOTHING was inserted (chunks[%d]) -- ",
+						static_cast<int>( offender ) );
+					const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+					for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+						AgentChunkResult e;
+						e.applied     = false;
+						e.rawCode     = 0;
+						e.status      = "rejected";
+						e.headVersion = head;
+						e.message     = std::string( buf ) + clause;
+						out.push_back( e );
+					}
+					return out;
+				}
+			}
 
 			// SEQUENTIAL, BEST-EFFORT: delegate to the existing InsertChunk
 			// for every element, in order, without duplicating any of its
@@ -5121,6 +5796,262 @@ namespace RISE
 			return r;
 		}
 
+		AgentSession::AgentRemoveBatchResult AgentSession::RemoveChunks( const std::vector<std::string>& targets,
+		                                                                const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentRemoveBatchResult r;
+
+			// ---- Request validation (nothing touched on any failure) --------------------------------
+			if( targets.empty() ) {
+				r.status      = "rejected";
+				r.headVersion = HeadVersion();
+				r.message     = "remove_chunks refused: `targets` must list at least one chunk name";
+				return r;
+			}
+
+			// DEDUPE by exact name, FIRST-OCCURRENCE order.  Silently-but-honestly: the chunk is removed
+			// once and `note` says so.  Refusing a harmless bookkeeping slip would cost the model a whole
+			// round-trip to fix nothing.  An EMPTY element is a different matter -- it addresses no chunk
+			// at all, so it refuses the batch (all-or-nothing) rather than being quietly dropped.
+			std::vector<std::string>  unique;
+			std::vector<int>          repeatCount;   // parallel to `unique`; >1 means it was listed more than once
+			for( std::size_t i = 0; i < targets.size(); ++i )
+			{
+				if( targets[i].empty() ) {
+					char buf[160];
+					std::snprintf( buf, sizeof( buf ),
+						"remove_chunks refused: targets[%d] is empty -- every element must name a chunk (nothing was removed)",
+						static_cast<int>( i ) );
+					r.status      = "rejected";
+					r.headVersion = HeadVersion();
+					r.message     = buf;
+					return r;
+				}
+				std::size_t at = unique.size();
+				for( std::size_t u = 0; u < unique.size(); ++u ) { if( unique[u] == targets[i] ) { at = u; break; } }
+				if( at == unique.size() ) { unique.push_back( targets[i] ); repeatCount.push_back( 1 ); }
+				else                      { ++repeatCount[at]; }
+			}
+			{
+				std::string dupes;
+				for( std::size_t u = 0; u < unique.size(); ++u ) {
+					if( repeatCount[u] <= 1 ) continue;
+					if( !dupes.empty() ) dupes += ", ";
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ), "'%s' listed %dx", unique[u].c_str(), repeatCount[u] );
+					dupes += buf;
+				}
+				if( !dupes.empty() )
+					r.note = "deduped: " + dupes + " -- each chunk is removed once";
+			}
+
+			// Per-target results, one per UNIQUE target, in first-occurrence order.  `kind` fills in below
+			// from whatever the engine resolved; `name` is set now so even a total refusal identifies what
+			// was attempted (the SAME rule RemoveChunk follows).
+			r.targetResults.resize( unique.size() );
+			for( std::size_t u = 0; u < unique.size(); ++u ) r.targetResults[u].name = unique[u];
+
+			// `fanOutVerdict` stamps the batch verdict onto every per-target entry.  ALL-OR-NOTHING means
+			// there is exactly one verdict; the entries exist to localize the CAUSE, not to disagree.
+			auto fanOutVerdict = [&r]() {
+				for( AgentChunkResult& tr : r.targetResults ) {
+					tr.applied     = r.applied;
+					tr.retriable   = r.retriable;
+					tr.rawCode     = r.rawCode;
+					tr.status      = r.status;
+					tr.headVersion = r.headVersion;
+					tr.queueFull   = r.queueFull;
+				}
+			};
+
+			// ---- External authority: stage the WHOLE batch as ONE proposal ---------------------------
+			// The same authority gate RemoveChunk applies (see ProposePatch's doc for the rationale), with
+			// ONE deliberate difference in shape: the batch stages as a SINGLE AgentProposal
+			// (AgentProposalKind::RemoveChunks) rather than N.  An Owner must be able to approve or reject
+			// exactly the atomic edit that was proposed -- N cards could be partially approved into a
+			// half-torn-down state the agent never asked for, which is the precise failure this verb's
+			// all-or-nothing contract exists to prevent.
+			if( mAuthority == AgentAuthority::External )
+			{
+				if( !mController )
+				{
+					r.status      = "rejected";
+					r.headVersion = HeadVersion();
+					r.message     = "remove_chunks refused: this session is External-authority and no live "
+					                "controller is attached -- staging needs a live Owner to resolve against";
+					fanOutVerdict();
+					return r;
+				}
+				// S5a hardening: see ProposePatch's identical comment -- no unlocked head pre-read;
+				// StageProposal stamps it under its own mMutex hold when no explicit base was supplied.
+				SceneEditController::AgentProposal p;
+				p.kind = SceneEditController::AgentProposalKind::RemoveChunks;
+				// The '\n'-packed carriers documented on AgentProposal: `target` = the N names, `entityKind`
+				// = the N kinds (all EMPTY here -- remove_chunks takes bare names only), same order.
+				{
+					std::string packedNames, packedKinds;
+					for( std::size_t u = 0; u < unique.size(); ++u ) {
+						if( u ) { packedNames += '\n'; packedKinds += '\n'; }
+						packedNames += unique[u];
+					}
+					// packedKinds is (unique.size()-1) newlines: N empty entries, positionally aligned.
+					p.target     = String( packedNames.c_str() );
+					p.entityKind = String( packedKinds.c_str() );
+				}
+				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
+				if( baseOrNull ) p.baseVersion = *baseOrNull;
+				// Secure-MCP slice 5c: see ProposePatch's identical comment.
+				p.sessionLabel = String( mSessionLabel.c_str() );
+				RISE::Cst::CstHeadVersion stagedHead{};
+				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
+				if( id == 0 )
+				{
+					// Secure-MCP slice 6: see ProposePatch's identical queue-full branch.
+					r.queueFull   = true;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message = "remove_chunks refused: the pending-proposal queue is full -- "
+					            "the Owner must resolve (approve/reject) some pending proposals "
+					            "before another can be staged";
+					fanOutVerdict();
+					return r;
+				}
+				r.status      = "staged";
+				r.headVersion = stagedHead;
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"proposal %llu staged (pending owner approval) -- ONE proposal for all %d targets; approving it "
+					"removes them atomically",
+					static_cast<unsigned long long>( id ), static_cast<int>( unique.size() ) );
+				r.message = buf;
+				fanOutVerdict();
+				return r;
+			}
+
+			// ---- LIVE mode: delegate to the controller ----------------------------------------------
+			if( mController )
+			{
+				std::vector<String> ctlTargets, ctlKinds;
+				ctlTargets.reserve( unique.size() );
+				ctlKinds.reserve( unique.size() );
+				for( std::size_t u = 0; u < unique.size(); ++u ) {
+					ctlTargets.push_back( String( unique[u].c_str() ) );
+					ctlKinds.push_back( String() );   // bare names only -- see the header's NO PER-TARGET `kind` note
+				}
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentRemoveChunks( ctlTargets, ctlKinds, baseOrNull );
+				r.applied     = cr.applied;
+				r.retriable   = cr.retriable;
+				r.rawCode     = cr.rawCode;
+				r.status      = cr.status.c_str();
+				r.headVersion = cr.headVersion;
+				r.message     = cr.message.c_str();
+				fanOutVerdict();
+				// Per-target keywords: the controller echoes them '\n'-joined, one per INPUT target, in the
+				// order we passed them (empty for a target that never resolved).
+				{
+					const std::string kws( cr.chunkKeyword.c_str() );
+					std::size_t at = 0, u = 0;
+					while( u < r.targetResults.size() )
+					{
+						const std::size_t nl = kws.find( '\n', at );
+						r.targetResults[u].kind = kws.substr( at, ( nl == std::string::npos ) ? std::string::npos : nl - at );
+						++u;
+						if( nl == std::string::npos ) break;
+						at = nl + 1;
+					}
+				}
+				// Actionable rejection diagnostics on the LIVE path -- the SAME gating RemoveChunk's LIVE
+				// branch applies (IsAnalysableRejection_ + the controller-mediated ReadHeadDocumentAt_, only
+				// on a real derive rejection and only while the head still IS the version this result
+				// stamps).  A rejection left the head UNCHANGED, so the retained Document is the correct
+				// namespace to resolve the targets and their referrers against.
+				// Widened for the batch exactly as the headless tail below is (see its comment): the
+				// probe's rawCode is 0 for EVERY batch refusal (the controller normalizes negatives),
+				// so IsAnalysableRejection_ admits -1/-2 refusals here too.
+				AgentChunkResult probe;   // IsAnalysableRejection_ reads only status/applied/rawCode
+				probe.applied = r.applied; probe.retriable = r.retriable; probe.rawCode = r.rawCode;
+				probe.status  = r.status;  probe.headVersion = r.headVersion;
+				RISE::Cst::Document headDoc;
+				if( IsAnalysableRejection_( probe ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) ) {
+					AttachRemoveBatchRejectionIssues( r.targetResults, headDoc, unique );
+					r.message += BuildRemoveBatchActionableClause( r.targetResults );
+				}
+				return r;
+			}
+
+			// ---- Headless: straight to the Job primitive --------------------------------------------
+			if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				r.status      = "rejected";
+				r.headVersion = HeadVersion();
+				r.message     = "no retained CST Document -- RemoveChunks needs a CST-loaded head";
+				fanOutVerdict();
+				return r;
+			}
+			if( baseOrNull ) {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( *baseOrNull != cur ) {
+					r.status      = "conflict";
+					r.headVersion = cur;
+					char buf[160];
+					std::snprintf( buf, sizeof( buf ),
+						"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
+						static_cast<unsigned long long>( cur.revision ) );
+					r.message = buf;
+					fanOutVerdict();
+					return r;
+				}
+			}
+
+			std::vector<const char*> targetPtrs;
+			std::vector<const char*> kindPtrs;
+			targetPtrs.reserve( unique.size() );
+			kindPtrs.reserve( unique.size() );
+			for( std::size_t u = 0; u < unique.size(); ++u ) {
+				targetPtrs.push_back( unique[u].c_str() );
+				kindPtrs.push_back( nullptr );   // bare names only
+			}
+			char kwBuf[1024];  kwBuf[0]   = '\0';
+			char diagBuf[512]; diagBuf[0] = '\0';
+			int  failIndex = -1;
+			const int code = mJob->ApplyCstRemoveChunks( &targetPtrs[0], &kindPtrs[0],
+			                                             static_cast<int>( targetPtrs.size() ),
+			                                             kwBuf, sizeof( kwBuf ),
+			                                             diagBuf, sizeof( diagBuf ), &failIndex );
+			// Resolved keywords, one per unique target, '\n'-separated in the order we passed them.
+			{
+				const std::string kws( kwBuf );
+				std::size_t at = 0, u = 0;
+				while( u < r.targetResults.size() )
+				{
+					const std::size_t nl = kws.find( '\n', at );
+					r.targetResults[u].kind = kws.substr( at, ( nl == std::string::npos ) ? std::string::npos : nl - at );
+					++u;
+					if( nl == std::string::npos ) break;
+					at = nl + 1;
+				}
+			}
+			FoldRemoveBatchCode_( r, code, failIndex, unique, diagBuf );
+			r.headVersion = mJob->GetCstHeadVersion();
+			fanOutVerdict();
+			// The pre-flight CAUSE analysis for a REJECTED batch -- ONLY for literal code 0
+			// (Job::ApplyCstRemoveChunks' generic "would not derive" catch-all).  -1/-2 already carry a
+			// precise, index-attributed cause, the SAME rule RemoveChunk's own AttachRemoveRejectionIssues
+			// call applies.
+			// The pre-flight CAUSE analysis for a REFUSED batch.  UNLIKE the singular verb -- whose
+			// analyser runs for code 0 ONLY, because its -1/-2 already carry a precise cause in the
+			// message -- the BATCH runs it for every refusal code.  Rationale: a batch refusal's message
+			// can name only the FIRST offender (Job stops resolving there), while the per-target `issues`
+			// can flag EVERY target the static analysis can explain in one round-trip, which is exactly
+			// what "fix the offenders and resend" needs.  The analyser is honest about what it cannot
+			// classify (ambiguous names and unexplainable derive failures produce no issue at all).
+			if( code <= 0 && mJob->GetCstDocument() ) {
+				AttachRemoveBatchRejectionIssues( r.targetResults, *mJob->GetCstDocument(), unique );
+				r.message += BuildRemoveBatchActionableClause( r.targetResults );
+			}
+			return r;
+		}
+
 		namespace
 		{
 			//! Secure-MCP slice 5a: SceneEditController::AgentProposalKind ->
@@ -5132,6 +6063,7 @@ namespace RISE
 					case SceneEditController::AgentProposalKind::ParamEdit:   return "param_edit";
 					case SceneEditController::AgentProposalKind::InsertChunk: return "insert_chunk";
 					case SceneEditController::AgentProposalKind::RemoveChunk: return "remove_chunk";
+					case SceneEditController::AgentProposalKind::RemoveChunks: return "remove_chunks";   // R1a: ONE entry for a whole batch
 				}
 				return "param_edit";
 			}
@@ -6617,8 +7549,32 @@ namespace RISE
 			// from `params`, never from live Job state, so they stay safe to
 			// compute here, unchanged.
 
+			// R1b (2026-08-09): a "production BEAUTY" render is exactly the
+			// case none of the three fixed-fidelity targets claim -- pure
+			// function of `params`, same safety rationale as the flags above.
+			const bool isProductionBeauty = !isDraft && !isObjectMap && !isViewMode;
+			// R1b: the agent-surface ABSENT-dims default (see
+			// AgentRenderParams::fromAgentSurface's doc) applies iff this is a
+			// production beauty render, on the agent RPC surface, that did NOT
+			// supply an explicit width/height PAIR.  Pure function of params
+			// (fromAgentSurface/isProductionBeauty/width/height), safe to
+			// compute here; the ACTUAL scaled dims need the live Film's aspect
+			// ratio, which is only resolved under the park, inside
+			// applyFilmOverride() below.
+			const bool wantsAgentDefaultResolutionCap =
+				params.fromAgentSurface && isProductionBeauty &&
+				!( params.width > 0 && params.height > 0 );
+
 			const bool wantFilmOverride =
-				( params.width > 0 && params.height > 0 );
+				( params.width > 0 && params.height > 0 ) || wantsAgentDefaultResolutionCap;
+			// R1b: forcing `wantFilmOverride` true for the absent-dims-default
+			// case is DELIBERATE, not incidental -- see the LIVE-mode safety
+			// block below (`DoOneRenderPass swaps the SAME shared Film dims...
+			// in place`).  A default that resizes the Film genuinely IS a
+			// film-dims override now, so routing it through the SAME
+			// RunPreviewRenderParked path an explicit width/height override
+			// takes (rather than the plain no-override SubmitAgentRenderSync
+			// path) is required for the same race-safety reason, not optional.
 
 			// GUI render modes P2a `render{view:}` surface (docs/gui/
 			// RENDER_MODES.md section 8, deferred from P1): resolve an optional
@@ -6697,6 +7653,15 @@ namespace RISE
 			bool overrodeFilm = false;
 			bool overrodeCamera = false;
 			unsigned int origFilmW = 0, origFilmH = 0;
+			// R1b: the dims applyFilmOverride() actually resolved and applied
+			// via SetFilm -- params.width/height ALONE are no longer a
+			// faithful "what did this render at" answer once
+			// wantsAgentDefaultResolutionCap can flip wantFilmOverride true
+			// while params.width/height stay 0 (the agent-surface absent-dims
+			// default is resolved live, inside applyFilmOverride, never
+			// written back to `params`).  Meaningful only when
+			// `wantFilmOverride` is true, same convention as origFilmW/H.
+			unsigned int appliedFilmW = 0, appliedFilmH = 0;
 			double origFilmPAR = 1.0;
 			std::vector<CapturedCameraField> capturedCam;
 			ICamera* activeCam = nullptr;
@@ -6714,6 +7679,21 @@ namespace RISE
 			// so it is now declared fresh there instead, right where `rast`
 			// is guaranteed freshly-resolved and non-null.
 			bool overrodeSamples = false;
+			// R1b (2026-08-09): agent-surface samples cap bookkeeping -- see
+			// AgentRenderParams::fromAgentSurface's doc.  `agentSamplesForceCapped`
+			// is true only once SetSampleCountOverride actually SUCCEEDED for
+			// the FORCED (no explicit `samples` requested) cap attempt --
+			// mirrors overrodeSamples' own "true only on real success" honesty
+			// contract.  `agentSamplesForceCapAttempted` is true whenever the
+			// forced cap was ATTEMPTED regardless of outcome, so the tail can
+			// report an honest "could not be applied" note (never silent) on
+			// an unsupported rasterizer, matching the explicit-override
+			// precedent just below.  `agentSamplesCapOrigValue` is the
+			// scene-authored sample count (origSamples, captured before any
+			// mutation) that triggered the attempt, for the message text.
+			bool agentSamplesForceCapped = false;
+			bool agentSamplesForceCapAttempted = false;
+			int  agentSamplesCapOrigValue = -1;
 			// P1 fix: the TAIL (after doRenderWork returns, possibly after
 			// the park has released) needs the effective sample count for
 			// the result message -- captured under the park, inside
@@ -6876,8 +7856,49 @@ namespace RISE
 					origFilmH   = curFilm->GetHeight();
 					origFilmPAR = curFilm->GetPixelAR();
 				}
+				// R1b (2026-08-09): the EXPLICIT override dims (both params.width
+				// and params.height nonzero) by default; for the agent-surface
+				// ABSENT-dims case (wantsAgentDefaultResolutionCap -- see its doc
+				// above) resolve the scaled dims HERE instead, from the live
+				// Film's aspect ratio just captured above -- this is the one
+				// place in RenderCore_ where reading that aspect ratio is safe
+				// (under the park; see the P1 fix comment above doRenderWork).
+				// NEVER upscales: a Film already at or under
+				// kAgentSurfaceMaxRenderEdge on its long edge renders unchanged
+				// -- honestly reflected below by leaving agentResolutionCapped
+				// false in that case (nothing was actually reduced).
+				unsigned int overrideW = params.width;
+				unsigned int overrideH = params.height;
+				if( wantsAgentDefaultResolutionCap && curFilm && origFilmW > 0 && origFilmH > 0 ) {
+					const unsigned int longEdge = origFilmW > origFilmH ? origFilmW : origFilmH;
+					if( longEdge > kAgentSurfaceMaxRenderEdge ) {
+						const double scale = static_cast<double>( kAgentSurfaceMaxRenderEdge ) /
+							static_cast<double>( longEdge );
+						overrideW = static_cast<unsigned int>( origFilmW * scale + 0.5 );
+						overrideH = static_cast<unsigned int>( origFilmH * scale + 0.5 );
+						if( overrideW < 1 ) overrideW = 1;
+						if( overrideH < 1 ) overrideH = 1;
+						res.agentResolutionCapped = true;
+						res.filmWidth  = origFilmW;
+						res.filmHeight = origFilmH;
+					} else {
+						// Already within the cap -- render at the Film's own
+						// dims, unchanged (SetFilm below is then a same-dims
+						// no-op via Job::SetFilm's short-circuit).
+						overrideW = origFilmW;
+						overrideH = origFilmH;
+					}
+				}
+				// R1b: record what was actually applied -- see appliedFilmW/H's
+				// doc above.  Set unconditionally alongside overrodeFilm's own
+				// "meaningful only when wantFilmOverride" convention (a caller
+				// reading these without checking wantFilmOverride first gets
+				// 0/0 in the common no-override case, same honesty contract as
+				// origFilmW/H before this lambda ran).
+				appliedFilmW = overrideW;
+				appliedFilmH = overrideH;
 				if( wantFilmOverride && curFilm ) {
-					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
+					if( mJob->SetFilm( overrideW, overrideH, origFilmPAR ) ) {
 						overrodeFilm = true;
 					}
 				}
@@ -7498,6 +8519,17 @@ namespace RISE
 				}
 
 				if( params.maxPixelCount > 0 ) {
+					// R1b NOTE: `params.width`/`height` here assume an EXPLICIT
+					// override -- correct today because every caller that sets
+					// maxPixelCount>0 (AgentEvalRunner.cpp's CheckRenderKind) also
+					// leaves fromAgentSurface false, so wantsAgentDefaultResolutionCap
+					// is false and wantFilmOverride reduces to the plain
+					// (params.width>0 && params.height>0) check -- params.width/
+					// height are never 0 when wantFilmOverride is true on that
+					// path.  A future caller combining maxPixelCount>0 WITH
+					// fromAgentSurface's absent-dims default would need
+					// appliedFilmW/H here instead (not yet resolved at this point
+					// in the closure -- applyFilmOverride() runs later).
 					const IScenePriv* scenePrivForBudget = mJob->GetScene();
 					const IFilm* filmForBudget = scenePrivForBudget ? scenePrivForBudget->GetFilm() : nullptr;
 					const unsigned int budgetW = wantFilmOverride ? params.width
@@ -7823,6 +8855,45 @@ namespace RISE
 
 				if( wantSamplesOverride ) {
 					overrodeSamples = rast->SetSampleCountOverride( params.samples );
+				} else if( params.fromAgentSurface &&
+					( origSamples < 0 || origSamples > kAgentSurfaceMaxSamples ) ) {
+					// R1b (2026-08-09): no `samples` override was requested, but
+					// the scene's own authored count (origSamples, just
+					// captured above, before any mutation) exceeds the agent
+					// surface's cap -- force one, exactly as if the caller had
+					// asked for kAgentSurfaceMaxSamples.  Keeps the render
+					// cheap even when an untrusted agent-driven scene edit
+					// bumped the rasterizer's own `samples` chunk param
+					// arbitrarily high; see AgentRenderResult::agentSamplesCapped's
+					// doc for the honesty contract this feeds.
+					//
+					// FIX 1 (P1, 2026-08-09): `origSamples < 0` widens this to
+					// also fire when the active rasterizer doesn't report a
+					// sample count at all.  IRasterizer::GetSampleCountOverride's
+					// base default returns -1 for every rasterizer outside the
+					// PixelBasedRasterizerHelper family (MLT, photon-map-only,
+					// AutoRasterizer's outer wrapper -- see
+					// IRasterizer.h:181-190); PixelBasedRasterizerHelper's own
+					// override (the ONLY Get/SetSampleCountOverride pair in the
+					// tree) never returns -1, so -1 here unambiguously means
+					// "this rasterizer doesn't participate in the override
+					// protocol", not "zero samples".  Without this widening,
+					// `-1 > kAgentSurfaceMaxSamples` is false, the cap is never
+					// attempted, and an untrusted scene's
+					// `mutations_per_pixel 5000000` on an MLT rasterizer would
+					// render at full authored cost with no honesty note at all
+					// (agentSamplesForceCapAttempted stays false, so the "could
+					// NOT be applied" branch below never fires either).
+					// SetSampleCountOverride on these rasterizers still returns
+					// false (IRasterizer's base default), so
+					// agentSamplesForceCapped stays false and the message tail
+					// below correctly reports the honest "could NOT be applied"
+					// case for both the known-too-high and unknown origSamples
+					// values.
+					agentSamplesForceCapAttempted = true;
+					agentSamplesCapOrigValue = origSamples;
+					overrodeSamples = rast->SetSampleCountOverride( kAgentSurfaceMaxSamples );
+					agentSamplesForceCapped = overrodeSamples;
 				}
 
 				// GUI render modes P2b `render{light:}` surface (docs/gui/
@@ -7983,8 +9054,14 @@ namespace RISE
 				// place).  Also gated on a non-null CURRENT FrameStore so a
 				// rasterizer that never had one isn't handed one for the
 				// first time by an agent render.
-				const unsigned int renderW = wantFilmOverride ? params.width  : origFilmW;
-				const unsigned int renderH = wantFilmOverride ? params.height : origFilmH;
+				// R1b: use appliedFilmW/H (what applyFilmOverride() actually
+				// resolved and set via SetFilm just above), NOT params.width/
+				// height directly -- those stay 0 for the agent-surface
+				// absent-dims default even though wantFilmOverride is true
+				// for it (the scaled dims are resolved live inside
+				// applyFilmOverride, never written back to `params`).
+				const unsigned int renderW = wantFilmOverride ? appliedFilmW : origFilmW;
+				const unsigned int renderH = wantFilmOverride ? appliedFilmH : origFilmH;
 				if( concreteRast && concreteRast->AcceptsFrameStorePush()
 				    && concreteRast->GetFrameStore() != nullptr )
 				{
@@ -8639,6 +9716,21 @@ namespace RISE
 					"the active camera has no editable field-of-view (only a pinhole "
 					"camera does); the view's pose (location/lookat/up) WAS applied)";
 			}
+			// R1b (2026-08-09): honest note for the agent-surface ABSENT-dims
+			// default -- see AgentRenderResult::agentResolutionCapped's doc.
+			// Only fires when it actually reduced the render below the
+			// scene's authored Film size (never for a Film already at or
+			// under the cap, and never for an explicit width/height pair --
+			// that clamp, when it fires, is reported by the RPC layer, which
+			// alone has the caller's raw pre-clamp request).
+			if( res.agentResolutionCapped && res.ok ) {
+				char resNote[256];
+				std::snprintf( resNote, sizeof( resNote ),
+					" (agent render cap: no width/height requested and the scene's authored Film (%ux%u) "
+					"exceeds the %upx agent surface max edge -- rendered at %ux%u)",
+					res.filmWidth, res.filmHeight, kAgentSurfaceMaxRenderEdge, res.width, res.height );
+				res.message += resNote;
+			}
 
 			// Model-B F2 slice S3 (production) / Toolkit slice 2 (draft):
 			// report the sample-count outcome.  DRAFT and PRODUCTION are
@@ -8747,13 +9839,65 @@ namespace RISE
 				}
 			} else {
 				res.samplesOverridden = overrodeSamples;
+				// R1b (2026-08-09) ADDITIVE wire field -- see
+				// AgentRenderResult::agentSamplesCapped's doc.  False (the
+				// default) whenever the forced-cap branch inside doRenderWork
+				// never fired (an explicit `samples` was requested, or the
+				// scene's authored count was already <= the cap, or this
+				// wasn't an agent-surface call at all).
+				res.agentSamplesCapped = agentSamplesForceCapped;
 				if( overrodeSamples ) {
-					res.effectiveSamples = params.samples;
+					// R1b: read back the ACTUAL applied count rather than
+					// assuming params.samples -- the forced-cap branch applies
+					// kAgentSurfaceMaxSamples with params.samples still at its
+					// -1 "no override requested" sentinel, so params.samples is
+					// not a faithful answer for that case.  productionSampleReadBack
+					// was captured under the park, right after Rasterize(),
+					// while the override was still in effect -- correct for
+					// BOTH the explicit and the forced-cap case.
+					const int readBack = productionSampleReadBack;
+					res.effectiveSamples = ( readBack >= 1 ) ? readBack : params.samples;
+					if( agentSamplesForceCapped && res.ok ) {
+						char capNote[224];
+						std::snprintf( capNote, sizeof( capNote ),
+							" (agent render cap: no samples requested and the scene's authored sample count (%d) "
+							"exceeded the %d-spp agent surface cap -- capped to %d)",
+							agentSamplesCapOrigValue, kAgentSurfaceMaxSamples, kAgentSurfaceMaxSamples );
+						res.message += capNote;
+					}
 				} else {
 					const int readBack = productionSampleReadBack;   // P1 fix: captured under the park inside doRenderWork -- never re-dereference `rast` here
 					res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
 					if( wantSamplesOverride && res.ok ) {
 						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+					} else if( agentSamplesForceCapAttempted && res.ok ) {
+						// R1b: the forced cap was ATTEMPTED but the active
+						// rasterizer does not support SetSampleCountOverride
+						// (MLT, photon-map-only, AutoRasterizer's outer
+						// wrapper) -- report that HONESTLY (never silently
+						// fall through) without refusing the render, matching
+						// the explicit-override precedent just above.
+						//
+						// FIX 1 (P1, 2026-08-09): `agentSamplesCapOrigValue` can
+						// now be -1 (rasterizer never reported a count -- see
+						// the widened gate above), so the two cases get
+						// distinct wording: printing "-1" as if it were the
+						// scene's authored count would read as nonsense.
+						char capNote[320];
+						if( agentSamplesCapOrigValue < 0 ) {
+							std::snprintf( capNote, sizeof( capNote ),
+								" (agent render cap: the active rasterizer does not report its sample count "
+								"(unknown/unsupported by the override protocol), so the %d-spp agent surface cap "
+								"could NOT be verified or applied; rendered at the scene-authored count)",
+								kAgentSurfaceMaxSamples );
+						} else {
+							std::snprintf( capNote, sizeof( capNote ),
+								" (agent render cap: the scene's authored sample count (%d) exceeds the %d-spp agent "
+								"surface cap, but the active rasterizer does not support a sample-count override -- "
+								"the cap could NOT be applied; rendered at the scene-authored count)",
+								agentSamplesCapOrigValue, kAgentSurfaceMaxSamples );
+						}
+						res.message += capNote;
 					}
 				}
 			}
@@ -9539,6 +10683,19 @@ namespace RISE
 			}
 		}
 
+		//! R1 fix round (2026-08-09) -- supervisor decision, recorded here so a future pass doesn't "close
+		//! the gap" by mistake: this comparison render's RESOLUTION is deliberately NEVER capped by the
+		//! agent-surface resolution axis (kAgentSurfaceMaxRenderEdge) -- see `rparams.width`/`rparams.height`
+		//! being forced to the reference image's own `refW`/`refH` a few lines below.  RMSE comparison
+		//! REQUIRES the comparison render and the reference to share exact dimensions (see the defensive
+		//! `candW != refW || candH != refH` guard further down), and the reference's dims are HOST-registered
+		//! by the eval author via whatever attached the reference image, never model-chosen -- capping
+		//! resolution here would just break the feature for no honesty gain (an agent can't inflate cost by
+		//! picking a large reference; it isn't the one choosing the dims).  The SAMPLES axis, by contrast, IS
+		//! capped -- at the RPC layer (AgentRpc.cpp's `compare_to_reference` handler clamps an explicit
+		//! `samples` to [1,kAgentSurfaceMaxSamples] before it ever reaches this function; see the comment
+		//! there for the full rationale), so an agent-driven comparison render still can't run away on sample
+		//! cost even though its resolution is unbounded.
 		AgentCompareToReferenceResult AgentSession::CompareToReference(
 			const AgentCompareToReferenceParams& params )
 		{

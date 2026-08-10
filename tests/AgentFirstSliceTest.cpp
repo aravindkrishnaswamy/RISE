@@ -770,13 +770,17 @@ int main()
 
 	//----------------------------------------------------------------------
 	// Preview-render wire tests (F5 the cheap multi-angle observe loop):
-	// width/height clamping [16,512], camera param shape validation, and
-	// read_image maxEdge clamping [16,1024].  All driven through the SAME
-	// live dispatcher `rpc` used above, so the head carries whatever the
-	// coherence block left it at (irrelevant here -- we only check dims /
-	// param-shape behaviour, not pixel content).
+	// width/height clamping [16,256] (R1b, 2026-08-09: tightened from
+	// [16,512] -- an agent-surface cost cap, see AgentSession::
+	// kAgentSurfaceMaxRenderEdge's doc), camera param shape validation, and
+	// read_image maxEdge clamping [16,1024] (UNCHANGED -- imageMaxEdge only
+	// downscales the returned PNG, it never bounds render cost, so R1b left
+	// it alone).  All driven through the SAME live dispatcher `rpc` used
+	// above, so the head carries whatever the coherence block left it at
+	// (irrelevant here -- we only check dims / param-shape behaviour, not
+	// pixel content).
 	//----------------------------------------------------------------------
-	std::printf( "[preview-render wire] width/height clamp to [16,512]\n" );
+	std::printf( "[preview-render wire] width/height clamp to [16,256]\n" );
 	{
 		// Below the floor: 4x4 requested -> clamped to 16x16 (never rejected).
 		JsonValue params = JsonValue::MakeObject();
@@ -794,17 +798,26 @@ int main()
 		       "previewHeight echoes the clamped 16" );
 	}
 	{
-		// Above the ceiling: 9999x9999 requested -> clamped to 512x512.
+		// Above the ceiling: 9999x9999 requested -> clamped to 256x256
+		// (R1b, 2026-08-09: tightened from 512 -- see AgentSession::
+		// kAgentSurfaceMaxRenderEdge's doc).  The result also carries an
+		// `agentRenderCap` fact naming the caller's original 9999x9999
+		// request -- see AgentRpc.cpp's BuildAgentRenderCapJson.
 		JsonValue params = JsonValue::MakeObject();
 		params.set( "width",  JsonValue::MakeNumber( 9999.0 ) );
 		params.set( "height", JsonValue::MakeNumber( 9999.0 ) );
 		const std::string resp = rpc.HandleLine( Req( 31, "render", params ) );
 		JsonValue env = ParseResponse( resp, 31 );
 		Check( env.has( "result" ), "render(width=9999) returns a success result (clamped, not rejected)" );
-		Check( env.get( "result" ).get( "width" ).asNumber() == 512.0,
-		       "render(width=9999) is CLAMPED DOWN to the ceiling (512)" );
-		Check( env.get( "result" ).get( "height" ).asNumber() == 512.0,
-		       "render(height=9999) is CLAMPED DOWN to the ceiling (512)" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 256.0,
+		       "render(width=9999) is CLAMPED DOWN to the ceiling (256)" );
+		Check( env.get( "result" ).get( "height" ).asNumber() == 256.0,
+		       "render(height=9999) is CLAMPED DOWN to the ceiling (256)" );
+		const JsonValue& cap = env.get( "result" ).get( "agentRenderCap" );
+		Check( cap.isObject() && cap.get( "resolutionCapped" ).asBool(),
+		       "R1b: an explicit over-ceiling request reports the agentRenderCap fact" );
+		Check( cap.get( "requestedWidth" ).asNumber( -1 ) == 9999.0 && cap.get( "requestedHeight" ).asNumber( -1 ) == 9999.0,
+		       "R1b: the fact echoes the caller's original (pre-clamp) 9999x9999 request" );
 	}
 	{
 		// width WITHOUT height (ambiguous pairing) -> no override applied;

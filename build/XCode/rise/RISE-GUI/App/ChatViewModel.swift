@@ -583,6 +583,15 @@ final class ChatViewModel: ObservableObject {
                 summary = "insert: \(firstLine)"
             case "remove_chunk":
                 summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
+            case "remove_chunks":
+                // R1a (2026-08-09): ONE proposal for a WHOLE batch remove — `target`
+                // carries the '\n'-separated target-name list (see
+                // SceneEditController::AgentProposal's doc).  Render the count plus the
+                // names so an Owner approving the card sees exactly what it deletes.
+                let names = target.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                summary = names.count == 1
+                    ? "remove: \(names[0])"
+                    : "remove \(names.count) chunks: \(names.joined(separator: ", "))"
             default:
                 summary = "\(target).\(param) = \(value)"
             }
@@ -2984,7 +2993,7 @@ final class ChatViewModel: ObservableObject {
     // tests/SourceHygieneTest.cpp pins each of them on both platforms).
     // ================================================================
 
-    /// The FIVE mutating verbs whose results carry the `applied` +
+    /// The SIX mutating verbs whose results carry the `applied` +
     /// `retriable` pair this retry gate reads — exactly the set
     /// `AgentRpc.cpp`'s `IsProposeSafeVerb` enumerates, and exactly the
     /// set whose result JSON is built by `ChunkResultJson` /
@@ -2995,7 +3004,12 @@ final class ChatViewModel: ObservableObject {
     /// tests/SourceHygieneTest.cpp derives this set from
     /// `IsProposeSafeVerb` and fails if the two drift.
     private static let retriableEditVerbs: Set<String> = [
-        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk"
+        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
+        // R1a (2026-08-09): the ATOMIC batch remove.  Its envelope is a HYBRID —
+        // a top-level BOOLEAN `applied` (all-or-nothing) alongside a `results`
+        // array — so `editRefusalIsWhollyUnapplied` routes it down the SINGULAR
+        // arm, not the batch one.  See that function's note.
+        "remove_chunks"
     ]
 
     /// THE ATTEMPT BUDGET.  Total dispatch attempts for one refused edit
@@ -3043,7 +3057,9 @@ final class ChatViewModel: ObservableObject {
     /// Is this tool result a refusal with **nothing applied** — the only
     /// shape a client-side retry may re-issue?
     ///
-    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`):
+    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`) — and
+    /// R1a's `remove_chunks`, which despite carrying a `results` array is
+    /// ALL-OR-NOTHING and so reports ONE boolean verdict, exactly this shape:
     /// `applied == false` AND `retriable == true` AND
     /// `status == "rejected"`.  The rejection contract guarantees the
     /// head is byte-identical on a reject (SceneEditController refuses
@@ -3097,15 +3113,27 @@ final class ChatViewModel: ObservableObject {
         else { return false }
 
         // BATCH FIRST — see the BATCH-FIRST note above.
-        if let results = result["results"] as? [[String: Any]] {
+        //
+        // R1a (2026-08-09): the batch arm is now selected on the TYPE of the
+        // top-level `applied`, not merely on `results` being present.
+        // `remove_chunks` returns a HYBRID envelope — a `results` array (one entry
+        // per unique target) alongside a BOOLEAN top-level `applied`, because it is
+        // ALL-OR-NOTHING and so has one verdict, not a count.  Its correct handling
+        // is the SINGULAR arm below (top-level applied/retriable/status), so a
+        // boolean in the count position must FALL THROUGH here, not `return false`
+        // — the pre-R1a code would have silently declined to retry a genuinely
+        // retriable remove_chunks refusal.
+        let appliedIsCount: Bool = {
+            guard let appliedCount = result["applied"] as? NSNumber else { return false }
+            // A JSON boolean ALSO bridges to NSNumber, so type-check it out — the
+            // Qt sibling's `isDouble()` rejects a bool outright and the two halves
+            // must not diverge on shape validation.
+            return CFGetTypeID(appliedCount) != CFBooleanGetTypeID()
+        }()
+        if appliedIsCount, let results = result["results"] as? [[String: Any]] {
             guard
                 !results.isEmpty,
                 let appliedCount = result["applied"] as? NSNumber,
-                // A JSON boolean ALSO bridges to NSNumber, so type-check
-                // it out — the Qt sibling's `isDouble()` rejects a bool
-                // outright and the two halves must not diverge on shape
-                // validation.
-                CFGetTypeID(appliedCount) != CFBooleanGetTypeID(),
                 appliedCount.intValue == 0
             else { return false }
             for element in results {

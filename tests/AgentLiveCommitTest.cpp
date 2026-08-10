@@ -2870,6 +2870,163 @@ static void TestChunkInsertUndoRedo()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 23b (R1a, 2026-08-09): remove_chunkS -- an ATOMIC BATCH remove of
+// THREE scattered middle chunks is ONE head bump and ONE history entry, so
+// a SINGLE Cmd-Z restores every one of them byte-identically.  That single
+// undo step is the whole reason the verb exists at the controller level:
+// three separate remove_chunk calls would leave three separate undo entries
+// a user has to press Cmd-Z three times to reverse.
+//////////////////////////////////////////////////////////////////////
+static void TestChunkRemoveChunksBatchUndoRedo()
+{
+	std::cout << "Test 23b: remove_chunks (BATCH) -- ONE bump, ONE undo step restores ALL (R1a)..." << std::endl;
+
+	const char* tmp = "agentlive_r1a_removebatch.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "R1a batch fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+
+		// matA / matB / matC are three SCATTERED middle chunks (each sandwiched by
+		// siblings), and none is referenced by anything -- exactly the subassembly
+		// teardown shape.
+		std::vector<String> targets, kinds;
+		targets.push_back( String( "matA" ) ); kinds.push_back( String() );
+		targets.push_back( String( "matB" ) ); kinds.push_back( String() );
+		targets.push_back( String( "matC" ) ); kinds.push_back( String() );
+
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunks( targets, kinds, nullptr );
+		Check( rm.applied, "the 3-chunk batch remove applies" );
+		Check( rm.headVersion.revision == preVersion.revision + 1,
+		       "the WHOLE batch bumped the revision by EXACTLY ONE (three singular calls would bump three times)" );
+		Check( c.HasUnsavedChanges(), "the batch marks the editor dirty" );
+		const std::string postRemoveDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRemoveDoc.find( "matA" ) == std::string::npos
+		    && postRemoveDoc.find( "matB" ) == std::string::npos
+		    && postRemoveDoc.find( "matC" ) == std::string::npos,
+		       "all three materials are gone from the Document" );
+		Check( postRemoveDoc.find( "lum" ) != std::string::npos
+		    && postRemoveDoc.find( "white" ) != std::string::npos,
+		       "the untargeted chunks survive" );
+
+		// THE headline: ONE Cmd-Z brings back ALL THREE, byte-identically.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc == preDoc,
+		       "a SINGLE Undo restores the FULL Document BYTE-IDENTICAL to pre-batch -- all three chunks, "
+		       "in their exact original positions, from ONE history entry" );
+		Check( pJob->GetMaterials()
+		    && pJob->GetMaterials()->GetItem( "matA" ) != nullptr
+		    && pJob->GetMaterials()->GetItem( "matB" ) != nullptr
+		    && pJob->GetMaterials()->GetItem( "matC" ) != nullptr,
+		       "the derived scene has all three materials again after the single Undo" );
+
+		// And ONE Redo re-removes all three byte-exactly.
+		c.Redo();
+		const std::string postRedoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRedoDoc == postRemoveDoc,
+		       "a SINGLE Redo re-removes all three BYTE-EXACTLY (matches the post-batch Document)" );
+		Check( pJob->GetMaterials()
+		    && pJob->GetMaterials()->GetItem( "matB" ) == nullptr,
+		       "the derived scene lost the materials again after the single Redo" );
+
+		c.Stop();
+	}
+
+	pJob->release();
+	std::remove( tmp );
+}
+
+// A rasterizer-bearing sibling of kU2Scene: an explicit (necessarily UNNAMED --
+// see TestChunkRemoveChunksBatchRasterizerTargetRefused's comment for why no
+// *_rasterizer chunk can ever carry a `name`) pathtracing_pel_rasterizer chunk
+// plus two named materials, for the FIX 2 (P2, R1 fix round) batch test below.
+static const char* kU2SceneWithRasterizer =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+	"pathtracing_pel_rasterizer\n{\nsamples 4\npixel_filter box\noidn_denoise false\n}\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"lambertian_material\n{\nname matA\nreflectance white\n}\n"
+	"lambertian_material\n{\nname matB\nreflectance white\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+//////////////////////////////////////////////////////////////////////
+// Test 23c (FIX 2, P2, R1 fix round, 2026-08-09): a remove_chunks batch that
+// NAMES a `*_rasterizer` chunk alongside a legitimate target.
+//////////////////////////////////////////////////////////////////////
+static void TestChunkRemoveChunksBatchRasterizerTargetRefused()
+{
+	std::cout << "Test 23c: remove_chunks batch naming a `*_rasterizer` chunk -- ALL-OR-NOTHING refusal, "
+	             "active rasterizer untouched (FIX 2, R1 fix round)..." << std::endl;
+
+	const char* tmp = "agentlive_r1_removebatch_rasterizer.RISEscene";
+	Job* pJob = LoadScene( kU2SceneWithRasterizer, tmp );
+	Check( pJob != nullptr, "rasterizer-batch fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+		const std::string preActiveRasterizer = pJob->GetActiveRasterizerName();
+		Check( !preActiveRasterizer.empty(), "a rasterizer is active before the batch attempt" );
+
+		// FIX 2's brief asked for a batch that ACTUALLY REMOVES a `*_rasterizer` chunk, to prove the
+		// correct rasterizer stays active across the batch/Undo/Redo (exercising SceneEditController's
+		// `anyWasRasterizer` -> `restoreActiveRasterizer` wiring -- the FIX 3 site, SceneEditController.cpp
+		// ~5474).  That scenario is UNREACHABLE under the current resolver rules -- verified exhaustively:
+		// EVERY *_rasterizer descriptor in ChunkParserRegistry.cpp declines a `name` parameter
+		// (AddBaseRasterizerParams never declares one, and no individual rasterizer's own Describe() adds
+		// one either -- checked programmatically across all 12 *_rasterizer keywords), so ChunkNamePath
+		// (which reads a chunk's `name` param) is ALWAYS empty for a rasterizer chunk.  Rasterizer kinds are
+		// also neither `unnamedRepeatable` (only gltf_import/keyframe/timeline are, per ChunkDescriptor.h's
+		// default-false flag) nor camera-special-cased in CstResolveRemoveTarget_'s /
+		// CaptureAgentChunkForRemoveUndo_'s `uniqueFallback` rule (hardcoded to the literal kind "camera").
+		// A rasterizer chunk therefore can NEVER resolve as a remove_chunk(s) target, named or not --
+		// matching remove_chunks' own tool description in AgentChatCodecs.cpp verbatim: "unnamed film and
+		// rasterizer chunks are unremovable".  The next-best REAL regression this file can assert is the one
+		// below: a batch that tries anyway, addressing the rasterizer by the only string a caller could
+		// plausibly attempt (its bare keyword), is honestly REFUSED under the all-or-nothing contract --
+		// taking its perfectly legitimate sibling target (matA) down with it -- and the Document / active
+		// rasterizer are left completely untouched.  (Reported to the supervisor as a disagreement with the
+		// literal FIX 2 brief; see this session's final report.)
+		std::vector<String> targets, kinds;
+		targets.push_back( String( "matA" ) );                       kinds.push_back( String() );
+		targets.push_back( String( "pathtracing_pel_rasterizer" ) ); kinds.push_back( String() );
+
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunks( targets, kinds, nullptr );
+		Check( !rm.applied, "FIX 2 MONEY: the batch is REFUSED -- a rasterizer target can never resolve, "
+		                     "so nothing (not even the legitimate matA target) is removed" );
+		const std::string postDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postDoc == preDoc, "the Document is BYTE-IDENTICAL to pre-attempt -- matA survives the refused batch" );
+		Check( pJob->GetCstHeadVersion().revision == preVersion.revision,
+		       "the head version did NOT bump on a refused batch" );
+		Check( pJob->GetActiveRasterizerName() == preActiveRasterizer,
+		       "FIX 2 MONEY: the active rasterizer is completely untouched by the refused attempt" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matA" ) != nullptr,
+		       "matA is still present in the derived scene" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Test 23: remove_chunk on a MIDDLE chunk (matB, sandwiched between matA and
 // matC) -> Undo -> byte-identical restore INCLUDING position -> Redo
 // re-removes byte-exactly.  This is the headline exact-position claim:
@@ -5881,6 +6038,8 @@ int main()
 	TestUndoRedoAfterSaveMarksDirty();
 	TestChunkInsertUndoRedo();
 	TestChunkRemoveMiddleUndoRedo();
+	TestChunkRemoveChunksBatchUndoRedo();
+	TestChunkRemoveChunksBatchRasterizerTargetRefused();
 	TestChunkInsertThenParamEditInterleavedLifo();
 	TestUndoInsertRefusedWhenReferenced();
 	TestRasterizerInsertUndoMatchesReload();

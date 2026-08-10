@@ -1085,7 +1085,7 @@ namespace RISE
 			//!  clarifying-questions feature); askUserBeforeMutation asserts the
 			//!  FIRST ask_user record precedes the FIRST document-mutating tool
 			//!  record (insert_chunk/insert_chunks/propose_patch/
-			//!  propose_patches/remove_chunk -- see kMutatingToolNames in
+			//!  propose_patches/remove_chunk/remove_chunks -- see kMutatingToolNames in
 			//!  CheckTrajectoryKind; a mutating verb missing from that table
 			//!  reads as non-mutating and VACUOUSLY PASSES this assertion);
 			//!  askUserQuestionContainsAny requires at least one ask_user
@@ -6476,9 +6476,9 @@ namespace RISE
 				//! user-turn count.  askUserMin/askUserMax (stage 2 of the
 				//! clarifying-questions feature) count "ask_user" tool records;
 				//! askUserBeforeMutation asserts the FIRST "ask_user" record
-				//! precedes the FIRST record of one of the 5 document-mutating
+				//! precedes the FIRST record of one of the document-mutating
 				//! tools (insert_chunk/insert_chunks/propose_patch/
-				//! propose_patches/remove_chunk -- the same mutation set
+				//! propose_patches/remove_chunk/remove_chunks -- the same mutation set
 				//! AgentChatLoop::AddToolResult's blind-edit nudge tracks).
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
@@ -6693,7 +6693,7 @@ namespace RISE
 								// IsMutatingToolName already tracks (insert_chunk/
 								// insert_chunks/insert_material_scaffold/
 								// insert_geometry_scaffold/propose_patch/
-								// propose_patches/remove_chunk).
+								// propose_patches/remove_chunk/remove_chunks).
 								// EVERY mutating verb must be
 								// listed: a verb missing here is silently treated
 								// as non-mutating, so a run that built via that
@@ -6744,7 +6744,13 @@ namespace RISE
 										// geometry sibling, SAME InsertChunks path, SAME
 										// membership rationale.
 										"insert_geometry_scaffold",
-										"propose_patch", "propose_patches", "remove_chunk"
+										"propose_patch", "propose_patches", "remove_chunk",
+										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
+										// remove -- ONE call removes N chunks, so it is very
+										// much a mutation record; omitting it would let a run
+										// that tore the scene down before asking VACUOUSLY
+										// PASS askUserBeforeMutation.
+										"remove_chunks"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {
 										for( const char* m : kMutatingToolNames ) if( name == m ) return true;

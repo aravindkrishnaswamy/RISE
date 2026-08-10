@@ -453,6 +453,21 @@ namespace RISE
 			bool isInsert, const String& chunkName, const String& chunkKind, const String& chunkBytes,
 			int docIndex, bool wasRasterizer );
 
+		//! R1a (2026-08-09, batched remove_chunks): push the ONE EditHistory record that represents a WHOLE
+		//! agent batch remove already applied to the retained Document (via Job::ApplyCstRemoveChunks -- see
+		//! SceneEditController::ApplyAgentRemoveChunks).  Same "forward already happened" shape as
+		//! PushAgentChunkCrudEdit; one record, so one Cmd-Z restores every removed chunk.
+		//!
+		//! `displayTargets` is the comma-joined target list used for logs only (it is NOT an addressable
+		//! entity name -- see the AgentRemoveChunks op doc); `priorDocText` is the byte-exact Cst::SerializeCst
+		//! of the Document captured immediately BEFORE the erase (the Undo payload); `redoTargetLines` is the
+		//! `kind\tname`-per-line redo descriptor; `anyWasRasterizer` is true iff ANY removed chunk was a
+		//! `*_rasterizer` chunk.  Does NOT mark dirty or fire notifications -- the caller already calls
+		//! MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentRemoveChunksEdit(
+			const String& displayTargets, const String& priorDocText, const String& redoTargetLines,
+			bool anyWasRasterizer );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
@@ -915,6 +930,14 @@ namespace RISE
 		//! insert-Redo = re-insert captured bytes; remove-Undo = ApplyCstRestoreChunkAt at the captured index;
 		//! remove-Redo = re-remove by name).
 		bool RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp, bool forward, bool* outDiagnosed = nullptr );
+
+		//! R1a (2026-08-09, batched remove_chunks): the AgentRemoveChunks sibling of RouteAgentChunkCrud_.
+		//! `forward` false = Undo (Job::ApplyCstReplaceDocumentText on the captured pre-batch document text);
+		//! `forward` true = Redo (Job::ApplyCstRemoveChunks over the recorded `kind\tname` lines).  Same
+		//! mutation-keyed return + `outDiagnosed` convention as RouteAgentChunkCrud_.  Kept SEPARATE from that
+		//! helper rather than folded into it: the two directions consume entirely different fields and call
+		//! entirely different Job primitives, so a shared four-way branch would only obscure both.
+		bool RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.

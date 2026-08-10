@@ -155,6 +155,7 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"   // R1c: enumerate every registered rasterizer kind for the classification-coverage assertion
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -1261,6 +1262,13 @@ static void TestRenameRecipeEndToEnd()
 // G3: rasterizer insert ACTIVATION (review round 2 P1-B): inserting a
 // different-keyword rasterizer makes it ACTIVE live, and the serialized
 // head reloaded into a fresh Job agrees (live == reload; last-wins).
+//
+// R1c (2026-08-09): the inserted kind is `vcm_pel_rasterizer`, not the
+// `bdpt_pel_rasterizer` this test used before the agent rasterizer
+// allowlist landed.  BDPT is now refused for agent selection (see
+// TestRasterizerAllowlistGate); VCM is on the allowlist and is equally
+// different-keyword from the fixture's authored pathtracing rasterizer,
+// so the ACTIVATION property under test is unchanged.
 //----------------------------------------------------------------------
 static void TestRasterizerInsertActivation()
 {
@@ -1285,9 +1293,9 @@ static void TestRasterizerInsertActivation()
 	}
 
 	Agent::AgentChunkResult r = sess->InsertChunk(
-		"bdpt_pel_rasterizer\n{\n\tsamples 4\n}" );
+		"vcm_pel_rasterizer\n{\n\tsamples 4\n}" );
 	Check( r.applied, "inserting a different-keyword rasterizer applies" );
-	Check( pJob->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+	Check( pJob->GetActiveRasterizerName() == "vcm_pel_rasterizer",
 	       "the inserted rasterizer is ACTIVE live (activation restore skipped)" );
 
 	// ... and post-insert the render result OBSERVES the switch -- the agent
@@ -1295,8 +1303,8 @@ static void TestRasterizerInsertActivation()
 	{
 		Agent::AgentRenderResult rrPost = sess->Render();
 		Check( rrPost.ok, "the post-insert render succeeds" );
-		Check( rrPost.integrator == "bdpt_pel_rasterizer",
-		       "the post-insert render reports integrator=bdpt_pel_rasterizer (the field reflects the insert)" );
+		Check( rrPost.integrator == "vcm_pel_rasterizer",
+		       "the post-insert render reports integrator=vcm_pel_rasterizer (the field reflects the insert)" );
 	}
 
 	// Live == reload: derive the serialized bytes into a FRESH Job and
@@ -1307,7 +1315,7 @@ static void TestRasterizerInsertActivation()
 		Job* fresh = LoadScene( bytes.c_str(), tmp2 );
 		Check( fresh != nullptr, "the post-insert head reloads" );
 		if( fresh ) {
-			Check( fresh->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+			Check( fresh->GetActiveRasterizerName() == "vcm_pel_rasterizer",
 			       "the reloaded head's active rasterizer AGREES with live (no divergence)" );
 			Check( fresh->GetActiveRasterizerName() == pJob->GetActiveRasterizerName(),
 			       "live and reload name the SAME active rasterizer" );
@@ -3114,6 +3122,704 @@ static void TestNonSamplingEmitterGate()
 	}
 }
 
+
+//----------------------------------------------------------------------
+// R1c (2026-08-09): the AGENT RASTERIZER ALLOWLIST gate.
+//
+// USER DIRECTIVE: a scene-editing agent must never select the MLT
+// rasterizer ("its a specialized rasterizer"), narrowed by the user to
+// "agents may use PT and VCM only".  ALLOWED: pathtracing_pel /
+// pathtracing_spectral / vcm_pel / vcm_spectral.  BLOCKED: bdpt_pel /
+// bdpt_spectral / mlt / mlt_spectral / auto / auto_spectral.
+// DELIBERATELY UNGATED: pixelpel_rasterizer /
+// pixelintegratingspectral_rasterizer -- they are not integrator
+// choices, and pixelpel is required for alpha-mask scenes.
+//
+// Sub-tests, one per enforcement path this gate had to close:
+//   (a) insert_chunk of EACH blocked kind -> refused, document
+//       byte-identical, head revision unmoved, message names the kind
+//       AND the whole allowed set AND the no-override alternative;
+//   (b) insert_chunk of EACH allowed kind -> applies;
+//   (c) the two utility rasterizers -> NOT blocked;
+//   (d) STATE-VS-DELTA on a scene that ALREADY carries mlt_rasterizer:
+//       an unrelated edit applies, a patch to the MLT chunk's OWN params
+//       applies, the scene RENDERS, and a SECOND blocked rasterizer is
+//       still refused;
+//   (e) insert_chunks with one blocked element -> the WHOLE batch is
+//       refused atomically (nothing inserted, head unmoved) -- R1a's
+//       all-or-nothing shape, deliberately NOT insert_chunks' usual
+//       best-effort, because a policy refusal is not an authoring
+//       failure;
+//   (f) propose_patch VALUE-SPLICE injection: a value carrying a closing
+//       brace + a whole mlt_rasterizer chunk cannot smuggle one in --
+//       the gate compares DOCUMENTS, not patch triples;
+//   (g) the auto_* `integrator` pin: bdpt refused, pt/vcm/auto fine,
+//       every other param on the same chunk still editable, and (round-3
+//       FIX A) bdpt is refused EVEN WHEN the head already reads bdpt --
+//       the gate is a STATELESS allowlist, not a delta against the
+//       chunk's current value;
+//   (h) the PROPOSAL path: a blocked insert staged under External
+//       authority is re-gated at RESOLVE time (the E1 lesson -- a
+//       proposal staged before the gate must not slip through on
+//       approval);
+//   (i) CLASSIFICATION COVERAGE: every rasterizer keyword the PARSER
+//       registers is explicitly classified by this policy.  A newly
+//       added rasterizer kind fails here -- and blocks at runtime
+//       meanwhile, because the classifier is an ALLOWLIST.
+//----------------------------------------------------------------------
+static const char* const kRasterAllowlistScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tmaterial matte\n}\n\n"
+	"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 3 3\n}\n";
+
+//! A scene whose ACTIVE rasterizer is a BLOCKED one, authored by the
+//! USER (a file load, never an agent edit).  The state-vs-delta arm's
+//! whole point: this scene must stay fully usable.
+static const char* const kUserAuthoredMLTScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"mlt_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n\tmutations_per_pixel 1\n"
+	"\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tmaterial matte\n}\n\n"
+	"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 3 3\n}\n";
+
+//! The six kinds this policy blocks, each with a minimal, VALID body so
+//! a refusal can never be confused with a parse/derive failure.
+struct BlockedRasterizerCase { const char* kind; const char* chunkText; };
+static const BlockedRasterizerCase kBlockedRasterizerCases[] = {
+	{ "bdpt_pel_rasterizer",
+	  "bdpt_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "bdpt_spectral_rasterizer",
+	  "bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "mlt_rasterizer",
+	  "mlt_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "mlt_spectral_rasterizer",
+	  "mlt_spectral_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "auto_rasterizer",
+	  "auto_rasterizer\n{\n\tsamples 2\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "auto_spectral_rasterizer",
+	  "auto_spectral_rasterizer\n{\n\tsamples 2\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}" },
+};
+static const std::size_t kBlockedRasterizerCaseCount =
+	sizeof( kBlockedRasterizerCases ) / sizeof( kBlockedRasterizerCases[0] );
+
+//! Every clause the refusal message owes the model: the rejected kind,
+//! the FULL allowed set spelled out, and the human alternative.
+static void CheckRasterizerRefusalMessage( const std::string& msg, const std::string& kind,
+                                           const char* tag )
+{
+	Check( msg.find( kind ) != std::string::npos,
+	       std::string( tag ) + " message NAMES the rejected kind (" + kind + ")" );
+	Check( msg.find( "pathtracing_pel_rasterizer" ) != std::string::npos &&
+	       msg.find( "pathtracing_spectral_rasterizer" ) != std::string::npos &&
+	       msg.find( "vcm_pel_rasterizer" ) != std::string::npos &&
+	       msg.find( "vcm_spectral_rasterizer" ) != std::string::npos,
+	       std::string( tag ) + " message names the FULL allowed set explicitly" );
+	Check( msg.find( "no override" ) != std::string::npos ||
+	       msg.find( "NO override" ) != std::string::npos,
+	       std::string( tag ) + " message states there is NO escape parameter" );
+	Check( msg.find( "USER" ) != std::string::npos || msg.find( "user" ) != std::string::npos,
+	       std::string( tag ) + " message states the alternative (the user selects it themselves)" );
+}
+
+static void TestRasterizerAllowlistGate()
+{
+	std::printf( "R1c: agent rasterizer allowlist (PT + VCM only; MLT/BDPT/auto refused)...\n" );
+
+	// ---- (a) EVERY blocked kind is refused, atomically ------------------
+	for( std::size_t i = 0; i < kBlockedRasterizerCaseCount; ++i )
+	{
+		const BlockedRasterizerCase& bc = kBlockedRasterizerCases[i];
+		const std::string tmp = TempPath( ( std::string( "agentcrud_r1c_a_" ) + bc.kind + ".RISEscene" ).c_str() );
+		Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+		Check( pJob != nullptr, std::string( "R1c(a) fixture loads for " ) + bc.kind );
+		if( !pJob ) continue;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentChunkResult r = sess->InsertChunk( bc.chunkText );
+		Check( !r.applied && r.status == "rejected",
+		       std::string( "R1c(a) inserting " ) + bc.kind + " is REFUSED" );
+		Check( !r.retriable,
+		       std::string( "R1c(a) the refusal is PERMANENT (retriable=false) for " ) + bc.kind );
+		Check( r.kind == bc.kind,
+		       std::string( "R1c(a) the refusal still echoes the chunk kind for " ) + bc.kind );
+		Check( sess->ReadDocument() == headBefore,
+		       std::string( "R1c(a) the document is byte-identical after refusing " ) + bc.kind );
+		Check( sess->HeadVersion() == vBefore,
+		       std::string( "R1c(a) the head version did not move after refusing " ) + bc.kind );
+		Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+		       std::string( "R1c(a) the ACTIVE rasterizer is untouched after refusing " ) + bc.kind );
+		CheckRasterizerRefusalMessage( r.message, bc.kind, "R1c(a)" );
+		if( i == 0 ) std::printf( "  R1c(a) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (b) EVERY allowed kind applies ---------------------------------
+	// The fixture already declares pathtracing_pel_rasterizer, so a second
+	// copy of THAT one is a duplicate-singleton case rather than a policy
+	// case; every allowed kind gets its own fresh fixture regardless, and
+	// the assertion is only that the ALLOWLIST does not refuse it.
+	{
+		static const char* const kAllowedInserts[] = {
+			"pathtracing_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}",
+			"vcm_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}",
+			"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}",
+		};
+		static const char* const kAllowedNames[] = {
+			"pathtracing_spectral_rasterizer", "vcm_pel_rasterizer", "vcm_spectral_rasterizer",
+		};
+		for( std::size_t i = 0; i < 3; ++i )
+		{
+			const std::string tmp = TempPath( ( std::string( "agentcrud_r1c_b_" ) + kAllowedNames[i] + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+			Check( pJob != nullptr, std::string( "R1c(b) fixture loads for " ) + kAllowedNames[i] );
+			if( !pJob ) continue;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentChunkResult r = sess->InsertChunk( kAllowedInserts[i] );
+			Check( r.applied && r.status == "applied",
+			       std::string( "R1c(b) inserting the ALLOWED " ) + kAllowedNames[i] + " succeeds" );
+			Check( pJob->GetActiveRasterizerName() == kAllowedNames[i],
+			       std::string( "R1c(b) the allowed insert really becomes ACTIVE: " ) + kAllowedNames[i] );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- (c) the DELIBERATELY UNGATED utility rasterizers ---------------
+	// pixelpel_rasterizer is REQUIRED for alpha-mask scenes
+	// (docs/SCENE_CONVENTIONS.md) and neither of these is an integrator
+	// choice, so the directive does not reach them.
+	{
+		static const char* const kUtilityInserts[] = {
+			"pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}",
+			"pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}",
+		};
+		static const char* const kUtilityNames[] = {
+			"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+		};
+		for( std::size_t i = 0; i < 2; ++i )
+		{
+			const std::string tmp = TempPath( ( std::string( "agentcrud_r1c_c_" ) + kUtilityNames[i] + ".RISEscene" ).c_str() );
+			Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+			Check( pJob != nullptr, std::string( "R1c(c) fixture loads for " ) + kUtilityNames[i] );
+			if( !pJob ) continue;
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentChunkResult r = sess->InsertChunk( kUtilityInserts[i] );
+			Check( r.applied && r.status == "applied",
+			       std::string( "R1c(c) the UNGATED utility rasterizer " ) + kUtilityNames[i] + " is NOT blocked" );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- (d) STATE-VS-DELTA on a USER-authored MLT scene ----------------
+	{
+		const std::string tmp = TempPath( "agentcrud_r1c_d.RISEscene" );
+		Job* pJob = LoadScene( kUserAuthoredMLTScene, tmp );
+		Check( pJob != nullptr, "R1c(d) a USER-authored mlt_rasterizer scene loads" );
+		if( pJob )
+		{
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Check( pJob->GetActiveRasterizerName() == "mlt_rasterizer",
+			       "R1c(d) RED-PROVE: MLT really is the ACTIVE rasterizer on this head" );
+
+			// (d1) an edit to an UNRELATED chunk applies.
+			{
+				Agent::AgentSetPatch p;
+				p.target = "sph";
+				p.kind   = "sphere_geometry";
+				p.param  = "radius";
+				p.value  = "1.4";
+				Agent::AgentPatchResult r = sess->ProposePatch( p );
+				Check( r.applied && r.status == "applied",
+				       "R1c(d1) an unrelated edit on a pre-existing MLT scene APPLIES (state, not delta)" );
+			}
+
+			// (d2) an edit to the MLT chunk's OWN params applies -- the
+			// kind-addressed singleton form (a rasterizer has no `name`).
+			{
+				Agent::AgentSetPatch p;
+				p.target = "";
+				p.kind   = "mlt_rasterizer";
+				p.param  = "mutations_per_pixel";
+				p.value  = "2";
+				Agent::AgentPatchResult r = sess->ProposePatch( p );
+				Check( r.applied && r.status == "applied",
+				       "R1c(d2) patching the BLOCKED rasterizer's OWN params APPLIES (it is already here)" );
+				Check( sess->ReadDocument().find( "mutations_per_pixel 2" ) != std::string::npos,
+				       "R1c(d2) the param edit really landed in the document" );
+			}
+
+			// (d3) the scene still RENDERS -- the gate never touches the
+			// render path, only document mutation.
+			{
+				Agent::AgentRenderResult rr = sess->Render();
+				Check( rr.ok, "R1c(d3) a pre-existing MLT scene still RENDERS through the agent surface" );
+				Check( rr.integrator == "mlt_rasterizer",
+				       "R1c(d3) and it renders through MLT, honestly reported" );
+			}
+
+			// (d4) but a SECOND blocked rasterizer is still refused -- an
+			// insert is purely additive, so it is always a NEW selection.
+			{
+				const std::string headBefore = sess->ReadDocument();
+				Agent::AgentChunkResult r = sess->InsertChunk( kBlockedRasterizerCases[0].chunkText );
+				Check( !r.applied && r.status == "rejected",
+				       "R1c(d4) inserting a SECOND blocked rasterizer is STILL refused" );
+				Check( sess->ReadDocument() == headBefore,
+				       "R1c(d4) and the document is byte-identical" );
+			}
+
+			// (d5) PIN THE REASONING behind leaving the REMOVE verbs ungated:
+			// a rasterizer chunk declares no `name` param, and the resolver's
+			// unique-in-kind positional fallback fires only for `camera` and
+			// for descriptor-`unnamedRepeatable` kinds (timeline/keyframe) --
+			// neither of which a rasterizer is.  So neither remove verb can
+			// even RESOLVE a rasterizer, and neither can therefore re-activate
+			// a shadowed one.  Asserted empirically rather than reasoned,
+			// because the gate's coverage argument depends on it.
+			{
+				const std::string headBefore = sess->ReadDocument();
+				Agent::AgentChunkResult r1 = sess->RemoveChunk( "mlt_rasterizer" );
+				Check( !r1.applied, "R1c(d5) remove_chunk cannot resolve a rasterizer by keyword" );
+				Agent::AgentChunkResult r2 = sess->RemoveChunk( "mlt_rasterizer", "mlt_rasterizer" );
+				Check( !r2.applied, "R1c(d5) ... nor with an explicit `kind`" );
+				Agent::AgentChunkResult r3 = sess->RemoveChunk( "", "mlt_rasterizer" );
+				Check( !r3.applied, "R1c(d5) ... nor via an empty-name kind address" );
+				std::vector<std::string> batch;
+				batch.push_back( "mlt_rasterizer" );
+				Agent::AgentSession::AgentRemoveBatchResult rb = sess->RemoveChunks( batch );
+				Check( !rb.applied, "R1c(d5) ... nor through the batch remove verb" );
+				Check( sess->ReadDocument() == headBefore,
+				       "R1c(d5) and every one of those attempts left the head byte-identical" );
+				Check( pJob->GetActiveRasterizerName() == "mlt_rasterizer",
+				       "R1c(d5) the active rasterizer is still the user's MLT" );
+			}
+
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (e) insert_chunks: ONE blocked element refuses the WHOLE batch --
+	{
+		const std::string tmp = TempPath( "agentcrud_r1c_e.RISEscene" );
+		Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+		Check( pJob != nullptr, "R1c(e) fixture loads" );
+		if( pJob )
+		{
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string headBefore = sess->ReadDocument();
+			const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+			std::vector<std::string> batch;
+			batch.push_back( "uniformcolor_painter\n{\n\tname pnt_r1c\n\tcolor 0.2 0.4 0.6\n}" );
+			batch.push_back( "mlt_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n"
+			                 "\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}" );
+			batch.push_back( "sphere_geometry\n{\n\tname sph_r1c\n\tradius 0.3\n}" );
+			const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+
+			Check( rs.size() == batch.size(),
+			       "R1c(e) the batch still returns one result per input element" );
+			bool allRejected = true;
+			for( const Agent::AgentChunkResult& e : rs ) if( e.applied || e.status != "rejected" ) allRejected = false;
+			Check( allRejected, "R1c(e) EVERY element reports the same refusal (all-or-nothing)" );
+			Check( sess->ReadDocument() == headBefore,
+			       "R1c(e) NOTHING was inserted -- the document is byte-identical" );
+			Check( sess->HeadVersion() == vBefore,
+			       "R1c(e) the head version did not move" );
+			Check( !rs.empty() && rs[0].message.find( "NOTHING was inserted" ) != std::string::npos,
+			       "R1c(e) the message states the all-or-nothing contract explicitly" );
+			Check( !rs.empty() && rs[0].message.find( "chunks[1]" ) != std::string::npos,
+			       "R1c(e) the message names the OFFENDING INDEX so the fix is one edit" );
+			if( !rs.empty() ) {
+				CheckRasterizerRefusalMessage( rs[0].message, "mlt_rasterizer", "R1c(e)" );
+				std::printf( "  R1c(e) message: %s\n", rs[0].message.c_str() );
+			}
+			// RED-PROVE the fixture: the SAME batch WITHOUT the blocked
+			// element lands every element, so (e)'s refusal is about the
+			// policy and not about the batch being malformed.
+			{
+				std::vector<std::string> ok;
+				ok.push_back( batch[0] );
+				ok.push_back( batch[2] );
+				const std::vector<Agent::AgentChunkResult> rs2 = sess->InsertChunks( ok );
+				bool allApplied = rs2.size() == 2;
+				for( const Agent::AgentChunkResult& e : rs2 ) if( !e.applied ) allApplied = false;
+				Check( allApplied, "R1c(e) RED-PROVE: the same batch MINUS the blocked element applies fully" );
+			}
+
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (f) VALUE-SPLICE injection through propose_patch ----------------
+	// A param value is spliced into the document as TEXT.  The gate
+	// compares DOCUMENTS rather than patch triples precisely so a value
+	// carrying a closing brace plus a whole chunk cannot smuggle a blocked
+	// rasterizer past a keyword-only check.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1c_f.RISEscene" );
+		Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+		Check( pJob != nullptr, "R1c(f) fixture loads" );
+		if( pJob )
+		{
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string headBefore = sess->ReadDocument();
+
+			Agent::AgentSetPatch p;
+			p.target = "sph";
+			p.kind   = "sphere_geometry";
+			p.param  = "radius";
+			p.value  = "1.0\n}\n\nmlt_rasterizer\n{\n\tbootstrap_samples 16\n\tchains 1\n"
+			           "\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n";
+			Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( !r.applied,
+			       "R1c(f) a value-splice that would introduce mlt_rasterizer does NOT apply" );
+			Check( sess->ReadDocument() == headBefore,
+			       "R1c(f) the document is byte-identical after the injection attempt" );
+			Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+			       "R1c(f) the ACTIVE rasterizer is untouched" );
+			std::printf( "  R1c(f) message: %s\n", r.message.c_str() );
+
+			// The propose_patch above is refused by the DERIVE layer too (a
+			// Double slot rejects the non-numeric token), so it alone does not
+			// prove the allowlist arm fired.  Drive the gate function DIRECTLY
+			// on the same head to red-prove arm (b): the candidate-document
+			// comparison sees the spliced chunk regardless of whether the
+			// derive layer would also have caught it.
+			{
+				const std::string clause = RISE::Agent::CheckRasterizerAllowlistGateForPatch(
+					headBefore, "sph", "sphere_geometry", "radius", p.value );
+				Check( !clause.empty(),
+				       "R1c(f) RED-PROVE: the allowlist gate ITSELF refuses the value-splice "
+				       "(it compares candidate DOCUMENTS, not patch triples)" );
+				CheckRasterizerRefusalMessage( clause, "mlt_rasterizer", "R1c(f)" );
+
+				// ... and a splice carrying an ALLOWED rasterizer is NOT
+				// refused by this gate (whatever the derive layer then says).
+				const std::string okClause = RISE::Agent::CheckRasterizerAllowlistGateForPatch(
+					headBefore, "sph", "sphere_geometry", "radius",
+					"1.0\n}\n\nvcm_pel_rasterizer\n{\n\tsamples 2\n" );
+				Check( okClause.empty(),
+				       "R1c(f) RED-PROVE (negation): the SAME splice with an ALLOWED rasterizer "
+				       "is not refused by the allowlist gate" );
+
+				// A splice into a chunk that is NOT touched at all leaves the
+				// document's rasterizer multiset alone -- no false positive.
+				const std::string noneClause = RISE::Agent::CheckRasterizerAllowlistGateForPatch(
+					headBefore, "sph", "sphere_geometry", "radius", "2.5" );
+				Check( noneClause.empty(), "R1c(f) an ordinary param edit is never refused" );
+			}
+
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (g) the auto_* dispatcher's `integrator` pin --------------------
+	{
+		std::string autoScene = kRasterAllowlistScene;
+		// Replace the authored PT rasterizer with a USER-authored auto one
+		// (file-loaded, never agent-inserted -- state-vs-delta again).
+		const std::string ptChunk =
+			"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}";
+		const std::string autoChunk =
+			"auto_rasterizer\n{\n\tsamples 2\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}";
+		const std::size_t at = autoScene.find( ptChunk );
+		Check( at != std::string::npos, "R1c(g) fixture surgery finds the authored PT chunk" );
+		if( at != std::string::npos ) autoScene.replace( at, ptChunk.size(), autoChunk );
+
+		const std::string tmp = TempPath( "agentcrud_r1c_g.RISEscene" );
+		Job* pJob = LoadScene( autoScene.c_str(), tmp );
+		Check( pJob != nullptr, "R1c(g) a USER-authored auto_rasterizer scene loads" );
+		if( pJob )
+		{
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// (g1) pinning bdpt is REFUSED -- that IS selecting BDPT.
+			{
+				const std::string headBefore = sess->ReadDocument();
+				Agent::AgentSetPatch p;
+				p.target = "";
+				p.kind   = "auto_rasterizer";
+				p.param  = "integrator";
+				p.value  = "bdpt";
+				Agent::AgentPatchResult r = sess->ProposePatch( p );
+				Check( !r.applied && r.status == "rejected",
+				       "R1c(g1) pinning auto_rasterizer's integrator to bdpt is REFUSED" );
+				Check( r.message.find( "bdpt" ) != std::string::npos &&
+				       r.message.find( "auto_rasterizer" ) != std::string::npos,
+				       "R1c(g1) the message names both the pin value and the chunk" );
+				Check( r.message.find( "no override" ) != std::string::npos ||
+				       r.message.find( "NO override" ) != std::string::npos,
+				       "R1c(g1) the message states there is NO escape parameter" );
+				Check( sess->ReadDocument() == headBefore,
+				       "R1c(g1) the document is byte-identical" );
+				std::printf( "  R1c(g1) message: %s\n", r.message.c_str() );
+			}
+
+			// (g1b) round-3 FIX A RED-PROVE: pinning bdpt is refused EVEN
+			// WHEN the head ALREADY reads bdpt.  A separate fixture/session
+			// (this one's head is still pinned to `pt`) whose
+			// auto_rasterizer is USER-authored with `integrator bdpt`
+			// already in place -- the prior DELTA form treated re-writing
+			// the SAME value as an inert no-op and let it through; the
+			// STATELESS allowlist form refuses unconditionally, closing the
+			// TOCTOU hole where a co-editor could move the pin off bdpt
+			// between gate-check and commit.
+			{
+				std::string bdptAutoScene = kRasterAllowlistScene;
+				const std::string ptChunk2 =
+					"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}";
+				const std::string bdptAutoChunk =
+					"auto_rasterizer\n{\n\tsamples 2\n\tintegrator bdpt\n\tpixel_filter box\n\toidn_denoise false\n}";
+				const std::size_t at2 = bdptAutoScene.find( ptChunk2 );
+				Check( at2 != std::string::npos, "R1c(g1b) fixture surgery finds the authored PT chunk" );
+				if( at2 != std::string::npos ) bdptAutoScene.replace( at2, ptChunk2.size(), bdptAutoChunk );
+
+				const std::string tmp2 = TempPath( "agentcrud_r1c_g1b.RISEscene" );
+				Job* pJob2 = LoadScene( bdptAutoScene.c_str(), tmp2 );
+				Check( pJob2 != nullptr, "R1c(g1b) a USER-authored auto_rasterizer scene ALREADY pinned to bdpt loads" );
+				if( pJob2 )
+				{
+					std::unique_ptr<Agent::AgentSession> sess2 = Agent::AgentSession::WrapJob( pJob2 );
+					const std::string headBefore2 = sess2->ReadDocument();
+
+					Agent::AgentSetPatch p2;
+					p2.target = "";
+					p2.kind   = "auto_rasterizer";
+					p2.param  = "integrator";
+					p2.value  = "bdpt";
+					Agent::AgentPatchResult r2 = sess2->ProposePatch( p2 );
+					Check( !r2.applied && r2.status == "rejected",
+					       "R1c(g1b) re-pinning bdpt on a chunk ALREADY pinned to bdpt is STILL REFUSED" );
+					Check( r2.message.find( "bdpt" ) != std::string::npos,
+					       "R1c(g1b) the message still names the rejected pin" );
+					Check( sess2->ReadDocument() == headBefore2,
+					       "R1c(g1b) the document is byte-identical" );
+
+					// The state-vs-delta carve-out still holds for every OTHER
+					// param on this same already-bdpt-pinned chunk.
+					Agent::AgentSetPatch p3;
+					p3.target = "";
+					p3.kind   = "auto_rasterizer";
+					p3.param  = "samples";
+					p3.value  = "5";
+					Agent::AgentPatchResult r3 = sess2->ProposePatch( p3 );
+					Check( r3.applied && r3.status == "applied",
+					       "R1c(g1b) an UNRELATED param on the already-bdpt-pinned chunk still APPLIES" );
+
+					sess2.reset();
+					pJob2->release();
+				}
+				std::remove( tmp2.c_str() );
+			}
+
+			// (g2) pinning vcm / pt / auto is fine.
+			{
+				static const char* const kOkPins[] = { "vcm", "pt", "auto" };
+				for( std::size_t i = 0; i < 3; ++i ) {
+					Agent::AgentSetPatch p;
+					p.target = "";
+					p.kind   = "auto_rasterizer";
+					p.param  = "integrator";
+					p.value  = kOkPins[i];
+					Agent::AgentPatchResult r = sess->ProposePatch( p );
+					Check( r.applied && r.status == "applied",
+					       std::string( "R1c(g2) pinning integrator=" ) + kOkPins[i] + " APPLIES" );
+				}
+			}
+
+			// (g3) every OTHER param on the same blocked chunk is editable.
+			{
+				Agent::AgentSetPatch p;
+				p.target = "";
+				p.kind   = "auto_rasterizer";
+				p.param  = "samples";
+				p.value  = "3";
+				Agent::AgentPatchResult r = sess->ProposePatch( p );
+				Check( r.applied && r.status == "applied",
+				       "R1c(g3) an UNRELATED param on the blocked auto_rasterizer still APPLIES" );
+			}
+
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (h) the PROPOSAL path is re-gated at RESOLVE time ---------------
+	// The E1 lesson (P1-3): a proposal that reaches the queue must be
+	// re-checked on approval.  Here the stage-time gate already refuses,
+	// so this drives the RESOLVE-time arm directly through the controller
+	// -- proving that even a proposal that somehow reached `pending`
+	// (staged before the gate shipped, or staged while innocent) cannot
+	// land a blocked rasterizer on approval.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1c_h.RISEscene" );
+		Job* pJob = LoadScene( kRasterAllowlistScene, tmp );
+		Check( pJob != nullptr, "R1c(h) fixture loads" );
+		if( pJob )
+		{
+			TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+			c.Start();
+			std::unique_ptr<Agent::AgentSession> owner =
+				Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+			owner->AttachController( &c );
+
+			// (h1) stage-time: an External session's blocked insert never
+			// even reaches the queue.
+			{
+				std::unique_ptr<Agent::AgentSession> ext =
+					Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+				ext->AttachController( &c );
+				Agent::AgentChunkResult r = ext->InsertChunk( kBlockedRasterizerCases[2].chunkText );
+				Check( !r.applied && r.status == "rejected",
+				       "R1c(h1) an External-authority blocked insert is refused BEFORE staging" );
+				Check( owner->ListProposals().empty(),
+				       "R1c(h1) and nothing was enqueued" );
+			}
+
+			// (h2) resolve-time: stage a proposal the controller WILL be
+			// asked to apply, bypassing the session gate by staging
+			// directly on the controller (the shape a pre-gate proposal
+			// has), then approve it -- the re-gate must refuse.
+			{
+				SceneEditController::AgentProposal p;
+				p.kind      = SceneEditController::AgentProposalKind::InsertChunk;
+				p.chunkText = String( kBlockedRasterizerCases[2].chunkText );
+				p.hasExplicitBaseVersion = false;
+				RISE::Cst::CstHeadVersion stagedHead{};
+				const std::uint64_t id = c.StageProposal( p, &stagedHead );
+				Check( id != 0, "R1c(h2) the pre-gate-shaped proposal reaches the queue" );
+
+				const std::string headBefore = owner->ReadDocument();
+				Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+				Check( rr.ok, "R1c(h2) resolve runs (the id is found)" );
+				Check( rr.status == "rejected",
+				       "R1c(h2) approving a staged BLOCKED rasterizer is REFUSED at resolve time" );
+				Check( rr.message.find( "resolve refused" ) != std::string::npos,
+				       "R1c(h2) message carries the resolve-refusal marker" );
+				CheckRasterizerRefusalMessage( rr.message, "mlt_rasterizer", "R1c(h2)" );
+				Check( owner->ReadDocument() == headBefore,
+				       "R1c(h2) the live document never received the staged rasterizer" );
+				Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+				       "R1c(h2) the ACTIVE rasterizer is untouched" );
+				std::printf( "  R1c(h2) message: %s\n", rr.message.c_str() );
+			}
+
+			owner.reset();
+			c.Stop();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// ---- (i) CLASSIFICATION COVERAGE -------------------------------------
+	// Walk the PARSER's own registry.  Every chunk whose descriptor is
+	// ChunkCategory::Rasterizer AND whose keyword ends in `_rasterizer`
+	// (the same pair the gate itself uses -- `light_rr_threshold` is
+	// category Rasterizer but is not a rasterizer) must be a kind this
+	// policy has explicitly considered.  A rasterizer added to the parser
+	// tomorrow fails HERE and blocks at runtime meanwhile.
+	{
+		unsigned int seen = 0, allowed = 0, ungated = 0, blocked = 0;
+		for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() )
+		{
+			const std::string& kw = e.keyword;
+			const RISE::Agent::AgentRasterizerPolicy cls = RISE::Agent::ClassifyAgentRasterizerKind( kw );
+			if( cls == RISE::Agent::AgentRasterizerPolicy::NotARasterizer ) continue;
+			++seen;
+			if( cls == RISE::Agent::AgentRasterizerPolicy::Allowed )        ++allowed;
+			else if( cls == RISE::Agent::AgentRasterizerPolicy::UngatedUtility ) ++ungated;
+			else                                                            ++blocked;
+			Check( RISE::Agent::AgentRasterizerKindIsExplicitlyClassified( kw ),
+			       "R1c(i) rasterizer kind `" + kw + "` is EXPLICITLY classified by the R1c policy "
+			       "(a new rasterizer defaults to BLOCKED -- classify it deliberately)" );
+		}
+		Check( seen == 12,
+		       "R1c(i) the parser registers exactly 12 rasterizer kinds (update this count AND the "
+		       "policy sets together when that changes)" );
+		Check( allowed == 4, "R1c(i) exactly FOUR kinds are agent-selectable (PT + VCM, pel + spectral)" );
+		Check( ungated == 2, "R1c(i) exactly TWO utility rasterizers are deliberately ungated" );
+		Check( blocked == 6, "R1c(i) exactly SIX kinds are blocked (BDPT, MLT, auto -- pel + spectral)" );
+		// `light_rr_threshold` is ChunkCategory::Rasterizer but is NOT a
+		// rasterizer -- the suffix half of the predicate is load-bearing.
+		Check( RISE::Agent::ClassifyAgentRasterizerKind( "light_rr_threshold" ) ==
+		       RISE::Agent::AgentRasterizerPolicy::NotARasterizer,
+		       "R1c(i) light_rr_threshold is category Rasterizer but is correctly NOT a rasterizer kind" );
+		Check( RISE::Agent::ClassifyAgentRasterizerKind( "omni_light" ) ==
+		       RISE::Agent::AgentRasterizerPolicy::NotARasterizer,
+		       "R1c(i) a non-rasterizer chunk classifies as NotARasterizer" );
+	}
+
+	// ---- (i2) round-3 FIX A: INTEGRATOR-PIN CLASSIFICATION COVERAGE -----
+	// Walk auto_rasterizer's AND auto_spectral_rasterizer's OWN descriptor
+	// (not a hand-typed literal) for the `integrator` param's enumValues.
+	// Every value the descriptor accepts must be a value this policy has
+	// explicitly classified -- a value the descriptor gains tomorrow still
+	// defaults to REFUSED at runtime (allowlist semantics), but fails HERE
+	// so the omission is a decision someone makes deliberately, mirroring
+	// (i) above for rasterizer KINDS.
+	{
+		static const char* const kAutoKeywords[] = { "auto_rasterizer", "auto_spectral_rasterizer" };
+		unsigned int paramsChecked = 0;
+		for( const char* autoKw : kAutoKeywords )
+		{
+			bool foundChunk = false;
+			for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() )
+			{
+				if( e.keyword != autoKw ) continue;
+				foundChunk = true;
+				const RISE::ChunkDescriptor& d = e.parser->Describe();
+				bool foundParam = false;
+				for( const RISE::ParameterDescriptor& p : d.parameters )
+				{
+					if( p.name != "integrator" ) continue;
+					foundParam = true;
+					++paramsChecked;
+					for( const std::string& ev : p.enumValues )
+					{
+						Check( RISE::Agent::AgentIntegratorPinIsExplicitlyClassified( ev ),
+						       "R1c(i2) `" + std::string( autoKw ) + "`'s integrator enum value `" + ev +
+						       "` is EXPLICITLY classified by the R1c pin policy "
+						       "(a new accepted value defaults to REFUSED -- classify it deliberately)" );
+					}
+				}
+				Check( foundParam, std::string( "R1c(i2) " ) + autoKw + " declares an `integrator` param" );
+				break;
+			}
+			Check( foundChunk, std::string( "R1c(i2) the parser registers " ) + autoKw );
+		}
+		Check( paramsChecked == 2, "R1c(i2) both auto_* chunks' integrator params were checked" );
+	}
+}
+
 //----------------------------------------------------------------------
 // R3: actionable REJECTED remove_chunk diagnostics -- the remove_chunk
 // sibling of R1/R2. The reference graph's reverse adjacency NAMES the
@@ -3185,6 +3891,513 @@ static void TestActionableRemoveDiagnostics()
 		std::printf( "  R3(j) message: %s\n", r.message.c_str() );
 
 		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+
+//----------------------------------------------------------------------
+// RC1: remove_chunks -- the ATOMIC BATCH form of remove_chunk (headless,
+// direct AgentSession::RemoveChunks API).  This is the verb's core
+// contract, so every clause of it is red-provable here:
+//   (a) N targets removed in ONE call with EXACTLY ONE head-version bump
+//       (the measured motivation: 20 remove_chunk calls -> 1);
+//   (b) INTRA-BATCH references resolve in BOTH list orders (producer
+//       first AND consumer first) -- there is no ordering requirement;
+//   (c) an OUTSIDE-batch referrer refuses the WHOLE batch: NOTHING
+//       removed, head byte-identical, and the per-target issue names the
+//       outside referrer while the intra-batch-only target gets NO issue;
+//   (d) an unknown target mid-batch refuses atomically with a per-target
+//       "unknown_target" issue naming the offender;
+//   (e) duplicates are DEDUPED (removed once) and reported in `note`,
+//       never refused;
+//   (f) a single-element batch is semantically identical to the singular
+//       verb -- same outcome, byte-identical resulting document.
+//----------------------------------------------------------------------
+static void TestRemoveChunksBatch()
+{
+	std::printf( "RC1: remove_chunks -- the ATOMIC batch remove (headless)...\n" );
+
+	// The emissive subassembly of kScene is a self-contained 4-chunk graph:
+	//   pnt_emit -> mat_emit -> obj_emit  and  quad_emit -> obj_emit
+	// Nothing OUTSIDE it references any of the four, so it is exactly the
+	// "tear down a subassembly" shape the verb exists for.
+	const char* const kEmissiveSubassembly[] = { "pnt_emit", "mat_emit", "quad_emit", "obj_emit" };
+
+	// (a) N targets, ONE head bump.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc1a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC1(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion before = sess->HeadVersion();
+		std::vector<std::string> targets( kEmissiveSubassembly, kEmissiveSubassembly + 4 );
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( targets );
+
+		Check( r.applied && r.status == "applied", "RC1(a) the 4-chunk batch APPLIES" );
+		Check( r.rawCode == 2, "RC1(a) rawCode is 2 (a D2 full re-derive), never 1" );
+		Check( r.note.empty(), "RC1(a) no dedupe note when nothing was listed twice" );
+		Check( r.targetResults.size() == 4, "RC1(a) one result per target" );
+		// THE headline property: FOUR chunks left the document for the price of ONE
+		// revision bump.  Four separate remove_chunk calls would bump it four times.
+		Check( r.headVersion.revision == before.revision + 1,
+		       "RC1(a) EXACTLY ONE head-version bump for the whole 4-chunk batch" );
+		Check( r.headVersion.uuid == before.uuid, "RC1(a) same document uuid (not a reload)" );
+
+		const std::string doc = sess->ReadDocument();
+		for( const char* n : kEmissiveSubassembly )
+			Check( doc.find( std::string( "name " ) + n ) == std::string::npos,
+			       std::string( "RC1(a) '" ) + n + "' is GONE from the document" );
+		Check( doc.find( "name mat_diffuse" ) != std::string::npos,
+		       "RC1(a) the untargeted diffuse subassembly is untouched" );
+		// Every per-target entry mirrors the batch verdict and echoes its resolved kind.
+		bool everyEntryApplied = true, everyEntryHasKind = true;
+		for( const Agent::AgentChunkResult& tr : r.targetResults ) {
+			if( !tr.applied || tr.status != "applied" ) everyEntryApplied = false;
+			if( tr.kind.empty() ) everyEntryHasKind = false;
+		}
+		Check( everyEntryApplied, "RC1(a) every per-target entry mirrors the batch verdict" );
+		Check( everyEntryHasKind, "RC1(a) every per-target entry echoes its resolved chunk keyword" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) INTRA-BATCH references, BOTH orders.  pnt_emit is referenced ONLY by
+	// mat_emit, which is itself in the batch -- so it must come out regardless of
+	// which one the caller listed first.  This is the property N sequential
+	// remove_chunk calls cannot offer at all (producer-first would be refused).
+	for( int order = 0; order < 2; ++order )
+	{
+		const bool producerFirst = ( order == 0 );
+		const char* label = producerFirst ? "RC1(b1) producer-first" : "RC1(b2) consumer-first";
+		const std::string tmp = TempPath( producerFirst ? "agentcrud_rc1b1.RISEscene"
+		                                                : "agentcrud_rc1b2.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, std::string( label ) + " fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		std::vector<std::string> targets;
+		if( producerFirst ) { targets.push_back( "pnt_emit" ); targets.push_back( "mat_emit" ); }
+		else                { targets.push_back( "mat_emit" ); targets.push_back( "pnt_emit" ); }
+		// obj_emit references mat_emit from outside the pair, so it has to join the
+		// batch too -- include it LAST in both orders so the ordering variable under
+		// test is strictly the producer/consumer pair above.
+		targets.push_back( "obj_emit" );
+
+		const RISE::Cst::CstHeadVersion before = sess->HeadVersion();
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( targets );
+		Check( r.applied, std::string( label ) + ": the batch APPLIES (list order is irrelevant)" );
+		Check( r.headVersion.revision == before.revision + 1,
+		       std::string( label ) + ": still exactly ONE head bump" );
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "name pnt_emit" ) == std::string::npos &&
+		       doc.find( "name mat_emit" ) == std::string::npos &&
+		       doc.find( "name obj_emit" ) == std::string::npos,
+		       std::string( label ) + ": all three chunks are gone" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) An OUTSIDE-batch referrer refuses the WHOLE batch.  mat_diffuse is bound
+	// by obj_sph, which is NOT in the batch; pnt_albedo's only referrer IS in the
+	// batch.  So the batch must be refused, NOTHING removed, and only mat_diffuse
+	// carries a still_referenced issue.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc1c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC1(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion before = sess->HeadVersion();
+		const std::string docBefore = sess->ReadDocument();
+		std::vector<std::string> targets;
+		targets.push_back( "pnt_albedo" );
+		targets.push_back( "mat_diffuse" );
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( targets );
+
+		Check( !r.applied && r.status == "rejected", "RC1(c) the batch is REFUSED" );
+		// ALL-OR-NOTHING, red-proven on BOTH observables.
+		Check( r.headVersion.revision == before.revision,
+		       "RC1(c) head-version UNCHANGED -- nothing was removed" );
+		Check( sess->ReadDocument() == docBefore,
+		       "RC1(c) the document is BYTE-IDENTICAL -- pnt_albedo, whose only referrer WAS in the "
+		       "batch, was not partially removed either" );
+		Check( r.message.find( "NOTHING was removed" ) != std::string::npos,
+		       "RC1(c) the message STATES the all-or-nothing outcome (never left to inference)" );
+
+		Check( r.targetResults.size() == 2, "RC1(c) two per-target entries" );
+		if( r.targetResults.size() == 2 ) {
+			// pnt_albedo: its only referrer (mat_diffuse) is IN the batch -> NOT blocking.
+			Check( r.targetResults[0].name == "pnt_albedo", "RC1(c) entry 0 is pnt_albedo (first-occurrence order)" );
+			Check( r.targetResults[0].issues.empty(),
+			       "RC1(c) pnt_albedo carries NO issue -- its only referrer is INSIDE the batch, which "
+			       "does not block a batch removal" );
+			// mat_diffuse: obj_sph is OUTSIDE the batch -> blocking, and named.
+			Check( r.targetResults[1].name == "mat_diffuse", "RC1(c) entry 1 is mat_diffuse" );
+			Check( r.targetResults[1].issues.size() == 1, "RC1(c) mat_diffuse carries exactly ONE issue" );
+			if( r.targetResults[1].issues.size() == 1 ) {
+				const Agent::AgentChunkIssue& u = r.targetResults[1].issues[0];
+				Check( u.reason == "still_referenced", "RC1(c) reason is \"still_referenced\"" );
+				Check( u.value == "mat_diffuse", "RC1(c) issue value is the target's own name" );
+				bool sawIt = false;
+				for( const std::string& sug : u.suggestions ) if( sug == "obj_sph" ) sawIt = true;
+				Check( sawIt, "RC1(c) suggestions NAME the OUTSIDE-batch referrer 'obj_sph'" );
+			}
+		}
+		Check( r.message.find( "OUTSIDE this batch" ) != std::string::npos &&
+		       r.message.find( "obj_sph" ) != std::string::npos,
+		       "RC1(c) the ACTIONABLE clause names the outside referrer and says it is outside" );
+		std::printf( "  RC1(c) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) An UNKNOWN target in the MIDDLE of an otherwise-valid batch.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc1d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC1(d) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion before = sess->HeadVersion();
+		const std::string docBefore = sess->ReadDocument();
+		// obj_emit has no referrers at all, and quad_emit's ONLY referrer (obj_emit) is
+		// itself in the batch -- so both valid targets are genuinely unblocked, and the
+		// ONLY thing wrong with this batch is the typo in the middle.
+		std::vector<std::string> targets;
+		targets.push_back( "obj_emit" );
+		targets.push_back( "pnt_emitt" );          // typo -- resolves to nothing
+		targets.push_back( "quad_emit" );
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( targets );
+
+		Check( !r.applied && r.status == "rejected", "RC1(d) the batch is REFUSED" );
+		Check( r.headVersion.revision == before.revision && sess->ReadDocument() == docBefore,
+		       "RC1(d) ATOMIC: obj_emit (which resolved fine, and comes BEFORE the offender) was NOT "
+		       "removed -- the document is byte-identical" );
+		Check( r.message.find( "pnt_emitt" ) != std::string::npos,
+		       "RC1(d) the message NAMES the offending target" );
+		Check( r.targetResults.size() == 3, "RC1(d) three per-target entries" );
+		if( r.targetResults.size() == 3 ) {
+			Check( r.targetResults[0].issues.empty() && r.targetResults[2].issues.empty(),
+			       "RC1(d) the two VALID targets carry no issue" );
+			Check( r.targetResults[1].issues.size() == 1, "RC1(d) the offender carries exactly ONE issue" );
+			if( r.targetResults[1].issues.size() == 1 ) {
+				const Agent::AgentChunkIssue& u = r.targetResults[1].issues[0];
+				Check( u.reason == "unknown_target", "RC1(d) reason is \"unknown_target\"" );
+				Check( u.value == "pnt_emitt", "RC1(d) issue value is the unresolvable name" );
+				bool sawNearMiss = false;
+				for( const std::string& sug : u.suggestions ) if( sug == "pnt_emit" ) sawNearMiss = true;
+				Check( sawNearMiss, "RC1(d) suggestions rank the near-miss 'pnt_emit' (the name actually meant)" );
+			}
+		}
+		std::printf( "  RC1(d) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) DUPLICATES are deduped, not refused.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc1e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC1(e) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion before = sess->HeadVersion();
+		std::vector<std::string> targets;
+		targets.push_back( "pnt_emit" );
+		targets.push_back( "mat_emit" );
+		targets.push_back( "pnt_emit" );           // listed twice
+		targets.push_back( "quad_emit" );
+		targets.push_back( "obj_emit" );
+		targets.push_back( "pnt_emit" );           // and a third time
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( targets );
+
+		Check( r.applied, "RC1(e) duplicates do NOT refuse the batch" );
+		Check( r.targetResults.size() == 4, "RC1(e) 6 inputs collapse to 4 UNIQUE per-target entries" );
+		Check( r.headVersion.revision == before.revision + 1, "RC1(e) still exactly ONE head bump" );
+		Check( r.note.find( "deduped" ) != std::string::npos &&
+		       r.note.find( "'pnt_emit' listed 3x" ) != std::string::npos,
+		       "RC1(e) the dedupe is reported HONESTLY in `note`, naming the repeated target and its count" );
+		std::printf( "  RC1(e) note: %s\n", r.note.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (f) A SINGLE-element batch is semantically identical to the singular verb.
+	// Run both on two independent fixtures loaded from the SAME text and compare
+	// the resulting documents byte-for-byte.
+	{
+		const std::string tmpBatch = TempPath( "agentcrud_rc1f_batch.RISEscene" );
+		const std::string tmpSing  = TempPath( "agentcrud_rc1f_sing.RISEscene" );
+		Job* jBatch = LoadScene( kScene, tmpBatch );
+		Job* jSing  = LoadScene( kScene, tmpSing );
+		Check( jBatch != nullptr && jSing != nullptr, "RC1(f) both fixtures load" );
+		if( !jBatch || !jSing ) return;
+		std::unique_ptr<Agent::AgentSession> sBatch = Agent::AgentSession::WrapJob( jBatch );
+		std::unique_ptr<Agent::AgentSession> sSing  = Agent::AgentSession::WrapJob( jSing );
+
+		std::vector<std::string> one( 1, std::string( "obj_emit" ) );
+		const Agent::AgentSession::AgentRemoveBatchResult rb = sBatch->RemoveChunks( one );
+		const Agent::AgentChunkResult                     rs = sSing->RemoveChunk( "obj_emit" );
+
+		Check( rb.applied == rs.applied && rb.status == rs.status && rb.rawCode == rs.rawCode,
+		       "RC1(f) a 1-element batch reports the SAME verdict as the singular verb" );
+		Check( rb.targetResults.size() == 1 && rb.targetResults[0].kind == rs.kind,
+		       "RC1(f) the single per-target entry echoes the SAME resolved kind" );
+		Check( sBatch->ReadDocument() == sSing->ReadDocument(),
+		       "RC1(f) the resulting documents are BYTE-IDENTICAL -- the batch path is not a different erase" );
+
+		sBatch.reset(); sSing.reset();
+		jBatch->release(); jSing->release();
+		std::remove( tmpBatch.c_str() ); std::remove( tmpSing.c_str() );
+	}
+
+	// (g) Request-shape refusals: an empty list, and an empty element.  Neither
+	// touches the document.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc1g.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC1(g) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentSession::AgentRemoveBatchResult rEmpty =
+			sess->RemoveChunks( std::vector<std::string>() );
+		Check( !rEmpty.applied && rEmpty.status == "rejected" && rEmpty.targetResults.empty(),
+		       "RC1(g) an EMPTY targets list is refused with no per-target entries" );
+
+		std::vector<std::string> withBlank;
+		withBlank.push_back( "pnt_emit" );
+		withBlank.push_back( "" );
+		const Agent::AgentSession::AgentRemoveBatchResult rBlank = sess->RemoveChunks( withBlank );
+		Check( !rBlank.applied && rBlank.status == "rejected",
+		       "RC1(g) an EMPTY element refuses the batch (it addresses no chunk)" );
+		Check( rBlank.message.find( "targets[1]" ) != std::string::npos,
+		       "RC1(g) the refusal names the offending INDEX" );
+		Check( sess->ReadDocument() == docBefore,
+		       "RC1(g) neither refusal touched the document" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// RC2: remove_chunks over the WIRE -- the JSON-RPC envelope shape
+// (applied is a BOOL, removed/total counts, the conditional `note` key,
+// per-target `results` with `issues`), plus the param-validation errors.
+//----------------------------------------------------------------------
+static void TestRemoveChunksWireShape()
+{
+	std::printf( "RC2: remove_chunks wire shape through the LIVE dispatcher...\n" );
+
+	const std::string tmp = TempPath( "agentcrud_rc2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "RC2 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	// Param validation: a singular 'target' is the likeliest slip, and the error
+	// must say so in the SAME round-trip.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"remove_chunks\",\"params\":{\"target\":\"pnt_emit\"}}" );
+		Check( resp.find( "\"error\"" ) != std::string::npos, "RC2 a singular 'target' is a param error" );
+		Check( resp.find( "rename to 'targets'" ) != std::string::npos,
+		       "RC2 the error NAMES the wrong key the caller actually sent" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"remove_chunks\",\"params\":{\"targets\":[]}}" );
+		Check( resp.find( "non-empty array" ) != std::string::npos, "RC2 an empty array is a param error" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"remove_chunks\",\"params\":{\"targets\":[\"a\",7]}}" );
+		Check( resp.find( "'targets[1]' must be a string" ) != std::string::npos,
+		       "RC2 a non-string element is a param error naming its index" );
+	}
+
+	// The success envelope.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"remove_chunks\",\"params\":{\"targets\":"
+			"[\"pnt_emit\",\"mat_emit\",\"pnt_emit\",\"quad_emit\",\"obj_emit\"]}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "RC2 remove_chunks returns a JSON-RPC result object" );
+		Check( result.get( "applied" ).isBool() && result.get( "applied" ).asBool(),
+		       "RC2 `applied` is a BOOL and is true (all-or-nothing, NOT a count like insert_chunks')" );
+		Check( result.get( "removed" ).asNumber( -1 ) == 4.0, "RC2 `removed` is 4 (the deduped count)" );
+		Check( result.get( "total" ).asNumber( -1 ) == 4.0,   "RC2 `total` is 4" );
+		Check( result.has( "note" ) && result.get( "note" ).asString().find( "deduped" ) != std::string::npos,
+		       "RC2 the dedupe rides in the CONDITIONAL `note` key" );
+		Check( result.get( "results" ).isArray() && result.get( "results" ).size() == 4,
+		       "RC2 `results` has one entry per UNIQUE target" );
+		Check( result.get( "results" ).at( 0 ).get( "name" ).asString() == "pnt_emit",
+		       "RC2 results are in first-occurrence order" );
+	}
+
+	// A refusal envelope: `note` is OMITTED entirely when there is nothing to say,
+	// and the per-target `issues` localize the cause.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"remove_chunks\",\"params\":{\"targets\":"
+			"[\"pnt_albedo\",\"mat_diffuse\"]}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "RC2 the refusal is a result object (not a JSON-RPC error)" );
+		Check( !result.get( "applied" ).asBool() && result.get( "status" ).asString() == "rejected",
+		       "RC2 refusal: applied false, status rejected" );
+		Check( result.get( "removed" ).asNumber( -1 ) == 0.0,
+		       "RC2 refusal: `removed` is 0 -- the all-or-nothing outcome stated numerically" );
+		Check( !result.has( "note" ), "RC2 the `note` key is OMITTED when there is nothing to remark on" );
+		const Agent::JsonValue& entries = result.get( "results" );
+		Check( entries.isArray() && entries.size() == 2, "RC2 refusal still carries both per-target entries" );
+		if( entries.isArray() && entries.size() == 2 ) {
+			Check( !entries.at( 0 ).has( "issues" ),
+			       "RC2 the intra-batch-only target has NO `issues` key (omitted when empty)" );
+			Check( entries.at( 1 ).get( "issues" ).isArray() &&
+			       entries.at( 1 ).get( "issues" ).at( 0 ).get( "reason" ).asString() == "still_referenced",
+			       "RC2 the blocked target's `issues` carry reason still_referenced" );
+		}
+	}
+
+	std::remove( tmp.c_str() );
+}
+
+
+//----------------------------------------------------------------------
+// RC3: remove_chunks on the LIVE (controller-attached) path -- the two
+// things the headless RC1 cannot reach:
+//   (a) an OWNER batch remove commits through
+//       SceneEditController::ApplyAgentRemoveChunks with ONE head bump;
+//   (b) an EXTERNAL batch remove stages as ONE bundled proposal (never N
+//       -- an Owner must approve or reject exactly the atomic edit that
+//       was proposed), whose approval then applies it atomically.
+//----------------------------------------------------------------------
+static void TestRemoveChunksLiveAndProposal()
+{
+	std::printf( "RC3: remove_chunks LIVE commit + ONE bundled proposal...\n" );
+
+	// (a) OWNER, live controller attached.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc3a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC3(a) fixture loads" );
+		if( !pJob ) return;
+
+		TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+		c.Start();
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		owner->AttachController( &c );
+
+		const RISE::Cst::CstHeadVersion before = pJob->GetCstHeadVersion();
+		std::vector<std::string> targets;
+		targets.push_back( "pnt_emit" );
+		targets.push_back( "mat_emit" );
+		targets.push_back( "quad_emit" );
+		targets.push_back( "obj_emit" );
+		const Agent::AgentSession::AgentRemoveBatchResult r = owner->RemoveChunks( targets );
+
+		Check( r.applied && r.status == "applied", "RC3(a) the LIVE batch APPLIES" );
+		Check( r.headVersion.revision == before.revision + 1,
+		       "RC3(a) EXACTLY ONE head bump on the LIVE path too" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "mat_emit" ) == nullptr,
+		       "RC3(a) the LIVE derived scene really lost the emissive material" );
+		Check( c.HasUnsavedChanges(), "RC3(a) the batch marks the editor dirty" );
+
+		// A LIVE refusal is equally atomic.
+		const std::string docBefore = owner->ReadDocument();
+		const RISE::Cst::CstHeadVersion beforeRefusal = pJob->GetCstHeadVersion();
+		std::vector<std::string> blocked;
+		blocked.push_back( "pnt_albedo" );
+		blocked.push_back( "mat_diffuse" );
+		const Agent::AgentSession::AgentRemoveBatchResult rr = owner->RemoveChunks( blocked );
+		Check( !rr.applied && rr.status == "rejected", "RC3(a) the outside-referenced LIVE batch is REFUSED" );
+		Check( pJob->GetCstHeadVersion().revision == beforeRefusal.revision &&
+		       owner->ReadDocument() == docBefore,
+		       "RC3(a) the LIVE refusal removed NOTHING -- document byte-identical" );
+		Check( rr.targetResults.size() == 2 && rr.targetResults[1].issues.size() == 1 &&
+		       rr.targetResults[1].issues[0].reason == "still_referenced",
+		       "RC3(a) the LIVE refusal carries the same per-target still_referenced localization" );
+
+		owner.reset();
+		c.Stop();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) EXTERNAL authority -> ONE bundled proposal -> approve -> atomic apply.
+	{
+		const std::string tmp = TempPath( "agentcrud_rc3b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "RC3(b) fixture loads" );
+		if( !pJob ) return;
+
+		TestController c( *pJob, /*simulatedRenderMs*/ 0 );
+		c.Start();
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		const std::string docBefore = owner->ReadDocument();
+		std::vector<std::string> targets;
+		targets.push_back( "pnt_emit" );
+		targets.push_back( "mat_emit" );
+		targets.push_back( "quad_emit" );
+		targets.push_back( "obj_emit" );
+		const Agent::AgentSession::AgentRemoveBatchResult staged = ext->RemoveChunks( targets );
+
+		Check( !staged.applied && staged.status == "staged", "RC3(b) the External batch STAGES" );
+		Check( owner->ReadDocument() == docBefore, "RC3(b) staging is INERT -- document untouched" );
+		Check( staged.message.find( "ONE proposal for all 4 targets" ) != std::string::npos,
+		       "RC3(b) the staged message states the batch is ONE proposal" );
+
+		// THE bundling claim: ONE queue entry, not four.
+		std::vector<Agent::AgentSession::AgentProposalEntry> pending;
+		for( const auto& p : owner->ListProposals() ) if( p.status == "pending" ) pending.push_back( p );
+		Check( pending.size() == 1,
+		       "RC3(b) EXACTLY ONE proposal is queued for the whole 4-target batch (never four -- an Owner "
+		       "must not be able to partially approve an all-or-nothing edit)" );
+		if( pending.size() != 1 ) { owner.reset(); ext.reset(); c.Stop(); pJob->release(); std::remove( tmp.c_str() ); return; }
+		Check( pending[0].kind == "remove_chunks", "RC3(b) the entry's kind is \"remove_chunks\"" );
+		// The card needs the names: they ride '\n'-packed in `target`.
+		for( const std::string& n : targets )
+			Check( pending[0].target.find( n ) != std::string::npos,
+			       std::string( "RC3(b) the queued entry names '" ) + n + "'" );
+
+		const Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( pending[0].id, /*approve=*/true );
+		Check( rr.ok && rr.status == "applied", "RC3(b) approving the bundled proposal APPLIES it" );
+		const std::string docAfter = owner->ReadDocument();
+		for( const std::string& n : targets )
+			Check( docAfter.find( "name " + n ) == std::string::npos,
+			       std::string( "RC3(b) '" ) + n + "' is gone after the single approval" );
+		Check( docAfter.find( "name mat_diffuse" ) != std::string::npos,
+		       "RC3(b) the untargeted subassembly survived the approval" );
+
+		owner.reset();
+		ext.reset();
+		c.Stop();
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
@@ -5686,7 +6899,7 @@ static void TestGeometryScaffoldBlendedChainAdversarialContinuityRender()
 
 int main()
 {
-	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
+	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk; R1a: remove_chunks) ===\n" );
 
 	TestHeadlessInsert();
 	TestInsertRejections();
@@ -5711,7 +6924,11 @@ int main()
 	TestRejectedInsertDiagnostics();
 	TestActionablePatchDiagnostics();
 	TestNonSamplingEmitterGate();
+	TestRasterizerAllowlistGate();
 	TestActionableRemoveDiagnostics();
+	TestRemoveChunksBatch();
+	TestRemoveChunksWireShape();
+	TestRemoveChunksLiveAndProposal();
 	TestInsertChunksBatchAllApply();
 	TestInsertChunksBestEffort();
 	TestInsertChunksValidation();

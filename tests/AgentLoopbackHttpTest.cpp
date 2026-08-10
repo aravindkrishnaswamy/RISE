@@ -797,10 +797,19 @@ static void TestMutatingRateLimitAndTotalDeadline()
 			JsonValue chunksArgs = JsonValue::MakeObject();
 			chunksArgs.set( "chunks", chunkArr );
 
+			// R1a (2026-08-09): remove_chunks is the THIRD batch verb, and the one with
+			// the most per-call leverage of the three (N chunks DELETED in one call), so
+			// a missing entry in IsMutatingMcpToolCall's list would be the worst leak yet.
+			JsonValue targetsArr = JsonValue::MakeArray();
+			targetsArr.push_back( JsonValue::MakeString( "sph" ) );
+			JsonValue targetsArgs = JsonValue::MakeObject();
+			targetsArgs.set( "targets", targetsArr );
+
 			struct BatchCase { double id; const char* verb; const JsonValue* args; };
 			const BatchCase kBatch[] = {
-				{ 9003.0, "propose_patches", &batchArgs  },
-				{ 9004.0, "insert_chunks",   &chunksArgs },
+				{ 9003.0, "propose_patches", &batchArgs   },
+				{ 9004.0, "insert_chunks",   &chunksArgs  },
+				{ 9005.0, "remove_chunks",   &targetsArgs },
 			};
 			for( const BatchCase& bc : kBatch ) {
 				HttpResponse br = DoRequestEx( port, "POST", "/mcp",

@@ -20,6 +20,7 @@
 #include <QWidget>
 #include <QString>
 #include <QVector>
+#include <QStringList>
 #include <QtGlobal>
 
 class QEvent;
@@ -33,7 +34,7 @@ class QVBoxLayout;
 /// string / false for fields that don't apply to a given `kind`.
 struct ProposalEntry {
     quint64 id = 0;
-    QString kind;            // "param_edit" | "insert_chunk" | "remove_chunk"
+    QString kind;            // "param_edit" | "insert_chunk" | "remove_chunk" | "remove_chunks" (R1a: batch remove; `target` holds the '\n'-separated name list)
     QString sessionLabel;
     QString status;          // "pending" | "applied" | "rejected" | "conflict"
     QString target;
@@ -94,6 +95,10 @@ private:
 
     int plusCount() const;
     int minusCount() const;
+    //! R1a (2026-08-09): the '\n'-separated target-name list a "remove_chunks"
+    //! proposal packs into `kind`'s `target` field (see
+    //! SceneEditController::AgentProposal's doc); empty for every other kind.
+    QStringList removeTargetNames() const;
 
     // LIVE THEME-SWITCH CONTRACT: re-applies every one of THIS card's
     // own token-dependent styling sites (outer card border/background,

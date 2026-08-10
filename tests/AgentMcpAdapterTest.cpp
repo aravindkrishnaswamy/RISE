@@ -8,7 +8,7 @@
 //    * initialize handshake -> protocolVersion/capabilities/serverInfo.
 //    * notifications/initialized -> RED-PROVED silent (empty response).
 //    * tools/list -> every dispatcher verb present (the count tracks the
-//      verb surface; see kExpectedNames below); spot-check 3 schemas' required
+//      verb surface; see kExpectedNames below); spot-check 4 schemas' required
 //      fields + a description contains a known AgentRpc.h gotcha string.
 //    * tools/call happy path: read_document, render (sync), read_image
 //      (an MCP image content block with valid base64 PNG).
@@ -216,7 +216,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 21, "id:null tools/list result carries all 21 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 22, "id:null tools/list result carries all 22 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -290,12 +290,13 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 21, "tools/list returns EXACTLY the 21 agent verbs" );
+		Check( toolsList.size() == 22, "tools/list returns EXACTLY the 22 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 			"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+			"remove_chunks",   // R1a (2026-08-09): the ATOMIC batch remove
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
 			"compare_to_reference",
@@ -353,6 +354,45 @@ int main()
 			const std::string desc = tool.get( "description" ).asString();
 			Check( desc.find( "NO ARGUMENTS" ) != std::string::npos,
 			       "validate description leads with the no-argument current-scene form" );
+		}
+
+		// Spot-check 2b (R1a, 2026-08-09): remove_chunks declares a REQUIRED
+		// string-ARRAY `targets` (never a singular `target`), plus the shared
+		// optional baseHeadVersion -- and its description teaches the four
+		// contract clauses a model cannot infer from the schema: prefer ONE
+		// batched call, all-or-nothing, intra-batch references resolve in any
+		// order, and there is no per-target `kind`.
+		{
+			JsonValue tool = FindTool( "remove_chunks" );
+			Check( tool.isObject(), "found remove_chunks tool" );
+			const JsonValue& schema = tool.get( "inputSchema" );
+			Check( schema.get( "type" ).asString() == "object", "remove_chunks inputSchema.type == \"object\"" );
+			const JsonValue& required = schema.get( "required" );
+			Check( required.isArray() && required.size() == 1 && required.at( 0 ).asString() == "targets",
+			       "remove_chunks inputSchema.required == [\"targets\"]" );
+			const JsonValue& props = schema.get( "properties" );
+			Check( props.get( "targets" ).get( "type" ).asString() == "array" &&
+			       props.get( "targets" ).get( "items" ).get( "type" ).asString() == "string",
+			       "remove_chunks `targets` is an ARRAY OF STRINGS (not a singular string)" );
+			Check( !props.has( "target" ), "remove_chunks declares NO singular `target` property" );
+			Check( !props.has( "kind" ),
+			       "remove_chunks declares NO per-target `kind` -- that disambiguator stays exclusive to the "
+			       "singular remove_chunk (including the unnamed-camera case)" );
+			Check( props.get( "baseHeadVersion" ).isObject(),
+			       "remove_chunks takes the shared optional baseHeadVersion precondition" );
+			const std::string desc = tool.get( "description" ).asString();
+			Check( desc.find( "ALL-OR-NOTHING" ) != std::string::npos,
+			       "remove_chunks description states the ALL-OR-NOTHING contract" );
+			Check( desc.find( "Prefer ONE remove_chunks call" ) != std::string::npos,
+			       "remove_chunks description states the cost fact (prefer one batched call)" );
+			Check( desc.find( "ONE undo step" ) != std::string::npos,
+			       "remove_chunks description states the one-bump / one-undo-step property" );
+			Check( desc.find( "SAME BATCH" ) != std::string::npos && desc.find( "ANY order" ) != std::string::npos,
+			       "remove_chunks description teaches that intra-batch references resolve in any order" );
+			Check( desc.find( "deduped" ) != std::string::npos,
+			       "remove_chunks description states the dedupe behaviour" );
+			Check( desc.find( "singular remove_chunk with `kind`" ) != std::string::npos,
+			       "remove_chunks description names the singular verb as the escape hatch for kind/camera" );
 		}
 
 		// Spot-check 3: render_status requires renderJobId.
@@ -630,7 +670,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 21, "no-head tools/list still lists all 21 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 22, "no-head tools/list still lists all 22 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

@@ -977,6 +977,87 @@ int main()
 			       std::to_string( capMentions ) + ")" );
 		}
 
+		// ---- R1c: agent rasterizer allowlist, surface parity --------------
+		// GROUND TRUTH IS THE CODE.  The policy lives in three arrays in
+		// AgentSession.cpp (kAgentAllowedRasterizers_ /
+		// kAgentUngatedUtilityRasterizers_ / kAgentBlockedRasterizers_) and is
+		// RESTATED, in prose, on the two hand-authored tool-description
+		// surfaces a model actually reads: the shared chat tool defs
+		// (AgentChatCodecs.cpp `kToolDefs`) and the MCP tools/list text
+		// (AgentMcpAdapter.cpp).  Those two are written independently -- there
+		// is no shared string -- so they drift silently, and a model told the
+		// wrong allowlist burns a round trip discovering the real one, which
+		// is precisely the failure the read_schema cap block above exists to
+		// stop.  Neither surface is compiled against the arrays, so nothing
+		// but this scan pins them.
+		//
+		// The rule: EVERY keyword in the allowed set and EVERY keyword in the
+		// known-blocked set must appear verbatim in BOTH files.  Adding a
+		// fifth allowed rasterizer, or blocking a newly added kind, therefore
+		// cannot land without updating both surfaces.  (The two ungated
+		// utility rasterizers are checked as a pair rather than individually
+		// for the same reason -- an agent that is never told they are exempt
+		// will avoid pixelpel_rasterizer, which alpha-mask scenes require.)
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+			// Pull the quoted keywords out of one of the policy arrays.
+			auto arrayKeywords = [&]( const char* arrayName ) {
+				std::vector<std::string> out;
+				const std::string anchorDecl = std::string( "kAgent" ) + arrayName + "Rasterizers_[] = {";
+				const size_t at = sessionSrc.find( anchorDecl );
+				if( at == std::string::npos ) return out;
+				const size_t end = sessionSrc.find( "};", at );
+				if( end == std::string::npos ) return out;
+				const std::string body = sessionSrc.substr( at + anchorDecl.size(),
+				                                            end - ( at + anchorDecl.size() ) );
+				for( size_t q = body.find( '"' ); q != std::string::npos; q = body.find( '"', q + 1 ) ) {
+					const size_t q2 = body.find( '"', q + 1 );
+					if( q2 == std::string::npos ) break;
+					out.push_back( body.substr( q + 1, q2 - q - 1 ) );
+					q = q2;
+				}
+				return out;
+			};
+
+			const std::vector<std::string> allowedKw = arrayKeywords( "Allowed" );
+			const std::vector<std::string> ungatedKw = arrayKeywords( "UngatedUtility" );
+			const std::vector<std::string> blockedKw = arrayKeywords( "Blocked" );
+			Check( allowedKw.size() == 4 && ungatedKw.size() == 2 && blockedKw.size() == 6,
+			       "R1c allowlist parity: parsed the THREE policy arrays out of AgentSession.cpp "
+			       "(allowed=" + std::to_string( allowedKw.size() ) +
+			       ", ungated=" + std::to_string( ungatedKw.size() ) +
+			       ", blocked=" + std::to_string( blockedKw.size() ) + ")" );
+
+			static const char* const kPolicySurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
+			std::vector<std::string> policyProblems;
+			for( const char* fname : kPolicySurfaces ) {
+				const std::string src = slurp( agentDir / fname );
+				for( const std::string& kw : allowedKw )
+					if( src.find( kw ) == std::string::npos )
+						policyProblems.push_back( std::string( fname ) + ": never names the ALLOWED "
+							"rasterizer `" + kw + "` -- a model reading this surface cannot know it "
+							"may select it" );
+				for( const std::string& kw : blockedKw )
+					if( src.find( kw ) == std::string::npos )
+						policyProblems.push_back( std::string( fname ) + ": never names the BLOCKED "
+							"rasterizer `" + kw + "` -- a model reading this surface will try it and "
+							"be refused" );
+				bool anyUngated = false;
+				for( const std::string& kw : ungatedKw ) if( src.find( kw ) != std::string::npos ) anyUngated = true;
+				if( !anyUngated )
+					policyProblems.push_back( std::string( fname ) + ": never mentions the DELIBERATELY "
+						"UNGATED utility rasterizers -- a model will avoid pixelpel_rasterizer, which "
+						"alpha-mask scenes require" );
+			}
+			for( const std::string& p : policyProblems )
+				std::cout << "  R1C ALLOWLIST DRIFT: " << p << std::endl;
+			Check( policyProblems.empty(),
+			       "R1c: both hand-authored tool-description surfaces state the SAME rasterizer "
+			       "allowlist AgentSession.cpp enforces" );
+		}
+
 		// ---- render{imageMaxEdge} through the drivers' async detour -------
 		// WHY THIS IS GUARDED IN SOURCE.  `render{imageMaxEdge:N}` returns the
 		// PNG inline so an ordinary look costs ONE turn.  The RPC refuses that
@@ -1268,7 +1349,11 @@ int main()
 	// restatement should use one of these anchor phrasings so it is covered.
 	//
 	// WHERE IT LOOKS (round 20 widened this; round 17's scanner saw `//`
-	// lines ONLY).  Every prose run in src/Library/Agent/*.{cpp,h}:
+	// lines ONLY; FIX 5b, 2026-08-09, widened it again to the GUI bridge
+	// sources -- see the DISCLOSED RESIDUAL note and the scan below).  Every
+	// prose run in src/Library/Agent/*.{cpp,h} (part (A) ALSO runs, narrowed,
+	// over build/XCode/rise/RISE-GUI/**/*.{swift,h,mm} and
+	// build/VS2022/RISE-GUI/**/*.{h,cpp}):
 	//   * runs of consecutive `//` lines,
 	//   * `/* */` blocks, and
 	//   * runs of adjacent string literals -- the MODEL-FACING tool
@@ -1282,9 +1367,20 @@ int main()
 	// read-safe-allowlist anchor is invisible by design (the anchors are what
 	// keep the many legitimate subsets from false-positiving).  Rephrase such
 	// a restatement into an anchor form to buy coverage.  (2) Files outside
-	// src/Library/Agent -- the GUI bridges, docs and skills restate these sets
-	// too; only the reason-code registry below scans repo-wide.  (3) Raw
-	// string literals (`R"(...)"`) are not decoded; none exist in this tree.
+	// src/Library/Agent -- the GUI bridges' own host-loop/bridge sources
+	// (build/XCode/rise/RISE-GUI/**/*.{swift,h,mm}, build/VS2022/RISE-GUI/**/*.{h,cpp})
+	// are ALSO scanned since FIX 5b (2026-08-09 R1 fix round), but for part (A)'s
+	// counted-mutating-verb claim ONLY -- not part (B)'s read-safe-allowlist
+	// enumeration.  This is CODE-ENFORCED (FIX C, round-3 fix, 2026-08-09):
+	// part (B) is gated on `isAgentFile` inside the scan loop below, not just
+	// documented here -- an earlier draft of this loop ran BOTH parts over
+	// the full agentFiles+guiFiles union with no per-file branch, and did not
+	// false-positive only because existing GUI prose happened to be followed
+	// by capitalized identifiers that parseRun's lowercase-only isVerbChar
+	// rejects, which is luck, not enforcement.  docs and skills restate these
+	// sets too and remain UNSCANNED here; only the reason-code registry below
+	// scans repo-wide.  (3) Raw string literals (`R"(...)"`) are not decoded;
+	// none exist in this tree.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
@@ -1406,7 +1502,61 @@ int main()
 		       "verb-parity: found the src/Library/Agent sources to scan (got "
 		       + std::to_string( agentFiles.size() ) + ")" );
 
-		for( const fs::path& f : agentFiles ) {
+		// FIX 5b (P2, 2026-08-09 R1 fix round): the DISCLOSED RESIDUAL above ("Files outside
+		// src/Library/Agent -- the GUI bridges ... restate these sets too") is exactly the gap that let
+		// FIX 4's four stale "5 mutating verbs" GUI sites (RISEViewportBridge.h x2, ViewportBridge.h x2,
+		// ChatPanel.cpp) survive undetected -- extend the SAME anchored counted-claim scan (part (A) above)
+		// to the GUI host-loop/bridge sources that restate this count in prose:
+		// build/XCode/rise/RISE-GUI/**/*.{swift,h,mm} and build/VS2022/RISE-GUI/**/*.{h,cpp}.  Deliberately
+		// NARROWER than the Agent-dir scan: only part (A)'s counted-mutating-verb claim is checked on these
+		// files, not part (B)'s read-safe-allowlist enumeration -- every GUI site found in this arc restates
+		// ONLY the mutating count/list, never the read-safe set, so wiring (B) here would be untested dead
+		// code with no real coverage to show for it; a narrower, provably-live check beats a broader,
+		// unverified one.  (ExtractProseBlocks's generic `//` / `/* */` / string-literal grammar covers
+		// Objective-C++ (.mm) and Swift line/block comments the same way it covers C++; Swift's `///` doc
+		// marker is not specially recognised, but that only folds one extra leading `/` into the prose text,
+		// which the substring/anchor search below does not care about.)
+		std::vector<fs::path> guiFiles;
+		{
+			std::error_code ec;
+			struct GuiRoot { fs::path dir; std::vector<std::string> exts; };
+			const GuiRoot roots[] = {
+				{ repoRoot / "build" / "XCode" / "rise" / "RISE-GUI", { ".swift", ".h", ".mm" } },
+				{ repoRoot / "build" / "VS2022" / "RISE-GUI",         { ".h", ".cpp" } },
+			};
+			for( const GuiRoot& root : roots ) {
+				fs::recursive_directory_iterator it( root.dir, ec ), end;
+				if( ec ) { continue; }
+				for( ; it != end; it.increment( ec ) ) {
+					if( ec ) { break; }
+					if( !it->is_regular_file() ) { continue; }
+					const std::string ext = it->path().extension().string();
+					if( std::find( root.exts.begin(), root.exts.end(), ext ) != root.exts.end() )
+						guiFiles.push_back( it->path() );
+				}
+			}
+		}
+		std::sort( guiFiles.begin(), guiFiles.end() );
+		// Liveness for the GUI extension itself: if the roots above ever get renamed/moved, this silently
+		// degenerating to zero files would silently disable the exact coverage FIX 5b exists to add.
+		Check( guiFiles.size() >= 4,
+		       "verb-parity: found the GUI bridge/host-loop sources to scan (got "
+		       + std::to_string( guiFiles.size() ) + ")" );
+
+		std::vector<fs::path> scanFiles = agentFiles;
+		scanFiles.insert( scanFiles.end(), guiFiles.begin(), guiFiles.end() );
+
+		// FIX C (P2, round-3 fix, 2026-08-09): part (B) below (the read-safe-
+		// allowlist enumeration check) runs ONLY against agentFiles, matching
+		// the DISCLOSED RESIDUAL note above.  A linear membership test against
+		// the (small, single-digit-to-low-double-digit) agentFiles list is
+		// cheap enough not to warrant a set/map here.
+		auto isAgentFile = [&]( const fs::path& f ) {
+			return std::find( agentFiles.begin(), agentFiles.end(), f ) != agentFiles.end();
+		};
+
+		for( const fs::path& f : scanFiles ) {
+			const bool fileIsAgentFile = isAgentFile( f );
 			const std::string name = f.filename().string();
 			for( const ProseBlock& blk : ExtractProseBlocks( slurp( f ) ) ) {
 				const std::string& b = blk.text;
@@ -1468,20 +1618,25 @@ int main()
 					}
 				}
 
-				// (B) "read-safe allowlist (" / "IsReadSafeVerb -- "
-				const char* anchors[] = { "read-safe allowlist", "isreadsafeverb --" };
-				for( int a = 0; a < 2; ++a ) {
-					const std::string anchor = anchors[a];
-					for( size_t p = lb.find( anchor ); p != std::string::npos;
-					     p = lb.find( anchor, p + 1 ) ) {
-						const std::vector<std::string> run =
-							parseRun( b, p + anchor.size(), false );
-						if( run.empty() ) { continue; }
-						++readSafeRunsChecked;
-						if( setOf( run ) != readSorted ) {
-							verbProblems.push_back(
-								where( p ) + ": the read-safe allowlist \"" + join( run )
-								+ "\" is not IsReadSafeVerb's set (" + join( readSorted ) + ")" );
+				// (B) "read-safe allowlist (" / "IsReadSafeVerb -- ".  FIX C
+				// (round-3 fix, 2026-08-09): agentFiles ONLY -- see the
+				// DISCLOSED RESIDUAL note and the `fileIsAgentFile` gate set
+				// up above the outer loop.
+				if( fileIsAgentFile ) {
+					const char* anchors[] = { "read-safe allowlist", "isreadsafeverb --" };
+					for( int a = 0; a < 2; ++a ) {
+						const std::string anchor = anchors[a];
+						for( size_t p = lb.find( anchor ); p != std::string::npos;
+						     p = lb.find( anchor, p + 1 ) ) {
+							const std::vector<std::string> run =
+								parseRun( b, p + anchor.size(), false );
+							if( run.empty() ) { continue; }
+							++readSafeRunsChecked;
+							if( setOf( run ) != readSorted ) {
+								verbProblems.push_back(
+									where( p ) + ": the read-safe allowlist \"" + join( run )
+									+ "\" is not IsReadSafeVerb's set (" + join( readSorted ) + ")" );
+							}
 						}
 					}
 				}

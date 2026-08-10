@@ -71,7 +71,7 @@
 //                                            `text` -> -32602 rather than a false
 //                                            "clean" verdict about a document that
 //                                            does not exist.)
-//    DRIVER-INJECTED KEY, on the five mutating verbs below ONLY.  The two GUI
+//    DRIVER-INJECTED KEY, on the six mutating verbs below ONLY.  The two GUI
 //    chat drivers (build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
 //    stampDriverRetry and build/VS2022/RISE-GUI/ChatPanel.cpp's, "FIX 2") may
 //    ADD one key the dispatcher never emits:
@@ -121,11 +121,20 @@
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...]}
 //                                           (BATCH form of insert_chunk: N chunks in ONE
 //                                            call, applied in array order.  SEQUENTIAL and
-//                                            BEST-EFFORT throughout -- a rejected element,
-//                                            INCLUDING a stale-base conflict, does not stop
-//                                            the batch, because an insert is ADDITIVE and
-//                                            racing a co-editor merely interleaves new
-//                                            entities.  Contrast propose_patches above.)
+//                                            BEST-EFFORT for ordinary per-element authoring
+//                                            failures -- a rejected element, INCLUDING a
+//                                            stale-base conflict, does not stop the batch,
+//                                            because an insert is ADDITIVE and racing a
+//                                            co-editor merely interleaves new entities.
+//                                            Contrast propose_patches above.  CARVE-OUT
+//                                            (R1c, 2026-08-09): a rasterizer-allowlist POLICY
+//                                            refusal (an element that would introduce a
+//                                            BLOCKED rasterizer kind -- see
+//                                            CheckRasterizerAllowlistGateForInsert in
+//                                            AgentSession.h) is NOT sequential/best-effort --
+//                                            it rejects the WHOLE batch atomically, nothing
+//                                            inserted, because a policy refusal is not an
+//                                            authoring failure a co-editor could race around.)
 //      insert_material_scaffold {family,name,tone,wear,scale,baseHeadVersion?}
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
 //                                            family,name,material:{name,kind},boundSlots:[{param,painter},...]}
@@ -269,6 +278,23 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
+//      remove_chunks {targets:[string,...],baseHeadVersion?}
+//                                        -> {applied,rawCode,status,retriable,headVersion,message,
+//                                            removed,total,note?,results:[{...ChunkResultJson},...]}
+//                                           (R1a (2026-08-09): the ATOMIC BATCH form of
+//                                            remove_chunk -- N chunks, ONE call, ONE head
+//                                            bump, ONE undo step.  DELIBERATELY UNLIKE
+//                                            insert_chunks' sequential/best-effort shape:
+//                                            ALL-OR-NOTHING, so a refusal removes NOTHING
+//                                            and leaves the head byte-identical.  A chunk
+//                                            referenced only from INSIDE the batch is
+//                                            removable in any order; `still_referenced`
+//                                            names only referrers OUTSIDE it.  Duplicates
+//                                            deduped (reported in `note`), not refused.
+//                                            NO per-target `kind` -- bare names only, so
+//                                            the unnamed-camera case stays exclusive to
+//                                            the singular verb.  `results` is one entry
+//                                            per UNIQUE target, first-occurrence order.)
 //      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
 //                    imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
@@ -813,9 +839,9 @@
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
-//    including the 5 known-
+//    including the 6 known-
 //    mutating verbs (propose_patch, propose_patches, insert_chunk,
-//    insert_chunks, remove_chunk), any
+//    insert_chunks, remove_chunk, remove_chunks), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
 //    dispatch below without also being added to the read-safe list.  This
 //    is a deliberate polarity flip from the pre-hardening design (an
@@ -844,7 +870,7 @@
 //    RESOURCE/BACKPRESSURE refusal rather than a policy or scene-state
 //    outcome: kProposalQueueFull (-32012, AgentRpc.cpp) when
 //    any mutating verb (propose_patch/propose_patches/insert_chunk/
-//    insert_chunks/remove_chunk) would stage past
+//    insert_chunks/remove_chunk/remove_chunks) would stage past
 //    SceneEditController::kMaxPendingProposals; kMutatingRateLimitExceeded
 //    (-32013, AgentLoopbackHttpServer.cpp -- enforced at the HTTP
 //    TRANSPORT layer, before a request reaches this dispatcher, so it is
@@ -854,9 +880,9 @@
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
 //    Read and Commit.  Under `Propose`, the read-safe allowlist
 //    (IsReadSafeVerb -- includes list_proposals, read-safe under every
-//    posture, see below) still passes (same as Read) PLUS the 5 mutating
+//    posture, see below) still passes (same as Read) PLUS the 6 mutating
 //    verbs (propose_patch, propose_patches, insert_chunk, insert_chunks,
-//    remove_chunk) are let THROUGH
+//    remove_chunk/remove_chunks) are let THROUGH
 //    to the wrapped
 //    AgentSession rather than refused at this dispatcher's choke point --
 //    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
@@ -932,10 +958,10 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 5 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
-			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 5 mutating
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
-			//! insert_chunks/remove_chunk) dispatch -- but
+			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
 			//! authority decides staging-vs-commit (see the file header's
 			//! Propose-autonomy doc).  resolve_proposal is deliberately NOT
@@ -977,7 +1003,7 @@ namespace RISE
 			//! part of this set).  Secure-MCP slice 2 hardening: under
 			//! AgentAutonomy::Read, any method NOT on the read-safe
 			//! allowlist (IsReadSafeVerb, the single source of truth for
-			//! membership) -- the 5 mutating verbs, an
+			//! membership) -- the 6 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.

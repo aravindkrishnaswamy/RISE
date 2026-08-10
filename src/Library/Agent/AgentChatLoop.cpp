@@ -158,7 +158,13 @@ namespace RISE
 				"media -- are positioned before the objects that consume them "
 				"automatically), and DELETE an entity with remove_chunk (refused "
 				"while another chunk still references the target -- retarget or "
-				"remove the consumers first). Any edit that would leave the "
+				"remove the consumers first). DELETING MORE THAN ONE chunk? Use "
+				"ONE remove_chunks{targets:[...]} call, not repeated remove_chunk "
+				"calls: it is one round-trip and one undo step, it is "
+				"ALL-OR-NOTHING (a failure removes nothing, so you fix the one "
+				"named offender and resend), and chunks that reference each other "
+				"WITHIN the batch come out together in any order -- so tearing "
+				"down a painter+material+object subassembly is a single call. Any edit that would leave the "
 				"document unable to derive in order is refused cleanly with the "
 				"head unchanged. Honest limits: whole-chunk granularity only -- "
 				"no rename verb (the safe recipe: insert_chunk the renamed "
@@ -405,8 +411,8 @@ namespace RISE
 			//! verb allowlist -- shared by AddToolResult's streak accounting
 			//! and GateRefusalResponse's gate check, so the two can never
 			//! disagree about which verbs count.  The BATCH forms
-			//! (insert_chunks / propose_patches / insert_material_scaffold /
-			//! insert_geometry_scaffold) count too -- they still edit the
+			//! (insert_chunks / propose_patches / remove_chunks /
+			//! insert_material_scaffold / insert_geometry_scaffold) count too -- they still edit the
 			//! document with no visual observation in between, same
 			//! blind-edit risk, and if anything a LARGER one (N edits land
 			//! per call, so a model that batches would otherwise never
@@ -419,7 +425,14 @@ namespace RISE
 				       v == "insert_material_scaffold" ||
 				       v == "insert_geometry_scaffold" ||
 				       v == "propose_patch" || v == "propose_patches" ||
-				       v == "remove_chunk";
+				       v == "remove_chunk" ||
+				       // R1a (2026-08-09): ONE remove_chunks call is ONE
+				       // blind mutation, exactly like one batched
+				       // insert_chunks -- N chunks leave the document with
+				       // no visual observation in between.  A REFUSED call
+				       // never counts: the streak accounting in AddToolResult
+				       // is gated on the response, not on the verb name.
+				       v == "remove_chunks";
 			}
 
 			//! The VISUAL-OBSERVE verb allowlist -- resets the blind-edit
@@ -1232,6 +1245,7 @@ namespace RISE
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
 			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
+			//!   4b. name == "remove_chunks"                -> "<removed>/<total> removed" (all-or-nothing: `applied` is a BOOL here, counts ride in removed/total)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1307,6 +1321,16 @@ namespace RISE
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
+				}
+
+				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so
+				// its `applied` is a BOOL (not a count like rule 4's verbs) and the
+				// counts ride in `removed`/`total`.  A refusal already left through
+				// rule 2 above, so reaching here means every target went.
+				if( call.name == "remove_chunks" ) {
+					const long long removed = static_cast<long long>( result.get( "removed" ).asNumber() );
+					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
+					return std::to_string( removed ) + "/" + std::to_string( total ) + " removed";
 				}
 
 				// 5. A single-chunk mutation that applied cleanly.

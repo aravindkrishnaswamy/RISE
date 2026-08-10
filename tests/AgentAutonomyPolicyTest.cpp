@@ -791,10 +791,11 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 21,
-		       "tools/list under Read STILL lists all 21 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 22,
+		       "tools/list under Read STILL lists all 22 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
+		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
 		bool sawInsertMaterialScaffold = false, sawInsertGeometryScaffold = false;
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
@@ -812,7 +813,7 @@ static void TestMcpLayer()
 			// Arc-75 S2.1: insert_material_scaffold reuses kAutonomyReadNote
 			// VERBATIM under Read (see kScaffoldProposeRefusedNote's doc in
 			// AgentMcpAdapter.cpp) -- it is annotated exactly like the other
-			// 5 mutating tools here, even though it is NOT on
+			// 6 mutating tools here, even though it is NOT on
 			// IsProposeSafeVerb's set (that asymmetry only shows up under
 			// Propose, tested below).
 			if( name == "insert_material_scaffold" ) { sawInsertMaterialScaffold = true; Check( annotated, "insert_material_scaffold tool description is ANNOTATED under Read" ); }
@@ -820,6 +821,9 @@ static void TestMcpLayer()
 			// SAME kAutonomyReadNote reuse under Read.
 			if( name == "insert_geometry_scaffold" ) { sawInsertGeometryScaffold = true; Check( annotated, "insert_geometry_scaffold tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )    { sawRemoveChunk    = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
+			// R1a (2026-08-09): the batch remove is a mutating verb like its singular
+			// sibling, so it must be ANNOTATED under Read, never silently hidden.
+			if( name == "remove_chunks" )   { sawRemoveChunks   = true; Check( annotated, "remove_chunks tool description is ANNOTATED under Read" ); }
 			if( name == "render" )          { sawRender         = true; Check( !annotated, "render tool description is NOT annotated under Read (it is allowed)" ); }
 			if( name == "list_proposals" ) {
 				sawListProposals = true;
@@ -832,9 +836,9 @@ static void TestMcpLayer()
 			}
 		}
 		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold &&
-		       sawInsertGeometryScaffold && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
+		       sawInsertGeometryScaffold && sawRemoveChunk && sawRemoveChunks && sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 7, "EXACTLY 7 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/insert_material_scaffold/insert_geometry_scaffold, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 8, "EXACTLY 8 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -844,7 +848,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 21, "tools/list under Commit lists all 21 tools" );
+		Check( tools.isArray() && tools.size() == 22, "tools/list under Commit lists all 22 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -882,9 +886,10 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 21, "tools/list under Propose lists all 21 tools" );
+		Check( tools.isArray() && tools.size() == 22, "tools/list under Propose lists all 22 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
+		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
 		bool sawInsertMaterialScaffold = false, sawInsertGeometryScaffold = false;
 		int proposeNotedCount = 0, readNotedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -943,12 +948,19 @@ static void TestMcpLayer()
 				sawRemoveChunk = true;
 				Check( proposeNoted, "remove_chunk tool description carries the propose-staging note under Propose" );
 			}
+			// R1a (2026-08-09): the batch remove IS on IsProposeSafeVerb, so it must
+			// carry the staging note -- an External session stages the WHOLE batch as
+			// ONE proposal (never N), which is exactly what the note promises.
+			if( name == "remove_chunks" ) {
+				sawRemoveChunks = true;
+				Check( proposeNoted, "remove_chunks tool description carries the propose-staging note under Propose" );
+			}
 		}
 		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawRemoveChunk &&
-		       sawInsertMaterialScaffold && sawInsertGeometryScaffold,
-		       "all 5 IsProposeSafeVerb mutating tools + insert_material_scaffold + insert_geometry_scaffold were found in tools/list under Propose" );
-		Check( proposeNotedCount == 5,
-		       "RED-PROVE: EXACTLY 5 tool descriptions carry the propose-staging note under Propose" );
+		       sawRemoveChunks && sawInsertMaterialScaffold && sawInsertGeometryScaffold,
+		       "all 6 IsProposeSafeVerb mutating tools + insert_material_scaffold + insert_geometry_scaffold were found in tools/list under Propose" );
+		Check( proposeNotedCount == 6,
+		       "RED-PROVE: EXACTLY 6 tool descriptions carry the propose-staging note under Propose" );
 		Check( readNotedCount == 0,
 		       "RED-PROVE: NO tool description carries the Read-only refusal note under Propose" );
 	}

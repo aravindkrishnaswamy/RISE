@@ -123,9 +123,9 @@ namespace RISE
 				return o;
 			}
 
-			//! The `baseHeadVersion` object shared by all 5 mutating tools
+			//! The `baseHeadVersion` object shared by all 6 mutating tools
 			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-			//! remove_chunk) -- optional optimistic-concurrency precondition,
+			//! remove_chunk/remove_chunks) -- optional optimistic-concurrency precondition,
 			//! {uuid,revision} both numeric.  The BATCH forms take it too:
 			//! the precondition is on the HEAD the batch starts from, not on
 			//! any one element.
@@ -229,8 +229,8 @@ namespace RISE
 				"--agent-autonomy=commit to enable it)] ";
 
 			//! Secure-MCP slice 5b fix round (P2-1): the sibling annotation for
-			//! the same 5 mutating tools (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) under
+			//! the same 6 mutating tools (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) under
 			//! AgentAutonomy::Propose specifically.  Under Propose those
 			//! tools REACH the session (unlike Read, where kAutonomyReadNote's
 			//! tool is refused before dispatch) -- but for an External-
@@ -312,17 +312,17 @@ namespace RISE
 			//! width/height, camera vector shapes, the async-refused-headless
 			//! note, pinned semantics, samples clamp, the ODD/EVEN id-space
 			//! split, the baseHeadVersion conflict protocol, retriable).
-			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 5
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 6
 			//! mutating tools' descriptions are ANNOTATED (prefixed with
 			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
 			//! Secure-MCP slice 5b: resolve_proposal is annotated (with the
 			//! DISTINCT kResolveProposalOwnerOnlyNote) under BOTH Read and
 			//! Propose -- it is refused at the dispatcher under either posture
-			//! (see AgentRpc.h); the 5 mutating tools' kAutonomyReadNote
+			//! (see AgentRpc.h); the 6 mutating tools' kAutonomyReadNote
 			//! annotation, by contrast, applies ONLY under Read (Propose lets
 			//! them reach the session, which stages rather than refuses).
 			//! Secure-MCP slice 5b fix round (P2-1): under AgentAutonomy::
-			//! Propose, the SAME 5 mutating tools instead get the DISTINCT
+			//! Propose, the SAME 6 mutating tools instead get the DISTINCT
 			//! kAutonomyProposeNote -- they are not refused (readOnly is
 			//! false), but they no longer commit directly either, so leaving
 			//! their description bare (Commit-identical) would hide that from
@@ -348,8 +348,8 @@ namespace RISE
 					"optimistic-concurrency headVersion {uuid,revision}. Works with NO scene "
 					"loaded (hasDocument:false, headVersion {0,0}) -- an agent starting from "
 					"scratch calls this first. Pass the returned headVersion back as "
-					"baseHeadVersion on any of the 5 mutating tools "
-					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk) "
+					"baseHeadVersion on any of the 6 mutating tools "
+					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks) "
 					"to guard against editing a stale head.",
 					ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
 
@@ -448,7 +448,13 @@ namespace RISE
 						"outside an Enum's declared set; `message` then lists the allowed values). An "
 						"EMPTY or ABSENT `issues` on a rejection does not mean the patch was fine; it "
 						"means this pass could not statically pin the cause, and `message` still "
-						"carries the engine's own diagnostic." );
+						"carries the engine's own diagnostic. "
+						"A rasterizer chunk's own parameters are freely editable through this verb -- "
+						"including on a bdpt/mlt/auto rasterizer the USER authored -- with exactly one "
+						"exception: pinning an `auto_rasterizer`'s or `auto_spectral_rasterizer`'s "
+						"`integrator` to `bdpt` is refused, because that IS selecting BDPT (`pt`, "
+						"`vcm` and `auto` are all fine). See insert_chunk for the rasterizer "
+						"allowlist this belongs to." );
 					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -514,7 +520,19 @@ namespace RISE
 						"in detail (`suggestions` lists near-miss candidate names, best match "
 						"first) -- but an EMPTY `issues` on a rejection does not mean the chunk was "
 						"fine; it means this pass could not statically pin the cause, and `message` "
-						"still carries the engine's own diagnostic." );
+						"still carries the engine's own diagnostic. "
+						"A rasterizer chunk inserted this way becomes the ACTIVE integrator, and "
+						"RASTERIZER SELECTION IS ALLOWLISTED on this surface: you may insert "
+						"`pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, "
+						"`vcm_pel_rasterizer` or `vcm_spectral_rasterizer` -- PT for general scenes, "
+						"VCM for caustic/refractive/dispersive transport. `bdpt_pel_rasterizer`, "
+						"`bdpt_spectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`, "
+						"`auto_rasterizer` and `auto_spectral_rasterizer` are SPECIALIZED and are "
+						"refused, with no override parameter -- only the USER selects those (in the "
+						"GUI, or by authoring the chunk into the scene file). The utility rasterizers "
+						"`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are NOT "
+						"gated. A scene that ALREADY contains a blocked rasterizer stays fully "
+						"editable, including that chunk's own parameters." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -552,7 +570,11 @@ namespace RISE
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
 						"succeeded just because the call itself returned. REQUIRES a scene to be "
-						"loaded; `chunks` must be a non-empty array of strings." );
+						"loaded; `chunks` must be a non-empty array of strings. "
+						"The rasterizer allowlist insert_chunk documents applies here too, and it is "
+						"the ONE refusal that is NOT best-effort: a blocked rasterizer anywhere in "
+						"the array refuses the WHOLE batch atomically -- nothing is inserted and the "
+						"head version does not move." );
 					tools.push_back( MakeTool( "insert_chunks", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -706,12 +728,47 @@ namespace RISE
 					tools.push_back( MakeTool( "remove_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// remove_chunks (R1a, 2026-08-09) -- the ATOMIC batch form.  This description is
+				// hand-authored HERE and must stay semantically identical to the chat-codec tool
+				// definition in AgentChatCodecs.cpp's kToolDefs (the two texts are separate by design --
+				// this one is MCP-facing -- but they describe ONE verb, so a semantic change to either
+				// must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "targets", StringArrayProp( "The bare NAMES of the chunks to remove, 1 or more. Order does not matter -- chunks that reference each other WITHIN the batch are removed together regardless of listed order." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required; required.push_back( "targets" );
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
+						"Remove SEVERAL chunks in ONE call, ATOMICALLY. Prefer ONE remove_chunks call over "
+						"repeated remove_chunk calls whenever you delete more than one chunk: each separate "
+						"remove_chunk costs a full round-trip and a separate undo step, while one "
+						"remove_chunks call is one round-trip, ONE headVersion bump, and ONE undo step. "
+						"REQUIRES a scene to be loaded. ALL-OR-NOTHING -- unlike insert_chunks, which applies "
+						"what it can: if ANY target fails (unknown name, ambiguous name, or still referenced "
+						"from outside the batch) then NOTHING is removed and the head is byte-identical, so "
+						"you fix the one offender and resend. A chunk referenced ONLY by other chunks IN THE "
+						"SAME BATCH is removable, in ANY order -- list a painter and the material that uses it "
+						"together and both go; there is no need to order the list by dependency. "
+						"\"still_referenced\" is therefore reported only for referrers OUTSIDE the batch, and "
+						"`suggestions` NAMES them. Duplicate names are deduped, not refused: the chunk is "
+						"removed once and `note` says which names were listed more than once. There is NO "
+						"per-target `kind` -- targets are bare names only; for an ambiguous name, or the "
+						"sole-unnamed-camera case, use the singular remove_chunk with `kind` for that one "
+						"chunk. Same result gating as propose_patch (including the \"staged\" status -- an "
+						"External-authority session stages the WHOLE batch as ONE proposal, never N). The "
+						"result carries `applied` (a BOOL -- all or nothing), `removed`/`total`, an optional "
+						"`note`, and `results`: one entry per UNIQUE target in first-occurrence order (match "
+						"by `name`, not index), each with the same {param,value,reason,suggestions} `issues` "
+						"shape remove_chunk returns, localizing exactly which target blocked the batch." );
+					tools.push_back( MakeTool( "remove_chunks", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// render
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536] (out-of-range values are clamped, not rejected). Omit for the scene-authored sample count. Only honoured by rasterizers that support a sample-count override (the pixel-based family: PT, spectral PT, BDPT, VCM) -- see the result's `samplesOverridden`/`effectiveSamples` fields; on an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored." ) );
-					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,512]. Must be paired with `height` -- supplying only one is ignored (ambiguous aspect ratio), not applied. NEVER mutates the scene document; restored after the render." ) );
-					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
+					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,16] -- an agent-surface cap (out-of-range values are clamped, not rejected; see this tool's own description). Omit for the scene-authored sample count, UNLESS that count exceeds 16, in which case it is likewise capped to 16 (check the result's `agentRenderCap.samplesCapped` / `effectiveSamples`). Only honoured by rasterizers that support a sample-count override (the pixel-based family: PT, spectral PT, BDPT, VCM) -- see the result's `samplesOverridden`/`effectiveSamples` fields; on an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override -- or the implicit cap when none was requested -- is honestly reported as NOT applied, never silently ignored." ) );
+					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,256] -- an agent-surface cap (see this tool's own description). Must be paired with `height` -- supplying only one is ignored (ambiguous aspect ratio), not applied. Omitting BOTH renders at the scene's own aspect ratio scaled to fit the 256px cap, never the full authored resolution -- check `previewWidth`/`previewHeight` or `agentRenderCap.filmWidth`/`filmHeight` for the actual/uncapped dims. NEVER mutates the scene document; restored after the render." ) );
+					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,256] -- an agent-surface cap (see this tool's own description). Must be paired with `width`." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
 					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
@@ -734,7 +791,14 @@ namespace RISE
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
-						"per-object `legend` when mode:\"objectmap\"). Returns NO image bytes by "
+						"per-object `legend` when mode:\"objectmap\", and an `agentRenderCap` object "
+						"when the agent-surface cap described next actually reduced this render). "
+						"AGENT RENDERS ARE CAPPED at 256px on the long edge and 16 samples/pixel -- "
+						"omitted width/height/samples still render, just at or under those caps "
+						"(never the scene's full authored resolution/sample count); an explicit value "
+						"above the cap is silently clamped, never rejected. This is a fixed property "
+						"of the agent surface -- the user's own full-frame, full-sample renders happen "
+						"from the GUI, a separate path this cap does not touch. Returns NO image bytes by "
 						"default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back inline "
 						"in this same result, which is the one-call form to prefer for an ordinary "
 						"look. A separate read_image is still the way to re-read a render you already "
@@ -945,7 +1009,7 @@ namespace RISE
 					props.set( "reference", StringProp( "REQUIRED. The name of a HOST-registered reference image (e.g. the eval harness's \"view1\", \"view2\", ... prompt-attachment naming contract, in prompt-then-attachment order). An unknown name is an error listing every registered reference name -- there is no way to compare against an arbitrary path; only images the host explicitly registered are reachable." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "visual", BoolProp( "OPTIONAL, default true. When true, ALSO returns a composite [render | reference | abs-diff heatmap] side-by-side PNG (3x the reference's width) as a real image content block, using the SAME mechanism read_image uses. Set false once you only need the numeric feedback (rmse/channelDelta/grid) -- saves the encode cost and the response's token footprint." ) );
-					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536]. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 16-64) for the real measurement once composition looks plausible." ) );
+					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,16] -- an agent-surface cap, same as the render tool's own samples cap. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 8-16) for the real measurement once composition looks plausible. A requested value above 16 is silently clamped -- the result's `agentRenderCap` object names the cap when it fires." ) );
 					props.set( "split", BoolProp( "OPTIONAL, default false. When true, ALSO returns split:{objectRmse,backgroundRmse,objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown built from a SECOND, ephemeral mode:\"objectmap\" render of your OWN candidate (an extra render, so it costs more). Use it once your overall `rmse` plateaus across iterations: a high `backgroundRmse` means your staging (ground/environment/lighting) is still the biggest lever; a low `backgroundRmse` with a high `objectRmse` means staging is DONE -- stop tuning it and spend remaining iterations on the object's silhouette/proportions instead. HONESTY CAVEAT: the object mask comes from YOUR candidate only (the reference is a plain PNG with no objectmap of its own) -- it answers \"on the pixels where my object is, how wrong am I\" and \"on my background pixels, how wrong am I\", not \"how wrong is the reference's object region\". A badly misplaced object still shows up: high objectRmse on the candidate's (wrong) object pixels, AND the reference's actual object pixels raise backgroundRmse too, since your candidate has no object there. Both figures sentinel to -1 when their bucket is EMPTY -- objectRmse is -1 when no object pixels are visible (camera pointed away, object off-frame), backgroundRmse is -1 when registered objects cover the ENTIRE frame -- so ALWAYS check for >= 0 before trusting either; -1 means \"not measured\", NOT \"perfect match\". IMPORTANT CAVEAT ABOUT WHAT COUNTS AS \"OBJECT\": without `splitObjects` (below), EVERY registered object counts as OBJECT -- including a ground plane, backdrop, or any other staging geometry you built as a real scene object. That means an unscoped split measures \"geometry vs. environment\", not \"hero object vs. staging\": a scene with a modeled ground plane can show a huge OBJECT bucket (observed averaging 86% of the frame in practice) that is mostly stage, not your hero object. Pass `splitObjects` naming just your hero object to get a true hero-vs-staging reading." ) );
 					props.set( "splitObjects", StringArrayProp( "OPTIONAL array of object names, only meaningful alongside `split:true`. When non-empty, SCOPES the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, INCLUDING other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Use this to get a true hero-object-vs-staging reading: without it, a ground plane/backdrop you modeled as a scene object counts as OBJECT too (see the `split` parameter's own caveat), which inflates the OBJECT bucket and starves BACKGROUND down to just the sky/environment. Names are matched against the candidate's own objectmap legend; a name not found there is dropped from the mask (never a hard failure) and is instead surfaced in split.note, along with every name that IS available, so a typo doesn't silently shrink your mask unnoticed. If NONE of the requested names match, objectRmse comes back -1 with a note explicitly saying the named object(s) don't exist in this scene -- distinct from the ordinary \"object off-frame\" -1 case." ) );
 					std::vector<std::string> required; required.push_back( "reference" );
@@ -985,7 +1049,8 @@ namespace RISE
 						"resolved -- resolved entries stay for audit). Returns "
 						"{proposals:[{id,kind,target,entityKind,param,value,chunkText,baseVersion,"
 						"sessionLabel,status},...]}: `kind` is one of \"param_edit\"/\"insert_chunk\"/"
-						"\"remove_chunk\"; `status` is \"pending\"/\"applied\"/\"rejected\"/\"conflict\". "
+						"\"remove_chunk\"/\"remove_chunks\" (the batch remove stages as ONE entry); "
+						"`status` is \"pending\"/\"applied\"/\"rejected\"/\"conflict\". "
 						"READ-ONLY and available regardless of this session's autonomy posture -- "
 						"listing the queue is not a mutation. Requires a scene to be loaded with a live "
 						"controller attached (a headless CLI session with no in-app GUI owner returns "
@@ -1064,7 +1129,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 21 tool names this adapter recognizes --
+			//! The list of the 22 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -1072,6 +1137,7 @@ namespace RISE
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+					"remove_chunks",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"compare_to_reference",

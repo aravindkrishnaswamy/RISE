@@ -650,6 +650,30 @@ namespace RISE
 			const String& kind,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! R1a (2026-08-09, batched remove_chunks): route an ATOMIC agent BATCH chunk remove through the SAME
+		//! critical section as ApplyAgentRemoveChunk (mTxnOpen refusal -> cancel-and-park under mMutex ->
+		//! conflict gate -> the Job primitive -> rebind -> MarkCstHeadDirty -> ONE history push -> re-render
+		//! kick -> post-commit head read).  `targets[i]` / `kinds[i]` (kinds may be shorter, or carry empty
+		//! entries, meaning "no kind narrowing") are resolved with the SAME rules the singular verb uses.
+		//!
+		//! ALL-OR-NOTHING and ONE head bump: Job::ApplyCstRemoveChunks resolves every target against the
+		//! unmutated Document, refuses the WHOLE batch if any target fails, and otherwise erases them all in
+		//! ONE Document mutation realized by ONE dry-run-guarded re-derive.  Intra-batch references therefore
+		//! resolve regardless of the order the caller listed them in, and a target still referenced from
+		//! OUTSIDE the batch refuses the batch as a whole with the head byte-identical.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentRemoveChunks) is pushed, so a single Cmd-Z
+		//! restores every removed chunk -- not N records the user has to undo one at a time.  The record's
+		//! Undo payload is the byte-exact pre-batch Document text captured under this same lock hold.
+		//!
+		//! The result's `chunkName` is the comma-joined target list and `chunkKeyword` is the '\n'-joined
+		//! resolved keyword list (one entry per INPUT target, input order) -- the batch analogue of the
+		//! singular verb's single-chunk echo.
+		AgentCommitResult ApplyAgentRemoveChunks(
+			const std::vector<String>& targets,
+			const std::vector<String>& kinds,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
 		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
 		//! on approval.  Mirrors the three existing agent commit entry points
 		//! 1:1 -- there is no fourth kind because those are the only three
@@ -658,7 +682,11 @@ namespace RISE
 		{
 			ParamEdit    = 0,   //!< replays via ApplyAgentParamEdit (entity/kind/param/value)
 			InsertChunk  = 1,   //!< replays via ApplyAgentInsertChunk (chunkText)
-			RemoveChunk  = 2    //!< replays via ApplyAgentRemoveChunk (target/kind)
+			RemoveChunk  = 2,   //!< replays via ApplyAgentRemoveChunk (target/kind)
+			//! R1a (2026-08-09): replays via ApplyAgentRemoveChunks -- ONE proposal for a WHOLE batch remove,
+			//! so an Owner approves (or rejects) the batch as the single atomic edit it is, rather than N
+			//! separate cards that could be partially approved into a state the agent never asked for.
+			RemoveChunks = 3
 		};
 
 		//! Secure-MCP slice 5a: ONE staged (inert) proposal from an
@@ -695,6 +723,11 @@ namespace RISE
 			String              chunkText;
 			//! RemoveChunk fields (kind==RemoveChunk only); `target`/`entityKind`
 			//! above double as RemoveChunk's (target,kind) -- no separate fields.
+			//! R1a: RemoveChunkS (kind==RemoveChunks) reuses the SAME two carriers rather than adding
+			//! batch-only members -- `target` holds the '\n'-separated TARGET NAMES and `entityKind` the
+			//! '\n'-separated KINDS, one entry per target, same order, an empty entry meaning "no kind
+			//! narrowing".  ResolveProposal splits them back apart; ListProposals surfaces them verbatim so a
+			//! proposal card can render the N targets it will delete.
 			RISE::Cst::CstHeadVersion baseVersion;   //!< the head this proposal was staged against
 			//! S5a hardening: when false (the common case -- the proposing
 			//! session did not pin an explicit baseHeadVersion), `baseVersion`
@@ -704,9 +737,9 @@ namespace RISE
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
-			//! to one of the 5 mutating verbs -- propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) and StageProposal
-			//! passes it through untouched.
+			//! to one of the 6 mutating verbs -- propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) and
+			//! StageProposal passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
@@ -3400,6 +3433,17 @@ namespace RISE
 		//! MarkCstHeadDirty + kick on a mutated head).  `isInsert` selects the
 		//! primitive; `a` = chunkText (insert) or target name (remove); `b` =
 		//! unused (insert) or kind (remove).
+		//! R1a (2026-08-09, batched remove_chunks): the batch sibling of ApplyAgentChunkCrud_ -- the whole
+		//! critical section for ApplyAgentRemoveChunks (see that method's doc).  Kept SEPARATE from
+		//! ApplyAgentChunkCrud_ deliberately: the batch takes a LIST, captures a WHOLE-DOCUMENT undo payload
+		//! rather than a per-chunk bytes+index capture, and pushes a DIFFERENT history op.  Everything the two
+		//! genuinely share lives one level down, in Job::ApplyCstRemoveChunks.  Caller holds
+		//! mRenderAdmissionMutex and has already cleared the agent-render gate; this takes mMutex itself.
+		AgentCommitResult ApplyAgentRemoveChunksCrud_(
+			const std::vector<String>& targets,
+			const std::vector<String>& kinds,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
 		AgentCommitResult ApplyAgentChunkCrud_(
 			bool isInsert,
 			const String& a,

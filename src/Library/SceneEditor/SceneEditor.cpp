@@ -1154,6 +1154,9 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		break;
 	case SceneEdit::AgentInsertChunk:
 	case SceneEdit::AgentRemoveChunk:
+	case SceneEdit::AgentRemoveChunks:
+		// R1a: AgentRemoveChunks rides the SAME arm -- its `cstEntityKind` is deliberately EMPTY (see the op
+		// doc), so MarkCstHeadDirty routes it to the boolean CST-head channel rather than a per-entity mark.
 		// Shared-undo U2: same rationale as SetAgentCstParam above -- the FORWARD chunk-CRUD commit marks
 		// dirty via MarkCstHeadDirty directly (SceneEditController::ApplyAgentChunkCrud_), since that mutation
 		// also lands OUTSIDE SceneEditor::Apply.  Undo/Redo of a chunk-CRUD op route through THIS function via
@@ -1589,6 +1592,7 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	    || op == SceneEdit::SetAgentCstParam    // shared-undo U1: agent edits re-derive by name too
 	    || op == SceneEdit::AgentInsertChunk    // shared-undo U2: agent chunk CRUD re-derives (full re-derive) too
 	    || op == SceneEdit::AgentRemoveChunk
+	    || op == SceneEdit::AgentRemoveChunks   // R1a: the batch remove re-derives by name too
 	    || SceneEdit::IsObjectOp( op )
 	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
 }
@@ -1798,6 +1802,71 @@ bool SceneEditor::RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp,
 		char diagBuf[512]; diagBuf[0] = '\0';
 		r = mJob->ApplyCstRemoveChunk( edit.objectName.c_str(), kind, kwBuf, sizeof( kwBuf ), diagBuf, sizeof( diagBuf ) );
 		if( r < 0 ) r = 0;
+	}
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
+}
+
+// R1a (2026-08-09, batched remove_chunks): the AgentRemoveChunks sibling of RouteAgentChunkCrud_ -- see the
+// header doc for why it is a separate helper.  Both directions end in a Job primitive that is ALREADY
+// full-derivability-gated (both route through the shared RederiveCstDocumentFull_ tail, which always dry-runs
+// before committing), so this helper is pure dispatch + the same 0/2/3 fold every sibling uses.
+bool SceneEditor::RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forward, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	if( !mJob ) return false;
+	int r = 0;
+	if( !forward )
+	{
+		// UNDO: restore the byte-exact pre-batch document text wholesale.  `restoreActiveRasterizer` is the
+		// INVERSE of "the batch removed a rasterizer chunk", mirroring AgentRemoveChunk's own P1-B rule --
+		// re-introducing ANY `*_rasterizer` chunk changes the document's last-wins activation, so the
+		// pre-erase active rasterizer must NOT be restored over it.
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstReplaceDocumentText( edit.propertyValue.c_str(),
+		                                       /*restoreActiveRasterizer*/ !edit.agentChunkWasRasterizer,
+		                                       diagBuf, sizeof( diagBuf ) );
+	}
+	else
+	{
+		// REDO: re-run the whole batch by (kind, name), parsed back out of the recorded descriptor lines.
+		// Deterministic for the same reason the singular remove-Redo is: Undo restored the pre-batch Document
+		// byte-identically first, so the same targets resolve to the same chunks.
+		std::vector<std::string> names, kinds;
+		{
+			const std::string lines( edit.prevPropertyValue.c_str() );
+			std::size_t at = 0;
+			for( ;; )
+			{
+				const std::size_t nl = lines.find( '\n', at );
+				const std::string line = lines.substr( at, ( nl == std::string::npos ) ? std::string::npos : nl - at );
+				if( !line.empty() )
+				{
+					const std::size_t tab = line.find( '\t' );
+					// A line with no tab would be a malformed record (never produced by the sole caller);
+					// read the whole line as the name with no kind rather than drop the target silently.
+					if( tab == std::string::npos ) { kinds.push_back( std::string() ); names.push_back( line ); }
+					else { kinds.push_back( line.substr( 0, tab ) ); names.push_back( line.substr( tab + 1 ) ); }
+				}
+				if( nl == std::string::npos ) break;
+				at = nl + 1;
+			}
+		}
+		if( names.empty() ) return false;
+		std::vector<const char*> namePtrs, kindPtrs;
+		namePtrs.reserve( names.size() );
+		kindPtrs.reserve( kinds.size() );
+		for( std::size_t i = 0; i < names.size(); ++i ) {
+			namePtrs.push_back( names[i].c_str() );
+			kindPtrs.push_back( kinds[i].empty() ? nullptr : kinds[i].c_str() );
+		}
+		char kwBuf[1024]; kwBuf[0] = '\0';
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRemoveChunks( &namePtrs[0], &kindPtrs[0], static_cast<int>( namePtrs.size() ),
+		                                kwBuf, sizeof( kwBuf ), diagBuf, sizeof( diagBuf ), nullptr );
+		if( r < 0 ) r = 0;   // fold not-found/ambiguous refusals into the ordinary "would not derive" bucket
 	}
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
@@ -2267,6 +2336,25 @@ void SceneEditor::PushAgentChunkCrudEdit(
 	mHistory.Push( edit );
 }
 
+// R1a (2026-08-09, batched remove_chunks): see the header doc.  Same shape as PushAgentChunkCrudEdit -- the
+// forward mutation (Job::ApplyCstRemoveChunks) already landed via SceneEditController::ApplyAgentRemoveChunks
+// before this call, so this only records what a later Undo/Redo needs.  ONE record per batch is the whole
+// point: a single Cmd-Z restores every chunk the batch removed.
+void SceneEditor::PushAgentRemoveChunksEdit(
+	const String& displayTargets, const String& priorDocText, const String& redoTargetLines,
+	bool anyWasRasterizer )
+{
+	SceneEdit edit;
+	edit.op                      = SceneEdit::AgentRemoveChunks;
+	edit.objectName              = displayTargets;    // DISPLAY ONLY -- see the op doc
+	edit.propertyValue           = priorDocText;      // Undo payload (byte-exact pre-batch document)
+	edit.prevPropertyValue       = redoTargetLines;   // Redo descriptor (`kind\tname` per line)
+	edit.agentChunkWasRasterizer = anyWasRasterizer;
+	// cstEntityKind deliberately left EMPTY and agentChunkIndex at its default -- see the op doc.
+	// capturedTargetSerial stays 0 (default): CST-routed, same as its singular sibling.
+	mHistory.Push( edit );
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
@@ -2700,6 +2788,20 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::AgentRemoveChunks )
+	{
+		// R1a (2026-08-09, Undo direction): ONE record, whole batch -- restore the byte-exact pre-batch
+		// document text.  See the AgentRemoveChunks op doc + RouteAgentRemoveChunksBatch_.
+		if( !mJob ) return false;
+		bool diagnosed = false;
+		if( !RouteAgentRemoveChunksBatch_( edit, /*forward*/ false, &diagnosed ) ) return false;
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent batch chunk remove of `%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
+			                       edit.objectName.c_str() );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	if( edit.op == SceneEdit::AgentInsertChunk || edit.op == SceneEdit::AgentRemoveChunk )
 	{
 		// Shared-undo U2 (Undo direction): the inverse-patch doctrine -- Undo of an insert REMOVES the chunk
@@ -3044,6 +3146,21 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		BumpSceneLightGenerationForAgentParamEdit(
 			edit.objectName.c_str(),
 			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AgentRemoveChunks )
+	{
+		// R1a (2026-08-09, Redo direction): re-run the whole batch by (kind, name).  The FIRST apply of a
+		// fresh batch never reaches here (the mutation already landed via Job::ApplyCstRemoveChunks before
+		// the history push -- see PushAgentRemoveChunksEdit); this arm is exercised by Redo only.
+		if( !mJob ) return false;
+		bool diagnosed = false;
+		if( !RouteAgentRemoveChunksBatch_( edit, /*forward*/ true, &diagnosed ) ) return false;
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent batch chunk remove of `%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
+			                       edit.objectName.c_str() );
 		mLastScope = Dirty_Camera;
 		return true;
 	}

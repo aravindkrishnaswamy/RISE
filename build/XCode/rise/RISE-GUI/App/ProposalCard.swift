@@ -81,13 +81,24 @@ struct ProposalDiffCard: View {
     private var plusCount: Int {
         switch proposal.kind {
         case "insert_chunk": return chunkLines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
-        case "remove_chunk": return 0
+        case "remove_chunk", "remove_chunks": return 0
         default: return 1
         }
     }
 
+    /// R1a (2026-08-09): a `remove_chunks` proposal deletes N chunks in one
+    /// atomic edit, so the minus chip counts them — `target` carries the
+    /// '\n'-separated name list (see SceneEditController::AgentProposal).
+    private var removeTargetNames: [String] {
+        proposal.target.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
     private var minusCount: Int {
-        proposal.kind == "remove_chunk" ? 1 : 0
+        switch proposal.kind {
+        case "remove_chunk":  return 1
+        case "remove_chunks": return max(removeTargetNames.count, 1)
+        default:              return 0
+        }
     }
 
     private func countChip(_ text: String, color: Color, bg: Color) -> some View {
@@ -113,6 +124,15 @@ struct ProposalDiffCard: View {
                              ? proposal.target
                              : "\(proposal.target) (\(proposal.entityKind))",
                          isAddition: false)
+            }
+        case "remove_chunks":
+            // R1a (2026-08-09): ONE card for the WHOLE batch (approving it applies
+            // the batch atomically), so list every target on its own minus line —
+            // the same per-line shape a multi-chunk insert_chunk card uses.
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(removeTargetNames.enumerated()), id: \.offset) { _, name in
+                    diffLine(sign: "−", text: name, isAddition: false)
+                }
             }
         default:
             paramEditBody

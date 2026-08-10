@@ -2948,6 +2948,23 @@ namespace RISE
 		                         char* outKeyword, unsigned int keywordMax,
 		                         char* outDiag, unsigned int diagMax );
 
+		//! R1a (2026-08-09, batched remove_chunks): ATOMIC batch form of ApplyCstRemoveChunk -- resolve every
+		//! target first (shared resolver, so resolution can never drift from the singular verb), refuse the
+		//! WHOLE batch if any target fails, else erase all resolved indices in ONE Document mutation and
+		//! realize them with ONE dry-run-guarded full re-derive (ONE head-version bump).  Full contract,
+		//! including the intra-batch-reference and duplicate rules, documented on the IJob virtual.  Returns
+		//! 2/3 (replaced; rebind) / 0 (would-not-derive) / -1 (a target not found) / -2 (a target ambiguous).
+		int ApplyCstRemoveChunks( const char* const* targets, const char* const* kinds, int count,
+		                         char* outKeywords, unsigned int keywordsMax,
+		                         char* outDiag, unsigned int diagMax,
+		                         int* outFailIndex = nullptr );
+
+		//! R1a (2026-08-09, batched remove_chunks -- UNDO): replace the whole retained Document with `fullText`
+		//! and realize it through the shared dry-run-guarded full re-derive tail.  Contract documented on the
+		//! IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (refused; nothing changed).  Never 1.
+		int ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
+		                                 char* outDiag, unsigned int diagMax );
+
 		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
 		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex` (GLUE-SAFE per round-1 P1-B: a
 		//! synthesized "\n" lead item is inserted first when the left neighbour at a shifted `atIndex` does not

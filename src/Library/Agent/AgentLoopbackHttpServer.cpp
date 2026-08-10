@@ -280,7 +280,7 @@ namespace
 	//! mutating verbs this rate limiter counts against
 	//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
 	//! insert_material_scaffold/insert_geometry_scaffold/remove_chunk/
-	//! resolve_proposal). This
+	//! remove_chunks/resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
 	//! verb name for a tool invocation always lives at params.name (see
@@ -330,7 +330,11 @@ namespace
 		    // Arc-75 slice S3b: insert_geometry_scaffold is the geometry
 		    // sibling, SAME InsertChunks path, SAME rate-limit membership.
 		    name == "insert_geometry_scaffold" ||
-		    name == "remove_chunk"   || name == "resolve_proposal" ) {
+		    name == "remove_chunk"   ||
+		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
+		    // strictly MORE per-call leverage than the singular verb, so it
+		    // is unambiguously in the rate limiter's membership.
+		    name == "remove_chunks"  || name == "resolve_proposal" ) {
 			outToolName = name;
 			return true;
 		}

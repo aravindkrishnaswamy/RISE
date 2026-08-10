@@ -145,3 +145,28 @@ the standard dual EXR (HDR archive) + PNG (display preview) idiom.
 Declare the rasterizer chunk BEFORE any `file_rasterizeroutput`
 chunk; FRO-first (or no rasterizer chunk) fails the load with a
 "no rasterizer is set" diagnostic.
+
+## Choosing the integrator
+
+You may select exactly two integrator families, in either their RGB
+or spectral form:
+
+| Rasterizer chunk | Use it for |
+| --- | --- |
+| `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer` | Everything, unless there is a specific reason not to.  This is the default. |
+| `vcm_pel_rasterizer` / `vcm_spectral_rasterizer` | Caustics and refractive / dispersive transport — light focused through glass, water, gems.  PT misses much of that energy. |
+
+`bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer`,
+`mlt_spectral_rasterizer`, `auto_rasterizer` and
+`auto_spectral_rasterizer` are **specialized rasterizers you may not
+select** — inserting one is refused, and there is no override
+parameter.  If a scene needs one, the user selects it themselves.
+`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are
+not integrator choices and are not gated (`pixelpel_rasterizer` is
+required for alpha-mask scenes).
+
+A scene the user handed you that already contains one of the blocked
+rasterizers stays **fully editable** — edit any chunk in it, including
+that rasterizer's own parameters, and render it normally.  The one
+parameter edit that is refused is pinning an `auto_rasterizer`'s
+`integrator` to `bdpt`; `pt`, `vcm` and `auto` are all fine.

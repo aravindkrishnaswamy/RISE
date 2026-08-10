@@ -1046,7 +1046,7 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// verb-by-verb behaviour per level:
 ///   * Read    -> the read-safe allowlist (IsReadSafeVerb in AgentRpc.cpp,
 ///                which IS the membership list — no count or copy of it
-///                here) dispatches; the 5 mutating verbs and any other verb
+///                here) dispatches; the 6 mutating verbs and any other verb
 ///                are REFUSED
 ///                (kAutonomyRefused, -32011) — this is Owner authority
 ///                under Read autonomy, so even the refusal path never
@@ -1055,7 +1055,7 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 ///                level runs over a SEPARATE, External-authority
 ///                AgentSession sharing the SAME live SceneEditController
 ///                `-agentHandleLine:`'s administrative session is
-///                attached to — so the 5 mutating verbs (IsProposeSafeVerb)
+///                attached to — so the 6 mutating verbs (IsProposeSafeVerb)
 ///                STAGE a
 ///                real proposal onto that controller's ONE queue (the
 ///                exact queue the existing proposals panel already reads
