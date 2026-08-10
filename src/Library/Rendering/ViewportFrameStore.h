@@ -188,12 +188,13 @@ namespace RISE
 			//! Job's reference both keep it alive across the VFS
 			//! lifetime; this addref is defensive).
 			//!
-			//! Threading: takes `chainMutex_` unique-lock to swap
-			//! the chain pointers.  Reader threads in
-			//! `RenderToBuffer` / `SaveAs` / `Generation` are
-			//! unaffected — they snapshot+addref under the lock and
-			//! their captured snapshot stays valid even if we swap
-			//! mid-render.
+			//! Threading: bind writers are serialized; a concurrent or
+			//! reentrant bind request fails synchronously on its requesting
+			//! thread and may be retried by the caller. Readers in
+			//! `RenderToBuffer` / `SaveAs` / `Generation` briefly take the
+			//! shared `chainMutex_` to snapshot+addref the active store. They
+			//! can briefly contend with a bind, but their captured snapshot
+			//! stays valid after the lock is released.
 			//!
 			//! Passing `nullptr` unbinds — VFS reverts to the legacy
 			//! lazy-internal-allocate path.  The previously-bound

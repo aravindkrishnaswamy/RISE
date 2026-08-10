@@ -247,6 +247,15 @@ namespace RISE
 			//! observer was never attached (silent no-op).
 			void RemoveObserver( IRenderObserver* observer );
 
+			//! Transactional removal for owners that may need to restore the
+			//! same observer after a later operation fails.  The reservation
+			//! prevents concurrent AddObserver calls from consuming the erased
+			//! vector slot, so restoration cannot allocate.
+			bool RemoveObserverWithRestoreReservation( IRenderObserver* observer );
+			void RestoreObserverFromRemovalReservation(
+				IRenderObserver* observer ) noexcept;
+			void CommitObserverRemovalReservation() noexcept;
+
 			// ── read-side API (UI, encoders) ──────────────────────
 
 			//! Monotonically-increasing frame-store generation.
@@ -557,6 +566,7 @@ namespace RISE
 			// wait for another active callback fails closed, avoiding raw-pointer
 			// lifetime cycles without globally serializing independent stores.
 			std::vector<IRenderObserver*>     observers_;
+			size_t                            observerRestoreReservations_ = 0u;
 			mutable std::mutex                observerMutex_;
 			std::mutex                        observerCallbackDispatchMutex_;
 			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
@@ -606,6 +616,8 @@ namespace RISE
 			//! only used inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
+			bool RemoveObserverImpl(
+				IRenderObserver* observer, bool reserveRestoreSlot );
 			void NotifyTileComplete( size_t tileX, size_t tileY, uint64_t generation );
 
 			// FrameStore is non-copyable (Reference rules).

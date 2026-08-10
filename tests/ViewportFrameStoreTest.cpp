@@ -1827,7 +1827,7 @@ namespace
 		const std::vector<const char*> stages = {
 			"bind_after_retain",
 			"bind_after_observer_allocation",
-			"bind_after_observer_registration"
+			"bind_after_old_observer_detachment"
 		};
 		bool allPreserved = true;
 		for( const char* stage : stages ) {
@@ -1858,6 +1858,47 @@ namespace
 		}
 		Check(allPreserved,
 			"every external replacement construction failure preserves the old binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestBindRollbackReservationSurvivesObserverInsertion()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<unsigned int> vfsCallbacks(0u);
+		std::atomic<unsigned int> independentCallbacks(0u);
+		CallbackObserver independent([&]() { ++independentCallbacks; });
+		vfs->SetTileCompleteCallback(
+			[&]( const Rect&, uint64_t ) { ++vfsCallbacks; });
+		vfs->BindFrameStore(source);
+		bool hookCalled = false;
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_old_observer_detachment") != 0 ) return;
+			hookCalled = true;
+			source->AddObserver(&independent);
+			throw std::runtime_error("injected post-detachment failure");
+		});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(replacement);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected post-detachment failure";
+		}
+		vfs->ForTest_SetChainConstructionHook({});
+		source->BeginTile(0u,0u);
+		source->EndTile(0u,0u);
+		Check(hookCalled && rejected && vfs->GetFrameStore() == source &&
+			vfsCallbacks.load() == 1u && independentCallbacks.load() == 1u,
+			"bind rollback retains a nonallocating observer slot across an intervening insertion" );
+		source->RemoveObserver(&independent);
 		vfs->release();
 		source->release();
 		replacement->release();
@@ -2175,6 +2216,7 @@ int main()
 	TestBindTeardownKeepsOldChainPublished();
 	TestRejectedCrossStoreBindPreservesExistingChain();
 	TestBindConstructionFailuresPreserveExistingChain();
+	TestBindRollbackReservationSurvivesObserverInsertion();
 	TestExposureUpdateWinsConcurrentBindCommit();
 	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();

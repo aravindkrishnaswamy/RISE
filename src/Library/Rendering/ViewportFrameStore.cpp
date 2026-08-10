@@ -390,27 +390,33 @@ namespace RISE
 				}
 			}
 
-			bool oldObserverDetached = false;
-			std::array<bool,kMaxDormantChains> dormantObserverDetached{};
-			const auto restoreDetachedObservers = [&]() {
-				if( oldObserverDetached ) oldFs->AddObserver(oldObs);
+			bool oldObserverRemovalReserved = false;
+			std::array<bool,kMaxDormantChains> dormantRemovalReserved{};
+			const auto restoreDetachedObservers = [&]() noexcept {
+				if( oldObserverRemovalReserved ) {
+					oldFs->RestoreObserverFromRemovalReservation(oldObs);
+				}
 				for( size_t i=0; i<oldDormant.size(); ++i ) {
-					if( dormantObserverDetached[i] ) {
-						oldDormant[i].fs->AddObserver(oldDormant[i].obs);
+					if( dormantRemovalReserved[i] ) {
+						oldDormant[i].fs->RestoreObserverFromRemovalReservation(
+							oldDormant[i].obs);
 					}
 				}
 			};
 			try {
 				if ( oldFs && oldObs ) {
-					oldFs->RemoveObserver( oldObs );
-					oldObserverDetached = true;
+					oldObserverRemovalReserved =
+						oldFs->RemoveObserverWithRestoreReservation(oldObs);
 				}
 				for( size_t i=0; i<oldDormant.size(); ++i ) {
 					DormantChain& d = oldDormant[i];
 					if( d.fs && d.obs ) {
-						d.fs->RemoveObserver(d.obs);
-						dormantObserverDetached[i] = true;
+						dormantRemovalReserved[i] =
+							d.fs->RemoveObserverWithRestoreReservation(d.obs);
 					}
+				}
+				if( chainConstructionTestHook_ ) {
+					chainConstructionTestHook_("bind_after_old_observer_detachment");
 				}
 			} catch ( ... ) {
 				restoreDetachedObservers();
@@ -419,21 +425,11 @@ namespace RISE
 
 			FrameStore* committedStore = candidate.store;
 			try {
-				if( candidate.store ) {
-					{
-						std::unique_lock<std::shared_mutex> lock(chainMutex_);
-						candidate.store->SetCameraExposureEV(
-							static_cast<double>(cameraExposureEV_));
-						candidate.store->AddObserver(candidate.observer);
-					}
-					if( chainConstructionTestHook_ ) {
-						chainConstructionTestHook_("bind_after_observer_registration");
-					}
-				}
 				std::unique_lock<std::shared_mutex> lock(chainMutex_);
 				if( candidate.store ) {
 					candidate.store->SetCameraExposureEV(
 						static_cast<double>(cameraExposureEV_));
+					candidate.store->AddObserver(candidate.observer);
 				}
 				externalFrameStore_ = candidate.store;
 				framestore_ = candidate.store;
@@ -443,11 +439,16 @@ namespace RISE
 				if( candidate.observer ) candidate.observer->Activate();
 				candidate.Commit();
 			} catch ( ... ) {
-				if( candidate.store && candidate.observer ) {
-					candidate.store->RemoveObserver(candidate.observer);
-				}
 				restoreDetachedObservers();
 				throw;
+			}
+			if( oldObserverRemovalReserved ) {
+				oldFs->CommitObserverRemovalReservation();
+			}
+			for( size_t i=0; i<oldDormant.size(); ++i ) {
+				if( dormantRemovalReserved[i] ) {
+					oldDormant[i].fs->CommitObserverRemovalReservation();
+				}
 			}
 
 			delete oldObs;

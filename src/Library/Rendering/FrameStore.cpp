@@ -1768,13 +1768,30 @@ namespace RISE
 			// scene reload don't need to first remove).
 			auto it = std::find( observers_.begin(), observers_.end(), observer );
 			if ( it == observers_.end() ) {
+				if( observers_.size()+observerRestoreReservations_ >=
+					observers_.capacity() ) {
+					observers_.reserve(
+						observers_.size()+observerRestoreReservations_+1u);
+				}
 				observers_.push_back( observer );
 			}
 		}
 
 		void FrameStore::RemoveObserver( IRenderObserver* observer )
 		{
-			if ( !observer ) return;
+			RemoveObserverImpl(observer,false);
+		}
+
+		bool FrameStore::RemoveObserverWithRestoreReservation(
+			IRenderObserver* observer )
+		{
+			return RemoveObserverImpl(observer,true);
+		}
+
+		bool FrameStore::RemoveObserverImpl(
+			IRenderObserver* observer, const bool reserveRestoreSlot )
+		{
+			if ( !observer ) return false;
 			std::unique_lock<std::mutex> lock( observerMutex_ );
 			// Wait for callbacks that have already claimed precisely
 			// this observer.  Snapshot-only pointers are harmless: every
@@ -1792,12 +1809,38 @@ namespace RISE
 					"FrameStore observer removal would wait on another callback" );
 			}
 			auto it = std::find( observers_.begin(), observers_.end(), observer );
-			if ( it != observers_.end() ) observers_.erase( it );
+			if ( it == observers_.end() ) return false;
+			if( reserveRestoreSlot ) ++observerRestoreReservations_;
+			observers_.erase( it );
 			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
 				const auto active = observerCallbacksInFlight_.find(observer);
 				return active == observerCallbacksInFlight_.end() ||
 					active->second <= localCallbacks;
 			} );
+			return true;
+		}
+
+		void FrameStore::RestoreObserverFromRemovalReservation(
+			IRenderObserver* observer ) noexcept
+		{
+			std::lock_guard<std::mutex> lock(observerMutex_);
+			assert(observerRestoreReservations_ != 0u);
+			if( observerRestoreReservations_ == 0u ) return;
+			if( std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				assert(observers_.size() < observers_.capacity());
+				observers_.push_back(observer);
+			}
+			--observerRestoreReservations_;
+		}
+
+		void FrameStore::CommitObserverRemovalReservation() noexcept
+		{
+			std::lock_guard<std::mutex> lock(observerMutex_);
+			assert(observerRestoreReservations_ != 0u);
+			if( observerRestoreReservations_ != 0u ) {
+				--observerRestoreReservations_;
+			}
 		}
 
 		// ─────────────────────────────────────────────────────────────
