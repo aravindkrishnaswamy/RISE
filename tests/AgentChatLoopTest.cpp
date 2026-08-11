@@ -3940,6 +3940,76 @@ static void TestSupersededReadElision()
 		       "read_viewport: an available:false result packs NO image block" );
 	}
 
+	// --- (k2) G3a fix-round (2026-08-10): file_part_plan's SKETCH composite
+	//     is covered by the SAME image retention as (k)'s read_viewport PNG.
+	//
+	// This PINS an ACCEPTED-by-design behaviour, it does not fight it: the
+	// supervisor's arbitration for G3a's P2 review explicitly accepted that
+	// the sketch composite shares the transport's single-global-image-slot
+	// retention, because G3b's comparison composite re-surfaces the sketch
+	// at consultation time (design doc docs/agentic-redesign/77-imagination-
+	// target-design.md Section 4.3 records the decision). file_part_plan is
+	// listed in IsImageResult (AgentChatCodecs.cpp ~1307) alongside
+	// read_image/compare_to_reference/render/read_viewport for exactly this
+	// reason -- ANY later image-bearing result, not only another
+	// file_part_plan, must elide it.
+	//
+	// If someone later "fixes" the elision by PINNING the sketch (excluding
+	// file_part_plan from IsImageResult, or special-casing it in the
+	// elision walk), the FIRST assertion below goes red: the sketch base64
+	// would then still be present after the render, silently doubling the
+	// per-request token cost every time a plan is filed and then a render
+	// happens later in the same session. That flip must be LOUD.
+	{
+		const std::vector<unsigned char> sketchPx( 48, 0x37 );
+		const std::vector<unsigned char> renderPx( 48, 0x64 );
+		const std::string b64Sketch = Base64Encode( sketchPx );
+		const std::string b64Render = Base64Encode( renderPx );
+		const std::string envFilePartPlan =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,"
+			"\"replacedPreviousPlan\":false,\"partCount\":1,\"parts\":[{\"part\":\"wing\","
+			"\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1; 0 1\",\"view\":\"front\","
+			"\"pointCount\":4,\"areaFraction\":0.72,\"aspect\":1.0}],"
+			"\"png_base64\":\"" + b64Sketch + "\",\"compositeWidth\":256,\"compositeHeight\":256,"
+			"\"message\":\"Sketches, in order: wing. wing: 4 points, area 0.72, aspect 1.00.\"}}";
+		const std::string envRender =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true,\"width\":160,\"height\":120,"
+			"\"png_base64\":\"" + b64Render + "\",\"byteLength\":48}}";
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "sketch the parts, then render it" );
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "file_part_plan" ),
+		                     Vec1( "toolu_fp" ), Vec1( envFilePartPlan ) ) ) {
+			Check( false, "file_part_plan retention: drive filing round" ); return;
+		}
+		const std::string bodyAfterFiling = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( bodyAfterFiling, b64Sketch ) == 1,
+		       "file_part_plan retention: the sketch composite's base64 rides after filing, "
+		       "before anything supersedes it" );
+
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "render" ),
+		                     Vec1( "toolu_rd" ), Vec1( envRender ) ) ) {
+			Check( false, "file_part_plan retention: drive render round" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64Sketch ) == 0,
+		       "file_part_plan retention: MONEY ASSERTION (regression tripwire) -- the sketch "
+		       "composite's base64 is FULLY ABSENT once a later image-bearing render supersedes "
+		       "it, the accepted G3a/G3b contract. If this ever reads != 0, the sketch was "
+		       "silently pinned and every render-after-filing session now double-pays for it" );
+		Check( CountOccurrences( body, b64Render ) == 1,
+		       "file_part_plan retention: the NEWER render's base64 rides exactly once" );
+		Check( body.find( "image elided" ) != std::string::npos,
+		       "file_part_plan retention: the elided sketch carries the image-elision note" );
+		Check( body.find( "4 points" ) != std::string::npos &&
+		       body.find( "0.72" ) != std::string::npos,
+		       "file_part_plan retention: the sketch's TEXTUAL facts (pointCount/areaFraction) "
+		       "SURVIVE the elision -- the pixels don't, the facts do, that is the pinned contract" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "file_part_plan retention: every recorded call is still answered after elision" );
+	}
+
 	// --- (g) DETERMINISM: two loops fed identical scripts agree byte for byte ---
 	{
 		AgentChatLoop a, b;
@@ -9369,12 +9439,31 @@ static void TestFilePartPlanToolAndGateClassification()
 			Check( en.at( 0 ).asString() == "primitive" && en.at( 5 ).asString() == "mesh",
 			       "T47a: the enum is primitive..mesh in the documented order" );
 			const JsonValue& req = items.get( "required" );
-			bool hasPart = false, hasCons = false;
+			bool hasPart = false, hasCons = false, hasOutline = false;
 			for( std::size_t k = 0; k < req.size(); ++k ) {
 				if( req.at( k ).asString() == "part" ) hasPart = true;
 				if( req.at( k ).asString() == "construction" ) hasCons = true;
+				if( req.at( k ).asString() == "outline" ) hasOutline = true;
 			}
 			Check( hasPart && hasCons, "T47a: both `part` and `construction` are REQUIRED per entry" );
+			// G3a (2026-08-10): `outline` is REQUIRED with NO opt-out value --
+			// that force level IS the mechanism (the design's resolved
+			// decision 2), so a codec that shipped it as optional would
+			// silently turn the slice off for that provider.
+			Check( hasOutline, "T47a/G3a: `outline` is REQUIRED per entry too" );
+			const JsonValue& outlineProp = items.get( "properties" ).get( "outline" );
+			Check( outlineProp.get( "type" ).asString() == "string",
+			       "T47a/G3a: `outline` is a string (the \"x y; x y; ...\" point list)" );
+			Check( outlineProp.get( "description" ).asString().find( "at least 3" ) != std::string::npos,
+			       "T47a/G3a: the outline description states the 3-point minimum the dispatcher enforces" );
+			const JsonValue& viewEnum = items.get( "properties" ).get( "view" ).get( "enum" );
+			Check( viewEnum.isArray() && viewEnum.size() == 3 &&
+			       viewEnum.at( 0 ).asString() == "front",
+			       "T47a/G3a: `view` carries the closed front|side|top enum, front first" );
+			bool viewRequired = false;
+			for( std::size_t k = 0; k < req.size(); ++k )
+				if( req.at( k ).asString() == "view" ) viewRequired = true;
+			Check( !viewRequired, "T47a/G3a: `view` is OPTIONAL (it defaults to front)" );
 			const std::string desc = tools.at( i ).get( "description" ).asString();
 			Check( desc.find( "NOT binding" ) != std::string::npos,
 			       "T47a: the description states the plan is NOT binding" );
@@ -9424,10 +9513,20 @@ static void TestFilePartPlanToolAndGateClassification()
 	}
 
 	// (b) E4 classification.
+	// G3a (2026-08-10): the fixture carries the schema-v2 result shape --
+	// per-part sketch facts plus the composite PNG -- because the E4
+	// classification below is precisely the question of whether an
+	// image-BEARING plan result now counts as a look.  A pre-G3a fixture
+	// would make that assertion vacuous.
 	const std::string kPlanResult =
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"replacedPreviousPlan\":false,"
-		"\"partCount\":2,\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"\"},"
-		"{\"part\":\"body\",\"construction\":\"primitive\",\"note\":\"\"}],\"message\":\"part plan filed\"}}";
+		"\"partCount\":2,\"parts\":["
+		"{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"\",\"outline\":\"0 0; 2 1; 0 2\","
+		"\"view\":\"front\",\"pointCount\":3,\"areaFraction\":0.36,\"aspect\":1.0},"
+		"{\"part\":\"body\",\"construction\":\"primitive\",\"note\":\"\",\"outline\":\"0 0; 1 0; 1 1; 0 1\","
+		"\"view\":\"front\",\"pointCount\":4,\"areaFraction\":0.73,\"aspect\":1.0}],"
+		"\"png_base64\":\"aVZCT1J3\",\"byteLength\":6,\"compositeWidth\":512,\"compositeHeight\":256,"
+		"\"message\":\"part plan filed\"}}";
 	const std::string kInsertResult =
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\"}}";
 
@@ -9503,6 +9602,30 @@ static void TestFilePartPlanToolAndGateClassification()
 		Check( line.find( "wing=sweep" ) != std::string::npos &&
 		       line.find( "body=primitive" ) != std::string::npos,
 		       "T47c: the outcome line echoes each part and its declared construction" );
+		Check( line.find( "(2 sketches)" ) != std::string::npos,
+		       "T47c/G3a: and how many sketches the filing produced -- a filing that rasterized "
+		       "fewer sketches than it declared parts must be visible, not silent" );
+	}
+
+	// G3a (2026-08-10): the plan result IS an image result for TRANSPORT
+	// purposes (the composite sketch rides back as a real image block) while
+	// remaining neither a mutation nor a look for the SEQUENCING GATE.  Both
+	// halves asserted here, side by side, because the pair is the whole
+	// classification decision and reading either alone invites "it has a PNG,
+	// so surely it is a look".
+	{
+		ChatToolCall call;
+		call.name = "file_part_plan";
+		Check( ChatToolResultCarriesImage( call, kPlanResult ),
+		       "T47d/G3a: a filing WITH a composite PNG is an image-bearing result (so it gets a "
+		       "real image block and is metered by the image-retention cap)" );
+		const std::string kPlanNoImage =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"partCount\":1,"
+			"\"parts\":[{\"part\":\"body\",\"construction\":\"primitive\",\"pointCount\":4}],"
+			"\"message\":\"part plan filed\"}}";
+		Check( !ChatToolResultCarriesImage( call, kPlanNoImage ),
+		       "T47d/G3a: RED-PROVE -- the predicate keys on the png_base64 FIELD, not the verb name, "
+		       "so a filing that produced no image is correctly not an image result" );
 	}
 }
 

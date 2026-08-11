@@ -469,6 +469,20 @@ namespace RISE
 			//! would hand every model a free, image-free streak reset and
 			//! silently defeat E4.  It leaves the streak exactly as it found
 			//! it.
+			//!
+			//! G3a (2026-08-10) RE-AFFIRMS THAT CALL, against the one fact
+			//! that looks like it should change it: file_part_plan's result
+			//! now CARRIES AN IMAGE (the composite sketch echo), and it is
+			//! listed in AgentChatCodecs' IsImageResult accordingly.  It is
+			//! STILL neither a mutation nor a look.  The sketch is the model's
+			//! OWN drawing rasterized back at it -- it observes nothing about
+			//! the scene, contains no rendered pixel, and would be identical
+			//! on an empty document.  Treating "the result has a PNG" as "the
+			//! model looked" is exactly the free streak reset above, only
+			//! harder to spot.  The two classifications are deliberately
+			//! independent: IsImageResult governs image TRANSPORT (build the
+			//! block, count it against the retention cap), this list governs
+			//! observation BEHAVIOUR.
 			bool IsVisualObserveToolName( const std::string& v )
 			{
 				return v == "render" || v == "read_image" || v == "read_viewport" ||
@@ -1267,7 +1281,7 @@ namespace RISE
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
-			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ..." (G2)
+			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ... (<k> sketch(es))" (G2; sketch count G3a)
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
 			//!                                                  each with " (candidate)" appended when validated == "text".
@@ -1416,17 +1430,28 @@ namespace RISE
 				// model declared.  The whole point of the gate is the
 				// representation choice, so the choice is what the line
 				// reports.  Factual echo only, no verdict on the plan.
+				// G3a (2026-08-10): the filing now also produces N sketches,
+				// so the line says how many -- a filing that produced fewer
+				// sketches than parts (or none) is a visible discrepancy
+				// rather than a silent one.  Counted from the ECHOED parts,
+				// which carry `pointCount` iff a sketch was rasterized for
+				// them, so the count cannot claim a sketch that does not
+				// exist.
 				if( call.name == "file_part_plan" ) {
 					const JsonValue& parts = result.get( "parts" );
 					if( !parts.isArray() || parts.size() == 0 ) return "ok";
+					std::size_t sketched = 0;
 					std::string line = std::to_string( parts.size() ) +
 						( parts.size() == 1 ? " part: " : " parts: " );
 					for( std::size_t i = 0; i < parts.size(); ++i ) {
 						if( i ) line += ", ";
 						line += parts.at( i ).get( "part" ).asString() + "=" +
 						        parts.at( i ).get( "construction" ).asString();
+						if( parts.at( i ).has( "pointCount" ) ) ++sketched;
 					}
-					return TruncateForOutcome( line, 120 );
+					line += " (" + std::to_string( sketched ) +
+						( sketched == 1 ? " sketch)" : " sketches)" );
+					return TruncateForOutcome( line, 140 );
 				}
 
 				// 8. validate: the one-liner must say whether the scene is

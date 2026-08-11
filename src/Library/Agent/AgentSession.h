@@ -2808,28 +2808,115 @@ namespace RISE
 			// intercepted at all.  Every refusal states, accurately, how
 			// many more calls will still be refused before the gate stops
 			// intercepting -- never a claim the code does not honour.
+			//
+			//----------------------------------------------------------------
+			// G3a (2026-08-10): the SKETCH ARTIFACT -- part-plan SCHEMA v2.
+			//
+			// WHAT CHANGED.  Every part entry now carries a REQUIRED 2D
+			// `outline` (a closed polygon, authored as "x y; x y; ..." with
+			// >= 3 points) and an OPTIONAL `view` (front|side|top, default
+			// front).  The harness rasterizes each outline into a
+			// deterministic 256x256 silhouette mask, keeps the masks as
+			// SESSION-LIFETIME targets (AgentPartSketch / mPartSketches), and
+			// echoes them back in the filing result as ONE composite PNG plus
+			// per-part facts.  Nothing else about the gate changes: same
+			// trigger set, same shared counter, same 3-refusal cap, same
+			// give-up, same launch switch.
+			//
+			// WHY.  The looking loop already fires and the fix is already
+			// cheap (R2/G1), but neither supplies a CRITERION -- "does this
+			// read as a wing?" is a judgement, and this workstream has
+			// measured that models act on FACTS, not judgements.  A
+			// self-authored sketch converts the judgement into a fact
+			// (distance from the thing the model said it was making).  The
+			// comparison that consumes these targets is slice G3b; G3a builds
+			// the artifact and nothing else.
+			//
+			// FORCE LEVEL: STRICTLY REQUIRED, no `"none"` escape (user
+			// decision 2026-08-10).  ANY polygon is accepted -- fog gets a
+			// blob and a blob is LEGAL -- so the gate still forces a DECISION
+			// rather than a particular answer, and the anti-Goodhart freedom
+			// moves from the presence dimension to the SHAPE dimension (a
+			// degenerate-sketch strategy is a measurable census outcome, not
+			// a hidden failure).  Two properties keep it bounded: a schema
+			// rejection is a -32602 that NEVER touches the gate's refusal
+			// counter, and the gate's own 3-refusal give-up is still the
+			// session-level escape valve.
+			//
+			// WIRE SECURITY IS PRESERVED BY CONSTRUCTION.  The wire carries
+			// only NUMBERS and NAMES -- never bytes, never paths.  Every mask
+			// byte originates HOST-SIDE, computed here from model-authored
+			// numbers, so `SetReferenceImages`' host-only-bytes rationale is
+			// untouched: no caller-supplied image data enters the process.
+			// The targets are session-lifetime state exactly like the plan
+			// itself -- NEVER written into the scene document, never
+			// persisted, gone when the session is.
 			//----------------------------------------------------------------
 
 			//! One declared part of the subject being built.  `construction`
 			//! is REQUIRED and comes from the closed enum
 			//! kPartPlanConstructionValues; `note` is optional free text.
+			//! G3a: `outline` is REQUIRED (see ValidatePartOutline for the
+			//! accepted grammar) and `view` is optional, defaulting to
+			//! kPartPlanDefaultView when left empty.
 			struct AgentPartPlanEntry
 			{
 				std::string part;           //!< free-string part name
 				std::string construction;   //!< one of kPartPlanConstructionValues
 				std::string note;           //!< optional, may be empty
+				//! G3a: REQUIRED closed polygon, "x y; x y; x y[; ...]",
+				//! >= 3 points, stored verbatim as the model authored it.
+				std::string outline;
+				//! G3a: one of kPartPlanViewValues, or empty for the
+				//! kPartPlanDefaultView default.  Recorded with the target
+				//! for G3b's comparison vantage; G3a only echoes it.
+				std::string view;
+			};
+
+			//! G3a: one rasterized imagination TARGET -- the session-lifetime
+			//! artifact produced from one AgentPartPlanEntry's `outline`.
+			//! `mask` is exactly kPartSketchCanvas*kPartSketchCanvas bytes,
+			//! each 0 (outside) or 1 (inside), row-major from the TOP row.
+			struct AgentPartSketch
+			{
+				std::string                part;          //!< the entry's part name
+				std::string                view;          //!< RESOLVED view (never empty)
+				std::string                outline;       //!< the raw authored outline string
+				std::size_t                pointCount = 0;//!< parsed polygon vertices
+				double                     areaFraction = 0.0; //!< filled pixels / canvas pixels
+				double                     aspect = 0.0;  //!< the OUTLINE bbox's width/height
+				std::vector<unsigned char> mask;          //!< 0/1 per pixel, row-major
 			};
 
 			//! The structured result of FilePartPlan.  `ok` is true whenever
-			//! the plan was recorded (which is every well-formed call -- the
-			//! ONLY rejections are shape errors, and those are caught at the
-			//! wire layer as -32602 before reaching here).
+			//! the plan was recorded.  G3a adds ONE rejection path reachable
+			//! from the C++ API: an `outline` this class cannot rasterize
+			//! (see ValidatePartOutline).  That is NOT schema policing -- it
+			//! is a PRECONDITION of the artifact, because the whole point of
+			//! the call is to produce a target and a plan whose outline does
+			//! not parse has no target to produce.  A rejected filing changes
+			//! NOTHING: the previous plan and targets stand, the gate is not
+			//! disarmed, and the gate's refusal counter is untouched.  On the
+			//! WIRE that path is unreachable -- AgentRpc validates every
+			//! outline first and answers a defect with -32602 naming the part
+			//! index (which, being a schema error, likewise never touches the
+			//! counter).
 			struct AgentPartPlanResult
 			{
 				bool                            ok = false;
 				bool                            replacedPreviousPlan = false;
 				std::vector<AgentPartPlanEntry> parts;
 				std::string                     message;
+				//! G3a: one entry per part, in filing order (empty when !ok).
+				std::vector<AgentPartSketch>    sketches;
+				//! G3a: the ONE composite PNG tiling every mask left-to-right,
+				//! wrapping every kPartSketchTilesPerRow tiles.  ONE image, not
+				//! N -- N inline images is N times the vision-token cost for a
+				//! model that can see them and N times the waste for one that
+				//! cannot.  Empty when !ok or when the encode failed.
+				std::vector<unsigned char>      compositePng;
+				unsigned int                    compositeWidth = 0;
+				unsigned int                    compositeHeight = 0;
 			};
 
 			//! The CLOSED `construction` enum, in declaration order.  Six
@@ -2848,6 +2935,83 @@ namespace RISE
 			//! refusal, the -32602 and both tool schemas cannot drift apart.
 			static std::string PartPlanConstructionList();
 
+			//! G3a: the CLOSED `view` enum, in declaration order -- which
+			//! axis-aligned direction the part's `outline` was drawn from.
+			//! G3a only RECORDS it (and echoes it back); G3b turns it into
+			//! the comparison render's vantage.
+			static const char* const kPartPlanViewValues[3];
+			static const std::size_t kPartPlanViewCount = 3;
+			//! The value an omitted `view` resolves to.  A default rather
+			//! than a required field because a front elevation is what a
+			//! human sketches unless they say otherwise, and forcing the
+			//! choice would add a second decision to a call that already
+			//! carries the one being measured.
+			static const char* const kPartPlanDefaultView;
+			//! True iff `v` is exactly one of kPartPlanViewValues.
+			static bool IsValidPartView( const std::string& v );
+			//! "front, side, top" -- the ONE rendering of the view enum, same
+			//! anti-drift reason as PartPlanConstructionList.
+			static std::string PartPlanViewList();
+
+			//! G3a: the sketch canvas edge, in pixels.  256 matches R1b's
+			//! agent render cap (kAgentSurfaceMaxRenderEdge), so a target and
+			//! an agent-surface render are the same size by construction.
+			static constexpr int kPartSketchCanvas = 256;
+			//! G3a: the fraction of the canvas the outline's own bbox is fit
+			//! into, aspect preserved and letterboxed.  Deliberately the SAME
+			//! 0.85 as G1's auto-framing kIsolateFrameFill (AgentSession.cpp)
+			//! -- G3b compares a target mask against an ISOLATE render's
+			//! silhouette, and the two are directly comparable only if both
+			//! were framed at the same fill.  Changing one without the other
+			//! silently biases every comparison.
+			static constexpr double kPartSketchFillFraction = 0.85;
+			//! G3a: how many sketch tiles the composite PNG puts in one row
+			//! before wrapping.  4 keeps an 8-part plan at 1024x512 -- inside
+			//! every provider's inline-image budget and readable at a glance.
+			static constexpr int kPartSketchTilesPerRow = 4;
+
+			//----------------------------------------------------------------
+			// G3a RESOURCE BOUNDS.  Three caps, because the plan's SIZE is
+			// wire-reachable while G2's fields were all O(1): a part list, a
+			// point list and a composite canvas all grow with whatever the
+			// caller sends.  None of them is reachable by an honest plan (the
+			// census's richest observed subject was a 14-part gear and its
+			// outlines would be tens of points), so each is a guard against
+			// an unbounded allocation, not a design limit anyone will meet.
+			//----------------------------------------------------------------
+
+			//! Most parts one plan may declare.  64 masks is ~4 MB of
+			//! session-lifetime state; without the cap a single call can ask
+			//! for arbitrarily many.
+			static constexpr std::size_t kPartPlanMaxParts = 64;
+			//! Most vertices one outline may carry.  The scanline fill is
+			//! O(canvas rows x edges), so an unbounded point list is a CPU
+			//! cost multiplied by the part count -- 512 keeps the worst case
+			//! at ~8M edge tests for a whole maximal plan, i.e. milliseconds.
+			static constexpr std::size_t kPartOutlineMaxPoints = 512;
+			//! Most tiles the composite PNG draws.  Every target is still
+			//! STORED (they are cheap and G3b needs them) -- this bounds only
+			//! the image, whose pixel buffer grows with the tile count.  16
+			//! tiles is a 1024x1024 composite, which covers any realistic
+			//! plan whole; past that the filing says, factually, how many
+			//! were drawn.
+			static constexpr std::size_t kPartSketchMaxCompositeTiles = 16;
+
+			//! G3a: is `outline` a rasterizable closed polygon?  The ONE
+			//! definition of outline validity, shared by the wire layer (which
+			//! turns a false into a -32602 naming the part index) and by
+			//! FilePartPlan (which will not record a target it cannot draw),
+			//! so the two cannot drift.  Accepts semicolon-separated "x y"
+			//! pairs, a trailing/leading blank segment tolerated; REJECTS
+			//! fewer than 3 points, a segment that is not exactly two numbers,
+			//! a non-finite or absurdly large coordinate, and a zero-area
+			//! bounding box.  A SELF-INTERSECTING polygon is ACCEPTED: the
+			//! even-odd fill rule makes it well-defined, so rejecting it would
+			//! refuse a legal (if unusual) imagination.  On false, `outError`
+			//! receives a lowercase phrase naming the defect, ready to be
+			//! appended after "parts[i].outline ".
+			static bool ValidatePartOutline( const std::string& outline, std::string& outError );
+
 			//! Record `parts` as this session's part plan and DISARM the gate
 			//! permanently.  Any non-empty list of well-formed entries is
 			//! accepted -- including `primitive` for every part.  Re-filing is
@@ -2855,6 +3019,16 @@ namespace RISE
 			//! `replacedPreviousPlan`); it is never refused, because a refusal
 			//! here would be an over-refusal on a call that costs the document
 			//! nothing (the E1 review's P1).  Touches the Document not at all.
+			//!
+			//! G3a: also rasterizes every entry's `outline` into a
+			//! session-lifetime target and returns the whole set, plus ONE
+			//! composite PNG, in the result.  The target set follows the
+			//! plan's REPLACE semantics exactly -- a re-filing drops every
+			//! previous target, so a part dropped from the plan leaves no
+			//! stale sketch behind.  The ONLY failure mode is an
+			//! unrasterizable outline (see AgentPartPlanResult), and it is
+			//! all-or-nothing: on a defect NOTHING is recorded and the gate
+			//! is NOT disarmed.
 			AgentPartPlanResult FilePartPlan( const std::vector<AgentPartPlanEntry>& parts );
 
 			//! Has this session filed a part plan?  Observation only -- no
@@ -2863,6 +3037,12 @@ namespace RISE
 
 			//! The plan as filed (empty before the first FilePartPlan).
 			const std::vector<AgentPartPlanEntry>& PartPlan() const { return mPartPlan; }
+
+			//! G3a: the rasterized imagination targets, one per part, in
+			//! filing order (empty before the first successful FilePartPlan).
+			//! Session-lifetime and read-only from outside: G3b's comparison
+			//! reads this, and nothing writes it but FilePartPlan.
+			const std::vector<AgentPartSketch>& PartSketches() const { return mPartSketches; }
 
 			//! Has the gate refused at least one call in this session?
 			//! Observation only.  True from the FIRST refusal onward, whether
@@ -4342,6 +4522,12 @@ namespace RISE
 			static const int kPartPlanGateMaxRefusals = 3;
 			//! The plan as filed, in the order the caller listed it.
 			std::vector<AgentPartPlanEntry> mPartPlan;
+			//! G3a: the rasterized targets, index-parallel to mPartPlan.
+			//! REPLACED wholesale by every successful FilePartPlan, exactly
+			//! like mPartPlan -- the two are written together and must never
+			//! disagree about which parts exist.  Session-lifetime: never
+			//! serialized into the Document, never persisted anywhere.
+			std::vector<AgentPartSketch> mPartSketches;
 
 			//! Is the gate armed?  A pure bool/int test with no parse, no
 			//! lock and no document access -- checked BEFORE the CST parse

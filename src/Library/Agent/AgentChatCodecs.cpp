@@ -845,7 +845,8 @@ namespace RISE
 				{
 					"file_part_plan",
 					"File the part plan for the thing you are building: one entry per part, each naming "
-					"how that part will be constructed. On a session that has not filed one, EVERY call "
+					"how that part will be constructed AND carrying a 2D outline sketch of it. On a "
+					"session that has not filed one, EVERY call "
 					"that creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
 					"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
 					"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
@@ -854,13 +855,20 @@ namespace RISE
 					"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
 					"profile swept along a path), \"chain\" (several shapes blended into one form), "
 					"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
-					"chunk). Any answer is accepted, including \"primitive\" for every part. The plan is "
+					"chunk). `outline` is REQUIRED per part: a closed 2D polygon of at least 3 \"x y\" "
+					"points separated by semicolons, in any units you like (it is scaled to fit its own "
+					"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
+					"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
+					"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
+					"construction answer is accepted, including \"primitive\" for every part. The plan is "
 					"NOT binding: declaring one construction and then authoring a different chunk kind is "
 					"allowed and is never refused. Filing does not change the document -- no chunk, no "
 					"head version, no undo step. Returns {filed,replacedPreviousPlan,partCount,parts:"
-					"[{part,construction,note}],message}. Calling it again replaces the previous plan.",
+					"[{part,construction,note,outline,view,pointCount,areaFraction,aspect}],png_base64,"
+					"compositeWidth,compositeHeight,message}. Calling it again replaces the previous plan "
+					"and every sketch filed with it.",
 					"{\"type\":\"object\",\"properties\":{"
-						"\"parts\":{\"type\":\"array\",\"minItems\":1,\"description\":"
+						"\"parts\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"description\":"
 						"\"Required, at least one entry -- the parts of the subject you are about to build.\","
 						"\"items\":{\"type\":\"object\",\"properties\":{"
 							"\"part\":{\"type\":\"string\",\"description\":"
@@ -869,9 +877,15 @@ namespace RISE
 							"\"enum\":[\"primitive\",\"csg\",\"sweep\",\"chain\",\"displaced\",\"mesh\"],"
 							"\"description\":"
 							"\"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh.\"},"
+							"\"outline\":{\"type\":\"string\",\"description\":"
+							"\"Required. A closed 2D outline of this part as semicolon-separated \\\"x y\\\" points, at least 3 of them -- e.g. \\\"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\\\". The last point joins back to the first automatically. Units and origin are yours; the shape is scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is not two finite numbers, or all points on one horizontal or vertical line.\"},"
+							"\"view\":{\"type\":\"string\","
+							"\"enum\":[\"front\",\"side\",\"top\"],"
+							"\"description\":"
+							"\"Optional, default \\\"front\\\". Which axis-aligned direction this outline is drawn from.\"},"
 							"\"note\":{\"type\":\"string\",\"description\":"
 							"\"Optional free text about this part.\"}"
-						"},\"required\":[\"part\",\"construction\"]}}"
+						"},\"required\":[\"part\",\"construction\",\"outline\"]}}"
 					"},\"required\":[\"parts\"]}"
 				},
 				{
@@ -1275,10 +1289,22 @@ namespace RISE
 			//! injected or hallucinated read_viewport really does return a PNG
 			//! into the transcript.  Listing it here is what keeps the
 			//! image-retention cap covering every PNG that can actually get in.
+			//!
+			//! G3a (2026-08-10): file_part_plan joins the set -- its result
+			//! carries the composite SKETCH PNG under the same field name.
+			//! This is purely about the IMAGE POLICIES (build the image block,
+			//! count it against the retention cap, elide it when superseded);
+			//! it says NOTHING about the E4 sequencing gate, where
+			//! file_part_plan remains neither a mutation nor a look.  The two
+			//! classifications are independent on purpose: "carries pixels" is
+			//! a transport fact, "observed the scene" is a behavioural one, and
+			//! a sketch is the model's own drawing, not an observation.  See
+			//! AgentChatLoop.cpp's IsVisualObserveToolName.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"
-				      && call.name != "render" && call.name != "read_viewport" )
+				      && call.name != "render" && call.name != "read_viewport"
+				      && call.name != "file_part_plan" )
 				    || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;

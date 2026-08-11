@@ -1140,12 +1140,69 @@ int main()
 						"up to 3 times before it stops intercepting -- the refusal itself asserts the cap "
 						"(2026-08-10 refuse-until-filed redesign), so this surface would be a second, "
 						"different contract" );
+				// G3a (2026-08-10): three MORE facts, load-bearing for the same
+				// reason the G2 three are.  (4) `outline` is REQUIRED with no
+				// opt-out -- a surface that presents it as optional turns the
+				// whole slice off for whichever provider reads that surface,
+				// silently and per-provider.  (5) The 3-POINT MINIMUM: fewer is
+				// a -32602, so a surface that omits the floor costs a round
+				// trip discovering it.  (6) `view` EXISTS and says what it
+				// means -- it is optional, so a surface that never mentions it
+				// leaves a model unable to declare a side or top sketch at all.
+				if( src.find( "`outline` is REQUIRED per part" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that `outline` is "
+						"REQUIRED per part -- the required-ness IS the G3a mechanism (design decision 2: "
+						"strictly required, no opt-out value), so a surface that presents it as optional "
+						"disables the slice for every model reading that surface" );
+				if( src.find( "at least 3" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state the outline's "
+						"3-point minimum -- fewer points is a -32602, so omitting the floor costs a "
+						"round trip to discover" );
+				if( src.find( "Which axis-aligned direction this outline is drawn from." ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not describe the optional "
+						"`view` field -- a model reading this surface cannot declare a side or top "
+						"sketch, and every outline is then read as a front elevation" );
+			}
+			// G3a: the parts cap is a real dispatcher rejection, and the chat
+			// codec cannot derive it (its schemas are raw string literals), so
+			// it spells the number.  Pin the literal against the header's
+			// kPartPlanMaxParts the same way the enum above is pinned against
+			// kPartPlanConstructionValues -- a bump on one side that silently
+			// left the other behind would advertise a limit the dispatcher
+			// does not enforce, or hide one it does.
+			{
+				const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
+				const std::string anchor = "kPartPlanMaxParts = ";
+				const size_t at = headerSrc.find( anchor );
+				std::string maxParts;
+				if( at != std::string::npos ) {
+					size_t q = at + anchor.size();
+					while( q < headerSrc.size() && std::isdigit( static_cast<unsigned char>( headerSrc[q] ) ) )
+						maxParts += headerSrc[q++];
+				}
+				Check( !maxParts.empty(),
+				       "G3a parity: parsed kPartPlanMaxParts out of AgentSession.h" );
+				if( !maxParts.empty() ) {
+					const std::string codecSrc = slurp( agentDir / "AgentChatCodecs.cpp" );
+					if( codecSrc.find( "\\\"maxItems\\\":" + maxParts ) == std::string::npos )
+						planProblems.push_back( "AgentChatCodecs.cpp: its file_part_plan `parts` schema "
+							"does not declare maxItems:" + maxParts + " -- the dispatcher rejects a longer "
+							"list with -32602, so this surface would advertise a contract it does not have" );
+					// The MCP adapter DERIVES the number from the constant, so
+					// it cannot drift -- assert that it still does, rather
+					// than grepping for a literal it deliberately lacks.
+					const std::string mcpSrc = slurp( agentDir / "AgentMcpAdapter.cpp" );
+					if( mcpSrc.find( "kPartPlanMaxParts" ) == std::string::npos )
+						planProblems.push_back( "AgentMcpAdapter.cpp: no longer derives its `parts` maxItems "
+							"from kPartPlanMaxParts" );
+				}
 			}
 			for( const std::string& p : planProblems )
 				std::cout << "  G2 PART-PLAN SURFACE DRIFT: " << p << std::endl;
 			Check( planProblems.empty(),
-			       "G2: both hand-authored tool-description surfaces state the SAME construction enum "
-			       "and the SAME non-binding / capped-refusal contract" );
+			       "G2/G3a: both hand-authored tool-description surfaces state the SAME construction "
+			       "enum, the SAME non-binding / capped-refusal contract, and the SAME required-outline "
+			       "/ optional-view schema" );
 		}
 
 		// ---- render{imageMaxEdge} through the drivers' async detour -------

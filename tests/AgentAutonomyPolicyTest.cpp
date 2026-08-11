@@ -351,6 +351,8 @@ static void TestReadPosture()
 		JsonValue entry = JsonValue::MakeObject();
 		entry.set( "part",         JsonValue::MakeString( "body" ) );
 		entry.set( "construction", JsonValue::MakeString( "primitive" ) );
+		// G3a (2026-08-10): `outline` is a REQUIRED part-plan field.
+		entry.set( "outline",      JsonValue::MakeString( "0 0; 1 0; 1 1; 0 1" ) );
 		JsonValue arr = JsonValue::MakeArray();
 		arr.push_back( entry );
 		JsonValue params = JsonValue::MakeObject();
@@ -707,6 +709,8 @@ static void TestProposePosture()
 		JsonValue entry = JsonValue::MakeObject();
 		entry.set( "part",         JsonValue::MakeString( "body" ) );
 		entry.set( "construction", JsonValue::MakeString( "primitive" ) );
+		// G3a (2026-08-10): `outline` is a REQUIRED part-plan field.
+		entry.set( "outline",      JsonValue::MakeString( "0 0; 1 0; 1 1; 0 1" ) );
 		JsonValue arr = JsonValue::MakeArray();
 		arr.push_back( entry );
 		JsonValue params = JsonValue::MakeObject();
@@ -1267,7 +1271,8 @@ static void TestLaunchFlagParsing()
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g2box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}\n"
 			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_part_plan\",\"params\":{\"parts\":"
-			"[{\"part\":\"body\",\"construction\":\"primitive\"}]}}\n"
+			"[{\"part\":\"body\",\"construction\":\"primitive\","
+			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}\n"
 			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g2box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}\n";
 		std::vector<std::string> args;

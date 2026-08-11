@@ -1736,9 +1736,12 @@ namespace RISE
 				//   per-chunk `issues` are all inherited unchanged.
 				//--------------------------------------------------------------
 				//--------------------------------------------------------------
-				// file_part_plan {parts:[{part,construction,note?},...]}
+				// file_part_plan {parts:[{part,construction,outline,view?,note?},...]}
 				//   -> {filed:true, replacedPreviousPlan:bool, partCount:number,
-				//       parts:[{part,construction,note},...], message}
+				//       parts:[{part,construction,note,outline,view,pointCount,
+				//               areaFraction,aspect},...],
+				//       png_base64, byteLength, compositeWidth, compositeHeight,
+				//       sketchCanvas, message}
 				//   G2 (2026-08-10): the ONLY way to disarm the part-plan gate
 				//   (AgentSession.h's block above FilePartPlan).  READ-SAFE --
 				//   it records a per-session declaration and touches the
@@ -1749,15 +1752,42 @@ namespace RISE
 				//   Every param error below is a clean kInvalidParams naming
 				//   the accepted enum; the plan CONTENT is never judged (a
 				//   plan of all-`primitive` is as valid as any other).
+				//   G3a (2026-08-10) SCHEMA v2: `outline` is REQUIRED per part
+				//   and `view` is optional.  Both are validated HERE, before
+				//   FilePartPlan is called, so a defect is a clean -32602
+				//   naming the part INDEX and the defect -- and, being a
+				//   schema error rather than a gate interception, it never
+				//   touches the gate's refusal counter (G2h pins that; the
+				//   G3a cases extend it).  The result gains ONE composite PNG
+				//   under the SAME `png_base64` field name read_image /
+				//   render{imageMaxEdge} / compare_to_reference use, so every
+				//   image-retention and image-surfacing policy built on that
+				//   field covers it with no second code path.  The wire still
+				//   carries only numbers and names INBOUND -- the mask bytes
+				//   are computed host-side from the model's own coordinates,
+				//   so no caller-supplied image data enters the process.
 				//--------------------------------------------------------------
 				if( m == "file_part_plan" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const std::string enumList = AgentSession::PartPlanConstructionList();
+					const std::string viewList = AgentSession::PartPlanViewList();
 					const JsonValue* partsVal = params.find( "parts" );
 					if( !partsVal || !partsVal->isArray() || partsVal->size() == 0 ) {
 						return MakeError( idValue, kInvalidParams,
-							"Invalid params: 'parts' (non-empty array of {part, construction[, note]}) "
-							"is required; each element's 'construction' must be one of: " + enumList );
+							"Invalid params: 'parts' (non-empty array of {part, construction, outline"
+							"[, view][, note]}) is required; each element's 'construction' must be one "
+							"of: " + enumList );
+					}
+					// G3a: bound the plan SIZE before doing per-element work.
+					// Unlike G2's fields, the plan's cost now grows with the
+					// caller's array (one 64 KB mask per part), so an
+					// unbounded list is an unbounded allocation reachable from
+					// the wire.  See AgentSession's kPartPlanMaxParts.
+					if( partsVal->size() > AgentSession::kPartPlanMaxParts ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'parts' has " + std::to_string( partsVal->size() ) +
+							" entries -- at most " + std::to_string( AgentSession::kPartPlanMaxParts ) +
+							" are accepted" );
 					}
 					std::vector<AgentSession::AgentPartPlanEntry> entries;
 					entries.reserve( partsVal->size() );
@@ -1768,7 +1798,7 @@ namespace RISE
 						if( !e.isObject() ) {
 							return MakeError( idValue, kInvalidParams,
 								std::string( "Invalid params: " ) + idx + " must be an object "
-								"{part, construction[, note]}" );
+								"{part, construction, outline[, view][, note]}" );
 						}
 						const JsonValue* partVal = e.find( "part" );
 						if( !partVal || !partVal->isString() || partVal->asString().empty() ) {
@@ -1791,20 +1821,75 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams,
 								std::string( "Invalid params: " ) + idx + ".note must be a string when present" );
 						}
+						// G3a: `outline` is REQUIRED with NO opt-out value --
+						// the force level the design resolves to (every part
+						// gets a sketch; a blob is legal, an absence is not).
+						// The grammar check is AgentSession::ValidatePartOutline,
+						// the SAME predicate FilePartPlan itself uses, so the
+						// wire error and the session's own precondition can
+						// never disagree about what a valid outline is.
+						const JsonValue* outlineVal = e.find( "outline" );
+						if( !outlineVal || !outlineVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".outline (string) is required "
+								"-- a closed 2D polygon of at least 3 \"x y\" points separated by "
+								"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\"" );
+						}
+						{
+							std::string oerr;
+							if( !AgentSession::ValidatePartOutline( outlineVal->asString(), oerr ) ) {
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".outline " + oerr );
+							}
+						}
+						// G3a: `view` is OPTIONAL and defaults to
+						// AgentSession::kPartPlanDefaultView.  Present-but-
+						// wrong is an error (a typo'd view would otherwise be
+						// silently recorded as `front` and mislead G3b's
+						// comparison vantage); absent is not.
+						const JsonValue* viewVal = e.find( "view" );
+						if( viewVal && ( !viewVal->isString() ||
+						                 !AgentSession::IsValidPartView( viewVal->asString() ) ) ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".view is `" +
+								( viewVal->isString() ? viewVal->asString() : JsonSerialize( *viewVal ) ) +
+								"` -- when present it must be one of: " + viewList );
+						}
 						AgentSession::AgentPartPlanEntry entry;
 						entry.part         = partVal->asString();
 						entry.construction = consVal->asString();
+						entry.outline      = outlineVal->asString();
+						if( viewVal ) entry.view = viewVal->asString();
 						if( noteVal ) entry.note = noteVal->asString();
 						entries.push_back( entry );
 					}
 
 					const AgentSession::AgentPartPlanResult pr = s->FilePartPlan( entries );
+					// G3a: every outline was validated above with the SAME
+					// predicate FilePartPlan re-checks, so !ok is unreachable
+					// from the wire.  Surface it as kInvalidParams anyway
+					// rather than shipping filed:false with an ok-shaped
+					// envelope -- a silent disagreement between the two layers
+					// would otherwise look like a successful filing.
+					if( !pr.ok ) return MakeError( idValue, kInvalidParams, pr.message );
 					JsonValue partsArr = JsonValue::MakeArray();
-					for( const AgentSession::AgentPartPlanEntry& e : pr.parts ) {
+					for( std::size_t i = 0; i < pr.parts.size(); ++i ) {
+						const AgentSession::AgentPartPlanEntry& e = pr.parts[i];
 						JsonValue o = JsonValue::MakeObject();
 						o.set( "part",         JsonValue::MakeString( e.part ) );
 						o.set( "construction", JsonValue::MakeString( e.construction ) );
 						o.set( "note",         JsonValue::MakeString( e.note ) );
+						// The per-part sketch FACTS, index-parallel to
+						// pr.parts by construction (FilePartPlan builds one
+						// sketch per entry, in order).
+						if( i < pr.sketches.size() ) {
+							const AgentSession::AgentPartSketch& sk = pr.sketches[i];
+							o.set( "outline",      JsonValue::MakeString( sk.outline ) );
+							o.set( "view",         JsonValue::MakeString( sk.view ) );
+							o.set( "pointCount",   JsonValue::MakeNumber( static_cast<double>( sk.pointCount ) ) );
+							o.set( "areaFraction", JsonValue::MakeNumber( sk.areaFraction ) );
+							o.set( "aspect",       JsonValue::MakeNumber( sk.aspect ) );
+						}
 						partsArr.push_back( o );
 					}
 					JsonValue result = JsonValue::MakeObject();
@@ -1812,6 +1897,16 @@ namespace RISE
 					result.set( "replacedPreviousPlan", JsonValue::MakeBool( pr.replacedPreviousPlan ) );
 					result.set( "partCount",            JsonValue::MakeNumber( static_cast<double>( pr.parts.size() ) ) );
 					result.set( "parts",                partsArr );
+					// G3a: the ONE composite sketch PNG, under the SAME
+					// `png_base64` field name every other image-bearing verb
+					// uses (see this handler's header comment).
+					if( !pr.compositePng.empty() ) {
+						result.set( "png_base64",      JsonValue::MakeString( Base64Encode( pr.compositePng ) ) );
+						result.set( "byteLength",      JsonValue::MakeNumber( static_cast<double>( pr.compositePng.size() ) ) );
+						result.set( "compositeWidth",  JsonValue::MakeNumber( static_cast<double>( pr.compositeWidth ) ) );
+						result.set( "compositeHeight", JsonValue::MakeNumber( static_cast<double>( pr.compositeHeight ) ) );
+						result.set( "sketchCanvas",    JsonValue::MakeNumber( static_cast<double>( AgentSession::kPartSketchCanvas ) ) );
+					}
 					result.set( "message",              JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );
 				}

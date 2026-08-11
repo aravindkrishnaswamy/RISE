@@ -6737,6 +6737,9 @@ namespace RISE
 			"primitive", "csg", "sweep", "chain", "displaced", "mesh"
 		};
 
+		const char* const AgentSession::kPartPlanViewValues[3] = { "front", "side", "top" };
+		const char* const AgentSession::kPartPlanDefaultView   = "front";
+
 		namespace
 		{
 			//! G2 (2026-08-10): the PROCESS-WIDE gate default -- see
@@ -6747,6 +6750,318 @@ namespace RISE
 			//! forgotten host silently opt out of the measurement, the exact
 			//! fail-open shape IsReadSafeVerb's doc argues against).
 			std::atomic<bool> gPartPlanGateDefaultEnabled_{ true };
+
+			//----------------------------------------------------------------
+			// G3a (2026-08-10): the sketch rasterizer.
+			//
+			// Model-authored numbers in, host-computed mask bytes out.  Pure
+			// in-memory arithmetic: no file, no scene, no Document, no lock,
+			// no rasterizer -- the same "nothing but per-session bookkeeping"
+			// property the G2 gate has, which is why file_part_plan stays
+			// READ-SAFE with an image in its result.
+			//----------------------------------------------------------------
+
+			//! FORWARD DECLARATION, not a second helper.  The PNG encoder is
+			//! this same anonymous namespace's EncodeLinearPassthroughPng_,
+			//! DEFINED further down alongside compare_to_reference's composite
+			//! (search "compare_to_reference visual=true: encode").  Declared
+			//! here only because FilePartPlan is implemented above that point;
+			//! reusing it is the point -- the sketch composite and the
+			//! reference-diff composite must encode identically or two
+			//! "PNG bytes" in the same result set would mean two things.
+			std::vector<unsigned char> EncodeLinearPassthroughPng_(
+				const std::vector<RISEColor>& pels, unsigned int w, unsigned int h );
+
+			//! One parsed outline vertex, in the model's own 2D coordinates.
+			struct SketchPoint_ { double x; double y; };
+
+			//! G3a: the sane coordinate bound, and NOT copied verbatim from
+			//! ScaffoldParsePoints' identical-looking cap -- the standing
+			//! question "what invariant does the copied idiom depend on?"
+			//! has a DIFFERENT answer here.  There the cap guards a
+			//! world-space spline against a point that swamps the curve.
+			//! Here every coordinate is normalized by the outline's OWN bbox,
+			//! so magnitude alone is harmless -- what is NOT harmless is
+			//! `RasterizePartOutline_`'s fit-scale arithmetic in BOTH
+			//! directions: `maxX - minX` OVERFLOWING to +inf for coordinates
+			//! near the double range (1e300 - -1e300) is the direction this
+			//! cap guards; a bbox extent UNDERFLOWING toward zero (a
+			//! subnormal, e.g. 1e-320) makes `scale = fillFraction * canvas /
+			//! extent` OVERFLOW to +inf the other way -- kSketchMinExtent_
+			//! below is what guards THAT direction.  Either overflow makes
+			//! every device coordinate NaN, every edge test false, and the
+			//! mask silently empty while reporting an honest-looking
+			//! areaFraction 0.00.  Same failure mode, two independent causes,
+			//! two independent bounds.
+			const double kSketchMaxCoord_ = 1e6;
+			//! G3a fix-round (2026-08-10): the minimum bounding-box extent
+			//! (on EITHER axis) an outline may have.  1e-9 is far above any
+			//! plausible authored precision (no one is drawing a silhouette
+			//! a billionth of a canvas unit wide) and far below where
+			//! `kPartSketchFillFraction * kPartSketchCanvas / extent` can
+			//! overflow a double -- so it rejects only the pathological case,
+			//! never a legitimate small-but-sane outline.
+			const double kSketchMinExtent_ = 1e-9;
+
+			//! Parse "x y; x y; x y[; ...]" into >= 3 finite points with a
+			//! non-degenerate bounding box.  Mirrors ScaffoldParsePoints'
+			//! segment handling deliberately (one blank leading/trailing
+			//! segment tolerated so a trailing `;` is not an error; a doubled
+			//! `;;` in the MIDDLE fails the "exactly two numbers" check
+			//! rather than being silently skipped, so a typo cannot quietly
+			//! change the point count).  `err` is a lowercase phrase that
+			//! reads correctly after "parts[i].outline ".
+			bool ParsePartOutlinePoints_( const std::string& raw,
+			                              std::vector<SketchPoint_>& out,
+			                              std::string& err )
+			{
+				out.clear();
+				std::vector<std::string> segs;
+				{
+					std::string cur;
+					for( char ch : raw ) {
+						if( ch == ';' ) { segs.push_back( cur ); cur.clear(); }
+						else cur += ch;
+					}
+					segs.push_back( cur );
+				}
+				auto isBlank = []( const std::string& s ) {
+					for( unsigned char c : s ) { if( !std::isspace( c ) ) return false; }
+					return true;
+				};
+				if( !segs.empty() && isBlank( segs.front() ) ) segs.erase( segs.begin() );
+				if( !segs.empty() && isBlank( segs.back() ) )  segs.pop_back();
+
+				if( segs.size() < 3 ) {
+					err = "must be at least 3 semicolon-separated \"x y\" points (the polygon is "
+						"closed implicitly) -- got " + std::to_string( segs.size() );
+					return false;
+				}
+				if( segs.size() > AgentSession::kPartOutlineMaxPoints ) {
+					err = "must have at most " + std::to_string( AgentSession::kPartOutlineMaxPoints ) +
+						" points -- got " + std::to_string( segs.size() );
+					return false;
+				}
+
+				out.reserve( segs.size() );
+				for( std::size_t i = 0; i < segs.size(); ++i ) {
+					double x = 0.0, y = 0.0;
+					char trailing[8] = { 0 };
+					const int n = std::sscanf( segs[i].c_str(), " %lf %lf %7s", &x, &y, trailing );
+					if( n != 2 ) {
+						err = "point " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") must be exactly two numbers \"x y\"";
+						return false;
+					}
+					if( !std::isfinite( x ) || !std::isfinite( y ) ) {
+						err = "point " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") must be finite (no NaN/inf)";
+						return false;
+					}
+					if( std::fabs( x ) > kSketchMaxCoord_ || std::fabs( y ) > kSketchMaxCoord_ ) {
+						err = "point " + std::to_string( i + 1 ) + " (\"" + segs[i] +
+							"\") has a coordinate magnitude past the " +
+							std::to_string( static_cast<long long>( kSketchMaxCoord_ ) ) + " sane bound";
+						return false;
+					}
+					SketchPoint_ p; p.x = x; p.y = y;
+					out.push_back( p );
+				}
+
+				double minX = out[0].x, maxX = out[0].x, minY = out[0].y, maxY = out[0].y;
+				for( const SketchPoint_& p : out ) {
+					if( p.x < minX ) minX = p.x;
+					if( p.x > maxX ) maxX = p.x;
+					if( p.y < minY ) minY = p.y;
+					if( p.y > maxY ) maxY = p.y;
+				}
+				if( !( maxX > minX ) || !( maxY > minY ) ) {
+					err = "has a zero-area bounding box (axis-aligned degeneracy: every point shares "
+						"the same x, or the same y) -- a silhouette needs extent on both axes "
+						"(a diagonal sliver, e.g. \"0 0; 1 1; 2 2\", is fine -- it has extent on "
+						"both axes and is accepted)";
+					return false;
+				}
+				// G3a fix-round (2026-08-10): a bbox extent that is POSITIVE but
+				// subnormal (e.g. "0 0; 1e-320 0; 0 1e-320") passes the check
+				// above yet overflows RasterizePartOutline_'s fit scale to +inf
+				// -- see kSketchMinExtent_'s comment for the mechanism.  Same
+				// -32602 shape as every other rejection here, so the wire layer
+				// and FilePartPlan (both of which call this one function) name
+				// the defect identically.
+				if( ( maxX - minX ) < kSketchMinExtent_ || ( maxY - minY ) < kSketchMinExtent_ ) {
+					err = "has a bounding-box extent below 1e-9 on at least one axis -- too small to "
+						"rasterize without the fit scale overflowing";
+					return false;
+				}
+				// A SELF-INTERSECTING polygon reaches here and is ACCEPTED on
+				// purpose: the even-odd fill rule below makes it perfectly
+				// well-defined (a bowtie fills as two lobes), so rejecting it
+				// would refuse a legal imagination for no gain.
+				return true;
+			}
+
+			//! Rasterize `pts` into a kPartSketchCanvas^2 0/1 mask.
+			//!
+			//! CONVENTIONS, all of them load-bearing for determinism and for
+			//! G3b's comparison:
+			//!   * FIT: the outline's own bbox is scaled by
+			//!     kPartSketchFillFraction * canvas / max(bboxW, bboxH) --
+			//!     aspect PRESERVED, letterboxed, centered on both axes.
+			//!   * ORIENTATION: outline +Y is UP, image rows run DOWN, so the
+			//!     mask reads the way the model drew it.
+			//!   * SAMPLING: one sample at each pixel's CENTRE (col+0.5,
+			//!     row+0.5).  No anti-aliasing -- it is a mask, not art, and a
+			//!     partially-covered pixel has no meaning in an IoU.
+			//!   * COVERAGE: even-odd, via the half-open edge test
+			//!     (a.y <= sy) != (b.y <= sy).  Half-open is what makes a
+			//!     vertex landing exactly on a scanline count ONCE, so spans
+			//!     always pair up.
+			//!   * ROUNDING: explicit and integral -- a span [xa,xb) covers
+			//!     columns ceil(xa-0.5) .. ceil(xb-0.5)-1, clamped to the
+			//!     canvas.  No implicit float->int truncation anywhere.
+			//! DETERMINISM: pure double arithmetic plus std::ceil (exact) and
+			//! a sort of doubles; no RNG, no time, no threading, no
+			//! platform-dependent rounding mode.  The same outline string
+			//! therefore produces byte-identical bytes in any session, any
+			//! process, any run -- pinned by a test.
+			void RasterizePartOutline_( const std::vector<SketchPoint_>& pts,
+			                            std::vector<unsigned char>& outMask,
+			                            std::size_t& outFilled )
+			{
+				const int    N      = AgentSession::kPartSketchCanvas;
+				const double canvas = static_cast<double>( N );
+				outMask.assign( static_cast<std::size_t>( N ) * static_cast<std::size_t>( N ), 0 );
+				outFilled = 0;
+				if( pts.size() < 3 ) return;   // ParsePartOutlinePoints_ already guarantees this
+
+				double minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
+				for( const SketchPoint_& p : pts ) {
+					if( p.x < minX ) minX = p.x;
+					if( p.x > maxX ) maxX = p.x;
+					if( p.y < minY ) minY = p.y;
+					if( p.y > maxY ) maxY = p.y;
+				}
+				const double bw = maxX - minX;
+				const double bh = maxY - minY;
+				const double scale = AgentSession::kPartSketchFillFraction * canvas /
+					( bw > bh ? bw : bh );
+				const double offX = ( canvas - bw * scale ) * 0.5;
+				const double offY = ( canvas - bh * scale ) * 0.5;
+
+				std::vector<SketchPoint_> dev( pts.size() );
+				for( std::size_t i = 0; i < pts.size(); ++i ) {
+					dev[i].x = offX + ( pts[i].x - minX ) * scale;
+					dev[i].y = offY + ( maxY - pts[i].y ) * scale;   // +Y up -> rows down
+				}
+
+				std::vector<double> xs;
+				xs.reserve( dev.size() );
+				for( int row = 0; row < N; ++row ) {
+					const double sy = static_cast<double>( row ) + 0.5;
+					xs.clear();
+					for( std::size_t i = 0; i < dev.size(); ++i ) {
+						const SketchPoint_& a = dev[i];
+						const SketchPoint_& b = dev[( i + 1 ) % dev.size()];
+						if( ( a.y <= sy ) == ( b.y <= sy ) ) continue;
+						// b.y != a.y is guaranteed by the test above.
+						xs.push_back( a.x + ( sy - a.y ) * ( b.x - a.x ) / ( b.y - a.y ) );
+					}
+					if( xs.size() < 2 ) continue;
+					std::sort( xs.begin(), xs.end() );
+					for( std::size_t k = 0; k + 1 < xs.size(); k += 2 ) {
+						int c0 = static_cast<int>( std::ceil( xs[k]     - 0.5 ) );
+						int c1 = static_cast<int>( std::ceil( xs[k + 1] - 0.5 ) ) - 1;
+						if( c0 < 0 )     c0 = 0;
+						if( c1 > N - 1 ) c1 = N - 1;
+						for( int c = c0; c <= c1; ++c ) {
+							unsigned char& px =
+								outMask[ static_cast<std::size_t>( row ) * static_cast<std::size_t>( N ) +
+								         static_cast<std::size_t>( c ) ];
+							// Count-once even if two spans ever touched: the
+							// area fraction is a reported FACT, so it must not
+							// be able to exceed 1.
+							if( !px ) { px = 1; ++outFilled; }
+						}
+					}
+				}
+			}
+
+			//! Tile every sketch mask into ONE composite PNG, left to right,
+			//! wrapping every AgentSession::kPartSketchTilesPerRow tiles, in
+			//! FILING order.  One image rather than N: on a vision-capable
+			//! model N inline images cost N times the tokens for the same
+			//! information, and on a text-only model N images are N times the
+			//! waste.  Filled = white, empty = black, plus a one-pixel grey
+			//! frame per tile so a 4-wide row reads as four sketches rather
+			//! than one wide black field.  The frame can never erase mask
+			//! content: kPartSketchFillFraction 0.85 leaves a >= 19-pixel
+			//! margin on every side of a 256-pixel tile.
+			//! At most kPartSketchMaxCompositeTiles tiles are drawn (see that
+			//! constant); `outTiled` reports how many, so the caller can state
+			//! the fact rather than silently show a partial set.
+			//! Returns empty (and leaves the dims at 0) if there is nothing to
+			//! draw or the encoder fails.
+			std::vector<unsigned char> BuildSketchCompositePng_(
+				const std::vector<AgentSession::AgentPartSketch>& sketches,
+				unsigned int& outW, unsigned int& outH, std::size_t& outTiled )
+			{
+				outW = 0;
+				outH = 0;
+				outTiled = 0;
+				if( sketches.empty() ) return std::vector<unsigned char>();
+
+				const int tile   = AgentSession::kPartSketchCanvas;
+				const int perRow = AgentSession::kPartSketchTilesPerRow;
+				const std::size_t drawn = sketches.size() < AgentSession::kPartSketchMaxCompositeTiles
+					? sketches.size() : AgentSession::kPartSketchMaxCompositeTiles;
+				const int n      = static_cast<int>( drawn );
+				const int cols   = ( n < perRow ) ? n : perRow;
+				const int rows   = ( n + perRow - 1 ) / perRow;
+				const unsigned int W = static_cast<unsigned int>( cols * tile );
+				const unsigned int H = static_cast<unsigned int>( rows * tile );
+
+				const RISEColor kBlack( 0.0, 0.0, 0.0, 1.0 );
+				const RISEColor kWhite( 1.0, 1.0, 1.0, 1.0 );
+				const RISEColor kFrame( 96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0, 1.0 );
+
+				std::vector<RISEColor> pels( static_cast<std::size_t>( W ) * H, kBlack );
+				for( int i = 0; i < n; ++i ) {
+					const std::vector<unsigned char>& mask = sketches[ static_cast<std::size_t>( i ) ].mask;
+					if( mask.size() != static_cast<std::size_t>( tile ) * static_cast<std::size_t>( tile ) )
+						continue;   // defensive: a target is always full-size
+					const int tx = ( i % perRow ) * tile;
+					const int ty = ( i / perRow ) * tile;
+					for( int y = 0; y < tile; ++y ) {
+						for( int x = 0; x < tile; ++x ) {
+							const bool onFrame = ( x == 0 || y == 0 || x == tile - 1 || y == tile - 1 );
+							const bool filled  =
+								mask[ static_cast<std::size_t>( y ) * static_cast<std::size_t>( tile ) +
+								      static_cast<std::size_t>( x ) ] != 0;
+							pels[ static_cast<std::size_t>( ty + y ) * W +
+							      static_cast<std::size_t>( tx + x ) ] =
+								onFrame ? kFrame : ( filled ? kWhite : kBlack );
+						}
+					}
+				}
+
+				std::vector<unsigned char> png = EncodeLinearPassthroughPng_( pels, W, H );
+				if( png.empty() ) return png;
+				outW = W;
+				outH = H;
+				outTiled = drawn;
+				return png;
+			}
+
+			//! Format one double as a fixed 2-decimal fact for the filing
+			//! message.  std::to_string on a double emits 6 decimals, which
+			//! reads as false precision on an area fraction.
+			std::string SketchFact2dp_( double v )
+			{
+				char buf[32];
+				std::snprintf( buf, sizeof( buf ), "%.2f", v );
+				return std::string( buf );
+			}
 		}
 
 		void AgentSession::SetPartPlanGateDefaultEnabled( bool enabled )
@@ -6775,6 +7090,30 @@ namespace RISE
 				s += kPartPlanConstructionValues[i];
 			}
 			return s;
+		}
+
+		bool AgentSession::IsValidPartView( const std::string& v )
+		{
+			for( std::size_t i = 0; i < kPartPlanViewCount; ++i ) {
+				if( v == kPartPlanViewValues[i] ) return true;
+			}
+			return false;
+		}
+
+		std::string AgentSession::PartPlanViewList()
+		{
+			std::string s;
+			for( std::size_t i = 0; i < kPartPlanViewCount; ++i ) {
+				if( i ) s += ", ";
+				s += kPartPlanViewValues[i];
+			}
+			return s;
+		}
+
+		bool AgentSession::ValidatePartOutline( const std::string& outline, std::string& outError )
+		{
+			std::vector<SketchPoint_> pts;
+			return ParsePartOutlinePoints_( outline, pts, outError );
 		}
 
 		bool AgentSession::ChunkTextCreatesGeometry_( const std::string& chunkText,
@@ -6835,10 +7174,24 @@ namespace RISE
 				// repo): it is exactly kPartPlanGateMaxRefusals minus the
 				// count just incremented to, so it can never drift from what
 				// CheckPartPlanGate_ actually does on the next call.
+				//
+				// G3a (2026-08-10): the text now names the `outline` and
+				// `view` fields too.  EVERY CLAUSE MUST STAY TRUE of the
+				// schema the dispatcher actually enforces: `outline` really
+				// is required with no opt-out, 3 points really is the
+				// minimum, the example really does validate, `view` really
+				// is optional with a `front` default, and any non-degenerate
+				// polygon really is accepted.  A model that follows this
+				// sentence must never then get a -32602.
 				return std::string( verb ) + " refused: no part plan has been filed for this session. "
 					"Call file_part_plan first, listing the parts of the subject you are about to build; "
-					"each part needs a `construction` value from: " + PartPlanConstructionList() + ". "
-					"Any value is accepted -- `primitive` for every part is a complete plan. The plan "
+					"each part needs a `construction` value from: " + PartPlanConstructionList() + ", "
+					"and an `outline` -- a closed 2D polygon of at least 3 \"x y\" points separated by "
+					"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\" -- and may carry a `view` of " +
+					PartPlanViewList() + " (default " + kPartPlanDefaultView + "). "
+					"Any of those construction values is accepted -- `primitive` for every part is a "
+					"complete plan -- and any outline shape with extent on both axes is accepted, a "
+					"rough blob included. The plan "
 					"does not constrain what you author afterwards. Nothing in the document was changed "
 					"by this call; reissue it after filing. The gate clears as soon as a plan is filed; "
 					"otherwise " + std::to_string( remaining ) +
@@ -6874,28 +7227,142 @@ namespace RISE
 			AgentPartPlanResult out;
 			out.replacedPreviousPlan = mPartPlanFiled;
 
-			mPartPlan     = parts;
+			// G3a: RASTERIZE FIRST, COMMIT AFTER.  Every outline is parsed and
+			// drawn into a local target set before ANY member is written, so a
+			// defect in part 4 cannot leave the session holding parts 1-3 of a
+			// plan it never accepted.  All-or-nothing, and on the failure path
+			// the previous plan, the previous targets, mPartPlanFiled and the
+			// gate's refusal counter are ALL exactly as they were -- a
+			// malformed filing must never be a way to disarm the gate, and it
+			// must never be a way to BURN a refusal either.
+			if( parts.size() > kPartPlanMaxParts ) {
+				out.ok = false;
+				out.replacedPreviousPlan = false;
+				out.message = "part plan not filed: " + std::to_string( parts.size() ) +
+					" parts exceeds the " + std::to_string( kPartPlanMaxParts ) +
+					"-part maximum. Nothing was recorded; the part plan and the part-plan gate are "
+					"unchanged.";
+				return out;
+			}
+
+			std::vector<AgentPartSketch> sketches;
+			sketches.reserve( parts.size() );
+			for( std::size_t i = 0; i < parts.size(); ++i )
+			{
+				const std::string idx = "parts[" + std::to_string( i ) + "]";
+
+				std::string view = parts[i].view;
+				if( view.empty() ) view = kPartPlanDefaultView;
+				if( !IsValidPartView( view ) ) {
+					out.ok = false;
+					out.replacedPreviousPlan = false;
+					out.message = "part plan not filed: " + idx + ".view is `" + parts[i].view +
+						"` -- it must be one of: " + PartPlanViewList() +
+						". Nothing was recorded; the part plan and the part-plan gate are unchanged.";
+					return out;
+				}
+
+				std::vector<SketchPoint_> pts;
+				std::string perr;
+				if( !ParsePartOutlinePoints_( parts[i].outline, pts, perr ) ) {
+					out.ok = false;
+					out.replacedPreviousPlan = false;
+					out.message = "part plan not filed: " + idx + ".outline " + perr +
+						". Nothing was recorded; the part plan and the part-plan gate are unchanged.";
+					return out;
+				}
+
+				AgentPartSketch s;
+				s.part       = parts[i].part;
+				s.view       = view;
+				s.outline    = parts[i].outline;
+				s.pointCount = pts.size();
+
+				double minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
+				for( const SketchPoint_& p : pts ) {
+					if( p.x < minX ) minX = p.x;
+					if( p.x > maxX ) maxX = p.x;
+					if( p.y < minY ) minY = p.y;
+					if( p.y > maxY ) maxY = p.y;
+				}
+				// The AUTHORED aspect (bbox width / height), not the mask's --
+				// the mask's own bbox is this same ratio quantized to whole
+				// pixels, so reporting the authored one is the more precise
+				// statement of the same fact.  Positive and finite by
+				// ParsePartOutlinePoints_'s zero-area rejection.
+				s.aspect = ( maxX - minX ) / ( maxY - minY );
+
+				std::size_t filled = 0;
+				RasterizePartOutline_( pts, s.mask, filled );
+				s.areaFraction = static_cast<double>( filled ) /
+					( static_cast<double>( kPartSketchCanvas ) * static_cast<double>( kPartSketchCanvas ) );
+
+				sketches.push_back( s );
+			}
+
+			// COMMIT.  mPartPlan and mPartSketches are written together and
+			// REPLACED wholesale (never merged), so a re-filing that drops a
+			// part leaves no target for a part that is no longer planned.
+			mPartPlan      = parts;
+			mPartSketches  = sketches;
 			mPartPlanFiled = true;
-			out.ok        = true;
-			out.parts     = mPartPlan;
+			out.ok         = true;
+			out.parts      = mPartPlan;
+			out.sketches   = mPartSketches;
+			std::size_t tiled = 0;
+			out.compositePng = BuildSketchCompositePng_( out.sketches, out.compositeWidth,
+			                                             out.compositeHeight, tiled );
 
 			// The result ECHOES the plan back factually -- this project has
 			// measured that task-specific facts in a JUST-REQUESTED tool
 			// result are acted on, while ambient advice is not, so the echo is
 			// the one place worth spending words.  It states what was
 			// recorded and nothing else: no grading, no suggestion, no
-			// "consider" of any kind.
+			// "consider" of any kind.  G3a keeps that rule for the sketch
+			// facts too -- point count, area fraction and aspect are reported
+			// and never characterized, because this is a measurement surface
+			// and a word like "simple" or "detailed" here would steer the very
+			// distribution the census is about to read.
 			std::string m = "part plan filed: " + std::to_string( mPartPlan.size() ) +
 				( mPartPlan.size() == 1 ? " part" : " parts" ) + " -- ";
 			for( std::size_t i = 0; i < mPartPlan.size(); ++i ) {
-				if( i ) m += ", ";
-				m += mPartPlan[i].part + ": " + mPartPlan[i].construction;
+				if( i ) m += "; ";
+				m += mPartPlan[i].part + ": " + mPartPlan[i].construction + ", " +
+					out.sketches[i].view + " view, " +
+					std::to_string( out.sketches[i].pointCount ) + " points, area " +
+					SketchFact2dp_( out.sketches[i].areaFraction ) + ", aspect " +
+					SketchFact2dp_( out.sketches[i].aspect );
 			}
-			m += ". The part-plan gate is now off for this session; it will not intercept any call. "
+			if( !out.sketches.empty() ) {
+				m += ". Sketches, in order: ";
+				for( std::size_t i = 0; i < out.sketches.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.sketches[i].part;
+				}
+			}
+			if( !out.compositePng.empty() ) {
+				m += " -- each outline rasterized to a " + std::to_string( kPartSketchCanvas ) + "x" +
+					std::to_string( kPartSketchCanvas ) + " silhouette and returned as one " +
+					std::to_string( out.compositeWidth ) + "x" + std::to_string( out.compositeHeight ) +
+					" image, tiled left to right, at most " + std::to_string( kPartSketchTilesPerRow ) +
+					" per row.";
+				// Stated, never silent: a partial composite that looked
+				// complete would let a model conclude its later sketches
+				// rasterized to nothing.
+				if( tiled < out.sketches.size() )
+					m += " The image shows the first " + std::to_string( tiled ) +
+						" of " + std::to_string( out.sketches.size() ) +
+						" sketches; the rest were rasterized and are reported as facts only.";
+			}
+			else {
+				m += ".";
+			}
+			m += " The part-plan gate is now off for this session; it will not intercept any call. "
 			     "This declaration does not constrain what you author -- any part may be built with "
 			     "any chunk kind.";
 			if( out.replacedPreviousPlan )
-				m += " This replaced the plan previously filed in this session.";
+				m += " This replaced the plan previously filed in this session, and every sketch "
+				     "filed with it.";
 			out.message = m;
 			return out;
 		}
@@ -8611,6 +9078,10 @@ namespace RISE
 		//! The fraction of each frame half-extent the object's bounding BOX is
 		//! allowed to fill -- i.e. a 15% margin on every side, so the
 		//! silhouette never touches the frame edge.
+		//! G3a (2026-08-10): AgentSession::kPartSketchFillFraction is
+		//! deliberately the SAME 0.85 -- G3b compares a sketch target against
+		//! an isolate render's silhouette, and the two are comparable only if
+		//! both were framed at the same fill.  Change one, change both.
 		const double kIsolateFrameFill = 0.85;
 
 		//! Solve the eye distance (along `dir`, the unit vector from the box

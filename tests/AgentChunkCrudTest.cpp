@@ -7547,11 +7547,23 @@ static std::unique_ptr<Agent::AgentSession> WrapJobGateArmed( Job* pJob )
 //! The two-part plan every "a plan is filed" test uses.  Deliberately NOT
 //! all-primitive (G2e covers that separately) and deliberately declaring a
 //! construction the test then does not use (G2f).
+//! G3a (2026-08-10): every entry now carries the REQUIRED `outline`.  These
+//! are real, distinct polygons (not one shared placeholder) so that a filing
+//! through this helper exercises the rasterizer on more than one shape, and
+//! one entry leaves `view` empty to keep the default path covered wherever
+//! this helper is used.
 static std::vector<Agent::AgentSession::AgentPartPlanEntry> SamplePlan()
 {
 	std::vector<Agent::AgentSession::AgentPartPlanEntry> p;
-	Agent::AgentSession::AgentPartPlanEntry a; a.part = "body";  a.construction = "sweep";  p.push_back( a );
-	Agent::AgentSession::AgentPartPlanEntry b; b.part = "base";  b.construction = "csg";    b.note = "two boxes"; p.push_back( b );
+	Agent::AgentSession::AgentPartPlanEntry a;
+	a.part = "body";  a.construction = "sweep";
+	a.outline = "0 0; 2 0.5; 2.4 2; 1 3; -0.4 1.8";
+	p.push_back( a );
+	Agent::AgentSession::AgentPartPlanEntry b;
+	b.part = "base";  b.construction = "csg";    b.note = "two boxes";
+	b.outline = "0 0; 3 0; 3 1; 0 1";
+	b.view = "side";
+	p.push_back( b );
 	return p;
 }
 
@@ -7693,7 +7705,9 @@ static void TestPartPlanFiledFirstNeverIntercepts()
 	// Re-filing REPLACES and is never refused (an over-refusal on a call that
 	// costs the document nothing is the E1 review's P1).
 	std::vector<Agent::AgentSession::AgentPartPlanEntry> p2;
-	Agent::AgentSession::AgentPartPlanEntry e; e.part = "everything"; e.construction = "mesh"; p2.push_back( e );
+	Agent::AgentSession::AgentPartPlanEntry e; e.part = "everything"; e.construction = "mesh";
+	e.outline = "0 0; 1 0; 1 1; 0 1";   // G3a: `outline` is required
+	p2.push_back( e );
 	const Agent::AgentSession::AgentPartPlanResult pr2 = sess->FilePartPlan( p2 );
 	Check( pr2.ok && pr2.replacedPreviousPlan, "G2b re-filing is accepted and reports the replacement" );
 	Check( sess->PartPlan().size() == 1 && sess->PartPlan()[0].part == "everything",
@@ -7898,6 +7912,9 @@ static void TestPartPlanAnyPlanAcceptedAndNonBinding()
 				Agent::AgentSession::AgentPartPlanEntry e;
 				e.part = "part" + std::to_string( i );
 				e.construction = "primitive";
+				// G3a: `outline` is required; a distinct triangle per part so
+				// the four sketches are not four copies of one shape.
+				e.outline = "0 0; " + std::to_string( i + 1 ) + " 0; 0.5 1";
 				plan.push_back( e );
 			}
 			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
@@ -7922,6 +7939,7 @@ static void TestPartPlanAnyPlanAcceptedAndNonBinding()
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
 			Agent::AgentSession::AgentPartPlanEntry e; e.part = "body"; e.construction = "sweep";
+			e.outline = "0 0; 1 0; 1 2; 0 2";   // G3a: `outline` is required
 			plan.push_back( e );
 			Check( sess->FilePartPlan( plan ).ok, "G2f the sweep plan is filed" );
 			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
@@ -8419,7 +8437,7 @@ static void TestPartPlanWireShape()
 	{
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\"}]}}" );
+			"{\"parts\":[{\"part\":\"wing\",\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a MISSING 'construction' is -32602" );
 		Check( resp.find( "parts[0].construction" ) != std::string::npos,
 		       "G2h that error names the offending INDEX and field" );
@@ -8429,8 +8447,10 @@ static void TestPartPlanWireShape()
 	{
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\"},"
-			"{\"part\":\"tail\",\"construction\":\"lathe\"}]}}" );
+			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\","
+			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
+			"{\"part\":\"tail\",\"construction\":\"lathe\","
+			"\"outline\":\"0 0; 1 0; 0.5 1\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a construction OUTSIDE the enum is -32602" );
 		Check( resp.find( "parts[1].construction" ) != std::string::npos &&
 		       resp.find( "`lathe`" ) != std::string::npos,
@@ -8461,8 +8481,10 @@ static void TestPartPlanWireShape()
 	{
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"membrane\"},"
-			"{\"part\":\"body\",\"construction\":\"primitive\"}]}}" );
+			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"membrane\","
+			"\"outline\":\"0 0; 4 1; 3 2; -1 1.4\",\"view\":\"top\"},"
+			"{\"part\":\"body\",\"construction\":\"primitive\","
+			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}" );
 		Agent::JsonValue result;
 		Check( JsonResultObj( resp, result ), "G2h file_part_plan returns a JSON-RPC result object" );
 		Check( result.get( "filed" ).isBool() && result.get( "filed" ).asBool(), "G2h `filed` is true" );
@@ -8494,6 +8516,633 @@ static void TestPartPlanWireShape()
 		       "G2h MONEY ASSERTION (wire): after file_part_plan the SAME insert applies" );
 	}
 
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// G3a (2026-08-10): the SKETCH ARTIFACT -- part-plan schema v2.
+//
+// What these pin, in order:
+//   G3a-a  a valid filing rasterizes one target per part: point count, area
+//          fraction and aspect are the RIGHT numbers for known shapes (a
+//          square fills ~0.85^2 of the canvas, a triangle ~half that), the
+//          composite PNG really decodes at the tiled dimensions, and `view`
+//          defaults to front
+//   G3a-b  DETERMINISM: the same outline in two independent sessions gives
+//          byte-identical masks AND byte-identical PNG bytes.  Without this
+//          every downstream comparison (G3b's IoU) is unreproducible
+//   G3a-c  every schema defect is a clean -32602 naming the part INDEX, and
+//          NONE of them touches the gate's refusal counter (the G2h
+//          invariant, extended to the outline-specific cases)
+//   G3a-d  a self-intersecting BOWTIE is ACCEPTED and fills as TWO LOBES
+//          under the even-odd rule -- rejecting it would refuse a legal
+//          imagination, and filling it solid would be the wrong rule
+//   G3a-e  a wide outline LETTERBOXES: the mask's own bbox carries the
+//          authored aspect to within a pixel
+//   G3a-f  re-filing REPLACES the target set completely -- a part dropped
+//          from the plan leaves no stale sketch
+//   G3a-g  the refusal text names the new fields and every claim it makes
+//          is true of the schema the dispatcher actually enforces
+//----------------------------------------------------------------------
+
+//! A filed sketch's mask bbox, in pixels (empty mask -> w==h==0).
+struct SketchMaskBBox { int x0 = 0, y0 = 0, x1 = -1, y1 = -1; int w = 0, h = 0; };
+
+static SketchMaskBBox MaskBBox( const RISE::Agent::AgentSession::AgentPartSketch& s )
+{
+	SketchMaskBBox b;
+	const int N = RISE::Agent::AgentSession::kPartSketchCanvas;
+	bool any = false;
+	for( int y = 0; y < N; ++y ) {
+		for( int x = 0; x < N; ++x ) {
+			if( !s.mask[ static_cast<std::size_t>( y ) * N + x ] ) continue;
+			if( !any ) { b.x0 = b.x1 = x; b.y0 = b.y1 = y; any = true; }
+			if( x < b.x0 ) b.x0 = x;
+			if( x > b.x1 ) b.x1 = x;
+			if( y < b.y0 ) b.y0 = y;
+			if( y > b.y1 ) b.y1 = y;
+		}
+	}
+	if( any ) { b.w = b.x1 - b.x0 + 1; b.h = b.y1 - b.y0 + 1; }
+	return b;
+}
+
+//! Filled pixel count on one mask row.
+static int MaskRowFilled( const RISE::Agent::AgentSession::AgentPartSketch& s, int row )
+{
+	const int N = RISE::Agent::AgentSession::kPartSketchCanvas;
+	int n = 0;
+	for( int x = 0; x < N; ++x )
+		if( s.mask[ static_cast<std::size_t>( row ) * N + x ] ) ++n;
+	return n;
+}
+
+static Agent::AgentSession::AgentPartPlanEntry PlanEntry( const char* part, const char* cons,
+                                                          const char* outline, const char* view = "" )
+{
+	Agent::AgentSession::AgentPartPlanEntry e;
+	e.part = part; e.construction = cons; e.outline = outline; e.view = view;
+	return e;
+}
+
+//! G3a-a / G3a-d / G3a-e: the rasterizer's numbers, on shapes whose answers
+//! are known in closed form.
+static void TestPartSketchRasterizer()
+{
+	std::printf( "G3a-a: the sketch rasterizer -- area/aspect/point facts, composite PNG, even-odd fill...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3a_a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G3a-a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	// 0: a unit SQUARE -- fills the fitted box entirely, so its area fraction
+	//    must be kPartSketchFillFraction^2 (0.7225) to within pixel
+	//    quantization.  This is the single most load-bearing number in the
+	//    whole rasterizer: it pins the FIT, the CENTERING and the fill rule at
+	//    once, and it is the constant G3b's comparison is calibrated against.
+	plan.push_back( PlanEntry( "square", "primitive", "0 0; 1 0; 1 1; 0 1" ) );
+	// 1: a TRIANGLE on the same bbox -- exactly HALF the square's area.
+	plan.push_back( PlanEntry( "triangle", "csg", "0 0; 1 0; 0.5 1", "side" ) );
+	// 2: a BOWTIE (self-intersecting) -- accepted, and even-odd fills it as
+	//    two lobes meeting at a point, NOT as a solid quad.
+	plan.push_back( PlanEntry( "bowtie", "chain", "0 0; 1 0; 0 1; 1 1" ) );
+	// 3: a 4:1 WIDE rectangle -- letterboxed, aspect preserved.
+	plan.push_back( PlanEntry( "wide", "sweep", "0 0; 4 0; 4 1; 0 1", "top" ) );
+
+	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+	Check( pr.ok, "G3a-a the four-part plan with outlines is accepted" );
+	Check( pr.sketches.size() == 4, "G3a-a one target per part" );
+	Check( sess->PartSketches().size() == 4,
+	       "G3a-a and the session HOLDS them as session-lifetime state" );
+	if( pr.sketches.size() != 4 ) { sess.reset(); pJob->release(); std::remove( tmp.c_str() ); return; }
+
+	const double fill2 = Agent::AgentSession::kPartSketchFillFraction *
+	                     Agent::AgentSession::kPartSketchFillFraction;
+
+	// --- 0: square -------------------------------------------------------
+	{
+		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[0];
+		Check( s.part == "square" && s.pointCount == 4, "G3a-a square: 4 points" );
+		Check( s.view == "front",
+		       "G3a-a MONEY ASSERTION: an omitted `view` resolves to front, never to empty" );
+		Check( std::fabs( s.areaFraction - fill2 ) < 0.01,
+		       "G3a-a MONEY ASSERTION: a square outline fills kPartSketchFillFraction^2 (~0.7225) of "
+		       "the canvas -- pins the fit, the centering and the fill rule at once (got " +
+		       std::to_string( s.areaFraction ) + ")" );
+		Check( std::fabs( s.aspect - 1.0 ) < 1e-9, "G3a-a square: aspect 1.0" );
+		const SketchMaskBBox b = MaskBBox( s );
+		Check( std::abs( b.w - b.h ) <= 1, "G3a-a square: the mask bbox is square to within a pixel" );
+	}
+	// --- 1: triangle -----------------------------------------------------
+	{
+		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[1];
+		Check( s.pointCount == 3, "G3a-a triangle: 3 points" );
+		Check( s.view == "side", "G3a-a triangle: an explicit `view` is recorded verbatim" );
+		Check( std::fabs( s.areaFraction - fill2 * 0.5 ) < 0.01,
+		       "G3a-a MONEY ASSERTION: a triangle on the same bbox fills HALF the square's area "
+		       "(~0.361) -- the fill is a real scanline, not a bbox stamp (got " +
+		       std::to_string( s.areaFraction ) + ")" );
+	}
+	// --- 2: bowtie (G3a-d) -----------------------------------------------
+	{
+		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[2];
+		Check( s.pointCount == 4, "G3a-d bowtie: accepted, 4 points -- self-intersection is NOT an error" );
+		// Two triangles of half-height each: total area is half the bbox,
+		// i.e. the same fraction as the triangle above.
+		Check( std::fabs( s.areaFraction - fill2 * 0.5 ) < 0.01,
+		       "G3a-d bowtie: even-odd gives the two lobes' combined area (~0.361), got " +
+		       std::to_string( s.areaFraction ) );
+		// The two-lobe SHAPE, which the area alone cannot distinguish from a
+		// single triangle: wide near the top and bottom of the content, empty
+		// at the waist.  Content spans rows ~19..236 (fill 0.85 of 256).
+		Check( MaskRowFilled( s, 30 ) >= 150,
+		       "G3a-d bowtie: the upper lobe is wide near the top of the content" );
+		Check( MaskRowFilled( s, 226 ) >= 150,
+		       "G3a-d bowtie: the lower lobe is wide near the bottom" );
+		Check( MaskRowFilled( s, 128 ) <= 4,
+		       "G3a-d MONEY ASSERTION: the WAIST is empty -- even-odd produced TWO LOBES, not the "
+		       "solid quad a nonzero-winding fill would have given" );
+	}
+	// --- 3: wide (G3a-e) -------------------------------------------------
+	{
+		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[3];
+		Check( std::fabs( s.aspect - 4.0 ) < 1e-9, "G3a-e wide: the reported aspect is the authored 4.0" );
+		Check( s.view == "top", "G3a-e wide: view top" );
+		const SketchMaskBBox b = MaskBBox( s );
+		const double edge   = static_cast<double>( Agent::AgentSession::kPartSketchCanvas );
+		const double fitted = Agent::AgentSession::kPartSketchFillFraction * edge;   // 217.6
+		Check( std::fabs( static_cast<double>( b.w ) - fitted ) <= 1.0,
+		       "G3a-e wide: the LONG axis is fitted to kPartSketchFillFraction of the canvas" );
+		Check( std::fabs( static_cast<double>( b.h ) - fitted / 4.0 ) <= 1.0,
+		       "G3a-e MONEY ASSERTION: the short axis is LETTERBOXED to the authored 4:1 aspect, to "
+		       "within a pixel -- a stretch-to-fit would have made it square (got h=" +
+		       std::to_string( b.h ) + ")" );
+		Check( b.y0 > 1 && b.y1 < Agent::AgentSession::kPartSketchCanvas - 2,
+		       "G3a-e wide: and it is CENTERED -- margin above and below" );
+	}
+
+	// --- the composite PNG -----------------------------------------------
+	Check( !pr.compositePng.empty(), "G3a-a the filing returns a composite PNG" );
+	Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
+	       pr.compositeHeight == static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+	       "G3a-a four sketches tile into ONE row of four (1024x256)" );
+	{
+		DecodedLuma d;
+		Check( DecodeRenderLuma( pr.compositePng, d ),
+		       "G3a-a MONEY ASSERTION: the composite really DECODES through RISE's own PNG reader -- "
+		       "not merely non-empty bytes" );
+		Check( d.w == pr.compositeWidth && d.h == pr.compositeHeight,
+		       "G3a-a and it decodes at exactly the reported dimensions" );
+	}
+
+	// --- the message: facts only -----------------------------------------
+	Check( pr.message.find( "Sketches, in order: square, triangle, bowtie, wide" ) != std::string::npos,
+	       "G3a-a the message states the tiling ORDER, so a model can map tile N to part N" );
+	Check( pr.message.find( "4 points" ) != std::string::npos &&
+	       pr.message.find( "area " ) != std::string::npos &&
+	       pr.message.find( "aspect " ) != std::string::npos,
+	       "G3a-a and echoes the per-part facts" );
+	Check( pr.message.find( "consider" ) == std::string::npos &&
+	       pr.message.find( "simple" ) == std::string::npos &&
+	       pr.message.find( "detailed" ) == std::string::npos &&
+	       pr.message.find( "should" ) == std::string::npos,
+	       "G3a-a MEASUREMENT HYGIENE: the echo carries no advice and no value language about the "
+	       "sketches -- this is the instrument, and a word like `simple` here would steer the very "
+	       "distribution the census is about to read" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! G3a-b: byte-level determinism across independent sessions.
+static void TestPartSketchDeterminism()
+{
+	std::printf( "G3a-b: the same outline rasterizes byte-identically in two fresh sessions...\n" );
+	const char* const kOutline = "0.13 -2.5; 3.7 0.25; 2.05 4.9; -1.4 3.33; -2.2 0.1";
+
+	std::vector<unsigned char> mask[2];
+	std::vector<unsigned char> png[2];
+	for( int trial = 0; trial < 2; ++trial ) {
+		const std::string name = "agentcrud_g3a_b" + std::to_string( trial ) + ".RISEscene";
+		const std::string tmp = TempPath( name.c_str() );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G3a-b fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+		plan.push_back( PlanEntry( "blob", "displaced", kOutline ) );
+		const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+		Check( pr.ok && pr.sketches.size() == 1, "G3a-b the filing succeeds" );
+		if( pr.sketches.size() == 1 ) { mask[trial] = pr.sketches[0].mask; png[trial] = pr.compositePng; }
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+	Check( !mask[0].empty() && mask[0] == mask[1],
+	       "G3a-b MONEY ASSERTION: the mask bytes are IDENTICAL across two independent sessions -- "
+	       "without this every IoU G3b reports is unreproducible" );
+	Check( !png[0].empty() && png[0] == png[1],
+	       "G3a-b and so are the encoded composite PNG bytes" );
+}
+
+//! G3a-c: every outline/view defect is a clean -32602 naming the index, and
+//! NONE of them burns a gate refusal.
+static void TestPartSketchWireRejections()
+{
+	std::printf( "G3a-c: outline/view -32602 shapes, and the gate counter stays untouched...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3a_c.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G3a-c fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sessOwned = WrapJobGateArmed( pJob );
+	Agent::AgentSession* sess = sessOwned.get();
+	Agent::AgentRpcDispatcher rpc( std::move( sessOwned ) );
+
+	struct Case { const char* params; const char* mustSay; const char* what; };
+	static const Case kCases[] = {
+		{ "{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\"}]}",
+		  "parts[0].outline", "a MISSING outline" },
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
+		  "{\"part\":\"b\",\"construction\":\"csg\",\"outline\":\"0 0; 1 1\"}]}",
+		  "parts[1].outline", "an outline with only 2 points" },
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; nan 1; 1 1\"}]}",
+		  "parts[0].outline", "a NON-FINITE coordinate" },
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 2 0; 3 0\"}]}",
+		  // G3a fix-round (2026-08-10): this is AXIS-DEGENERATE (every point
+		  // shares y=0), not "collinear" -- a diagonal line of points (e.g.
+		  // "0 0; 1 1; 2 2") is also collinear but has extent on both axes,
+		  // so ParsePartOutlinePoints_ deliberately ACCEPTS it and it
+		  // degrades gracefully to a near-empty mask.
+		  "parts[0].outline", "an AXIS-DEGENERATE outline (zero-area bounding box)" },
+		// G3a fix-round (2026-08-10) FIX 1: a bbox extent that is POSITIVE
+		// (passes the zero-area check above) but SUBNORMAL overflows
+		// RasterizePartOutline_'s fit scale to +inf, turning every device
+		// coordinate to NaN and the mask silently empty -- reported as an
+		// honest-looking areaFraction 0.00 if it were ever let through.
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1e-320 0; 0 1e-320\"}]}",
+		  "parts[0].outline", "a SUBNORMAL-extent outline (bbox extent overflows the fit scale)" },
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1; 1 1\"}]}",
+		  "parts[0].outline", "a point that is not two numbers" },
+		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1\","
+		  "\"view\":\"isometric\"}]}",
+		  "parts[0].view", "a `view` outside the closed enum" },
+	};
+	int id = 100;
+	for( const Case& c : kCases ) {
+		const std::string resp = rpc.HandleLine(
+			std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
+			",\"method\":\"file_part_plan\",\"params\":" + c.params + "}" );
+		const std::string p = std::string( "G3a-c " ) + c.what + ": ";
+		Check( resp.find( "-32602" ) != std::string::npos, p + "is a clean -32602" );
+		Check( resp.find( c.mustSay ) != std::string::npos,
+		       p + "and the error names the offending part INDEX and field (" + c.mustSay + ")" );
+		Check( !sess->PartPlanFiled(), p + "no plan was recorded" );
+		Check( sess->PartSketches().empty(), p + "and no target was recorded" );
+	}
+	// The two RESOURCE BOUNDS, both wire-reachable and both -32602.  Unlike
+	// every G2 field these grow with what the caller sends (one 64 KB mask
+	// per part; a scanline fill per edge), so without them one call is an
+	// unbounded allocation.  No honest plan comes near either.
+	{
+		std::string many = "{\"parts\":[";
+		for( int i = 0; i < 65; ++i ) {
+			if( i ) many += ",";
+			many += "{\"part\":\"p" + std::to_string( i ) +
+				"\",\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1\"}";
+		}
+		many += "]}";
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"file_part_plan\",\"params\":" + many + "}" );
+		Check( resp.find( "-32602" ) != std::string::npos && resp.find( "at most 64" ) != std::string::npos,
+		       "G3a-c a 65-part plan is a -32602 naming the 64-part cap" );
+		Check( !sess->PartPlanFiled(), "G3a-c and nothing was recorded" );
+	}
+	{
+		std::string pts;
+		for( int i = 0; i < 513; ++i ) {
+			if( i ) pts += "; ";
+			pts += std::to_string( i ) + " " + std::to_string( ( i * 7 ) % 13 );
+		}
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":151,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"" + pts + "\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos &&
+		       resp.find( "parts[0].outline" ) != std::string::npos &&
+		       resp.find( "at most 512" ) != std::string::npos,
+		       "G3a-c a 513-point outline is a -32602 naming the 512-point cap" );
+		Check( !sess->PartPlanFiled(), "G3a-c and nothing was recorded" );
+	}
+
+	Check( sess->PartPlanGateRefusalCount() == 0 && !sess->PartPlanGateHasFired(),
+	       "G3a-c MONEY ASSERTION: nine rejected filings burned ZERO gate refusals -- a schema error "
+	       "is not a gate interception, and the design's bounded-escape argument depends on it (G2h "
+	       "pins the same property for the G2 fields)" );
+
+	// RED-PROVE the pair: the gate is still armed and still fires.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
+			"\"box_geometry\\n{\\n\\tname g3ac_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
+		Check( resp.find( "file_part_plan" ) != std::string::npos,
+		       "G3a-c RED-PROVE: after nine REFUSED filings the gate is still armed and fires" );
+		Check( sess->PartPlanGateRefusalCount() == 1,
+		       "G3a-c and THAT interception is refusal #1 -- the counter starts here, not at 10" );
+	}
+
+	// A well-formed filing on the same session clears it, and carries an image.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"file_part_plan\",\"params\":"
+			"{\"parts\":[{\"part\":\"body\",\"construction\":\"primitive\","
+			"\"outline\":\"0 0; 2 0; 2 1; 0 1\"}]}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "G3a-c the corrected filing returns a result object" );
+		Check( result.get( "filed" ).asBool( false ), "G3a-c and it files" );
+		Check( result.get( "parts" ).at( 0 ).get( "view" ).asString() == "front",
+		       "G3a-c the echoed `view` defaults to front on the wire too" );
+		Check( result.get( "parts" ).at( 0 ).get( "pointCount" ).asNumber( -1 ) == 4.0,
+		       "G3a-c the echoed pointCount is the parsed vertex count" );
+		Check( result.get( "parts" ).at( 0 ).get( "outline" ).asString() == "0 0; 2 0; 2 1; 0 1",
+		       "G3a-c and the outline comes back VERBATIM as authored" );
+		Check( std::fabs( result.get( "parts" ).at( 0 ).get( "aspect" ).asNumber( -1 ) - 2.0 ) < 1e-9,
+		       "G3a-c and the aspect fact is the authored 2:1" );
+		Check( !result.get( "png_base64" ).asString().empty() &&
+		       result.get( "compositeWidth" ).asNumber( -1 ) ==
+		           static_cast<double>( Agent::AgentSession::kPartSketchCanvas ),
+		       "G3a-c the composite rides the wire under the SAME png_base64 field name every other "
+		       "image-bearing verb uses" );
+		Check( result.get( "byteLength" ).asNumber( -1 ) > 0.0, "G3a-c with its byte length" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
+			"\"box_geometry\\n{\\n\\tname g3ac_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ) && result.get( "applied" ).asBool(),
+		       "G3a-c MONEY ASSERTION: refusal -> file (with outlines) -> proceed still works end to end" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! G3a fix-round (2026-08-10) FIX 1: the new subnormal-extent floor
+//! (kSketchMinExtent_ == 1e-9) rejects only the pathological case -- a
+//! bounding-box extent that is small in absolute terms but nowhere near
+//! subnormal must still rasterize NORMALLY.  If a future edit moves the
+//! floor up carelessly (e.g. to "fix" this by rejecting anything under 1),
+//! this goes red before any legitimately small, honestly-authored
+//! silhouette does.
+static void TestPartSketchSmallButSaneExtentStillRasterizes()
+{
+	std::printf( "G3a fix-round: a small-but-sane 0.001 extent still rasterizes normally...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3a_fix1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "fix1 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	plan.push_back( PlanEntry( "tiny", "primitive", "0 0; 0.001 0; 0.001 0.001; 0 0.001" ) );
+	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+	Check( pr.ok, "fix1 a 0.001-unit square outline is ACCEPTED (extent is 1e6 times the 1e-9 floor)" );
+	if( !pr.ok || pr.sketches.empty() ) { sess.reset(); pJob->release(); std::remove( tmp.c_str() ); return; }
+
+	const Agent::AgentSession::AgentPartSketch& s = pr.sketches[0];
+	const double fill2 = Agent::AgentSession::kPartSketchFillFraction *
+	                     Agent::AgentSession::kPartSketchFillFraction;
+	Check( std::fabs( s.areaFraction - fill2 ) < 0.01,
+	       "fix1 MONEY ASSERTION: it rasterizes to the SAME ~0.7225 fill fraction as the unit square in "
+	       "TestPartSketchRasterizer -- the fit is scale-invariant, so a small outline is not a degraded "
+	       "outline (got " + std::to_string( s.areaFraction ) + ")" );
+	Check( std::isfinite( s.aspect ) && std::fabs( s.aspect - 1.0 ) < 1e-6,
+	       "fix1 and the aspect fact is finite and correct (1.0), not NaN/inf from an overflowed scale" );
+	const SketchMaskBBox b = MaskBBox( s );
+	Check( b.w > 0 && b.h > 0, "fix1 the mask actually has filled pixels, not the silently-empty mask "
+	       "the pre-fix overflow would have produced" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! G3a fix-round (2026-08-10) FIX 3: composite tiling paths past the
+//! previously-tested <= 4 sketches (single row), plus the ACCEPT side of
+//! the two resource-cap fences whose REJECT side (65 parts, 513 points) is
+//! already covered in TestPartSketchWireRejections.  Every fixture here is
+//! built programmatically -- no pasted kilobyte outline lists.
+static void TestPartSketchCompositeTilingAndAcceptBoundaries()
+{
+	std::printf( "G3a fix-round: composite multi-row tiling, truncation, and 64-part/512-point "
+	             "accept boundaries...\n" );
+
+	// --- 6 parts: composite wraps to a SECOND row ---------------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g3a_fix3_6.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "fix3-6 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			for( int i = 0; i < 6; ++i )
+				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
+				                           "0 0; 1 0; 0.5 1" ) );
+			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			Check( pr.ok, "fix3-6 the six-part plan is accepted" );
+			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
+			       pr.compositeHeight == 2u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+			       "fix3-6 MONEY ASSERTION: six sketches wrap to TWO rows of four -- 1024x512, not "
+			       "1536x256 (a single wide row) or 1024x1024 (four rows)" );
+			Check( pr.message.find( "Sketches, in order: p0, p1, p2, p3, p4, p5" ) != std::string::npos,
+			       "fix3-6 the message states the tiling order, and it matches FILING order" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// --- 17 parts: composite draws exactly 16 tiles, truncation stated -
+	{
+		const std::string tmp = TempPath( "agentcrud_g3a_fix3_17.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "fix3-17 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			for( int i = 0; i < 17; ++i )
+				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
+				                           "0 0; 1 0; 0.5 1" ) );
+			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			Check( pr.ok, "fix3-17 the seventeen-part plan is accepted" );
+			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
+			       pr.compositeHeight == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+			       "fix3-17 MONEY ASSERTION: exactly 16 tiles are drawn (four full rows of four) -- "
+			       "1024x1024, not a 17th partial row" );
+			Check( pr.message.find( "first 16 of 17 sketches" ) != std::string::npos,
+			       "fix3-17 the message carries the factual truncation note with correct arithmetic" );
+			Check( sess->PartSketches().size() == 17,
+			       "fix3-17 MONEY ASSERTION: ALL 17 targets are still stored -- the composite's tile "
+			       "cap bounds only the IMAGE, never what is recorded" );
+			bool allFacts = true;
+			for( int i = 0; i < 17; ++i )
+				if( pr.message.find( "p" + std::to_string( i ) + ": primitive" ) == std::string::npos )
+					allFacts = false;
+			Check( allFacts,
+			       "fix3-17 and facts are present for EVERY part, including the 17th that never got a tile" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// --- exactly 64 parts: the cap boundary, ACCEPTED -------------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g3a_fix3_64.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "fix3-64 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			for( std::size_t i = 0; i < Agent::AgentSession::kPartPlanMaxParts; ++i )
+				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
+				                           "0 0; 1 0; 0.5 1" ) );
+			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			Check( pr.ok && pr.sketches.size() == Agent::AgentSession::kPartPlanMaxParts,
+			       "fix3-64 MONEY ASSERTION: EXACTLY 64 parts is accepted (the cap itself, not past "
+			       "it -- 65 is already covered as a rejection in TestPartSketchWireRejections)" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// --- exactly 512 points: the cap boundary, ACCEPTED -----------------
+	{
+		const std::string tmp = TempPath( "agentcrud_g3a_fix3_512.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "fix3-512 fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+			std::string pts;
+			for( std::size_t i = 0; i < Agent::AgentSession::kPartOutlineMaxPoints; ++i ) {
+				if( i ) pts += "; ";
+				pts += std::to_string( i ) + " " + std::to_string( ( i * 7 ) % 13 );
+			}
+			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			plan.push_back( PlanEntry( "many", "csg", pts.c_str() ) );
+			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			Check( pr.ok && pr.sketches.size() == 1 &&
+			       pr.sketches[0].pointCount == Agent::AgentSession::kPartOutlineMaxPoints,
+			       "fix3-512 MONEY ASSERTION: EXACTLY 512 points is accepted (the cap itself, not "
+			       "past it -- 513 is already covered as a rejection in TestPartSketchWireRejections)" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
+//! G3a-f: re-filing REPLACES the whole target set.
+static void TestPartSketchReplaceSemantics()
+{
+	std::printf( "G3a-f: re-filing replaces the target set completely...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3a_f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G3a-f fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> first;
+	first.push_back( PlanEntry( "wing", "sweep",  "0 0; 3 1; 2 2; -1 1" ) );
+	first.push_back( PlanEntry( "tail", "chain",  "0 0; 1 0; 0.5 2" ) );
+	Check( sess->FilePartPlan( first ).ok, "G3a-f the first plan files" );
+	Check( sess->PartSketches().size() == 2, "G3a-f two targets" );
+
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> second;
+	second.push_back( PlanEntry( "hull", "csg", "0 0; 5 0; 5 2; 0 2" ) );
+	const Agent::AgentSession::AgentPartPlanResult pr2 = sess->FilePartPlan( second );
+	Check( pr2.ok && pr2.replacedPreviousPlan, "G3a-f the re-filing is accepted and reports the replace" );
+	Check( sess->PartSketches().size() == 1 && sess->PartSketches()[0].part == "hull",
+	       "G3a-f MONEY ASSERTION: the target set is REPLACED wholesale -- `wing` and `tail` are gone, "
+	       "so a part dropped from the plan can never leave a stale sketch behind for G3b to compare "
+	       "against" );
+	Check( pr2.compositeWidth == static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+	       "G3a-f and the composite is re-tiled for the NEW set (one tile, not three)" );
+	Check( pr2.message.find( "every sketch filed with it" ) != std::string::npos,
+	       "G3a-f the echo states the replacement covered the sketches, not only the plan" );
+
+	// A rejected re-filing changes NOTHING -- all-or-nothing, and it must not
+	// be a back door to clearing targets.
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> bad;
+	bad.push_back( PlanEntry( "ok",  "primitive", "0 0; 1 0; 1 1" ) );
+	bad.push_back( PlanEntry( "bad", "primitive", "0 0; 1 0" ) );
+	const Agent::AgentSession::AgentPartPlanResult pr3 = sess->FilePartPlan( bad );
+	Check( !pr3.ok && pr3.message.find( "parts[1].outline" ) != std::string::npos,
+	       "G3a-f a defect in part 1 rejects the WHOLE filing, naming the index" );
+	Check( sess->PartSketches().size() == 1 && sess->PartSketches()[0].part == "hull" &&
+	       sess->PartPlan().size() == 1,
+	       "G3a-f MONEY ASSERTION: the rejected filing left the previous plan AND targets untouched -- "
+	       "no half-applied plan, no cleared targets" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! G3a-g: the refusal text names the new required fields, and every claim it
+//! makes is TRUE of the schema the dispatcher enforces.  The second half is
+//! the point: a refusal that told a model to do something the dispatcher then
+//! -32602s is a P1 in this repo, so the test does not merely grep for words --
+//! it FILES the exact example the refusal prints.
+static void TestPartSketchRefusalText()
+{
+	std::printf( "G3a-g: the refusal names the outline/view schema and every claim in it is true...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3a_g.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G3a-g fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
+	Check( !r.applied, "G3a-g the first geometry insert is refused" );
+	Check( r.message.find( "`outline`" ) != std::string::npos,
+	       "G3a-g the refusal NAMES the outline field -- without it a model files a G2-shaped plan "
+	       "and gets a -32602 it was never warned about" );
+	Check( r.message.find( "at least 3" ) != std::string::npos,
+	       "G3a-g and states the 3-point minimum" );
+	Check( r.message.find( "0 0; 1 0; 1 2; 0 2" ) != std::string::npos,
+	       "G3a-g and prints a concrete example" );
+	Check( r.message.find( "`view`" ) != std::string::npos &&
+	       r.message.find( "front, side, top" ) != std::string::npos &&
+	       r.message.find( "default front" ) != std::string::npos,
+	       "G3a-g and describes the optional `view` with its default" );
+	Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos &&
+	       r.message.find( "`primitive` for every part is a complete plan" ) != std::string::npos &&
+	       r.message.find( "does not constrain" ) != std::string::npos,
+	       "G3a-g the G2 claims all survive the rewrite" );
+	Check( r.message.find( "2 more calls will be refused" ) != std::string::npos,
+	       "G3a-g and so does the accurate remaining-refusal count" );
+
+	// EVERY CLAIM TRUE: file exactly what the refusal describes -- the printed
+	// example outline, no `view` (it said view is optional) -- and it must be
+	// accepted.  This is the assertion that catches a refusal drifting away
+	// from the dispatcher's real schema.
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	plan.push_back( PlanEntry( "body", "primitive", "0 0; 1 0; 1 2; 0 2" ) );
+	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+	Check( pr.ok,
+	       "G3a-g MONEY ASSERTION: a plan built by following the refusal LITERALLY -- its own example "
+	       "outline, `primitive`, no view -- is accepted" );
+	Check( pr.sketches.size() == 1 && pr.sketches[0].view == "front",
+	       "G3a-g and the omitted view really does default to front, as the refusal claims" );
+	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+	       "G3a-g and the gate really does clear, as the refusal claims" );
+
+	sess.reset();
 	pJob->release();
 	std::remove( tmp.c_str() );
 }
@@ -8562,6 +9211,16 @@ int main()
 	TestPartPlanGatePatchArm();        // G2 fix-round (2026-08-10): the value-splice bypass
 	TestPartPlanGateStagedResolve();   // G2 fix-round (2026-08-10): the staged/resolve re-check
 	TestPartPlanWireShape();
+	// G3a (2026-08-10): the sketch artifact -- schema v2.
+	TestPartSketchRasterizer();
+	TestPartSketchDeterminism();
+	TestPartSketchWireRejections();
+	// G3a fix-round (2026-08-10): FIX 1 (subnormal-extent floor) and FIX 3
+	// (multi-row/truncation composite tiling + accept boundaries).
+	TestPartSketchSmallButSaneExtentStillRasterizes();
+	TestPartSketchCompositeTilingAndAcceptBoundaries();
+	TestPartSketchReplaceSemantics();
+	TestPartSketchRefusalText();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();
 	TestGeometryScaffoldAspectFlow();

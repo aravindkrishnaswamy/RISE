@@ -44,9 +44,12 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
-//      file_part_plan {parts:[{part,construction,note?},...]}
+//      file_part_plan {parts:[{part,construction,outline,view?,note?},...]}
 //                                        -> {filed:true,replacedPreviousPlan:bool,partCount:number,
-//                                            parts:[{part,construction,note},...],message}
+//                                            parts:[{part,construction,note,outline,view,
+//                                                    pointCount,areaFraction,aspect},...],
+//                                            png_base64?,byteLength?,compositeWidth?,
+//                                            compositeHeight?,sketchCanvas?,message}
 //                                           (G2, 2026-08-10: file the session's PART PLAN --
 //                                            a list of the parts of the subject being
 //                                            built, each with a `construction` value from
@@ -68,7 +71,25 @@
 //                                            a `construction` outside the enum is a clean
 //                                            -32602 naming the accepted values.  See
 //                                            AgentSession.h's block above FilePartPlan
-//                                            for the gate itself.)
+//                                            for the gate itself.
+//                                            G3a, 2026-08-10 -- SCHEMA v2: each part also
+//                                            carries a REQUIRED `outline` (a closed 2D
+//                                            polygon "x y; x y; ...", >= 3 points, no
+//                                            opt-out value) and an OPTIONAL `view`
+//                                            (front|side|top, default front).  Each
+//                                            outline is rasterized HOST-SIDE into a
+//                                            deterministic 256x256 silhouette kept as a
+//                                            session-lifetime target, and the result
+//                                            echoes the whole set back as per-part facts
+//                                            plus ONE composite PNG under the same
+//                                            `png_base64` field name read_image /
+//                                            render{imageMaxEdge} / compare_to_reference
+//                                            use.  A malformed outline or an unknown view
+//                                            is a clean -32602 naming the part INDEX --
+//                                            and, being a schema error, it never touches
+//                                            the gate's refusal counter.  Re-filing
+//                                            REPLACES the target set wholesale, exactly
+//                                            like the plan.)
 //      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
 //                                            validated:"head"|"text"}
 //                                           (TWO forms, both read-only.  WITH `text`:

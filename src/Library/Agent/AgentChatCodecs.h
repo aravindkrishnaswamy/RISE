@@ -716,8 +716,8 @@ namespace RISE
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
 		//! a LIVE image block/part -- i.e. a success result from one of the
 		//! image-capable verbs (read_image, compare_to_reference,
-		//! read_viewport, or a render called with imageMaxEdge) with a
-		//! non-empty png_base64.
+		//! read_viewport, file_part_plan's G3a sketch composite, or a render
+		//! called with imageMaxEdge) with a non-empty png_base64.
 		//! Shared by the loop (to decide when the
 		//! image-elision pass must run) and the codecs (which use the same
 		//! predicate to build the image block/part), so the two can never

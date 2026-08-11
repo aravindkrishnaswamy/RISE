@@ -446,6 +446,30 @@ int main()
 			Check( desc.find( "image content block" ) != std::string::npos,
 			       "read_image description documents the MCP image content block mapping" );
 		}
+		// G3a (2026-08-10): the part-plan schema v2 on the MCP surface.
+		// `outline` REQUIRED with no opt-out is the mechanism itself, so an
+		// adapter that shipped it optional would turn the slice off for every
+		// MCP client while the chat codecs still enforced it.
+		{
+			JsonValue tool = FindTool( "file_part_plan" );
+			const JsonValue& items = tool.get( "inputSchema" ).get( "properties" )
+			                             .get( "parts" ).get( "items" );
+			const JsonValue& req = items.get( "required" );
+			bool hasOutline = false, hasView = false;
+			for( std::size_t i = 0; i < req.size(); ++i ) {
+				if( req.at( i ).asString() == "outline" ) hasOutline = true;
+				if( req.at( i ).asString() == "view" )    hasView = true;
+			}
+			Check( hasOutline, "G3a: the MCP file_part_plan schema marks `outline` REQUIRED" );
+			Check( !hasView,   "G3a: and leaves `view` OPTIONAL (it defaults to front)" );
+			const JsonValue& viewEnum = items.get( "properties" ).get( "view" ).get( "enum" );
+			Check( viewEnum.isArray() && viewEnum.size() == 3 && viewEnum.at( 0 ).asString() == "front",
+			       "G3a: `view` carries the closed front|side|top enum, derived from "
+			       "kPartPlanViewValues so it cannot drift" );
+			Check( items.get( "properties" ).get( "outline" ).get( "description" )
+			            .asString().find( "at least 3" ) != std::string::npos,
+			       "G3a: and the outline description states the 3-point minimum the dispatcher enforces" );
+		}
 	}
 
 	//----------------------------------------------------------------------
@@ -517,6 +541,46 @@ int main()
 			}
 		}
 		Check( foundImageBlock, "tools/call(read_image) content includes a {type:\"image\"} block" );
+	}
+
+	//----------------------------------------------------------------------
+	// G3a (2026-08-10): tools/call(file_part_plan) -- the composite SKETCH
+	// PNG must ride back as a real MCP image content block, not merely as a
+	// base64 string buried in the text block.  The whole point of the echo is
+	// that the model SEES what it sketched; on this transport "sees" means an
+	// image block, and a client is not required to know that some field of
+	// some verb's JSON happens to be a picture.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] G3a file_part_plan -> MCP image content block (the sketch composite)\n" );
+	{
+		JsonValue entry = JsonValue::MakeObject();
+		entry.set( "part",         JsonValue::MakeString( "wing" ) );
+		entry.set( "construction", JsonValue::MakeString( "sweep" ) );
+		entry.set( "outline",      JsonValue::MakeString( "0 0; 3 1; 2 2; -1 1.4" ) );
+		JsonValue arr = JsonValue::MakeArray();
+		arr.push_back( entry );
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "parts", arr );
+
+		const std::string resp = mcp.HandleLine( ReqToolCall( 23, "file_part_plan", args ) );
+		JsonValue env = ParseResponse( resp, 23 );
+		Check( !env.has( "error" ), "tools/call(file_part_plan) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(file_part_plan) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			foundImage = true;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "G3a: the sketch composite decodes to the \\x89PNG signature" );
+		}
+		Check( foundImage,
+		       "G3a MONEY ASSERTION: tools/call(file_part_plan) content includes a {type:\"image\"} "
+		       "block -- the model SEES its own sketch on the MCP transport too" );
 	}
 
 	//----------------------------------------------------------------------

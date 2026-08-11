@@ -657,13 +657,39 @@ namespace RISE
 						construction.set( "enum", enumArr );
 					}
 					entryProps.set( "construction", construction );
+					// G3a (2026-08-10): the REQUIRED outline and the OPTIONAL
+					// view.  Kept semantically identical to the chat codec's
+					// hand-authored copy of the same contract
+					// (AgentChatCodecs.cpp kToolDefs) -- SourceHygieneTest's
+					// G2/G3a parity scan is what pins the two together.
+					entryProps.set( "outline", StringProp(
+						"Required. A closed 2D outline of this part as semicolon-separated \"x y\" points, "
+						"at least 3 of them -- e.g. \"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\". The last point "
+						"joins back to the first automatically. Units and origin are yours; the shape is "
+						"scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled "
+						"by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is "
+						"not two finite numbers, or all points on one horizontal or vertical line." ) );
+					JsonValue view = StringProp(
+						"Optional, default \"front\". Which axis-aligned direction this outline is drawn from." );
+					{
+						JsonValue viewEnum = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kPartPlanViewCount; ++i )
+							viewEnum.push_back( JsonValue::MakeString( AgentSession::kPartPlanViewValues[i] ) );
+						view.set( "enum", viewEnum );
+					}
+					entryProps.set( "view", view );
 					entryProps.set( "note", StringProp( "Optional free text about this part." ) );
 					std::vector<std::string> entryRequired;
 					entryRequired.push_back( "part" ); entryRequired.push_back( "construction" );
+					entryRequired.push_back( "outline" );
 
 					JsonValue partsProp = JsonValue::MakeObject();
 					partsProp.set( "type", JsonValue::MakeString( "array" ) );
 					partsProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					// G3a: the resource bound, machine-readable rather than
+					// only enforced at the dispatcher.
+					partsProp.set( "maxItems", JsonValue::MakeNumber(
+						static_cast<double>( AgentSession::kPartPlanMaxParts ) ) );
 					partsProp.set( "items", ObjectProp( "", entryProps, entryRequired ) );
 					partsProp.set( "description", JsonValue::MakeString(
 						"Required, at least one entry -- the parts of the subject you are about to build." ) );
@@ -675,7 +701,8 @@ namespace RISE
 
 					const std::string desc =
 						"File the part plan for the thing you are building: one entry per part, each naming how "
-						"that part will be constructed. On a session that has not filed one, EVERY call that "
+						"that part will be constructed AND carrying a 2D outline sketch of it. On a session "
+						"that has not filed one, EVERY call that "
 						"creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
 						"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
 						"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
@@ -684,12 +711,19 @@ namespace RISE
 						"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
 						"profile swept along a path), \"chain\" (several shapes blended into one form), "
 						"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
-						"chunk). Any answer is accepted, including \"primitive\" for every part. The plan "
+						"chunk). `outline` is REQUIRED per part: a closed 2D polygon of at least 3 \"x y\" "
+						"points separated by semicolons, in any units you like (it is scaled to fit its own "
+						"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
+						"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
+						"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
+						"construction answer is accepted, including \"primitive\" for every part. The plan "
 						"is NOT binding: declaring one construction and then authoring a different chunk "
 						"kind is allowed and is never refused. Filing does not change the document -- no chunk, no head "
 						"version, no undo step -- so there is no baseHeadVersion and no conflict outcome. "
-						"Returns {filed,replacedPreviousPlan,partCount,parts:[{part,construction,note}],message}. "
-						"Calling it again replaces the previous plan.";
+						"Returns {filed,replacedPreviousPlan,partCount,parts:[{part,construction,note,outline,"
+						"view,pointCount,areaFraction,aspect}],png_base64,compositeWidth,compositeHeight,message} "
+						"-- the composite sketch image also rides back as an MCP image content block. "
+						"Calling it again replaces the previous plan and every sketch filed with it.";
 					tools.push_back( MakeTool( "file_part_plan", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1509,8 +1543,15 @@ namespace RISE
 					// the `!b64.empty()` guard below simply skips the image
 					// block and only the text block (rmse/grid/summary/...)
 					// is returned -- no special-casing needed here.
+					// G3a (2026-08-10): file_part_plan joins the set for the
+					// same reason -- its result carries the COMPOSITE SKETCH
+					// PNG under that same field name, and the whole point of
+					// the echo is that the model SEES what it sketched, which
+					// on this transport means a real image content block.  A
+					// filing whose encode produced nothing still returns its
+					// text block, via the same `!b64.empty()` guard.
 					if( toolName == "read_image" || toolName == "read_viewport" ||
-					    toolName == "compare_to_reference" )
+					    toolName == "compare_to_reference" || toolName == "file_part_plan" )
 					{
 						JsonValue content = JsonValue::MakeArray();
 						const std::string b64 = innerResult.get( "png_base64" ).asString();
