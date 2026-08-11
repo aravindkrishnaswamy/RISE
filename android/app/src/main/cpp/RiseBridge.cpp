@@ -436,10 +436,11 @@ void RiseBridge::ensureProductionVFSCreated() {
         // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
         // inversion that hung the render after a handful of blocks.
         //
-        // Lockless replacement: the Kotlin side's `Choreographer`
+        // Generation-gated replacement: the Kotlin side's `Choreographer`
         // callback (post-L8 round 9 wiring in MainActivity.kt) calls
         // `Java_..._pollProductionVFS()` at the display refresh
-        // cadence.  That JNI hop reads `vfs->Generation()` and only
+        // cadence.  That JNI hop takes the VFS chain's brief shared snapshot,
+        // reads the active store's generation, and only
         // does a full-image emit when the counter advances.  Workers
         // never block on the JNI / Kotlin side; their per-tile
         // EndTile calls just bump the atomic generation counter in

@@ -1084,6 +1084,9 @@ int main()
 				std::string::npos &&
 			windowsRenderSource.find("Lockless replacement") == std::string::npos,
 			"Windows polling contract accounts for VFS chain snapshot contention" );
+		Check(androidBridgeSource.find("Lockless replacement") ==
+				std::string::npos,
+			"Android polling contract accounts for VFS chain snapshot contention" );
 		const std::string regionUpdate = braceBody(renderViewModel,"func updateOutput(");
 		const std::string imageCoalescer = braceBody(
 			renderViewModel,"final class CoalescedImageDelivery");
