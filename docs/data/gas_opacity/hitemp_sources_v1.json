@@ -1,0 +1,97 @@
+{
+ "citations_required": {
+  "hitemp_2010_h2o": "Rothman, Gordon, Barber, Dothe, Gamache, Goldman, Perevalov, Tashkun, Tennyson, 'HITEMP, the high-temperature molecular spectroscopic database', JQSRT 111(15):2139-2150 (2010), doi:10.1016/j.jqsrt.2010.05.001",
+  "hitemp_co2_2024": "HITEMP CO2 2024 edition as distributed by HITRANonline (hitran.org/hitemp/); cite the HITEMP article together with the CO2-2024 edition article named on that page, and the original data sources referenced for individual parameters, per HITRAN's citation policy.",
+  "hitran_citation_policy": "https://hitran.org/citepolicy/",
+  "tips_2021": "Gamache, Vispoel, Rey, Nikitin, Tyuterev, Egorov, Gordon, Boudon, 'Total internal partition sums for the HITRAN2020 database', JQSRT 271:107713 (2021), doi:10.1016/j.jqsrt.2021.107713; data doi:10.5281/zenodo.4708099; MIT licence, (C) 2021 Robert Gamache"
+ },
+ "compiled": "2026-08-11",
+ "design_revision_evaluated_against": 49,
+ "draft_record_id_sha256_of_payload": "5da49bb59c1b57282bcbc6acd82b7b7c811e01e6a6167b89f50fbfbccc15393c",
+ "licensing": {
+  "hitemp": "No licence text is published by HITRAN; a citation policy only. Free to obtain with a free account. This repository therefore ships DERIVED TABLES ONLY and pins the source bytes by digest.",
+  "redistribution_decision": "raw .par line-list bytes deliberately NOT committed to this repository",
+  "tips_2021": "MIT - derived products publishable; notice travels with any bundled TIPS files"
+ },
+ "outputs": {
+  "co2": {
+   "elow_max_cm-1": "39987.2630",
+   "histogram_cells": "1468935",
+   "nu_max_cm-1": "17696.929730",
+   "nu_min_cm-1": "0.000001",
+   "records_kept": "326260084",
+   "records_read": "326260084",
+   "rejected_unparseable": "0",
+   "visible_band_line_count": "1584856"
+  },
+  "h2o": {
+   "elow_max_cm-1": "29994.9727",
+   "histogram_cells": "306635",
+   "nu_max_cm-1": "29661.820700",
+   "nu_min_cm-1": "0.000100",
+   "records_kept": "114241164",
+   "records_read": "114241164",
+   "rejected_unparseable": "0",
+   "visible_band_line_count": "446553"
+  }
+ },
+ "purpose": "Pins the exact HITEMP line-list bytes and TIPS partition sums from which the derived CO2/H2O Planck-mean tables in this directory were computed. Raw .par bytes are NOT redistributed in this repository; they are re-obtainable from HITRANonline by any (free) account holder and verified against these digests.",
+ "quantity_semantics": "Planck-mean absorption coefficient kappa_P(T_gas, T_radiation) per species, in the optically-thin limit of FIRE_SMOKE_DESIGN.md section 3.5. Stored as a per-molecule cross-section (cm^2/molecule), hence pressure-independent in this limit; the m^-1 atm^-1 column assumes 1 atm partial pressure. Line shape parameters do not enter this quantity and are discarded during reduction. NOT valid for transmission, optically-thick transfer, or band-resolved radiative transfer.",
+ "record_kind": "gas_opacity_source_pin",
+ "record_name": "hitemp-co2-h2o-planck-mean-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "source_files": {
+  "file_count": 36,
+  "root_note": "paths relative to the operator's local HITEMP archive; digests are over the exact bytes as served",
+  "sha256": {
+   "CO2/02_HITEMP2024.par.bz2": "10dc7564782d9fdd59ec44e442bd009b314751bb5915923edcb12a5712ed6473",
+   "H2O/01_00000-00050_HITEMP2010.zip": "ec429b947e883b362d5b3c86fa8901f1961b299f96203935b8aa4b7baff6929f",
+   "H2O/01_00050-00150_HITEMP2010.zip": "733be3cb1d3e9a75a98236ec155c855a5212180327966907e4709206a2ededa4",
+   "H2O/01_00150-00250_HITEMP2010.zip": "c8af44379583666ec03a91aab2004924cd8fdc516c8fc57e919ff656b0a75e4c",
+   "H2O/01_00250-00350_HITEMP2010.zip": "4409e53182e1987d839643fd011c2f3c06bd85a48f6b94c8f4a05534d04362e8",
+   "H2O/01_00350-00500_HITEMP2010.zip": "aaf96bfb7ddb81bd33b4af207100a339442e2cd1b842a730917775c2d167e04e",
+   "H2O/01_00500-00600_HITEMP2010.zip": "6917dfb5e795f1d0dc5988bab21d624f4f64c6981ca963f85be46e6801a0877e",
+   "H2O/01_00600-00700_HITEMP2010.zip": "180988b108faf4ff0b12f78d6973dc5c7876babf597426c9a2e1160df7f29f7c",
+   "H2O/01_00700-00800_HITEMP2010.zip": "3d57c07416d4cff9d33ab9334cf209a850c34dce692f68d63917001419a88c48",
+   "H2O/01_00800-00900_HITEMP2010.zip": "5d019c1e4373bc4015274fb3f3da278c6e15fd1f7f8d3cebaeb20de90322dff2",
+   "H2O/01_00900-01000_HITEMP2010.zip": "0c4885c624f7e2bd2482bdc6519b911497e317eec47c44ac3bce60fc3061ceb4",
+   "H2O/01_01000-01150_HITEMP2010.zip": "caf89d2356d0e3be8308de75f1a29fefb48ccc0d8b0d48e75dd4fd371f766f70",
+   "H2O/01_01150-01300_HITEMP2010.zip": "08c548a6eab491c99297d08e2c10fcadc0db6932afdb637b0f88893373c7f49e",
+   "H2O/01_01300-01500_HITEMP2010.zip": "4ae58e775bacd21fd0fe69027ce1ce42575af68d6c9ee7fede6bbbb45f956667",
+   "H2O/01_01500-01750_HITEMP2010.zip": "ae7d561e7269c8b3acfdefc9d01c2d6339a5ecc3134732706b958cd0caf8d2d3",
+   "H2O/01_01750-02000_HITEMP2010.zip": "a9c193abf8f649cf703256004b68abc1f2a8e97e33b5e66edfd5f3e8514034f1",
+   "H2O/01_02000-02250_HITEMP2010.zip": "d2192c5a215fa0cab4c52a799abe3fc373ffe70e70f56d17af3f521e18a76006",
+   "H2O/01_02250-02500_HITEMP2010.zip": "758a7d8695a67bdd9cd7f6e4c76fda18dbfcae192103d2a1aba5d979a742817b",
+   "H2O/01_02500-02750_HITEMP2010.zip": "1e1755fb68988fcb2839578308c11c8eccdf258d7cb5d568fb2b8ef6aba98d41",
+   "H2O/01_02750-03000_HITEMP2010.zip": "c0349b759c374d7d2d5a3036b45ae652d05d51dab34a650faffd1f29592083f3",
+   "H2O/01_03000-03250_HITEMP2010.zip": "6b8134333686c84c2639d78ae90435e89c4ba0e8da4f9ef7c4a822e1c22c7923",
+   "H2O/01_03250-03500_HITEMP2010.zip": "5d3bef250306ecc1e1cbad796457f35241262cb8136df1957a18693426e4fb1f",
+   "H2O/01_03500-04150_HITEMP2010.zip": "133b112f465347576017f1ebe6052c0416f05371931c074f2f3a515527d64464",
+   "H2O/01_04150-04500_HITEMP2010.zip": "a2501847c9f3b9a142eca6edff4459926e76c4b3d08d779f5a6e818364e434e9",
+   "H2O/01_04500-05000_HITEMP2010.zip": "c4a7956ecff5c7462e8dc489e741b89a1e53ac2a0d799b330b664154121adc68",
+   "H2O/01_05000-05500_HITEMP2010.zip": "66e51858f6461b960f9fe4c4cc38b651f22064758977709907932026b84d7c77",
+   "H2O/01_05500-06000_HITEMP2010.zip": "8a8c72172ec9378a1909e4940d692bd2e87d62a8214383c5a19e798c0bf24fa3",
+   "H2O/01_06000-06500_HITEMP2010.zip": "dc3598ade8bfb0dbc6e91dd3bdc73b8005f33d03818ae399a344d497e0a39a69",
+   "H2O/01_06500-07000_HITEMP2010.zip": "e771fef26f1992d524a1fa91e1fbef33d37807910b163edf62fc09357c5aecf9",
+   "H2O/01_07000-07500_HITEMP2010.zip": "8b6c5eb4d2446322b7dd80bb86220c4ae4126c98b96ee228bef095f1f500afa7",
+   "H2O/01_07500-08000_HITEMP2010.zip": "dc06c54d38c454f6f1d9f00436744e667eb7fb04796a4408535286de209f21dc",
+   "H2O/01_08000-08500_HITEMP2010.zip": "83e929c68cc7e1c8c89de3bbd0eec02cf7aceff721563b22aaae6cd2c5263996",
+   "H2O/01_08500-09000_HITEMP2010.zip": "fff55706cc49d193e9cd6b162d6bf349d2c32c6910c87b92cc2268339908badb",
+   "H2O/01_09000-11000_HITEMP2010.zip": "641bcaad6a951b6a9125405dc3e0ef536be3f4fb3f2ddd2e81696f8230f97b8b",
+   "H2O/01_11000-30000_HITEMP2010.zip": "e3c699fb657c3a070d4e4727d909ad1e8f0585ef4bd4902c26cbfc1764af5446",
+   "Read-me_for_HITEMP.pdf": "4a6dd134e3eb4d1a3ce94ee4d0342263c12fb40064ee44cefefd21071f340749"
+  }
+ },
+ "tools": {
+  "tools/hitemp_planck_mean.cpp": "b1394b9fd3762fc552630d0ccd4357dc3f9d238f68b742ae5ccea3c878e863a8",
+  "tools/hitemp_reduce.cpp": "e6335ae5d6d4e6355400551dbea09e74ddd70d7e2019c1f3b0b0c6b1588f31ab",
+  "tools/hitemp_visible_bound.py": "6d157c7039f20230ebd445e7af84d9fca8e9cfbb754a6bcd22830782c6a04953"
+ },
+ "validation_references_not_inputs": {
+  "cdsd4000_lbl_independent": "Zheng et al., ES Energy & Environment 17:33-43 (2022), doi:10.30919/esee8c635",
+  "hitemp_lbl_independent": "Chmielewski & Gieras, J. Power Technologies 95(2):97-104 (2015)",
+  "radcal_tnf": "Grosshandler, NIST TN 1402 (1993), via the TNF Workshop radiation page kappa_P fits; Barlow et al., Combust. Flame 127:2102-2118 (2001)"
+ },
+ "version": "1.0.0-draft"
+}
