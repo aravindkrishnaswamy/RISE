@@ -407,14 +407,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         _state.value = if (ok) RenderState.Done else RenderState.Cancelled
 
         // Restart the viewport so the user can interact with the scene.
-        // The post-production restart needs the first preview frame
-        // dropped — otherwise a fast preview pass would flash a
-        // half-rendered image right over the just-finished production
-        // result.  We thread the suppression intent INTO start (rather
-        // than setting it after) so the flag is latched on the sink
-        // before Start spawns the render thread.  Doing it after is
-        // a race: on a cheap scene the first OutputImage can fire
-        // before the follow-up JNI hop sets the flag.
+        // The controller suppresses only its synthetic initial admission;
+        // an immediate real edit remains a distinct pending render and cannot
+        // be swallowed by a sink-level one-shot.
         RiseNative.nativeViewportStart(
             suppressFirstFrame = true,
             ownerToken = callbackOwner,

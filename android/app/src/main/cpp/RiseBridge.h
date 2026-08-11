@@ -173,14 +173,10 @@ public:
 
     // Build the live-preview rasterizer + sink, create the controller,
     // and start its render thread.  When `suppressFirstFrame` is true
-    // (typical post-production-render path), the suppression flag is
-    // latched on the sink BEFORE the render thread starts, closing
-    // the race where a fast preview pass could blit through to the
-    // sink between the controller's Start and a follow-up suppression
-    // call from the UI layer.  On Android the sink
-    // is reconstructed by every stop/start (unlike macOS / Windows
-    // where it's persistent), so the suppress intent has to be
-    // threaded into the start call itself.
+    // (typical post-production-render path), start through the controller's
+    // source-level suppressed-initial-render admission. No preview pass is
+    // emitted until the first real edit, so an immediate user kick cannot be
+    // mistaken for and swallowed as the synthetic initial pass.
     bool startViewport(bool suppressFirstFrame, uint64_t ownerToken);
     bool stopViewport(uint64_t ownerToken);
     bool isViewportRunning(uint64_t ownerToken) const;

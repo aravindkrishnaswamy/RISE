@@ -943,9 +943,6 @@ public:
         m_fanoutVFS = vfs;
     }
 
-    // Drop the very next OutputImage call.  Auto-clears after one drop.
-    void SuppressNextFrame() { m_suppressNext.store(true); }
-
     // Per-tile callback fires many times per render — explicitly ignore
     // (matches the macOS / Windows policy: avoid distracting tile fills).
     // L5a round-5: ALSO do not fan into VFS at this level — see
@@ -959,17 +956,13 @@ public:
     // on every pointer move, and dropping the resulting partial
     // buffers makes the viewport feel throttled (the user only sees
     // post-pause refinement frames).  Center-out tile order keeps
-    // partial buffers visually usable.  The one-shot suppress is kept
-    // for the post-production case.
+    // partial buffers visually usable. Post-production suppression is
+    // handled at the controller's render-admission boundary, before a pass
+    // exists, so this sink never has to guess which output is "initial."
     void OutputImage(const RISE::IRasterImage& pImage,
                      const RISE::Rect* pRegion,
                      const unsigned int frame) override {
         if (!m_bridge) return;
-        if (m_suppressNext.exchange(false)) {
-            // One-shot suppression (post-production) — skip exactly
-            // this dispatch.  The next render's frame goes through.
-            return;
-        }
         const unsigned int W = pImage.GetWidth();
         const unsigned int H = pImage.GetHeight();
         if (W == 0 || H == 0) return;
@@ -1013,7 +1006,6 @@ public:
 private:
     RiseBridge*                                  m_bridge = nullptr;
     RISE::Implementation::ViewportFrameStore*    m_fanoutVFS = nullptr;    // strong (addref'd in SetFanoutVFS)
-    std::atomic<bool>                            m_suppressNext{false};
 };
 
 }  // anonymous namespace
@@ -1083,24 +1075,14 @@ bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
     }
     m_viewportHasTimeEdit = false;
     if (m_viewportSink) {
-        // The downcast is safe — m_viewportSink is only ever populated
-        // with a freshly constructed ViewportPreviewSink above.
-        auto* previewSink = static_cast<ViewportPreviewSink*>(m_viewportSink);
-
-        // Latch the first-frame suppression BEFORE Start kicks the
-        // render thread.  The Android sink is freshly constructed on
-        // every start, so a follow-up suppression call from the UI
-        // layer races the freshly-spawned worker pool — on a cheap
-        // preview scene the first OutputImage call can fire before
-        // the JNI hop returns.  Setting the flag inline here closes
-        // that window: by the time Start signals the render thread,
-        // the sink already knows to drop pass #1.
-        if (suppressFirstFrame) {
-            previewSink->SuppressNextFrame();
-        }
         RISE::RISE_API_SceneEditController_SetPreviewSink(m_viewportController, m_viewportSink);
     }
-    RISE::RISE_API_SceneEditController_Start(m_viewportController);
+    if (suppressFirstFrame) {
+        RISE::RISE_API_SceneEditController_StartSuppressingInitialRender(
+            m_viewportController);
+    } else {
+        RISE::RISE_API_SceneEditController_Start(m_viewportController);
+    }
     m_viewportRunning = true;
     return true;
 }

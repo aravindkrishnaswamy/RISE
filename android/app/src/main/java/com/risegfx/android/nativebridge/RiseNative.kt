@@ -259,14 +259,9 @@ object RiseNative {
      * Build the live-preview rasterizer + sink, create the
      * SceneEditController, and start its render thread.  When
      * [suppressFirstFrame] is true (typical post-production-render
-     * restart), the first preview frame is dropped at the sink layer
-     * so the production image stays on screen until the user starts
-     * dragging — without that, a fast preview pass can blit through
-     * before the user notices.  The flag is latched on the sink
-     * INSIDE the start call (before the render thread spawns), which
-     * closes the race against the previous "Start, then SuppressNext"
-     * sequence: a cheap scene could complete pass #1 before the
-     * follow-up JNI hop returned.
+     * restart), the controller suppresses its synthetic initial render at
+     * source. The first real user edit still produces a frame; no sink-level
+     * one-shot can accidentally swallow it.
      */
     external fun nativeViewportStart(suppressFirstFrame: Boolean, ownerToken: Long): Boolean
     external fun nativeViewportStop(ownerToken: Long): Boolean
