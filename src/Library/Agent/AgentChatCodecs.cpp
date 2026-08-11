@@ -4248,7 +4248,16 @@ namespace RISE
 		std::string ChatImageGenerationModelId( const std::string& providerName )
 		{
 			if( providerName == "gemini" )
-				return ImageEnvOr_( "RISE_IMAGE_MODEL_GEMINI", "gemini-3.6-flash-image" );
+				// VERIFIED LIVE 2026-08-11: `gemini-3.6-flash-image` does NOT
+				// exist -- the first live imagine_scene 404'd on it.  The
+				// account's image-capable generateContent models are
+				// gemini-3.1-flash-image / -lite-image / gemini-3-pro-image
+				// (imagen-4.0-* are `predict`-method, a different shape this
+				// builder does not speak).  Do not "modernise" this to match
+				// the chat default's version number without listing
+				// v1beta/models first -- the image and chat model lines are
+				// versioned independently.
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_GEMINI", "gemini-3.1-flash-image" );
 			if( providerName == "openai" )
 				return ImageEnvOr_( "RISE_IMAGE_MODEL_OPENAI", "gpt-image-1" );
 			return std::string();

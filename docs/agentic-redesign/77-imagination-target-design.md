@@ -379,3 +379,46 @@ The per-part sketch pipeline stays (filing works, declarations translate);
 its comparison half awaits either Phase 2's pull or a payload-fact
 attachment to full-frame renders (which would need the join solved).
 Decision deferred to the user.
+
+## 14. Phase 2 live result — the zero moved (2026-08-11, `evals/runs/imagine_p2_demo`)
+
+One live gemini run, figure subject, full mechanism.  **The headline metric
+that survived every previous lever at zero is no longer zero.**
+
+| | pre-Phase-2 battery (9 runs) | this run |
+|---|---|---|
+| target comparisons consulted | **0** | **16** |
+| geometry verbs within 3 calls of a comparison | **0** | **7** |
+| param patches after a comparison | — | 21 |
+
+Sequence: the model called `imagine_scene` as its **6th call, before any
+geometry**, authoring its own description ("a surreal psychedelic landscape
+at twilight ... a magnificent dragon with iridescent glowing scales coiling
+through a vibrant cosmic ring"); Gemini generated it; thereafter all 16
+full-frame renders carried the RMSE facts and the [target | render] strip.
+
+**Why this worked where the per-part comparison did not**: it is on the
+surface models already visit.  Every voluntary consultation surface built
+this arc measured 0/64 (isolate, target-compare, replace_geometry_scaffold);
+this one fired 16 times in one run because receiving it costs nothing.  The
+law extends: *a fact the model must ASK for is not consulted; the same fact
+attached to a call it already makes is acted on.*
+
+**Honest limits, recorded:** RMSE did not converge (0.27 -> 0.44 -> 0.32 ->
+0.41) -- the model looks and acts but does not hill-climb, which is expected
+and arguably correct (a photoreal AI painting is not reachable by SDF
+primitives, and nothing gates on the number).  The render still does not
+resemble the target -- but the dragon it built IS serpentine and coiling,
+matching both its own description and its filed `chain` declaration.
+`aspectMatched:false` on all 16 (512x279 target vs 4:3 renders); honest per
+the contract, but a scene-target-aware aspect request would make the
+comparison fairer -- recorded, unbuilt.
+
+**API-shape verdict (the thing mocks could not settle):** `gemini-3.6-flash-
+image` does not exist; the account offers `gemini-3.1-flash-image` (and
+`gemini-3-pro-image`; the `imagen-4.0-*` family is `predict`-method, a
+different shape).  The first run 404'd and **the anti-stranding rule fired
+exactly as designed** -- status-only message, imagine requirement disarmed,
+run completed plan-only with a full five-part plan.  Fixed by env override
+with no rebuild, then in the compiled default.  OpenAI's `gpt-image-1`
+verified present on the live account.
