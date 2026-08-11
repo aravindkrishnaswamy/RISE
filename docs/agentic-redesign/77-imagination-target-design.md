@@ -422,3 +422,25 @@ exactly as designed** -- status-only message, imagine requirement disarmed,
 run completed plan-only with a full five-part plan.  Fixed by env override
 with no rebuild, then in the compiled default.  OpenAI's `gpt-image-1`
 verified present on the live account.
+
+### 14.1 OpenAI arm verified (2026-08-11, `evals/runs/imagine_p2_openai`)
+
+`gpt-5.6-terra` + `gpt-image-1`, same figure subject, one run.  The second
+provider path — different endpoint (`/v1/images/generations`), different auth
+header (`Bearer`), different response shape (`data[0].b64_json` vs gemini's
+nested `inlineData`) — worked **first live attempt, no override needed**.
+
+- `imagine_scene` called 8th, again BEFORE any geometry; 512x512 image.
+- 4 comparisons consulted, 2 geometry verbs within 3 calls of one.
+- RMSE 0.198 / 0.197 / 0.194 / 0.195 — flat but *monotonically slightly
+  improving*, and notably tighter than gemini's 0.27–0.44 wander (square
+  target, so `aspectMatched` is less punishing).
+- Its filed plan is the best decomposition seen in any run to date:
+  terrain=displaced, dragon body+tail=**chain**, dragon **wings=sweep**,
+  wizard=primitive, crystals=primitive, mist=displaced.  This is the first
+  time any model declared `sweep` for wings — the exact plank-wing defect
+  that started this whole line of work (75-arc POST-ARC R2).
+
+Cross-provider read: both models imagine unprompted and both consult the
+comparison, at different rates (gemini 16, openai 4 — openai reads the
+document far more between edits).  The mechanism is not gemini-specific.

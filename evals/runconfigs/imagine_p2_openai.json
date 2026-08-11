@@ -1,0 +1,15 @@
+{
+ "//": "Arc-77 Phase 2 live check, OPENAI arm (user 2026-08-11): same figure subject, gpt-5.6-terra chat + gpt-image-1 image generation via /v1/images/generations. Verifies the second provider path end-to-end (different endpoint, different auth header, different response shape: data[0].b64_json vs gemini inlineData).",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-terra",
+   "keyEnvVar": "OPENAI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_p2_openai"
+}
