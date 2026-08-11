@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  FireSimulationRecords.cpp - Phase-C thermochemistry and transport records
+//  FireSimulationRecords.cpp - Phase-C open physical-property record subsets
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -109,7 +109,7 @@ namespace RISE
 			}
 			minimum = domain[0];
 			maximum = domain[1];
-			return (minimum > 0.0 && minimum < maximum) ||
+			return (minimum > 0.0 && minimum < maximum && std::isfinite(maximum-minimum)) ||
 				Fail(error,"fire-simulation domain is not positive and ordered");
 		}
 
@@ -230,12 +230,10 @@ namespace RISE
 		{
 			const RISECBOR64::Value* version = Required(
 				record,"schema_version",RISECBOR64::Value::UnsignedInteger,error);
-			std::string policy;
 			if( !version || version->GetIntegerArgument() != 1 ) {
 				return Fail(error,"fire-simulation schema version is unsupported");
 			}
-			return ValidateSHA256Text(record,"source_snapshot_sha256",error) &&
-				ReadText(record,"out_of_domain_policy",policy,error) && policy == "reject";
+			return ValidateSHA256Text(record,"source_snapshot_sha256",error);
 		}
 
 		bool ValidateMeasuredCondensedOrganics(
@@ -352,14 +350,20 @@ namespace RISE
 			const double molecularWeight
 			)
 		{
+			const double span = segment.temperatureMaxK-segment.temperatureMinK;
+			const std::size_t intervalCount = static_cast<std::size_t>(
+				std::min(65536.0,std::max(1.0,std::ceil(span))));
 			double minimum = std::numeric_limits<double>::max();
-			for( double lower=segment.temperatureMinK; lower<segment.temperatureMaxK; ) {
-				const double upper = std::min(lower+1.0,segment.temperatureMaxK);
+			for( std::size_t interval=0; interval<intervalCount; ++interval ) {
+				const double lower = segment.temperatureMinK+
+					span*static_cast<double>(interval)/static_cast<double>(intervalCount);
+				const double upper = interval+1 == intervalCount ? segment.temperatureMaxK :
+					segment.temperatureMinK+span*static_cast<double>(interval+1)/
+					static_cast<double>(intervalCount);
 				const double midpoint = 0.5*(lower+upper);
 				const double bound = CpOverR(segment.coefficients,midpoint)-
 					CpDerivativeBound(segment.coefficients,lower,upper)*0.5*(upper-lower);
 				minimum = std::min(minimum,bound*kUniversalGasConstantJPerKMolK/molecularWeight);
-				lower = upper;
 			}
 			return std::nextafter(minimum,-std::numeric_limits<double>::infinity());
 		}
@@ -399,6 +403,11 @@ namespace RISE
 			for( std::size_t i=0; i+1<count; ++i ) {
 				h[i] = x[i+1]-x[i];
 				delta[i] = (y[i+1]-y[i])/h[i];
+			}
+			if( count == 2 ) {
+				slopes[0] = delta[0];
+				slopes[1] = delta[0];
+				return slopes;
 			}
 			for( std::size_t i=1; i+1<count; ++i ) {
 				if( delta[i-1]*delta[i] > 0.0 ) {
@@ -547,7 +556,8 @@ namespace RISE
 		std::string kind, status, schema;
 		double backgroundPressure = 0.0, ambientTemperature = 0.0;
 		if( !ValidateSchemaHeader(record,error) ||
-			!ReadText(record,"record_kind",kind,error) || kind != "fire_sim_thermochemistry" ||
+			!ReadText(record,"record_kind",kind,error) ||
+				kind != "fire_sim_thermochemistry_property_subset" ||
 			!ReadText(record,"record_name",m_recordName,error) ||
 			!ReadText(record,"record_status",status,error) || status != "preview_only" ||
 			!ReadText(record,"provenance_schema",schema,error) ||
@@ -617,7 +627,11 @@ namespace RISE
 					!ReadFloat(encodedSegment,"certified_cp_lower_J_per_kg_K",segment.certifiedCpLowerJPerKGK,error) ||
 					!encodedCoefficients || !ReadFloatArray(*encodedCoefficients,coefficients,error) ||
 					coefficients.size() != 9 || segment.temperatureMinK >= segment.temperatureMaxK ||
-					segment.certifiedCpLowerJPerKGK <= 0.0 ) return false;
+					segment.temperatureMinK < m_temperatureMinK ||
+					segment.temperatureMaxK > m_temperatureMaxK ||
+					segment.certifiedCpLowerJPerKGK <= 0.0 ) {
+					return Fail(error,"fire-simulation thermochemistry segment is invalid");
+				}
 				for( std::size_t i=0; i<7; ++i ) segment.coefficients[i] = coefficients[i];
 				const double verifiedLower = CertifiedCpLower(segment,species.molecularWeightKGPerKMol);
 				const double tolerance = 128.0*std::numeric_limits<double>::epsilon()*
@@ -661,7 +675,7 @@ namespace RISE
 		double ambientSum = 0.0;
 		for( const auto& entry : ambientMassFractions->GetMap() ) {
 			double fraction = 0.0;
-			if( !FindSpecies(entry.first.c_str()) || !ReadNumber(entry.second,fraction,error) ||
+			if( ids.find(entry.first) == ids.end() || !ReadNumber(entry.second,fraction,error) ||
 				fraction < 0.0 ) {
 				return Fail(error,"fire-simulation ambient composition is invalid");
 			}
@@ -679,14 +693,17 @@ namespace RISE
 		std::string* error
 		)
 	{
-		m_valid = false;
+		FireSimulationThermochemistryRecord candidate;
 		RISECBOR64::Value decoded;
-		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) || !LoadSemanticRecord(decoded,error) ) {
+		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) ||
+			!candidate.LoadSemanticRecord(decoded,error) ) {
+			*this = FireSimulationThermochemistryRecord();
 			return false;
 		}
-		m_recordBytes = bytes;
-		m_recordId = RISECBOR64::SHA256Hex(bytes);
-		m_valid = true;
+		candidate.m_recordBytes = bytes;
+		candidate.m_recordId = RISECBOR64::SHA256Hex(bytes);
+		candidate.m_valid = true;
+		*this = candidate;
 		return true;
 	}
 
@@ -703,7 +720,7 @@ namespace RISE
 		const char* id
 		) const
 	{
-		if( !id ) return 0;
+		if( !m_valid || !id ) return 0;
 		for( const FireThermochemistrySpecies& species : m_species ) {
 			if( species.id == id ) return &species;
 		}
@@ -765,6 +782,9 @@ namespace RISE
 			}
 			result += entry.second*sensibleEnthalpy;
 			totalMass += entry.second;
+			if( !std::isfinite(result) || !std::isfinite(totalMass) ) {
+				return Fail(error,"fire-simulation mixture accumulation overflowed");
+			}
 		}
 		return (totalMass > 0.0 && std::isfinite(result)) ||
 			Fail(error,"fire-simulation mixture is empty or non-finite");
@@ -866,14 +886,17 @@ namespace RISE
 		std::string* error
 		)
 	{
-		m_valid = false;
+		FireSimulationTransportRecord candidate;
 		RISECBOR64::Value decoded;
-		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) || !LoadSemanticRecord(decoded,error) ) {
+		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) ||
+			!candidate.LoadSemanticRecord(decoded,error) ) {
+			*this = FireSimulationTransportRecord();
 			return false;
 		}
-		m_recordBytes = bytes;
-		m_recordId = RISECBOR64::SHA256Hex(bytes);
-		m_valid = true;
+		candidate.m_recordBytes = bytes;
+		candidate.m_recordId = RISECBOR64::SHA256Hex(bytes);
+		candidate.m_valid = true;
+		*this = candidate;
 		return true;
 	}
 
@@ -890,7 +913,7 @@ namespace RISE
 		const char* id
 		) const
 	{
-		if( !id ) return 0;
+		if( !m_valid || !id ) return 0;
 		for( const FireTransportSpecies& species : m_species ) {
 			if( species.id == id ) return &species;
 		}
@@ -940,6 +963,9 @@ namespace RISE
 			std::string* error
 			)
 		{
+			if( !thermochemistry.IsValid() ) {
+				return Fail(error,"fire-simulation transport requires valid thermochemistry");
+			}
 			double moleTotal = 0.0;
 			std::set<std::string> unique;
 			for( const auto& entry : massFractions ) {

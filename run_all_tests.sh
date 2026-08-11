@@ -10,6 +10,9 @@ LIB_DIR="$REPO_ROOT/src/Library"
 FIRE_OPTICS_GENERATOR="$REPO_ROOT/tools/generate_fire_optics_records.py"
 FIRE_OPTICS_DATA="$REPO_ROOT/docs/data"
 FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
+FIRE_SIM_GENERATOR="$REPO_ROOT/tools/generate_fire_simulation_records.py"
+FIRE_SIM_DATA="$REPO_ROOT/docs/data/source_pulls/fire_sim_open_sources_v1.json"
+FIRE_SIM_EMBEDDED="$LIB_DIR/Utilities/FireSimulationRecordData.inc"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -88,6 +91,10 @@ fi
 printf 'Checking embedded fire-optics records ... '
 "$python_bin" "$FIRE_OPTICS_GENERATOR" --check \
 	"$FIRE_OPTICS_DATA" "$FIRE_OPTICS_EMBEDDED"
+echo "pass"
+printf 'Checking embedded fire-simulation records ... '
+"$python_bin" "$FIRE_SIM_GENERATOR" --check \
+	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
 echo "pass"
 
 # Remove orphan .o files only (no matching .cpp). Active .o files are kept

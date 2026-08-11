@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Freeze Phase-C thermochemistry/transport records into RISE-CBOR64-v1.
+"""Freeze Phase-C open property subsets into RISE-CBOR64-v1.
 
 The operational records are deliberately generated from redistribution-safe
 NASA CEA, NIST ThermoML, and GRI-Mech/Cantera inputs.  Burcat and HITEMP content
 is excluded so license-gated coefficients cannot enter the generated records.
+The thermochemistry output is intentionally not a solver-ready §3.3 gas
+record: its explicit blockers name every missing fuel/aerosol closure.
 """
 
 from __future__ import annotations
@@ -24,6 +26,13 @@ from generate_fire_optics_records import (
 
 R_KMOL = 8314.46261815324
 CEA_REVISION = "0c99ecefce3e9a885ec912040477caf74e69c8f3"
+EXPECTED_SOURCE_SHA256 = {
+    "nasa_cea_thermo": "fa7746572952d74e249e818a82a35c113829742fb421a308e167185528884363",
+    "nasa_cea_transport": "379c514a7f7638371d8d9254a1d653cd078084a9371061aa0b45c5a5c3334d41",
+    "nist_thermoml": "64186a74e71e3b973ab7ea385ba42ef9d2583ce73323c4f9f42435c7503f632b",
+    "gri_transport": "e2ef4437568311ad0ba6c2311a564966c9accb2b43ea3157b764c1e8febc5825",
+    "cantera_gri30_yaml": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
+}
 THERMO_NAMES = (
     "Ar", "CH4", "CH3OH", "CO", "CO2", "C7H16,n-heptane",
     "H2O", "N2", "O2", "C(gr)",
@@ -45,6 +54,14 @@ FORMULAS = {
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def require_source_digest(path: Path, source_id: str) -> str:
+    actual = sha256(path)
+    expected = EXPECTED_SOURCE_SHA256[source_id]
+    if actual != expected:
+        raise ValueError(f"{source_id} SHA-256 mismatch: expected {expected}, got {actual}")
+    return actual
 
 
 def fortran_numbers(line: str) -> list[float]:
@@ -155,9 +172,13 @@ def cantera_transport_tables(gri_yaml: Path) -> dict:
         import cantera as ct
     except ImportError as exc:
         raise ValueError("source extraction requires Cantera on PYTHONPATH") from exc
+    if ct.__version__ != "3.1.0":
+        raise ValueError(f"source extraction requires Cantera 3.1.0, got {ct.__version__}")
     gas = ct.Solution(str(gri_yaml))
     aliases = {"Ar": "AR"}
-    temperatures = [300.0 + 25.0 * index for index in range(189)]
+    if gas.min_temp != 300.0 or gas.max_temp != 3000.0:
+        raise ValueError(f"pinned GRI phase domain changed to [{gas.min_temp},{gas.max_temp}] K")
+    temperatures = [300.0 + 25.0 * index for index in range(109)]
     result = {}
     for name in TRANSPORT_NAMES:
         cantera_name = aliases.get(name, name)
@@ -182,6 +203,11 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
     forbidden = "burcat" in str(thermo).lower() or "burcat" in str(transport).lower()
     if forbidden:
         raise ValueError("Burcat-derived bytes are license-gated and forbidden")
+    thermo_hash = require_source_digest(thermo, "nasa_cea_thermo")
+    transport_hash = require_source_digest(transport, "nasa_cea_transport")
+    thermoml_hash = require_source_digest(thermoml, "nist_thermoml")
+    gri_transport_hash = require_source_digest(gri_transport, "gri_transport")
+    gri_yaml_hash = require_source_digest(gri_yaml, "cantera_gri30_yaml")
     thermo_lines = thermo.read_text(encoding="ascii").splitlines(keepends=True)
     transport_lines = transport.read_text(encoding="ascii").splitlines(keepends=True)
     thermoml_value = json.loads(thermoml.read_text(encoding="utf-8"))
@@ -192,22 +218,22 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
             "repository": "https://github.com/nasa/cea",
             "revision": CEA_REVISION,
             "license": "Apache-2.0",
-            "thermo_inp_sha256": sha256(thermo),
-            "trans_inp_sha256": sha256(transport),
+            "thermo_inp_sha256": thermo_hash,
+            "trans_inp_sha256": transport_hash,
             "thermochemistry": [parse_thermo(thermo_lines, name) for name in THERMO_NAMES],
             "transport": [parse_transport(transport_lines, name) for name in TRANSPORT_NAMES],
         },
         "nist_thermoml": {
             "locator": "https://trc.nist.gov/ThermoML/10.1016/j.jct.2015.01.005.json",
-            "sha256": sha256(thermoml),
+            "sha256": thermoml_hash,
             "doi": "10.1016/j.jct.2015.01.005",
             "levoglucosan_cp": extract_levoglucosan_cp(thermoml_value),
         },
         "gri_mech_3": {
             "transport_locator": "http://combustion.berkeley.edu/gri-mech/version30/files30/transport.dat",
-            "transport_sha256": sha256(gri_transport),
-            "cantera_gri30_yaml_sha256": sha256(gri_yaml),
-            "cantera_revision": "Cantera v3.1.0",
+            "transport_sha256": gri_transport_hash,
+            "cantera_gri30_yaml_sha256": gri_yaml_hash,
+            "cantera_version": "3.1.0",
             **cantera_transport_tables(gri_yaml),
         },
     }
@@ -356,12 +382,11 @@ def thermo_payload(snapshot: dict) -> dict:
         raise ValueError("Kabo levoglucosan record does not close at 370 K")
     return {
         "schema_version": 1,
-        "record_kind": "fire_sim_thermochemistry",
+        "record_kind": "fire_sim_thermochemistry_property_subset",
         "record_name": "fire-sim-thermochemistry-open-subset-v1",
         "record_status": "preview_only",
         "provenance_schema": "fire-optics-canonical-provenance-schema-v1",
         "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
-        "out_of_domain_policy": "reject",
         "common_temperature_domain_K": [common_min, common_max],
         "reference_temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.3", "all species"),
         "background_pressure_Pa": exact(101325.0, "FIRE_SMOKE_DESIGN.md SS3.2", "open-domain baseline"),
@@ -369,6 +394,10 @@ def thermo_payload(snapshot: dict) -> dict:
         "ambient_mass_fractions": ambient,
         "species": species,
         "predictive_blockers": [
+            "complete_fuel_element_matrix_and_atom_balance_not_present",
+            "fuel_lhv_and_primary_product_coefficients_not_present",
+            "injected_fuel_composition_and_temperature_not_present",
+            "operational_condensed_organic_thermochemistry_not_present",
             "levoglucosan_vapor_burcat_redistribution_unresolved",
             "pentacosane_vapor_burcat_redistribution_unresolved",
             "levoglucosan_condensed_cp_above_370K_assumption_bound_unpinned",
@@ -386,13 +415,14 @@ def thermo_payload(snapshot: dict) -> dict:
 
 
 def transport_payload(snapshot: dict) -> dict:
-    common_min, common_max = 300.0, 5000.0
+    common_min, common_max = 300.0, 3000.0
     sources = snapshot["gri_mech_3"]["tables"]
     species = []
     for name in TRANSPORT_NAMES:
         source = sources[name]
-        source_citation = ("GRI-Mech 3.0 transport.dat evaluated by Cantera 3.1.0 "
-                           "mixture-averaged pure-species implementation")
+        source_citation = ("Cantera 3.1.0 gri30.yaml GRI-Mech transport parameters "
+                           "evaluated by its mixture-averaged pure-species implementation; "
+                           "original GRI-Mech 3.0 transport.dat hash archived separately")
         species.append({
             "species_id": name,
             "viscosity_model": {
@@ -402,7 +432,7 @@ def transport_payload(snapshot: dict) -> dict:
                 "interpolation": source["viscosity_interpolation"],
                 "value_column": 1,
                 "table_metadata": {"uncertainty": {"kind": "computed_range_from_input_sensitivity", "magnitude": [0.0, 0.0],
-                                                      "basis": "pinned NASA fit; source fit uncertainty is not published"},
+                                                      "basis": "deterministic evaluation of the pinned GRI/Cantera parameters; physical source-fit uncertainty is not published"},
                                    "provenance": provenance(source_citation,
                                        "http://combustion.berkeley.edu/gri-mech/version30/files30/transport.dat"),
                                    "applicability": "dilute gas",
@@ -415,7 +445,7 @@ def transport_payload(snapshot: dict) -> dict:
                 "interpolation": source["conductivity_interpolation"],
                 "value_column": 2,
                 "table_metadata": {"uncertainty": {"kind": "computed_range_from_input_sensitivity", "magnitude": [0.0, 0.0],
-                                                      "basis": "pinned NASA fit; source fit uncertainty is not published"},
+                                                      "basis": "deterministic evaluation of the pinned GRI/Cantera parameters; physical source-fit uncertainty is not published"},
                                    "provenance": provenance(source_citation,
                                        "http://combustion.berkeley.edu/gri-mech/version30/files30/transport.dat"),
                                    "applicability": "dilute gas",
@@ -429,7 +459,6 @@ def transport_payload(snapshot: dict) -> dict:
         "record_status": "preview_only",
         "provenance_schema": "fire-optics-canonical-provenance-schema-v1",
         "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
-        "out_of_domain_policy": "reject",
         "common_temperature_domain_K": [common_min, common_max],
         "species": species,
         "viscosity_mixing_law": "wilke_v1",

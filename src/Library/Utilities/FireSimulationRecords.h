@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  FireSimulationRecords.h - Phase-C thermochemistry and transport records
+//  FireSimulationRecords.h - Phase-C open physical-property record subsets
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

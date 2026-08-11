@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,30 @@ namespace
 		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
 	}
 
+	RISECBOR64::Value TwoKnotFirstTransportCurve(
+		const RISECBOR64::Value& record
+		)
+	{
+		RISECBOR64::Value::Values species = record.Find("species")->GetArray();
+		RISECBOR64::Value model = *species[0].Find("viscosity_model");
+		RISECBOR64::Value::Values rows = model.Find("rows")->GetArray();
+		rows.resize(2);
+		RISECBOR64::Value interpolation = *model.Find("interpolation");
+		RISECBOR64::Value::Values slopes = interpolation.Find("slopes")->GetArray();
+		RISECBOR64::Value::Values enclosures = interpolation.Find(
+			"derivative_enclosures")->GetArray();
+		slopes.resize(2);
+		enclosures.resize(1);
+		interpolation = ReplaceMember(interpolation,"slopes",
+			RISECBOR64::Value::ArrayValue(slopes));
+		interpolation = ReplaceMember(interpolation,"derivative_enclosures",
+			RISECBOR64::Value::ArrayValue(enclosures));
+		model = ReplaceMember(model,"rows",RISECBOR64::Value::ArrayValue(rows));
+		model = ReplaceMember(model,"interpolation",interpolation);
+		species[0] = ReplaceMember(species[0],"viscosity_model",model);
+		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
+	}
+
 	template<class Record>
 	bool Rejects( const RISECBOR64::Value& value )
 	{
@@ -145,7 +170,7 @@ int main()
 	Check(transport.IsValid(),"embedded transport record loads");
 	Check(!thermo.IsPredictiveQualified(),"open thermochemistry subset remains preview-only");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
-	Check(thermo.PredictiveBlockers().size() == 4,
+	Check(thermo.PredictiveBlockers().size() == 8,
 		"thermochemistry exposes every unresolved licensed/estimation field");
 	Check(transport.PredictiveBlockers().size() == 1,
 		"transport exposes its unpublished-fit uncertainty blocker");
@@ -153,7 +178,7 @@ int main()
 		"canonical records have content identities");
 	Check(thermo.TemperatureMinK() == 300.0 && thermo.TemperatureMaxK() == 5000.0,
 		"thermochemistry common domain is frozen");
-	Check(transport.TemperatureMinK() == 300.0 && transport.TemperatureMaxK() == 5000.0,
+	Check(transport.TemperatureMinK() == 300.0 && transport.TemperatureMaxK() == 3000.0,
 		"transport common domain is frozen");
 	Check(transport.TurbulentPrandtl() == 0.7 && transport.TurbulentSchmidt() == 0.7,
 		"turbulent transport constants come from the record");
@@ -213,7 +238,7 @@ int main()
 		"transport anchors match the frozen GRI/Cantera evaluation");
 	Check(!transport.ViscosityPaS("N2",299.999,unused),
 		"transport rejects below-domain lookup");
-	Check(!transport.ConductivityWPerMK("N2",5000.001,unused),
+	Check(!transport.ConductivityWPerMK("N2",3000.001,unused),
 		"transport rejects above-domain lookup");
 
 	const std::vector<std::pair<std::string,double> > pure = {{"N2",4.0}};
@@ -266,6 +291,30 @@ int main()
 		transportValue,"clamp")),"transport rejects a non-reject out-of-domain policy");
 	Check(Rejects<FireSimulationTransportRecord>(UnderstateFirstDerivativeEnclosure(
 		transportValue)),"transport rejects a false derivative enclosure");
+	Check(Rejects<FireSimulationTransportRecord>(TwoKnotFirstTransportCurve(
+		transportValue)),"two-knot transport input is handled without out-of-bounds access");
+	RISECBOR64::Value extremeSegment = ReplaceFirstThermoSegmentMember(thermoValue,
+		"temperature_min_K",RISECBOR64::Value::Float(1.0e16));
+	extremeSegment = ReplaceFirstThermoSegmentMember(extremeSegment,
+		"temperature_max_K",RISECBOR64::Value::Float(1.0e16+4.0));
+	Check(Rejects<FireSimulationThermochemistryRecord>(extremeSegment),
+		"extreme malformed segment rejects before certificate iteration");
+	const std::vector<std::pair<std::string,double> > overflowingDensities = {
+		{"N2",std::numeric_limits<double>::max()},
+		{"O2",std::numeric_limits<double>::max()}
+	};
+	Check(!thermo.MixtureSensibleEnergyJPerM3(overflowingDensities,300.0,unused),
+		"mixture energy rejects overflowing mass accumulation");
+	FireSimulationThermochemistryRecord invalidatedThermo;
+	Check(invalidatedThermo.LoadCanonicalRecord(thermo.RecordBytes()),
+		"reload regression starts from a valid thermochemistry record");
+	const RISECBOR64::Bytes malformedBytes(1,0xff);
+	Check(!invalidatedThermo.LoadCanonicalRecord(malformedBytes) &&
+		!invalidatedThermo.IsValid() && invalidatedThermo.RecordBytes().empty() &&
+		!invalidatedThermo.FindSpecies("N2"),
+		"failed reload clears all previously valid thermochemistry state");
+	Check(!transport.MixtureViscosityPaS(binary,invalidatedThermo,300.0,unused),
+		"transport rejects an invalid thermochemistry dependency");
 
 	if( failures ) {
 		std::printf("FireSimulationRecordsTest: %d failure(s)\n",failures);

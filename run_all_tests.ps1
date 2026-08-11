@@ -52,6 +52,9 @@ $RiseLibrary = if ($Config -eq 'Debug') {
 $FireOpticsGenerator = Join-Path $RepoRoot 'tools\generate_fire_optics_records.py'
 $FireOpticsData = Join-Path $RepoRoot 'docs\data'
 $FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecordData.inc'
+$FireSimulationGenerator = Join-Path $RepoRoot 'tools\generate_fire_simulation_records.py'
+$FireSimulationData = Join-Path $RepoRoot 'docs\data\source_pulls\fire_sim_open_sources_v1.json'
+$FireSimulationEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireSimulationRecordData.inc'
 
 $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 if (-not $python) {
@@ -63,6 +66,13 @@ if (-not $python) {
 }
 Write-Host -NoNewline 'Checking embedded fire-optics records ... '
 & $python $FireOpticsGenerator --check $FireOpticsData $FireOpticsEmbedded
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
+Write-Host -NoNewline 'Checking embedded fire-simulation records ... '
+& $python $FireSimulationGenerator --check $FireSimulationData $FireSimulationEmbedded
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAILED' -ForegroundColor Red
     exit $LASTEXITCODE
