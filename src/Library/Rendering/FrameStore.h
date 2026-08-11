@@ -64,6 +64,7 @@ namespace RISE
 		class FrameStoreBulkBracket;
 		class PixelBasedRasterizerHelper;
 		class Rasterizer;
+		class ViewportFrameStore;
 	}
 
 	namespace FrameStoreOutput
@@ -150,8 +151,6 @@ namespace RISE
 		class FrameStore : public virtual Reference
 		{
 		public:
-			class ObserverMutationToken;
-
 			using Spec        = FrameStoreOutput::FrameStoreSpec;
 			using Metadata    = FrameStoreOutput::Metadata;
 			using ChannelId   = FrameStoreOutput::ChannelId;
@@ -248,28 +247,6 @@ namespace RISE
 			//! Detach a render observer.  Safe to call if the
 			//! observer was never attached (silent no-op).
 			void RemoveObserver( IRenderObserver* observer );
-
-			//! Prepared observer mutations for an atomic cross-store handoff.
-			//! A prepared removal leaves the observer registered but blocks new
-			//! callback claims until commit or token destruction.  A prepared
-			//! registration reserves vector capacity without publishing the
-			//! observer.  Token destruction rolls either preparation back.
-			ObserverMutationToken PrepareObserverRemoval(
-				IRenderObserver* observer );
-			ObserverMutationToken PrepareObserverRegistration();
-			void LockPreparedObserverMutation( ObserverMutationToken& token );
-			static void LockPreparedObserverMutations(
-				ObserverMutationToken& first,
-				ObserverMutationToken& second );
-			void CommitPreparedObserverRemoval(
-				ObserverMutationToken& token ) noexcept;
-			void CommitPreparedObserverRegistration(
-				ObserverMutationToken& token,
-				IRenderObserver* observer ) noexcept;
-			void CommitPreparedObserverReplacement(
-				ObserverMutationToken& registration,
-				ObserverMutationToken& removal,
-				IRenderObserver* observer ) noexcept;
 
 			// ── read-side API (UI, encoders) ──────────────────────
 
@@ -471,9 +448,32 @@ namespace RISE
 
 		private:
 			friend class FrameStoreBulkBracket;
-
-			friend class PixelBasedRasterizerHelper;
 			friend class Rasterizer;
+			friend class PixelBasedRasterizerHelper;
+			friend class ViewportFrameStore;
+
+			class ObserverMutationToken;
+
+			//! Prepared observer mutations are private transaction machinery for
+			//! ViewportFrameStore.  A prepared removal leaves the observer
+			//! registered but blocks new callback claims until commit or token
+			//! destruction.  A prepared registration reserves vector capacity
+			//! without publishing the observer.  Token destruction rolls either
+			//! preparation back while the owning FrameStore is retained by VFS.
+			ObserverMutationToken PrepareObserverRemoval(
+				IRenderObserver* observer );
+			ObserverMutationToken PrepareObserverRegistration();
+			static void LockPreparedObserverMutations(
+				const std::vector<ObserverMutationToken*>& tokens );
+			void CommitPreparedObserverRemoval(
+				ObserverMutationToken& token ) noexcept;
+			void CommitPreparedObserverRegistration(
+				ObserverMutationToken& token,
+				IRenderObserver* observer ) noexcept;
+			void CommitPreparedObserverReplacement(
+				ObserverMutationToken& registration,
+				ObserverMutationToken& removal,
+				IRenderObserver* observer ) noexcept;
 			//! Freezes the identity-bearing fire envelope while a rasterizer is
 			//! executing an authorized fire render.  Exposure/sample/frame progress
 			//! and finalized-primary linkage remain independently writable.

@@ -377,10 +377,11 @@ namespace RISE
 			// `RemoveObserver`, deadlocking against in-flight
 			// observer dispatches that re-enter chainMutex_ via
 			// `RenderToBuffer`.  Replacement: `BindFrameStore(nullptr)`
-			// uses a serialized phased pattern (snapshot + drop lock +
-			// RemoveObserver + rollback-or-cleanup) that doesn't deadlock
-			// and preserves the old chain if removal fails. See
-			// ViewportFrameStore.cpp for details.
+			// uses a serialized transaction: prepare registration/removal
+			// without the chain lock, quiesce callback claims, acquire one
+			// observer mutex per distinct FrameStore in address order, then
+			// commit registrations and chain pointers together.  Preparation
+			// failure leaves the old chain published. See ViewportFrameStore.cpp.
 
 			struct DormantChain;
 

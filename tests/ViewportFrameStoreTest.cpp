@@ -1227,6 +1227,40 @@ namespace
 		vfs->release();
 	}
 
+	void TestBindDormantStoreAsExternal()
+	{
+		auto* vfs = new ViewportFrameStore();
+		std::atomic<int> frames{0};
+		vfs->SetFrameCompleteCallback(
+			[&frames]( unsigned int, uint64_t ) { ++frames; });
+
+		auto* imageA = MakeTestImage();
+		vfs->OutputImage(*imageA,nullptr,0u);
+		FrameStore* dormantCandidate = vfs->GetFrameStore();
+		dormantCandidate->addref();
+
+		auto* imageB = MakeTestImage(32u,32u);
+		vfs->OutputImage(*imageB,nullptr,1u);
+		Check(vfs->GetFrameStore() != dormantCandidate,
+			"dormant bind: resolution change parks the original store");
+
+		vfs->BindFrameStore(dormantCandidate);
+		Check(vfs->IsExternallyBound(),
+			"dormant bind: cached store becomes an external binding");
+		Check(vfs->GetFrameStore() == dormantCandidate,
+			"dormant bind: cached store is the published active store");
+
+		const int before = frames.load();
+		dormantCandidate->MarkFrameComplete(2u);
+		Check(frames.load() == before+1,
+			"dormant bind: replacement observer receives one frame callback");
+
+		safe_release(imageB);
+		safe_release(imageA);
+		vfs->release();
+		safe_release(dormantCandidate);
+	}
+
 	// ─── Section 7: multi-frame reuse ─────────────────────────────
 	void TestMultiFrameReuse()
 	{
@@ -2212,6 +2246,7 @@ int main()
 	TestNonFireSavesLeaseOutputClassification();
 	TestRasterizerSwap();
 	TestResolutionChange();
+	TestBindDormantStoreAsExternal();
 	TestMultiFrameReuse();
 	TestMidRenderSaveAs();
 	TestPreparedFireFrameCannotPublish();

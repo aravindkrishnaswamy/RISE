@@ -169,9 +169,10 @@ namespace RISE
 		// re-enters `chainMutex_` (via `RenderToBuffer`) would
 		// deadlock against `RemoveObserver`'s wait protocol.
 		//
-		// Replacement: `BindFrameStore(nullptr)` does the same
-		// teardown work via snapshot, unlocked observer removal,
-		// atomic pointer commit, and cleanup.
+		// Replacement: `BindFrameStore(nullptr)` prepares observer
+		// removal without the chain lock, quiesces new callback claims,
+		// then commits the observer mutation and pointer swap atomically
+		// under deterministic observer-store locks plus chainMutex_.
 		// The dtor uses it; `EnsureChain` still uses
 		// `ParkActiveAsDormant_locked` for dim changes (which
 		// doesn't call `RemoveObserver`).  No other in-tree caller
@@ -416,20 +417,19 @@ namespace RISE
 			}
 
 			FrameStore* committedStore = candidate.store;
+			std::vector<FrameStore::ObserverMutationToken*> mutationTokens;
+			if( candidateRegistration ) {
+				mutationTokens.push_back(&*candidateRegistration);
+			}
+			if( oldObserverRemoval ) {
+				mutationTokens.push_back(&*oldObserverRemoval);
+			}
 			for( size_t i=0; i<oldDormant.size(); ++i ) {
 				if( dormantRemovals[i] && dormantRemovals[i]->IsPrepared() ) {
-					oldDormant[i].fs->LockPreparedObserverMutation(
-						*dormantRemovals[i]);
+					mutationTokens.push_back(&*dormantRemovals[i]);
 				}
 			}
-			if( candidateRegistration && oldObserverRemoval ) {
-				FrameStore::LockPreparedObserverMutations(
-					*candidateRegistration,*oldObserverRemoval);
-			} else if( candidateRegistration ) {
-				candidate.store->LockPreparedObserverMutation(*candidateRegistration);
-			} else if( oldObserverRemoval ) {
-				oldFs->LockPreparedObserverMutation(*oldObserverRemoval);
-			}
+			FrameStore::LockPreparedObserverMutations(mutationTokens);
 			{
 				std::unique_lock<std::shared_mutex> lock(chainMutex_);
 				externalFrameStore_ = candidate.store;
@@ -438,14 +438,29 @@ namespace RISE
 				observer_ = candidate.observer;
 				dormant_.clear();
 				if( candidate.observer ) candidate.observer->Activate();
-				if( candidateRegistration && oldObserverRemoval &&
-					candidate.store == oldFs ) {
-					candidate.store->CommitPreparedObserverReplacement(
-						*candidateRegistration,*oldObserverRemoval,
-						candidate.observer);
-				} else if( candidateRegistration ) {
-					candidate.store->CommitPreparedObserverRegistration(
-						*candidateRegistration,candidate.observer);
+				if( candidateRegistration ) {
+					bool replacementCommitted = false;
+					if( oldObserverRemoval && candidate.store == oldFs ) {
+						candidate.store->CommitPreparedObserverReplacement(
+							*candidateRegistration,*oldObserverRemoval,
+							candidate.observer);
+						replacementCommitted = true;
+					} else {
+						for( size_t i=0; i<oldDormant.size(); ++i ) {
+							if( dormantRemovals[i] &&
+								candidate.store == oldDormant[i].fs ) {
+								candidate.store->CommitPreparedObserverReplacement(
+									*candidateRegistration,*dormantRemovals[i],
+									candidate.observer);
+								replacementCommitted = true;
+								break;
+							}
+						}
+					}
+					if( !replacementCommitted ) {
+						candidate.store->CommitPreparedObserverRegistration(
+							*candidateRegistration,candidate.observer);
+					}
 				}
 				if( oldObserverRemoval && oldObserverRemoval->IsPrepared() ) {
 					oldFs->CommitPreparedObserverRemoval(*oldObserverRemoval);

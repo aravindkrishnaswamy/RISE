@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <mutex>
@@ -1920,27 +1921,30 @@ namespace RISE
 			return token;
 		}
 
-		void FrameStore::LockPreparedObserverMutation(
-			ObserverMutationToken& token )
-		{
-			if( token.owner_ != this ) {
-				throw std::runtime_error("FrameStore observer mutation token mismatch");
-			}
-			if( !token.lock_.owns_lock() ) token.lock_.lock();
-		}
-
 		void FrameStore::LockPreparedObserverMutations(
-			ObserverMutationToken& first, ObserverMutationToken& second )
+			const std::vector<ObserverMutationToken*>& tokens )
 		{
-			if( !first.owner_ || !second.owner_ || first.lock_.owns_lock() ||
-				second.lock_.owns_lock() ) {
-				throw std::runtime_error(
-					"FrameStore observer mutation token pair mismatch");
+			std::vector<ObserverMutationToken*> distinctStores;
+			distinctStores.reserve(tokens.size());
+			for( ObserverMutationToken* token : tokens ) {
+				if( !token || !token->owner_ || token->lock_.owns_lock() ) {
+					throw std::runtime_error(
+						"FrameStore observer mutation token set mismatch");
+				}
+				const bool represented = std::any_of(
+					distinctStores.begin(),distinctStores.end(),
+					[token]( const ObserverMutationToken* candidate ) {
+						return candidate->owner_ == token->owner_;
+					});
+				if( !represented ) distinctStores.push_back(token);
 			}
-			if( first.owner_ == second.owner_ ) {
-				first.lock_.lock();
-			} else {
-				std::lock(first.lock_,second.lock_);
+			std::sort(distinctStores.begin(),distinctStores.end(),
+				[]( const ObserverMutationToken* lhs,
+					const ObserverMutationToken* rhs ) {
+					return std::less<FrameStore*>()(lhs->owner_,rhs->owner_);
+				});
+			for( ObserverMutationToken* token : distinctStores ) {
+				token->lock_.lock();
 			}
 		}
 
