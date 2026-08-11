@@ -1,7 +1,9 @@
 {
  "gri_mech_3": {
   "cantera_gri30_yaml_sha256": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
+  "cantera_source_revision": "v3.1.0",
   "cantera_version": "3.1.0",
+  "license": "Cantera gri30.yaml is BSD-3-Clause; original GRI-Mech transport.dat redistribution terms are not separately stated",
   "tables": {
    "Ar": {
     "columns": [
@@ -17907,6 +17909,7 @@
     ]
    ]
   },
+  "license": "NIST ThermoML public data; no SPDX identifier stated",
   "locator": "https://trc.nist.gov/ThermoML/10.1016/j.jct.2015.01.005.json",
   "sha256": "64186a74e71e3b973ab7ea385ba42ef9d2583ce73323c4f9f42435c7503f632b"
  },

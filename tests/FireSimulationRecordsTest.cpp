@@ -46,6 +46,18 @@ namespace
 		return RISECBOR64::Value::MapValue(members);
 	}
 
+	RISECBOR64::Value RemoveMember(
+		const RISECBOR64::Value& map,
+		const char* key
+		)
+	{
+		RISECBOR64::Value::Members members;
+		for( const auto& member : map.GetMap() ) {
+			if( member.first != key ) members.push_back(member);
+		}
+		return RISECBOR64::Value::MapValue(members);
+	}
+
 	RISECBOR64::Value ReplaceFirstThermoSegmentMember(
 		const RISECBOR64::Value& record,
 		const char* key,
@@ -170,7 +182,7 @@ int main()
 	Check(transport.IsValid(),"embedded transport record loads");
 	Check(!thermo.IsPredictiveQualified(),"open thermochemistry subset remains preview-only");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
-	Check(thermo.PredictiveBlockers().size() == 8,
+	Check(thermo.PredictiveBlockers().size() == 9,
 		"thermochemistry exposes every unresolved licensed/estimation field");
 	Check(transport.PredictiveBlockers().size() == 1,
 		"transport exposes its unpublished-fit uncertainty blocker");
@@ -315,6 +327,23 @@ int main()
 		"failed reload clears all previously valid thermochemistry state");
 	Check(!transport.MixtureViscosityPaS(binary,invalidatedThermo,300.0,unused),
 		"transport rejects an invalid thermochemistry dependency");
+	Check(Rejects<FireSimulationThermochemistryRecord>(RemoveMember(thermoValue,"version")),
+		"thermochemistry requires an aggregate record version");
+	RISECBOR64::Value referenceTemperature = *thermoValue.Find("reference_temperature_K");
+	RISECBOR64::Value referenceUncertainty = *referenceTemperature.Find("uncertainty");
+	referenceUncertainty = ReplaceMember(referenceUncertainty,"magnitude",
+		RISECBOR64::Value::Bool(false));
+	referenceTemperature = ReplaceMember(referenceTemperature,"uncertainty",referenceUncertainty);
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"reference_temperature_K",referenceTemperature)),
+		"uncertainty magnitude type is fail-closed");
+	FireSimulationTransportRecord invalidatedTransport;
+	Check(invalidatedTransport.LoadCanonicalRecord(transport.RecordBytes()),
+		"reload regression starts from a valid transport record");
+	Check(!invalidatedTransport.LoadCanonicalRecord(malformedBytes) &&
+		!invalidatedTransport.IsValid() && invalidatedTransport.RecordBytes().empty() &&
+		!invalidatedTransport.FindSpecies("N2"),
+		"failed reload clears all previously valid transport state");
 
 	if( failures ) {
 		std::printf("FireSimulationRecordsTest: %d failure(s)\n",failures);

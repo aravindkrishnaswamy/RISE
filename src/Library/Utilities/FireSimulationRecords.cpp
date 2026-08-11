@@ -150,10 +150,41 @@ namespace RISE
 			if( !magnitude || magnitude->GetType() == RISECBOR64::Value::Null ) {
 				return Fail(error,"fire-simulation uncertainty magnitude is missing");
 			}
+			auto readInterval = [error]( const RISECBOR64::Value& encoded ) {
+				std::vector<double> interval;
+				return ReadFloatArray(encoded,interval,error) && interval.size() == 2 &&
+					interval[0] <= interval[1];
+			};
 			if( kind == "design_pinned_exact" || kind == "synthetic_exact" ) {
 				double number = 0.0;
 				if( !ReadNumber(*magnitude,number,error) || number != 0.0 ) {
 					return Fail(error,"fire-simulation exact uncertainty is not zero");
+				}
+			}
+			if( kind == "range" || kind == "computed_range_from_input_sensitivity" ) {
+				if( !readInterval(*magnitude) ) {
+					return Fail(error,"fire-simulation range uncertainty magnitude is malformed");
+				}
+			}
+			if( kind == "assumption_bound" ) {
+				double number = 0.0;
+				if( magnitude->GetType() == RISECBOR64::Value::Array ) {
+					if( !readInterval(*magnitude) ) {
+						return Fail(error,"fire-simulation assumption-bound interval is malformed");
+					}
+				} else if( !ReadNumber(*magnitude,number,error) || number < 0.0 ) {
+					return Fail(error,"fire-simulation assumption-bound magnitude is malformed");
+				}
+			}
+			if( kind == "expanded_95" || kind == "measured_1sigma" ) {
+				double number = 0.0;
+				if( magnitude->GetType() == RISECBOR64::Value::Text ) {
+					if( magnitude->GetText().compare(0,7,"column:") != 0 ||
+						magnitude->GetText().size() == 7 ) {
+						return Fail(error,"fire-simulation measured uncertainty column reference is malformed");
+					}
+				} else if( !ReadNumber(*magnitude,number,error) || number < 0.0 ) {
+					return Fail(error,"fire-simulation measured uncertainty magnitude is malformed");
 				}
 			}
 			if( kind == "assumption_bound" || kind == "computed_range_from_input_sensitivity" ) {
@@ -553,12 +584,13 @@ namespace RISE
 		std::string* error
 		)
 	{
-		std::string kind, status, schema;
+		std::string kind, status, schema, version;
 		double backgroundPressure = 0.0, ambientTemperature = 0.0;
 		if( !ValidateSchemaHeader(record,error) ||
 			!ReadText(record,"record_kind",kind,error) ||
 				kind != "fire_sim_thermochemistry_property_subset" ||
 			!ReadText(record,"record_name",m_recordName,error) ||
+			!ReadText(record,"version",version,error) ||
 			!ReadText(record,"record_status",status,error) || status != "preview_only" ||
 			!ReadText(record,"provenance_schema",schema,error) ||
 			schema != "fire-optics-canonical-provenance-schema-v1" ||
@@ -580,9 +612,11 @@ namespace RISE
 			record,"species",RISECBOR64::Value::Array,error);
 		const RISECBOR64::Value* ambientMassFractions = Required(
 			record,"ambient_mass_fractions",RISECBOR64::Value::Map,error);
-		if( !encodedSpecies || encodedSpecies->GetArray().empty() || !ambientMassFractions ) return false;
+		if( !encodedSpecies || encodedSpecies->GetArray().empty() ||
+			encodedSpecies->GetArray().size() > 256 || !ambientMassFractions ) return false;
 		m_species.clear();
 		std::set<std::string> ids;
+		std::size_t certificateWork = 0;
 		for( const RISECBOR64::Value& encoded : encodedSpecies->GetArray() ) {
 			FireThermochemistrySpecies species;
 			std::string phase;
@@ -609,6 +643,7 @@ namespace RISE
 			std::string modelKind;
 			double modelMinimum = 0.0, modelMaximum = 0.0, modelReference = 0.0;
 			if( !model || !segments || segments->GetArray().empty() ||
+				segments->GetArray().size() > 64 ||
 				!ReadText(*model,"kind",modelKind,error) ||
 				modelKind != "nasa9_cp_with_continuous_integrated_hs_v1" ||
 				!ReadDomain(*model,"temperature_domain_K",modelMinimum,modelMaximum,error) ||
@@ -632,6 +667,13 @@ namespace RISE
 					segment.certifiedCpLowerJPerKGK <= 0.0 ) {
 					return Fail(error,"fire-simulation thermochemistry segment is invalid");
 				}
+				const std::size_t segmentWork = static_cast<std::size_t>(std::min(
+					65536.0,std::max(1.0,std::ceil(segment.temperatureMaxK-
+					segment.temperatureMinK))));
+				if( certificateWork > 1000000-segmentWork ) {
+					return Fail(error,"fire-simulation cp certificate work budget is exceeded");
+				}
+				certificateWork += segmentWork;
 				for( std::size_t i=0; i<7; ++i ) segment.coefficients[i] = coefficients[i];
 				const double verifiedLower = CertifiedCpLower(segment,species.molecularWeightKGPerKMol);
 				const double tolerance = 128.0*std::numeric_limits<double>::epsilon()*
@@ -829,11 +871,12 @@ namespace RISE
 		std::string* error
 		)
 	{
-		std::string kind, status, schema, viscosityMix, conductivityMix;
+		std::string kind, status, schema, version, viscosityMix, conductivityMix;
 		std::string lewisLaw, wallStress, wallHeatFlux, filterWidths;
 		if( !ValidateSchemaHeader(record,error) ||
 			!ReadText(record,"record_kind",kind,error) || kind != "fire_sim_transport_closure" ||
 			!ReadText(record,"record_name",m_recordName,error) ||
+			!ReadText(record,"version",version,error) ||
 			!ReadText(record,"record_status",status,error) || status != "preview_only" ||
 			!ReadText(record,"provenance_schema",schema,error) ||
 			schema != "fire-optics-canonical-provenance-schema-v1" ||
