@@ -3,8 +3,8 @@
 // Mirrors the Objective-C++ RISEBridge.mm on macOS. The bridge is a thin C++
 // class that:
 //   - owns the job,
-//   - owns the framebuffer (RGBA8, allocated once per scene),
-//   - owns the progress / rasterizer-output / logger adapters,
+//   - owns the framebuffer (RGBA8, resized with the active display output),
+//   - owns the progress, VFS/fallback-output, and logger adapters,
 //   - forwards cancellation requests to an atomic flag read by the progress
 //     callback from worker threads.
 //
@@ -71,8 +71,8 @@ public:
 
     // Blocking render. MUST be called from a non-UI thread. The library's
     // own pthread worker pool dispatches tiles underneath this call. The
-    // RasterizerOutputImpl callback fires from those workers and writes
-    // into m_framebuffer while calling back into Kotlin.
+    // production VFS publishes coherent display snapshots and invalidation
+    // callbacks to Kotlin.
     bool rasterize();
 
     // The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")
@@ -110,14 +110,13 @@ public:
     // Dimensions, generation, and copy status are captured under one lock.
     jobject copyFramebufferSnapshot(JNIEnv* env, jobject destination) const;
 
-    // Internal: called by RasterizerOutputImpl on the first tile callback
-    // when scene dimensions become known. Allocates m_framebuffer if needed
-    // and notifies the Kotlin callback via onSceneReady. Thread-safe.
+    // Internal: called by the production and interactive display paths when
+    // their output dimensions become known or change. Reallocates the
+    // framebuffer as needed and notifies Kotlin via onSceneReady. Thread-safe.
     void ensureFramebuffer(unsigned w, unsigned h);
 
-    // Internal: called by RasterizerOutputImpl on every tile callback to
-    // copy the dirty region from RGBA16 source into the RGBA8 framebuffer
-    // and notify Kotlin via onRegionInvalidated.
+    // Internal: legacy interactive-fallback blit. Copies one dirty region
+    // from RGBA16 into the RGBA8 framebuffer and notifies Kotlin.
     void writeDirtyRegion(const unsigned short* src16,
                           unsigned w, unsigned h,
                           unsigned top, unsigned left,
@@ -392,8 +391,8 @@ private:
     mutable std::mutex            m_etaMutex;
     RISE::RenderETAEstimator      m_eta;
 
-    // Framebuffer: RGBA8, allocated once per scene, reused across tiles and
-    // across renders of the same scene dimensions.
+    // Framebuffer: RGBA8, reallocated whenever either display producer changes
+    // dimensions and reused while those dimensions remain stable.
     mutable std::mutex m_fbMutex;
     uint8_t*           m_framebuffer = nullptr;
     unsigned           m_fbWidth  = 0;

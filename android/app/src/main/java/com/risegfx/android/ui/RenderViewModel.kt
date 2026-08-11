@@ -175,8 +175,11 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
      * loading; restarts it on completion so the user can immediately drag.
      */
     fun loadAndRender(scenePath: String) {
-        renderJob?.cancel()
-        etaPollJob?.cancel()
+        // A coroutine cancellation cannot interrupt nativeLoadScene or
+        // nativeRasterize while either blocking JNI call is executing. Never
+        // start a second scene lifecycle until the active one has returned.
+        if (renderJob?.isActive == true) return
+        stopRenderPolling()
         // Tear down the previous viewport (if any) before swapping scenes —
         // the controller borrows pointers into the IJob that nativeLoadScene
         // is about to replace.
@@ -233,15 +236,13 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
 
                 runProductionRenderInternal()
             } catch (c: CancellationException) {
-                etaPollJob?.cancel()
-                etaPollJob = null
                 _state.value = RenderState.Cancelled
                 throw c
             } catch (t: Throwable) {
-                etaPollJob?.cancel()
-                etaPollJob = null
                 Log.e(TAG, "loadAndRender failed", t)
                 _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
+            } finally {
+                stopRenderPolling()
             }
         }
     }
@@ -259,24 +260,22 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             try {
                 runProductionRenderInternal()
             } catch (c: CancellationException) {
-                etaPollJob?.cancel()
-                etaPollJob = null
-                // L8 round 9 — also cancel the progressive-update poll
-                // on cancellation paths so it doesn't outlive the
-                // render coroutine.
-                progressivePollJob?.cancel()
-                progressivePollJob = null
                 _state.value = RenderState.Cancelled
                 throw c
             } catch (t: Throwable) {
-                etaPollJob?.cancel()
-                etaPollJob = null
-                progressivePollJob?.cancel()
-                progressivePollJob = null
                 Log.e(TAG, "startRender failed", t)
                 _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
+            } finally {
+                stopRenderPolling()
             }
         }
+    }
+
+    private fun stopRenderPolling() {
+        progressivePollJob?.cancel()
+        progressivePollJob = null
+        etaPollJob?.cancel()
+        etaPollJob = null
     }
 
     private suspend fun runProductionRenderInternal() {

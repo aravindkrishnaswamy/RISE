@@ -20,8 +20,9 @@ interface RiseCallback {
     fun onProgress(progress: Float)
 
     /**
-     * Fired once per scene, when the first tile callback arrives and the
-     * dimensions become known. After this,
+     * Fired whenever the native display framebuffer is allocated or resized.
+     * Adaptive interactive rendering can therefore fire this multiple times
+     * within one scene. After each notification,
      * [RiseNative.nativeCopyFramebuffer] can copy a snapshot of size w*h*4
      * into caller-owned storage.
      */

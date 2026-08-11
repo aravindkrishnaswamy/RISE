@@ -1042,9 +1042,18 @@ int main()
 		const std::string androidNative = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"nativebridge"/"RiseNative.kt");
+		const std::string androidCallback = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"nativebridge"/"RiseCallback.kt");
+		const std::string androidRenderSmoke = slurp(
+			repoRoot/"android"/"app"/"src"/"androidTest"/"java"/"com"/"risegfx"/
+			"android"/"RenderSmokeTest.kt");
 		const std::string androidRenderViewModel = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"ui"/"RenderViewModel.kt");
+		const std::string androidRenderScreen = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"RenderScreen.kt");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("byte-for-byte at EV=0") == std::string::npos &&
@@ -1070,6 +1079,8 @@ int main()
 			"Android publishes its production VFS before UI polling can begin" );
 		const std::string androidSnapshot = braceBody(
 			androidBridgeSource,"RiseBridge::copyFramebufferSnapshot(");
+		const std::string androidLoadAndRender = braceBody(
+			androidRenderViewModel,"fun loadAndRender(");
 		Check(androidBridgeSource.find("NewDirectByteBuffer") == std::string::npos &&
 			androidSnapshot.find("std::lock_guard<std::mutex> lock(m_fbMutex)") !=
 				std::string::npos &&
@@ -1079,8 +1090,31 @@ int main()
 			androidNative.find("nativeCopyFramebuffer(destination: ByteBuffer)") !=
 				std::string::npos &&
 			androidRenderViewModel.find("ByteBuffer.allocateDirect") !=
+				std::string::npos &&
+			androidRenderSmoke.find("firstNonZeroByteIndex") != std::string::npos &&
+			androidRenderSmoke.find(
+				"secondBytes.put(knownNonZeroIndex, poisonByte)") != std::string::npos &&
+			androidRenderSmoke.find("next.generation == fb.generation") !=
 				std::string::npos,
 			"Android framebuffer handoff copies a locked snapshot into Java-owned storage" );
+		Check(androidLoadAndRender.find("if (renderJob?.isActive == true) return") !=
+				std::string::npos &&
+			androidLoadAndRender.find("renderJob?.cancel()") == std::string::npos &&
+			androidRenderViewModel.find("finally {\n                stopRenderPolling()") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Loading") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Rendering") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Cancelling") !=
+				std::string::npos &&
+			androidRenderScreen.find("enabled = canSelectScene") !=
+				std::string::npos,
+			"Android serializes blocking JNI scene lifecycles and always stops render polls" );
+		Check(androidBridgeHeader.find("allocated once per scene") == std::string::npos &&
+			androidBridgeHeader.find("RasterizerOutputImpl callback") == std::string::npos &&
+			androidCallback.find("Fired once per scene") == std::string::npos,
+			"Android framebuffer contracts describe adaptive VFS dimension changes" );
 		Check(riseBridgeHeader.find("~10 ns") == std::string::npos &&
 			riseBridgeHeader.find("~5 ms") == std::string::npos &&
 			riseBridge.find("atomic, lock-free") == std::string::npos &&

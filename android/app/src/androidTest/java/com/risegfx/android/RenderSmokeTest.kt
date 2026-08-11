@@ -11,7 +11,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -82,29 +81,39 @@ class RenderSmokeTest {
             fb.byteCount == fb.width * fb.height * 4,
         )
         assertTrue("framebuffer snapshot should fit caller storage", fb.copied)
-        assertFrameHasNonZeroPixel(firstBytes, fb.byteCount)
+        val knownNonZeroIndex = firstNonZeroByteIndex(firstBytes, fb.byteCount)
+        assertTrue(
+            "framebuffer is entirely zero — render did not produce output",
+            knownNonZeroIndex >= 0,
+        )
 
-        val originalFirstByte = firstBytes.get(0)
-        firstBytes.put(0, (originalFirstByte.toInt() xor 0xFF).toByte())
+        val originalByte = firstBytes.get(knownNonZeroIndex)
+        firstBytes.put(knownNonZeroIndex, (originalByte.toInt() xor 0xFF).toByte())
         val secondBytes = ByteBuffer.allocateDirect(fb.byteCount)
+        val poisonByte = (originalByte.toInt() xor 0xFF).toByte()
+        secondBytes.put(knownNonZeroIndex, poisonByte)
         val nullableNext = RiseNative.nativeCopyFramebuffer(secondBytes)
         assertNotNull("second framebuffer snapshot not allocated", nullableNext)
         val next = requireNotNull(nullableNext)
         assertTrue(
+            "second snapshot envelope must describe the same completed frame",
+            next.width == fb.width && next.height == fb.height &&
+                next.byteCount == fb.byteCount && next.generation == fb.generation,
+        )
+        assertTrue(
             "mutating caller-owned storage must not mutate the native framebuffer",
-            next.copied && secondBytes.get(0) == originalFirstByte,
+            next.copied && secondBytes.get(knownNonZeroIndex) == originalByte &&
+                secondBytes.get(knownNonZeroIndex) != poisonByte,
         )
     }
 
-    private fun assertFrameHasNonZeroPixel(buffer: ByteBuffer, byteCount: Int) {
-        var hasNonZero = false
+    private fun firstNonZeroByteIndex(buffer: ByteBuffer, byteCount: Int): Int {
         for (i in 0 until byteCount) {
             if (buffer.get(i).toInt() and 0xFF != 0) {
-                hasNonZero = true
-                break
+                return i
             }
         }
-        assertFalse("framebuffer is entirely zero — render did not produce output", !hasNonZero)
+        return -1
     }
 
     companion object {

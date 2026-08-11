@@ -113,6 +113,8 @@ fun RenderScreen(
     // want — match the Mac/Win convention of "save the finished
     // image").
     val canSave = state is RenderState.Done || state is RenderState.Cancelled
+    val canSelectScene = state !is RenderState.Loading &&
+        state !is RenderState.Rendering && state !is RenderState.Cancelling
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -126,6 +128,7 @@ fun RenderScreen(
                 ScenePickerBar(
                     modifier = Modifier.fillMaxWidth(),
                     selected = selectedScene,
+                    enabled = canSelectScene,
                     onSceneSelected = { entry ->
                         selectedScene = entry
                         viewModel.loadAndRender(SceneCatalog.absolutePath(riseRoot, entry))
@@ -194,6 +197,7 @@ fun RenderScreen(
 private fun ScenePickerBar(
     modifier: Modifier = Modifier,
     selected: SceneEntry?,
+    enabled: Boolean,
     onSceneSelected: (SceneEntry) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -210,6 +214,7 @@ private fun ScenePickerBar(
             ) {
                 OutlinedButton(
                     onClick = { expanded = true },
+                    enabled = enabled,
                     modifier = Modifier.widthIn(min = 200.dp),
                 ) {
                     Text(
@@ -230,7 +235,7 @@ private fun ScenePickerBar(
                 }
             }
             DropdownMenu(
-                expanded = expanded,
+                expanded = expanded && enabled,
                 onDismissRequest = { expanded = false },
                 // Cap the width so very long descriptions don't blow
                 // the menu out across the whole screen.
@@ -238,6 +243,7 @@ private fun ScenePickerBar(
             ) {
                 SceneCatalog.bundled.forEach { entry ->
                     DropdownMenuItem(
+                        enabled = enabled,
                         text = {
                             Column {
                                 Text(
