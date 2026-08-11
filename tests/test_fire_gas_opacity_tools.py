@@ -11,6 +11,7 @@ import math
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -21,15 +22,24 @@ FIXTURE = REPO / "tests/fixtures/fire_gas_opacity"
 sys.path.insert(0, str(TOOLS))
 
 from fire_gas_opacity import (  # noqa: E402
-    C2_CM_K, PartitionSums, iter_hitran_lines, line_intensity,
+    C2_CM_K, PartitionSums, conservative_voigt_bin_weights,
+    iter_hitran_lines, line_intensity,
     parse_hitran160, planck_weight_wavenumber, species_spectra_batch,
-    spectral_grid, voigt_interval_probability, voigt_profile_cm,
+    spectral_grid, tensor_linear_derivative_certificate,
+    voigt_interval_probability, voigt_profile_cm,
+    voigt_profile_interval_upper,
 )
 from generate_fire_gas_opacity_record import (  # noqa: E402
-    evaluate_mixture_planck_mean, evaluate_species_planck_mean, generate,
-    generator_identity, load_verified_manifest,
+    evaluate_mixture_planck_mean, evaluate_species_kappa_bin,
+    evaluate_species_planck_mean, generate, generator_identity,
+    load_verified_manifest,
 )
-from crosscheck_fire_gas_opacity_em2c import homogeneous_emissivity, parse_em2c  # noqa: E402
+from build_fire_gas_opacity_native import build as build_native  # noqa: E402
+from fire_gas_opacity_native import species_spectra_batch_native  # noqa: E402
+from crosscheck_fire_gas_opacity_em2c import (  # noqa: E402
+    homogeneous_emissivity, parse_em2c, ratio_from_em2c_filename,
+    validate_case_ratio, validate_relative_tolerance,
+)
 
 
 class FireGasOpacityToolsTest(unittest.TestCase):
@@ -87,6 +97,22 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             (1.0 if index in (0, intervals) else 4.0 if index % 2 else 2.0)
             for index in range(intervals + 1)) * step / 3.0
         self.assertLess(abs(integrated - simpson) / simpson, 3.0e-5)
+        self.assertAlmostEqual(
+            voigt_interval_probability(25.0, 50.0, 0.1, 0.05),
+            0.00031831805653399656, delta=1.0e-12)
+        self.assertAlmostEqual(
+            voigt_interval_probability(-25.0, 25.0, 0.1, 0.05),
+            0.9987267417795154, delta=1.0e-12)
+        bound = voigt_profile_interval_upper(0.0, 0.001, 0.08)
+        actual_peak = voigt_profile_cm(0.0, 0.001, 0.08)
+        self.assertGreaterEqual(bound, actual_peak)
+
+    def test_voigt_tail_certificate_is_a_true_convolution_union_bound(self) -> None:
+        grid = spectral_grid(0.05, 20.05, 0.01)
+        _, tail_bound = conservative_voigt_bin_weights(
+            10.05, 1.0, 1.0, grid, 2.0)
+        actual_tail = 1.0 - voigt_interval_probability(-2.0, 2.0, 1.0, 1.0)
+        self.assertGreaterEqual(tail_bound, actual_tail)
 
     def test_bzip2_uses_the_same_hitran_parser(self) -> None:
         source = FIXTURE / "CO2-HITEMP2024.synthetic-hitran160.txt"
@@ -116,7 +142,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 path.write_text("200 100\n296 120\n3000 700\n", encoding="ascii")
                 q_entries.append((2, isotopologue, path))
             partition = PartitionSums.from_hitran_q_files(q_entries)
-            _, counts, _, _ = species_spectra_batch(
+            _, counts, _, _, _ = species_spectra_batch(
                 decoded, 2, {10: 0.044, 11: 0.045, 12: 0.046}, partition,
                 spectral_grid(50.0, 3000.0, 50.0), [300.0], 101325.0,
                 [0.0], [50.0])
@@ -141,7 +167,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
 
         one_shot = OneShot(lines)
         grid = spectral_grid(50.0, 3000.0, 50.0)
-        spectra, counts, _, _ = species_spectra_batch(
+        spectra, counts, _, _, _ = species_spectra_batch(
             one_shot, 1, {1: 0.018010565}, partition, grid,
             [300.0, 1000.0], 101325.0, [0.0, 1.0], [25.0, 50.0], [300.0])
         self.assertEqual(one_shot.passes, 1)
@@ -152,11 +178,11 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 areas = [sum(row) * step for row in self_rows]
                 self.assertTrue(all(value > 0.0 for value in areas))
 
-        aligned, _, _, _ = species_spectra_batch(
+        aligned, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, grid,
             [300.0], 101325.0, [0.0], [25.0])
         shifted_grid = spectral_grid(75.0, 3025.0, 50.0)
-        half_cell, _, _, _ = species_spectra_batch(
+        half_cell, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, shifted_grid,
             [300.0], 101325.0, [0.0], [25.0])
         self.assertAlmostEqual(sum(aligned[0][0][0]) * step,
@@ -188,20 +214,71 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             h2o["kappa_bin_average_per_m_per_unit_species_mole_fraction"][0],
             h2o["kappa_bin_average_per_m_per_unit_species_mole_fraction"][1])
 
+    def test_native_accumulator_matches_reference_and_has_production_throughput(self) -> None:
+        manifest = FIXTURE / "synthetic_manifest.json"
+        reference = generate(manifest, None)
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory) / ("fire-opacity-native.dll" if sys.platform == "win32"
+                                         else "libfire-opacity-native.so")
+            build_native(library)
+            native = generate(manifest, None, library)
+            self.assertEqual(native["accumulator_backend"], "native_streaming_v1")
+            for expected_species, actual_species in zip(
+                    reference["species_tables"], native["species_tables"]):
+                self.assertEqual(expected_species["species"], actual_species["species"])
+                self.assertEqual(expected_species["line_counts_used"],
+                                 actual_species["line_counts_used"])
+                expected = expected_species[
+                    "planck_mean_per_m_per_unit_species_mole_fraction"]
+                actual = actual_species[
+                    "planck_mean_per_m_per_unit_species_mole_fraction"]
+                for self_index in range(len(expected)):
+                    for gas_index in range(len(expected[self_index])):
+                        for radiation_index in range(len(expected[self_index][gas_index])):
+                            self.assertAlmostEqual(
+                                expected[self_index][gas_index][radiation_index],
+                                actual[self_index][gas_index][radiation_index],
+                                delta=1.0e-7 * max(
+                                    1.0, expected[self_index][gas_index][radiation_index]))
+
+            raw = (FIXTURE / "H2O-HITEMP2010.synthetic-hitran160.txt").read_bytes(
+                ).splitlines(keepends=True)[0]
+            archive = Path(directory) / "production-scale-sample.txt"
+            archive.write_bytes(raw * 100000)
+            partition = PartitionSums.from_hitran_q_files([
+                (1, 1, FIXTURE / "H2O.synthetic-hitran-q.txt")])
+            source = {"molecule_number": 1,
+                      "files": [{"path": str(archive), "compression": "none"}]}
+            started = time.perf_counter()
+            species_spectra_batch_native(
+                library, source, Path(directory), {1: 0.018010565}, partition,
+                spectral_grid(50.0, 3000.0, 50.0), [300.0, 1000.0, 2000.0],
+                101325.0, [0.0, 1.0], [50.0, 100.0],
+                [300.0, 1000.0, 2000.0], [1.0e7 / 780.0, 1.0e7 / 380.0])
+            throughput = 100000.0 / (time.perf_counter() - started)
+            self.assertGreater(throughput, 25000.0)
+
     def test_operational_evaluator_is_bounded_and_certificate_bound(self) -> None:
         table = generate(FIXTURE / "synthetic_manifest.json", None)
         h2o = next(entry for entry in table["species_tables"]
                    if entry["species"] == "H2O")
         expected = h2o["planck_mean_per_m_per_unit_species_mole_fraction"][0][0][0]
+        with self.assertRaisesRegex(ValueError, "synthetic opacity table"):
+            evaluate_species_planck_mean(
+                table, "H2O", 0.0, 300.0, 300.0, 101325.0)
         self.assertEqual(evaluate_species_planck_mean(
-            table, "H2O", 0.0, 300.0, 300.0, 101325.0), expected)
+            table, "H2O", 0.0, 300.0, 300.0, 101325.0,
+            allow_synthetic=True), expected)
         self.assertGreater(evaluate_mixture_planck_mean(
-            table, 0.2, 0.1, 900.0, 1100.0, 101325.0), 0.0)
+            table, 0.2, 0.1, 900.0, 1100.0, 101325.0,
+            allow_synthetic=True), 0.0)
         epsilon = 1.0e-3
         upper = evaluate_species_planck_mean(
-            table, "H2O", 0.2, 900.0 + epsilon, 1100.0, 101325.0)
+            table, "H2O", 0.2, 900.0 + epsilon, 1100.0, 101325.0,
+            allow_synthetic=True)
         lower = evaluate_species_planck_mean(
-            table, "H2O", 0.2, 900.0 - epsilon, 1100.0, 101325.0)
+            table, "H2O", 0.2, 900.0 - epsilon, 1100.0, 101325.0,
+            allow_synthetic=True)
         derivative = (upper - lower) / (2.0 * epsilon)
         first_cell = next(cell for cell in h2o["planck_mean_interpolation"]["cells"]
                           if cell["lower_indices"] == [0, 0, 1])
@@ -213,16 +290,49 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 ("H2O", 0.0, 300.0, 2001.0, 101325.0),
                 ("H2O", 0.0, 300.0, 300.0, 101324.0)):
             with self.assertRaisesRegex(ValueError, "out of domain"):
-                evaluate_species_planck_mean(table, *arguments)
+                evaluate_species_planck_mean(table, *arguments, allow_synthetic=True)
         with self.assertRaisesRegex(ValueError, "simplex"):
-            evaluate_mixture_planck_mean(table, 0.8, 0.3, 300.0, 300.0, 101325.0)
+            evaluate_mixture_planck_mean(
+                table, 0.8, 0.3, 300.0, 300.0, 101325.0,
+                allow_synthetic=True)
+        self.assertGreaterEqual(evaluate_species_kappa_bin(
+            table, "H2O", 0.2, 900.0, table["spectral_grid_cm-1"][20],
+            101325.0, allow_synthetic=True), 0.0)
+        with self.assertRaisesRegex(ValueError, "spectral coordinate"):
+            evaluate_species_kappa_bin(
+                table, "H2O", 0.2, 900.0,
+                math.nextafter(table["spectral_bin_edge_domain_cm-1"][0], -math.inf),
+                101325.0, allow_synthetic=True)
         mutated = copy.deepcopy(table)
         mutated["species_tables"][0]["planck_mean_interpolation"]["cells"][0][
             "partial_derivative_bounds"][0][0] -= 1.0
-        with self.assertRaisesRegex(ValueError, "does not bind"):
+        with self.assertRaisesRegex(ValueError, "canonical identity mismatch"):
             evaluate_species_planck_mean(
                 mutated, mutated["species_tables"][0]["species"],
-                0.0, 300.0, 300.0, 101325.0)
+                0.0, 300.0, 300.0, 101325.0, allow_synthetic=True)
+        recertified = copy.deepcopy(table)
+        target = recertified["species_tables"][0]
+        target["planck_mean_per_m_per_unit_species_mole_fraction"][0][0][0] *= 2.0
+        target["planck_mean_interpolation"] = tensor_linear_derivative_certificate(
+            [recertified["self_broadening_mole_fractions"],
+             recertified["gas_temperatures_K"],
+             recertified["radiation_temperatures_K"]],
+            target["planck_mean_per_m_per_unit_species_mole_fraction"])
+        with self.assertRaisesRegex(ValueError, "canonical identity mismatch"):
+            evaluate_species_planck_mean(
+                recertified, target["species"], 0.0, 300.0, 300.0,
+                101325.0, allow_synthetic=True)
+        relabeled = copy.deepcopy(table)
+        relabeled["synthetic"] = False
+        relabeled["record_status"] = "production_derived"
+        payload = dict(relabeled)
+        payload.pop("canonical_payload_without_identity_sha256")
+        relabeled["canonical_payload_without_identity_sha256"] = hashlib.sha256(
+            (json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=False, allow_nan=False) + "\n").encode()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "externally pinned identity"):
+            evaluate_species_planck_mean(
+                relabeled, "H2O", 0.0, 300.0, 300.0, 101325.0)
 
     def test_em2c_harness_has_constant_opacity_identity_and_row_parser(self) -> None:
         grid = [100.0, 550.0, 1000.0]
@@ -247,6 +357,16 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             self.assertEqual(len(parsed), 9450)
             self.assertEqual(parsed[0], (300.0, 0.01, 0.25))
             self.assertEqual(parsed[-1][0], 2900.0)
+        self.assertEqual(ratio_from_em2c_filename(Path(
+            "R=01.000_EM2C-SNB_totalEmissivities_90x105.dat")), 1.0)
+        self.assertTrue(math.isinf(ratio_from_em2c_filename(Path(
+            "R=Infinity_EM2C-SNB_totalEmissivities_90x105.dat"))))
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            validate_case_ratio(1.0, Path(
+                "R=00.000_EM2C-SNB_totalEmissivities_90x105.dat"))
+        for invalid in (math.nan, math.inf, -math.inf, 0.0, -0.1, 1.1):
+            with self.assertRaisesRegex(ValueError, "finite"):
+                validate_relative_tolerance(invalid)
 
     def test_wrong_hash_and_owner_pending_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())
@@ -317,6 +437,12 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             manifest["maximum_planck_mean_wing_relative_error"] = 1.0e-12
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "line-wing comparison fails"):
+                generate(path, FIXTURE)
+            manifest["maximum_planck_mean_wing_relative_error"] = 0.05
+            manifest[
+                "maximum_visible_gas_absorption_m-1_per_unit_species_mole_fraction"] = 1.0e-12
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "visible-gas upper-bound"):
                 generate(path, FIXTURE)
 
     def test_no_hitemp_line_archive_is_tracked(self) -> None:

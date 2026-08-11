@@ -15,6 +15,7 @@ from pathlib import Path
 from fire_gas_opacity import (
     C2_CM_K, multilinear_value, planck_weight_wavenumber, sha256_file,
 )
+from generate_fire_gas_opacity_record import validate_opacity_table
 
 
 DOI = "10.17632/x5wjzk6sjs.1"
@@ -104,9 +105,32 @@ def ratio_value(text: str) -> float:
     if text.lower() in {"inf", "infinity"}:
         return math.inf
     value = float(text)
-    if value < 0.0:
+    if not math.isfinite(value) or value < 0.0:
         raise argparse.ArgumentTypeError("H2O:CO2 ratio must be nonnegative")
     return value
+
+
+def ratio_from_em2c_filename(path: Path) -> float:
+    prefix = path.name.partition("_EM2C-SNB_")[0]
+    if not prefix.startswith("R="):
+        raise ValueError("EM2C filename does not encode its H2O:CO2 ratio")
+    return ratio_value(prefix[2:])
+
+
+def validate_relative_tolerance(value: float) -> float:
+    if not math.isfinite(value) or value <= 0.0 or value > 1.0:
+        raise ValueError("EM2C relative tolerance must be finite in (0,1]")
+    return value
+
+
+def validate_case_ratio(requested: float, path: Path) -> None:
+    filename_ratio = ratio_from_em2c_filename(path)
+    if ((math.isinf(requested) or math.isinf(filename_ratio)) and
+            requested != filename_ratio) or (
+            not math.isinf(requested) and
+            not math.isclose(requested, filename_ratio,
+                             rel_tol=0.0, abs_tol=1.0e-12)):
+        raise ValueError("requested ratio does not match the pinned EM2C filename")
 
 
 def main() -> None:
@@ -115,11 +139,18 @@ def main() -> None:
                         help="H2O:CO2 ratio and EM2C file as RATIO=PATH")
     parser.add_argument("--relative-tolerance", type=float, default=0.05,
                         help="provisional gate; reset from the first real comparison")
+    parser.add_argument("--expected-table-sha256", required=True,
+                        help="external pin for the exact production table bytes")
     parser.add_argument("table", type=Path)
     args = parser.parse_args()
+    tolerance = validate_relative_tolerance(args.relative_tolerance)
+    if (len(args.expected_table_sha256) != 64 or
+            sha256_file(args.table) != args.expected_table_sha256.lower()):
+        raise ValueError("opacity table does not match the external SHA-256 pin")
     table = json.loads(args.table.read_text(encoding="utf-8"))
-    if table.get("synthetic"):
-        raise ValueError("EM2C physical cross-check refuses a synthetic opacity table")
+    validate_opacity_table(
+        table, expected_payload_identity=table.get(
+            "canonical_payload_without_identity_sha256"))
     species = {entry["species"]: entry for entry in table["species_tables"]}
     grid = table["spectral_grid_cm-1"]
     failures = 0
@@ -129,6 +160,7 @@ def main() -> None:
         if not separator:
             raise ValueError("--case must have the form RATIO=PATH")
         ratio = ratio_value(ratio_text)
+        validate_case_ratio(ratio, Path(path_text))
         x_h2o = 1.0 if math.isinf(ratio) else ratio / (1.0 + ratio)
         x_co2 = 0.0 if math.isinf(ratio) else 1.0 / (1.0 + ratio)
         cached: dict[float, list[float]] = {}
@@ -145,10 +177,10 @@ def main() -> None:
             label = f"R={ratio_text}, T={temperature:g} K, pL={pressure_path_atm_m:g} atm.m"
             if relative > worst[0]:
                 worst = (relative, label)
-            failures += relative > args.relative_tolerance
+            failures += relative > tolerance
     print(f"EM2C-SNB {DOI}: worst relative error {worst[0]:.6g} at {worst[1]}")
     if failures:
-        raise SystemExit(f"{failures} EM2C comparison row(s) exceed {args.relative_tolerance:.3%}")
+        raise SystemExit(f"{failures} EM2C comparison row(s) exceed {tolerance:.3%}")
 
 
 if __name__ == "__main__":

@@ -243,6 +243,34 @@ def voigt_profile_cm(x_cm1: float, sigma_cm1: float, gamma_cm1: float) -> float:
         sigma_cm1 * math.sqrt(2.0 * math.pi))
 
 
+def voigt_profile_interval_upper(distance_cm1: float, sigma_cm1: float,
+                                 gamma_cm1: float) -> float:
+    """Conservative Voigt maximum at points at least ``distance`` from center."""
+    if (not all(math.isfinite(value) for value in
+                (distance_cm1, sigma_cm1, gamma_cm1)) or
+            distance_cm1 < 0.0 or sigma_cm1 < 0.0 or gamma_cm1 < 0.0 or
+            (sigma_cm1 == 0.0 and gamma_cm1 == 0.0)):
+        raise ValueError("Voigt upper-bound arguments are inadmissible")
+    if sigma_cm1 == 0.0:
+        return gamma_cm1 / (math.pi *
+                            (distance_cm1 * distance_cm1 + gamma_cm1 * gamma_cm1))
+    gaussian_peak = 1.0 / (sigma_cm1 * math.sqrt(2.0 * math.pi))
+    if gamma_cm1 == 0.0:
+        return gaussian_peak * math.exp(
+            -0.5 * (distance_cm1 / sigma_cm1) ** 2)
+    lorentz_peak = 1.0 / (math.pi * gamma_cm1)
+    if distance_cm1 == 0.0:
+        return min(gaussian_peak, lorentz_peak)
+    gaussian_radius = min(0.5 * distance_cm1, 8.0 * sigma_cm1)
+    gaussian_tail = math.erfc(gaussian_radius /
+                              (math.sqrt(2.0) * sigma_cm1))
+    near_distance = max(0.0, distance_cm1 - gaussian_radius)
+    near_lorentz = gamma_cm1 / (math.pi *
+                                (near_distance * near_distance + gamma_cm1 * gamma_cm1))
+    return min(gaussian_peak, lorentz_peak,
+               gaussian_tail * lorentz_peak + near_lorentz)
+
+
 def planck_weight_wavenumber(wavenumber_cm1: float, temperature_k: float) -> float:
     if wavenumber_cm1 <= 0.0 or temperature_k <= 0.0:
         return 0.0
@@ -335,7 +363,8 @@ def voigt_interval_probability(lower_cm1: float, upper_cm1: float,
     if sigma_cm1 == 0.0:
         return lorentz_interval(0.0)
     total = 0.0
-    if gamma_cm1 <= sigma_cm1:
+    boundary_near_gaussian_core = min(abs(lower_cm1), abs(upper_cm1)) <= 6.0 * sigma_cm1
+    if gamma_cm1 <= sigma_cm1 and boundary_near_gaussian_core:
         # Average the analytic Gaussian interval over a Cauchy random shift,
         # using y=gamma*tan(theta); the Cauchy measure becomes dtheta/pi.
         def gaussian_interval(shift: float) -> float:
@@ -343,12 +372,23 @@ def voigt_interval_probability(lower_cm1: float, upper_cm1: float,
             return 0.5 * (math.erf((upper_cm1 - shift) / scale) -
                           math.erf((lower_cm1 - shift) / scale))
 
-        for node, weight in LEGENDRE32_POSITIVE:
-            theta = 0.5 * math.pi * node
-            shift = gamma_cm1 * math.tan(theta)
-            total += 0.5 * weight * (gaussian_interval(shift) +
-                                     gaussian_interval(-shift))
-        result = total
+        def integrand(theta: float) -> float:
+            return gaussian_interval(gamma_cm1 * math.tan(theta)) / math.pi
+
+        def integrate_segment(lower: float, upper: float) -> float:
+            midpoint = 0.5 * (lower + upper)
+            half_width = 0.5 * (upper - lower)
+            return half_width * sum(
+                weight * (integrand(midpoint + half_width * node) +
+                          integrand(midpoint - half_width * node))
+                for node, weight in LEGENDRE32_POSITIVE)
+
+        breakpoints = [-0.5 * math.pi,
+                       math.atan(lower_cm1 / gamma_cm1),
+                       math.atan(upper_cm1 / gamma_cm1),
+                       0.5 * math.pi]
+        result = sum(integrate_segment(breakpoints[index], breakpoints[index + 1])
+                     for index in range(3))
     else:
         # Average the analytic Lorentz interval over a Gaussian random shift.
         # Eight sigma truncation contributes less than 1.3e-15 probability.
@@ -393,11 +433,15 @@ def conservative_voigt_bin_weights(center_cm1: float, sigma_cm1: float,
     )
     if available_half_span <= 0.0:
         return [], 1.0
-    gaussian_tail = (math.erfc(available_half_span /
+    # If |G+L| exceeds the available span, then either |G| or |L| exceeds
+    # half that span.  The sum below is therefore a true union bound for the
+    # convolution tail (using the full span for both terms is not).
+    union_half_span = 0.5 * available_half_span
+    gaussian_tail = (math.erfc(union_half_span /
                                (math.sqrt(2.0) * sigma_cm1))
                      if sigma_cm1 > 0.0 else 0.0)
     lorentz_tail = (1.0 - 2.0 / math.pi *
-                    math.atan(available_half_span / gamma_cm1)
+                    math.atan(union_half_span / gamma_cm1)
                     if gamma_cm1 > 0.0 else 0.0)
     return weights, min(1.0, gaussian_tail + lorentz_tail)
 
@@ -424,8 +468,9 @@ def species_spectra_batch(
         self_mole_fractions: Sequence[float],
         wing_cutoffs_cm1: Sequence[float],
         radiation_temperatures_k: Sequence[float] = (),
+        visible_wavenumber_interval_cm1: Sequence[float] = (),
 ) -> tuple[list[list[list[list[float]]]], list[list[list[int]]],
-           list[list[list[float]]], list[list[float]]]:
+           list[list[list[float]]], list[list[float]], list[list[float]]]:
     """Accumulate every requested state in one archive pass.
 
     Returned axes are cutoff, self mole fraction, gas temperature, and
@@ -439,6 +484,12 @@ def species_spectra_batch(
     _validate_samples(wing_cutoffs_cm1, "wing cutoff")
     if radiation_temperatures_k:
         _validate_samples(radiation_temperatures_k, "radiation temperature")
+    if (visible_wavenumber_interval_cm1 and
+            (len(visible_wavenumber_interval_cm1) != 2 or
+             not all(math.isfinite(value) for value in visible_wavenumber_interval_cm1) or
+             visible_wavenumber_interval_cm1[0] <= 0.0 or
+             visible_wavenumber_interval_cm1[0] >= visible_wavenumber_interval_cm1[1])):
+        raise ValueError("visible wavenumber interval is invalid")
     if (pressure_pa <= 0.0 or self_mole_fractions[0] < 0.0 or
             self_mole_fractions[-1] > 1.0):
         raise ValueError("batch opacity state is inadmissible")
@@ -452,6 +503,8 @@ def species_spectra_batch(
                    for _ in range(shape[0])]
     line_center_means = [[0.0 for _ in radiation_temperatures_k]
                          for _ in temperatures_k]
+    visible_upper_bounds = [[0.0 for _ in temperatures_k]
+                            for _ in self_mole_fractions]
     step = grid_cm1[1] - grid_cm1[0]
     pressure_atm = pressure_pa / REFERENCE_PRESSURE_PA
     for line in lines:
@@ -463,19 +516,20 @@ def species_spectra_batch(
         if not molar_mass or molar_mass <= 0.0:
             raise ValueError("line isotopologue has no positive molar mass")
         center = line.center_cm1 + line.pressure_shift_cm1_atm * pressure_atm
-        if (center + wing_cutoffs_cm1[-1] < grid_cm1[0] or
-                center - wing_cutoffs_cm1[-1] > grid_cm1[-1]):
-            continue
+        contributes_to_spectral_table = not (
+            center + wing_cutoffs_cm1[-1] < grid_cm1[0] or
+            center - wing_cutoffs_cm1[-1] > grid_cm1[-1])
         molecular_mass_kg = molar_mass / N_AVOGADRO
         for temperature_index, temperature_k in enumerate(temperatures_k):
             strength = line_intensity(line, temperature_k, partition_sums)
             number_density_cm3 = pressure_pa / (K_BOLTZMANN * temperature_k) / 1.0e6
             line_area_m1_cm1 = strength * number_density_cm3 * 100.0
-            for radiation_index, radiation_temperature in enumerate(
-                    radiation_temperatures_k):
-                line_center_means[temperature_index][radiation_index] += (
-                    line_area_m1_cm1 *
-                    planck_weight_wavenumber(center, radiation_temperature))
+            if contributes_to_spectral_table:
+                for radiation_index, radiation_temperature in enumerate(
+                        radiation_temperatures_k):
+                    line_center_means[temperature_index][radiation_index] += (
+                        line_area_m1_cm1 *
+                        planck_weight_wavenumber(center, radiation_temperature))
             sigma = center * math.sqrt(K_BOLTZMANN * temperature_k /
                                        (molecular_mass_kg * C_LIGHT * C_LIGHT))
             for self_index, self_fraction in enumerate(self_mole_fractions):
@@ -483,6 +537,15 @@ def species_spectra_batch(
                     line, temperature_k, pressure_pa, self_fraction)
                 if gamma == 0.0 and sigma == 0.0:
                     raise ValueError("line has zero Lorentz and Doppler width")
+                if visible_wavenumber_interval_cm1:
+                    visible_lo, visible_hi = visible_wavenumber_interval_cm1
+                    distance = (visible_lo - center if center < visible_lo else
+                                center - visible_hi if center > visible_hi else 0.0)
+                    visible_upper_bounds[self_index][temperature_index] += (
+                        line_area_m1_cm1 *
+                        voigt_profile_interval_upper(distance, sigma, gamma))
+                if not contributes_to_spectral_table:
+                    continue
                 for cutoff_index, cutoff in enumerate(wing_cutoffs_cm1):
                     weights, tail_bound = conservative_voigt_bin_weights(
                         center, sigma, gamma, grid_cm1, cutoff)
@@ -504,7 +567,7 @@ def species_spectra_batch(
             denominator = ((math.pi ** 4 / 15.0) *
                            (radiation_temperature / C2_CM_K) ** 4)
             line_center_means[temperature_index][radiation_index] /= denominator
-    return spectra, counts, tail_bounds, line_center_means
+    return spectra, counts, tail_bounds, line_center_means, visible_upper_bounds
 
 
 def species_spectrum(lines: Iterable[HitranLine], molecule: int,
@@ -515,7 +578,7 @@ def species_spectrum(lines: Iterable[HitranLine], molecule: int,
                      self_mole_fraction: float = 0.0) -> tuple[list[float], int, float]:
     if pressure_pa <= 0.0 or wing_cutoff_cm1 <= 0.0:
         raise ValueError("pressure and line-wing cutoff must be positive")
-    spectra, counts, tails, _ = species_spectra_batch(
+    spectra, counts, tails, _, _ = species_spectra_batch(
         lines, molecule, molar_masses_kg_per_mol, partition_sums, grid_cm1,
         [temperature_k], pressure_pa, [self_mole_fraction], [wing_cutoff_cm1])
     return spectra[0][0][0], counts[0][0][0], tails[0][0][0]

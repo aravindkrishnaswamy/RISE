@@ -154,7 +154,13 @@ and deposits each line into declared finite-volume wavenumber bins while
 preserving its integrated area.  It derives the required two-temperature
 Planck-mean tensors across a self-broadening composition axis and stores exact
 per-cell multilinear partial-derivative enclosures.  Each species archive is
-streamed once for all table states.  The owner manifest remains explicitly pending in
+streamed once for all table states. Production generation is required to use
+the compiled streaming accumulator in `tools/fire_gas_opacity_native.cpp`;
+the Python implementation is the independently compared reference used by the
+synthetic fixture. Both finite-bin and expanded-wing Planck-mean convergence
+limits are manifest gates, and a sum-of-per-line conservative profile bound
+gates gas absorption over 380–780 nm rather than mistaking a bin average for a
+pointwise upper bound. The owner manifest remains explicitly pending in
 `docs/data/source_pulls/hitemp_owner_inputs_v1.pending.json`; it cannot
 generate a physical table until the exact H₂O-2010 inventory, the
 `02_HITEMP2024.par.bz2` digest, all required isotopologue masses/partition

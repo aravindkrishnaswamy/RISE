@@ -40,6 +40,9 @@ def generator_identity(paths: Sequence[Path] | None = None) -> str:
     inventory = list(paths) if paths is not None else [
         Path(__file__).resolve(),
         Path(__file__).with_name("fire_gas_opacity.py").resolve(),
+        Path(__file__).with_name("fire_gas_opacity_native.py").resolve(),
+        Path(__file__).with_name("fire_gas_opacity_native.cpp").resolve(),
+        Path(__file__).with_name("build_fire_gas_opacity_native.py").resolve(),
     ]
     digest = hashlib.sha256(b"rise-fire-gas-opacity-generator-inventory-v1\0")
     for path in sorted(inventory, key=lambda item: item.name):
@@ -57,6 +60,128 @@ def _concrete_citation(value: str) -> bool:
         return False
     return ("http://" in value or "https://" in value or "doi" in value.lower() or
             re.search(r"\b(?:19|20)\d{2}\b", value) is not None)
+
+
+def _validate_tensor(value: object, dimensions: Sequence[int], label: str) -> None:
+    if not dimensions:
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{label} contains an invalid scalar")
+        return
+    if not isinstance(value, list) or len(value) != dimensions[0]:
+        raise ValueError(f"{label} has the wrong tensor shape")
+    for child in value:
+        _validate_tensor(child, dimensions[1:], label)
+
+
+def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
+                           expected_payload_identity: str | None = None) -> None:
+    if table.get("schema") != "rise-fire-gas-opacity-table-v1":
+        raise ValueError("opacity table schema is unsupported")
+    synthetic = table.get("synthetic")
+    status = table.get("record_status")
+    if (synthetic, status) not in {
+            (True, "synthetic_test_only"), (False, "production_derived")}:
+        raise ValueError("opacity table status/synthetic pair is invalid")
+    if synthetic and not allow_synthetic:
+        raise ValueError("synthetic opacity table is forbidden for operational use")
+    identity = table.get("canonical_payload_without_identity_sha256")
+    if not _is_digest(identity):
+        raise ValueError("opacity table canonical identity is missing")
+    payload = dict(table)
+    payload.pop("canonical_payload_without_identity_sha256", None)
+    if hashlib.sha256(canonical_json_bytes(payload)).hexdigest() != identity:
+        raise ValueError("opacity table canonical identity mismatch")
+    if not synthetic:
+        if not _is_digest(expected_payload_identity) or identity != expected_payload_identity:
+            raise ValueError("production opacity table lacks the externally pinned identity")
+    elif expected_payload_identity is not None and identity != expected_payload_identity:
+        raise ValueError("synthetic opacity table identity does not match its test pin")
+    if (table.get("out_of_domain_policy") != "reject" or
+            table.get("archive_passes_per_species") != 1 or
+            table.get("spectral_coordinate") != "vacuum_wavenumber_cm-1"):
+        raise ValueError("opacity table operational policy is unsupported")
+    backend = table.get("accumulator_backend")
+    if ((not synthetic and backend != "native_streaming_v1") or
+            (synthetic and backend not in {
+                "python_reference_test_only", "native_streaming_v1"})):
+        raise ValueError("opacity accumulator backend is not qualified")
+    provenance_value = table.get("provenance")
+    if (not isinstance(provenance_value, dict) or
+            provenance_value.get("generator_sha256") != generator_identity() or
+            provenance_value.get("line_bytes_committed") is not False or
+            not _is_digest(provenance_value.get("input_manifest_sha256"))):
+        raise ValueError("opacity table provenance is invalid")
+    native_digest = provenance_value.get("native_accumulator_library_sha256")
+    if ((backend == "native_streaming_v1" and not _is_digest(native_digest)) or
+            (backend == "python_reference_test_only" and native_digest is not None)):
+        raise ValueError("opacity accumulator binary identity is invalid")
+    for field in ("hitemp_citations", "original_source_citations"):
+        citations = provenance_value.get(field)
+        if (not isinstance(citations, list) or not citations or
+                any(not isinstance(item, str) or not item.strip() for item in citations)):
+            raise ValueError("opacity table citations are invalid")
+        if not synthetic and any(not _concrete_citation(item) for item in citations):
+            raise ValueError("production opacity table citation is not concrete")
+    self_axis = table.get("self_broadening_mole_fractions")
+    gas_axis = table.get("gas_temperatures_K")
+    radiation_axis = table.get("radiation_temperatures_K")
+    grid = table.get("spectral_grid_cm-1")
+    for axis, label in ((self_axis, "self"), (gas_axis, "gas temperature"),
+                        (radiation_axis, "radiation temperature"),
+                        (grid, "spectral")):
+        if (not isinstance(axis, list) or len(axis) < 2 or
+                any(not isinstance(value, (int, float)) or not math.isfinite(value)
+                    for value in axis) or
+                any(axis[index] >= axis[index + 1]
+                    for index in range(len(axis) - 1))):
+            raise ValueError(f"opacity {label} axis is malformed")
+    if self_axis[0] != 0.0 or self_axis[-1] != 1.0:
+        raise ValueError("opacity self-broadening axis does not span its domain")
+    pressure = table.get("pressure_Pa")
+    edges = table.get("spectral_bin_edge_domain_cm-1")
+    if (not isinstance(pressure, (int, float)) or not math.isfinite(pressure) or pressure <= 0.0 or
+            not isinstance(edges, list) or len(edges) != 2 or
+            not all(isinstance(value, (int, float)) and math.isfinite(value)
+                    for value in edges) or edges[0] <= 0.0 or edges[0] >= edges[1]):
+        raise ValueError("opacity pressure or spectral-bin domain is malformed")
+    step = grid[1] - grid[0]
+    if (any(not math.isclose(grid[index + 1] - grid[index], step,
+                             rel_tol=0.0, abs_tol=1.0e-12 * step)
+            for index in range(len(grid) - 1)) or
+            edges != [grid[0] - 0.5 * step, grid[-1] + 0.5 * step]):
+        raise ValueError("opacity spectral bins are inconsistent")
+    species_tables = table.get("species_tables")
+    if (not isinstance(species_tables, list) or
+            {item.get("species") for item in species_tables
+             if isinstance(item, dict)} != set(EXPECTED_MOLECULES) or
+            len(species_tables) != len(EXPECTED_MOLECULES)):
+        raise ValueError("opacity species inventory is incomplete or duplicated")
+    for species in species_tables:
+        name = species["species"]
+        if (species.get("molecule_number") != EXPECTED_MOLECULES[name] or
+                not isinstance(species.get("release"), str) or not species["release"]):
+            raise ValueError("opacity species identity is invalid")
+        _validate_tensor(species.get("line_counts_used"),
+                         [len(self_axis), len(gas_axis)], "line counts")
+        if any(count <= 0 for row in species["line_counts_used"] for count in row):
+            raise ValueError("opacity species has an empty state")
+        _validate_tensor(
+            species.get("kappa_bin_average_per_m_per_unit_species_mole_fraction"),
+            [len(self_axis), len(gas_axis), len(grid)], "spectral opacity")
+        means = species.get("planck_mean_per_m_per_unit_species_mole_fraction")
+        _validate_tensor(means, [len(self_axis), len(gas_axis), len(radiation_axis)],
+                         "Planck mean")
+        if tensor_linear_derivative_certificate(
+                [self_axis, gas_axis, radiation_axis], means) != species.get(
+                    "planck_mean_interpolation"):
+            raise ValueError("opacity interpolation certificate does not bind the table")
+        files = species.get("input_files")
+        q_files = species.get("partition_sums", {}).get("files")
+        if (not isinstance(files, list) or not files or
+                any(not _is_digest(item.get("sha256")) for item in files) or
+                not isinstance(q_files, list) or not q_files or
+                any(not _is_digest(item.get("sha256")) for item in q_files)):
+            raise ValueError("opacity species source inventory is invalid")
 
 
 def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, Path]:
@@ -155,7 +280,12 @@ def evaluate_species_planck_mean(table: dict, species_name: str,
                                  self_mole_fraction: float,
                                  gas_temperature_k: float,
                                  radiation_temperature_k: float,
-                                 pressure_pa: float) -> float:
+                                 pressure_pa: float, *,
+                                 allow_synthetic: bool = False,
+                                 expected_payload_identity: str | None = None) -> float:
+    validate_opacity_table(
+        table, allow_synthetic=allow_synthetic,
+        expected_payload_identity=expected_payload_identity)
     if (not math.isfinite(pressure_pa) or
             pressure_pa != float(table.get("pressure_Pa", math.nan))):
         raise ValueError("opacity pressure is out of domain")
@@ -178,19 +308,65 @@ def evaluate_mixture_planck_mean(table: dict, h2o_mole_fraction: float,
                                  co2_mole_fraction: float,
                                  gas_temperature_k: float,
                                  radiation_temperature_k: float,
-                                 pressure_pa: float) -> float:
+                                 pressure_pa: float, *,
+                                 allow_synthetic: bool = False,
+                                 expected_payload_identity: str | None = None) -> float:
+    validate_opacity_table(
+        table, allow_synthetic=allow_synthetic,
+        expected_payload_identity=expected_payload_identity)
     fractions = (h2o_mole_fraction, co2_mole_fraction)
     if (any(not math.isfinite(value) or value < 0.0 for value in fractions) or
             sum(fractions) > 1.0):
         raise ValueError("opacity composition is outside the air-balance simplex")
     return sum(fraction * evaluate_species_planck_mean(
         table, species, fraction, gas_temperature_k,
-        radiation_temperature_k, pressure_pa)
+        radiation_temperature_k, pressure_pa,
+        allow_synthetic=allow_synthetic,
+        expected_payload_identity=expected_payload_identity)
                for fraction, species in zip(fractions, ("H2O", "CO2")))
 
 
-def generate(manifest_path: Path, input_root: Path | None) -> dict:
+def evaluate_species_kappa_bin(table: dict, species_name: str,
+                               self_mole_fraction: float,
+                               gas_temperature_k: float,
+                               wavenumber_cm1: float, pressure_pa: float, *,
+                               allow_synthetic: bool = False,
+                               expected_payload_identity: str | None = None) -> float:
+    validate_opacity_table(
+        table, allow_synthetic=allow_synthetic,
+        expected_payload_identity=expected_payload_identity)
+    if (not math.isfinite(pressure_pa) or
+            pressure_pa != float(table["pressure_Pa"])):
+        raise ValueError("opacity pressure is out of domain")
+    edges = table["spectral_bin_edge_domain_cm-1"]
+    if (not math.isfinite(wavenumber_cm1) or
+            wavenumber_cm1 < edges[0] or wavenumber_cm1 > edges[1]):
+        raise ValueError("opacity spectral coordinate is out of domain")
+    species = next((entry for entry in table["species_tables"]
+                    if entry["species"] == species_name), None)
+    if species is None:
+        raise ValueError("opacity species record is missing")
+    grid = table["spectral_grid_cm-1"]
+    step = grid[1] - grid[0]
+    bin_index = min(len(grid) - 1, max(0, int(
+        math.floor((wavenumber_cm1 - edges[0]) / step))))
+    tensor = [[species[
+        "kappa_bin_average_per_m_per_unit_species_mole_fraction"][self_index][gas_index][
+            bin_index]
+               for gas_index in range(len(table["gas_temperatures_K"]))]
+              for self_index in range(len(table["self_broadening_mole_fractions"]))]
+    return multilinear_value(
+        [table["self_broadening_mole_fractions"], table["gas_temperatures_K"]],
+        tensor, [self_mole_fraction, gas_temperature_k])
+
+
+def generate(manifest_path: Path, input_root: Path | None,
+             native_library: Path | None = None) -> dict:
     manifest, root = load_verified_manifest(manifest_path, input_root)
+    if not manifest["synthetic"] and native_library is None:
+        raise ValueError("production HITEMP generation requires the native accumulator")
+    if native_library is not None and not native_library.is_file():
+        raise ValueError("native opacity accumulator library is missing")
     grid_config = manifest["spectral_grid_cm-1"]
     grid = spectral_grid(float(grid_config["minimum"]), float(grid_config["maximum"]),
                          float(grid_config["step"]))
@@ -219,8 +395,10 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
     convergence_factor = float(manifest["line_wing_convergence_factor"])
     maximum_grid_relative = float(manifest["maximum_planck_mean_grid_relative_error"])
     maximum_wing_relative = float(manifest["maximum_planck_mean_wing_relative_error"])
+    maximum_visible_upper = float(
+        manifest["maximum_visible_gas_absorption_m-1_per_unit_species_mole_fraction"])
     if (convergence_factor <= 1.0 or maximum_grid_relative <= 0.0 or
-            maximum_wing_relative <= 0.0):
+            maximum_wing_relative <= 0.0 or maximum_visible_upper <= 0.0):
         raise ValueError("line-wing convergence factor must exceed one")
 
     species_tables = []
@@ -228,10 +406,22 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
         partition = _partition_sums(source, root)
         masses = {int(key): float(value) for key, value in
                   source["isotopologue_molar_masses_kg_per_mol"].items()}
-        all_spectra, all_counts, tail_bounds, center_means = species_spectra_batch(
-            _line_iterator(source, root), int(source["molecule_number"]), masses,
-            partition, grid, gas_temperatures, pressure_pa, self_fractions,
-            [cutoff, cutoff * convergence_factor], radiation_temperatures)
+        visible_interval = [1.0e7 / 780.0, 1.0e7 / 380.0]
+        if native_library is None:
+            accumulator_result = species_spectra_batch(
+                _line_iterator(source, root), int(source["molecule_number"]), masses,
+                partition, grid, gas_temperatures, pressure_pa, self_fractions,
+                [cutoff, cutoff * convergence_factor], radiation_temperatures,
+                visible_interval)
+        else:
+            from fire_gas_opacity_native import species_spectra_batch_native
+            accumulator_result = species_spectra_batch_native(
+                native_library, source, root, masses, partition, grid,
+                gas_temperatures, pressure_pa, self_fractions,
+                [cutoff, cutoff * convergence_factor], radiation_temperatures,
+                visible_interval)
+        all_spectra, all_counts, tail_bounds, center_means, visible_bounds = (
+            accumulator_result)
         spectra = all_spectra[0]
         expanded = all_spectra[1]
         line_counts = all_counts[0]
@@ -283,14 +473,9 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
             raise ValueError(f"{source['species']} spectral grid fails its Planck-mean gate")
         if maximum_wing_mean_rel > maximum_wing_relative:
             raise ValueError(f"{source['species']} line-wing comparison fails its Planck-mean gate")
-        visible_indices = [
-            index for index, wn in enumerate(grid)
-            if (wn + 0.5 * grid_step >= 1.0e7 / 780.0 and
-                wn - 0.5 * grid_step <= 1.0e7 / 380.0)
-        ]
-        visible_maximum = max(
-            (gas_row[index] for self_rows in spectra for gas_row in self_rows
-             for index in visible_indices), default=0.0)
+        visible_maximum = max(value for row in visible_bounds for value in row)
+        if visible_maximum > maximum_visible_upper:
+            raise ValueError(f"{source['species']} fails the visible-gas upper-bound gate")
         species_tables.append({
             "species": source["species"],
             "release": source["release"],
@@ -300,7 +485,8 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
             "planck_mean_per_m_per_unit_species_mole_fraction": means,
             "planck_mean_interpolation": tensor_linear_derivative_certificate(
                 [self_fractions, gas_temperatures, radiation_temperatures], means),
-            "visible_380_780nm_maximum_bin_average_per_m_per_unit_species_mole_fraction": visible_maximum,
+            "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction": visible_maximum,
+            "visible_380_780nm_maximum_allowed_m-1_per_unit_species_mole_fraction": maximum_visible_upper,
             "spectral_grid_discretization": {
                 "reference": "line-area-weighted Planck function evaluated at shifted line centers",
                 "maximum_absolute_planck_mean_m-1_per_unit_species_mole_fraction": maximum_grid_abs,
@@ -360,10 +546,14 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
                             "analytic interval CDFs; exact Gaussian/Lorentz degenerate "
                             "limits; binary64"),
         "archive_passes_per_species": 1,
+        "accumulator_backend": ("python_reference_test_only" if native_library is None
+                                else "native_streaming_v1"),
         "out_of_domain_policy": "reject",
         "species_tables": species_tables,
         "provenance": {
             "generator_sha256": generator_identity(),
+            "native_accumulator_library_sha256": (
+                sha256_file(native_library) if native_library is not None else None),
             "hitemp_citations": manifest["hitemp_citations"],
             "hitran_definitions": "https://hitran.org/docs/definitions-and-units/",
             "original_source_citations": manifest["original_source_citations"],
@@ -373,6 +563,11 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
     }
     payload["canonical_payload_without_identity_sha256"] = hashlib.sha256(
         canonical_json_bytes(payload)).hexdigest()
+    validate_opacity_table(
+        payload, allow_synthetic=bool(manifest["synthetic"]),
+        expected_payload_identity=(
+            payload["canonical_payload_without_identity_sha256"]
+            if not manifest["synthetic"] else None))
     return payload
 
 
@@ -380,10 +575,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--input-root", type=Path)
+    parser.add_argument("--native-library", type=Path,
+                        help="required compiled accumulator for production manifests")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    generated = canonical_json_bytes(generate(args.manifest, args.input_root))
+    generated = canonical_json_bytes(generate(
+        args.manifest, args.input_root, args.native_library))
     if args.check:
         if not args.output.is_file() or args.output.read_bytes() != generated:
             raise SystemExit(f"{args.output} is stale; regenerate with {Path(__file__).name}")
