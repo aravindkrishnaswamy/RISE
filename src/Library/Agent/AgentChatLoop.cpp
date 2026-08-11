@@ -483,6 +483,21 @@ namespace RISE
 			//! independent: IsImageResult governs image TRANSPORT (build the
 			//! block, count it against the retention cap), this list governs
 			//! observation BEHAVIOUR.
+			//!
+			//! Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
+			//! NEITHER, by the same two tests and for a sharper version of
+			//! the same reason.  It mutates nothing (no chunk, no param, no
+			//! head bump) and the part-plan gate can force it, so counting it
+			//! as a mutation would have the two gates fight -- exactly
+			//! file_part_plan's argument.  And it is not a LOOK: the image it
+			//! returns is the model's own imagination rendered by a provider,
+			//! containing no pixel of the actual scene and identical on an
+			//! empty document, so resetting the blind-edit streak with it
+			//! would hand every model a free, scene-free streak reset -- the
+			//! G3a sketch-echo precedent, one step further from the scene.
+			//! A RENDER that carries a `sceneTarget` comparison is of course
+			//! still a look: it is a `render`, already on the list by name,
+			//! and it really did produce scene pixels.
 			bool IsVisualObserveToolName( const std::string& v )
 			{
 				return v == "render" || v == "read_image" || v == "read_viewport" ||
@@ -1280,8 +1295,12 @@ namespace RISE
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
+			//!                                                  (+ "; <part> vs sketch: iou <2dp>" on a G3b target comparison,
+			//!                                                   + "; render vs imagined scene: rmse <2dp>" on an Arc-77 scene-target one)
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
 			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ... (<k> sketch(es))" (G2; sketch count G3a)
+			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
+			//!                                                  | "no image generation on this provider" | "not imagined: <msg>" (Arc 77 Phase 2)
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
 			//!                                                  each with " (candidate)" appended when validated == "text".
@@ -1425,6 +1444,20 @@ namespace RISE
 							line += "; " + tgt.get( "part" ).asString() + " vs sketch: iou " + iouBuf;
 						}
 					}
+					// Arc 77 Phase 2 (2026-08-11): the whole-scene comparison,
+					// same rule and same discipline as the sketch one above --
+					// a NUMBER, never a judgement, absent on every render that
+					// did not carry one, so the existing line shape is
+					// unchanged for any session that never imagined a scene.
+					if( result.has( "sceneTarget" ) ) {
+						const JsonValue& st = result.get( "sceneTarget" );
+						if( st.isObject() && st.has( "rmse" ) ) {
+							char rmseBuf[32];
+							std::snprintf( rmseBuf, sizeof( rmseBuf ), "%.2f", st.get( "rmse" ).asNumber() );
+							line += "; render vs imagined scene: rmse ";
+							line += rmseBuf;
+						}
+					}
 					return TruncateForOutcome( line, 140 );
 				}
 
@@ -1454,6 +1487,29 @@ namespace RISE
 				// which carry `pointCount` iff a sketch was rasterized for
 				// them, so the count cannot claim a sketch that does not
 				// exist.
+				// 7c. Arc 77 Phase 2 (2026-08-11) imagine_scene: "ok" would
+				// throw away the one fact a human watching the transcript
+				// wants -- whether the model's imagination actually became a
+				// picture, or whether the provider could not supply one.
+				// Three distinguishable outcomes, no verdict on any of them.
+				if( call.name == "imagine_scene" ) {
+					if( result.get( "ok" ).asBool() ) {
+						std::string line = "scene imagined (image received)";
+						const long long w = static_cast<long long>( result.get( "width" ).asNumber() );
+						const long long h = static_cast<long long>( result.get( "height" ).asNumber() );
+						if( w > 0 && h > 0 )
+							line += " " + std::to_string( w ) + "x" + std::to_string( h );
+						if( result.get( "replacedPreviousTarget" ).asBool() ) line += ", replaced previous";
+						return TruncateForOutcome( line, 140 );
+					}
+					// The capability refusal gets its OWN line rather than the
+					// generic one: "this provider cannot do it" and "the
+					// attempt failed" are different events for anyone reading
+					// the transcript, and only the second is worth retrying.
+					if( result.has( "capabilityAvailable" ) ) return "no image generation on this provider";
+					return TruncateForOutcome( "not imagined: " + result.get( "message" ).asString(), 140 );
+				}
+
 				if( call.name == "file_part_plan" ) {
 					const JsonValue& parts = result.get( "parts" );
 					if( !parts.isArray() || parts.size() == 0 ) return "ok";

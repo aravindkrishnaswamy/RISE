@@ -1184,6 +1184,45 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
                          autonomy:(RISEAgentAutonomyLevel)level
     NS_SWIFT_NAME(agentHandleToolCall(_:autonomy:));
 
+#pragma mark - Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring)
+
+/// Install (or replace) the HOST half of `imagine_scene` on EVERY in-app
+/// tool-call session this bridge owns -- `_agentDispatcher`,
+/// `_agentToolDispatcherOwner`, and `_agentToolDispatcherPropose` (see
+/// AgentSession::SetImageGenerator's doc for why this is host-installed-
+/// only: no wire verb can reach it). Before this method existed, none of
+/// the three ever got a generator, so in-app `imagine_scene` honestly
+/// reported no capability and the part-plan gate's imagine half never
+/// armed -- this is the fix.
+///
+/// `providerName` is the SAME lowercase spelling ChatViewModel's
+/// `AgentChatProviderChoice.rawValue` already uses ("anthropic" /
+/// "gemini" / "openai" / "xai" / "local") -- capability is PER PROVIDER
+/// (gemini and openai only; the rest answer `imagine_scene` with an
+/// honest "not available" instead of an image, exactly like every other
+/// provider/tool combination). `apiKey` rides in the SAME per-provider
+/// auth header the chat codec for that provider already uses (never a
+/// query string, never logged) -- pass "" for a keyless/no-key-yet
+/// posture; a provider that needs one then answers with a factual HTTP
+/// error the model can read, not a silent failure.
+///
+/// Performs the actual POST through the platform system transport
+/// (`RISE::Agent::CreateSystemChatHttpTransport()` -- the SAME
+/// synchronous NSURLSession-backed transport the live eval runner uses),
+/// because `imagine_scene`'s dispatch is a synchronous call on the
+/// calling thread (the 1c-1 contract every other verb here already
+/// follows) and cannot await the chat panel's own async URLSession loop.
+///
+/// CALL AGAIN on every provider or key change -- a generator captured
+/// against a stale key keeps authenticating as the OLD credential.
+/// ChatViewModel calls this once per turn, at the exact point it already
+/// resolves that turn's own API key (`driveTurn`), so the in-app
+/// generator is always installed with the SAME key value that turn's
+/// chat request uses -- no extra Keychain read, and never stale.
+- (void)agentSetImageGeneratorProvider:(NSString *)providerName
+                                 apiKey:(NSString *)apiKey
+    NS_SWIFT_NAME(agentSetImageGenerator(provider:apiKey:));
+
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 
 /// Start a LOOPBACK-ONLY MCP HTTP server (the same

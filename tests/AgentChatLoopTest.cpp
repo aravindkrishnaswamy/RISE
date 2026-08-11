@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 19, "body carries nineteen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 20, "body carries twenty OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -566,8 +566,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 19,
-		       "xAI body carries the same nineteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 20,
+		       "xAI body carries the same twenty tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -832,7 +832,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 19, "body carries nineteen tools" );
+	Check( tools.isArray() && tools.size() == 20, "body carries twenty tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1772,7 +1772,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 19, "nineteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 20, "twenty functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -6776,6 +6776,51 @@ static void TestToolOutcomeDisplay()
 			"\"meanR\":0,\"meanG\":0,\"meanB\":0}}" );
 		Check( e5.toolSummaries[0].outcomeLine == "96x96, luma 0.00",
 		       "T38g/G3b: a render WITHOUT a target block is unchanged" );
+
+		// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE comparison line, under
+		// the same discipline -- a number, no verdict.
+		const ChatTranscriptEntry e6 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,"
+			"\"sceneTarget\":{\"rmse\":0.3149,\"compareWidth\":96,\"compareHeight\":96}}}" );
+		Check( e6.toolSummaries[0].outcomeLine == "96x96, luma 0.00; render vs imagined scene: rmse 0.31",
+		       "T38g/Arc77: a scene-target comparison appends \"render vs imagined scene: rmse <2dp>\" "
+		       "-- a NUMBER, with no verdict word anywhere in it" );
+	}
+
+	// (g2) Arc 77 Phase 2 (2026-08-11): imagine_scene's three outcomes.
+	// "ok" would throw away the one fact worth reading -- whether the
+	// imagination became a picture, and if not, whether that is a provider
+	// limitation or a failed attempt.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"imagined\":true,"
+			"\"replacedPreviousTarget\":false,\"provider\":\"gemini\",\"width\":512,"
+			"\"height\":512,\"png_base64\":\"\",\"message\":\"scene imagined\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "scene imagined (image received) 512x512",
+		       "T38g2: a successful imagine reports that an image really arrived, and its dims" );
+
+		const ChatTranscriptEntry e2 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"imagined\":true,"
+			"\"replacedPreviousTarget\":true,\"width\":512,\"height\":512,"
+			"\"message\":\"scene imagined\"}}" );
+		Check( e2.toolSummaries[0].outcomeLine ==
+		       "scene imagined (image received) 512x512, replaced previous",
+		       "T38g2: a re-imagine says so -- sketch-vs-build ordering is a census fingerprint" );
+
+		const ChatTranscriptEntry e3 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":false,\"imagined\":false,"
+			"\"replacedPreviousTarget\":false,\"capabilityAvailable\":false,"
+			"\"message\":\"imagine_scene is not available: ...\"}}" );
+		Check( e3.toolSummaries[0].outcomeLine == "no image generation on this provider",
+		       "T38g2: a CAPABILITY refusal reads as a provider fact, not as a failed attempt "
+		       "-- only the latter is worth retrying" );
+
+		const ChatTranscriptEntry e4 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":false,\"imagined\":false,"
+			"\"requirementDisarmed\":true,\"message\":\"imagine_scene failed: http 503\"}}" );
+		Check( e4.toolSummaries[0].outcomeLine == "not imagined: imagine_scene failed: http 503",
+		       "T38g2: a PROVIDER failure surfaces its factual reason" );
 	}
 
 	// (h) read_image / read_viewport -> "image <w>x<h>".
@@ -9651,6 +9696,214 @@ static void TestFilePartPlanToolAndGateClassification()
 	}
 }
 
+//----------------------------------------------------------------------
+// Arc 77 Phase 2 (2026-08-11): the PROVIDER IMAGE-GENERATION wire shapes.
+//
+// These are the four pure functions in AgentChatCodecs.cpp that decide
+// WHERE the image request goes, HOW it is authenticated, WHAT it sends and
+// HOW the answer is read.  They are asserted exactly the way the chat
+// codecs' own request shapes are asserted a few hundred lines above: build
+// the request, then read back the url, the headers and the body.  NO
+// NETWORK -- these functions never touch one.
+//
+// The auth assertions are the load-bearing ones: the key must appear in
+// the provider's OWN header and NOWHERE else (never the URL, never the
+// body), which is the chat transport's key-hygiene idiom this borrows.
+//----------------------------------------------------------------------
+static void TestImageGenerationWireShapes()
+{
+	std::printf( "T50: provider image-generation wire shapes (imagine_scene's host half)...\n" );
+
+	// --- the capability map -------------------------------------------
+	Check( ChatProviderSupportsImageGeneration( "gemini" ),
+	       "T50: gemini has an image-generation endpoint" );
+	Check( ChatProviderSupportsImageGeneration( "openai" ),
+	       "T50: openai has an image-generation endpoint" );
+	Check( !ChatProviderSupportsImageGeneration( "anthropic" ) &&
+	       !ChatProviderSupportsImageGeneration( "xai" ) &&
+	       !ChatProviderSupportsImageGeneration( "local" ),
+	       "T50: anthropic / xai / local do NOT -- the capability is per provider, and the "
+	       "tool still exists on all of them (kToolDefs is one shared table)" );
+	Check( !ChatProviderSupportsImageGeneration( "not-a-provider" ) &&
+	       ChatImageGenerationModelId( "not-a-provider" ).empty(),
+	       "T50: an unrecognized provider name is simply NOT capable -- never a guessed endpoint" );
+
+	Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.6-flash-image",
+	       "T50: the gemini image model default" );
+	Check( ChatImageGenerationModelId( "openai" ) == "gpt-image-1",
+	       "T50: the openai image model default" );
+
+	// --- gemini: the SAME surface + auth header as the chat codec ------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildImageGenerationRequest(
+			"gemini", "gemini-3.6-flash-image", "SECRET-GEMINI-KEY",
+			"a brass orrery on a walnut desk", req, err );
+		Check( built && err.empty(), "T50: gemini image request builds" );
+		Check( req.url ==
+		       "https://generativelanguage.googleapis.com/v1beta/models/"
+		       "gemini-3.6-flash-image:generateContent",
+		       "T50: gemini image generation rides the SAME generativelanguage generateContent "
+		       "surface the chat codec uses -- got: " + req.url );
+		bool sawKeyHeader = false, sawContentType = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i ) {
+			if( req.headers[i].first == "x-goog-api-key" ) {
+				sawKeyHeader = ( req.headers[i].second == "SECRET-GEMINI-KEY" );
+			}
+			if( req.headers[i].first == "content-type" ) sawContentType = true;
+		}
+		Check( sawKeyHeader, "T50: the key rides in gemini's OWN x-goog-api-key header" );
+		Check( sawContentType, "T50: and a content-type header is set" );
+		Check( req.url.find( "SECRET-GEMINI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-GEMINI-KEY" ) == std::string::npos,
+		       "T50 MONEY ASSERTION: the key is NOWHERE in the url or the body -- the chat "
+		       "transport's header-only key idiom, unchanged" );
+		Check( req.body.find( "\"responseModalities\":[\"IMAGE\"]" ) != std::string::npos,
+		       "T50: the body asks for an IMAGE modality -- got: " + req.body );
+		Check( req.body.find( "a brass orrery on a walnut desk" ) != std::string::npos,
+		       "T50: and carries the model's description verbatim as the prompt text" );
+	}
+
+	// --- openai: the images endpoint, Bearer auth ----------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildImageGenerationRequest(
+			"openai", "gpt-image-1", "SECRET-OPENAI-KEY", "a foggy harbour at dawn", req, err );
+		Check( built && err.empty(), "T50: openai image request builds" );
+		Check( req.url == "https://api.openai.com/v1/images/generations",
+		       "T50: openai image generation POSTs /v1/images/generations -- got: " + req.url );
+		bool sawBearer = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "Authorization" )
+				sawBearer = ( req.headers[i].second == "Bearer SECRET-OPENAI-KEY" );
+		Check( sawBearer, "T50: the key rides in the Authorization: Bearer header, as it does for chat" );
+		Check( req.url.find( "SECRET-OPENAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-OPENAI-KEY" ) == std::string::npos,
+		       "T50: and appears nowhere else" );
+		Check( req.body.find( "\"model\":\"gpt-image-1\"" ) != std::string::npos &&
+		       req.body.find( "\"n\":1" ) != std::string::npos &&
+		       req.body.find( "\"size\":\"1024x1024\"" ) != std::string::npos,
+		       "T50: the openai body carries model/n/size -- got: " + req.body );
+	}
+
+	// --- an incapable provider refuses to build anything ---------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		Check( !BuildImageGenerationRequest( "anthropic", "whatever", "k", "p", req, err ) &&
+		       !err.empty() && req.url.empty(),
+		       "T50: an incapable provider yields NO request and a factual reason" );
+	}
+
+	// --- env overrides: the no-recompile hand-test seam ----------------
+	// Config, not credentials.  Set, re-resolve, unset -- so the rest of
+	// this binary sees the compiled-in defaults again.
+	{
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_MODEL_GEMINI", "gemini-test-override" );
+#else
+		setenv( "RISE_IMAGE_MODEL_GEMINI", "gemini-test-override", 1 );
+#endif
+		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-test-override",
+		       "T50: RISE_IMAGE_MODEL_GEMINI retargets the model with no recompile" );
+		ChatHttpRequest req;
+		std::string err;
+		BuildImageGenerationRequest( "gemini", ChatImageGenerationModelId( "gemini" ),
+		                             "k", "p", req, err );
+		Check( req.url.find( "gemini-test-override:generateContent" ) != std::string::npos,
+		       "T50: and the overridden id lands in the url path -- got: " + req.url );
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_MODEL_GEMINI", "" );
+#else
+		unsetenv( "RISE_IMAGE_MODEL_GEMINI" );
+#endif
+		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.6-flash-image",
+		       "T50: unsetting restores the compiled-in default" );
+	}
+
+	// --- response parsing ----------------------------------------------
+	{
+		// "AAECAw==" is base64 for the four bytes 00 01 02 03.
+		const std::string geminiBody =
+			"{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":["
+			"{\"text\":\"here you go\"},"
+			"{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AAECAw==\"}}]}}]}";
+		std::vector<unsigned char> bytes;
+		std::string mime, err;
+		Check( ParseImageGenerationResponse( "gemini", geminiBody, bytes, mime, err ),
+		       "T50: the gemini inlineData part is found past a leading text part" );
+		Check( bytes.size() == 4 && bytes[0] == 0 && bytes[3] == 3 && mime == "image/png",
+		       "T50: and decodes to the exact payload bytes with its declared mime" );
+
+		// snake_case is accepted too -- the nesting/naming has moved between
+		// API revisions and a rename must not read as "no image".
+		const std::string snake =
+			"{\"candidates\":[{\"content\":{\"parts\":["
+			"{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"AAECAw==\"}}]}}]}";
+		bytes.clear(); mime.clear(); err.clear();
+		Check( ParseImageGenerationResponse( "gemini", snake, bytes, mime, err ) &&
+		       bytes.size() == 4 && mime == "image/jpeg",
+		       "T50: inline_data/mime_type (the snake_case spelling) parses identically" );
+
+		const std::string openaiBody = "{\"created\":1,\"data\":[{\"b64_json\":\"AAECAw==\"}]}";
+		bytes.clear(); mime.clear(); err.clear();
+		Check( ParseImageGenerationResponse( "openai", openaiBody, bytes, mime, err ) &&
+		       bytes.size() == 4 && mime == "image/png",
+		       "T50: the openai data[0].b64_json payload parses" );
+
+		// A url-only openai response is REFUSED rather than silently treated
+		// as success -- the bytes must arrive inline.
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "openai",
+			       "{\"data\":[{\"url\":\"https://example.invalid/i.png\"}]}", bytes, mime, err ) &&
+		       !err.empty() && bytes.empty(),
+		       "T50: a url-only openai response is an honest failure, not an empty success" );
+
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "gemini", "not json at all", bytes, mime, err ) &&
+		       !err.empty(),
+		       "T50: an unparseable body fails with a reason" );
+		Check( err.find( "not json at all" ) == std::string::npos,
+		       "T50 MONEY ASSERTION: the parse error names a SHAPE and does not echo the body -- "
+		       "a provider body can carry the prompt back and must not be spliced into a result "
+		       "the model reads" );
+
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"sorry\"}]}}]}",
+			       bytes, mime, err ) && !err.empty(),
+		       "T50: a text-only candidate is not an image" );
+	}
+
+	// --- the transport predicate covers the new verb -------------------
+	{
+		ChatToolCall call;
+		call.name = "imagine_scene";
+		Check( ChatToolResultCarriesImage( call,
+			       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"png_base64\":\"QUJD\"}}" ),
+		       "T50: imagine_scene's result counts as image-bearing on every transport" );
+		ChatToolCall renderCall;
+		renderCall.name = "render";
+		Check( ChatToolResultCarriesImage( renderCall,
+			       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,"
+			       "\"sceneTarget\":{\"rmse\":0.3},\"png_base64\":\"QUJD\"}}" ),
+		       "T50: and a render carrying the scene-target composite needs no new entry -- "
+		       "`render` is already on the list and the composite uses the same field" );
+	}
+
+	// --- the tool is declared, with its one required param -------------
+	{
+		const std::string fp = ChatToolDefsFingerprint();
+		Check( fp.find( "imagine_scene" ) != std::string::npos,
+		       "T50: imagine_scene is in the ONE shared tool table every codec maps from" );
+		Check( fp.find( "\\\"required\\\":[\\\"description\\\"]" ) != std::string::npos ||
+		       fp.find( "\"required\":[\"description\"]" ) != std::string::npos,
+		       "T50: and its schema requires `description`" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -9718,6 +9971,7 @@ int main()
 	TestContextCompaction( rpc );
 	TestReasoningExtraction();
 	TestToolOutcomeDisplay();
+	TestImageGenerationWireShapes();
 	TestAskUserToolSchema();
 	TestAskUserToolLoop();
 	TestAskUserParallelWithDispatchedTool( rpc );

@@ -30,6 +30,8 @@
 #include "Rendering/InteractivePelRasterizer.h"
 #include "Agent/AgentSession.h"
 #include "Agent/AgentRpc.h"
+#include "Agent/AgentChatCodecs.h"    // Arc 77 Phase 2 GUI wiring: MakeChatImageGenerator (imagine_scene)
+#include "Agent/ChatHttpTransport.h"  // Arc 77 Phase 2 GUI wiring: CreateSystemChatHttpTransport
 
 using namespace RISE;
 
@@ -1375,6 +1377,52 @@ QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest,
     const std::string response =
         dispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
     return QString::fromUtf8(response.c_str());
+}
+
+void ViewportBridge::agentSetImageGenerator(const QString& providerName, const QString& apiKey)
+{
+    const QByteArray providerUtf8 = providerName.toUtf8();
+    const QByteArray keyUtf8      = apiKey.toUtf8();
+    const std::string provider(providerUtf8.constData(), static_cast<std::size_t>(providerUtf8.size()));
+    const std::string key(keyUtf8.constData(), static_cast<std::size_t>(keyUtf8.size()));
+
+    // ONE system transport, shared by all three sessions' generators
+    // below -- safe because every in-app dispatcher is called only from
+    // the UI thread (mirrors macOS RISEViewportBridge's identical note).
+    // CreateSystemChatHttpTransport never returns null.
+    const std::shared_ptr<Agent::IChatHttpTransport> transport(
+        Agent::CreateSystemChatHttpTransport().release());
+
+    const Agent::ChatImageGenerator wire =
+        Agent::MakeChatImageGenerator(provider, key, transport);
+
+    Agent::AgentSession::AgentImageGenerator gen;
+    gen.providerName = wire.providerName;
+    gen.supported     = wire.supported;
+    gen.modelId       = wire.modelId;
+    if (wire.supported) {
+        const std::function<Agent::ChatImageGenOutcome(const std::string&)> rawGenerate = wire.generate;
+        gen.generate =
+            [rawGenerate](const std::string& description) -> Agent::AgentSession::AgentImageGenOutcome {
+            Agent::AgentSession::AgentImageGenOutcome out;
+            const Agent::ChatImageGenOutcome r = rawGenerate(description);
+            out.ok       = r.ok;
+            out.bytes    = r.bytes;
+            out.mimeType = r.mimeType;
+            out.error    = r.error;
+            return out;
+        };
+    }
+
+    // Every in-app tool-call-reachable session, mirroring macOS
+    // RISEViewportBridge's identical three-dispatcher loop.
+    Agent::AgentRpcDispatcher* dispatchers[] = {
+        m_agentDispatcher.get(), m_agentToolDispatcherOwner.get(), m_agentToolDispatcherPropose.get()};
+    for (Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) {
+            d->Session()->SetImageGenerator(gen);
+        }
+    }
 }
 
 ViewportBridge::PanelMode ViewportBridge::panelMode() const

@@ -90,6 +90,39 @@
 //                                            the gate's refusal counter.  Re-filing
 //                                            REPLACES the target set wholesale, exactly
 //                                            like the plan.)
+//      imagine_scene {description}       -> {ok,imagined,replacedPreviousTarget,
+//                                            provider?,model?,capabilityAvailable?,
+//                                            requirementDisarmed?,width?,height?,
+//                                            png_base64?,byteLength?,imageWidth?,
+//                                            imageHeight?,message}
+//                                           (Arc 77 Phase 2, 2026-08-11: the WHOLE-SCENE
+//                                            imagined target.  The model writes its own
+//                                            visual description of the finished scene; the
+//                                            HOST asks the session's provider to generate
+//                                            ONE image from exactly that text, holds it
+//                                            session-side as THE scene target, and returns
+//                                            it inline under the same `png_base64` field
+//                                            name every other image-bearing verb uses.
+//                                            READ-SAFE for file_part_plan's two reasons
+//                                            (it touches the Document not at all, and on a
+//                                            capable provider it is one of the TWO ways to
+//                                            disarm the part-plan gate).  From then on
+//                                            every FULL-FRAME PRODUCTION BEAUTY render --
+//                                            not draft, not mode:, not isolate -- gains a
+//                                            `sceneTarget` block (rmse + per-channel means
+//                                            on a shared canvas) and returns a
+//                                            [target | render] strip in place of the
+//                                            frame.  CAPABILITY-CONDITIONAL: a provider
+//                                            with no image generation answers ok:false
+//                                            with an honest statement, and the gate is
+//                                            then exactly the shipped plan-only gate.
+//                                            ANTI-STRANDING: a PROVIDER failure (HTTP
+//                                            error, quota, missing key, timeout) drops the
+//                                            imagine requirement for the session and says
+//                                            so; a missing `description` is a -32602 and
+//                                            disarms NOTHING.  Re-imagining REPLACES the
+//                                            target.  Nothing is ever gated on the
+//                                            comparison numbers.)
 //      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
 //                                            validated:"head"|"text"}
 //                                           (TWO forms, both read-only.  WITH `text`:
@@ -998,7 +1031,7 @@
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
 //    list_proposals, read_viewport, query_object_at, compare_to_reference,
-//    file_part_plan --
+//    file_part_plan, imagine_scene --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
@@ -1121,7 +1154,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_part_plan) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_part_plan/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
 			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but

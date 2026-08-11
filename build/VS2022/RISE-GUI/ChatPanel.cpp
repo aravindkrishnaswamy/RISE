@@ -1523,6 +1523,21 @@ QString ChatPanel::envKeyFor(Provider provider) const
     return qEnvironmentVariable("OPENAI_API_KEY");
 }
 
+QString ChatPanel::agentProviderName(Provider provider)
+{
+    switch (provider) {
+    case Provider::Anthropic: return QStringLiteral("anthropic");
+    case Provider::Gemini:    return QStringLiteral("gemini");
+    case Provider::OpenAI:    return QStringLiteral("openai");
+    case Provider::XAI:       return QStringLiteral("xai");
+    case Provider::Local:     return QStringLiteral("local");
+    }
+    qWarning("ChatPanel::agentProviderName: unhandled Provider %d -- falling back to openai",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::agentProviderName: unhandled Provider");
+    return QStringLiteral("openai");
+}
+
 bool ChatPanel::providerRequiresApiKey(Provider provider)
 {
     return provider != Provider::Local;
@@ -2091,8 +2106,19 @@ void ChatPanel::runNextStep()
     // cannot change m_appliedProvider without going back through that
     // function, reading the live field text here is reading the CURRENTLY
     // APPLIED provider's key, never a stale/foreign one.
+    const QString appliedApiKey = m_apiKeyEdit->text().trimmed();
+
+    // Arc 77 Phase 2 GUI wiring: keep `imagine_scene`'s HOST generator
+    // fresh on every in-app tool-call session before this round's tool
+    // calls (if any) dispatch. Reinstalled every round with the SAME key
+    // just read above, so a provider or key change mid-session is picked
+    // up by the very next round instead of leaving a generator bound to
+    // a stale credential. See ViewportBridge::agentSetImageGenerator's
+    // doc (mirrors macOS ChatViewModel.driveTurn's identical call).
+    m_bridge->agentSetImageGenerator(agentProviderName(m_appliedProvider), appliedApiKey);
+
     const RISE::Agent::ChatHttpRequest req =
-        m_loop->BuildRequest(toStdString(m_apiKeyEdit->text().trimmed()));
+        m_loop->BuildRequest(toStdString(appliedApiKey));
     if (req.url.empty()) {
         finishBusy();
         return;

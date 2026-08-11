@@ -127,6 +127,8 @@
 #define RISE_AGENT_AGENTCHATCODECS_
 
 #include <cstddef>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -716,8 +718,12 @@ namespace RISE
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
 		//! a LIVE image block/part -- i.e. a success result from one of the
 		//! image-capable verbs (read_image, compare_to_reference,
-		//! read_viewport, file_part_plan's G3a sketch composite, or a render
-		//! called with imageMaxEdge) with a non-empty png_base64.
+		//! read_viewport, file_part_plan's G3a sketch composite,
+		//! imagine_scene's generated scene target, or a render called with
+		//! imageMaxEdge -- or, since Arc 77 Phase 2, a render carrying either
+		//! comparison composite, which rides the SAME png_base64 field on the
+		//! SAME `render` verb and so needs no new entry) with a non-empty
+		//! png_base64.
 		//! Shared by the loop (to decide when the
 		//! image-elision pass must run), the codecs (which use the same
 		//! predicate to build the image block/part), and -- as of
@@ -843,6 +849,175 @@ namespace RISE
 		//! table every codec maps from, so the fingerprint never depends on
 		//! which provider is selected.
 		std::string ChatToolDefsFingerprint();
+
+		//--------------------------------------------------------------
+		// Arc 77 Phase 2 (2026-08-11) -- PROVIDER IMAGE GENERATION, the
+		// wire half of `imagine_scene`.
+		//
+		// WHERE THIS LIVES AND WHY.  These four functions are the ONLY
+		// place the tree knows how a provider is asked for an image.
+		// They sit in the codec TU for the same reason the chat request
+		// builders do: it is the one file that already owns per-provider
+		// URLs, auth-header names and body shapes, and keeping the image
+		// call beside them is what makes "same auth idiom as the chat
+		// transport" checkable by reading one file.  They build/parse
+		// ONLY -- exactly like IChatProviderCodec::BuildRequest, nothing
+		// here touches the network.  The HOST performs the POST through
+		// the SAME IChatHttpTransport seam the chat rounds use.
+		//
+		// PROVIDER IDENTITY IS A STRING, not the ChatProvider enum: that
+		// enum lives in AgentChatLoop.h, one layer ABOVE this file, and
+		// the callers that need this (the eval runner, a GUI driver)
+		// already have the canonical lowercase name.  Accepted names are
+		// exactly "anthropic", "gemini", "openai", "xai", "local" -- the
+		// same spellings AgentEvalRunner's ChatProviderName emits.  An
+		// unrecognized name is simply NOT CAPABLE; it never throws and
+		// never guesses an endpoint.
+		//
+		// CAPABILITY IS PER PROVIDER, NOT PER TOOL TABLE.  `imagine_scene`
+		// stays in kToolDefs for EVERY provider (a per-provider tool
+		// table would fork the shared-table architecture); a provider
+		// without the capability answers the call with an honest
+		// statement instead of an image.
+		//--------------------------------------------------------------
+
+		//! Does `providerName` have a wired image-generation endpoint?
+		//! true for "gemini" and "openai"; false for every other name,
+		//! including unrecognized ones.
+		bool ChatProviderSupportsImageGeneration( const std::string& providerName );
+
+		//! The image model id this build will ask `providerName` for --
+		//! the compiled-in default, overridden by an environment variable
+		//! so a hand test can retarget a model without recompiling:
+		//!   gemini -> RISE_IMAGE_MODEL_GEMINI (default "gemini-3.6-flash-image")
+		//!   openai -> RISE_IMAGE_MODEL_OPENAI (default "gpt-image-1")
+		//! Empty string for a provider with no capability.  The env read
+		//! is CONFIG, not a credential (the same distinction AgentChatLoop's
+		//! RISE_LOCAL_LLM_BASE_URL read is documented under) -- no key is
+		//! ever read from the environment here.
+		std::string ChatImageGenerationModelId( const std::string& providerName );
+
+		//! Build the POST that asks `providerName` for ONE image of
+		//! `prompt`.  `apiKey` rides in the provider's OWN auth header --
+		//! the identical header name and sanitization the chat codec for
+		//! that provider uses (`x-goog-api-key` for Gemini, `Authorization:
+		//! Bearer` for OpenAI), never a query parameter, never a log.
+		//! Returns false with a factual `outError` when the provider has
+		//! no capability or the model id resolved empty.
+		//!
+		//! Endpoint overrides, for the same no-recompile hand-test reason
+		//! as the model ids:
+		//!   gemini -> RISE_IMAGE_ENDPOINT_GEMINI (default
+		//!             "https://generativelanguage.googleapis.com/v1beta/models")
+		//!             -- the MODELS BASE; "/<model>:generateContent" is
+		//!             appended, matching GeminiChatCodec::BuildRequest.
+		//!   openai -> RISE_IMAGE_ENDPOINT_OPENAI (default
+		//!             "https://api.openai.com/v1/images/generations") -- the
+		//!             FULL url.
+		//! Two more, both narrow and both there because the exact accepted
+		//! value is provider-version-dependent:
+		//!   RISE_IMAGE_MODALITIES_GEMINI (default "IMAGE") -- a
+		//!     comma-separated responseModalities list.
+		//!   RISE_IMAGE_SIZE_OPENAI (default "1024x1024") -- the `size`
+		//!     field.
+		bool BuildImageGenerationRequest( const std::string& providerName,
+		                                  const std::string& modelId,
+		                                  const std::string& apiKey,
+		                                  const std::string& prompt,
+		                                  ChatHttpRequest& outRequest,
+		                                  std::string& outError );
+
+		//! Pull the FIRST generated image out of a 200-OK response body.
+		//! Gemini: `candidates[0].content.parts[]`, the first part with
+		//! `inlineData`/`inline_data` {mimeType, data}.  OpenAI:
+		//! `data[0].b64_json`.  On success `outBytes` holds the DECODED
+		//! image bytes and `outMimeType` whatever the provider declared
+		//! ("image/png" assumed for OpenAI, which documents PNG and sends
+		//! no mime).  Returns false with a factual, HEADER-FREE and
+		//! BODY-FREE `outError` otherwise -- a provider body can carry
+		//! prompt text and must not be echoed wholesale into a result the
+		//! model reads back.
+		bool ParseImageGenerationResponse( const std::string& providerName,
+		                                   const std::string& body,
+		                                   std::vector<unsigned char>& outBytes,
+		                                   std::string& outMimeType,
+		                                   std::string& outError );
+
+		//--------------------------------------------------------------
+		// GUI wiring (2026-08-11): the ONE place that turns the four
+		// building blocks above into an installable host image
+		// generator.  AgentEvalRunner.cpp used to hand-roll this exact
+		// wiring inline (build request -> POST -> parse response ->
+		// AgentSession::AgentImageGenOutcome); the Mac and Windows GUI
+		// drivers need the identical wiring to make `imagine_scene`
+		// work in-app, so it now lives here, once, beside the codec
+		// functions it composes.
+		//
+		// LAYERING: this file stays independent of AgentSession.h (a
+		// much larger, higher-level header) -- ChatImageGenerator below
+		// mirrors the SHAPE of AgentSession::AgentImageGenerator field-
+		// for-field, but is its own type.  Every caller that installs
+		// it via AgentSession::SetImageGenerator does a trivial 4-field
+		// copy (see AgentEvalRunner.cpp / RISEViewportBridge.mm for the
+		// two existing copies; ChatPanel.cpp mirrors it for Windows).
+		//
+		// `IChatHttpTransport` is only FORWARD-declared here (defined
+		// in ChatHttpTransport.h, which itself includes THIS header for
+		// ChatHttpRequest) -- taking it by reference keeps this
+		// declaration circular-include-free; the .cpp includes
+		// ChatHttpTransport.h to call Post().
+		//--------------------------------------------------------------
+
+		class IChatHttpTransport;
+
+		//! One blocking image-generation attempt's outcome.  Mirrors
+		//! AgentSession::AgentImageGenOutcome's four fields exactly.
+		struct ChatImageGenOutcome
+		{
+			bool                       ok = false;
+			std::vector<unsigned char> bytes;
+			std::string                mimeType;
+			std::string                error;
+		};
+
+		//! The host-installable shape.  Mirrors
+		//! AgentSession::AgentImageGenerator's three data fields plus
+		//! `generate`; see MakeChatImageGenerator's doc for how it is
+		//! built and AgentSession.h for why the real installation point
+		//! is a distinct, higher-level type.
+		struct ChatImageGenerator
+		{
+			bool        supported = false;
+			std::string providerName;
+			std::string modelId;
+			std::function<ChatImageGenOutcome( const std::string& description )> generate;
+		};
+
+		//! Build the FULL host-installable image generator for
+		//! `providerName`: `supported`/`modelId` resolved exactly as
+		//! ChatProviderSupportsImageGeneration/ChatImageGenerationModelId
+		//! already do, and (when supported) `generate` wired to perform
+		//! ONE synchronous BuildImageGenerationRequest -> `transport`.Post
+		//! -> ParseImageGenerationResponse round trip per call.  `apiKey`
+		//! is captured by value into the returned callable -- callers
+		//! that need a fresh key after a provider/key change must call
+		//! this function again and reinstall the result (see
+		//! AgentSession::SetImageGenerator's "call once, before the
+		//! session serves requests" contract: reinstalling is exactly
+		//! how a host satisfies that after the credential moves).
+		//!
+		//! `transport` is captured by shared_ptr into the returned
+		//! callable, so the caller may pass a fresh instance, a
+		//! process-lifetime singleton, or (as AgentEvalRunner.cpp does)
+		//! an adapter over its own replay/live FetchFn abstraction --
+		//! this function does not care which, only that `Post` performs
+		//! ONE synchronous round trip.  Never throws; an unsupported or
+		//! empty `providerName` returns `supported=false` and a null
+		//! `generate`, exactly like the four building blocks above.
+		ChatImageGenerator MakeChatImageGenerator(
+			const std::string& providerName,
+			const std::string& apiKey,
+			std::shared_ptr<IChatHttpTransport> transport );
 	}
 }
 

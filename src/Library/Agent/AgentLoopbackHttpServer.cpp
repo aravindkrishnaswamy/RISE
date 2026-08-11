@@ -350,6 +350,16 @@ namespace
 		// limiting it could leave a client that hit its mutation budget
 		// unable to unblock itself.  Read-safe here, exactly as in
 		// AgentRpc.cpp's IsReadSafeVerb.
+		//
+		// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
+		// DELIBERATELY not on this list, on the same three counts.  It
+		// changes nothing in the document; on a capable provider it is the
+		// OTHER way to disarm the part-plan gate, so metering it could
+		// strand a client that spent its mutation budget; and it is
+		// read-safe in IsReadSafeVerb for those same two reasons.  Its own
+		// cost -- one provider round trip per call -- is bounded by the
+		// caller's own turn budget, not by this limiter, whose job is to
+		// meter DOCUMENT mutations.
 		return false;
 	}
 

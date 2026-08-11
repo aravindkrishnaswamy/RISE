@@ -723,6 +723,15 @@ int main( int argc, char** argv )
 	//                           --agent-autonomy: LAUNCH-TIME ONLY, and any
 	//                           value but exactly "on"/"off" (including a
 	//                           missing `=value`) is a loud failure.
+	//                           (Arc 77 Phase 2, 2026-08-11) This ONE switch
+	//                           governs BOTH halves of the gate. On a provider
+	//                           that can generate images the gate also requires
+	//                           an imagined scene target (imagine_scene) before
+	//                           it clears -- same shared 3-refusal counter, same
+	//                           give-up, no second flag -- so `off` disables the
+	//                           imagine requirement along with the plan one. A
+	//                           provider without image generation sees exactly
+	//                           the plan-only gate described above.
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -780,6 +789,11 @@ int main( int argc, char** argv )
 	// scene file) can reach it -- AgentRpc exposes no verb that touches it.
 	// Any value but exactly "on" or "off" is a loud launch-time failure,
 	// never a silent default, matching this flag family's contract.
+	// Arc 77 Phase 2 (2026-08-11): this remains the ONLY switch -- the
+	// imagine half of the gate is gated on the same
+	// SetPartPlanGateDefaultEnabled value (see AgentSession.h's
+	// ImagineRequirementActive_), so `off` turns off both halves and no
+	// second flag was added.
 	bool cliPartPlanGate = true;
 	const char* kPartPlanGateFlagPrefix = "--agent-part-plan-gate=";
 	const std::size_t kPartPlanGateFlagPrefixLen = strlen( kPartPlanGateFlagPrefix );

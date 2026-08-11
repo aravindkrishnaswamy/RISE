@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the NINETEEN provider-neutral tool definitions -- eighteen are
+//    (1) the TWENTY provider-neutral tool definitions -- nineteen are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -25,8 +25,11 @@
 #include "pch.h"
 #include "AgentChatCodecs.h"
 
+#include "Base64.h"   // Arc 77 Phase 2: decode a provider's base64 image payload
+#include "ChatHttpTransport.h"   // GUI wiring (2026-08-11): IChatHttpTransport -- MakeChatImageGenerator's transport seam
 #include "Json.h"
 
+#include <cstdlib>   // getenv -- ONLY for the RISE_IMAGE_* endpoint/model/size overrides (config, not credentials; see ImageEnvOr_)
 #include <cstring>
 #include <map>
 #include <string>
@@ -907,6 +910,34 @@ namespace RISE
 					"},\"required\":[\"parts\"]}"
 				},
 				{
+					"imagine_scene",
+					"Imagine the finished scene before you build it: write your own visual description "
+					"of what it should look like -- subject, composition, lighting, mood, colour -- and "
+					"this call asks your provider to generate one image from exactly that text, returns "
+					"it to you, and holds it as this session's SCENE TARGET. `description` is REQUIRED "
+					"and is free text; nothing checks what it says, and no wording is preferred. Writing "
+					"the description IS the imagining -- the image is what lets you check yourself "
+					"against it afterwards. Once a target exists, every full-frame production render "
+					"(not draft, not a mode: render, not an isolate render) also carries a `sceneTarget` "
+					"block -- {rmse, renderMeanR/G/B, targetMeanR/G/B, compareWidth, compareHeight, "
+					"targetWidth, targetHeight, aspectMatched, compositeWidth, compositeHeight} -- and "
+					"returns a [target | render] side-by-side strip in place of the rendered frame, so "
+					"you see the two together at the moment you look. `rmse` is root-mean-square error "
+					"over the two images resampled to a shared canvas (each axis the smaller of the "
+					"two, so neither is ever enlarged; `aspectMatched` false means the two shapes "
+					"differ and each was fitted per axis). These are measurements only -- nothing is "
+					"gated on them, no value is required, and no target is ever expected to be "
+					"reproduced; the point is to notice the difference and decide for yourself whether "
+					"to act on it. Calling it again replaces this session's scene target. On a provider "
+					"that does not generate images this returns ok:false with a plain statement and "
+					"nothing else changes -- no call is blocked by the absence of a target. Returns "
+					"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"description\":{\"type\":\"string\",\"description\":"
+						"\"Required. Your own words for what the finished scene should look like -- what is in it, how it is arranged, how it is lit, what it feels like. Write it as you would describe a picture to someone who will draw it.\"}"
+					"},\"required\":[\"description\"]}"
+				},
+				{
 					"ask_user",
 					"Pause and ask the user a single, SPECIFIC clarifying question when a "
 					"real ambiguity would MATERIALLY change the scene you build -- subject "
@@ -1332,7 +1363,16 @@ namespace RISE
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"
 				      && call.name != "render" && call.name != "read_viewport"
-				      && call.name != "file_part_plan" )
+				      && call.name != "file_part_plan"
+				      // Arc 77 Phase 2 (2026-08-11): imagine_scene's result carries
+				      // the generated scene target under the same `png_base64`
+				      // field name every other image-bearing verb uses.  `render`
+				      // is ALREADY on this list, so the whole-scene comparison
+				      // composite needs no entry of its own -- verified rather
+				      // than assumed: this predicate keys on the VERB plus a
+				      // non-empty png_base64, and AgentRpc.cpp's render handler
+				      // writes the composite into exactly that field.
+				      && call.name != "imagine_scene" )
 				    || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
@@ -4129,6 +4169,288 @@ namespace RISE
 		std::size_t OpenAIChatCodec::ToolsWireBytes() const
 		{
 			return ( mConfig.useResponsesApi ? OpenAIResponsesToolsJson() : OpenAIToolsJson() ).size();
+		}
+
+		//======================================================================
+		// Arc 77 Phase 2 (2026-08-11): PROVIDER IMAGE GENERATION -- the wire
+		// half of `imagine_scene`.  See AgentChatCodecs.h for the contract.
+		//
+		// THE INVARIANT THIS BORROWS, STATED SO IT CAN BE CHECKED.  The chat
+		// transport's auth idiom is: the key appears ONLY in the provider's
+		// own auth HEADER, sanitized of control characters, never in the URL
+		// and never in a log; a failure maps to a header-free CATEGORY, never
+		// to a dump of the request.  That idiom holds here for exactly the
+		// same reason it holds there -- these builders emit a ChatHttpRequest
+		// and the SAME IChatHttpTransport performs it, so the transport's
+		// documented key-hygiene contract (ChatHttpTransport.h) covers this
+		// call unchanged.  The one thing that is NOT inherited is response
+		// parsing: an image response body can echo the prompt, so the parse
+		// errors below name a SHAPE, never a body substring.
+		//======================================================================
+		namespace
+		{
+			//! Environment override, or `fallback` when unset/empty.  CONFIG
+			//! ONLY -- see the header's note; no credential is ever read from
+			//! the environment here.  Control characters are stripped for the
+			//! same header/URL-injection reason SanitizeHeaderValue exists.
+			std::string ImageEnvOr_( const char* name, const char* fallback )
+			{
+				const char* v = std::getenv( name );
+				if( !v || !*v ) return std::string( fallback );
+				std::string out;
+				for( const char* p = v; *p; ++p ) {
+					if( static_cast<unsigned char>( *p ) >= 0x20 ) out += *p;
+				}
+				if( out.empty() ) return std::string( fallback );
+				return out;
+			}
+
+			//! Depth-first search for the first object under `v` that carries
+			//! BOTH `data` and a mime key -- the Gemini inlineData part, whose
+			//! exact nesting has moved between API revisions (`inlineData` vs
+			//! `inline_data`, and `parts` sometimes under `content`).  Shape-
+			//! tolerant on purpose: a nesting change should degrade to "found
+			//! it anyway", not to a false "the provider returned no image".
+			bool FindInlineImagePart_( const JsonValue& v, std::string& outB64, std::string& outMime,
+			                           int depth )
+			{
+				if( depth > 8 ) return false;
+				if( v.isArray() ) {
+					for( std::size_t i = 0; i < v.size(); ++i )
+						if( FindInlineImagePart_( v.at( i ), outB64, outMime, depth + 1 ) ) return true;
+					return false;
+				}
+				if( !v.isObject() ) return false;
+				const JsonValue* inl = v.find( "inlineData" );
+				if( !inl ) inl = v.find( "inline_data" );
+				if( inl && inl->isObject() ) {
+					const JsonValue* d = inl->find( "data" );
+					if( d && d->isString() && !d->asString().empty() ) {
+						outB64 = d->asString();
+						const JsonValue* m = inl->find( "mimeType" );
+						if( !m ) m = inl->find( "mime_type" );
+						outMime = ( m && m->isString() ) ? m->asString() : std::string( "image/png" );
+						return true;
+					}
+				}
+				const std::vector<std::pair<std::string, JsonValue> >& mem = v.members();
+				for( std::size_t i = 0; i < mem.size(); ++i )
+					if( FindInlineImagePart_( mem[i].second, outB64, outMime, depth + 1 ) ) return true;
+				return false;
+			}
+		}
+
+		bool ChatProviderSupportsImageGeneration( const std::string& providerName )
+		{
+			return providerName == "gemini" || providerName == "openai";
+		}
+
+		std::string ChatImageGenerationModelId( const std::string& providerName )
+		{
+			if( providerName == "gemini" )
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_GEMINI", "gemini-3.6-flash-image" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_OPENAI", "gpt-image-1" );
+			return std::string();
+		}
+
+		bool BuildImageGenerationRequest( const std::string& providerName,
+		                                  const std::string& modelId,
+		                                  const std::string& apiKey,
+		                                  const std::string& prompt,
+		                                  ChatHttpRequest& outRequest,
+		                                  std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsImageGeneration( providerName ) ) {
+				outError = "provider `" + providerName + "` has no image-generation endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no image model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+
+			if( providerName == "gemini" ) {
+				// The SAME surface, auth header and model-id escaping as
+				// GeminiChatCodec::BuildRequest -- image generation is a
+				// generateContent call whose responseModalities ask for an
+				// image, not a separate API.
+				const std::string base =
+					ImageEnvOr_( "RISE_IMAGE_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+
+				// responseModalities is a JSON array of bare enum tokens; the
+				// accepted set is model-version-dependent (some revisions
+				// require TEXT alongside IMAGE), hence the env override.
+				std::string modalities;
+				{
+					const std::string raw = ImageEnvOr_( "RISE_IMAGE_MODALITIES_GEMINI", "IMAGE" );
+					std::size_t start = 0;
+					while( start <= raw.size() ) {
+						const std::size_t comma = raw.find( ',', start );
+						const std::string tok = raw.substr(
+							start, comma == std::string::npos ? std::string::npos : comma - start );
+						if( !tok.empty() ) {
+							if( !modalities.empty() ) modalities += ",";
+							JsonAppendEscapedString( modalities, tok );
+						}
+						if( comma == std::string::npos ) break;
+						start = comma + 1;
+					}
+					if( modalities.empty() ) JsonAppendEscapedString( modalities, "IMAGE" );
+				}
+
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}],\"generationConfig\":{\"responseModalities\":[" + modalities + "]}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// openai: the dedicated images endpoint, Bearer auth -- the SAME
+			// header OpenAIChatCodec::BuildRequest emits.
+			outRequest.url = ImageEnvOr_( "RISE_IMAGE_ENDPOINT_OPENAI",
+			                              "https://api.openai.com/v1/images/generations" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "Authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			std::string body = "{\"model\":";
+			JsonAppendEscapedString( body, modelId );
+			body += ",\"prompt\":";
+			JsonAppendEscapedString( body, prompt );
+			body += ",\"n\":1,\"size\":";
+			JsonAppendEscapedString( body, ImageEnvOr_( "RISE_IMAGE_SIZE_OPENAI", "1024x1024" ) );
+			body += "}";
+			outRequest.body = body;
+			return true;
+		}
+
+		bool ParseImageGenerationResponse( const std::string& providerName,
+		                                   const std::string& body,
+		                                   std::vector<unsigned char>& outBytes,
+		                                   std::string& outMimeType,
+		                                   std::string& outError )
+		{
+			outBytes.clear();
+			outMimeType.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the image response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string b64;
+			if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the image response carried no `candidates`";
+					return false;
+				}
+				if( !FindInlineImagePart_( *cands, b64, outMimeType, 0 ) ) {
+					outError = "the image response's candidate carried no inlineData image part";
+					return false;
+				}
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* data = root.find( "data" );
+				if( !data || !data->isArray() || data->size() == 0 ) {
+					outError = "the image response carried no `data` array";
+					return false;
+				}
+				const JsonValue& first = data->at( 0 );
+				const JsonValue* b = first.isObject() ? first.find( "b64_json" ) : nullptr;
+				if( !b || !b->isString() || b->asString().empty() ) {
+					outError = "the image response's data[0] carried no `b64_json` payload "
+					           "(a url-only response is not accepted -- the bytes must arrive inline)";
+					return false;
+				}
+				b64 = b->asString();
+				outMimeType = "image/png";
+			}
+			else {
+				outError = "provider `" + providerName + "` has no image-response shape in this build";
+				return false;
+			}
+
+			if( !Base64Decode( b64, outBytes ) || outBytes.empty() ) {
+				outBytes.clear();
+				outError = "the image payload was not valid base64";
+				return false;
+			}
+			if( outMimeType.empty() ) outMimeType = "image/png";
+			return true;
+		}
+
+		ChatImageGenerator MakeChatImageGenerator( const std::string& providerName,
+		                                            const std::string& apiKey,
+		                                            std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatImageGenerator out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsImageGeneration( providerName );
+			out.modelId      = ChatImageGenerationModelId( providerName );
+			if( !out.supported ) return out;
+
+			// `modelId` and `apiKey` are captured BY VALUE (not `providerName`
+			// again -- `out.providerName` above already holds the identical
+			// string, reused below by value-capture through the lambda's own
+			// copy) so the returned callable is self-contained and safe to
+			// outlive this function's locals.  `transport` is a shared_ptr:
+			// the callable keeps it alive for as long as the generator itself
+			// is held, exactly like AgentSession::AgentImageGenerator's own
+			// documented lifetime contract.
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.generate =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& description ) -> ChatImageGenOutcome
+			{
+				ChatImageGenOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildImageGenerationRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                  description, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for image generation";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the
+					// request and never the key -- see
+					// ChatHttpTransport.h's key-hygiene contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result
+					// the model reads.
+					result.error = "the image provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string perr;
+				if( !ParseImageGenerationResponse( providerCopy, resp.body, result.bytes,
+				                                   result.mimeType, perr ) ) {
+					result.bytes.clear();
+					result.error = perr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
 		}
 
 		//======================================================================

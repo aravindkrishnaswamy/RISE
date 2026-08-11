@@ -1216,6 +1216,85 @@ namespace RISE
 			std::vector<unsigned char> targetCompositePng;
 			unsigned int               targetCompositeWidth = 0;
 			unsigned int               targetCompositeHeight = 0;
+			//! Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE target comparison
+			//! -- this render measured against the image the model asked the
+			//! provider to generate from its own description (`imagine_scene`).
+			//! ALL default to the "no comparison happened" values, and stay
+			//! there for every render on a session that never imagined a
+			//! scene, so a session that does not use the mechanism produces
+			//! byte-identical results to before this slice.
+			//!
+			//! WHERE IT ATTACHES, and why exactly there.  ONLY on a
+			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
+			//! isolate and did NOT carry a part `target`.  The three
+			//! exclusions are not conservatism, they are honesty:
+			//!   * DRAFT ignores the scene's authored materials and lighting
+			//!     entirely, so an RMSE against a coloured, lit target image
+			//!     would be a real number measuring the wrong thing.
+			//!   * OBJECTMAP / VIEW MODE paint identity or data colours, not
+			//!     appearance -- same objection, more starkly.
+			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
+			//!     PART, and the whole-scene target is not what it is a look
+			//!     at.  (A part look has its own criterion -- `target`.)
+			//! The battery that selected this mechanism measured models
+			//! visiting the full-frame render surface 64/64 times and every
+			//! per-part consultation surface 0/64, which is why the
+			//! comparison rides the surface that is actually visited rather
+			//! than waiting to be asked for.
+			//!
+			//! `sceneTargetApplied` gates the whole block on the wire and is
+			//! set ONLY when a measurement really happened (same rule, same
+			//! reason, as `targetApplied`).
+			//!
+			//! THE COMPARISON CANVAS.  The render and the stored target are
+			//! rarely the same size, so both are BOX-DOWNSCALED to a shared
+			//! canvas whose dimensions are the per-axis MINIMUM of the two:
+			//! `sceneTargetCompareWidth = min(renderW, targetW)`,
+			//! `...Height = min(renderH, targetH)`.  Never an upscale, so no
+			//! interpolation invents detail on either side.  When the two
+			//! aspect ratios differ, that per-axis fit is a NON-UNIFORM
+			//! resample -- `sceneTargetAspectMatched` is then false and both
+			//! source sizes are reported, so a caller can see the squeeze
+			//! rather than reading a distorted RMSE as a content difference.
+			//!
+			//! `sceneTargetRmse` is root-mean-square error over the shared
+			//! canvas's R,G,B samples in [0,1] -- the SAME formula
+			//! compare_to_reference reports (and the eval grader's own
+			//! objective function), so the two numbers are directly
+			//! comparable.  The six means are each image's per-channel mean
+			//! over that same canvas, render first: they say WHICH WAY the
+			//! frame differs (too dark, too blue) where the RMSE says only
+			//! how much.
+			//!
+			//! `sceneTargetCompositePng` is the [target | render] strip, two
+			//! canvas-sized panels side by side.  It is a REQUIREMENT, not a
+			//! convenience, for the reason G3b's composite is: the transport
+			//! keeps only the MOST RECENT tool-result image live, so this
+			//! strip is HOW the imagined target re-enters the model's context
+			//! at the moment it looks (design doc
+			//! docs/agentic-redesign/77-imagination-target-design.md sec 4.3
+			//! "Retention interaction").  Empty when !sceneTargetApplied or
+			//! when the encode failed.
+			//!
+			//! NOTHING IS GATED ON ANY OF THESE NUMBERS and none of them is
+			//! ever characterized -- no threshold, no verdict, no advice
+			//! (design doc sec 5.4).
+			bool                       sceneTargetApplied = false;
+			double                     sceneTargetRmse = 0.0;
+			double                     sceneTargetRenderMeanR = 0.0;
+			double                     sceneTargetRenderMeanG = 0.0;
+			double                     sceneTargetRenderMeanB = 0.0;
+			double                     sceneTargetMeanR = 0.0;
+			double                     sceneTargetMeanG = 0.0;
+			double                     sceneTargetMeanB = 0.0;
+			unsigned int               sceneTargetCompareWidth = 0;
+			unsigned int               sceneTargetCompareHeight = 0;
+			unsigned int               sceneTargetWidth = 0;
+			unsigned int               sceneTargetHeight = 0;
+			bool                       sceneTargetAspectMatched = true;
+			std::vector<unsigned char> sceneTargetCompositePng;
+			unsigned int               sceneTargetCompositeWidth = 0;
+			unsigned int               sceneTargetCompositeHeight = 0;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -1602,6 +1681,15 @@ namespace RISE
 		//!     nothing running on the controller's render worker ever
 		//!     touches mPartSketches.  See the `resolvedTarget` parameters
 		//!     on RenderCore_ / ApplyTargetComparison_.
+		//!     Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET state
+		//!     (mSceneTarget -- written by ImagineScene, read by the
+		//!     whole-scene render comparison) is in this bucket too and
+		//!     honours it the SAME way, deliberately reusing the discipline
+		//!     rather than inventing a second one: Render() and RenderAsync
+		//!     each COPY the shared_ptr on the submitting thread and pass the
+		//!     copy to ApplySceneTargetComparison_, and ImagineScene publishes
+		//!     by REPLACING the pointer (never mutating a published pointee),
+		//!     so a worker holding a snapshot is reading immutable bytes.
 		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
 		//!     The Job behind mJob is SHARED: with a controller attached the
 		//!     GUI main thread commits to the same head while this session
@@ -3248,6 +3336,184 @@ namespace RISE
 			static void SetPartPlanGateDefaultEnabled( bool enabled );
 			static bool PartPlanGateDefaultEnabled();
 
+			//----------------------------------------------------------------
+			// Arc 77 PHASE 2 (2026-08-11): the WHOLE-SCENE IMAGINED TARGET.
+			//
+			// WHAT IT IS.  `imagine_scene {description}` -- the model writes
+			// its own visual description of the finished scene (writing it IS
+			// the imagining act), the HOST asks the session's provider to
+			// generate ONE image from exactly that text, and the image is
+			// held session-side as THE scene target and returned inline so
+			// the model sees its own imagination.  From then on every
+			// full-frame production beauty render carries a factual
+			// `sceneTarget` comparison against it (see
+			// AgentRenderResult::sceneTargetApplied) plus a [target | render]
+			// composite.  Re-imagining REPLACES the target, exactly as
+			// re-filing replaces the part plan.
+			//
+			// WHY THIS SHAPE, from the battery that selected it (design doc
+			// docs/agentic-redesign/77-imagination-target-design.md sec 13):
+			// across 9 runs / 64 renders, models visited the FULL-FRAME
+			// render surface 64/64 times and every per-part consultation
+			// surface -- isolate, render{target}, replace_geometry_scaffold
+			// -- exactly 0/64.  A criterion nobody asks for is not a
+			// criterion.  The same battery measured 9/9 PROACTIVE compliance
+			// with a stated BLOCKING precondition and zero refusals, which is
+			// why the imagine step joins the existing gate rather than being
+			// offered as advice: this workstream has measured advice at ~0.
+			//
+			// CAPABILITY-CONDITIONAL, NEVER STRANDING.  On a provider with no
+			// image generation the tool answers with an honest capability
+			// statement and the gate is EXACTLY today's plan-only gate.  On a
+			// capable provider the gate stays armed until BOTH a plan is
+			// filed AND a target exists -- same shared 3-refusal counter,
+			// same give-up.  And if an attempt fails for PROVIDER reasons
+			// (HTTP error, quota, missing key, timeout) the imagine
+			// REQUIREMENT DISARMS for the session with a factual note in that
+			// result: a network blip must never strand a session.  A
+			// SCHEMA-invalid call (missing `description`) is a -32602 and
+			// disarms nothing, exactly as a malformed file_part_plan does not
+			// burn a refusal.
+			//
+			// WIRE DIRECTION.  Outbound the wire carries only the model's
+			// description STRING; the image bytes are received host-side from
+			// the provider and never leave the session (no scene document, no
+			// disk, no persistence).  `SetReferenceImages`' host-only-bytes
+			// rationale is untouched -- and this target is deliberately NOT
+			// stored there: that registry is the eval harness's GRADING
+			// reference set and is replaced wholesale, so writing into it
+			// would collide with an image_reconstruct scenario's own
+			// references.  Only the RMSE MACHINERY is shared.
+			//----------------------------------------------------------------
+
+			//! The session's imagined whole-scene target: the model's own
+			//! description plus the image the provider generated from it,
+			//! normalized to ONE representation (see ImagineScene) --
+			//! `rgb` is tightly-packed 8-bit RGB, `width*height*3` bytes,
+			//! and `png` is that same image re-encoded, which is what rides
+			//! back inline.  Session-lifetime and IMMUTABLE once published:
+			//! re-imagining swaps the whole object behind a new shared_ptr
+			//! rather than mutating this one, which is what lets an async
+			//! render hold a snapshot without a lock (see RenderAsync).
+			struct AgentSceneTarget
+			{
+				std::string                description;   //!< the model's own text, verbatim
+				std::vector<unsigned char> rgb;           //!< width*height*3, row-major
+				unsigned int               width = 0;
+				unsigned int               height = 0;
+				std::vector<unsigned char> png;           //!< the same image, PNG-encoded
+				std::string                providerName;  //!< which provider generated it
+				std::string                modelId;       //!< which image model
+				std::string                sourceMimeType;//!< what the provider actually sent
+			};
+
+			//! One image-generation attempt's outcome, as the HOST reports it
+			//! back to this class.  `ok` true REQUIRES non-empty `bytes`.
+			//! `error` must be a HEADER-FREE, BODY-FREE category (the
+			//! IChatHttpTransport contract) -- it is echoed to the model.
+			struct AgentImageGenOutcome
+			{
+				bool                       ok = false;
+				std::vector<unsigned char> bytes;      //!< the generated image, as the provider sent it
+				std::string                mimeType;   //!< e.g. "image/png"
+				std::string                error;      //!< factual category on failure
+			};
+
+			//! The HOST-INSTALLED image-generation capability -- the same
+			//! shape of dependency as SetReferenceImages (host-provided, no
+			//! wire verb can reach it) but a callable rather than data,
+			//! because performing the POST needs the host's transport and the
+			//! session's chat credentials, neither of which this class has or
+			//! should have.  Left unset (the default at EVERY existing
+			//! construction site) the session honestly reports no capability
+			//! and the imagine half of the gate never arms -- back-compat by
+			//! construction.
+			struct AgentImageGenerator
+			{
+				//! Does this provider generate images at all?  When false the
+				//! other fields are informational and `generate` is not called.
+				bool        supported = false;
+				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
+				std::string modelId;        //!< e.g. "gemini-3.6-flash-image"
+				//! Perform ONE blocking generation of `description`.  Called
+				//! on the dispatcher thread inside tool dispatch; a generous
+				//! transport timeout is the host's to set.  Never throws.
+				std::function<AgentImageGenOutcome( const std::string& description )> generate;
+			};
+
+			//! Install (or replace) the host's image-generation capability.
+			//! HOST-PROVIDED ONLY -- there is no wire verb that can set,
+			//! change or inspect the endpoint, the model or the credentials.
+			//! Call once, before the session serves requests.
+			void SetImageGenerator( AgentImageGenerator generator )
+			{
+				mImageGenerator = std::move( generator );
+			}
+
+			//! The structured result of ImagineScene.  On `ok` the target was
+			//! REPLACED (or created) and `png`/`width`/`height` describe it.
+			//! On !ok NOTHING about the session's target changed -- a failed
+			//! imagine never drops a target the model already has.
+			struct AgentImagineResult
+			{
+				bool                       ok = false;
+				bool                       replacedPreviousTarget = false;
+				//! true iff the failure was a PROVIDER failure that disarmed
+				//! the imagine requirement (see the anti-stranding rule).
+				bool                       requirementDisarmed = false;
+				//! true iff the refusal was "this provider cannot generate
+				//! images" rather than a failed attempt.
+				bool                       capabilityRefusal = false;
+				std::string                description;
+				std::string                providerName;
+				std::string                modelId;
+				unsigned int               width = 0;
+				unsigned int               height = 0;
+				std::vector<unsigned char> png;
+				std::string                message;
+			};
+
+			//! Ask the provider for an image of `description` and hold it as
+			//! this session's scene target.  Touches the Document not at all.
+			//! Blocking: it performs one provider round trip through the
+			//! host-installed generator.  See the block above for the
+			//! capability, replacement and anti-stranding contracts.
+			AgentImagineResult ImagineScene( const std::string& description );
+
+			//! The current scene target, or null when none has been imagined.
+			//! SINGLE-THREADED-CALLER, exactly like the part-plan state: the
+			//! async render path COPIES this shared_ptr on the submitting
+			//! thread and carries the copy into the worker (see RenderAsync),
+			//! so nothing on the controller's render worker ever reads this
+			//! member.  The pointee is immutable, so a held snapshot stays
+			//! valid across a re-imagine.
+			std::shared_ptr<const AgentSceneTarget> SceneTarget() const { return mSceneTarget; }
+
+			//! Does this session have a scene target?  Observation only.
+			bool HasSceneTarget() const { return mSceneTarget != nullptr; }
+
+			//! Does this session's provider generate images (i.e. did the
+			//! host install a capable generator)?  Observation only -- this
+			//! is what makes the gate's imagine half conditional.
+			bool ImagineCapable() const { return mImageGenerator.supported && mImageGenerator.generate != nullptr; }
+
+			//! Has a PROVIDER failure disarmed the imagine requirement for
+			//! this session?  Observation only.
+			bool ImagineRequirementDisarmed() const { return mImagineRequirementDisarmed; }
+			//! Phase 2 (P2-2 spend cap): generator-reaching imagine_scene calls
+			//! allowed per session.  Capability/schema refusals never count.
+			static constexpr int kSceneImagineMaxPerSession = 10;
+
+			//! The longest edge the stored scene target is kept at.  A
+			//! provider image arrives at 1024 or larger; every agent-surface
+			//! render is capped at kAgentSurfaceMaxRenderEdge (256), so the
+			//! comparison canvas can never exceed that anyway and storing the
+			//! full-size original would only inflate the inline image the
+			//! filing echo returns.  512 keeps the echo legible to a vision
+			//! model while staying well inside every provider's inline-image
+			//! budget.
+			static constexpr unsigned int kSceneTargetMaxEdge = 512;
+
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
 			//! narrowing -- the SAME resolution rules as ProposePatch,
@@ -4414,6 +4680,36 @@ namespace RISE
 			                              bool assumeParked,
 			                              const AgentPartSketch* resolvedTarget );
 
+			//! Arc 77 Phase 2 (2026-08-11): attach the WHOLE-SCENE target
+			//! comparison to a render that qualifies for it -- see
+			//! AgentRenderResult::sceneTargetApplied for the qualification
+			//! rule, the canvas convention and the composite.
+			//!
+			//! Unlike ApplyTargetComparison_ this runs NO EXTRA RENDER: it
+			//! reads the frame the caller's render already produced
+			//! (`rr.png`), so it costs one PNG decode, one box-downscale of
+			//! each side and one PNG encode -- microseconds at the agent
+			//! surface's 256-pixel cap, and nothing at all on a session with
+			//! no target.
+			//!
+			//! `target` is the shared_ptr SNAPSHOT the CALLER copied on the
+			//! CALLER's thread, for exactly the reason ApplyTargetComparison_
+			//! takes a sketch snapshot: on the async path this runs on the
+			//! controller's render worker while the dispatcher thread may be
+			//! inside ImagineScene replacing mSceneTarget.  A null snapshot
+			//! (the common case) is a silent no-op; the pointee is immutable,
+			//! so a snapshot taken before a re-imagine still describes the
+			//! target the caller submitted against.
+			//!
+			//! A failure anywhere in the measurement (undecodable frame,
+			//! degenerate dims, failed encode) leaves every `sceneTarget*`
+			//! field at its default, emits no block, and appends a factual
+			//! note to `rr.message` -- it NEVER fails the render, which
+			//! succeeded on its own terms.
+			void ApplySceneTargetComparison_( const AgentRenderParams& params,
+			                                   AgentRenderResult& rr,
+			                                   const std::shared_ptr<const AgentSceneTarget>& target );
+
 			//! Resolve the effective BEAUTY display transform (exposure EV +
 			//! tone-curve enum) the agent's in-memory PNG encode must apply so
 			//! read_image / read_viewport / a compareToImage grading render
@@ -4762,14 +5058,68 @@ namespace RISE
 			//! serialized into the Document, never persisted anywhere.
 			std::vector<AgentPartSketch> mPartSketches;
 
+			//----------------------------------------------------------------
+			// Arc 77 Phase 2 (2026-08-11): the scene-target state.  Lives in
+			// the SAME single-threaded-caller bucket as the part-plan state
+			// above (see the class contract) and is honoured across the async
+			// render boundary by the SAME snapshot discipline, not by a new
+			// lock: RenderAsync copies the shared_ptr on the submitting
+			// thread and the worker reads only its copy.
+			//----------------------------------------------------------------
+
+			//! The host-installed image-generation capability; default-
+			//! constructed (supported=false, no callable) at every existing
+			//! construction site.
+			AgentImageGenerator mImageGenerator;
+			//! The imagined whole-scene target, or null.  Written ONLY by
+			//! ImagineScene, and always by REPLACING the pointer -- the
+			//! pointee is never mutated after publication, which is what
+			//! makes a held snapshot safe.
+			std::shared_ptr<const AgentSceneTarget> mSceneTarget;
+			//! ANTI-STRANDING: set when an imagine attempt fails for PROVIDER
+			//! reasons, permanently dropping the imagine half of the gate for
+			//! this session.  A schema error never sets it (it never reaches
+			//! this class), and a capability refusal never sets it (the half
+			//! was never armed on an incapable provider).
+			bool mImagineRequirementDisarmed = false;
+			//! Phase 2 review round (P2-2): calls that actually reached the
+			//! image generator this session -- the billed ones.  See the cap
+			//! block in ImagineScene for the full rationale (first read-safe
+			//! verb costing real provider money; interactive surface has no
+			//! call budget) and the proof cap-hit can never strand the gate.
+			int  mSceneImagineCalls = 0;
+
+			//! Is the imagine half of the gate in force?  Only on a provider
+			//! that can actually generate images, only while the gate itself
+			//! is enabled (so --agent-part-plan-gate=off disables BOTH halves
+			//! with no second switch), and only until a provider failure
+			//! disarms it.
+			bool ImagineRequirementActive_() const
+			{
+				return mPartPlanGateEnabled && !mImagineRequirementDisarmed &&
+				       mImageGenerator.supported && mImageGenerator.generate != nullptr;
+			}
+
 			//! Is the gate armed?  A pure bool/int test with no parse, no
 			//! lock and no document access -- checked BEFORE the CST parse
 			//! ChunkTextCreatesGeometry_ needs, so that once the gate is
 			//! disarmed (the common case for the whole rest of a session)
 			//! every insert pays exactly nothing for it.
+			//!
+			//! Arc 77 Phase 2: the gate now has TWO satisfaction conditions
+			//! on a capable provider -- a filed plan AND an imagined scene
+			//! target -- and stays armed until BOTH hold.  The give-up flag
+			//! still disarms everything, so the 3-refusal cap bounds the
+			//! two-condition form exactly as it bounded the one-condition
+			//! form; there is no second counter and no second cap.  On a
+			//! provider with no image capability ImagineRequirementActive_
+			//! is false and this reduces, term for term, to the shipped
+			//! plan-only gate.
 			bool PartPlanGateArmed_() const
 			{
-				return mPartPlanGateEnabled && !mPartPlanFiled && !mPartPlanGateGaveUp;
+				if( !mPartPlanGateEnabled || mPartPlanGateGaveUp ) return false;
+				if( !mPartPlanFiled ) return true;
+				return ImagineRequirementActive_() && !mSceneTarget;
 			}
 
 			//! True iff `chunkText` parses to at least one top-level chunk

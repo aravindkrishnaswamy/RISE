@@ -2355,6 +2355,189 @@ static void RunLastRenderCompletionSitesTest()
 	std::remove( scenePath.c_str() );
 }
 
+//======================================================================
+// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE target comparison on the
+// render surface.
+//
+// WHY THIS IS THE SURFACE.  The battery that selected this mechanism
+// measured models visiting the full-frame render 64/64 times and every
+// per-part consultation surface 0/64 -- so the comparison rides the render
+// rather than waiting to be asked for.  These tests pin WHERE it attaches
+// and, just as importantly, where it must NOT:
+//   * DRAFT ignores the scene's materials and lighting, so an RMSE against
+//     a coloured, lit target would be a real number measuring the wrong
+//     thing.
+//   * OBJECTMAP paints identity colours, not appearance.
+//   * ISOLATE is a look at ONE PART; the whole-scene target is not what it
+//     is a look at.
+// Each of those would be a dishonest number in a payload this project has
+// measured models ACTING on, which is why they are assertions and not
+// merely comments.
+//======================================================================
+
+//! Mint a real, decodable PNG of a known size without adding a PNG encoder
+//! to this test: the part-plan sketch composite is exactly 256x256 per
+//! tile, so one part gives a 256x256 image and two give 512x256.
+static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
+{
+	std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
+	if( !s ) return std::vector<unsigned char>();
+	std::vector<AgentSession::AgentPartPlanEntry> parts;
+	for( int i = 0; i < partCount; ++i ) {
+		AgentSession::AgentPartPlanEntry e;
+		e.part         = "canned" + std::to_string( i );
+		e.construction = "primitive";
+		e.outline      = "0 0; 1 0; 1 1; 0 1";
+		parts.push_back( e );
+	}
+	return s->FilePartPlan( parts ).compositePng;
+}
+
+static AgentSession::AgentImageGenerator MakeFakeImageGen( const std::vector<unsigned char>& png )
+{
+	AgentSession::AgentImageGenerator g;
+	g.supported    = true;
+	g.providerName = "gemini";
+	g.modelId      = "test-image-model";
+	g.generate = [png]( const std::string& ) {
+		AgentSession::AgentImageGenOutcome o;
+		o.ok       = true;
+		o.bytes    = png;
+		o.mimeType = "image/png";
+		return o;
+	};
+	return g;
+}
+
+static void RunSceneTargetTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 77 Phase 2 (the imagined whole-scene target) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_scene_target.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the scene-target scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (scene-target test)" );
+
+	const std::vector<unsigned char> squarePng = MintCannedPng( pJob, 1 );   // 256x256
+	const std::vector<unsigned char> widePng   = MintCannedPng( pJob, 2 );   // 512x256
+	Check( !squarePng.empty() && !widePng.empty(), "two canned target images were minted" );
+
+	// (a) BASELINE: a session that never imagined a scene produces a render
+	//     result with no comparison at all -- back-compat by construction.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "baseline production render succeeds" );
+		Check( !r.sceneTargetApplied,
+		       "MONEY ASSERTION (back-compat): with no imagined target the render result carries NO "
+		       "sceneTarget block -- a session that does not use the mechanism is untouched by it" );
+		Check( r.sceneTargetCompositePng.empty(), "and no composite" );
+		Check( r.message.find( "scene target" ) == std::string::npos,
+		       "and the message is unchanged" );
+	}
+
+	// (b) THE COMPARISON on a full-frame production beauty render.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		session->SetImageGenerator( MakeFakeImageGen( squarePng ) );
+		Check( session->ImagineScene( "a grey sphere lit from the front" ).ok, "the imagine succeeds" );
+
+		const std::string docBefore = session->ReadDocument();
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the production render succeeds" );
+		Check( r.sceneTargetApplied,
+		       "MONEY ASSERTION: a full-frame production BEAUTY render carries the sceneTarget "
+		       "comparison automatically -- the model does not have to ask for it, which is the "
+		       "whole point (the per-part consultation surfaces measured 0/64)" );
+		// The shared canvas is the PER-AXIS MINIMUM: a 24x24 render against a
+		// 256x256 target compares at 24x24, never upscaling either side.
+		Check( r.sceneTargetCompareWidth == r.width && r.sceneTargetCompareHeight == r.height,
+		       "the shared canvas is the render's dims here (both are smaller than the target's)" );
+		Check( r.sceneTargetWidth == 256 && r.sceneTargetHeight == 256,
+		       "and the target's own dims are reported alongside" );
+		Check( r.sceneTargetAspectMatched,
+		       "a square render against a square target reports aspectMatched" );
+		Check( r.sceneTargetRmse >= 0.0 && r.sceneTargetRmse <= 1.7321,
+		       "the RMSE is a real number in range" );
+		Check( r.sceneTargetRenderMeanR >= 0.0 && r.sceneTargetRenderMeanR <= 1.0 &&
+		       r.sceneTargetMeanR >= 0.0 && r.sceneTargetMeanR <= 1.0,
+		       "both sides' per-channel means are in [0,1]" );
+		Check( r.sceneTargetCompositeWidth == r.sceneTargetCompareWidth * 2 &&
+		       r.sceneTargetCompositeHeight == r.sceneTargetCompareHeight,
+		       "the [target | render] strip is two canvas-sized panels wide" );
+		Check( r.sceneTargetCompositePng.size() >= 8 && r.sceneTargetCompositePng[0] == 0x89 &&
+		       r.sceneTargetCompositePng[1] == 'P' && r.sceneTargetCompositePng[2] == 'N' &&
+		       r.sceneTargetCompositePng[3] == 'G',
+		       "MONEY ASSERTION: and it is a real PNG -- the strip is HOW the imagined target "
+		       "re-enters the model's context at the moment it looks (the single live-image slot)" );
+		Check( r.message.find( "scene target: rmse" ) != std::string::npos,
+		       "the message states the measurement" );
+		Check( r.message.find( "close" ) == std::string::npos &&
+		       r.message.find( "poor" ) == std::string::npos &&
+		       r.message.find( "good" ) == std::string::npos,
+		       "MONEY ASSERTION: and CHARACTERIZES nothing -- no verdict word anywhere, per the "
+		       "design's no-Goodhart rule" );
+		Check( session->ReadDocument() == docBefore,
+		       "the comparison is side-effect-free on the Document" );
+
+		// (c) The three exclusions, on the SAME session (so the only variable
+		//     is the render kind, not whether a target exists).
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult d = session->Render( p );
+			Check( d.ok, "the draft render succeeds" );
+			Check( !d.sceneTargetApplied,
+			       "MONEY ASSERTION: a DRAFT render carries NO comparison -- draft ignores the "
+			       "scene's materials and lighting, so an RMSE against a lit, coloured target "
+			       "would be a real number measuring the wrong thing" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult om = session->Render( p );
+			Check( om.ok, "the objectmap render succeeds" );
+			Check( !om.sceneTargetApplied,
+			       "MONEY ASSERTION: an OBJECTMAP render carries NO comparison -- it paints identity "
+			       "colours, not appearance" );
+		}
+		{
+			AgentRenderParams p;
+			p.isolate = "obj_sph";
+			const AgentRenderResult iso = session->Render( p );
+			Check( iso.ok, "the isolate render succeeds" );
+			Check( iso.isolateApplied, "and really did isolate" );
+			Check( !iso.sceneTargetApplied,
+			       "MONEY ASSERTION: an ISOLATE render carries NO whole-scene comparison -- isolate "
+			       "deletes the rest of the scene, so it is a look at one PART and the whole-scene "
+			       "target is not what it is a look at" );
+		}
+	}
+
+	// (d) A target whose aspect differs from the render's: the per-axis fit
+	//     is REPORTED, not hidden, so a squeeze cannot read as a content
+	//     difference.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		session->SetImageGenerator( MakeFakeImageGen( widePng ) );   // 512x256, 2:1
+		Check( session->ImagineScene( "a wide panorama" ).ok, "the wide-target imagine succeeds" );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok && r.sceneTargetApplied, "the comparison still happens" );
+		Check( !r.sceneTargetAspectMatched,
+		       "MONEY ASSERTION: a 1:1 render against a 2:1 target reports aspectMatched FALSE -- "
+		       "the non-uniform fit is a stated fact, not a silent distortion of the RMSE" );
+		Check( r.sceneTargetWidth == 512 && r.sceneTargetHeight == 256,
+		       "and both source sizes are reported so the squeeze is legible" );
+		Check( r.message.find( "so each was fitted per axis" ) != std::string::npos,
+		       "the message says so in words too" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -2375,6 +2558,7 @@ int main()
 	RunDraftCancelTest();
 	RunNoRasterizerDraftTest();
 	RunLastRenderCompletionSitesTest();
+	RunSceneTargetTests();   // Arc 77 Phase 2 (2026-08-11)
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

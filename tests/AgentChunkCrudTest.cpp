@@ -9147,6 +9147,440 @@ static void TestPartSketchRefusalText()
 	std::remove( tmp.c_str() );
 }
 
+//======================================================================
+// Arc 77 Phase 2 (2026-08-11): imagine_scene + the two-condition gate.
+//
+// WHAT THESE PIN, and why each one is a P1 if it breaks:
+//   IM-a  CAPABILITY.  A provider with no image generation answers with a
+//         plain statement, holds no target, and -- crucially -- leaves the
+//         gate as the shipped PLAN-ONLY gate.  A regression here would turn
+//         every non-image provider's session into an unclearable gate.
+//   IM-b  SUCCESS + REPLACE.  A capable provider's image becomes THE scene
+//         target; imagining again replaces it wholesale.
+//   IM-c  ANTI-STRANDING.  A PROVIDER failure disarms the imagine
+//         requirement for the session, so the gate then clears on the plan
+//         alone.  This is the rule that stops a network blip from bricking
+//         a run; nothing else in the design substitutes for it.
+//   IM-d  THE TWO-CONDITION GATE.  On a capable provider the refusal names
+//         BOTH outstanding requirements, then only the one still missing,
+//         and clears when both are met -- sharing ONE counter and ONE cap
+//         with the plan half, whose value-splice arm and counter semantics
+//         are untouched.
+//   IM-e  THE CAP STILL BOUNDS IT.  Two conditions, still 3 refusals, still
+//         a give-up on the 4th -- and the give-up notice names what was
+//         actually missing rather than asserting "without a filed plan".
+//   IM-f  A -32602 DISARMS NOTHING.  A mis-shaped call must not be a way to
+//         switch the mechanism off; only a PROVIDER failure disarms.
+//======================================================================
+
+//! Mint a real, decodable PNG of a known size without adding a PNG encoder
+//! to this test: file a `parts`-entry plan and take its composite sketch
+//! echo, which is exactly kPartSketchCanvas x kPartSketchCanvas per tile.
+//! One part -> 256x256, two parts -> 512x256, so a test can tell two canned
+//! images apart by their dimensions alone.
+static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
+{
+	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
+	if( !s ) return std::vector<unsigned char>();
+	std::vector<Agent::AgentSession::AgentPartPlanEntry> parts;
+	for( int i = 0; i < partCount; ++i ) {
+		Agent::AgentSession::AgentPartPlanEntry e;
+		e.part         = "canned" + std::to_string( i );
+		e.construction = "primitive";
+		e.outline      = "0 0; 1 0; 1 1; 0 1";
+		parts.push_back( e );
+	}
+	return s->FilePartPlan( parts ).compositePng;
+}
+
+//! A fake, host-installed generator -- the same seam AgentEvalRunner fills
+//! from the live transport, so these tests drive the identical session code
+//! a real provider does, with no network and no key.
+static Agent::AgentSession::AgentImageGenerator MakeFakeImageGen(
+	const std::vector<unsigned char>& png, int* callCount = nullptr )
+{
+	Agent::AgentSession::AgentImageGenerator g;
+	g.supported    = true;
+	g.providerName = "gemini";
+	g.modelId      = "test-image-model";
+	g.generate = [png, callCount]( const std::string& ) {
+		Agent::AgentSession::AgentImageGenOutcome o;
+		if( callCount ) ++*callCount;
+		o.ok       = true;
+		o.bytes    = png;
+		o.mimeType = "image/png";
+		return o;
+	};
+	return g;
+}
+
+static Agent::AgentSession::AgentImageGenerator MakeFailingImageGen( const char* why )
+{
+	Agent::AgentSession::AgentImageGenerator g;
+	g.supported    = true;
+	g.providerName = "gemini";
+	g.modelId      = "test-image-model";
+	const std::string reason = why;
+	g.generate = [reason]( const std::string& ) {
+		Agent::AgentSession::AgentImageGenOutcome o;
+		o.ok    = false;
+		o.error = reason;
+		return o;
+	};
+	return g;
+}
+
+//! A geometry chunk with a CALLER-CHOSEN name.  The sub-blocks below share
+//! one Job (loading a scene per block would triple these tests' cost), so a
+//! block that actually LANDS a chunk must not collide with the next block's
+//! insert -- a name collision would be rejected by the Job for a reason that
+//! has nothing to do with the gate under test, and read as a gate failure.
+static std::string ImagineBoxChunk( const char* name )
+{
+	return std::string( "box_geometry\n{\n\tname " ) + name +
+		"\n\twidth 1.0\n\theight 1.0\n\tdepth 1.0\n}";
+}
+
+//! IM-a: no capability -> honest refusal, no target, and the gate is EXACTLY
+//! today's plan-only gate.
+static void TestImagineCapabilityRefusal()
+{
+	std::printf( "IM-a: an incapable provider refuses honestly and leaves the plan-only gate...\n" );
+	const std::string tmp = TempPath( "agentcrud_im_a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-a fixture loads" );
+	if( !pJob ) return;
+
+	// (1) No generator installed at all -- every EXISTING construction site.
+	{
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( !sess->ImagineCapable(), "IM-a a session with no host-installed generator is not capable" );
+		const Agent::AgentSession::AgentImagineResult r = sess->ImagineScene( "a quiet courtyard" );
+		Check( !r.ok, "IM-a ImagineScene refuses" );
+		Check( r.capabilityRefusal, "IM-a and reports it as a CAPABILITY refusal" );
+		Check( r.message.find( "does not generate images" ) != std::string::npos,
+		       "IM-a the message says plainly what is missing" );
+		Check( !sess->HasSceneTarget(), "IM-a no target is held" );
+		Check( !sess->ImagineRequirementDisarmed(),
+		       "IM-a MONEY ASSERTION: a capability refusal does NOT set the provider-failure disarm "
+		       "-- the imagine half was never armed here, so claiming a disarm would be a false "
+		       "statement about the session's own state" );
+
+		// The gate is the shipped plan-only gate, word for word.
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( kG2GeometryChunk );
+		Check( !r1.applied, "IM-a the geometry insert is still refused (the plan half)" );
+		Check( r1.message.find( "no part plan has been filed for this session." ) != std::string::npos,
+		       "IM-a MONEY ASSERTION: the refusal is the plan-only sentence -- an incapable provider "
+		       "sees byte-identical behaviour to before this slice" );
+		Check( r1.message.find( "imagine_scene" ) == std::string::npos,
+		       "IM-a and it does NOT name imagine_scene, which cannot help here" );
+		Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-a the plan files" );
+		Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+		       "IM-a MONEY ASSERTION: the plan ALONE clears the gate on an incapable provider" );
+	}
+
+	// (2) A generator installed but explicitly not supported (the shape the
+	//     host builds for anthropic/xai/local).
+	{
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::AgentImageGenerator g;
+		g.supported    = false;
+		g.providerName = "anthropic";
+		sess->SetImageGenerator( g );
+		Check( !sess->ImagineCapable(), "IM-a a supported=false generator is not capable" );
+		const Agent::AgentSession::AgentImagineResult r = sess->ImagineScene( "anything" );
+		Check( !r.ok && r.capabilityRefusal &&
+		       r.message.find( "anthropic" ) != std::string::npos,
+		       "IM-a the refusal NAMES the provider that cannot do it" );
+	}
+
+	std::remove( tmp.c_str() );
+	pJob->release();
+}
+
+//! IM-b: a capable provider's image becomes the target; re-imagining
+//! replaces it.
+static void TestImagineSuccessAndReplace()
+{
+	std::printf( "IM-b: a generated image becomes the scene target, and re-imagining replaces it...\n" );
+	const std::string tmp = TempPath( "agentcrud_im_b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-b fixture loads" );
+	if( !pJob ) return;
+
+	const std::vector<unsigned char> png1 = MintCannedPng( pJob, 1 );   // 256x256
+	const std::vector<unsigned char> png2 = MintCannedPng( pJob, 2 );   // 512x256
+	Check( !png1.empty() && !png2.empty(), "IM-b two distinguishable canned PNGs were minted" );
+
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	int calls = 0;
+	sess->SetImageGenerator( MakeFakeImageGen( png1, &calls ) );
+	Check( sess->ImagineCapable(), "IM-b the session reports the installed capability" );
+
+	const std::string docBefore = sess->ReadDocument();
+	const Agent::AgentSession::AgentImagineResult r1 =
+		sess->ImagineScene( "a cold blue dawn over a stone bridge" );
+	Check( r1.ok, "IM-b the imagine succeeds" );
+	Check( calls == 1, "IM-b the host generator was called exactly once" );
+	Check( !r1.replacedPreviousTarget, "IM-b the first imagine replaced nothing" );
+	Check( r1.width == 256 && r1.height == 256, "IM-b the target's dims are the generated image's" );
+	Check( r1.png.size() >= 8 && r1.png[0] == 0x89 && r1.png[1] == 'P' && r1.png[2] == 'N' &&
+	       r1.png[3] == 'G',
+	       "IM-b the returned image is a real PNG -- the model SEES its own imagination" );
+	Check( sess->HasSceneTarget() && sess->SceneTarget() != nullptr,
+	       "IM-b the session now holds a scene target" );
+	Check( sess->SceneTarget()->description == "a cold blue dawn over a stone bridge",
+	       "IM-b MONEY ASSERTION: the target carries the model's OWN words verbatim -- the "
+	       "description IS the imagining act" );
+	Check( sess->SceneTarget()->rgb.size() ==
+	       static_cast<std::size_t>( sess->SceneTarget()->width ) * sess->SceneTarget()->height * 3,
+	       "IM-b and a decoded RGB representation the comparison can use" );
+	Check( sess->ReadDocument() == docBefore,
+	       "IM-b MONEY ASSERTION: the Document is BYTE-IDENTICAL -- the target is session state and "
+	       "is never written into the scene" );
+	Check( r1.message.find( "gemini/test-image-model" ) != std::string::npos,
+	       "IM-b the echo names the provider and model that produced it" );
+
+	const std::shared_ptr<const Agent::AgentSession::AgentSceneTarget> firstTarget = sess->SceneTarget();
+
+	sess->SetImageGenerator( MakeFakeImageGen( png2 ) );
+	const Agent::AgentSession::AgentImagineResult r2 = sess->ImagineScene( "warmer, at noon" );
+	Check( r2.ok && r2.replacedPreviousTarget, "IM-b the second imagine REPLACES the target" );
+	Check( sess->SceneTarget()->width == 512 && sess->SceneTarget()->height == 256,
+	       "IM-b and the held target is now the NEW image (512x256, not 256x256)" );
+	Check( firstTarget && firstTarget->width == 256,
+	       "IM-b MONEY ASSERTION: a snapshot taken before the replace still describes the OLD "
+	       "target -- publication replaces the pointer and never mutates a published pointee, "
+	       "which is what makes an in-flight async render's snapshot safe" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! IM-c: a PROVIDER failure disarms the imagine requirement -- the
+//! anti-stranding rule.
+static void TestImagineProviderFailureDisarms()
+{
+	std::printf( "IM-c: a provider failure disarms the imagine requirement (anti-stranding)...\n" );
+	const std::string tmp = TempPath( "agentcrud_im_c.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-c fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetImageGenerator( MakeFailingImageGen( "the image provider answered HTTP 503" ) );
+
+	const Agent::AgentSession::AgentImagineResult r = sess->ImagineScene( "anything at all" );
+	Check( !r.ok, "IM-c the imagine fails" );
+	Check( !r.capabilityRefusal, "IM-c and it is NOT reported as a capability refusal" );
+	Check( r.requirementDisarmed && sess->ImagineRequirementDisarmed(),
+	       "IM-c MONEY ASSERTION: a PROVIDER failure DISARMS the imagine requirement -- a network "
+	       "blip must never strand a session" );
+	Check( r.message.find( "the image provider answered HTTP 503" ) != std::string::npos,
+	       "IM-c the transport's header-free category is reported verbatim" );
+	Check( r.message.find( "dropped for this session" ) != std::string::npos,
+	       "IM-c and the disarm is stated as a fact in the result, not left silent" );
+	Check( !sess->HasSceneTarget(), "IM-c no target was created" );
+
+	// The gate now clears on the plan ALONE.
+	const Agent::AgentChunkResult refused = sess->InsertChunk( kG2GeometryChunk );
+	Check( !refused.applied, "IM-c the plan half still gates" );
+	Check( refused.message.find( "imagine_scene" ) == std::string::npos,
+	       "IM-c and the refusal no longer names imagine_scene -- the requirement is gone" );
+	Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-c the plan files" );
+	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
+	       "IM-c MONEY ASSERTION: with the requirement disarmed the gate clears on the plan alone" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! IM-d + IM-e: the two-condition gate, its refusal texts, its shared
+//! counter and its unchanged cap.
+//----------------------------------------------------------------------
+// IM-g (Phase 2 review round, P2-2): the per-session spend cap.  Exactly
+// kSceneImagineMaxPerSession calls reach the generator; the next is
+// refused with the factual cap message, the generator is NOT invoked
+// again, and the target from the last successful call is retained.
+// Cap-hit can never strand the gate -- by construction every capped
+// session already settled the imagine half (target exists, or the first
+// provider failure disarmed it); asserted here via HasSceneTarget.
+//----------------------------------------------------------------------
+static void TestImaginePerSessionSpendCap()
+{
+	std::printf( "IM-g: the per-session image-generation spend cap refuses call %d factually...\n",
+	             Agent::AgentSession::kSceneImagineMaxPerSession + 1 );
+	const std::string tmp = TempPath( "agentcrud_im_g.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-g fixture loads" );
+	if( !pJob ) return;
+
+	const std::vector<unsigned char> png1 = MintCannedPng( pJob, 1 );
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	int calls = 0;
+	sess->SetImageGenerator( MakeFakeImageGen( png1, &calls ) );
+
+	for( int i = 0; i < Agent::AgentSession::kSceneImagineMaxPerSession; ++i ) {
+		const Agent::AgentSession::AgentImagineResult r = sess->ImagineScene( "a scene" );
+		Check( r.ok, "IM-g every call up to the cap succeeds" );
+	}
+	Check( calls == Agent::AgentSession::kSceneImagineMaxPerSession,
+	       "IM-g the generator ran exactly kSceneImagineMaxPerSession times" );
+
+	const Agent::AgentSession::AgentImagineResult over = sess->ImagineScene( "one more" );
+	Check( !over.ok, "IM-g MONEY ASSERTION: the call past the cap is refused" );
+	Check( calls == Agent::AgentSession::kSceneImagineMaxPerSession,
+	       "IM-g MONEY ASSERTION: the generator was NOT invoked for the refused call -- no spend" );
+	Check( over.message.find( "per-session image-generation cap" ) != std::string::npos,
+	       "IM-g the refusal states the cap factually" );
+	Check( sess->HasSceneTarget(),
+	       "IM-g the previously generated target is retained -- the cap never strands the gate" );
+	pJob->release();
+}
+
+static void TestImagineTwoConditionGate()
+{
+	std::printf( "IM-d/IM-e: the gate needs BOTH a plan and a target on a capable provider...\n" );
+	const std::string tmp = TempPath( "agentcrud_im_d.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-d fixture loads" );
+	if( !pJob ) return;
+	const std::vector<unsigned char> png = MintCannedPng( pJob, 1 );
+
+	// (1) Both missing -> the refusal names both, then the plan alone is not
+	//     enough, then imagining clears it.
+	{
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetImageGenerator( MakeFakeImageGen( png ) );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( kG2GeometryChunk );
+		Check( !r1.applied, "IM-d the first geometry insert is refused" );
+		Check( r1.message.find( "file_part_plan" ) != std::string::npos &&
+		       r1.message.find( "imagine_scene" ) != std::string::npos,
+		       "IM-d MONEY ASSERTION: on a CAPABLE provider the refusal names BOTH tools" );
+		Check( r1.message.find( "a plan is filed AND a scene target exists" ) != std::string::npos,
+		       "IM-d and states BOTH clearing conditions -- the pre-Phase-2 'as soon as a plan is "
+		       "filed' would now be a false claim in a model-facing payload" );
+		Check( r1.message.find( "2 more calls will be refused before this gate stops intercepting" )
+		       != std::string::npos,
+		       "IM-d the shared counter is unchanged -- one counter, one cap, both halves" );
+		Check( sess->ReadDocument() == docBefore, "IM-d the document is untouched" );
+
+		Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-d the plan files" );
+		const Agent::AgentChunkResult r2 = sess->InsertChunk( kG2GeometryChunk );
+		Check( !r2.applied,
+		       "IM-d MONEY ASSERTION: the plan ALONE does not clear the gate on a capable provider" );
+		Check( r2.message.find( "no imagined scene target has been created for this session." )
+		       != std::string::npos,
+		       "IM-d and the refusal now names ONLY what is still missing" );
+		Check( r2.message.find( "no part plan has been filed" ) == std::string::npos,
+		       "IM-d -- it does not repeat a requirement already met" );
+		Check( sess->PartPlanGateRefusalCount() == 2,
+		       "IM-d both refusals came out of the SAME counter" );
+
+		Check( sess->ImagineScene( "a lit courtyard at dusk" ).ok, "IM-d the imagine succeeds" );
+		Check( sess->InsertChunk( ImagineBoxChunk( "im_d_box" ) ).applied,
+		       "IM-d MONEY ASSERTION: with BOTH conditions met the gate clears" );
+	}
+
+	// (2) The cap still bounds a two-condition gate, and the give-up notice
+	//     names what was actually missing.
+	{
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetImageGenerator( MakeFakeImageGen( png ) );
+		const std::string capBox = ImagineBoxChunk( "im_e_cap_box" );
+		for( int i = 0; i < 3; ++i ) {
+			Check( !sess->InsertChunk( capBox ).applied,
+			       "IM-e refusal " + std::to_string( i + 1 ) + " of 3" );
+		}
+		const Agent::AgentChunkResult r4 = sess->InsertChunk( capBox );
+		Check( r4.applied,
+		       "IM-e MONEY ASSERTION: still exactly 3 refusals then a give-up -- two conditions did "
+		       "NOT double the cap, and no second counter was introduced" );
+		Check( sess->PartPlanGateGaveUp() && sess->PartPlanGateRefusalCount() == 3,
+		       "IM-e the give-up state is the shipped one" );
+		Check( r4.message.find( "part-plan gate: not satisfied after 3 refusals" ) != std::string::npos,
+		       "IM-e the census anchor for the give-up event is unchanged" );
+		Check( r4.message.find( "a filed plan or an imagined scene target" ) != std::string::npos,
+		       "IM-e MONEY ASSERTION: and the notice names what was ACTUALLY missing rather than "
+		       "asserting 'without a filed plan' when neither had been done" );
+	}
+
+	// (3) The launch switch governs BOTH halves -- there is no second flag.
+	{
+		Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->SetImageGenerator( MakeFakeImageGen( png ) );
+		Check( sess->ImagineCapable(), "IM-e the generator is still installed with the gate off" );
+		Check( sess->InsertChunk( ImagineBoxChunk( "im_e_gateoff_box" ) ).applied,
+		       "IM-e MONEY ASSERTION: --agent-part-plan-gate=off disables the IMAGINE half too -- "
+		       "one switch, both conditions" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! IM-f: a schema error is a -32602 and disarms NOTHING.
+static void TestImagineSchemaErrorDisarmsNothing()
+{
+	std::printf( "IM-f: a -32602 on imagine_scene disarms nothing...\n" );
+	const std::string tmp = TempPath( "agentcrud_im_f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IM-f fixture loads" );
+	if( !pJob ) return;
+	const std::vector<unsigned char> png = MintCannedPng( pJob, 1 );
+
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetImageGenerator( MakeFakeImageGen( png ) );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"imagine_scene\",\"params\":{}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "IM-f a missing 'description' is -32602" );
+		Check( resp.find( "description" ) != std::string::npos, "IM-f and the error names the field" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"imagine_scene\","
+			"\"params\":{\"description\":\"\"}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "IM-f an EMPTY 'description' is -32602 too" );
+	}
+	Check( rpc.Session() != nullptr, "IM-f the dispatcher exposes its session" );
+	if( rpc.Session() ) {
+		Check( !rpc.Session()->ImagineRequirementDisarmed(),
+		       "IM-f MONEY ASSERTION: a SCHEMA error does not disarm the imagine requirement -- only "
+		       "a PROVIDER failure does, so a mis-shaped call is not a way to switch the mechanism "
+		       "off" );
+		Check( rpc.Session()->PartPlanGateRefusalCount() == 0,
+		       "IM-f and it does not burn a gate refusal either" );
+		Check( !rpc.Session()->HasSceneTarget(), "IM-f and no target was created" );
+	}
+
+	// The well-formed call on the same dispatcher DOES work, and its result
+	// carries the image under the shared png_base64 field name.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"imagine_scene\","
+			"\"params\":{\"description\":\"a copper kettle on a slate hearth\"}}" );
+		Check( resp.find( "-32602" ) == std::string::npos, "IM-f the well-formed call is not an error" );
+		Check( resp.find( "\"png_base64\"" ) != std::string::npos,
+		       "IM-f MONEY ASSERTION: the generated image rides under the SAME png_base64 field every "
+		       "other image-bearing verb uses, so every retention policy covers it with no second "
+		       "code path" );
+		Check( resp.find( "\"imagined\":true" ) != std::string::npos, "IM-f and reports imagined:true" );
+		Check( rpc.Session() && rpc.Session()->HasSceneTarget(),
+		       "IM-f the wire path really did install the target" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -9221,6 +9655,13 @@ int main()
 	TestPartSketchCompositeTilingAndAcceptBoundaries();
 	TestPartSketchReplaceSemantics();
 	TestPartSketchRefusalText();
+	// Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target.
+	TestImagineCapabilityRefusal();
+	TestImagineSuccessAndReplace();
+	TestImagineProviderFailureDisarms();
+	TestImagineTwoConditionGate();
+	TestImagineSchemaErrorDisarmsNothing();
+	TestImaginePerSessionSpendCap();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();
 	TestGeometryScaffoldAspectFlow();

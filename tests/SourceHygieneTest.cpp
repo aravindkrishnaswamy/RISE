@@ -1270,6 +1270,97 @@ int main()
 							"from kPartPlanMaxParts" );
 				}
 			}
+			// ---- Arc 77 Phase 2 (2026-08-11): the IMAGINE-SCENE surface pins.
+			//
+			// Same test, same problem list, same reason as the G2/G3a/G3b pins
+			// above: `imagine_scene` and the render-time `sceneTarget` block it
+			// switches on are ONE mechanism described by TWO hand-authored
+			// surfaces, and a caveat that lands on only one of them silently
+			// changes the mechanism for whichever transport reads the other.
+			// The codec text is CANONICAL and the MCP text mirrors it (the
+			// recorded drift-class fix); these pins are what make "mirrors"
+			// checkable.
+			//
+			// MATCHED ON THE JOINED SOURCE, not the raw file.  Both surfaces
+			// are C++ string literals wrapped across lines, and the two wrap
+			// at different columns -- so a raw find() would pin the WRAPPING
+			// rather than the sentence, and a harmless reflow would fail the
+			// test while a real deletion could slip through a re-wrap.
+			// Collapsing `" <ws> "` (adjacent-literal concatenation, the only
+			// thing between the halves of a wrapped sentence) makes the pin
+			// about the TEXT.
+			{
+				auto joinLiterals = []( const std::string& src ) {
+					std::string out;
+					out.reserve( src.size() );
+					for( std::size_t i = 0; i < src.size(); ) {
+						if( src[i] == '"' ) {
+							std::size_t j = i + 1;
+							while( j < src.size() &&
+							       ( src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == '\r' ) )
+								++j;
+							if( j > i + 1 && j < src.size() && src[j] == '"' ) { i = j + 1; continue; }
+						}
+						out += src[i++];
+					}
+					return out;
+				};
+
+				struct Pin { const char* text; const char* why; };
+				// Each entry is a fact a model CANNOT recover by experiment
+				// without burning a provider round trip, or one whose absence
+				// makes it misread what it is looking at.
+				static const Pin kImaginePins[] = {
+					{ "one image from exactly that text",
+					  "does not state that the provider generates the image from the model's OWN "
+					  "description verbatim -- the whole mechanism is that the model authors the "
+					  "target, and a surface that leaves that vague invites a one-word prompt" },
+					{ "`description` is REQUIRED",
+					  "does not state that `description` is REQUIRED -- an empty/absent one is a "
+					  "-32602, so omitting the requirement costs a round trip to discover" },
+					{ "every full-frame production render",
+					  "does not state WHERE the comparison lands -- the whole design decision is "
+					  "that the target rides the surface models actually visit, and a model that "
+					  "does not know renders carry it will never look for it" },
+					{ "not an isolate render",
+					  "does not state the exclusions (draft / mode: / isolate) -- those renders "
+					  "carry NO comparison, and a model expecting one there reads its absence as "
+					  "a broken result" },
+					{ "in place of the rendered frame",
+					  "does not state that the [target | render] strip REPLACES the frame as the "
+					  "call's image -- a model expecting its beauty frame back would misread the "
+					  "strip it gets" },
+					{ "each axis the smaller of the two, so neither is ever enlarged",
+					  "does not state the shared-canvas convention -- an RMSE whose resampling "
+					  "rule is unstated is a number a model cannot interpret across two renders "
+					  "of different sizes" },
+					{ "nothing is gated on them",
+					  "does not state that nothing is gated on the comparison numbers -- leaving "
+					  "that open invites optimizing the metric, the Goodhart failure the design "
+					  "forbids outright (sec 5.4/sec 8)" },
+					{ "Calling it again replaces this session's scene target",
+					  "does not state the re-imagine REPLACE semantics -- a model that believes "
+					  "targets accumulate cannot reason about which one a render measured against" },
+					{ "does not generate images",
+					  "does not state the capability-conditional outcome -- on a provider without "
+					  "image generation the call honestly refuses, and a surface that promises an "
+					  "image unconditionally turns that honest answer into an apparent failure" }
+				};
+
+				for( const char* fname : kPlanSurfaces ) {
+					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+					if( joined.find( "imagine_scene" ) == std::string::npos ) {
+						planProblems.push_back( std::string( fname ) +
+							": never mentions imagine_scene at all" );
+						continue;
+					}
+					for( std::size_t k = 0; k < sizeof( kImaginePins ) / sizeof( kImaginePins[0] ); ++k ) {
+						if( joined.find( kImaginePins[k].text ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": " + kImaginePins[k].why );
+					}
+				}
+			}
+
 			for( const std::string& p : planProblems )
 				std::cout << "  G2 PART-PLAN SURFACE DRIFT: " << p << std::endl;
 			Check( planProblems.empty(),
@@ -1278,7 +1369,11 @@ int main()
 			       "/ optional-view schema, and the SAME render{target} comparison contract "
 			       "(isolate pairing, named vantages, shape-only IoU, composite-replaces-frame, "
 			       "overlay legend, nothing-is-gated, canvas-not-frame area fractions, and both "
-			       "omitted-field conditions)" );
+			       "omitted-field conditions) -- and, Arc 77 Phase 2, the SAME imagine_scene "
+			       "contract (description-required, generated-from-that-text, where the sceneTarget "
+			       "comparison lands and where it does NOT, strip-replaces-frame, the shared-canvas "
+			       "convention, nothing-is-gated, replace-on-re-imagine, and the "
+			       "capability-conditional refusal)" );
 
 			// G3b (2026-08-10): THE FILL-FRACTION AND FIT PINS.
 			//
@@ -1372,8 +1467,13 @@ int main()
 			// named (the async detour), so banning it would fire on unrelated
 			// work.  A re-grown list must still name at least one of these
 			// four to be a list at all.
+			// Arc 77 Phase 2 (2026-08-11): `imagine_scene` joins the ban list
+			// -- it is image-bearing (IsImageResult lists it) and the adapter
+			// must reach it through the shared predicate, exactly like the
+			// other four.
 			static const char* const kImageVerbLiterals[] = {
-				"read_image", "read_viewport", "compare_to_reference", "file_part_plan" };
+				"read_image", "read_viewport", "compare_to_reference", "file_part_plan",
+				"imagine_scene" };
 			for( std::size_t v = 0; v < sizeof( kImageVerbLiterals ) / sizeof( kImageVerbLiterals[0] ); ++v ) {
 				const std::string verb = kImageVerbLiterals[v];
 				Check( mcpSrc.find( "toolName == \"" + verb + "\"" ) == std::string::npos &&

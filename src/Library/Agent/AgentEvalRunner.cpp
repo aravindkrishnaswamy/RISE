@@ -2325,6 +2325,48 @@ namespace RISE
 
 			using FetchFn = std::function<FetchOutcome( const ChatHttpRequest& )>;
 
+			//! Arc 77 Phase 2 GUI wiring (2026-08-11): adapts THIS file's
+			//! replay/live FetchFn abstraction to the codec layer's
+			//! IChatHttpTransport seam, so the `imagine_scene` host
+			//! generator (Agent::MakeChatImageGenerator, AgentChatCodecs.h)
+			//! can be reused here byte-for-byte instead of hand-rolled --
+			//! that function is now the ONE implementation every host
+			//! (this runner, the Mac GUI, the Windows GUI) builds its
+			//! generator from.  A FetchFn's `!proceed` case has no direct
+			//! ChatHttpResponse analogue (it distinguishes "never got an
+			//! HTTP response" via a stopStatus/stopError pair rather than a
+			//! bare status+error), so this adapter folds it into
+			//! ChatHttpResponse's own "transport failure" shape (status 0,
+			//! a synthesized error) -- textually identical to the message
+			//! this file used to construct inline before the extraction.
+			class FetchFnTransport : public IChatHttpTransport
+			{
+			public:
+				explicit FetchFnTransport( FetchFn fetch ) : mFetch( std::move( fetch ) ) {}
+
+				ChatHttpResponse Post( const ChatHttpRequest& req ) override
+				{
+					const FetchOutcome fo = mFetch( req );
+					ChatHttpResponse resp;
+					if( !fo.proceed ) {
+						resp.status = 0;
+						resp.error = fo.stopError.empty()
+							? ( "the image request did not complete (" +
+							    ( fo.stopStatus.empty() ? std::string( "no reason reported" )
+							                            : fo.stopStatus ) + ")" )
+							: fo.stopError;
+						return resp;
+					}
+					resp.status    = fo.status;
+					resp.body      = fo.body;
+					resp.elapsedMs = fo.elapsedMs;
+					return resp;
+				}
+
+			private:
+				FetchFn mFetch;
+			};
+
 			//! The SHARED scenario drive loop for both the replay
 			//! (RunScenario) and live (RunScenarioLive) paths.  Everything
 			//! below the body source -- scene load, session/dispatcher
@@ -2501,6 +2543,65 @@ namespace RISE
 					}
 				}
 				session->SetReferenceImages( std::move( referenceImages ) );
+
+				// Arc 77 Phase 2 (2026-08-11): install the HOST half of
+				// `imagine_scene` -- the capability the session cannot supply
+				// for itself, because performing the POST needs this host's
+				// transport and this run's credentials.
+				//
+				// THIS TU'S NO-CREDENTIAL / NO-GETENV CONTRACT IS INTACT (see
+				// the file header).  The key is the `apiKey` parameter this
+				// function was already handed for BuildRequest, and the POST
+				// goes through the SAME injected `fetch` seam every chat round
+				// uses -- via FetchFnTransport, the IChatHttpTransport adapter
+				// defined above -- so a mocked transport drives image
+				// generation on the byte-identical code path a real socket
+				// does, and nothing new is read from the environment here.
+				// The actual wiring (build request -> POST -> parse response)
+				// is Agent::MakeChatImageGenerator (AgentChatCodecs.h/.cpp) --
+				// the ONE implementation every host (this runner, the Mac and
+				// Windows GUIs) builds its generator from; this block is just
+				// the adapter + the trivial 3-field copy into
+				// AgentSession::AgentImageGenerator's own type (kept distinct
+				// from ChatImageGenerator so AgentChatCodecs.h stays
+				// independent of AgentSession.h -- see MakeChatImageGenerator's
+				// doc).
+				//
+				// `fetch` is a const& whose referent is this function's
+				// caller's local; FetchFnTransport copies it into the
+				// shared_ptr-held adapter instance, which the generator
+				// lambda below in turn keeps alive by shared_ptr -- so
+				// nothing here outlives its referent even though the session
+				// (and its generator) outlives this function inside the
+				// returned handle's dispatcher.
+				{
+					const std::string providerName = ChatProviderName( provider );
+					const std::shared_ptr<IChatHttpTransport> transport =
+						std::make_shared<FetchFnTransport>( fetch );
+					const ChatImageGenerator wire =
+						MakeChatImageGenerator( providerName, apiKey, transport );
+
+					AgentSession::AgentImageGenerator gen;
+					gen.providerName = wire.providerName;
+					gen.supported    = wire.supported;
+					gen.modelId      = wire.modelId;
+					if( wire.supported ) {
+						const std::function<ChatImageGenOutcome( const std::string& )> rawGenerate =
+							wire.generate;
+						gen.generate =
+							[rawGenerate]( const std::string& description ) -> AgentSession::AgentImageGenOutcome
+						{
+							AgentSession::AgentImageGenOutcome out;
+							const ChatImageGenOutcome r = rawGenerate( description );
+							out.ok       = r.ok;
+							out.bytes    = r.bytes;
+							out.mimeType = r.mimeType;
+							out.error    = r.error;
+							return out;
+						};
+					}
+					session->SetImageGenerator( std::move( gen ) );
+				}
 
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;
@@ -6756,6 +6857,13 @@ namespace RISE
 										// the part-plan gate can force that ordering, so
 										// the two mechanisms would fight.  Same call it
 										// gets in AgentChatLoop.cpp's IsMutatingToolName.
+										// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is
+										// absent for the IDENTICAL reason -- it changes
+										// nothing in the document, and on a capable provider
+										// the same gate can force it before the first
+										// geometry call, so listing it would make the gate
+										// and askUserBeforeMutation fight in exactly the way
+										// file_part_plan's exclusion prevents.
 										"propose_patch", "propose_patches", "remove_chunk",
 										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
 										// remove -- ONE call removes N chunks, so it is very

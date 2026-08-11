@@ -728,6 +728,54 @@ namespace RISE
 					tools.push_back( MakeTool( "file_part_plan", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
+				// IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit; no autonomy note).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT.  Every
+				// contract sentence below is kept semantically identical to
+				// AgentChatCodecs.cpp's kToolDefs entry for the same tool, for
+				// the drift-class reason recorded on file_part_plan above: a
+				// caveat that lives on only one of the two hand-authored
+				// surfaces silently changes the mechanism for whichever
+				// transport reads the other one.  SourceHygieneTest's
+				// part-plan/imagination parity scan pins the sentences.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "description", StringProp(
+						"Required. Your own words for what the finished scene should look like -- what is in "
+						"it, how it is arranged, how it is lit, what it feels like. Write it as you would "
+						"describe a picture to someone who will draw it." ) );
+					std::vector<std::string> required;
+					required.push_back( "description" );
+
+					const std::string desc =
+						"Imagine the finished scene before you build it: write your own visual description of "
+						"what it should look like -- subject, composition, lighting, mood, colour -- and this "
+						"call asks your provider to generate one image from exactly that text, returns it to "
+						"you, and holds it as this session's SCENE TARGET. `description` is REQUIRED and is "
+						"free text; nothing checks what it says, and no wording is preferred. Writing the "
+						"description IS the imagining -- the image is what lets you check yourself against it "
+						"afterwards. Once a target exists, every full-frame production render (not draft, not "
+						"a mode: render, not an isolate render) also carries a `sceneTarget` block -- {rmse, "
+						"renderMeanR/G/B, targetMeanR/G/B, compareWidth, compareHeight, targetWidth, "
+						"targetHeight, aspectMatched, compositeWidth, compositeHeight} -- and returns a "
+						"[target | render] side-by-side strip in place of the rendered frame, so you see the "
+						"two together at the moment you look. `rmse` is root-mean-square error over the two "
+						"images resampled to a shared canvas (each axis the smaller of the two, so neither is "
+						"ever enlarged; `aspectMatched` false means the two shapes differ and each was fitted "
+						"per axis). These are measurements only -- nothing is gated on them, no value is "
+						"required, and no target is ever expected to be reproduced; the point is to notice the "
+						"difference and decide for yourself whether to act on it. Calling it again replaces "
+						"this session's scene target. On a provider that does not generate images this returns "
+						"ok:false with a plain statement and nothing else changes -- no call is blocked by the "
+						"absence of a target. It changes nothing in the document -- no chunk, no head version, "
+						"no undo step -- so there is no baseHeadVersion and no conflict outcome. Returns "
+						"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message} "
+						"-- the generated image also rides back as an MCP image content block.";
+					tools.push_back( MakeTool( "imagine_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// insert_geometry_scaffold (Arc-75 slice S3b; extended by slice E3
 				// with blended_chain, volume_bank)
 				{
@@ -1307,13 +1355,14 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 24 tool names this adapter recognizes --
+			//! The list of the 25 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
 					"file_part_plan",   // G2 (2026-08-10): read-safe, the part-plan gate's unblock
+					"imagine_scene",    // Arc 77 Phase 2 (2026-08-11): read-safe, the gate's OTHER unblock
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold",
 					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision

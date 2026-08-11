@@ -149,7 +149,18 @@ namespace RISE
 				       // can genuinely fire (insert_chunk reaches the session
 				       // there).  A gate whose unblock is refused by the
 				       // autonomy layer would be an un-unlockable session.
-				       method == "file_part_plan";
+				       method == "file_part_plan" ||
+				       // Arc 77 Phase 2 (2026-08-11): imagine_scene records a
+				       // per-session IMAGE TARGET (the model's own description,
+				       // rendered by the provider) and touches the retained
+				       // Document not at all -- read-safe on the same test
+				       // file_part_plan passes.  And it must be reachable under
+				       // every posture for the same second, load-bearing
+				       // reason: on a capable provider it is one of the TWO
+				       // ways to disarm the part-plan gate, and a gate whose
+				       // unblock the autonomy layer refuses would be an
+				       // un-unlockable session.
+				       method == "imagine_scene";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -681,6 +692,42 @@ namespace RISE
 					tgt.set( "compositeHeight",
 						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
 					result.set( "target", tgt );
+				}
+				// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE comparison,
+				// under ONE nested key, same omit-when-absent convention and
+				// same `rr.ok` belt-and-braces as the two blocks above.
+				// `sceneTargetApplied` is only ever set on a qualifying,
+				// successful render whose measurement really completed (see
+				// AgentRenderResult::sceneTargetApplied for the qualification
+				// rule), so a session that never imagined a scene produces a
+				// byte-identical render result to before this slice.
+				//
+				// EVERY NUMBER REPORTED, NONE CHARACTERIZED -- no threshold,
+				// no verdict, no advice, here or in the accompanying message
+				// (design doc sec 5.4).
+				if( rr.ok && rr.sceneTargetApplied ) {
+					JsonValue st = JsonValue::MakeObject();
+					st.set( "rmse", JsonValue::MakeNumber( rr.sceneTargetRmse ) );
+					st.set( "renderMeanR", JsonValue::MakeNumber( rr.sceneTargetRenderMeanR ) );
+					st.set( "renderMeanG", JsonValue::MakeNumber( rr.sceneTargetRenderMeanG ) );
+					st.set( "renderMeanB", JsonValue::MakeNumber( rr.sceneTargetRenderMeanB ) );
+					st.set( "targetMeanR", JsonValue::MakeNumber( rr.sceneTargetMeanR ) );
+					st.set( "targetMeanG", JsonValue::MakeNumber( rr.sceneTargetMeanG ) );
+					st.set( "targetMeanB", JsonValue::MakeNumber( rr.sceneTargetMeanB ) );
+					st.set( "compareWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompareWidth ) ) );
+					st.set( "compareHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompareHeight ) ) );
+					st.set( "targetWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetWidth ) ) );
+					st.set( "targetHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetHeight ) ) );
+					st.set( "aspectMatched", JsonValue::MakeBool( rr.sceneTargetAspectMatched ) );
+					st.set( "compositeWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
+					st.set( "compositeHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					result.set( "sceneTarget", st );
 				}
 				return result;
 			}
@@ -1952,6 +1999,79 @@ namespace RISE
 					return MakeSuccess( idValue, result );
 				}
 
+				//--------------------------------------------------------------
+				// imagine_scene {description}
+				//   -> {ok, imagined:bool, replacedPreviousTarget, provider,
+				//       model, width, height, png_base64, byteLength,
+				//       imageWidth, imageHeight, message}
+				//   Arc 77 Phase 2 (2026-08-11).  READ-SAFE -- it records a
+				//   per-session IMAGE TARGET and touches the Document not at
+				//   all, so there is no headVersion, no conflict, no staging
+				//   and no authority branch, exactly like file_part_plan.
+				//
+				//   THE ONLY SCHEMA ERROR is a missing/empty/non-string
+				//   `description`, and it is a clean -32602.  That distinction
+				//   is load-bearing, not cosmetic: a -32602 is a SCHEMA defect
+				//   and DISARMS NOTHING (it never reaches AgentSession, so it
+				//   cannot touch the gate's refusal counter and cannot trip the
+				//   provider-failure disarm), whereas a PROVIDER failure --
+				//   which arrives as ok:false from the session -- drops the
+				//   imagine requirement for the session.  A model that
+				//   mis-shapes the call must not be able to switch the
+				//   mechanism off by doing so.
+				//
+				//   A provider with no image capability answers ok:false with
+				//   an honest statement; the tool is still DECLARED there (one
+				//   shared tool table for every provider -- see
+				//   AgentChatCodecs.cpp's kToolDefs), so the wire shape is
+				//   uniform and only the answer differs.
+				//
+				//   The generated image rides under the SAME `png_base64`
+				//   field name every other image-bearing verb uses, so
+				//   IsImageResult and every retention/elision policy built on
+				//   it cover this with no second code path.
+				//--------------------------------------------------------------
+				if( m == "imagine_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* descVal = params.find( "description" );
+					if( !descVal || !descVal->isString() || descVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'description' (non-empty string) is required -- your own "
+							"words for what the finished scene should look like" );
+					}
+					const AgentSession::AgentImagineResult ir = s->ImagineScene( descVal->asString() );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",      JsonValue::MakeBool( ir.ok ) );
+					// `imagined` is the same bool under the name a reader of
+					// the verb expects, mirroring file_part_plan's `filed`.
+					result.set( "imagined", JsonValue::MakeBool( ir.ok ) );
+					result.set( "replacedPreviousTarget", JsonValue::MakeBool( ir.replacedPreviousTarget ) );
+					if( !ir.providerName.empty() )
+						result.set( "provider", JsonValue::MakeString( ir.providerName ) );
+					if( !ir.modelId.empty() )
+						result.set( "model", JsonValue::MakeString( ir.modelId ) );
+					// Two structured facts about WHY a refusal happened, so a
+					// census (and a driver) can tell the three outcomes apart
+					// without matching on prose: capability refusal, provider
+					// failure that disarmed the requirement, or success.
+					if( ir.capabilityRefusal )
+						result.set( "capabilityAvailable", JsonValue::MakeBool( false ) );
+					if( ir.requirementDisarmed )
+						result.set( "requirementDisarmed", JsonValue::MakeBool( true ) );
+					if( ir.ok ) {
+						result.set( "width",  JsonValue::MakeNumber( static_cast<double>( ir.width ) ) );
+						result.set( "height", JsonValue::MakeNumber( static_cast<double>( ir.height ) ) );
+						if( !ir.png.empty() ) {
+							result.set( "png_base64",  JsonValue::MakeString( Base64Encode( ir.png ) ) );
+							result.set( "byteLength",  JsonValue::MakeNumber( static_cast<double>( ir.png.size() ) ) );
+							result.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( ir.width ) ) );
+							result.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( ir.height ) ) );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( ir.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
 				if( m == "insert_material_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* familyVal = params.find( "family" );
@@ -3048,7 +3168,16 @@ namespace RISE
 					// code path.  Attached only on a SUCCESSFUL render: on a
 					// failure the cache still holds the PREVIOUS render, and
 					// returning those pixels as this call's image would be a lie.
-					if( imePresent == 1 && rr.ok && !rr.targetApplied ) {
+					// Arc 77 Phase 2 (2026-08-11): `!rr.sceneTargetApplied`
+					// joins `!rr.targetApplied` on this branch for the
+					// IDENTICAL reason -- the scene-target composite below
+					// REPLACES the frame, and exactly one `png_base64` may be
+					// written (JsonValue::set APPENDS, so a second write would
+					// serialize a duplicate key, not overwrite).  The two
+					// comparison blocks are themselves mutually exclusive (see
+					// ApplySceneTargetComparison_'s qualification rule), so at
+					// most one of the two branches below can fire.
+					if( imePresent == 1 && rr.ok && !rr.targetApplied && !rr.sceneTargetApplied ) {
 						unsigned int imgW = 0, imgH = 0;
 						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
 						if( !png.empty() ) {
@@ -3093,6 +3222,36 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeWidth ) ) );
 						renderResult.set( "imageHeight",
 							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
+					}
+					// Arc 77 Phase 2 (2026-08-11): on a qualifying full-frame
+					// render of a session that has imagined a scene, the inline
+					// image is the [target | render] COMPOSITE, and it rides
+					// UNCONDITIONALLY -- `imageMaxEdge` is neither required nor
+					// consulted, exactly as for G3b's strip.
+					//
+					// WHY UNCONDITIONALLY, and why that is not a behaviour
+					// change for anyone.  The composite IS the mechanism: the
+					// transport keeps only the most recent tool-result image
+					// live (one global slot), so this strip is the ONE moment
+					// the imagined target re-enters the model's context, and
+					// the numbers without the picture are precisely the
+					// degradation the design's sec 4.3 retention decision
+					// rejected.  It cannot surprise an existing session because
+					// `sceneTargetApplied` requires a target, and a target
+					// exists only if the model itself called imagine_scene --
+					// no session that does not use the mechanism sees any of
+					// this.  A caller that wants the plain frame can call
+					// read_image, which still serves THIS render's own beauty
+					// pixels (nothing here touches the image cache).
+					if( rr.ok && rr.sceneTargetApplied && !rr.sceneTargetCompositePng.empty() ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.sceneTargetCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
 					}
 					return MakeSuccess( idValue, renderResult );
 				}

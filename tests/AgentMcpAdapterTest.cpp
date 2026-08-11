@@ -145,6 +145,38 @@ int main()
 	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 	Check( session != nullptr, "AgentSession::LoadFromFile loads the native-v7 scene" );
 	if( !session ) { std::printf( "cannot continue without a session\n" ); return 1; }
+
+	// Arc 77 Phase 2 (2026-08-11): install the HOST half of imagine_scene, the
+	// same seam AgentEvalRunner fills from the live transport -- so the MCP
+	// path below drives the identical session code a real provider does, with
+	// no network and no key.  The canned image is minted as a real, decodable
+	// PNG from a throwaway session's part-plan sketch composite (256x256),
+	// which avoids adding a PNG encoder to this test.
+	{
+		std::vector<unsigned char> cannedPng;
+		{
+			std::unique_ptr<AgentSession> minter = AgentSession::LoadFromFile( scenePath );
+			if( minter ) {
+				std::vector<AgentSession::AgentPartPlanEntry> parts;
+				AgentSession::AgentPartPlanEntry e;
+				e.part = "canned"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1";
+				parts.push_back( e );
+				cannedPng = minter->FilePartPlan( parts ).compositePng;
+			}
+		}
+		Check( !cannedPng.empty(), "minted a canned target PNG for the imagine_scene MCP test" );
+		AgentSession::AgentImageGenerator gen;
+		gen.supported    = true;
+		gen.providerName = "gemini";
+		gen.modelId      = "test-image-model";
+		gen.generate = [cannedPng]( const std::string& ) {
+			AgentSession::AgentImageGenOutcome o;
+			o.ok = true; o.bytes = cannedPng; o.mimeType = "image/png";
+			return o;
+		};
+		session->SetImageGenerator( std::move( gen ) );
+	}
+
 	AgentMcpAdapter mcp( std::move( session ) );
 
 	//----------------------------------------------------------------------
@@ -225,7 +257,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 24, "id:null tools/list result carries all 24 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 25, "id:null tools/list result carries all 25 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -299,7 +331,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 24, "tools/list returns EXACTLY the 24 agent verbs" );
+		Check( toolsList.size() == 25, "tools/list returns EXACTLY the 25 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
@@ -311,6 +343,7 @@ int main()
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
 			"compare_to_reference",
+			"imagine_scene",   // Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target
 			"list_proposals", "resolve_proposal"
 		};
 		for( const char* expected : kExpectedNames ) {
@@ -485,6 +518,27 @@ int main()
 			Check( props.get( "target" ).get( "type" ).asString() == "string",
 			       "G3b: and types it as a string" );
 		}
+		// Arc 77 Phase 2 (2026-08-11): imagine_scene must EXIST on the MCP
+		// surface with its one required param.  SourceHygieneTest pins the
+		// description's load-bearing sentences against the chat codec's
+		// canonical copy; this pins that the tool and its schema are here at
+		// all -- an MCP client told nothing about it cannot use the mechanism.
+		{
+			JsonValue tool = FindTool( "imagine_scene" );
+			Check( tool.isObject(), "Arc77: tools/list declares imagine_scene" );
+			const JsonValue& schema = tool.get( "inputSchema" );
+			Check( schema.get( "properties" ).has( "description" ),
+			       "Arc77: its schema declares the `description` property" );
+			Check( schema.get( "properties" ).get( "description" ).get( "type" ).asString() == "string",
+			       "Arc77: typed as a string" );
+			const JsonValue& req = schema.get( "required" );
+			bool requiresDescription = false;
+			for( std::size_t i = 0; i < req.size(); ++i )
+				if( req.at( i ).asString() == "description" ) requiresDescription = true;
+			Check( requiresDescription,
+			       "Arc77: and marks it REQUIRED -- an absent one is a -32602, so a schema that "
+			       "left it optional would cost every MCP client a round trip to discover" );
+		}
 	}
 
 	//----------------------------------------------------------------------
@@ -654,6 +708,7 @@ int main()
 		       "{type:\"image\"} block -- the composite is the point of the call, so it cannot "
 		       "arrive as text only" );
 	}
+
 	//----------------------------------------------------------------------
 	// 2026-08-11: the tools/call image branch now routes through the SAME
 	// ChatToolResultCarriesImage predicate the chat transports use (see
@@ -723,6 +778,78 @@ int main()
 		Check( !foundImage,
 		       "tools/call(render) with no imageMaxEdge still returns no image content block -- "
 		       "the statistics-only response shape is unchanged" );
+		// ORDERING NOTE (Arc 77 Phase 2, 2026-08-11): this assertion holds only
+		// while the session has NO imagined scene target -- once one exists a
+		// plain render deliberately DOES carry the [target | render] strip (and
+		// the block further down asserts exactly that).  The imagine_scene call
+		// is therefore sequenced AFTER this one on purpose; do not reorder them.
+	}
+
+	//----------------------------------------------------------------------
+	// Arc 77 Phase 2 (2026-08-11): tools/call(imagine_scene) -- the generated
+	// scene target must arrive as a real MCP image content block, for the
+	// same reason the sketch echo does: the model has to SEE its own
+	// imagination for the loop to close at all.  And exactly ONE image block:
+	// the adapter routes through the shared ChatToolResultCarriesImage
+	// predicate over a single png_base64 field, so a second image here would
+	// mean a duplicate key had been serialized upstream.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 imagine_scene -> MCP image content block (the generated target)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "description",
+			JsonValue::MakeString( "a single grey sphere on a dark floor, lit from the front" ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 26, "imagine_scene", args ) );
+		JsonValue env = ParseResponse( resp, 26 );
+		Check( !env.has( "error" ), "tools/call(imagine_scene) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(imagine_scene) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		int imageBlocks = 0;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			++imageBlocks;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "Arc77: the generated scene target decodes to the \\x89PNG signature" );
+		}
+		Check( imageBlocks == 1,
+		       "Arc77 MONEY ASSERTION: tools/call(imagine_scene) returns EXACTLY ONE "
+		       "{type:\"image\"} block -- the model sees its own imagination, and the "
+		       "exactly-one-png_base64 discipline holds through the MCP transport" );
+	}
+
+	//----------------------------------------------------------------------
+	// Arc 77 Phase 2: and the render that FOLLOWS it carries the whole-scene
+	// comparison -- the [target | render] strip, again exactly one image
+	// block, plus the factual sceneTarget numbers in the text block.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 render after imagine -> the [target | render] strip\n" );
+	{
+		const std::string resp = mcp.HandleLine(
+			ReqToolCall( 27, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 27 );
+		Check( !env.has( "error" ), "tools/call(render) after an imagine is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "isError == false" );
+		const JsonValue& content = result.get( "content" );
+		int imageBlocks = 0;
+		bool sawSceneTargetFacts = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() == "image" ) ++imageBlocks;
+			if( block.get( "type" ).asString() == "text" &&
+			    block.get( "text" ).asString().find( "\"sceneTarget\"" ) != std::string::npos )
+				sawSceneTargetFacts = true;
+		}
+		Check( imageBlocks == 1,
+		       "Arc77 MONEY ASSERTION: a plain render (NO imageMaxEdge) on a session with a scene "
+		       "target returns EXACTLY ONE image block -- the strip rides unconditionally and "
+		       "REPLACES the frame, never alongside it" );
+		Check( sawSceneTargetFacts,
+		       "Arc77: and the serialized result carries the factual sceneTarget block" );
 	}
 
 	//----------------------------------------------------------------------
@@ -885,7 +1012,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 24, "no-head tools/list still lists all 24 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 25, "no-head tools/list still lists all 25 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

@@ -7448,6 +7448,15 @@ namespace RISE
 			// before calling sees "no notice" on every one of them.
 			if( !PartPlanGateArmed_() ) return std::string();
 
+			// Arc 77 Phase 2 (2026-08-11): WHICH of the gate's two conditions
+			// is unmet.  PartPlanGateArmed_ above already established that at
+			// least one is, so these two bools are never both false here.
+			// `needImagine` is false on every provider without image
+			// generation, which is what makes the non-capable refusal below
+			// byte-identical to the shipped plan-only one.
+			const bool needPlan    = !mPartPlanFiled;
+			const bool needImagine = ImagineRequirementActive_() && !mSceneTarget;
+
 			if( mPartPlanGateRefusalCount < kPartPlanGateMaxRefusals )
 			{
 				// REFUSE -- and count it, but do NOT disarm.  This is the
@@ -7479,20 +7488,61 @@ namespace RISE
 				// is optional with a `front` default, and any non-degenerate
 				// polygon really is accepted.  A model that follows this
 				// sentence must never then get a -32602.
-				return std::string( verb ) + " refused: no part plan has been filed for this session. "
-					"Call file_part_plan first, listing the parts of the subject you are about to build; "
-					"each part needs a `construction` value from: " + PartPlanConstructionList() + ", "
-					"and an `outline` -- a closed 2D polygon of at least 3 \"x y\" points separated by "
-					"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\" -- and may carry a `view` of " +
-					PartPlanViewList() + " (default " + kPartPlanDefaultView + "). "
-					"Any of those construction values is accepted -- `primitive` for every part is a "
-					"complete plan -- and any outline shape with extent on both axes is accepted, a "
-					"rough blob included. The plan "
-					"does not constrain what you author afterwards. Nothing in the document was changed "
-					"by this call; reissue it after filing. The gate clears as soon as a plan is filed; "
-					"otherwise " + std::to_string( remaining ) +
+				//
+				// Arc 77 Phase 2 (2026-08-11): the refusal now has THREE
+				// shapes, one per unmet-condition combination, and every one
+				// of them must be TRUE of what the code does.  In particular
+				// the closing "the gate clears as soon as ..." clause names
+				// EXACTLY the conditions still outstanding -- the pre-Phase-2
+				// wording ("as soon as a plan is filed") would be a false
+				// claim in a model-facing payload the moment a second
+				// condition existed.  On a provider with no image capability
+				// `needImagine` is false and the assembled string is
+				// BYTE-IDENTICAL to the shipped plan-only refusal.
+				std::string msg = std::string( verb ) + " refused: ";
+				if( needPlan && needImagine )
+					msg += "no part plan has been filed for this session, and no imagined scene target "
+					       "has been created for it. ";
+				else if( needPlan )
+					msg += "no part plan has been filed for this session. ";
+				else
+					msg += "no imagined scene target has been created for this session. ";
+
+				if( needPlan ) {
+					msg += "Call file_part_plan first, listing the parts of the subject you are about to build; "
+						"each part needs a `construction` value from: " + PartPlanConstructionList() + ", "
+						"and an `outline` -- a closed 2D polygon of at least 3 \"x y\" points separated by "
+						"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\" -- and may carry a `view` of " +
+						PartPlanViewList() + " (default " + kPartPlanDefaultView + "). "
+						"Any of those construction values is accepted -- `primitive` for every part is a "
+						"complete plan -- and any outline shape with extent on both axes is accepted, a "
+						"rough blob included. The plan "
+						"does not constrain what you author afterwards. ";
+				}
+				if( needImagine ) {
+					// FACTS ONLY, same measurement hygiene as the plan half:
+					// no advice about WHAT to describe, because the content of
+					// the description is precisely what this mechanism exists
+					// to measure.
+					msg += "Call imagine_scene with a `description` -- your own words for what the "
+						"finished scene should look like -- and " + mImageGenerator.providerName +
+						" will generate one image from exactly that text and hold it as this session's "
+						"scene target. Any description is accepted; nothing checks what it says. Calling "
+						"it again replaces the target. ";
+				}
+
+				msg += "Nothing in the document was changed by this call; reissue it after ";
+				if( needPlan && needImagine ) msg += "both calls";
+				else if( needPlan )           msg += "filing";
+				else                          msg += "imagining";
+				msg += ". The gate clears as soon as ";
+				if( needPlan && needImagine ) msg += "a plan is filed AND a scene target exists";
+				else if( needPlan )           msg += "a plan is filed";
+				else                          msg += "a scene target exists";
+				msg += "; otherwise " + std::to_string( remaining ) +
 					( remaining == 1 ? " more call will be refused" : " more calls will be refused" ) +
 					" before this gate stops intercepting.";
+				return msg;
 			}
 
 			// GIVE UP.  This is the (kPartPlanGateMaxRefusals+1)'th
@@ -7509,9 +7559,19 @@ namespace RISE
 				// text above.  The caller is responsible for folding this
 				// into ITS OWN result (not a log line) so the give-up is
 				// greppable in the trajectory payload a census reads.
+				// Arc 77 Phase 2: the "-- <verb> proceeded without ..." clause
+				// names the condition that was ACTUALLY still unmet.  The
+				// leading "part-plan gate: not satisfied after N refusals --"
+				// is unchanged and remains the census anchor for the give-up
+				// event; only the clause after it varies, so a census that
+				// greps the anchor keeps working and one that wants to know
+				// WHICH half stranded the session can read on.
+				std::string unmet = "a filed plan";
+				if( needPlan && needImagine ) unmet = "a filed plan or an imagined scene target";
+				else if( !needPlan )          unmet = "an imagined scene target";
 				*outGiveUpNotice = std::string( "part-plan gate: not satisfied after " ) +
 					std::to_string( kPartPlanGateMaxRefusals ) + " refusals -- " + verb +
-					" proceeded without a filed plan and the gate has disarmed for this session; "
+					" proceeded without " + unmet + " and the gate has disarmed for this session; "
 					"no further geometry-creating call will be intercepted.";
 			}
 			return std::string();
@@ -9867,6 +9927,14 @@ namespace RISE
 				resolvedTargetPtr = &resolvedTarget;
 			}
 
+			// Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET snapshot, taken
+			// HERE for the same reason and by the same discipline as the
+			// sketch snapshot above -- see ApplySceneTargetComparison_'s doc.
+			// A shared_ptr copy, so this costs a refcount bump rather than a
+			// copy of the image, and the pointee is immutable so a later
+			// re-imagine cannot re-point what this render measured against.
+			const std::shared_ptr<const AgentSceneTarget> sceneTargetSnapshot = mSceneTarget;
+
 			AgentRenderResult rr = RenderCore_( params, /*assumeParked=*/false,
 			                                    /*forcedJobId=*/0, resolvedTargetPtr );
 			// G3b (2026-08-10): the sketch comparison runs AFTER the render
@@ -9879,6 +9947,14 @@ namespace RISE
 			// assumeParked=true and the SAME kind of snapshot, so both entry
 			// points measure identically.
 			ApplyTargetComparison_( params, rr, /*assumeParked=*/false, resolvedTargetPtr );
+			// Arc 77 Phase 2: the whole-scene comparison, AFTER the part-sketch
+			// one so its own `targetApplied` guard sees the final state (the
+			// two are mutually exclusive by construction -- a part comparison
+			// requires `isolate`, which this one refuses -- and the ordering
+			// makes that exclusivity enforced rather than merely true).  No
+			// extra render, so unlike the sketch comparison it does not care
+			// whether the park has released.
+			ApplySceneTargetComparison_( params, rr, sceneTargetSnapshot );
 			return rr;
 		}
 
@@ -13959,6 +14035,188 @@ namespace RISE
 				};
 				return ( index >= 0 && index < 9 ) ? kLabels[index] : "unknown";
 			}
+
+			//----------------------------------------------------------------
+			// Arc 77 Phase 2 (2026-08-11): the imagined whole-scene target.
+			//----------------------------------------------------------------
+
+			//! Decode a PROVIDER-GENERATED image (whatever container it came
+			//! in) into the SAME tightly-packed 8-bit RGB representation
+			//! DecodeReferencePngToRgb8_ produces, so everything downstream --
+			//! the RMSE, the means, the composite -- is one code path
+			//! regardless of what the provider sent.
+			//!
+			//! WHAT WE DID ABOUT NON-PNG, stated plainly because the design
+			//! brief asks for it: we STORE AND COMPARE IN THE DECODED DOMAIN.
+			//! The container is decoded here through the tree's own readers
+			//! (PNG or JPEG -- both already linked, both already used by
+			//! png_painter / read_image) and the target is then re-encoded to
+			//! PNG exactly once, at imagine time, so the session holds ONE
+			//! representation and the inline echo is always a real PNG no
+			//! matter which provider produced it.  Dispatch is on the MAGIC
+			//! BYTES first and the provider-declared mime only as a
+			//! tie-breaker: a provider that mislabels its own payload should
+			//! not turn into a decode failure.  Anything that is neither PNG
+			//! nor JPEG (WebP, AVIF, ...) fails HONESTLY, naming the declared
+			//! mime -- guessing a decoder for an unknown container would turn
+			//! a clear provider-format problem into a mysterious one.
+			bool DecodeGeneratedImageToRgb8_( const std::vector<unsigned char>& bytes,
+			                                  const std::string& mimeType,
+			                                  std::vector<unsigned char>& outRgb,
+			                                  unsigned int& outW, unsigned int& outH,
+			                                  std::string& err )
+			{
+				outRgb.clear();
+				outW = 0;
+				outH = 0;
+				if( bytes.size() < 4 ) {
+					err = "the provider returned " + std::to_string( bytes.size() ) +
+						" bytes -- too few to be an image";
+					return false;
+				}
+				const bool pngMagic = bytes[0] == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G';
+				const bool jpegMagic = bytes[0] == 0xFF && bytes[1] == 0xD8;
+				const bool wantJpeg = jpegMagic || ( !pngMagic && mimeType == "image/jpeg" );
+				if( !pngMagic && !wantJpeg ) {
+					err = "the provider returned an image this build cannot decode (declared mime `" +
+						( mimeType.empty() ? std::string( "unspecified" ) : mimeType ) +
+						"`, and the bytes are neither PNG nor JPEG)";
+					return false;
+				}
+
+				IMemoryBuffer* buffer = nullptr;
+				if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer,
+					const_cast<char*>( reinterpret_cast<const char*>( bytes.data() ) ),
+					static_cast<unsigned int>( bytes.size() ), /*bTakeOwnership=*/false ) || !buffer )
+				{
+					err = "could not wrap the generated image bytes in a read buffer";
+					return false;
+				}
+
+				IRasterImageReader* reader = nullptr;
+				// Same colour-space argument as DecodeReferencePngToRgb8_ (see
+				// its doc): eColorSpace_Rec709RGB_Linear is the readers'
+				// "do nothing" branch, so the stored byte comes back verbatim
+				// and the *255 write-back below is an exact round trip.
+				const bool made = wantJpeg
+					? RISE_API_CreateJPEGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear )
+					: RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear );
+				if( !made || !reader ) {
+					buffer->release();
+					err = wantJpeg ? "could not create a JPEG reader" : "could not create a PNG reader";
+					return false;
+				}
+
+				unsigned int w = 0, h = 0;
+				if( !reader->BeginRead( w, h ) || w == 0 || h == 0 ) {
+					reader->EndRead();
+					reader->release();
+					buffer->release();
+					err = "the generated image did not decode (corrupt payload, or zero dimensions)";
+					return false;
+				}
+
+				outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
+				for( unsigned int y = 0; y < h; ++y ) {
+					for( unsigned int x = 0; x < w; ++x ) {
+						RISEColor c;
+						reader->ReadColor( c, x, y );
+						const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
+						outRgb[idx + 0] = QuantizeDecodedChannel_( c.base.r );
+						outRgb[idx + 1] = QuantizeDecodedChannel_( c.base.g );
+						outRgb[idx + 2] = QuantizeDecodedChannel_( c.base.b );
+					}
+				}
+				reader->EndRead();
+				reader->release();
+				buffer->release();
+				outW = w;
+				outH = h;
+				return true;
+			}
+
+			//! Box-DOWNSCALE a tightly-packed RGB8 image to `dstW`x`dstH` by
+			//! averaging each destination pixel's source footprint.  Callers
+			//! only ever ask for dimensions <= the source's in BOTH axes (the
+			//! comparison canvas is the per-axis minimum, and the target cap
+			//! only ever shrinks), so this never interpolates upward and never
+			//! invents detail.  A same-size request is a straight copy.
+			//! Deterministic integer footprints, doubles only for the average.
+			bool BoxDownscaleRgb8_( const std::vector<unsigned char>& src,
+			                        unsigned int srcW, unsigned int srcH,
+			                        unsigned int dstW, unsigned int dstH,
+			                        std::vector<unsigned char>& dst )
+			{
+				dst.clear();
+				if( srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0 ) return false;
+				if( src.size() != static_cast<std::size_t>( srcW ) * srcH * 3 ) return false;
+				if( dstW > srcW || dstH > srcH ) return false;
+				if( dstW == srcW && dstH == srcH ) { dst = src; return true; }
+
+				dst.assign( static_cast<std::size_t>( dstW ) * dstH * 3, 0 );
+				for( unsigned int dy = 0; dy < dstH; ++dy ) {
+					// Half-open source row span [y0,y1); the +1 guard keeps a
+					// span non-empty when the ratio rounds two destination rows
+					// onto the same source row boundary.
+					unsigned int y0 = static_cast<unsigned int>(
+						( static_cast<std::uint64_t>( dy ) * srcH ) / dstH );
+					unsigned int y1 = static_cast<unsigned int>(
+						( static_cast<std::uint64_t>( dy + 1 ) * srcH ) / dstH );
+					if( y1 <= y0 ) y1 = y0 + 1;
+					if( y1 > srcH ) y1 = srcH;
+					for( unsigned int dx = 0; dx < dstW; ++dx ) {
+						unsigned int x0 = static_cast<unsigned int>(
+							( static_cast<std::uint64_t>( dx ) * srcW ) / dstW );
+						unsigned int x1 = static_cast<unsigned int>(
+							( static_cast<std::uint64_t>( dx + 1 ) * srcW ) / dstW );
+						if( x1 <= x0 ) x1 = x0 + 1;
+						if( x1 > srcW ) x1 = srcW;
+						std::uint64_t sr = 0, sg = 0, sb = 0, n = 0;
+						for( unsigned int sy = y0; sy < y1; ++sy ) {
+							for( unsigned int sx = x0; sx < x1; ++sx ) {
+								const std::size_t i = ( static_cast<std::size_t>( sy ) * srcW + sx ) * 3;
+								sr += src[i + 0];
+								sg += src[i + 1];
+								sb += src[i + 2];
+								++n;
+							}
+						}
+						if( n == 0 ) continue;
+						const std::size_t o = ( static_cast<std::size_t>( dy ) * dstW + dx ) * 3;
+						dst[o + 0] = static_cast<unsigned char>( ( sr + n / 2 ) / n );
+						dst[o + 1] = static_cast<unsigned char>( ( sg + n / 2 ) / n );
+						dst[o + 2] = static_cast<unsigned char>( ( sb + n / 2 ) / n );
+					}
+				}
+				return true;
+			}
+
+			//! Encode a tightly-packed RGB8 buffer through the SAME
+			//! linear-passthrough PNG writer compare_to_reference's composite
+			//! uses, so byte N in is byte N out (no re-gamma).
+			std::vector<unsigned char> EncodeRgb8Png_( const std::vector<unsigned char>& rgb,
+			                                           unsigned int w, unsigned int h )
+			{
+				if( w == 0 || h == 0 ||
+					rgb.size() != static_cast<std::size_t>( w ) * h * 3 )
+					return std::vector<unsigned char>();
+				std::vector<RISEColor> pels( static_cast<std::size_t>( w ) * h );
+				for( std::size_t i = 0; i < pels.size(); ++i ) {
+					pels[i] = RISEColor( rgb[i * 3 + 0] / 255.0, rgb[i * 3 + 1] / 255.0,
+					                     rgb[i * 3 + 2] / 255.0, 1.0 );
+				}
+				return EncodeLinearPassthroughPng_( pels, w, h );
+			}
+
+			//! Format one double as a fixed 4-decimal fact -- the same
+			//! precision compare_to_reference's RMSE summary prints, so the
+			//! two numbers read at the same scale.
+			std::string SceneTargetFact4dp_( double v )
+			{
+				char buf[32];
+				std::snprintf( buf, sizeof( buf ), "%.4f", v );
+				return std::string( buf );
+			}
 		}
 
 		//! R1 fix round (2026-08-09) -- supervisor decision, recorded here so a future pass doesn't "close
@@ -14425,6 +14683,325 @@ namespace RISE
 			return res;
 		}
 
+		// Arc 77 Phase 2 (2026-08-11): imagine_scene + the whole-scene ----------
+		// target comparison.  See the public block above ImagineScene in
+		// AgentSession.h for the mechanism and the three contracts
+		// (capability-conditional, replace-on-re-imagine, anti-stranding).
+
+		AgentSession::AgentImagineResult AgentSession::ImagineScene( const std::string& description )
+		{
+			AgentImagineResult out;
+			out.description  = description;
+			out.providerName = mImageGenerator.providerName;
+			out.modelId      = mImageGenerator.modelId;
+
+			// An empty description never reaches here from the wire (AgentRpc
+			// answers it with a -32602, which by design disarms nothing).
+			// A direct C++ caller gets the same refusal, and -- like the
+			// -32602 -- it changes no session state whatsoever.
+			if( description.empty() ) {
+				out.message = "imagine_scene: `description` must be a non-empty string. Nothing was "
+					"generated and this session's scene target is unchanged.";
+				return out;
+			}
+
+			// CAPABILITY REFUSAL.  Honest, and deliberately NOT a disarm: the
+			// imagine half of the gate was never armed on a provider that
+			// cannot generate images (see ImagineRequirementActive_), so there
+			// is nothing here to disarm and reporting one would be a false
+			// statement about the session's own state.  The tool stays in the
+			// shared table for every provider on purpose -- a per-provider
+			// tool table would fork the one definition list every codec maps
+			// from -- so this answer is a first-class outcome, not an error.
+			if( !ImagineCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mImageGenerator.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mImageGenerator.providerName + "`" );
+				out.message = "imagine_scene is not available: " + who + " does not generate images "
+					"through this build, so there is no way to turn your description into a picture "
+					"here. Nothing was generated and this session has no scene target; renders will "
+					"carry no comparison. Build and look as you normally would -- nothing else about "
+					"this session changes, and no other call is blocked by this.";
+				return out;
+			}
+
+			// PER-SESSION SPEND CAP (Phase 2 review round, P2-2).  imagine_scene
+			// is the first read-safe verb whose cost is real, billed provider
+			// money rather than local compute, and the interactive surface has
+			// no call budget (only eval runs have maxToolCalls).  A stuck retry
+			// loop could otherwise spend without bound.  Cap the number of
+			// calls that REACH the generator; capability/schema refusals above
+			// never count.  Cap-hit cannot strand the gate: reaching it means
+			// kSceneImagineMaxPerSession earlier calls reached the generator,
+			// and each either produced a target (gate satisfied) or failed at
+			// the provider (which disarmed the imagine requirement on the
+			// first failure) -- so by this point the imagine half is always
+			// already settled.  The refusal states the cap factually at the
+			// moment it matters; the tool description does not pre-advertise
+			// it (it promises nothing about call counts either way).
+			if( mSceneImagineCalls >= kSceneImagineMaxPerSession ) {
+				char capBuf[224];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"imagine_scene has already generated %d images this session -- the per-session "
+					"image-generation cap. Nothing was generated; this session's scene target is "
+					"unchanged.", kSceneImagineMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mSceneImagineCalls;
+
+			const AgentImageGenOutcome gen = mImageGenerator.generate( description );
+
+			// PROVIDER FAILURE -> DISARM.  The one rule that keeps a network
+			// blip from stranding a session: a transport error, an HTTP
+			// status, a quota, a missing key or a malformed response all drop
+			// the imagine REQUIREMENT for the rest of the session, so the gate
+			// falls back to plan-only rather than refusing geometry forever
+			// over something the model cannot fix.  The 3-refusal give-up
+			// still bounds everything on top of this.  `error` is the
+			// transport's HEADER-FREE category (never the request, never the
+			// key, never the response body) -- see ChatHttpTransport.h.
+			if( !gen.ok || gen.bytes.empty() ) {
+				mImagineRequirementDisarmed = true;
+				out.requirementDisarmed = true;
+				out.message = "imagine_scene failed: " +
+					( gen.error.empty() ? std::string( "the provider returned no image and no reason" )
+					                    : gen.error ) +
+					". This session's scene target is unchanged" +
+					( mSceneTarget ? " (the one imagined earlier still stands)" : " (there is none)" ) +
+					". Because the failure was on the provider side, the requirement to imagine a scene "
+					"is now dropped for this session -- no call will be blocked for the lack of a scene "
+					"target. You may call imagine_scene again if you want to retry.";
+				return out;
+			}
+
+			// Decode, cap and RE-ENCODE, so the session holds exactly one
+			// representation of the target regardless of what the provider
+			// sent (see DecodeGeneratedImageToRgb8_'s doc for the non-PNG
+			// decision).  A decode failure is a PROVIDER failure too -- the
+			// bytes arrived but are unusable -- and disarms on the same rule.
+			std::vector<unsigned char> rgb;
+			unsigned int w = 0, h = 0;
+			std::string derr;
+			if( !DecodeGeneratedImageToRgb8_( gen.bytes, gen.mimeType, rgb, w, h, derr ) ) {
+				mImagineRequirementDisarmed = true;
+				out.requirementDisarmed = true;
+				out.message = "imagine_scene failed: " + derr +
+					". This session's scene target is unchanged. Because the failure was on the "
+					"provider side, the requirement to imagine a scene is now dropped for this "
+					"session -- no call will be blocked for the lack of a scene target.";
+				return out;
+			}
+
+			// Cap the LONG edge (see kSceneTargetMaxEdge): a provider image
+			// arrives at 1024+ and every agent-surface render is capped at
+			// 256, so the full-size original could never widen the comparison
+			// canvas -- it would only inflate the inline echo.
+			unsigned int storeW = w, storeH = h;
+			const unsigned int longEdge = ( w > h ) ? w : h;
+			if( longEdge > kSceneTargetMaxEdge ) {
+				const double s = static_cast<double>( kSceneTargetMaxEdge ) / static_cast<double>( longEdge );
+				storeW = static_cast<unsigned int>( static_cast<double>( w ) * s );
+				storeH = static_cast<unsigned int>( static_cast<double>( h ) * s );
+				if( storeW == 0 ) storeW = 1;
+				if( storeH == 0 ) storeH = 1;
+				std::vector<unsigned char> scaled;
+				if( BoxDownscaleRgb8_( rgb, w, h, storeW, storeH, scaled ) ) {
+					rgb.swap( scaled );
+				}
+				else {
+					// Keep the full-size image rather than losing the target
+					// over a resample that should not fail; the comparison
+					// downscales per render anyway.
+					storeW = w;
+					storeH = h;
+				}
+			}
+
+			std::vector<unsigned char> png = EncodeRgb8Png_( rgb, storeW, storeH );
+			if( png.empty() ) {
+				// A HOST-side encode failure, not a provider one -- so it does
+				// NOT disarm the requirement (nothing about the provider is
+				// broken) and the previous target, if any, stands.
+				out.message = "imagine_scene: the provider returned an image but this build could not "
+					"re-encode it for return. This session's scene target is unchanged. Call "
+					"imagine_scene again to retry.";
+				return out;
+			}
+
+			// COMMIT.  Build the whole object first and publish it by
+			// REPLACING the pointer -- the pointee is never mutated after
+			// this, which is what makes a render's snapshot safe across a
+			// later re-imagine.
+			std::shared_ptr<AgentSceneTarget> next( new AgentSceneTarget() );
+			next->description    = description;
+			next->rgb            = rgb;
+			next->width          = storeW;
+			next->height         = storeH;
+			next->png            = png;
+			next->providerName   = mImageGenerator.providerName;
+			next->modelId        = mImageGenerator.modelId;
+			next->sourceMimeType = gen.mimeType;
+
+			out.replacedPreviousTarget = ( mSceneTarget != nullptr );
+			mSceneTarget = next;
+
+			out.ok     = true;
+			out.width  = storeW;
+			out.height = storeH;
+			out.png    = png;
+
+			// The echo: FACTS ONLY.  It states what was generated and what
+			// will now happen automatically, and says nothing at all about
+			// whether the image is any good -- characterizing the model's own
+			// imagination is exactly what this mechanism must not do (design
+			// doc sec 5.4).
+			out.message = "scene imagined: " + mImageGenerator.providerName + "/" +
+				mImageGenerator.modelId + " generated one " + std::to_string( storeW ) + "x" +
+				std::to_string( storeH ) + " image from your description, returned with this call and "
+				"held as this session's scene target. From now on every full-frame production render "
+				"(not draft, not a mode: render, not an isolate render) also reports `sceneTarget`: "
+				"RMSE and per-channel means of that render against this image, and returns a "
+				"[target | render] side-by-side strip in place of the frame. Those are measurements "
+				"only -- nothing is gated on them and no value is required. Calling imagine_scene "
+				"again replaces this target.";
+			if( out.replacedPreviousTarget )
+				out.message += " This replaced the scene target imagined earlier in this session.";
+			return out;
+		}
+
+		void AgentSession::ApplySceneTargetComparison_(
+			const AgentRenderParams& params,
+			AgentRenderResult& rr,
+			const std::shared_ptr<const AgentSceneTarget>& target )
+		{
+			// THE QUALIFICATION RULE, in one place.  See
+			// AgentRenderResult::sceneTargetApplied for why each exclusion is
+			// an honesty requirement rather than caution.  Every term is a
+			// pure function of `params` or of the completed result, so this
+			// cannot disagree with what actually rendered.
+			if( !target || !rr.ok ) return;
+			if( params.quality == AgentRenderQuality::Draft ) return;
+			if( params.renderTarget != AgentRenderTarget::Beauty ) return;
+			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			// A part-sketch comparison already owns this call's image and its
+			// own criterion; two comparisons on one render would also mean two
+			// png_base64 writes (see AgentRpc.cpp's exactly-one discipline).
+			if( !params.target.empty() || rr.targetApplied ) return;
+			if( rr.png.empty() ) return;
+			if( target->width == 0 || target->height == 0 ||
+				target->rgb.size() != static_cast<std::size_t>( target->width ) * target->height * 3 )
+				return;
+
+			std::vector<unsigned char> renderRgb;
+			unsigned int rw = 0, rh = 0;
+			std::string derr;
+			if( !DecodeReferencePngToRgb8_( rr.png.data(), rr.png.size(), renderRgb, rw, rh, derr ) ) {
+				rr.message += " (scene-target comparison not performed: this render's image could not "
+				              "be decoded -- " + derr + ")";
+				return;
+			}
+
+			// THE SHARED CANVAS: the per-axis MINIMUM, so neither side is ever
+			// upscaled.  A differing aspect ratio makes this a non-uniform
+			// resample; that is reported as a fact rather than hidden.
+			const unsigned int cw = ( rw < target->width )  ? rw : target->width;
+			const unsigned int ch = ( rh < target->height ) ? rh : target->height;
+			if( cw == 0 || ch == 0 ) return;
+
+			std::vector<unsigned char> a, b;
+			if( !BoxDownscaleRgb8_( renderRgb, rw, rh, cw, ch, a ) ||
+				!BoxDownscaleRgb8_( target->rgb, target->width, target->height, cw, ch, b ) ) {
+				rr.message += " (scene-target comparison not performed: the render and the target could "
+				              "not be brought to a common size)";
+				return;
+			}
+
+			// The SAME RMSE formula compare_to_reference reports and the eval
+			// checker's compareToImage assertion uses, so the two numbers are
+			// directly comparable.  Reused as a FORMULA, deliberately not via
+			// that verb's reference REGISTRY -- SetReferenceImages is the
+			// grading-reference set and replacing it here would collide with
+			// an image_reconstruct scenario's own references.
+			const std::size_t nPixels = static_cast<std::size_t>( cw ) * ch;
+			double sumSq = 0.0;
+			double sumAR = 0.0, sumAG = 0.0, sumAB = 0.0;
+			double sumBR = 0.0, sumBG = 0.0, sumBB = 0.0;
+			for( std::size_t i = 0; i < nPixels; ++i ) {
+				const double ar = a[i*3+0] / 255.0, ag = a[i*3+1] / 255.0, ab = a[i*3+2] / 255.0;
+				const double br = b[i*3+0] / 255.0, bg = b[i*3+1] / 255.0, bb = b[i*3+2] / 255.0;
+				const double dr = ar - br, dg = ag - bg, db = ab - bb;
+				sumSq += dr*dr + dg*dg + db*db;
+				sumAR += ar; sumAG += ag; sumAB += ab;
+				sumBR += br; sumBG += bg; sumBB += bb;
+			}
+			const double n = static_cast<double>( nPixels );
+			rr.sceneTargetRmse = std::sqrt( sumSq / ( n * 3.0 ) );
+			rr.sceneTargetRenderMeanR = sumAR / n;
+			rr.sceneTargetRenderMeanG = sumAG / n;
+			rr.sceneTargetRenderMeanB = sumAB / n;
+			rr.sceneTargetMeanR = sumBR / n;
+			rr.sceneTargetMeanG = sumBG / n;
+			rr.sceneTargetMeanB = sumBB / n;
+			rr.sceneTargetCompareWidth  = cw;
+			rr.sceneTargetCompareHeight = ch;
+			rr.sceneTargetWidth  = target->width;
+			rr.sceneTargetHeight = target->height;
+			// Equal to within the half-pixel the integer dims can express --
+			// compared as a cross product so no division and no epsilon on a
+			// ratio is involved.
+			rr.sceneTargetAspectMatched =
+				( static_cast<std::uint64_t>( rw ) * target->height ==
+				  static_cast<std::uint64_t>( target->width ) * rh );
+
+			// The [target | render] strip.  Target FIRST, deliberately: it is
+			// what the model said it was making, so the eye reads intent then
+			// actual, left to right, the same order compare_to_reference's own
+			// strip is documented in.
+			{
+				const unsigned int compW = cw * 2;
+				std::vector<RISEColor> pels( static_cast<std::size_t>( compW ) * ch );
+				for( unsigned int y = 0; y < ch; ++y ) {
+					for( unsigned int x = 0; x < cw; ++x ) {
+						const std::size_t i = ( static_cast<std::size_t>( y ) * cw + x ) * 3;
+						pels[ static_cast<std::size_t>( y ) * compW + x ] =
+							RISEColor( b[i+0] / 255.0, b[i+1] / 255.0, b[i+2] / 255.0, 1.0 );
+						pels[ static_cast<std::size_t>( y ) * compW + cw + x ] =
+							RISEColor( a[i+0] / 255.0, a[i+1] / 255.0, a[i+2] / 255.0, 1.0 );
+					}
+				}
+				rr.sceneTargetCompositePng = EncodeLinearPassthroughPng_( pels, compW, ch );
+				if( !rr.sceneTargetCompositePng.empty() ) {
+					rr.sceneTargetCompositeWidth  = compW;
+					rr.sceneTargetCompositeHeight = ch;
+				}
+			}
+
+			rr.sceneTargetApplied = true;
+
+			// The note.  NUMBERS ONLY -- no threshold, no verdict, no advice,
+			// for the same reason ApplyTargetComparison_'s note carries none.
+			std::string note = " (scene target: rmse " + SceneTargetFact4dp_( rr.sceneTargetRmse ) +
+				" vs the imagined scene, measured on a " + std::to_string( cw ) + "x" +
+				std::to_string( ch ) + " shared canvas";
+			if( !rr.sceneTargetAspectMatched )
+				note += " -- the render is " + std::to_string( rw ) + "x" + std::to_string( rh ) +
+					" and the target " + std::to_string( target->width ) + "x" +
+					std::to_string( target->height ) + ", so each was fitted per axis";
+			note += "; render mean rgb " + SceneTargetFact4dp_( rr.sceneTargetRenderMeanR ) + " " +
+				SceneTargetFact4dp_( rr.sceneTargetRenderMeanG ) + " " +
+				SceneTargetFact4dp_( rr.sceneTargetRenderMeanB ) +
+				", target mean rgb " + SceneTargetFact4dp_( rr.sceneTargetMeanR ) + " " +
+				SceneTargetFact4dp_( rr.sceneTargetMeanG ) + " " +
+				SceneTargetFact4dp_( rr.sceneTargetMeanB );
+			if( !rr.sceneTargetCompositePng.empty() )
+				note += "; the image returned with this call is the [target | render] strip, not the "
+				        "rendered frame on its own";
+			note += ")";
+			rr.message += note;
+		}
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
@@ -14480,6 +15057,22 @@ namespace RISE
 				}
 				haveResolvedTarget = true;
 			}
+
+			// Arc 77 Phase 2 (2026-08-11): THE SCENE-TARGET SNAPSHOT, taken
+			// HERE on the submitting thread for EXACTLY the reason FIX 1 above
+			// takes the sketch snapshot here.  The reachability question was
+			// enumerated across all three surfaces before deciding this was
+			// needed rather than assumed: the TOOL SCHEMA exposes `async` on
+			// `render`; the RAW WIRE accepts {"method":"render","params":
+			// {"async":true}} whether or not any schema mentions it; and
+			// RenderAsync is PUBLIC C++.  So the worker closure below really
+			// can run while the dispatcher thread is inside ImagineScene.
+			// Copying the shared_ptr here is a refcount bump (not an image
+			// copy), and because ImagineScene REPLACES the pointer instead of
+			// mutating the pointee, the worker's copy keeps describing the
+			// target the caller submitted against -- the same
+			// as-it-was-at-submission semantics FIX 1 established for the plan.
+			const std::shared_ptr<const AgentSceneTarget> sceneTargetSnapshot = mSceneTarget;
 
 			// Submit a closure that runs the FULL render body (override
 			// capture/apply/render/restore, same as the synchronous path)
@@ -14579,7 +15172,8 @@ namespace RISE
 				// `haveResolvedTarget` ride into the closure BY VALUE -- the
 				// worker consumes the submission-time copy and never reads
 				// mPartSketches.
-				[this, params, ownJobIdCell, resolvedTarget, haveResolvedTarget]() {
+				[this, params, ownJobIdCell, resolvedTarget, haveResolvedTarget,
+				 sceneTargetSnapshot]() {
 					struct OutstandingGuard {
 						AgentSession&                       self;
 						std::shared_ptr<std::uint64_t>      ownJobIdCell;
@@ -14617,6 +15211,13 @@ namespace RISE
 					// this read nor silently re-point the comparison at a
 					// different sketch.
 					ApplyTargetComparison_( params, r, /*assumeParked=*/true, targetSnapshot );
+					// Arc 77 Phase 2: the whole-scene comparison, measured
+					// against the SUBMISSION-TIME snapshot captured by value
+					// above -- this closure never reads mSceneTarget.  Placed
+					// before the mLastAsyncRenderResult store below for the
+					// same reason the sketch comparison is: the cached result a
+					// later render_wait echoes must carry the block.
+					ApplySceneTargetComparison_( params, r, sceneTargetSnapshot );
 					// Model-B F2 slice S2b: cache the FULL result (the whole
 					// point of RenderCore_ having computed it) so a caller
 					// that drove this render via render{"async":true} ->

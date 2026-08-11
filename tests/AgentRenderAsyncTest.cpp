@@ -6869,6 +6869,144 @@ static void RunAsyncTargetSnapshotTest()
 		g_pass, g_fail );
 }
 
+//======================================================================
+// Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET snapshot across the async
+// boundary -- the same defect class G3b's FIX 1 closed for the part plan,
+// pinned for the whole-scene target before it can be reintroduced.
+//
+// REACHABILITY, ENUMERATED (the standing rule for a claim like "this can
+// race"): the TOOL SCHEMA exposes `async` on `render`; the RAW WIRE accepts
+// {"method":"render","params":{"async":true}} whether or not any schema
+// mentions it (this test drives exactly that line); and RenderAsync is
+// public C++.  Three surfaces, so the worker closure really can run while
+// the dispatcher thread is inside ImagineScene -- a snapshot is required,
+// not merely tidy.
+//
+// The pin: submit an async render against a 256x256 target, REPLACE the
+// target with a 512x256 one while the worker is still rendering, and
+// require the echoed comparison to describe the target AS IT WAS AT
+// SUBMISSION.  Goes red if anyone makes the worker read mSceneTarget.
+//======================================================================
+static void RunAsyncSceneTargetSnapshotTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (Arc 77 Phase 2) async scene-target snapshot ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_scenetarget.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the async scene-target scene to a temp file" );
+
+	// Two canned, decodable PNGs of DIFFERENT sizes, minted from a throwaway
+	// session's part-plan sketch composite (256x256 per tile) so this test
+	// needs no PNG encoder of its own.
+	std::vector<unsigned char> smallPng, widePng;
+	{
+		Job* mintJob = new Job();
+		if( mintJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
+			for( int n = 1; n <= 2; ++n ) {
+				std::unique_ptr<AgentSession> m = AgentSession::WrapJob( mintJob );
+				std::vector<AgentSession::AgentPartPlanEntry> parts;
+				for( int i = 0; i < n; ++i ) {
+					AgentSession::AgentPartPlanEntry e;
+					e.part = "canned" + std::to_string( i );
+					e.construction = "primitive";
+					e.outline = "0 0; 1 0; 1 1; 0 1";
+					parts.push_back( e );
+				}
+				const std::vector<unsigned char> png = m->FilePartPlan( parts ).compositePng;
+				if( n == 1 ) smallPng = png; else widePng = png;
+			}
+		}
+		mintJob->release();
+	}
+	Check( !smallPng.empty() && !widePng.empty(), "two distinguishable canned targets were minted" );
+
+	auto makeGen = []( const std::vector<unsigned char>& png ) {
+		AgentSession::AgentImageGenerator g;
+		g.supported    = true;
+		g.providerName = "gemini";
+		g.modelId      = "test-image-model";
+		g.generate = [png]( const std::string& ) {
+			AgentSession::AgentImageGenOutcome o;
+			o.ok = true; o.bytes = png; o.mimeType = "image/png";
+			return o;
+		};
+		return g;
+	};
+
+	{
+		SlowRasterizeJob* pJob = new SlowRasterizeJob();
+		// Long enough that the re-imagine below is GUARANTEED to land before
+		// the worker reaches the comparison -- deterministic, not a coin flip.
+		pJob->SetSleepMs( 400 );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "SlowRasterizeJob loads the async scene-target scene" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "AgentSession::WrapJob wraps the async scene-target Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+			AgentRpcDispatcher rpc( std::move( owned ) );
+
+			session->SetImageGenerator( makeGen( smallPng ) );
+			Check( session->ImagineScene( "target A -- a 256x256 imagination" ).ok,
+			       "target A is imagined (256x256)" );
+
+			JsonValue submitEnv; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true}}" ),
+				submitEnv, err ), "the async submit response parses" );
+			Check( submitEnv.get( "result" ).get( "status" ).asString() == "submitted",
+			       "MONEY ASSERTION: the RAW WIRE accepts {async:true} on a session holding a scene "
+			       "target -- the shape that makes the snapshot necessary is a supported submission" );
+			const double jobIdD = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+
+			// THE RACE: replace the target while the worker is still inside
+			// the render.  Pre-snapshot this is an unsynchronized write
+			// against a live read on the worker thread.
+			session->SetImageGenerator( makeGen( widePng ) );
+			Check( session->ImagineScene( "target B -- a 512x256 imagination" ).ok,
+			       "target B replaces it WHILE the async render is in flight" );
+
+			JsonValue waitEnv;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+				std::to_string( static_cast<unsigned long long>( jobIdD ) ) +
+				",\"timeoutMs\":30000}}" ), waitEnv, err ), "the render_wait response parses" );
+			const JsonValue& waitResult = waitEnv.get( "result" );
+			Check( waitResult.get( "completed" ).asBool(), "the async render completed" );
+			const JsonValue& rr = waitResult.get( "result" );
+			Check( rr.get( "ok" ).asBool(),
+			       std::string( "the async render succeeded: " ) + rr.get( "message" ).asString() );
+			Check( rr.has( "sceneTarget" ),
+			       "MONEY ASSERTION: the async path measures the whole-scene comparison exactly as "
+			       "the sync path does, and render_wait echoes it" );
+			const JsonValue& st = rr.get( "sceneTarget" );
+			Check( st.get( "targetWidth" ).asNumber( 0.0 ) == 256.0,
+			       "MONEY ASSERTION: the echoed target is A (256 wide), the one that existed AT "
+			       "SUBMISSION -- NOT B (512).  Goes RED the moment anyone makes the render worker "
+			       "read mSceneTarget instead of the snapshot it was handed." );
+			Check( !rr.has( "png_base64" ),
+			       "and the render_wait echo carries the FACTS without image bytes, exactly as the "
+			       "part-target echo does" );
+			Check( session->SceneTarget() && session->SceneTarget()->width == 512,
+			       "while the SESSION's live target is B -- the snapshot pinned the render, not the "
+			       "session" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+	std::printf( "=== (Arc 77 Phase 2) async scene-target snapshot: %d passed, %d failed (cumulative) ===\n",
+		g_pass, g_fail );
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -6926,6 +7064,7 @@ int main()
 	RunPinnedFieldNotStaleAfterCompletionTest();
 	RunAgentSurfaceRenderCapTest();
 	RunAsyncTargetSnapshotTest();
+	RunAsyncSceneTargetSnapshotTest();   // Arc 77 Phase 2 (2026-08-11)
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

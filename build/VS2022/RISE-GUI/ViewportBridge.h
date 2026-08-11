@@ -838,6 +838,31 @@ public:
     /// that bookkeeping is deliberately NOT shared.
     QString agentHandleToolCall(const QString& jsonRpcRequest, AgentAutonomyLevel level);
 
+    // Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring) --
+
+    /// Windows mirror of macOS RISEViewportBridge's
+    /// `-agentSetImageGeneratorProvider:apiKey:`. Installs (or replaces)
+    /// the HOST half of `imagine_scene` on every in-app tool-call session
+    /// this bridge owns (m_agentDispatcher, m_agentToolDispatcherOwner,
+    /// m_agentToolDispatcherPropose -- see
+    /// RISE::Agent::AgentSession::SetImageGenerator's doc for why this is
+    /// host-installed-only). `providerName` is the SAME lowercase
+    /// spelling ChatPanel's Provider enum already maps to for
+    /// OpenAIChatCodec::Config ("anthropic"/"gemini"/"openai"/"xai"/
+    /// "local") -- capability is per-provider (gemini/openai only).
+    /// `apiKey` rides in the SAME per-provider auth header the chat
+    /// codec for that provider uses; pass an empty string for a
+    /// keyless/no-key-yet posture. Builds the actual generator via
+    /// RISE::Agent::MakeChatImageGenerator (AgentChatCodecs.h) over the
+    /// platform system transport (RISE::Agent::CreateSystemChatHttpTransport)
+    /// -- `imagine_scene` dispatches synchronously on the calling thread,
+    /// so it cannot await Qt's async QNetworkAccessManager reply the chat
+    /// panel's own HTTP path uses. CALL AGAIN on every provider or key
+    /// change; ChatPanel does so once per round, at the same point it
+    /// already reads the applied provider's key for BuildRequest (see
+    /// ChatPanel::runNextStep).
+    void agentSetImageGenerator(const QString& providerName, const QString& apiKey);
+
     // Properties panel ------------------------------------------------
 
     /// Mirrors RISE::SceneEditController::PanelMode.  Drives which

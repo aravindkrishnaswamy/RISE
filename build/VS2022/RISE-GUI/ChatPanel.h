@@ -223,6 +223,12 @@ private:
     Provider currentProvider() const;
     QString defaultModelFor(Provider provider) const;
     QString envKeyFor(Provider provider) const;
+    /// The lowercase wire-provider name Arc 77 Phase 2's image-generator
+    /// wiring expects ("anthropic"/"gemini"/"openai"/"xai"/"local") --
+    /// the SAME spelling OpenAIChatCodec::Config::providerName already
+    /// uses for XAI/Local in defaultModelFor(). See
+    /// ViewportBridge::agentSetImageGenerator's doc.
+    static QString agentProviderName(Provider provider);
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     QPushButton* makeAutonomyChip(const QString& title, AutonomyLevel level, const QString& help);

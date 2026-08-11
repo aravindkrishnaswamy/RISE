@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), a production render, and (once you have called imagine_scene) that same production render measured against your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -393,6 +393,31 @@ sketch-only red, silhouette-only cyan, overlap white, and neither
 black. It replaces the rendered frame as this call's image, with or
 without `imageMaxEdge`. An unknown part name, or no filed plan, FAILS
 the render (`ok:false`) with the filed part names in `message`.
+
+## The imagined scene target: `imagine_scene`, then every full render
+
+`imagine_scene {description}` asks your provider to generate one image
+from your own written description of the finished scene, returns it to
+you, and holds it as the session's scene target. From then on every
+FULL-FRAME PRODUCTION render -- not `quality:"draft"`, not any
+`mode:` render, not an `isolate` render -- also carries a `sceneTarget`
+block (`rmse`, `renderMeanR/G/B`, `targetMeanR/G/B`, `compareWidth`,
+`compareHeight`, `targetWidth`, `targetHeight`, `aspectMatched`, and
+the composite's dims) and returns a `[target | render]` side-by-side
+strip in place of the rendered frame. The three exclusions are honesty,
+not caution: draft ignores the scene's materials and lights, a `mode:`
+render paints identity or data colours rather than appearance, and an
+isolate render is a look at one part rather than at the scene the
+target describes. `rmse` is computed after both images are box-
+downscaled to a shared canvas whose width and height are each the
+smaller of the two, so neither side is ever enlarged; when the aspect
+ratios differ, `aspectMatched` is false and each axis was fitted
+independently. Nothing is gated on any of these numbers and no target
+is expected to be reproduced. `read_image` still returns this render's
+own frame, so the strip costs you nothing you cannot get back. Calling
+`imagine_scene` again replaces the target. On a provider without image
+generation the call returns `ok:false` with a plain statement and
+nothing else changes.
 
 ## Escalation ladder (cost, cheapest first)
 

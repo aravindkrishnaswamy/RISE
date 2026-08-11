@@ -30,8 +30,11 @@
 #include "Agent/AgentRpc.h"
 #include "Agent/AgentMcpAdapter.h"          // Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 #include "Agent/AgentLoopbackHttpServer.h"  // Secure-MCP slice 5c
+#include "Agent/AgentChatCodecs.h"          // Arc 77 Phase 2 GUI wiring: MakeChatImageGenerator (imagine_scene)
+#include "Agent/ChatHttpTransport.h"        // Arc 77 Phase 2 GUI wiring: CreateSystemChatHttpTransport
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -2362,6 +2365,66 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     const std::string response = dispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
     NSString* out = [NSString stringWithUTF8String:response.c_str()];
     return out ?: kNoDispatcher;
+}
+
+#pragma mark - Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring)
+
+- (void)agentSetImageGeneratorProvider:(NSString *)providerName
+                                 apiKey:(NSString *)apiKey {
+    const char* providerUtf8 = providerName ? [providerName UTF8String] : "";
+    const char* keyUtf8      = apiKey       ? [apiKey UTF8String]       : "";
+    const std::string provider(providerUtf8 ? providerUtf8 : "");
+    const std::string key(keyUtf8 ? keyUtf8 : "");
+
+    // ONE system transport, shared by all three sessions' generators
+    // below -- safe because every in-app dispatcher is called only from
+    // the main/UI thread (see the ivar block's doc), so no two `generate`
+    // callables can be inside Post() at once. CreateSystemChatHttpTransport
+    // never returns null (see ChatHttpTransport.h).
+    const std::shared_ptr<RISE::Agent::IChatHttpTransport> transport(
+        RISE::Agent::CreateSystemChatHttpTransport().release());
+
+    const RISE::Agent::ChatImageGenerator wire =
+        RISE::Agent::MakeChatImageGenerator(provider, key, transport);
+
+    RISE::Agent::AgentSession::AgentImageGenerator gen;
+    gen.providerName = wire.providerName;
+    gen.supported     = wire.supported;
+    gen.modelId       = wire.modelId;
+    if (wire.supported) {
+        // Copy (not move) the codec-layer callable: `gen` itself is
+        // copied into three sessions below via SetImageGenerator, and
+        // std::function's copy is cheap (a few captured strings + a
+        // shared_ptr).
+        const std::function<RISE::Agent::ChatImageGenOutcome(const std::string&)> rawGenerate =
+            wire.generate;
+        gen.generate =
+            [rawGenerate](const std::string& description) -> RISE::Agent::AgentSession::AgentImageGenOutcome {
+            RISE::Agent::AgentSession::AgentImageGenOutcome out;
+            const RISE::Agent::ChatImageGenOutcome r = rawGenerate(description);
+            out.ok       = r.ok;
+            out.bytes    = r.bytes;
+            out.mimeType = r.mimeType;
+            out.error    = r.error;
+            return out;
+        };
+    }
+
+    // Every in-app TOOL-CALL-REACHABLE session: `_agentDispatcher` (the
+    // administrative path -agentHandleLine drives; imagine_scene is on
+    // the read-safe allowlist so it dispatches there too), plus both
+    // tool-call sessions -agentHandleToolCall: routes between by
+    // autonomy. AgentSession::SetImageGenerator copies its argument, so
+    // handing the SAME `gen` to all three is safe -- each session ends up
+    // with its own independent AgentImageGenerator, all three sharing the
+    // one `transport` via shared_ptr.
+    RISE::Agent::AgentRpcDispatcher* dispatchers[] = {
+        _agentDispatcher, _agentToolDispatcherOwner, _agentToolDispatcherPropose};
+    for (RISE::Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) {
+            d->Session()->SetImageGenerator(gen);
+        }
+    }
 }
 
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint

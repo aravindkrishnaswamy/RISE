@@ -2137,6 +2137,17 @@ final class ChatViewModel: ObservableObject {
                 return
             }
 
+            // Arc 77 Phase 2 GUI wiring: keep `imagine_scene`'s HOST
+            // generator fresh on every in-app tool-call session before
+            // this round's tool calls (if any) dispatch. Reinstalled
+            // every turn with the SAME `apiKey` just resolved above --
+            // zero extra Keychain reads -- so a provider or key change
+            // mid-session (Settings' provider picker, Save Key, Clear
+            // Key) is picked up by the very next turn instead of leaving
+            // a generator bound to a stale credential. See
+            // -agentSetImageGenerator(provider:apiKey:)'s doc.
+            viewportBridge?.agentSetImageGenerator(provider: provider.rawValue, apiKey: apiKey)
+
             let request = chatBridge.buildRequest(apiKey: apiKey)
             // buildRequest is where span compaction runs, so this is the
             // moment to notice it did.  THIS DRIVER'S display transcript is

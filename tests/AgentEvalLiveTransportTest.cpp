@@ -32,6 +32,7 @@
 
 #include "../src/Library/Agent/AgentEvalRunner.h"
 #include "../src/Library/Agent/ChatHttpTransport.h"
+#include "../src/Library/Agent/AgentChatCodecs.h"   // GUI wiring (2026-08-11): MakeChatImageGenerator -- the shared imagine_scene generator helper
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -1221,6 +1222,90 @@ static void TestKeyHygieneRedProve()
 	//     transport never echoing headers into its response.
 	Check( !AnyFileUnderContains( runDir, kFakeKey ),
 	       "the fake key appears in NO runDir output file (trajectory/result/results.jsonl)" );
+}
+
+//----------------------------------------------------------------------
+// T5b: Agent::MakeChatImageGenerator (AgentChatCodecs.h) -- the ONE
+// shared implementation `imagine_scene`'s host generator is now built
+// from in every host (this runner via the FetchFnTransport adapter,
+// the Mac and Windows GUIs directly).  Before the Arc 77 Phase 2
+// GUI-wiring extraction this glue -- capture the key, call
+// BuildImageGenerationRequest, drive the transport, format an
+// HTTP-status-only error -- was hand-rolled inline inside
+// RunScenarioDriven with zero direct test coverage.  This is its
+// first: three properties against the SAME MockTransport this file
+// already drives the chat path with.
+//   (a) key hygiene -- the key rides the provider's OWN auth header
+//       ONLY, never the request URL or body, and no OTHER header;
+//   (b) a failed HTTP response yields a STATUS-CODE-ONLY error
+//       message, never the response body (a provider error body can
+//       echo the prompt back -- see ParseImageGenerationResponse's doc
+//       for why that must never reach the model);
+//   (c) the success path threads the decoded image bytes + mime type
+//       through end to end.
+//----------------------------------------------------------------------
+static void TestMakeChatImageGeneratorWiring()
+{
+	std::printf( "T5b: MakeChatImageGenerator -- key hygiene + status-only error + success decode...\n" );
+
+	const std::string kFakeKey = "AIza-FAKE-IMAGE-KEY-DO-NOT-LEAK-0123456789";
+
+	// (a) + (b): a 403 whose body carries a distinctive "leak" marker --
+	// proves the marker never reaches the outcome's error string, and
+	// that the key never rides anywhere but its own auth header.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back(
+			{ 403, "{\"error\":{\"message\":\"SECRET_PROMPT_LEAK_MARKER\"}}", "", 3 } );
+
+		const ChatImageGenerator gen = MakeChatImageGenerator( "gemini", kFakeKey, mock );
+		Check( gen.supported, "gemini reports image-generation capability" );
+		Check( gen.generate != nullptr, "gemini generator has a callable generate" );
+
+		const ChatImageGenOutcome out = gen.generate( "a red sphere on a checkerboard" );
+		Check( !out.ok, "a 403 response is reported as a failure" );
+		Check( out.error.find( "403" ) != std::string::npos,
+		       "the failure message names the HTTP status" );
+		Check( out.error.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       "the failure message never echoes the response body" );
+
+		Check( mock->seenRequests.size() == 1, "exactly one POST was issued" );
+		if( !mock->seenRequests.empty() ) {
+			const ChatHttpRequest& req = mock->seenRequests[0];
+			Check( req.url.find( kFakeKey ) == std::string::npos,
+			       "the key never appears in the request URL" );
+			Check( req.body.find( kFakeKey ) == std::string::npos,
+			       "the key never appears in the request body" );
+			Check( mock->AnyRequestHeaderContains( kFakeKey ),
+			       "the key DOES appear in a request header (red-prove: not vacuously absent)" );
+			bool keyOnlyInAuthHeader = true;
+			for( std::size_t h = 0; h < req.headers.size(); ++h ) {
+				const bool hasKey = req.headers[h].second.find( kFakeKey ) != std::string::npos;
+				if( hasKey && req.headers[h].first != "x-goog-api-key" ) keyOnlyInAuthHeader = false;
+			}
+			Check( keyOnlyInAuthHeader,
+			       "the key rides ONLY the provider's own auth header (x-goog-api-key), no other header" );
+		}
+	}
+
+	// (c) success: a canned Gemini generateContent body carrying one
+	// inlineData image part decodes through end to end.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		const std::vector<unsigned char> srcBytes =
+			{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02 };
+		const std::string b64 = Base64Encode( srcBytes );
+		const std::string body =
+			"{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\","
+			"\"data\":\"" + b64 + "\"}}]}}]}";
+		mock->responses.push_back( { 200, body, "", 5 } );
+
+		const ChatImageGenerator gen = MakeChatImageGenerator( "gemini", kFakeKey, mock );
+		const ChatImageGenOutcome out = gen.generate( "a blue cube" );
+		Check( out.ok, "a 200 response with an inlineData part succeeds" );
+		Check( out.mimeType == "image/png", "the mime type threads through" );
+		Check( out.bytes == srcBytes, "the decoded bytes match the source bytes exactly" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -3083,6 +3168,7 @@ int main()
 	TestLiveDegenerateRetryAccumulatesAcrossRounds();
 	TestLive5xxDoesNotStackWithDegenerate();
 	TestKeyHygieneRedProve();
+	TestMakeChatImageGeneratorWiring();
 	TestLiveLocalProviderTimeoutBudget();
 	TestLiveHttp5xxRetrySucceeds();
 	TestLiveHttp5xxRetryStillFails();
