@@ -7540,12 +7540,21 @@ namespace
 				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
 				IndependentSampler sampler(rng);
 				const unsigned int segmentsBefore = medium->segmentSamples;
-				const Scalar sample = integrator->IntegrateRayNM(
-					rc,rast,ray,nm,*job->GetScene(),*caster,
-					sampler,nullptr,nullptr);
-				Check( std::isfinite(sample) &&
-					medium->segmentSamples > segmentsBefore,
+				const unsigned int fastSamples = 8;
+				long double fastSum = 0.0;
+				bool allFinite = true;
+				for( unsigned int i=0; i<fastSamples; ++i ) {
+					const Scalar sample = integrator->IntegrateRayNM(
+						rc,rast,ray,nm,*job->GetScene(),*caster,
+						sampler,nullptr,nullptr);
+					allFinite = allFinite && std::isfinite(sample);
+					fastSum += sample;
+				}
+				Check( allFinite &&
+					medium->segmentSamples >= segmentsBefore+fastSamples,
 					"zero-soot chem-only default gate traverses the independent line-source estimator" );
+				Check( fastSum>0.0,
+					"zero-soot chem-only default gate retains positive synthetic line emission" );
 			} else {
 			const Scalar nm = 430.0;
 			const Scalar expected =

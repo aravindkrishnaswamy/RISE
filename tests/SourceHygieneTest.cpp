@@ -805,6 +805,10 @@ int main()
 				std::string::npos &&
 			windowsTestCmake.find("/UNDEBUG") != std::string::npos &&
 			testReadme.find("do not rely on `assert(...)`") !=
+				std::string::npos &&
+			testReadme.find("representative fixed-seed Monte") !=
+				std::string::npos &&
+			testReadme.find("high-sample Phase-B mean-equality") !=
 				std::string::npos,
 			"test runners never execute stale binaries after a failed dependency-aware build" );
 		Check(iorStackTest.find("\tassert(") == std::string::npos &&
@@ -1122,6 +1126,19 @@ int main()
 			riseBridgeHeader.find("Active production renders reject Save As") !=
 				std::string::npos,
 			"macOS public Save As contract matches its production render lease" );
+		Check(crossPlatformArchitecture.find(
+				"## 2. Current state (code-confirmed, 2026-08)") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("SceneEditCategory_*` (0–11)") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("`AgentMcpAdapter`") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"There is no MCP / LLM / agent / provider code") ==
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"`src/Library/Agent/` does not exist") == std::string::npos,
+			"cross-platform architecture current-state inventory matches the shipped Agent core and C ABI" );
 		Check(riseViewportBridge.find(
 			"mFanoutVFS->BindFrameStore( framestore )") != std::string::npos &&
 			riseBridge.find("deferred until L6e-3") == std::string::npos &&

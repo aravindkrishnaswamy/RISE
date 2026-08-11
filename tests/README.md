@@ -15,8 +15,10 @@ make -C build/make/rise tests
 
 The normal suite keeps deterministic structural, routing, cache-refresh,
 Pel-preview, constituent-closure, dispatcher-lifecycle, and fire-preflight
-gates. `PathTracingThermalEmissionTest` moves Monte Carlo mean-equality,
-analytic-integral convergence, and topology matrices under `--extended-matrix`.
+gates. `PathTracingThermalEmissionTest` keeps representative fixed-seed Monte
+Carlo analytic anchors in the normal tier while moving the exhaustive,
+high-sample Phase-B mean-equality, analytic-convergence, and topology matrices
+under `--extended-matrix`.
 `AutoRasterizerTest` keeps a 16x16 uniform-fire Pel/spectral projection envelope
 in the normal tier; `--fire-preview-only` restores the 32x48 showcase-flame
 tripwire, and the nightly runner combines it with `--extended-fire-ablation`
