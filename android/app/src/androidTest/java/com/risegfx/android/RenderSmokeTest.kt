@@ -47,6 +47,14 @@ class RenderSmokeTest {
         val lastRefresh    = AtomicLong(-1L)
         val frameWidth     = AtomicInteger(0)
         val frameHeight    = AtomicInteger(0)
+        val staleCallbackCount = AtomicInteger(0)
+
+        val staleCallback = object : RiseCallback {
+            override fun onProgress(progress: Float) { staleCallbackCount.incrementAndGet() }
+            override fun onSceneReady(width: Int, height: Int) { staleCallbackCount.incrementAndGet() }
+            override fun onRegionInvalidated(packedRect: Long) { staleCallbackCount.incrementAndGet() }
+            override fun onLog(level: Int, message: String) { staleCallbackCount.incrementAndGet() }
+        }
 
         val callback = object : RiseCallback {
             override fun onProgress(progress: Float) { progressCount.incrementAndGet() }
@@ -61,22 +69,46 @@ class RenderSmokeTest {
             }
             override fun onLog(level: Int, message: String) {}
         }
-        val callbackOwner = RiseNative.nativeSetCallback(callback)
-        assertTrue("callback ownership token should be nonzero", callbackOwner != 0L)
+        val requestBase = System.nanoTime().coerceAtLeast(1_000_000L)
+        val firstOwner = RiseNative.nativeSetCallback(staleCallback, requestBase)
+        val callbackOwner = RiseNative.nativeSetCallback(callback, requestBase + 2L)
+        val delayedStaleOwner = RiseNative.nativeSetCallback(staleCallback, requestBase + 1L)
+        assertTrue("first callback ownership token should be nonzero", firstOwner != 0L)
+        assertTrue("newest callback ownership token should be nonzero", callbackOwner != 0L)
+        assertTrue("out-of-order stale callback request must reject", delayedStaleOwner == 0L)
+        RiseNative.nativeClearCallback(firstOwner)
+        assertTrue(
+            "clearing an old token must preserve the newest callback owner",
+            RiseNative.nativeOwnsCallback(callbackOwner),
+        )
+        assertTrue(
+            "stale callback owner cannot load a scene",
+            !RiseNative.nativeLoadScene(sceneFile.absolutePath, firstOwner),
+        )
+        assertTrue(
+            "stale callback owner cannot start or stop the viewport",
+            !RiseNative.nativeViewportStart(false, firstOwner) &&
+                !RiseNative.nativeViewportStop(firstOwner),
+        )
+        assertTrue(
+            "stale callback owner cannot cancel the current render lifecycle",
+            !RiseNative.nativeCancel(firstOwner),
+        )
 
         try {
-            val loaded = RiseNative.nativeLoadScene(sceneFile.absolutePath)
+            val loaded = RiseNative.nativeLoadScene(sceneFile.absolutePath, callbackOwner)
             assertTrue("LoadAsciiScene failed", loaded)
 
             // Rasterize blocks the test thread; the library spawns its own
             // worker pool for tile dispatch. Bounded by the @Test timeout.
-            val rasterOk = RiseNative.nativeRasterize()
+            val rasterOk = RiseNative.nativeRasterize(callbackOwner)
             assertTrue("Rasterize returned false", rasterOk)
             assertTrue(
                 "onSceneReady never fired",
                 sceneReadyLatch.await(10, TimeUnit.SECONDS),
             )
             assertTrue("expected at least one display refresh", refreshCount.get() > 0)
+            assertTrue("superseded callbacks receive no render events", staleCallbackCount.get() == 0)
             val refreshed = DirtyRect.unpack(lastRefresh.get())
             assertTrue(
                 "production refresh must cover the completed framebuffer",

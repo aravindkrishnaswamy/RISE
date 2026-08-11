@@ -1130,22 +1130,44 @@ int main()
 			"Android serializes blocking JNI scene lifecycles and always stops render polls" );
 		Check(androidLoadScene.find("lifecycleLock(m_sceneLifecycleMutex)") !=
 				std::string::npos &&
+			androidLoadScene.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
 			androidRasterize.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidRasterize.find("ownsCallback(ownerToken)") !=
 				std::string::npos &&
 			androidSetCallback.find("lifecycleLock(m_sceneLifecycleMutex)") !=
 				std::string::npos &&
-			androidSetCallback.find("stopViewport();") != std::string::npos &&
+			androidSetCallback.find(
+				"requestGeneration <= m_latestKotlinCallbackRequest") !=
+				std::string::npos &&
+			androidSetCallback.find("stopViewportUnowned();") != std::string::npos &&
 			androidClearCallback.find("m_kotlinCallbackOwner != ownerToken") !=
 				std::string::npos &&
-			androidClearCallback.find("stopViewport();") != std::string::npos &&
+			androidClearCallback.find("stopViewportUnowned();") != std::string::npos &&
 			androidRenderViewModel.find("callbackOwnerFuture.get()") !=
+				std::string::npos &&
+			androidRenderViewModel.find(
+				"nativeSetCallback(this, callbackRequestGeneration)") !=
+				std::string::npos &&
+			androidRenderViewModel.find(
+				"nativeLoadScene(scenePath, callbackOwner)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("nativeRasterize(callbackOwner)") !=
 				std::string::npos &&
 			androidRenderViewModel.find("thenAcceptAsync") != std::string::npos &&
 			androidRenderViewModel.find("nativeClearCallback(ownerToken)") !=
 				std::string::npos &&
+			androidRenderSmoke.find("requestBase + 2L") != std::string::npos &&
+			androidRenderSmoke.find("requestBase + 1L") != std::string::npos &&
+			androidRenderSmoke.find("delayedStaleOwner == 0L") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"nativeLoadScene(sceneFile.absolutePath, firstOwner)") !=
+				std::string::npos &&
 			androidManifest.find("android:launchMode=\"singleTask\"") !=
 				std::string::npos,
-			"Android callback and viewport replacement is serialized, owner-checked, and off-main" );
+			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
 		Check(androidExposure.find("m_displaySource.load") !=
 				std::string::npos &&
 			androidExposure.find("m_viewportRunning.load") == std::string::npos &&

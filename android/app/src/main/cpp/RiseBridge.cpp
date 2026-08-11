@@ -180,14 +180,20 @@ void RiseBridge::initialize(const std::string& projectRoot,
          projectRoot.c_str(), logFile.c_str(), m_threadCount);
 }
 
-uint64_t RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
-    if (!env || !kotlinCallback) return 0u;
+uint64_t RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback,
+                                 uint64_t requestGeneration) {
+    if (!env || !kotlinCallback || requestGeneration == 0u) return 0u;
     // ViewModel replacement can happen while a blocking JNI load/render call
     // is still unwinding. Wait for that process-wide lifecycle before
     // replacing the callback. A live viewport belongs to the old callback;
     // stop it before retargeting so its frames can never reach the new owner.
     std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    stopViewport();
+    {
+        std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+        if (requestGeneration <= m_latestKotlinCallbackRequest) return 0u;
+        m_latestKotlinCallbackRequest = requestGeneration;
+    }
+    stopViewportUnowned();
     m_displaySource.store(DisplaySource::None,std::memory_order_release);
     std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
     if (m_kotlinCallback) {
@@ -214,7 +220,7 @@ void RiseBridge::clearCallback(JNIEnv* env, uint64_t ownerToken) {
         std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
         if (m_kotlinCallbackOwner != ownerToken) return;
     }
-    stopViewport();
+    stopViewportUnowned();
     m_displaySource.store(DisplaySource::None,std::memory_order_release);
     std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
     if (m_kotlinCallbackOwner != ownerToken) return;
@@ -225,10 +231,16 @@ void RiseBridge::clearCallback(JNIEnv* env, uint64_t ownerToken) {
     m_kotlinCallbackOwner = 0u;
 }
 
+bool RiseBridge::ownsCallback(uint64_t ownerToken) const {
+    if (ownerToken == 0u) return false;
+    std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+    return m_kotlinCallbackOwner == ownerToken && m_kotlinCallback != nullptr;
+}
+
 void RiseBridge::teardownJob() {
     // Tear down viewport (which holds rasterizer/caster references back into
     // the job) BEFORE releasing the job itself.  Otherwise we'd leak.
-    stopViewport();
+    stopViewportUnowned();
     m_displaySource.store(DisplaySource::None,std::memory_order_release);
 
     if (m_job) {
@@ -248,8 +260,12 @@ void RiseBridge::teardownJob() {
     }
 }
 
-bool RiseBridge::loadScene(const std::string& absPath) {
+bool RiseBridge::loadScene(const std::string& absPath, uint64_t ownerToken) {
     std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) {
+        LOGE("loadScene: stale callback owner");
+        return false;
+    }
     if (!m_initialized) {
         LOGE("loadScene: bridge not initialized");
         return false;
@@ -292,8 +308,12 @@ bool RiseBridge::loadScene(const std::string& absPath) {
     return true;
 }
 
-bool RiseBridge::rasterize() {
+bool RiseBridge::rasterize(uint64_t ownerToken) {
     std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) {
+        LOGE("rasterize: stale callback owner");
+        return false;
+    }
     if (!m_job) {
         LOGE("rasterize: no job loaded");
         return false;
@@ -338,19 +358,26 @@ std::string RiseBridge::autoResolveReason() const {
     return (reason && reason[0]) ? std::string(reason) : std::string();
 }
 
-void RiseBridge::requestCancel() {
+bool RiseBridge::requestCancel(uint64_t ownerToken) {
+    std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+    if (ownerToken == 0u || m_kotlinCallbackOwner != ownerToken ||
+        !m_kotlinCallback) return false;
     m_cancel.store(true);
+    return true;
 }
 
-bool RiseBridge::hasAnimatedObjects() const {
+bool RiseBridge::hasAnimatedObjects(uint64_t ownerToken) const {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) return false;
     if (!m_job) return false;
     return m_job->AreThereAnyKeyframedObjects();
 }
 
-void RiseBridge::setSceneTime(double t) {
-    if (!m_job) return;
+bool RiseBridge::setSceneTime(double t, uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken) || !m_job) return false;
     RISE::IScenePriv* scene = m_job->GetScene();
-    if (!scene) return;
+    if (!scene) return false;
     // Full SetSceneTime: advances the animator AND regenerates every
     // populated photon map at time `t`.  The interactive viewport's
     // scrub path calls SetSceneTimeForPreview (animator-only, no
@@ -358,6 +385,7 @@ void RiseBridge::setSceneTime(double t) {
     // expensive photon regen so the next production render gets
     // caustics consistent with the scrubbed scene state.
     scene->SetSceneTime(static_cast<RISE::Scalar>(t));
+    return true;
 }
 
 void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
@@ -1039,7 +1067,10 @@ void RiseBridge::releaseViewportLivePreview() {
 
 bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
                                 unsigned int maxSurfaceH,
-                                unsigned int maxLongEdge) {
+                                unsigned int maxLongEdge,
+                                uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) return false;
     if (!m_job) return false;
     if (maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0) return false;
     // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
@@ -1048,7 +1079,9 @@ bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
     return m_job->SetViewportFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
 }
 
-bool RiseBridge::startViewport(bool suppressFirstFrame) {
+bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) return false;
     if (m_viewportController) return true;
     if (!m_job) return false;
 
@@ -1092,7 +1125,14 @@ void RiseBridge::viewportSuppressNextFrame() {
     }
 }
 
-void RiseBridge::stopViewport() {
+bool RiseBridge::stopViewport(uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken)) return false;
+    stopViewportUnowned();
+    return true;
+}
+
+void RiseBridge::stopViewportUnowned() {
     if (!m_viewportController) return;
     RISE::RISE_API_SceneEditController_Stop(m_viewportController);
     m_viewportRunning = false;

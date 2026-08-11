@@ -83,23 +83,33 @@ JNIF(void, nativeInit)(JNIEnv* env, jobject /*thiz*/,
                            static_cast<int>(threadCount));
 }
 
-JNIF(jlong, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback) {
-    return static_cast<jlong>(getBridge().setCallback(env, kotlinCallback));
+JNIF(jlong, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback,
+                               jlong requestGeneration) {
+    return static_cast<jlong>(getBridge().setCallback(
+        env,kotlinCallback,static_cast<uint64_t>(requestGeneration)));
 }
 
 JNIF(void, nativeClearCallback)(JNIEnv* env, jobject /*thiz*/, jlong ownerToken) {
     getBridge().clearCallback(env, static_cast<uint64_t>(ownerToken));
 }
 
-JNIF(jboolean, nativeLoadScene)(JNIEnv* env, jobject /*thiz*/, jstring jPath) {
-    return getBridge().loadScene(jstringToStd(env, jPath)) ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeOwnsCallback)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().ownsCallback(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jboolean, nativeRasterize)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jboolean, nativeLoadScene)(JNIEnv* env, jobject /*thiz*/, jstring jPath,
+                                jlong ownerToken) {
+    return getBridge().loadScene(jstringToStd(env, jPath),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIF(jboolean, nativeRasterize)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
     // BLOCKING. Kotlin calls this from Dispatchers.IO. Inside Rasterize(),
     // the library spawns its own pthread worker pool; callbacks fire from
     // those workers and use getJniEnv() to attach-as-daemon.
-    return getBridge().rasterize() ? JNI_TRUE : JNI_FALSE;
+    return getBridge().rasterize(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
 JNIF(jstring, nativeAutoResolvedIntegrator)(JNIEnv* env, jobject /*thiz*/) {
@@ -110,24 +120,29 @@ JNIF(jstring, nativeAutoResolveReason)(JNIEnv* env, jobject /*thiz*/) {
     return env->NewStringUTF(getBridge().autoResolveReason().c_str());
 }
 
-JNIF(void, nativeCancel)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().requestCancel();
+JNIF(jboolean, nativeCancel)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().requestCancel(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(void, nativeSetSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t) {
+JNIF(jboolean, nativeSetSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t,
+                                   jlong ownerToken) {
     // Full SetSceneTime — advances the animator AND regenerates every
     // populated photon map at time `t`.  Called by RenderViewModel
     // before nativeRasterize so post-scrub renders pick up caustics
     // consistent with the scrubbed scene state.
-    getBridge().setSceneTime(static_cast<double>(t));
+    return getBridge().setSceneTime(static_cast<double>(t),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jboolean, nativeHasAnimatedObjects)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jboolean, nativeHasAnimatedObjects)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                         jlong ownerToken) {
     // Whether the loaded scene declares any keyframed objects.  Used
     // by RenderViewModel after nativeLoadScene to drive _hasAnimation
     // — works without the viewport controller being running, unlike
     // the controller-scoped nativeViewportAnimation* getters.
-    return getBridge().hasAnimatedObjects() ? JNI_TRUE : JNI_FALSE;
+    return getBridge().hasAnimatedObjects(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
 // -----------------------------------------------------------------------------
@@ -206,19 +221,23 @@ JNIF(jlong, nativeEtaRemainingMs)(JNIEnv* /*env*/, jobject /*thiz*/) {
 // -----------------------------------------------------------------------------
 
 JNIF(jboolean, nativeViewportStart)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                    jboolean suppressFirstFrame) {
-    return getBridge().startViewport(suppressFirstFrame == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+                                    jboolean suppressFirstFrame, jlong ownerToken) {
+    return getBridge().startViewport(suppressFirstFrame == JNI_TRUE,
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
 JNIF(jboolean, nativeScaleFilmToFit)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                     jint surfaceW, jint surfaceH, jint maxLongEdge) {
+                                     jint surfaceW, jint surfaceH, jint maxLongEdge,
+                                     jlong ownerToken) {
     if (surfaceW <= 0 || surfaceH <= 0 || maxLongEdge <= 0) return JNI_FALSE;
     return getBridge().scaleFilmToFit(
         static_cast<unsigned int>(surfaceW),
         static_cast<unsigned int>(surfaceH),
-        static_cast<unsigned int>(maxLongEdge)) ? JNI_TRUE : JNI_FALSE;
+        static_cast<unsigned int>(maxLongEdge),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportStop)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().stopViewport();
+JNIF(jboolean, nativeViewportStop)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().stopViewport(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 JNIF(jboolean, nativeViewportIsRunning)(JNIEnv* /*env*/, jobject /*thiz*/) {
     return getBridge().isViewportRunning() ? JNI_TRUE : JNI_FALSE;

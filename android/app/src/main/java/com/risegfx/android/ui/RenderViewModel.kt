@@ -16,6 +16,7 @@ import com.risegfx.android.nativebridge.RiseCallback
 import com.risegfx.android.nativebridge.RiseNative
 import java.nio.ByteBuffer
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
@@ -161,13 +162,14 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     )
 
     private lateinit var callbackOwnerFuture: CompletableFuture<Long>
+    private val callbackRequestGeneration = callbackRequestCounter.getAndIncrement()
 
     init {
         // Callback replacement can wait for a prior ViewModel's blocking JNI
         // render and viewport teardown. Keep that ownership handoff off-main;
         // render entry points wait for the token before touching native state.
         callbackOwnerFuture = CompletableFuture.supplyAsync {
-            RiseNative.nativeSetCallback(this)
+            RiseNative.nativeSetCallback(this, callbackRequestGeneration)
         }
 
         viewModelScope.launch {
@@ -195,7 +197,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 val callbackOwner = withContext(Dispatchers.IO) {
                     callbackOwnerFuture.get()
                 }
-                if (callbackOwner == 0L) {
+                if (callbackOwner == 0L ||
+                    !RiseNative.nativeOwnsCallback(callbackOwner)
+                ) {
                     _state.value = RenderState.Error("Failed to acquire native render ownership")
                     return@launch
                 }
@@ -204,7 +208,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 // off-main because controller shutdown joins its render thread.
                 withContext(Dispatchers.IO) {
                     if (RiseNative.nativeViewportIsRunning()) {
-                        RiseNative.nativeViewportStop()
+                        RiseNative.nativeViewportStop(callbackOwner)
                     }
                 }
                 (getApplication<RiseApplication>()).ensureInitialized()
@@ -215,7 +219,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 _state.value = RenderState.Loading(scenePath)
                 Log.i(TAG, "loadAndRender: $scenePath")
 
-                val loaded = withContext(Dispatchers.IO) { RiseNative.nativeLoadScene(scenePath) }
+                val loaded = withContext(Dispatchers.IO) {
+                    RiseNative.nativeLoadScene(scenePath, callbackOwner)
+                }
                 if (!loaded) {
                     _state.value = RenderState.Error("Failed to load $scenePath")
                     return@launch
@@ -234,10 +240,16 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 // To render at scene-authored dims, edit the Output
                 // Settings panel after load.
                 val dm = getApplication<RiseApplication>().resources.displayMetrics
-                RiseNative.nativeScaleFilmToFit(
+                val fitted = RiseNative.nativeScaleFilmToFit(
                     dm.widthPixels.coerceAtLeast(1),
                     dm.heightPixels.coerceAtLeast(1),
-                    800)
+                    800,
+                    callbackOwner,
+                )
+                if (!fitted) {
+                    _state.value = RenderState.Error("Native render ownership was replaced")
+                    return@launch
+                }
 
                 // New scene resets the scrub position.  hasAnimation
                 // has to flip after each load (and clear back to
@@ -249,9 +261,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 // getters, because the controller isn't started until
                 // the end of runProductionRenderInternal.
                 _sceneTime.value = 0.0
-                _hasAnimation.value = RiseNative.nativeHasAnimatedObjects()
+                _hasAnimation.value = RiseNative.nativeHasAnimatedObjects(callbackOwner)
 
-                runProductionRenderInternal()
+                runProductionRenderInternal(callbackOwner)
             } catch (c: CancellationException) {
                 _state.value = RenderState.Cancelled
                 throw c
@@ -278,11 +290,13 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 val callbackOwner = withContext(Dispatchers.IO) {
                     callbackOwnerFuture.get()
                 }
-                if (callbackOwner == 0L) {
+                if (callbackOwner == 0L ||
+                    !RiseNative.nativeOwnsCallback(callbackOwner)
+                ) {
                     _state.value = RenderState.Error("Native render ownership is unavailable")
                     return@launch
                 }
-                runProductionRenderInternal()
+                runProductionRenderInternal(callbackOwner)
             } catch (c: CancellationException) {
                 _state.value = RenderState.Cancelled
                 throw c
@@ -302,7 +316,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         etaPollJob = null
     }
 
-    private suspend fun runProductionRenderInternal() {
+    private suspend fun runProductionRenderInternal(callbackOwner: Long) {
         // Capture the canonical scrubbed time from the viewport
         // controller BEFORE stopping the viewport.  On Android,
         // nativeViewportStop destroys the controller (unlike macOS /
@@ -320,7 +334,10 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // the production renderer takes the same scene + framebuffer the
         // viewport's interactive renderer is writing to.
         if (RiseNative.nativeViewportIsRunning()) {
-            RiseNative.nativeViewportStop()
+            if (!RiseNative.nativeViewportStop(callbackOwner)) {
+                _state.value = RenderState.Error("Native render ownership was replaced")
+                return
+            }
         }
 
         // Advance scene state to the canonical scrubbed time AND
@@ -333,7 +350,10 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // controller's tracked time (captured above) rather than the
         // slider's local copy because Undo / Redo can change scene
         // time without going through the slider.
-        RiseNative.nativeSetSceneTime(canonical)
+        if (!RiseNative.nativeSetSceneTime(canonical, callbackOwner)) {
+            _state.value = RenderState.Error("Native render ownership was replaced")
+            return
+        }
 
         // Engage Rendering state HERE, not from the worker-thread
         // onSceneReady callback.  onSceneReady fires from BOTH the
@@ -373,7 +393,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             }
         }
 
-        val ok = withContext(Dispatchers.IO) { RiseNative.nativeRasterize() }
+        val ok = withContext(Dispatchers.IO) {
+            RiseNative.nativeRasterize(callbackOwner)
+        }
 
         // Phase 7c — surface the auto-dispatcher's resolution once the render
         // finishes (empty if the active rasterizer isn't the auto dispatcher).
@@ -410,7 +432,10 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // before Start spawns the render thread.  Doing it after is
         // a race: on a cheap scene the first OutputImage can fire
         // before the follow-up JNI hop sets the flag.
-        RiseNative.nativeViewportStart(suppressFirstFrame = true)
+        RiseNative.nativeViewportStart(
+            suppressFirstFrame = true,
+            ownerToken = callbackOwner,
+        )
         // Bump the epoch so ViewportPane re-applies the persisted
         // tool selection to the freshly-constructed controller.
         _viewportEpoch.value = _viewportEpoch.value + 1
@@ -475,7 +500,8 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     /** Cooperatively cancel any active render. */
     fun cancel() {
         _state.value = RenderState.Cancelling
-        RiseNative.nativeCancel()
+        val callbackOwner = callbackOwnerFuture.getNow(0L)
+        if (callbackOwner != 0L) RiseNative.nativeCancel(callbackOwner)
         // NOTE: we do NOT cancel renderJob here. nativeRasterize() is still
         // blocking on the IO thread and the library needs to finish its
         // worker join before we allow the coroutine to unwind (otherwise the
@@ -595,6 +621,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     }
 
     companion object {
+        private val callbackRequestCounter = AtomicLong(1L)
         private const val TAG = "RISE-VM"
         private const val INVALIDATE_HZ = 30
         private const val ETA_POLL_INTERVAL_MS = 500L

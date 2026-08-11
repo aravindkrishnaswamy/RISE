@@ -63,8 +63,10 @@ object RiseNative {
      * on the native side. Returns a nonzero ownership token. Replacement
      * stops the prior owner's viewport and can block until its load/render
      * call has returned, so callers must invoke this off the main thread.
+     * [requestGeneration] must increase with ViewModel creation order; a
+     * delayed request older than the latest accepted generation returns zero.
      */
-    external fun nativeSetCallback(callback: RiseCallback): Long
+    external fun nativeSetCallback(callback: RiseCallback, requestGeneration: Long): Long
 
     /**
      * Stop and detach the viewport/callback only if [ownerToken] still owns
@@ -72,12 +74,13 @@ object RiseNative {
      * no-op. This can wait for an in-flight render and must run off-main.
      */
     external fun nativeClearCallback(ownerToken: Long)
+    external fun nativeOwnsCallback(ownerToken: Long): Boolean
 
     /**
-     * Parse an ASCII RISE scene file. Blocking. Returns false on parse
-     * error.
+     * Parse an ASCII RISE scene file. Blocking. Returns false on parse error
+     * or when [ownerToken] no longer owns the native scene lifecycle.
      */
-    external fun nativeLoadScene(absPath: String): Boolean
+    external fun nativeLoadScene(absPath: String, ownerToken: Long): Boolean
 
     /**
      * Shrink the loaded scene's Film so the interactive preview
@@ -89,21 +92,26 @@ object RiseNative {
      * BEFORE [nativeViewportStart] so the override is in place when
      * the render thread spawns.
      */
-    external fun nativeScaleFilmToFit(surfaceW: Int, surfaceH: Int, maxLongEdge: Int): Boolean
+    external fun nativeScaleFilmToFit(
+        surfaceW: Int,
+        surfaceH: Int,
+        maxLongEdge: Int,
+        ownerToken: Long,
+    ): Boolean
 
     /**
      * Render the currently loaded scene. BLOCKING. Returns false if the
-     * render was cancelled or failed.
+     * render was cancelled, failed, or rejected for a stale [ownerToken].
      */
-    external fun nativeRasterize(): Boolean
+    external fun nativeRasterize(ownerToken: Long): Boolean
 
     // The auto-dispatcher's resolved concrete integrator ("pt"/"bdpt"/"vcm")
     // after a render; "" if the active rasterizer isn't the auto dispatcher.
     external fun nativeAutoResolvedIntegrator(): String
     external fun nativeAutoResolveReason(): String
 
-    /** Request cooperative cancellation of an in-flight render. */
-    external fun nativeCancel()
+    /** Request cooperative cancellation; false when [ownerToken] is stale. */
+    external fun nativeCancel(ownerToken: Long): Boolean
 
     /**
      * Advance the in-memory scene to time `t` AND regenerate every
@@ -116,7 +124,7 @@ object RiseNative {
      * this call; the caller should already be in a "rendering" UI
      * state.
      */
-    external fun nativeSetSceneTime(t: Double)
+    external fun nativeSetSceneTime(t: Double, ownerToken: Long): Boolean
 
     /**
      * True if the loaded scene declares any keyframed objects.  Used
@@ -124,7 +132,7 @@ object RiseNative {
      * call right after [nativeLoadScene]; doesn't require the
      * interactive viewport controller to be running.
      */
-    external fun nativeHasAnimatedObjects(): Boolean
+    external fun nativeHasAnimatedObjects(ownerToken: Long): Boolean
 
     /**
      * Canonical scene time tracked by the SceneEditController's edit
@@ -246,8 +254,8 @@ object RiseNative {
      * sequence: a cheap scene could complete pass #1 before the
      * follow-up JNI hop returned.
      */
-    external fun nativeViewportStart(suppressFirstFrame: Boolean): Boolean
-    external fun nativeViewportStop()
+    external fun nativeViewportStart(suppressFirstFrame: Boolean, ownerToken: Long): Boolean
+    external fun nativeViewportStop(ownerToken: Long): Boolean
     external fun nativeViewportIsRunning(): Boolean
     external fun nativeViewportHasLivePreview(): Boolean
 

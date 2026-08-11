@@ -63,21 +63,25 @@ public:
     // Install the Kotlin-side RiseCallback that will receive onProgress /
     // onRegionInvalidated / onSceneReady / onLog. Held as a JNI global ref.
     // Replacing an owner waits for any blocking scene operation and stops its
-    // viewport before returning the new nonzero ownership token.
-    uint64_t setCallback(JNIEnv* env, jobject kotlinCallback);
+    // viewport before returning the new nonzero ownership token. Requests are
+    // monotonic: a delayed older request is rejected instead of replacing the
+    // newest callback.
+    uint64_t setCallback(JNIEnv* env, jobject kotlinCallback,
+                         uint64_t requestGeneration);
     // Release the callback and viewport only when ownerToken still names the
     // installed owner. A delayed teardown from an old ViewModel is a no-op.
     void clearCallback(JNIEnv* env, uint64_t ownerToken);
+    bool ownsCallback(uint64_t ownerToken) const;
 
     // Tear down any previous job and parse the scene. Returns false on
-    // parse error.
-    bool loadScene(const std::string& absPath);
+    // parse error or when ownerToken was superseded.
+    bool loadScene(const std::string& absPath, uint64_t ownerToken);
 
     // Blocking render. MUST be called from a non-UI thread. The library's
     // own pthread worker pool dispatches tiles underneath this call. The
     // production VFS publishes coherent display snapshots and invalidation
-    // callbacks to Kotlin.
-    bool rasterize();
+    // callbacks to Kotlin. A superseded ownerToken rejects before mutation.
+    bool rasterize(uint64_t ownerToken);
 
     // The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")
     // when it is the auto_rasterizer dispatcher; empty otherwise.  Valid after a
@@ -95,7 +99,7 @@ public:
     // distinct full-fidelity entry point at production-render time.
     // Photon-heavy scenes may pause many seconds inside this call;
     // the caller should already be in a "rendering" UI state.
-    void setSceneTime(double t);
+    bool setSceneTime(double t, uint64_t ownerToken);
 
     // True if the loaded scene declares any keyframed objects (so
     // the Compose UI should surface the timeline scrubber).  Mirrors
@@ -103,12 +107,13 @@ public:
     // loadScene; doesn't require the viewport controller to be
     // running, so it works for the first-render-then-restart-viewport
     // ordering on Android.
-    bool hasAnimatedObjects() const;
+    bool hasAnimatedObjects(uint64_t ownerToken) const;
 
     // Cooperative cancel. The next IProgressCallback::Progress tick will
     // return false, the library will wind down its workers on tile
-    // boundaries, and rasterize() will return false (not true).
-    void requestCancel();
+    // boundaries, and rasterize() will return false (not true). A stale owner
+    // cannot cancel its replacement's render.
+    bool requestCancel(uint64_t ownerToken);
 
     // Copy the current RGBA8 framebuffer into caller-owned direct storage.
     // Dimensions, generation, and copy status are captured under one lock.
@@ -163,8 +168,8 @@ public:
     // is reconstructed by every stop/start (unlike macOS / Windows
     // where it's persistent), so the suppress intent has to be
     // threaded into the start call itself.
-    bool startViewport(bool suppressFirstFrame);
-    void stopViewport();
+    bool startViewport(bool suppressFirstFrame, uint64_t ownerToken);
+    bool stopViewport(uint64_t ownerToken);
     bool isViewportRunning() const { return m_viewportRunning.load(); }
     bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
 
@@ -182,7 +187,8 @@ public:
     // Returns false on null job or invalid arguments.
     bool scaleFilmToFit(unsigned int maxSurfaceW,
                         unsigned int maxSurfaceH,
-                        unsigned int maxLongEdge);
+                        unsigned int maxLongEdge,
+                        uint64_t ownerToken);
 
     // Drop exactly one upcoming preview frame.  Race-prone if called
     // *after* startViewport's render thread has already fired —
@@ -320,6 +326,7 @@ public:
     void onViewportFramePainted();
 
 private:
+    void stopViewportUnowned();
     enum class DisplaySource : uint8_t {
         None,
         Production,
@@ -429,6 +436,7 @@ private:
     jobject m_kotlinCallback = nullptr;
     uint64_t m_kotlinCallbackOwner = 0u;
     uint64_t m_nextKotlinCallbackOwner = 1u;
+    uint64_t m_latestKotlinCallbackRequest = 0u;
 
     // Snapshots of init config so global.options regeneration is possible
     // on subsequent calls (not currently wired to UI).
