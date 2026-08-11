@@ -1720,7 +1720,12 @@ namespace RISE
 			for ( IRenderObserver* obs : snapshot ) {
 				bool claimed = false;
 				{
-					std::lock_guard<std::mutex> lock( observerMutex_ );
+					std::unique_lock<std::mutex> lock( observerMutex_ );
+					observerDispatchDone_.wait(lock,[this,obs]{
+						return std::find(observerRemovalsPrepared_.begin(),
+							observerRemovalsPrepared_.end(),obs) ==
+							observerRemovalsPrepared_.end();
+					});
 					if( std::find(observers_.begin(),observers_.end(),obs) !=
 						observers_.end() ) {
 						++observerCallbacksInFlight_[obs];
@@ -1768,10 +1773,10 @@ namespace RISE
 			// scene reload don't need to first remove).
 			auto it = std::find( observers_.begin(), observers_.end(), observer );
 			if ( it == observers_.end() ) {
-				if( observers_.size()+observerRestoreReservations_ >=
+				if( observers_.size()+observerRegistrationReservations_ >=
 					observers_.capacity() ) {
 					observers_.reserve(
-						observers_.size()+observerRestoreReservations_+1u);
+						observers_.size()+observerRegistrationReservations_+1u);
 				}
 				observers_.push_back( observer );
 			}
@@ -1779,20 +1784,18 @@ namespace RISE
 
 		void FrameStore::RemoveObserver( IRenderObserver* observer )
 		{
-			RemoveObserverImpl(observer,false);
+			RemoveObserverImpl(observer);
 		}
 
-		bool FrameStore::RemoveObserverWithRestoreReservation(
-			IRenderObserver* observer )
-		{
-			return RemoveObserverImpl(observer,true);
-		}
-
-		bool FrameStore::RemoveObserverImpl(
-			IRenderObserver* observer, const bool reserveRestoreSlot )
+		bool FrameStore::RemoveObserverImpl( IRenderObserver* observer )
 		{
 			if ( !observer ) return false;
 			std::unique_lock<std::mutex> lock( observerMutex_ );
+			observerDispatchDone_.wait(lock,[this,observer]{
+				return std::find(observerRemovalsPrepared_.begin(),
+					observerRemovalsPrepared_.end(),observer) ==
+					observerRemovalsPrepared_.end();
+			});
 			// Wait for callbacks that have already claimed precisely
 			// this observer.  Snapshot-only pointers are harmless: every
 			// dispatcher rechecks registration before it claims a call.
@@ -1810,7 +1813,6 @@ namespace RISE
 			}
 			auto it = std::find( observers_.begin(), observers_.end(), observer );
 			if ( it == observers_.end() ) return false;
-			if( reserveRestoreSlot ) ++observerRestoreReservations_;
 			observers_.erase( it );
 			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
 				const auto active = observerCallbacksInFlight_.find(observer);
@@ -1820,27 +1822,196 @@ namespace RISE
 			return true;
 		}
 
-		void FrameStore::RestoreObserverFromRemovalReservation(
-			IRenderObserver* observer ) noexcept
+		FrameStore::ObserverMutationToken::ObserverMutationToken(
+			FrameStore& owner, const Kind kind, IRenderObserver* observer )
+			: owner_(&owner), kind_(kind), observer_(observer),
+			  lock_(owner.observerMutex_)
 		{
-			std::lock_guard<std::mutex> lock(observerMutex_);
-			assert(observerRestoreReservations_ != 0u);
-			if( observerRestoreReservations_ == 0u ) return;
+		}
+
+		FrameStore::ObserverMutationToken::ObserverMutationToken(
+			ObserverMutationToken&& other ) noexcept
+			: owner_(other.owner_), kind_(other.kind_), observer_(other.observer_),
+			  lock_(std::move(other.lock_))
+		{
+			other.owner_ = nullptr;
+			other.observer_ = nullptr;
+		}
+
+		void FrameStore::ObserverMutationToken::Reset() noexcept
+		{
+			owner_ = nullptr;
+			observer_ = nullptr;
+			if( lock_.owns_lock() ) lock_.unlock();
+		}
+
+		FrameStore::ObserverMutationToken::~ObserverMutationToken() noexcept
+		{
+			if( !owner_ ) return;
+			FrameStore* owner = owner_;
+			if( !lock_.owns_lock() ) lock_.lock();
+			if( kind_ == Kind::Registration ) {
+				assert(owner->observerRegistrationReservations_ != 0u);
+				if( owner->observerRegistrationReservations_ != 0u ) {
+					--owner->observerRegistrationReservations_;
+				}
+			} else if( observer_ ) {
+				auto prepared = std::find(owner->observerRemovalsPrepared_.begin(),
+					owner->observerRemovalsPrepared_.end(),observer_);
+				if( prepared != owner->observerRemovalsPrepared_.end() ) {
+					owner->observerRemovalsPrepared_.erase(prepared);
+				}
+			}
+			Reset();
+			owner->observerDispatchDone_.notify_all();
+		}
+
+		FrameStore::ObserverMutationToken FrameStore::PrepareObserverRegistration()
+		{
+			ObserverMutationToken token(*this,
+				ObserverMutationToken::Kind::Registration,nullptr);
+			if( observers_.size()+observerRegistrationReservations_ >=
+				observers_.capacity() ) {
+				observers_.reserve(
+					observers_.size()+observerRegistrationReservations_+1u);
+			}
+			++observerRegistrationReservations_;
+			token.lock_.unlock();
+			return token;
+		}
+
+		FrameStore::ObserverMutationToken FrameStore::PrepareObserverRemoval(
+			IRenderObserver* observer )
+		{
+			ObserverMutationToken token(*this,
+				ObserverMutationToken::Kind::Removal,observer);
+			if( !observer ) {
+				token.Reset();
+				return token;
+			}
+			const unsigned int localCallbacks =
+				ObserverActiveCountOnThisThread(this,observer);
+			const auto activeBeforeRemoval = observerCallbacksInFlight_.find(observer);
+			if( g_observerCallbackFrame && activeBeforeRemoval !=
+				observerCallbacksInFlight_.end() &&
+				activeBeforeRemoval->second > localCallbacks ) {
+				throw std::runtime_error(
+					"FrameStore observer removal would wait on another callback" );
+			}
 			if( std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				token.Reset();
+				return token;
+			}
+			if( std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),observer) !=
+				observerRemovalsPrepared_.end() ) {
+				throw std::runtime_error(
+					"FrameStore observer removal already prepared" );
+			}
+			observerRemovalsPrepared_.push_back(observer);
+			observerDispatchDone_.wait(token.lock_,
+				[this,observer,localCallbacks]{
+					const auto active = observerCallbacksInFlight_.find(observer);
+					return active == observerCallbacksInFlight_.end() ||
+						active->second <= localCallbacks;
+				});
+			token.lock_.unlock();
+			return token;
+		}
+
+		void FrameStore::LockPreparedObserverMutation(
+			ObserverMutationToken& token )
+		{
+			if( token.owner_ != this ) {
+				throw std::runtime_error("FrameStore observer mutation token mismatch");
+			}
+			if( !token.lock_.owns_lock() ) token.lock_.lock();
+		}
+
+		void FrameStore::LockPreparedObserverMutations(
+			ObserverMutationToken& first, ObserverMutationToken& second )
+		{
+			if( !first.owner_ || !second.owner_ || first.lock_.owns_lock() ||
+				second.lock_.owns_lock() ) {
+				throw std::runtime_error(
+					"FrameStore observer mutation token pair mismatch");
+			}
+			if( first.owner_ == second.owner_ ) {
+				first.lock_.lock();
+			} else {
+				std::lock(first.lock_,second.lock_);
+			}
+		}
+
+		void FrameStore::CommitPreparedObserverRemoval(
+			ObserverMutationToken& token ) noexcept
+		{
+			assert(token.owner_ == this &&
+				token.kind_ == ObserverMutationToken::Kind::Removal &&
+				token.lock_.owns_lock());
+			if( token.owner_ != this || !token.lock_.owns_lock() ) return;
+			auto observer = std::find(observers_.begin(),observers_.end(),
+				token.observer_);
+			if( observer != observers_.end() ) observers_.erase(observer);
+			auto prepared = std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),token.observer_);
+			if( prepared != observerRemovalsPrepared_.end() ) {
+				observerRemovalsPrepared_.erase(prepared);
+			}
+			token.Reset();
+			observerDispatchDone_.notify_all();
+		}
+
+		void FrameStore::CommitPreparedObserverRegistration(
+			ObserverMutationToken& token, IRenderObserver* observer ) noexcept
+		{
+			assert(token.owner_ == this && token.lock_.owns_lock() &&
+				token.kind_ == ObserverMutationToken::Kind::Registration);
+			if( token.owner_ != this || !token.lock_.owns_lock() ) return;
+			if( observer && std::find(observers_.begin(),observers_.end(),observer) ==
 				observers_.end() ) {
 				assert(observers_.size() < observers_.capacity());
 				observers_.push_back(observer);
 			}
-			--observerRestoreReservations_;
+			assert(observerRegistrationReservations_ != 0u);
+			if( observerRegistrationReservations_ != 0u ) {
+				--observerRegistrationReservations_;
+			}
+			token.Reset();
 		}
 
-		void FrameStore::CommitObserverRemovalReservation() noexcept
+		void FrameStore::CommitPreparedObserverReplacement(
+			ObserverMutationToken& registration,
+			ObserverMutationToken& removal,
+			IRenderObserver* observer ) noexcept
 		{
-			std::lock_guard<std::mutex> lock(observerMutex_);
-			assert(observerRestoreReservations_ != 0u);
-			if( observerRestoreReservations_ != 0u ) {
-				--observerRestoreReservations_;
+			assert(registration.owner_ == this && removal.owner_ == this &&
+				registration.kind_ == ObserverMutationToken::Kind::Registration &&
+				removal.kind_ == ObserverMutationToken::Kind::Removal &&
+				registration.lock_.owns_lock() && !removal.lock_.owns_lock());
+			if( registration.owner_ != this || removal.owner_ != this ||
+				!registration.lock_.owns_lock() || removal.lock_.owns_lock() ) return;
+			auto oldObserver = std::find(observers_.begin(),observers_.end(),
+				removal.observer_);
+			if( oldObserver != observers_.end() ) observers_.erase(oldObserver);
+			auto prepared = std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),removal.observer_);
+			if( prepared != observerRemovalsPrepared_.end() ) {
+				observerRemovalsPrepared_.erase(prepared);
 			}
+			if( observer && std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				assert(observers_.size() < observers_.capacity());
+				observers_.push_back(observer);
+			}
+			assert(observerRegistrationReservations_ != 0u);
+			if( observerRegistrationReservations_ != 0u ) {
+				--observerRegistrationReservations_;
+			}
+			removal.Reset();
+			registration.Reset();
+			observerDispatchDone_.notify_all();
 		}
 
 		// ─────────────────────────────────────────────────────────────

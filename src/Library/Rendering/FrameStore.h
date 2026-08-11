@@ -150,6 +150,8 @@ namespace RISE
 		class FrameStore : public virtual Reference
 		{
 		public:
+			class ObserverMutationToken;
+
 			using Spec        = FrameStoreOutput::FrameStoreSpec;
 			using Metadata    = FrameStoreOutput::Metadata;
 			using ChannelId   = FrameStoreOutput::ChannelId;
@@ -247,14 +249,27 @@ namespace RISE
 			//! observer was never attached (silent no-op).
 			void RemoveObserver( IRenderObserver* observer );
 
-			//! Transactional removal for owners that may need to restore the
-			//! same observer after a later operation fails.  The reservation
-			//! prevents concurrent AddObserver calls from consuming the erased
-			//! vector slot, so restoration cannot allocate.
-			bool RemoveObserverWithRestoreReservation( IRenderObserver* observer );
-			void RestoreObserverFromRemovalReservation(
+			//! Prepared observer mutations for an atomic cross-store handoff.
+			//! A prepared removal leaves the observer registered but blocks new
+			//! callback claims until commit or token destruction.  A prepared
+			//! registration reserves vector capacity without publishing the
+			//! observer.  Token destruction rolls either preparation back.
+			ObserverMutationToken PrepareObserverRemoval(
+				IRenderObserver* observer );
+			ObserverMutationToken PrepareObserverRegistration();
+			void LockPreparedObserverMutation( ObserverMutationToken& token );
+			static void LockPreparedObserverMutations(
+				ObserverMutationToken& first,
+				ObserverMutationToken& second );
+			void CommitPreparedObserverRemoval(
+				ObserverMutationToken& token ) noexcept;
+			void CommitPreparedObserverRegistration(
+				ObserverMutationToken& token,
 				IRenderObserver* observer ) noexcept;
-			void CommitObserverRemovalReservation() noexcept;
+			void CommitPreparedObserverReplacement(
+				ObserverMutationToken& registration,
+				ObserverMutationToken& removal,
+				IRenderObserver* observer ) noexcept;
 
 			// ── read-side API (UI, encoders) ──────────────────────
 
@@ -566,7 +581,8 @@ namespace RISE
 			// wait for another active callback fails closed, avoiding raw-pointer
 			// lifetime cycles without globally serializing independent stores.
 			std::vector<IRenderObserver*>     observers_;
-			size_t                            observerRestoreReservations_ = 0u;
+			std::vector<IRenderObserver*>     observerRemovalsPrepared_;
+			size_t                            observerRegistrationReservations_ = 0u;
 			mutable std::mutex                observerMutex_;
 			std::mutex                        observerCallbackDispatchMutex_;
 			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
@@ -616,13 +632,38 @@ namespace RISE
 			//! only used inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
-			bool RemoveObserverImpl(
-				IRenderObserver* observer, bool reserveRestoreSlot );
+			bool RemoveObserverImpl( IRenderObserver* observer );
 			void NotifyTileComplete( size_t tileX, size_t tileY, uint64_t generation );
 
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
 			FrameStore& operator=( const FrameStore& ) = delete;
+		};
+
+		class FrameStore::ObserverMutationToken
+		{
+		public:
+			ObserverMutationToken( ObserverMutationToken&& other ) noexcept;
+			~ObserverMutationToken() noexcept;
+
+			ObserverMutationToken( const ObserverMutationToken& ) = delete;
+			ObserverMutationToken& operator=( const ObserverMutationToken& ) = delete;
+			ObserverMutationToken& operator=( ObserverMutationToken&& ) = delete;
+
+			bool IsPrepared() const { return owner_ != nullptr; }
+
+		private:
+			friend class FrameStore;
+			enum class Kind { Registration, Removal };
+
+			ObserverMutationToken( FrameStore& owner, Kind kind,
+				IRenderObserver* observer );
+			void Reset() noexcept;
+
+			FrameStore* owner_;
+			Kind kind_;
+			IRenderObserver* observer_;
+			std::unique_lock<std::mutex> lock_;
 		};
 
 		// L6e-1.1 — RAII guard for bulk full-image FrameStore writes.

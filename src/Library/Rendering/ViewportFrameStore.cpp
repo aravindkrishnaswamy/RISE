@@ -26,6 +26,7 @@
 #include <cassert>
 #include <cctype>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 
 using namespace RISE;
@@ -146,8 +147,8 @@ namespace RISE
 			//
 			// Route through BindFrameStore(nullptr) rather than holding
 			// chainMutex_ around RemoveObserver.  The bind transaction
-			// leaves the old chain published while it detaches observers
-			// outside the lock, then clears the chain only at commit.
+			// leaves the old chain published while it quiesces observers,
+			// then swaps the chain and observer registrations at commit.
 			// See BindFrameStore comment for the full rationale.
 			//
 			// Snapshot semantics for in-flight readers: same as
@@ -355,7 +356,7 @@ namespace RISE
 					return;
 				}
 				// Snapshot every potentially-allocating old-chain value before a
-				// candidate observer is created or any observer is detached.
+				// candidate observer is created or any observer is quiesced.
 				oldExternal = externalFrameStore_;
 				oldFs       = framestore_;
 				oldSink     = framesink_;
@@ -388,66 +389,73 @@ namespace RISE
 				if( chainConstructionTestHook_ ) {
 					chainConstructionTestHook_("bind_after_observer_allocation");
 				}
+				candidate.store->SetCameraExposureEV(
+					static_cast<double>(cameraExposureEV_));
 			}
 
-			bool oldObserverRemovalReserved = false;
-			std::array<bool,kMaxDormantChains> dormantRemovalReserved{};
-			const auto restoreDetachedObservers = [&]() noexcept {
-				if( oldObserverRemovalReserved ) {
-					oldFs->RestoreObserverFromRemovalReservation(oldObs);
+			std::optional<FrameStore::ObserverMutationToken> candidateRegistration;
+			if( candidate.store ) {
+				candidateRegistration.emplace(
+					candidate.store->PrepareObserverRegistration());
+			}
+			std::optional<FrameStore::ObserverMutationToken> oldObserverRemoval;
+			std::array<std::optional<FrameStore::ObserverMutationToken>,
+				kMaxDormantChains> dormantRemovals;
+			for( size_t i=0; i<oldDormant.size(); ++i ) {
+				DormantChain& d = oldDormant[i];
+				if( d.fs && d.obs ) {
+					dormantRemovals[i].emplace(
+						d.fs->PrepareObserverRemoval(d.obs));
 				}
-				for( size_t i=0; i<oldDormant.size(); ++i ) {
-					if( dormantRemovalReserved[i] ) {
-						oldDormant[i].fs->RestoreObserverFromRemovalReservation(
-							oldDormant[i].obs);
-					}
-				}
-			};
-			try {
-				if ( oldFs && oldObs ) {
-					oldObserverRemovalReserved =
-						oldFs->RemoveObserverWithRestoreReservation(oldObs);
-				}
-				for( size_t i=0; i<oldDormant.size(); ++i ) {
-					DormantChain& d = oldDormant[i];
-					if( d.fs && d.obs ) {
-						dormantRemovalReserved[i] =
-							d.fs->RemoveObserverWithRestoreReservation(d.obs);
-					}
-				}
-				if( chainConstructionTestHook_ ) {
-					chainConstructionTestHook_("bind_after_old_observer_detachment");
-				}
-			} catch ( ... ) {
-				restoreDetachedObservers();
-				throw;
+			}
+			if( oldFs && oldObs ) {
+				oldObserverRemoval.emplace(oldFs->PrepareObserverRemoval(oldObs));
+			}
+			if( chainConstructionTestHook_ ) {
+				chainConstructionTestHook_("bind_after_old_observer_quiesced");
 			}
 
 			FrameStore* committedStore = candidate.store;
-			try {
-				std::unique_lock<std::shared_mutex> lock(chainMutex_);
-				if( candidate.store ) {
-					candidate.store->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
-					candidate.store->AddObserver(candidate.observer);
+			for( size_t i=0; i<oldDormant.size(); ++i ) {
+				if( dormantRemovals[i] && dormantRemovals[i]->IsPrepared() ) {
+					oldDormant[i].fs->LockPreparedObserverMutation(
+						*dormantRemovals[i]);
 				}
+			}
+			if( candidateRegistration && oldObserverRemoval ) {
+				FrameStore::LockPreparedObserverMutations(
+					*candidateRegistration,*oldObserverRemoval);
+			} else if( candidateRegistration ) {
+				candidate.store->LockPreparedObserverMutation(*candidateRegistration);
+			} else if( oldObserverRemoval ) {
+				oldFs->LockPreparedObserverMutation(*oldObserverRemoval);
+			}
+			{
+				std::unique_lock<std::shared_mutex> lock(chainMutex_);
 				externalFrameStore_ = candidate.store;
 				framestore_ = candidate.store;
 				framesink_ = nullptr;
 				observer_ = candidate.observer;
 				dormant_.clear();
 				if( candidate.observer ) candidate.observer->Activate();
+				if( candidateRegistration && oldObserverRemoval &&
+					candidate.store == oldFs ) {
+					candidate.store->CommitPreparedObserverReplacement(
+						*candidateRegistration,*oldObserverRemoval,
+						candidate.observer);
+				} else if( candidateRegistration ) {
+					candidate.store->CommitPreparedObserverRegistration(
+						*candidateRegistration,candidate.observer);
+				}
+				if( oldObserverRemoval && oldObserverRemoval->IsPrepared() ) {
+					oldFs->CommitPreparedObserverRemoval(*oldObserverRemoval);
+				}
 				candidate.Commit();
-			} catch ( ... ) {
-				restoreDetachedObservers();
-				throw;
-			}
-			if( oldObserverRemovalReserved ) {
-				oldFs->CommitObserverRemovalReservation();
 			}
 			for( size_t i=0; i<oldDormant.size(); ++i ) {
-				if( dormantRemovalReserved[i] ) {
-					oldDormant[i].fs->CommitObserverRemovalReservation();
+				if( dormantRemovals[i] && dormantRemovals[i]->IsPrepared() ) {
+					oldDormant[i].fs->CommitPreparedObserverRemoval(
+						*dormantRemovals[i]);
 				}
 			}
 

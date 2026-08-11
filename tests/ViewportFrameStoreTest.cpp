@@ -1827,7 +1827,7 @@ namespace
 		const std::vector<const char*> stages = {
 			"bind_after_retain",
 			"bind_after_observer_allocation",
-			"bind_after_old_observer_detachment"
+			"bind_after_old_observer_quiesced"
 		};
 		bool allPreserved = true;
 		for( const char* stage : stages ) {
@@ -1863,7 +1863,7 @@ namespace
 		replacement->release();
 	}
 
-	void TestBindRollbackReservationSurvivesObserverInsertion()
+	void TestBindRollbackPreservesQuiescedEventAndObserverInsertion()
 	{
 		auto* vfs = new ViewportFrameStore();
 		FrameStore::Spec spec;
@@ -1879,25 +1879,33 @@ namespace
 			[&]( const Rect&, uint64_t ) { ++vfsCallbacks; });
 		vfs->BindFrameStore(source);
 		bool hookCalled = false;
+		std::thread eventThread;
+		const uint64_t generationBefore = source->Generation();
 		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_old_observer_detachment") != 0 ) return;
+			if( std::strcmp(stage,"bind_after_old_observer_quiesced") != 0 ) return;
 			hookCalled = true;
 			source->AddObserver(&independent);
-			throw std::runtime_error("injected post-detachment failure");
+			eventThread = std::thread([&]() {
+				source->BeginTile(0u,0u);
+				source->EndTile(0u,0u);
+			});
+			while( source->Generation() == generationBefore ) {
+				std::this_thread::yield();
+			}
+			throw std::runtime_error("injected post-quiesce failure");
 		});
 		bool rejected = false;
 		try {
 			vfs->BindFrameStore(replacement);
 		} catch( const std::runtime_error& error ) {
 			rejected = std::string(error.what()) ==
-				"injected post-detachment failure";
+				"injected post-quiesce failure";
 		}
 		vfs->ForTest_SetChainConstructionHook({});
-		source->BeginTile(0u,0u);
-		source->EndTile(0u,0u);
+		if( eventThread.joinable() ) eventThread.join();
 		Check(hookCalled && rejected && vfs->GetFrameStore() == source &&
 			vfsCallbacks.load() == 1u && independentCallbacks.load() == 1u,
-			"bind rollback retains a nonallocating observer slot across an intervening insertion" );
+			"bind rollback releases a quiesced event to the preserved observer chain" );
 		source->RemoveObserver(&independent);
 		vfs->release();
 		source->release();
@@ -2216,7 +2224,7 @@ int main()
 	TestBindTeardownKeepsOldChainPublished();
 	TestRejectedCrossStoreBindPreservesExistingChain();
 	TestBindConstructionFailuresPreserveExistingChain();
-	TestBindRollbackReservationSurvivesObserverInsertion();
+	TestBindRollbackPreservesQuiescedEventAndObserverInsertion();
 	TestExposureUpdateWinsConcurrentBindCommit();
 	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();
