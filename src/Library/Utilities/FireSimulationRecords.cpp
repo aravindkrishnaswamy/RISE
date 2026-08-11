@@ -886,7 +886,11 @@ namespace RISE
 		)
 	{
 		std::string kind, status, schema, version, viscosityMix, conductivityMix;
-		std::string lewisLaw, wallStress, wallHeatFlux, filterWidths;
+		std::string molecularDiffusivity, sgsDiffusivity, totalDiffusivity;
+		std::string effectiveConductivity, sharedDiffusivity, dnsSgs;
+		std::string vremanAlpha, vremanBeta, vremanBBeta, vremanNuSgs;
+		std::string vremanNonnegativeB, vremanZeroDenominator;
+		std::string wallStress, wallHeatFlux, filterWidths;
 		if( !ValidateSchemaHeader(record,error) ||
 			!ReadText(record,"record_kind",kind,error) || kind != "fire_sim_transport_closure" ||
 			!ReadText(record,"record_name",m_recordName,error) ||
@@ -898,8 +902,30 @@ namespace RISE
 				viscosityMix != "wilke_v1" ||
 			!ReadTextEnvelope(record,"conductivity_mixing_law",conductivityMix,error) ||
 				conductivityMix != "wassiljewa_mason_saxena_v1" ||
-			!ReadTextEnvelope(record,"unit_lewis_diffusivity",lewisLaw,error) ||
-				lewisLaw != "D_mol=k_mol/(rho_g*cp_g)" ||
+			!ReadTextEnvelope(record,"molecular_diffusivity_relationship",molecularDiffusivity,error) ||
+				molecularDiffusivity != "D_mol=k_mol/(rho_g*cp_g)" ||
+			!ReadTextEnvelope(record,"sgs_diffusivity_relationship",sgsDiffusivity,error) ||
+				sgsDiffusivity != "D_sgs=nu_sgs/Sc_t" ||
+			!ReadTextEnvelope(record,"total_diffusivity_relationship",totalDiffusivity,error) ||
+				totalDiffusivity != "D=D_mol+D_sgs" ||
+			!ReadTextEnvelope(record,"effective_conductivity_relationship",effectiveConductivity,error) ||
+				effectiveConductivity != "k_eff=k_mol+rho_g*cp_g*nu_sgs/Pr_t" ||
+			!ReadTextEnvelope(record,"shared_diffusivity_rule",sharedDiffusivity,error) ||
+				sharedDiffusivity != "same_D_for_every_J_j_and_J_Z" ||
+			!ReadTextEnvelope(record,"dns_sgs_rule",dnsSgs,error) ||
+				dnsSgs != "nu_sgs=0;D_sgs=0;retain_molecular_laws" ||
+			!ReadTextEnvelope(record,"vreman_alpha_relationship",vremanAlpha,error) ||
+				vremanAlpha != "alpha_ij=du_j/dx_i" ||
+			!ReadTextEnvelope(record,"vreman_beta_relationship",vremanBeta,error) ||
+				vremanBeta != "beta_ij=sum_m(Delta_m^2*alpha_mi*alpha_mj)" ||
+			!ReadTextEnvelope(record,"vreman_B_beta_relationship",vremanBBeta,error) ||
+				vremanBBeta != "B_beta=beta_11*beta_22-beta_12^2+beta_11*beta_33-beta_13^2+beta_22*beta_33-beta_23^2" ||
+			!ReadTextEnvelope(record,"vreman_nu_sgs_relationship",vremanNuSgs,error) ||
+				vremanNuSgs != "nu_sgs=C_v*sqrt(B_beta/sum_ij(alpha_ij^2))" ||
+			!ReadTextEnvelope(record,"vreman_nonnegative_B_rule",vremanNonnegativeB,error) ||
+				vremanNonnegativeB != "B_beta=max(0,raw_B_beta)" ||
+			!ReadTextEnvelope(record,"vreman_zero_denominator_rule",vremanZeroDenominator,error) ||
+				vremanZeroDenominator != "nu_sgs=0_when_sum_ij(alpha_ij^2)=0" ||
 			!ReadTextEnvelope(record,"wall_stress",wallStress,error) ||
 				wallStress != "resolved_molecular_no_slip" ||
 			!ReadTextEnvelope(record,"wall_heat_flux",wallHeatFlux,error) ||
@@ -1114,5 +1140,105 @@ namespace RISE
 		}
 		return (result > 0.0 && std::isfinite(result)) ||
 			Fail(error,"fire-simulation WMS mixture conductivity is invalid");
+	}
+
+	bool FireSimulationTransportRecord::VremanEddyViscosityM2PerS(
+		const double velocityGradientPerS[3][3],
+		const double directionalWidthsM[3],
+		double& result,
+		std::string* error
+		) const
+	{
+		if( !m_valid || !velocityGradientPerS || !directionalWidthsM ) {
+			return Fail(error,"fire-simulation Vreman inputs require a valid record");
+		}
+		double alphaSquared = 0.0;
+		double beta[3][3] = {};
+		for( unsigned int i=0; i<3; ++i ) {
+			for( unsigned int j=0; j<3; ++j ) {
+				const double alpha = velocityGradientPerS[i][j];
+				if( !std::isfinite(alpha) ) {
+					return Fail(error,"fire-simulation Vreman velocity gradient is invalid");
+				}
+				alphaSquared += alpha*alpha;
+			}
+		}
+		for( unsigned int m=0; m<3; ++m ) {
+			if( !(directionalWidthsM[m] > 0.0) || !std::isfinite(directionalWidthsM[m]) ) {
+				return Fail(error,"fire-simulation Vreman filter width is invalid");
+			}
+			const double widthSquared = directionalWidthsM[m]*directionalWidthsM[m];
+			if( !std::isfinite(widthSquared) ) {
+				return Fail(error,"fire-simulation Vreman filter width overflowed");
+			}
+			for( unsigned int i=0; i<3; ++i ) {
+				for( unsigned int j=0; j<3; ++j ) {
+					beta[i][j] += widthSquared*
+						velocityGradientPerS[m][i]*velocityGradientPerS[m][j];
+				}
+			}
+		}
+		if( !std::isfinite(alphaSquared) ) {
+			return Fail(error,"fire-simulation Vreman gradient norm overflowed");
+		}
+		for( unsigned int i=0; i<3; ++i ) {
+			for( unsigned int j=0; j<3; ++j ) {
+				if( !std::isfinite(beta[i][j]) ) {
+					return Fail(error,"fire-simulation Vreman beta tensor overflowed");
+				}
+			}
+		}
+		if( alphaSquared == 0.0 ) {
+			result = 0.0;
+			return true;
+		}
+		const double rawBBeta =
+			beta[0][0]*beta[1][1]-beta[0][1]*beta[0][1]+
+			beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
+			beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
+		if( !std::isfinite(rawBBeta) ) {
+			return Fail(error,"fire-simulation Vreman B_beta overflowed");
+		}
+		const double bBeta = std::max(0.0,rawBBeta);
+		result = m_vremanCv*std::sqrt(bBeta/alphaSquared);
+		return (result >= 0.0 && std::isfinite(result)) ||
+			Fail(error,"fire-simulation Vreman eddy viscosity is invalid");
+	}
+
+	bool FireSimulationTransportRecord::EffectiveTransport(
+		const double molecularConductivityWPerMK,
+		const double gasDensityKGPerM3,
+		const double gasCpJPerKGK,
+		const double eddyViscosityM2PerS,
+		const bool dns,
+		double& molecularDiffusivityM2PerS,
+		double& sgsDiffusivityM2PerS,
+		double& totalDiffusivityM2PerS,
+		double& effectiveConductivityWPerMK,
+		std::string* error
+		) const
+	{
+		if( !m_valid || !(molecularConductivityWPerMK > 0.0) ||
+			!(gasDensityKGPerM3 > 0.0) || !(gasCpJPerKGK > 0.0) ||
+			eddyViscosityM2PerS < 0.0 ||
+			!std::isfinite(molecularConductivityWPerMK) ||
+			!std::isfinite(gasDensityKGPerM3) || !std::isfinite(gasCpJPerKGK) ||
+			!std::isfinite(eddyViscosityM2PerS) ) {
+			return Fail(error,"fire-simulation effective-transport inputs are invalid");
+		}
+		const double activeEddyViscosity = dns ? 0.0 : eddyViscosityM2PerS;
+		const double volumetricHeatCapacity = gasDensityKGPerM3*gasCpJPerKGK;
+		molecularDiffusivityM2PerS = molecularConductivityWPerMK/volumetricHeatCapacity;
+		sgsDiffusivityM2PerS = activeEddyViscosity/m_turbulentSchmidt;
+		totalDiffusivityM2PerS = molecularDiffusivityM2PerS+sgsDiffusivityM2PerS;
+		effectiveConductivityWPerMK = molecularConductivityWPerMK+
+			volumetricHeatCapacity*activeEddyViscosity/m_turbulentPrandtl;
+		return (molecularDiffusivityM2PerS > 0.0 && sgsDiffusivityM2PerS >= 0.0 &&
+			totalDiffusivityM2PerS > 0.0 && effectiveConductivityWPerMK > 0.0 &&
+			std::isfinite(molecularDiffusivityM2PerS) &&
+			std::isfinite(sgsDiffusivityM2PerS) &&
+			std::isfinite(totalDiffusivityM2PerS) &&
+			std::isfinite(effectiveConductivityWPerMK)) ||
+			Fail(error,"fire-simulation effective transport overflowed");
 	}
 }

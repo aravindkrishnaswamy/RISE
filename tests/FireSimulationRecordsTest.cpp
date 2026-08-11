@@ -58,6 +58,17 @@ namespace
 		return RISECBOR64::Value::MapValue(members);
 	}
 
+	RISECBOR64::Value ReplaceEnvelopeValue(
+		const RISECBOR64::Value& record,
+		const char* key,
+		const char* value
+		)
+	{
+		RISECBOR64::Value envelope = *record.Find(key);
+		envelope = ReplaceMember(envelope,"value",RISECBOR64::Value::String(value));
+		return ReplaceMember(record,key,envelope);
+	}
+
 	RISECBOR64::Value ReplaceFirstThermoSegmentMember(
 		const RISECBOR64::Value& record,
 		const char* key,
@@ -199,6 +210,33 @@ int main()
 	Check(transport.ChemicalTimeS() == 1.0e-4 &&
 		transport.CriticalFlameTemperatureK() == 1700.0,
 		"reaction closure constants come from the record");
+	const double zeroGradient[3][3] = {};
+	const double directionalWidths[3] = {0.5,0.25,0.125};
+	double eddyViscosity = -1.0;
+	Check(transport.VremanEddyViscosityM2PerS(
+		zeroGradient,directionalWidths,eddyViscosity) && eddyViscosity == 0.0,
+		"Vreman zero-gradient rule returns zero without division");
+	const double directionalGradient[3][3] = {
+		{1.0,0.0,0.0},
+		{0.0,2.0,0.0},
+		{0.0,0.0,0.0}
+	};
+	Check(transport.VremanEddyViscosityM2PerS(
+		directionalGradient,directionalWidths,eddyViscosity) &&
+		NearRelative(eddyViscosity,0.07*std::sqrt(0.0625/5.0),1.0e-14),
+		"directional linear gradient matches an independent Vreman evaluation");
+	double molecularD = 0.0, sgsD = 0.0, totalD = 0.0, effectiveK = 0.0;
+	Check(transport.EffectiveTransport(0.03,1.2,1000.0,eddyViscosity,false,
+		molecularD,sgsD,totalD,effectiveK) &&
+		NearRelative(molecularD,0.03/1200.0,1.0e-14) &&
+		NearRelative(sgsD,eddyViscosity/0.7,1.0e-14) &&
+		NearRelative(totalD,molecularD+sgsD,1.0e-14) &&
+		NearRelative(effectiveK,0.03+1200.0*eddyViscosity/0.7,1.0e-14),
+		"LES effective transport follows the record-owned relationships");
+	Check(transport.EffectiveTransport(0.03,1.2,1000.0,eddyViscosity,true,
+		molecularD,sgsD,totalD,effectiveK) && sgsD == 0.0 &&
+		NearRelative(totalD,0.03/1200.0,1.0e-14) && effectiveK == 0.03,
+		"DNS retains molecular transport and zeros SGS transport");
 
 	struct CpAnchor { const char* id; double value; };
 	const CpAnchor cpAnchors[] = {
@@ -290,6 +328,36 @@ int main()
 		"thermochemistry record decodes canonically");
 	Check(RISECBOR64::DecodeCanonical(transport.RecordBytes(),transportValue,&error),
 		"transport record decodes canonically");
+	const char* closureRelationshipFields[] = {
+		"molecular_diffusivity_relationship",
+		"sgs_diffusivity_relationship",
+		"total_diffusivity_relationship",
+		"effective_conductivity_relationship",
+		"shared_diffusivity_rule",
+		"dns_sgs_rule",
+		"vreman_alpha_relationship",
+		"vreman_beta_relationship",
+		"vreman_B_beta_relationship",
+		"vreman_nu_sgs_relationship",
+		"vreman_nonnegative_B_rule",
+		"vreman_zero_denominator_rule"
+	};
+	for( const char* field : closureRelationshipFields ) {
+		const RISECBOR64::Value mutated = ReplaceEnvelopeValue(
+			transportValue,field,"mutated");
+		Check(mutated.Find(field) && mutated.Find(field)->Find("value") &&
+			mutated.Find(field)->Find("value")->GetText() == "mutated",
+			"transport closure mutation fixture changes the intended field");
+		RISECBOR64::Bytes mutatedBytes;
+		std::string mutationError;
+		FireSimulationTransportRecord mutatedRecord;
+		const bool mutationEncoded = RISECBOR64::Encode(
+			mutated,mutatedBytes,&mutationError);
+		Check(mutationEncoded,"transport closure mutation encodes canonically");
+		Check(mutationEncoded &&
+			!mutatedRecord.LoadCanonicalRecord(mutatedBytes,&mutationError),
+			"transport rejects a mutated closure relationship");
+	}
 	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
 		"predictive_blockers",RISECBOR64::Value::ArrayValue({}))),
 		"preview record rejects an empty blocker list");

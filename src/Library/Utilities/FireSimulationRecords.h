@@ -194,6 +194,24 @@ namespace RISE
 			double& result,
 			std::string* error = 0
 			) const;
+		bool VremanEddyViscosityM2PerS(
+			const double velocityGradientPerS[3][3],
+			const double directionalWidthsM[3],
+			double& result,
+			std::string* error = 0
+			) const;
+		bool EffectiveTransport(
+			double molecularConductivityWPerMK,
+			double gasDensityKGPerM3,
+			double gasCpJPerKGK,
+			double eddyViscosityM2PerS,
+			bool dns,
+			double& molecularDiffusivityM2PerS,
+			double& sgsDiffusivityM2PerS,
+			double& totalDiffusivityM2PerS,
+			double& effectiveConductivityWPerMK,
+			std::string* error = 0
+			) const;
 	};
 }
 
