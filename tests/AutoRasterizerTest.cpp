@@ -49,6 +49,7 @@
 #include <chrono>
 #include <filesystem>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <thread>
 #ifdef _WIN32
@@ -89,6 +90,32 @@ namespace RISE
 
 static int passCount = 0;
 static int failCount = 0;
+
+class ProcessWatchdog
+{
+public:
+	explicit ProcessWatchdog( const unsigned int seconds ) :
+		completed_(std::make_shared<std::atomic<bool>>(false))
+	{
+		const auto completed = completed_;
+		std::thread([completed,seconds]() {
+			std::this_thread::sleep_for(std::chrono::seconds(seconds));
+			if( !completed->load(std::memory_order_acquire) ) {
+				std::fprintf(stderr,
+					"FAIL: AutoRasterizerTest exceeded %u-second watchdog\n",seconds);
+				std::_Exit(124);
+			}
+		}).detach();
+	}
+
+	~ProcessWatchdog()
+	{
+		completed_->store(true,std::memory_order_release);
+	}
+
+private:
+	std::shared_ptr<std::atomic<bool>> completed_;
+};
 
 static void Check( bool condition, const std::string& testName )
 {
@@ -3275,6 +3302,7 @@ int main( const int argc, const char* const argv[] )
 			return 2;
 		}
 	}
+	ProcessWatchdog watchdog(extendedFireAblation ? 900u : 120u);
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
 	// pointing GlobalOptions at a temp file that drops the activation gate
 	// to 1 and sets a cheap probe (spp 4, quarter-res).  MUST be set before any

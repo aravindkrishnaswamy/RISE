@@ -32,9 +32,12 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -63,6 +66,30 @@ namespace
 {
 	int gFailCount = 0;
 	int gPassCount = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		ProcessWatchdog() : completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed]() {
+				std::this_thread::sleep_for(std::chrono::seconds(30));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fputs("FAIL: FrameStoreTest exceeded 30-second watchdog\n",stderr);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 
 	void Check( bool cond, const std::string& label )
 	{
@@ -1644,6 +1671,7 @@ namespace
 
 int main()
 {
+	ProcessWatchdog watchdog;
 	std::cout << "FrameStoreTest L1 — buffer + tile locking + Render readback\n";
 	std::cout << "------------------------------------------------------------\n";
 
