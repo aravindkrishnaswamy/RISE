@@ -849,9 +849,12 @@ namespace RISE
 				modelKind != "nasa9_cp_with_continuous_integrated_hs_v1" ||
 				!ReadDomain(*model,"temperature_domain_K",modelMinimum,modelMaximum,error) ||
 				!ReadFloat(*model,"reference_temperature_K",modelReference,error) ||
-				modelMinimum > m_temperatureMinK || modelMaximum < m_temperatureMaxK ||
+				modelMinimum < 200.0 || modelMinimum > m_temperatureMinK ||
+				modelMaximum != m_temperatureMaxK ||
 				modelReference != m_referenceTemperatureK ||
-				!ValidateTableMetadata(*model,error) ) return false;
+				!ValidateTableMetadata(*model,error) ) {
+				return Fail(error,"fire-simulation thermochemistry model is malformed or has an unsupported domain");
+			}
 			const RISECBOR64::Value* modelMetadata = model->Find("table_metadata");
 			if( species.id == "C25H52,n-pentacosane" ) {
 				RISECBOR64::Bytes canonicalSpecies;
@@ -911,6 +914,19 @@ namespace RISE
 				species.segments.back().temperatureMaxK != modelMaximum ) {
 				return Fail(error,"fire-simulation thermochemistry species does not span its certified domain");
 			}
+			const double enthalpyScale =
+				kUniversalGasConstantJPerKMolK/species.molecularWeightKGPerKMol;
+			for( const FireThermochemistrySegment& segment : species.segments ) {
+				const double hMinimum = enthalpyScale*CpAntiderivativeOverR(
+					segment.coefficients,segment.temperatureMinK)+
+					segment.sensibleEnthalpyOffsetJPerKG;
+				const double hMaximum = enthalpyScale*CpAntiderivativeOverR(
+					segment.coefficients,segment.temperatureMaxK)+
+					segment.sensibleEnthalpyOffsetJPerKG;
+				if( !std::isfinite(hMinimum) || !std::isfinite(hMaximum) ) {
+					return Fail(error,"fire-simulation sensible enthalpy is non-finite at a certified endpoint");
+				}
+			}
 			for( std::size_t i=1; i<species.segments.size(); ++i ) {
 				const FireThermochemistrySegment& left = species.segments[i-1];
 				const FireThermochemistrySegment& right = species.segments[i];
@@ -918,10 +934,9 @@ namespace RISE
 					return Fail(error,"fire-simulation thermochemistry segment has a gap");
 				}
 				const double temperature = left.temperatureMaxK;
-				const double scale = kUniversalGasConstantJPerKMolK/species.molecularWeightKGPerKMol;
-				const double hLeft = scale*CpAntiderivativeOverR(left.coefficients,temperature)+
+				const double hLeft = enthalpyScale*CpAntiderivativeOverR(left.coefficients,temperature)+
 					left.sensibleEnthalpyOffsetJPerKG;
-				const double hRight = scale*CpAntiderivativeOverR(right.coefficients,temperature)+
+				const double hRight = enthalpyScale*CpAntiderivativeOverR(right.coefficients,temperature)+
 					right.sensibleEnthalpyOffsetJPerKG;
 				if( !std::isfinite(hLeft) || !std::isfinite(hRight) ||
 					std::fabs(hLeft-hRight) > 1.0e-8*std::max(1.0,std::fabs(hLeft)) ) {

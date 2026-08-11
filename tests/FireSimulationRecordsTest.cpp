@@ -101,6 +101,35 @@ namespace
 		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
 	}
 
+	RISECBOR64::Value HugeFiniteThermoDomain( const RISECBOR64::Value& record )
+	{
+		RISECBOR64::Value::Values species = record.Find("species")->GetArray();
+		for( auto& entry : species ) {
+			const RISECBOR64::Value* id = entry.Find("species_id");
+			if( !id || id->GetText() != "N2" ) continue;
+			const double molecularWeight = 28.0134;
+			RISECBOR64::Value model = *entry.Find("cp_hs_model");
+			RISECBOR64::Value segment = model.Find("segments")->GetArray()[0];
+			RISECBOR64::Value::Values coefficients(9,RISECBOR64::Value::Float(0.0));
+			coefficients[2] = RISECBOR64::Value::Float(1.0);
+			segment = ReplaceMember(segment,"temperature_min_K",RISECBOR64::Value::Float(200.0));
+			segment = ReplaceMember(segment,"temperature_max_K",RISECBOR64::Value::Float(1.0e307));
+			segment = ReplaceMember(segment,"coefficients",
+				RISECBOR64::Value::ArrayValue(coefficients));
+			segment = ReplaceMember(segment,"hs_offset_J_per_kg",RISECBOR64::Value::Float(
+				-8314.46261815324*300.0/molecularWeight));
+			segment = ReplaceMember(segment,"certified_cp_lower_J_per_kg_K",
+				RISECBOR64::Value::Float(1.0));
+			model = ReplaceMember(model,"temperature_domain_K",
+				RISECBOR64::Value::ArrayValue({RISECBOR64::Value::Float(200.0),
+					RISECBOR64::Value::Float(1.0e307)}));
+			model = ReplaceMember(model,"segments",
+				RISECBOR64::Value::ArrayValue({segment}));
+			entry = ReplaceMember(entry,"cp_hs_model",model);
+		}
+		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
+	}
+
 	RISECBOR64::Value ReplaceFirstTransportPolicy(
 		const RISECBOR64::Value& record,
 		const char* policy
@@ -558,6 +587,27 @@ int main()
 		"temperature_max_K",RISECBOR64::Value::Float(1.0e16+4.0));
 	Check(Rejects<FireSimulationThermochemistryRecord>(extremeSegment),
 		"extreme malformed segment rejects before certificate iteration");
+	const RISECBOR64::Value hugeDomain = HugeFiniteThermoDomain(thermoValue);
+	double hugeDomainMaximum = 0.0;
+	for( const auto& species : hugeDomain.Find("species")->GetArray() ) {
+		if( species.Find("species_id")->GetText() == "N2" ) {
+			hugeDomainMaximum = species.Find("cp_hs_model")->Find(
+				"temperature_domain_K")->GetArray()[1].GetFloat();
+		}
+	}
+	Check(hugeDomainMaximum == 1.0e307,
+		"huge-domain mutation fixture changes the intended species endpoint");
+	RISECBOR64::Bytes hugeDomainBytes;
+	std::string hugeDomainError;
+	FireSimulationThermochemistryRecord hugeDomainRecord;
+	const bool hugeDomainEncoded = RISECBOR64::Encode(
+		hugeDomain,hugeDomainBytes,&hugeDomainError);
+	Check(hugeDomainEncoded,"huge-domain mutation encodes canonically");
+	const bool hugeDomainRejected = hugeDomainEncoded &&
+		!hugeDomainRecord.LoadCanonicalRecord(hugeDomainBytes,&hugeDomainError) &&
+		!hugeDomainError.empty();
+	Check(hugeDomainRejected,
+		"thermochemistry rejects a finite huge domain whose endpoint enthalpy overflows");
 	const std::vector<std::pair<std::string,double> > overflowingDensities = {
 		{"N2",std::numeric_limits<double>::max()},
 		{"O2",std::numeric_limits<double>::max()}
