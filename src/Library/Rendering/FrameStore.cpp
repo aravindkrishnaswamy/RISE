@@ -39,6 +39,22 @@ namespace
 	};
 
 	thread_local ObserverCallbackFrame* g_observerCallbackFrame = nullptr;
+	std::atomic<RISE::Implementation::FrameStoreObserverDispatchContentionHook>
+		g_observerDispatchContentionHook{nullptr};
+	std::atomic<void*> g_observerDispatchContentionContext{nullptr};
+
+	std::unique_lock<std::mutex> AcquireObserverDispatchLock( std::mutex& mutex )
+	{
+		std::unique_lock<std::mutex> lock(mutex,std::defer_lock);
+		if( !lock.try_lock() ) {
+			const auto hook = g_observerDispatchContentionHook.load(
+				std::memory_order_acquire);
+			if( hook ) hook(g_observerDispatchContentionContext.load(
+				std::memory_order_acquire));
+			lock.lock();
+		}
+		return lock;
+	}
 
 	void RejectReentrantObserverPublication()
 	{
@@ -58,6 +74,14 @@ namespace
 		}
 		return count;
 	}
+}
+
+void RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+	const FrameStoreObserverDispatchContentionHook hook,
+	void* const context )
+{
+	g_observerDispatchContentionContext.store(context,std::memory_order_release);
+	g_observerDispatchContentionHook.store(hook,std::memory_order_release);
 }
 
 using namespace RISE;
@@ -1712,7 +1736,8 @@ namespace RISE
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
 			RejectReentrantObserverPublication();
-			std::lock_guard<std::mutex> dispatchLock(observerCallbackDispatchMutex_);
+			auto dispatchLock = AcquireObserverDispatchLock(
+				observerCallbackDispatchMutex_);
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );

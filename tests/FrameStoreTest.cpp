@@ -290,7 +290,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 3: tile seqlock + observer firing ────────────────
+	// ─── Section 3: tile locking + observer firing ────────────────
 	struct CountingObserver : public IRenderObserver
 	{
 		std::atomic<int> tileCount{ 0 };
@@ -309,7 +309,7 @@ namespace
 		}
 	};
 
-	void TestSeqlockAndObserver()
+	void TestTileLockingAndObserver()
 	{
 		FrameStore* store = MakeStore( 32, 16, 8 );
 
@@ -351,8 +351,8 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 4: concurrent reader / writer (seqlock stress) ───
-	void TestConcurrentSeqlock()
+	// ─── Section 4: concurrent reader / writer (tile-lock stress) ──
+	void TestConcurrentTileLocking()
 	{
 		FrameStore* store = MakeStore( 32, 32, 8 );
 
@@ -671,6 +671,29 @@ namespace
 		}
 	};
 
+	struct ObserverDispatchContentionWitness
+	{
+		static void Notify( void* context )
+		{
+			auto* witness = static_cast<ObserverDispatchContentionWitness*>(context);
+			{
+				std::lock_guard<std::mutex> lock(witness->mutex);
+				witness->observed = true;
+			}
+			witness->condition.notify_all();
+		}
+
+		bool Wait( const std::chrono::milliseconds timeout )
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			return condition.wait_for(lock,timeout,[this]() { return observed; });
+		}
+
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool observed = false;
+	};
+
 	void TestObserverRemovalFromUnrelatedCallbackWaitsForVictim()
 	{
 		FrameStore* store = MakeStore(8,8,8);
@@ -689,13 +712,19 @@ namespace
 			std::unique_lock<std::mutex> lock(victim.mutex);
 			victim.condition.wait(lock,[&]() { return victim.entered; });
 		}
+		ObserverDispatchContentionWitness contention;
+		RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+			&ObserverDispatchContentionWitness::Notify,&contention);
 		std::thread frameDispatch([&]() { store->MarkFrameComplete(1u); });
+		const bool frameDispatchContended =
+			contention.Wait(std::chrono::milliseconds(2000));
+		RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+			nullptr,nullptr);
 		bool removeStarted = false;
 		bool removeReturnedEarly = false;
 		{
-			std::unique_lock<std::mutex> lock(remover.mutex);
-			removeStarted = remover.condition.wait_for(lock,
-				std::chrono::milliseconds(100),[&]() { return remover.started; });
+			std::lock_guard<std::mutex> lock(remover.mutex);
+			removeStarted = remover.started;
 			removeReturnedEarly = remover.returned;
 		}
 		{
@@ -705,7 +734,8 @@ namespace
 		}
 		tileDispatch.join();
 		frameDispatch.join();
-		Check(!removeStarted && !removeReturnedEarly && remover.returned,
+		Check(frameDispatchContended && !removeStarted &&
+			!removeReturnedEarly && remover.returned,
 			"observer callbacks serialize before unrelated removal can overlap a victim" );
 
 		store->RemoveObserver(&remover);
@@ -816,7 +846,7 @@ namespace
 		bool overlapped = false;
 		{
 			std::unique_lock<std::mutex> lock(observer.mutex);
-			overlapped = observer.condition.wait_for(lock,std::chrono::milliseconds(100),
+			overlapped = observer.condition.wait_for(lock,std::chrono::milliseconds(2000),
 				[&]() { return observer.fires > 1u || observer.secondReturned; });
 			observer.continueFirst = true;
 			observer.condition.notify_all();
@@ -850,7 +880,7 @@ namespace
 				std::unique_lock<std::mutex> lock(*startMutex);
 				++*entered;
 				startCondition->notify_all();
-				startCondition->wait_for(lock,std::chrono::milliseconds(500),
+				startCondition->wait_for(lock,std::chrono::milliseconds(2000),
 					[this]() { return *entered == 2u; });
 			}
 			try { victimStore->RemoveObserver(victim); }
@@ -954,7 +984,7 @@ namespace
 			startWorker = true;
 			condition.notify_all();
 			completedWhileCallbackActive = condition.wait_for(
-				lock,std::chrono::milliseconds(500),[this]() { return workerDone; });
+				lock,std::chrono::milliseconds(2000),[this]() { return workerDone; });
 		}
 	};
 
@@ -1015,7 +1045,7 @@ namespace
 			});
 			std::unique_lock<std::mutex> lock(mutex);
 			completedBeforeCallbackReturned = condition.wait_for(
-				lock,std::chrono::milliseconds(500),[this]() { return done; });
+				lock,std::chrono::milliseconds(2000),[this]() { return done; });
 		}
 	};
 
@@ -1697,7 +1727,7 @@ int main()
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();
-	TestSeqlockAndObserver();
+	TestTileLockingAndObserver();
 	TestObserverSelfDetach();
 	TestObserverCascadeRemovalNoUAF();
 	TestObserverRemoveWaitsForInFlight();
@@ -1708,7 +1738,7 @@ int main()
 	TestReentrantObserverDispatchFailsClosed();
 	TestCrossThreadCrossStorePublicationDoesNotDeadlock();
 	TestBulkBracketReleasesAllTilesBeforeNotification();
-	TestConcurrentSeqlock();
+	TestConcurrentTileLocking();
 	TestConcurrentFrameMetadata();
 	TestRenderReadback();
 	TestToneCurveGating();

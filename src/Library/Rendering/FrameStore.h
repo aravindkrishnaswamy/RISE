@@ -66,6 +66,12 @@ namespace RISE
 		class PixelBasedRasterizerHelper;
 		class Rasterizer;
 		class ViewportFrameStore;
+		using FrameStoreObserverDispatchContentionHook = void (*)(void* context);
+		//! Test instrumentation: observes an actual failed try-lock before a
+		//! second publication blocks on a FrameStore's callback dispatcher.
+		void SetFrameStoreObserverDispatchContentionHookForTests(
+			FrameStoreObserverDispatchContentionHook hook,
+			void* context );
 	}
 
 	namespace FrameStoreOutput
