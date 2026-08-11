@@ -271,10 +271,10 @@ public:
     void MarkFrameComplete(unsigned frame);
 
     // ── observer registration ─────────────────────────────────────────
-    // Observers attach to the FrameStore, NOT to the rasterizer. The
-    // FrameStore is the persistent artifact; the rasterizer is the
-    // producer and may be swapped (PT → BDPT in the UI) without
-    // detaching observers. See §7.5.
+    // Observers attach to a specific FrameStore artifact, NOT to the
+    // rasterizer.  A producer swap may publish a new canonical store;
+    // output routes then move their store-local observer transactionally.
+    // See §7.5.
     void AddObserver     (IRenderObserver*);
     void RemoveObserver  (IRenderObserver*);
     void EnumerateObservers(IEnumCallback<IRenderObserver>&) const;
@@ -733,10 +733,13 @@ User swaps rasterizer in UI (PT → BDPT) — illustrating §7.5:
 
 ```
 GUI: user picks BDPT
-  → job.ConstructRasterizer("bdpt_pel_rasterizer", existingFrameStore)  // same store
-  → previousRasterizer destroyed
-  → frameStore observer list UNCHANGED (file outputs + viewport still attached)
-  → next Render: BDPT writes into same store, same observers fire
+  → job constructs the BDPT rasterizer and its canonical FrameStore
+  → attaching ViewportFrameStore makes the new rasterizer publish that store
+  → VFS quiesces its old BridgeObserver, registers a replacement on the new
+    store, and commits the observer handoff with its active-store pointers
+  → previous rasterizer/store references drain after the handoff
+  → next Render: BDPT writes the new store; the same UI callbacks fire through
+    the replacement store-local observer
 ```
 
 ---
