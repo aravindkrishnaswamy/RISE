@@ -209,15 +209,22 @@ class RenderSmokeTest {
             }
             pointerThread.start()
             startControllerRace.countDown()
-            assertTrue(
-                "viewport stop completes while pointer traffic is active",
-                RiseNative.nativeViewportStop(callbackOwner),
-            )
+            val stoppedDuringPointerTraffic =
+                RiseNative.nativeViewportStop(callbackOwner)
             assertTrue(
                 "pointer traffic completes across controller teardown",
                 pointerFinished.await(10,TimeUnit.SECONDS),
             )
             pointerThread.join()
+            assertTrue(
+                "a busy fail-fast stop succeeds after pointer traffic quiesces",
+                stoppedDuringPointerTraffic ||
+                    RiseNative.nativeViewportStop(callbackOwner),
+            )
+            assertTrue(
+                "viewport is stopped after the contention retry",
+                !RiseNative.nativeViewportIsRunning(callbackOwner),
+            )
         } finally {
             RiseNative.nativeClearCallback(callbackOwner)
         }

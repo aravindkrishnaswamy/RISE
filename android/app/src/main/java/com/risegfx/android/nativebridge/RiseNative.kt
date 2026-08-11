@@ -23,9 +23,13 @@ import java.nio.ByteBuffer
  *     library polls on tile boundaries. A render can take several hundred
  *     ms to actually wind down after cancel.
  *   - Every stateful `nativeViewport*` call carries the callback ownership
- *     token. Native code validates it and holds the scene lifecycle lock for
+ *     token. Native code validates it and try-locks the scene lifecycle for
  *     the complete controller access, so a stale Compose tree cannot mutate
- *     or dereference a replacement controller.
+ *     or dereference a replacement controller. If a load or render owns that
+ *     lifecycle, reads return their documented empty/zero/false default and
+ *     mutations return false or no-op immediately. Those transient defaults
+ *     are not persistent controller state; callers retry after interaction is
+ *     re-enabled.
  *
  * The shared library loads once at classload and stays resident for the
  * life of the process.

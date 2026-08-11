@@ -1126,6 +1126,17 @@ int main()
 			androidRenderSmoke.find("next.generation == fb.generation") !=
 				std::string::npos,
 			"Android framebuffer handoff copies a locked snapshot into Java-owned storage" );
+		Check(androidNative.find("try-locks the scene lifecycle") !=
+				std::string::npos &&
+			androidNative.find("mutations return false or no-op immediately") !=
+				std::string::npos &&
+			androidRenderSmoke.find("stoppedDuringPointerTraffic ||") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"RiseNative.nativeViewportStop(callbackOwner)") != std::string::npos &&
+			androidRenderSmoke.find(
+				"!RiseNative.nativeViewportIsRunning(callbackOwner)") != std::string::npos,
+			"Android viewport contention fails fast and teardown retries after traffic quiesces" );
 		Check(androidLoadAndRender.find("if (renderJob?.isActive == true) return") !=
 				std::string::npos &&
 			androidLoadAndRender.find("renderJob?.cancel()") == std::string::npos &&
