@@ -6901,13 +6901,44 @@ namespace RISE
 				return true;
 			}
 
+			//----------------------------------------------------------------
+			//! G3b (2026-08-10): THE SHARED BBOX-NORMALIZED FIT.  ONE
+			//! definition, called by BOTH mask producers -- the sketch
+			//! rasterizer (RasterizePartOutline_, below) and the rendered
+			//! silhouette normalizer (NormalizeSilhouetteToCanvas_, further
+			//! down) -- because an IoU between two masks fitted by DIFFERENT
+			//! transforms is not a shape comparison at all, it is a
+			//! comparison of two framings, and the degradation is SILENT (a
+			//! plausible number, systematically wrong).  A shared function
+			//! rather than a shared constant: the fill fraction, the
+			//! aspect-preserving max(), the centering and the letterbox all
+			//! have to agree, not just the 0.85.
+			//!
+			//! Maps a source bounding box of extent (`bw`, `bh`) onto the
+			//! kPartSketchCanvas square: `outScale` device units per source
+			//! unit, `outOffX`/`outOffY` the device-space origin of the
+			//! source box's min corner.  Aspect preserved (the LONGER axis
+			//! fills kPartSketchFillFraction of the canvas), the shorter axis
+			//! letterboxed and centered.  Callers guarantee bw, bh > 0.
+			void SketchFitTransform_( double bw, double bh,
+			                          double& outScale, double& outOffX, double& outOffY )
+			{
+				const double canvas = static_cast<double>( AgentSession::kPartSketchCanvas );
+				outScale = AgentSession::kPartSketchFillFraction * canvas / ( bw > bh ? bw : bh );
+				outOffX  = ( canvas - bw * outScale ) * 0.5;
+				outOffY  = ( canvas - bh * outScale ) * 0.5;
+			}
+
 			//! Rasterize `pts` into a kPartSketchCanvas^2 0/1 mask.
 			//!
 			//! CONVENTIONS, all of them load-bearing for determinism and for
 			//! G3b's comparison:
-			//!   * FIT: the outline's own bbox is scaled by
-			//!     kPartSketchFillFraction * canvas / max(bboxW, bboxH) --
-			//!     aspect PRESERVED, letterboxed, centered on both axes.
+			//!   * FIT: SketchFitTransform_ above -- the outline's own bbox
+			//!     scaled by kPartSketchFillFraction * canvas /
+			//!     max(bboxW, bboxH), aspect PRESERVED, letterboxed, centered
+			//!     on both axes.  G3b's silhouette goes through the SAME
+			//!     function; see its doc for why that has to be a function
+			//!     call and not a duplicated formula.
 			//!   * ORIENTATION: outline +Y is UP, image rows run DOWN, so the
 			//!     mask reads the way the model drew it.
 			//!   * SAMPLING: one sample at each pixel's CENTRE (col+0.5,
@@ -6929,8 +6960,7 @@ namespace RISE
 			                            std::vector<unsigned char>& outMask,
 			                            std::size_t& outFilled )
 			{
-				const int    N      = AgentSession::kPartSketchCanvas;
-				const double canvas = static_cast<double>( N );
+				const int N = AgentSession::kPartSketchCanvas;
 				outMask.assign( static_cast<std::size_t>( N ) * static_cast<std::size_t>( N ), 0 );
 				outFilled = 0;
 				if( pts.size() < 3 ) return;   // ParsePartOutlinePoints_ already guarantees this
@@ -6944,10 +6974,8 @@ namespace RISE
 				}
 				const double bw = maxX - minX;
 				const double bh = maxY - minY;
-				const double scale = AgentSession::kPartSketchFillFraction * canvas /
-					( bw > bh ? bw : bh );
-				const double offX = ( canvas - bw * scale ) * 0.5;
-				const double offY = ( canvas - bh * scale ) * 0.5;
+				double scale = 0.0, offX = 0.0, offY = 0.0;
+				SketchFitTransform_( bw, bh, scale, offX, offY );
 
 				std::vector<SketchPoint_> dev( pts.size() );
 				for( std::size_t i = 0; i < pts.size(); ++i ) {
@@ -7060,6 +7088,274 @@ namespace RISE
 			{
 				char buf[32];
 				std::snprintf( buf, sizeof( buf ), "%.2f", v );
+				return std::string( buf );
+			}
+
+			//----------------------------------------------------------------
+			// G3b (2026-08-10): the sketch COMPARISON.
+			//
+			// Everything below is pure integer/double arithmetic over two 0/1
+			// masks -- no scene, no Document, no lock, no rasterizer.  The
+			// one rendered input (an ephemeral objectmap PNG) is produced by
+			// AgentSession::ApplyTargetComparison_ and decoded here.
+			//----------------------------------------------------------------
+
+			//! Decode an OBJECTMAP identity PNG into a 0/1 silhouette mask:
+			//! 1 wherever the pixel is NOT the palette's reserved background
+			//! byte #000000, 0 elsewhere.  Exact by construction -- the
+			//! objectmap palette generator guarantees every identity colour
+			//! round-trips to its own byte and is never (0,0,0) (see
+			//! BuildObjectMapPalette's `reserved` list), so "not background"
+			//! is precisely "a ray hit the one visible object".  Deliberately
+			//! reads the WHOLE image in ONE decode rather than calling
+			//! DecodePngRgbAt per pixel (that helper constructs a reader per
+			//! call -- 65536 readers for a 256x256 frame).
+			//! Returns false (leaving the outputs untouched) when the bytes
+			//! do not decode.
+			bool DecodePngSilhouetteMask_( const std::vector<unsigned char>& png,
+			                               std::vector<unsigned char>& outMask,
+			                               unsigned int& outW, unsigned int& outH )
+			{
+				if( png.empty() || png.size() > static_cast<std::size_t>( UINT_MAX ) ) return false;
+				Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+					const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+					static_cast<unsigned int>( png.size() ), false );
+				IRasterImageReader* reader = nullptr;
+				if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+					safe_release( buffer );
+					return false;
+				}
+				unsigned int width = 0, height = 0;
+				if( !reader->BeginRead( width, height ) || width == 0 || height == 0 ) {
+					safe_release( reader );
+					safe_release( buffer );
+					return false;
+				}
+				// The SAME quantizer DecodePngRgbAt uses (round-to-nearest of
+				// the linear-passthrough channel), so "is this the reserved
+				// #000000 background" is decided by identical arithmetic on
+				// both sides of the objectmap contract.
+				auto toByte = []( double value ) -> unsigned char {
+					const int rounded = static_cast<int>( value * 255.0 + 0.5 );
+					return static_cast<unsigned char>( rounded < 0 ? 0 : ( rounded > 255 ? 255 : rounded ) );
+				};
+				std::vector<unsigned char> mask(
+					static_cast<std::size_t>( width ) * static_cast<std::size_t>( height ), 0 );
+				for( unsigned int y = 0; y < height; ++y ) {
+					for( unsigned int x = 0; x < width; ++x ) {
+						RISEColor pixel;
+						reader->ReadColor( pixel, x, y );
+						const bool hit = toByte( pixel.base.r ) != 0 || toByte( pixel.base.g ) != 0 ||
+							toByte( pixel.base.b ) != 0;
+						if( hit ) mask[ static_cast<std::size_t>( y ) * width + x ] = 1;
+					}
+				}
+				reader->EndRead();
+				safe_release( reader );
+				safe_release( buffer );
+
+				outMask.swap( mask );
+				outW = width;
+				outH = height;
+				return true;
+			}
+
+			//! Crop `src` (a `w` x `h` 0/1 mask, row-major from the TOP row)
+			//! to its own filled bounding box and resample it onto the shared
+			//! kPartSketchCanvas^2 canvas through SketchFitTransform_ -- the
+			//! EXACT transform the sketch rasterizer used, which is what
+			//! makes the resulting IoU a shape comparison rather than a
+			//! framing comparison.
+			//!
+			//! Nearest-neighbour, sampled at each destination pixel's CENTRE
+			//! and mapped BACK through the fit (inverse mapping, so every
+			//! destination pixel gets exactly one source sample and no source
+			//! pixel can be written twice).  No anti-aliasing and no
+			//! area-averaging: both masks are binary, and a fractional pixel
+			//! has no meaning in an integer IoU.
+			//!
+			//! When `mirrorX` is true the source is flipped left-to-right
+			//! WITHIN ITS OWN BBOX before resampling -- the mirrored IoU is
+			//! then the same shape measurement of the mirror image, not of a
+			//! translated one.
+			//!
+			//! Returns false and leaves `outMask` empty-but-sized when the
+			//! source has no filled pixel at all (nothing rendered inside the
+			//! frame); `outBBoxW`/`outBBoxH` are then 0.
+			bool NormalizeSilhouetteToCanvas_( const std::vector<unsigned char>& src,
+			                                   unsigned int w, unsigned int h, bool mirrorX,
+			                                   std::vector<unsigned char>& outMask,
+			                                   std::size_t& outFilled,
+			                                   unsigned int& outBBoxW, unsigned int& outBBoxH )
+			{
+				const int N = AgentSession::kPartSketchCanvas;
+				outMask.assign( static_cast<std::size_t>( N ) * static_cast<std::size_t>( N ), 0 );
+				outFilled = 0;
+				outBBoxW  = 0;
+				outBBoxH  = 0;
+				if( w == 0 || h == 0 ||
+					src.size() != static_cast<std::size_t>( w ) * static_cast<std::size_t>( h ) )
+					return false;
+
+				unsigned int minX = w, maxX = 0, minY = h, maxY = 0;
+				bool any = false;
+				for( unsigned int y = 0; y < h; ++y ) {
+					for( unsigned int x = 0; x < w; ++x ) {
+						if( !src[ static_cast<std::size_t>( y ) * w + x ] ) continue;
+						any = true;
+						if( x < minX ) minX = x;
+						if( x > maxX ) maxX = x;
+						if( y < minY ) minY = y;
+						if( y > maxY ) maxY = y;
+					}
+				}
+				if( !any ) return false;
+
+				// Pixel bbox extents are INCLUSIVE counts (a single filled
+				// pixel is a 1x1 box, never a 0x0 one), so the fit below can
+				// never divide by zero.
+				const unsigned int bw = maxX - minX + 1;
+				const unsigned int bh = maxY - minY + 1;
+				outBBoxW = bw;
+				outBBoxH = bh;
+
+				double scale = 0.0, offX = 0.0, offY = 0.0;
+				SketchFitTransform_( static_cast<double>( bw ), static_cast<double>( bh ),
+				                     scale, offX, offY );
+				if( !( scale > 0.0 ) ) return false;
+
+				for( int row = 0; row < N; ++row ) {
+					const double sy = ( static_cast<double>( row ) + 0.5 - offY ) / scale;
+					if( sy < 0.0 || sy >= static_cast<double>( bh ) ) continue;
+					const unsigned int srcY = minY + static_cast<unsigned int>( sy );
+					for( int col = 0; col < N; ++col ) {
+						const double sx = ( static_cast<double>( col ) + 0.5 - offX ) / scale;
+						if( sx < 0.0 || sx >= static_cast<double>( bw ) ) continue;
+						unsigned int bx = static_cast<unsigned int>( sx );
+						if( mirrorX ) bx = bw - 1 - bx;
+						const unsigned int srcX = minX + bx;
+						if( !src[ static_cast<std::size_t>( srcY ) * w + srcX ] ) continue;
+						outMask[ static_cast<std::size_t>( row ) * static_cast<std::size_t>( N ) +
+						         static_cast<std::size_t>( col ) ] = 1;
+						++outFilled;
+					}
+				}
+				return true;
+			}
+
+			//! Intersection-over-union of two equal-sized 0/1 masks.  Pure
+			//! integer counting -- no floating-point image math at all, so
+			//! the number is bit-reproducible.  Two empty masks have an empty
+			//! union; that returns 0.0 rather than the mathematically
+			//! conventional 1.0, because "nothing matched nothing" must not
+			//! read as a perfect match in a payload a model acts on.
+			double MaskIoU_( const std::vector<unsigned char>& a,
+			                 const std::vector<unsigned char>& b )
+			{
+				if( a.size() != b.size() || a.empty() ) return 0.0;
+				std::size_t inter = 0, uni = 0;
+				for( std::size_t i = 0; i < a.size(); ++i ) {
+					const bool pa = a[i] != 0, pb = b[i] != 0;
+					if( pa && pb ) ++inter;
+					if( pa || pb ) ++uni;
+				}
+				if( uni == 0 ) return 0.0;
+				return static_cast<double>( inter ) / static_cast<double>( uni );
+			}
+
+			//! The G3b comparison composite: THREE kPartSketchCanvas-square
+			//! tiles side by side -- [ sketch | silhouette | overlay ].
+			//!
+			//! This image is a REQUIREMENT of the slice, not decoration: the
+			//! transport keeps only the MOST RECENT tool-result image live,
+			//! so the sketch's pixels are gone from the model's context by
+			//! the time it looks again, and this composite is what puts them
+			//! back at the exact moment of consultation (design doc
+			//! docs/agentic-redesign/77-imagination-target-design.md §4.3).
+			//!
+			//! COLOURING, stated here and quoted verbatim in both tool
+			//! surfaces so a reader is never guessing at what a colour means:
+			//!   * tiles 1 and 2: filled WHITE on BLACK, the same rendering
+			//!     file_part_plan's own filing echo used, so the sketch tile
+			//!     looks identical to what the model already saw.
+			//!   * tile 3 (overlay) is CHANNEL-ADDITIVE: the sketch drives
+			//!     the RED channel and the silhouette drives GREEN+BLUE, so
+			//!     sketch-only reads RED, silhouette-only reads CYAN, and the
+			//!     overlap is their exact sum, WHITE.  Neither is BLACK.
+			//!     Red/cyan is the opponent pair that survives the common
+			//!     colour-vision deficiencies (unlike red/green), the three
+			//!     states differ in luminance as well as hue, and every tile
+			//!     carries its OWN black background -- so the strip reads the
+			//!     same whether the surrounding page is light or dark.
+			//! Each tile keeps the one-pixel grey frame BuildSketchCompositePng_
+			//! draws, for the same reason and with the same guarantee: at
+			//! kPartSketchFillFraction 0.85 both masks leave a >= 19-pixel
+			//! margin, so a frame can never erase mask content.
+			//! Returns empty (dims left 0) if the encoder fails.
+			std::vector<unsigned char> BuildTargetComparisonPng_(
+				const std::vector<unsigned char>& sketchMask,
+				const std::vector<unsigned char>& silhouetteMask,
+				unsigned int& outW, unsigned int& outH )
+			{
+				outW = 0;
+				outH = 0;
+				const int tile = AgentSession::kPartSketchCanvas;
+				const std::size_t tilePixels =
+					static_cast<std::size_t>( tile ) * static_cast<std::size_t>( tile );
+				if( sketchMask.size() != tilePixels || silhouetteMask.size() != tilePixels )
+					return std::vector<unsigned char>();
+
+				const unsigned int W = static_cast<unsigned int>( tile * 3 );
+				const unsigned int H = static_cast<unsigned int>( tile );
+
+				// Exact-byte colours: every channel is 0.0 or 1.0, which the
+				// linear-passthrough PNG encode turns into exactly 0 or 255
+				// -- so the composite's bytes are pinnable by a test rather
+				// than being whatever a transfer function happened to give.
+				const RISEColor kBlack( 0.0, 0.0, 0.0, 1.0 );
+				const RISEColor kWhite( 1.0, 1.0, 1.0, 1.0 );
+				const RISEColor kRed  ( 1.0, 0.0, 0.0, 1.0 );
+				const RISEColor kCyan ( 0.0, 1.0, 1.0, 1.0 );
+				const RISEColor kFrame( 96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0, 1.0 );
+
+				std::vector<RISEColor> pels( static_cast<std::size_t>( W ) * H, kBlack );
+				for( int y = 0; y < tile; ++y ) {
+					for( int x = 0; x < tile; ++x ) {
+						const std::size_t si =
+							static_cast<std::size_t>( y ) * static_cast<std::size_t>( tile ) +
+							static_cast<std::size_t>( x );
+						const bool inSketch = sketchMask[si] != 0;
+						const bool inSil    = silhouetteMask[si] != 0;
+						const bool onFrame  = ( x == 0 || y == 0 || x == tile - 1 || y == tile - 1 );
+						const std::size_t rowBase = static_cast<std::size_t>( y ) * W;
+						pels[ rowBase + static_cast<std::size_t>( x ) ] =
+							onFrame ? kFrame : ( inSketch ? kWhite : kBlack );
+						pels[ rowBase + static_cast<std::size_t>( tile + x ) ] =
+							onFrame ? kFrame : ( inSil ? kWhite : kBlack );
+						pels[ rowBase + static_cast<std::size_t>( 2 * tile + x ) ] =
+							onFrame ? kFrame
+							        : ( inSketch && inSil ? kWhite
+							          : inSketch          ? kRed
+							          : inSil             ? kCyan
+							                              : kBlack );
+					}
+				}
+
+				std::vector<unsigned char> png = EncodeLinearPassthroughPng_( pels, W, H );
+				if( png.empty() ) return png;
+				outW = W;
+				outH = H;
+				return png;
+			}
+
+			//! Format one double as a fixed 3-decimal fact.  IoU is reported
+			//! to three places (an area ratio over a 65536-pixel canvas
+			//! genuinely carries that much precision, unlike the 2-decimal
+			//! area/aspect facts the filing echo prints).
+			std::string SketchFact3dp_( double v )
+			{
+				char buf[32];
+				std::snprintf( buf, sizeof( buf ), "%.3f", v );
 				return std::string( buf );
 			}
 		}
@@ -7365,6 +7661,78 @@ namespace RISE
 				     "filed with it.";
 			out.message = m;
 			return out;
+		}
+
+		//----------------------------------------------------------------------
+		// G3b (2026-08-10): the plan-to-object join, made by the CALLER at
+		// comparison time.  These three functions are the ONLY place a
+		// `target` name is matched against the filed plan; the wire layer's
+		// pre-check and RenderCore_'s render-failing check both go through
+		// ResolveTargetSketch, so a caller cannot be shown one contract by a
+		// -32602 and a different one by the render.
+		//----------------------------------------------------------------------
+
+		const AgentSession::AgentPartSketch* AgentSession::FindPartSketch( const std::string& part ) const
+		{
+			for( std::size_t i = 0; i < mPartSketches.size(); ++i ) {
+				if( mPartSketches[i].part == part ) return &mPartSketches[i];
+			}
+			return nullptr;
+		}
+
+		std::string AgentSession::PartSketchNameList() const
+		{
+			std::string s;
+			for( std::size_t i = 0; i < mPartSketches.size(); ++i ) {
+				if( i ) s += ", ";
+				s += "\"";
+				s += mPartSketches[i].part;
+				s += "\"";
+			}
+			return s;
+		}
+
+		std::string AgentSession::TargetRequiresIsolateMessage( const std::string& target )
+		{
+			return "`target` (\"" + target + "\") requires `isolate`: a shape comparison measures ONE "
+				"object's silhouette against ONE filed sketch, so name the object to isolate in the "
+				"same call.";
+		}
+
+		bool AgentSession::ResolveTargetSketch( const std::string& target, const std::string& isolate,
+		                                         AgentPartSketch& out, std::string& outError ) const
+		{
+			if( target.empty() ) {
+				outError = "target is empty";
+				return false;
+			}
+			// REQUIRES `isolate`.  A comparison measures ONE object's
+			// silhouette; with no isolate there is no single object to
+			// measure, and inferring one from the part name is exactly the
+			// join-by-naming-convention this design rejected (design doc
+			// docs/agentic-redesign/77-imagination-target-design.md sec 5.1:
+			// the join is made BY THE CALLER, at the one moment it is
+			// unambiguous and free).
+			if( isolate.empty() ) {
+				outError = TargetRequiresIsolateMessage( target ) + " Nothing was rendered.";
+				return false;
+			}
+			if( mPartSketches.empty() ) {
+				outError = "target \"" + target + "\" cannot be compared: no part plan has been filed in "
+					"this session, so there is no sketch to compare against. Call file_part_plan first. "
+					"Nothing was rendered.";
+				return false;
+			}
+			const AgentPartSketch* found = FindPartSketch( target );
+			if( !found ) {
+				// The available-name list, same fail-loud contract as an
+				// unresolvable `view`/`light`/`isolate`.
+				outError = "unknown target part \"" + target + "\" -- the filed part plan lists: " +
+					PartSketchNameList() + ". Nothing was rendered.";
+				return false;
+			}
+			out = *found;
+			return true;
 		}
 
 		AgentChunkResult AgentSession::RemoveChunk( const std::string& target,
@@ -9075,6 +9443,55 @@ namespace RISE
 			out[2] = std::cos( kAzimuth ) * std::cos( kElev );
 		}
 
+		//! G3b (2026-08-10): the NAMED-VANTAGE set -- G1's single fixed
+		//! three-quarter direction generalized to the small closed set a
+		//! sketch's `view` can name.  Fills `outDir` (the unit vector FROM
+		//! the box centre TOWARD the eye) and `outUp` (the up HINT the fit
+		//! and the camera both use).
+		//!
+		//! `view` is one of AgentSession::kPartPlanViewValues; ANY other
+		//! string (including "") yields G1's three-quarter vantage
+		//! BYTE-FOR-BYTE, which is what keeps a plain `isolate` render
+		//! (no `target`) identical to what G1 shipped -- the three-quarter
+		//! case still calls IsolateThreeQuarterOffset above rather than
+		//! re-deriving the same numbers here.
+		//!
+		//! The three axis-aligned vantages, all stated as FACTS in the tool
+		//! surfaces because a silhouette is only interpretable against a
+		//! known orientation:
+		//!   * front -- eye on +Z looking along -Z; world +X to the right,
+		//!     world +Y up.  (+Z is "front" by RISE scene convention, see
+		//!     docs/SCENE_CONVENTIONS.md.)
+		//!   * side  -- eye on +X looking along -X; world -Z to the right
+		//!     (so the object's +Z "front" faces image-left), world +Y up.
+		//!   * top   -- eye on +Y looking straight down; world +X to the
+		//!     right, world -Z up in the frame (i.e. "away from the front
+		//!     view" is at the top of the image).  The up hint here CANNOT
+		//!     be world +Y: it is parallel to the view direction, which
+		//!     makes IsolateFitDistance's right-vector cross product
+		//!     degenerate and would silently fall back to a guessed
+		//!     distance.  (0,0,-1) is the only choice that both is
+		//!     perpendicular and keeps the frame's handedness matching the
+		//!     front view.
+		void IsolateVantageOffset( const std::string& view, double outDir[3], double outUp[3] )
+		{
+			outUp[0] = 0.0; outUp[1] = 1.0; outUp[2] = 0.0;
+			if( view == "front" ) {
+				outDir[0] = 0.0; outDir[1] = 0.0; outDir[2] = 1.0;
+				return;
+			}
+			if( view == "side" ) {
+				outDir[0] = 1.0; outDir[1] = 0.0; outDir[2] = 0.0;
+				return;
+			}
+			if( view == "top" ) {
+				outDir[0] = 0.0; outDir[1] = 1.0; outDir[2] = 0.0;
+				outUp[0]  = 0.0; outUp[1]  = 0.0; outUp[2]  = -1.0;
+				return;
+			}
+			IsolateThreeQuarterOffset( outDir );
+		}
+
 		//! The fraction of each frame half-extent the object's bounding BOX is
 		//! allowed to fill -- i.e. a 15% margin on every side, so the
 		//! silhouette never touches the frame edge.
@@ -9420,7 +9837,49 @@ namespace RISE
 
 		AgentRenderResult AgentSession::Render( const AgentRenderParams& params )
 		{
-			return RenderCore_( params );
+			// G3b fix-round (2026-08-10) FIX 1: RESOLVE ONCE, HERE, ON THE
+			// CALLER'S THREAD -- the SAME shape the async path uses, so the
+			// two entry points consume a resolved COPY rather than a name.
+			// Pre-fix, RenderCore_ resolved by name and ApplyTargetComparison_
+			// resolved the SAME name a second time; on the async path both of
+			// those ran on the controller's render worker while
+			// FilePartPlan could be reassigning mPartSketches on the
+			// dispatcher thread (the P1).  Unifying here also deletes the
+			// redundant double-resolve and makes the comparison describe the
+			// plan AS IT WAS at submission, which is the right semantics for
+			// an async call independently of the race.
+			//
+			// Ordering note: this now runs BEFORE RenderCore_'s `!mJob`
+			// check, so a session with no head AND an unresolvable target
+			// reports the target failure rather than "no head loaded".  Both
+			// are honest, the target check is the cheaper one, and a wrapped
+			// session always has a head.
+			AgentPartSketch resolvedTarget;
+			const AgentPartSketch* resolvedTargetPtr = nullptr;
+			if( !params.target.empty() ) {
+				std::string targetError;
+				if( !ResolveTargetSketch( params.target, params.isolate, resolvedTarget, targetError ) ) {
+					AgentRenderResult bad;
+					bad.ok      = false;
+					bad.message = targetError;
+					return bad;
+				}
+				resolvedTargetPtr = &resolvedTarget;
+			}
+
+			AgentRenderResult rr = RenderCore_( params, /*assumeParked=*/false,
+			                                    /*forcedJobId=*/0, resolvedTargetPtr );
+			// G3b (2026-08-10): the sketch comparison runs AFTER the render
+			// returns, on this thread, with the render's park already
+			// released (assumeParked=false) -- it fires ONE more internal
+			// render of its own and must therefore not be inside the first
+			// one's critical section.  A no-op unless `target` was requested
+			// AND the render succeeded; see ApplyTargetComparison_'s doc.
+			// RenderAsync's worker closure calls the SAME helper with
+			// assumeParked=true and the SAME kind of snapshot, so both entry
+			// points measure identically.
+			ApplyTargetComparison_( params, rr, /*assumeParked=*/false, resolvedTargetPtr );
+			return rr;
 		}
 
 		void AgentSession::ResolveBeautyDisplayTransform_( double& outExposureEV,
@@ -9564,7 +10023,8 @@ namespace RISE
 
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
 		                                              bool assumeParked,
-		                                              std::uint64_t forcedJobId )
+		                                              std::uint64_t forcedJobId,
+		                                              const AgentPartSketch* resolvedTarget )
 		{
 			AgentRenderResult res;
 
@@ -9572,6 +10032,49 @@ namespace RISE
 				res.ok = false;
 				res.message = "no head loaded";
 				return res;
+			}
+
+			// ---- G3b (2026-08-10) `render{target:}`: the CALLER-RESOLVED
+			// sketch, consumed before anything is rendered.
+			//
+			// G3b fix-round (2026-08-10) FIX 1: this block used to call
+			// ResolveTargetSketch itself, i.e. it read mPartSketches -- and
+			// on the async path this whole function runs on the controller's
+			// render worker thread while the dispatcher thread may be inside
+			// FilePartPlan reassigning that very vector.  Resolution now
+			// happens EXACTLY ONCE, on the submitting thread, in Render() /
+			// RenderAsync, and the resolved COPY arrives here; the fail-loud
+			// refusal (which needs the filed part-name list) moved with it,
+			// so a caller sees the identical message from the identical
+			// wording, just one frame earlier.  Nothing on this code path
+			// touches session part-plan state any more.
+			//
+			// The resolved sketch's `view` is what selects the render's
+			// AXIS-ALIGNED vantage in the isolate block below.  Its mask is
+			// NOT read here: the measurement happens in
+			// ApplyTargetComparison_, after this render (and its own internal
+			// identity pass) have completed -- and that helper is handed the
+			// SAME snapshot, so the two cannot disagree.
+			//
+			// The nested identity pass carries the same `target` precisely so
+			// it resolves to the same vantage; ApplyTargetComparison_ passes
+			// its own snapshot straight through for that reason.
+			const AgentPartSketch* const targetSketch =
+				params.target.empty() ? nullptr : resolvedTarget;
+			if( !params.target.empty() && !targetSketch ) {
+				// A private-caller programming error, not a user-reachable
+				// state: every in-class call site resolves first.  Fail
+				// loudly rather than rendering without the comparison the
+				// caller asked for.
+				res.ok = false;
+				res.message = "internal error: `target` (\"" + params.target + "\") reached the render "
+					"body without a resolved sketch snapshot -- the caller must resolve on its own "
+					"thread first (G3b fix-round FIX 1). Nothing was rendered.";
+				return res;
+			}
+			if( targetSketch ) {
+				res.targetPart = targetSketch->part;
+				res.targetView = targetSketch->view;
 			}
 
 			// Preserve the last successful frame until this render and its PNG
@@ -11081,15 +11584,27 @@ namespace RISE
 					{
 						// Solve the eye distance that fits the object's whole
 						// world AABB into kIsolateFrameFill of the frame from
-						// the fixed three-quarter vantage -- see
-						// IsolateFitDistance for the derivation (and for why
-						// the exact box fit, not a bounding sphere).
+						// the chosen vantage -- see IsolateFitDistance for the
+						// derivation (and for why the exact box fit, not a
+						// bounding sphere).
+						//
+						// G3b (2026-08-10): the vantage is now NAMED.  With no
+						// `target` (or a `target` whose view is somehow not one
+						// of the three) IsolateVantageOffset returns G1's fixed
+						// three-quarter direction and world +Y up -- the plain
+						// isolate render is byte-for-byte what G1 shipped.  With
+						// a resolved target the axis-aligned vantage matching the
+						// sketch's declared view is used instead, because that is
+						// the projection the sketch actually describes; the fit,
+						// the fill fraction and every other framing step are
+						// untouched.
 						double offset[3];
-						IsolateThreeQuarterOffset( offset );
+						double worldUp[3];
+						IsolateVantageOffset( targetSketch ? targetSketch->view : std::string(),
+						                      offset, worldUp );
 						const double center[3] = { ( bbMin[0]+bbMax[0] ) * 0.5,
 						                            ( bbMin[1]+bbMax[1] ) * 0.5,
 						                            ( bbMin[2]+bbMax[2] ) * 0.5 };
-						const double worldUp[3] = { 0.0, 1.0, 0.0 };
 						const double tanHalfV   = std::tan( camVFovRad * 0.5 );
 						double distance = IsolateFitDistance( bbMin, bbMax, center, offset,
 						                                       worldUp, tanHalfV, renderAspect );
@@ -11099,6 +11614,10 @@ namespace RISE
 							camEye[a]    = center[a] + offset[a] * distance;
 						}
 						camUp[0] = worldUp[0]; camUp[1] = worldUp[1]; camUp[2] = worldUp[2];
+						// The vantage FACT, recorded whether or not a target is
+						// in play (it is only reported when one is -- see the
+						// `targetVantage` field's doc).
+						if( targetSketch ) res.targetVantage = targetSketch->view;
 
 						// Feed the SAME AgentCameraOverride fields `camera`
 						// and `view` use, so applyCameraOverride restores the
@@ -11142,6 +11661,13 @@ namespace RISE
 							!( effectiveCamera.hasLocation && effectiveCamera.hasLookAt ) ) {
 							poseResolvable = false;
 						}
+						// G3b: the caller's camera wins over the sketch's
+						// axis-aligned vantage (G1's rule, unchanged), so the
+						// silhouette this comparison measures is NOT the
+						// projection the sketch describes.  Say which vantage
+						// ran, as a fact -- no warning, no adjective; the
+						// caller asked for this camera.
+						if( targetSketch ) res.targetVantage = "caller-camera";
 						if( !poseResolvable || !haveActiveSnapshot ) {
 							// Signal "coverage unavailable" to the projection below.
 							camVFovRad = -1.0;
@@ -12490,14 +13016,22 @@ namespace RISE
 						"framed by the camera you supplied, not auto-framed)",
 						res.isolateObject.c_str() );
 				} else if( res.isolateAutoFramed ) {
+					// G3b (2026-08-10): the vantage is named rather than
+					// hardcoded to "three-quarter" -- with a `target` in play
+					// the auto-frame is axis-aligned to the sketch's declared
+					// view, and a message that still said "three-quarter"
+					// would be a false statement about the image the caller is
+					// about to read.  With no target the string is unchanged.
+					const std::string vantageWord = targetSketch
+						? ( targetSketch->view + " (axis-aligned)" ) : std::string( "three-quarter" );
 					std::snprintf( isoNote, sizeof( isoNote ),
-						" (isolate: \"%s\" is the only object rendered; longest bbox edge %.6g; %s)",
-						res.isolateObject.c_str(), res.isolateLongestEdge,
+						" (isolate: \"%s\" is the only object rendered; longest bbox edge %.6g; auto-framed "
+						"%s view%s)",
+						res.isolateObject.c_str(), res.isolateLongestEdge, vantageWord.c_str(),
 						isolateFovAssumed
-							? "auto-framed three-quarter view, distance APPROXIMATE -- the active camera "
-							  "is not a pinhole, so a 45 deg vertical FOV was assumed; bboxCoverage was "
-							  "not computed for the same reason"
-							: "auto-framed three-quarter view" );
+							? ", distance APPROXIMATE -- the active camera is not a pinhole, so a 45 deg "
+							  "vertical FOV was assumed; bboxCoverage was not computed for the same reason"
+							: "" );
 				} else {
 					std::snprintf( isoNote, sizeof( isoNote ),
 						" (isolate: \"%s\" is the only object rendered; longest bbox edge %.6g; framed "
@@ -13000,6 +13534,194 @@ namespace RISE
 			res.name = "";
 			res.message = "hit an unregistered/unmapped object -- no legend name available for this pixel";
 			return res;
+		}
+
+		// G3b (2026-08-10) `render{target:}` -- the sketch comparison ---------------
+
+		void AgentSession::ApplyTargetComparison_( const AgentRenderParams& params,
+		                                            AgentRenderResult& rr,
+		                                            bool assumeParked,
+		                                            const AgentPartSketch* resolvedTarget )
+		{
+			// GATED ON ok FROM THE START.  This is G1's fix-round P1 in
+			// advance: a block of measured facts attached to a render that
+			// failed describes an image that never existed, and this project
+			// has measured that models ACT on result facts.  Also a no-op for
+			// every render that did not ask for a comparison, so the
+			// non-target path is byte-identical to G1's.
+			if( params.target.empty() || !rr.ok ) return;
+
+			// G3b fix-round (2026-08-10) FIX 1 -- THE SNAPSHOT, not a
+			// re-resolve.  This used to call ResolveTargetSketch a SECOND
+			// time (after RenderCore_ had already resolved the same name),
+			// which was two bugs in one: an unsynchronized mPartSketches read
+			// on the controller's render worker under the async path, and a
+			// comparison that would silently describe a DIFFERENT plan from
+			// the one the caller submitted against if FilePartPlan landed in
+			// between.  The caller now hands us the copy it resolved on its
+			// own thread; the measurement below reads nothing but that copy.
+			if( !resolvedTarget ) {
+				rr.message += " (target comparison not performed: no resolved sketch snapshot was "
+				              "supplied for \"" + params.target + "\" -- internal caller error)";
+				return;
+			}
+			const AgentPartSketch& sketch = *resolvedTarget;
+			const std::size_t canvasPixels =
+				static_cast<std::size_t>( kPartSketchCanvas ) * static_cast<std::size_t>( kPartSketchCanvas );
+			if( sketch.mask.size() != canvasPixels ) {
+				rr.message += " (target comparison not performed: the filed sketch for \"" +
+					sketch.part + "\" has no rasterized mask)";
+				return;
+			}
+
+			// ---- the internal identity pass ----
+			//
+			// SAME `isolate`, SAME `target` (so IsolateVantageOffset resolves
+			// the SAME vantage), SAME `camera`/`view`, SAME width/height and
+			// SAME fromAgentSurface flag -- copied wholesale from `params` and
+			// then narrowed -- so the pose and dims match the render just
+			// completed BY CONSTRUCTION rather than by a duplicated
+			// calculation that could drift.  `renderTarget` becomes ObjectMap:
+			// the identity pipeline is exact (one ray per pixel, flat identity
+			// colours, reserved #000000 background), so the mask is the
+			// object's true silhouette under EVERY mode and quality -- a
+			// beauty-pixel threshold would depend on lighting, materials and
+			// the tone curve.  `quality`/`samples`/`perception`/`xray` are
+			// narrowed because objectmap ignores all four anyway; narrowing
+			// them here keeps this pass from paying for anything it cannot use.
+			//
+			// When the caller's own render WAS an objectmap, this repeats it.
+			// Accepted: an identity pass is the cheap render in the system
+			// (~20ms at 256x256 -- see QueryObjectAt's header doc), and reusing
+			// the caller's PNG would mean the comparison worked differently
+			// depending on which mode was asked for, which is exactly the
+			// mode-dependence the identity pass exists to remove.
+			AgentRenderParams om = params;
+			om.renderTarget = AgentRenderTarget::ObjectMap;
+			om.quality      = AgentRenderQuality::Production;
+			om.samples      = -1;
+			om.perception   = false;
+			om.xray         = false;
+			// DIMS ARE PINNED TO WHAT THE CALLER'S RENDER ACTUALLY PRODUCED,
+			// not copied from `params`.  Copying them would be wrong in two
+			// separate ways, and both are silent:
+			//   * R1b's absent-dims agent default is gated on
+			//     `isProductionBeauty` (see wantsAgentDefaultResolutionCap),
+			//     so an agent-surface beauty render with no width/height
+			//     renders CAPPED at 256 while an objectmap pass with the same
+			//     absent dims renders at the scene's full authored Film -- a
+			//     400x300 identity pass behind a 256x192 beauty one.
+			//   * a BeautyVariant mode renders at a FIXED reduced resolution
+			//     (quarter/half) that `params` never mentions at all.
+			// `rr.width`/`rr.height` are the effective dims after every one of
+			// those layers, so pinning to them is the only formulation that
+			// means "the same dims" for all of them.  The aspect the framing
+			// solves against comes out identical either way (every implicit
+			// path preserves the Film's ratio), so this changes cost and
+			// fidelity, not the measured shape.
+			if( rr.width > 0 && rr.height > 0 ) {
+				om.width  = rr.width;
+				om.height = rr.height;
+			}
+
+			AgentRenderResult omr;
+			{
+				// The identity frame must NEVER displace the caller's own last
+				// render in the image cache -- a `read_image` after a target
+				// comparison would otherwise hand back a flat segmentation
+				// image of one object.  Same hazard, same guard, as
+				// QueryObjectAt's and CompareToReference's identity passes; see
+				// EphemeralRenderCacheGuard's doc for the deadlock / refcount /
+				// zero-byte-window constraints it encodes.
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+				// G3b fix-round (2026-08-10) FIX 1: the nested identity pass
+				// gets the SAME snapshot -- it must resolve to the SAME
+				// vantage, and it must not re-read mPartSketches either.
+				omr = RenderCore_( om, assumeParked, /*forcedJobId=*/0, resolvedTarget );
+			}
+			if( !omr.ok ) {
+				rr.message += " (target comparison not performed: the internal identity render failed -- " +
+					( omr.message.empty() ? std::string( "no reason reported" ) : omr.message ) + ")";
+				return;
+			}
+
+			std::vector<unsigned char> silRaw;
+			unsigned int silW = 0, silH = 0;
+			if( !DecodePngSilhouetteMask_( omr.png, silRaw, silW, silH ) ) {
+				rr.message += " (target comparison not performed: the internal identity render's image "
+				              "could not be decoded)";
+				return;
+			}
+
+			// Both masks now go through SketchFitTransform_ -- the ONE fit the
+			// sketch rasterizer used -- so the IoU below is a SHAPE match:
+			// invariant to where the part sits in the frame and to how big it
+			// is, which is deliberate (place is not what a sketch encodes).
+			std::vector<unsigned char> silCanvas, silMirrored;
+			std::size_t silFilled = 0, mirroredFilled = 0;
+			unsigned int silBBoxW = 0, silBBoxH = 0, mirBBoxW = 0, mirBBoxH = 0;
+			const bool haveSilhouette = NormalizeSilhouetteToCanvas_(
+				silRaw, silW, silH, /*mirrorX=*/false, silCanvas, silFilled, silBBoxW, silBBoxH );
+			NormalizeSilhouetteToCanvas_(
+				silRaw, silW, silH, /*mirrorX=*/true, silMirrored, mirroredFilled, mirBBoxW, mirBBoxH );
+
+			rr.targetPart                    = sketch.part;
+			rr.targetView                    = sketch.view;
+			rr.targetIou                     = MaskIoU_( sketch.mask, silCanvas );
+			rr.targetMirroredIou             = MaskIoU_( sketch.mask, silMirrored );
+			rr.targetSketchAreaFraction      = sketch.areaFraction;
+			rr.targetSilhouetteAreaFraction  =
+				static_cast<double>( silFilled ) / static_cast<double>( canvasPixels );
+			rr.targetSketchAspect            = sketch.aspect;
+			// -1.0 (omitted on the wire) when nothing rendered inside the
+			// frame: an aspect of an empty box is not a measurement.
+			rr.targetSilhouetteAspect        = ( haveSilhouette && silBBoxH > 0 )
+				? ( static_cast<double>( silBBoxW ) / static_cast<double>( silBBoxH ) ) : -1.0;
+			// The billboard fact: smallest 3D bbox extent over the largest.
+			// Same -1.0-means-not-computed convention as isolateBBoxCoverage,
+			// and it rides the SAME isolateBBoxUsable gate G1 established --
+			// an unusable box must not produce a ratio out of clamped zeros.
+			if( rr.isolateBBoxUsable ) {
+				double ext[3];
+				for( int a = 0; a < 3; ++a ) ext[a] = rr.isolateBBoxMax[a] - rr.isolateBBoxMin[a];
+				double lo = ext[0], hi = ext[0];
+				for( int a = 1; a < 3; ++a ) {
+					if( ext[a] < lo ) lo = ext[a];
+					if( ext[a] > hi ) hi = ext[a];
+				}
+				if( hi > 0.0 ) rr.targetThinnestAxisRatio = lo / hi;
+			}
+
+			rr.targetCompositePng = BuildTargetComparisonPng_( sketch.mask, silCanvas,
+			                                                    rr.targetCompositeWidth,
+			                                                    rr.targetCompositeHeight );
+			rr.targetApplied = true;
+
+			// The note.  NUMBERS ONLY -- no threshold, no verdict, no advice.
+			// A word like "close" or "poor" here would be the harness grading
+			// the model's imagination, which the design forbids outright
+			// (docs/agentic-redesign/77-imagination-target-design.md sec 5.4:
+			// the number is reported and never characterized).
+			std::string note = " (target \"" + rr.targetPart + "\": sketch view " + rr.targetView +
+				", rendered from the " + ( rr.targetVantage.empty() ? std::string( "unrecorded" )
+				                                                    : rr.targetVantage ) +
+				" vantage; iou " + SketchFact3dp_( rr.targetIou ) +
+				", mirroredIou " + SketchFact3dp_( rr.targetMirroredIou ) +
+				"; sketch area " + SketchFact3dp_( rr.targetSketchAreaFraction ) +
+				", silhouette area " + SketchFact3dp_( rr.targetSilhouetteAreaFraction ) +
+				"; sketch aspect " + SketchFact2dp_( rr.targetSketchAspect );
+			if( rr.targetSilhouetteAspect >= 0.0 )
+				note += ", silhouette aspect " + SketchFact2dp_( rr.targetSilhouetteAspect );
+			else
+				note += ", silhouette aspect not measured -- no pixel of the object landed in the frame";
+			if( rr.targetThinnestAxisRatio >= 0.0 )
+				note += "; thinnest/longest 3D bbox axis " + SketchFact3dp_( rr.targetThinnestAxisRatio );
+			if( !rr.targetCompositePng.empty() )
+				note += "; the image returned with this call is the [sketch | silhouette | overlay] "
+				        "composite, not the rendered frame";
+			note += ")";
+			rr.message += note;
 		}
 
 		// compare_to_reference ----------------------------------------------------
@@ -13716,6 +14438,49 @@ namespace RISE
 				return out;
 			}
 
+			// ---- G3b fix-round (2026-08-10) FIX 1: SNAPSHOT THE TARGET
+			// SKETCH AT SUBMISSION, ON THIS (the caller's) THREAD.
+			//
+			// THE BUG THIS CLOSES.  The submitted closure below runs on the
+			// controller's dedicated render worker thread.  Pre-fix it called
+			// RenderCore_ and ApplyTargetComparison_, each of which resolved
+			// `params.target` by NAME against mPartSketches -- while
+			// FilePartPlan, on the dispatcher thread, reassigns that very
+			// std::vector with no lock.  Concurrent read/write of a vector
+			// being reallocated is UB (use-after-free on the mask bytes), and
+			// it is REACHABLE: the raw JSON-RPC wire accepts
+			// {"async":true,"isolate":X,"target":Y}, and RenderAsync is public
+			// C++.  mPartSketches is single-threaded-caller state (see the
+			// class contract in AgentSession.h).
+			//
+			// WHY A SNAPSHOT AND NOT A LOCK.  (a) It closes the race without
+			// inventing a lock convention this state has never had, and
+			// without refusing a wire shape that is otherwise legal.  (b) It
+			// is the CORRECT semantics independently of the race: an async
+			// comparison should describe the plan AS IT WAS WHEN THE CALLER
+			// SUBMITTED, not whichever plan happens to be filed when the
+			// worker finishes.  (c) It removes the redundant double-resolve
+			// (RenderCore_ and ApplyTargetComparison_ each resolving the same
+			// name).  The copy is ~64KB (a 256x256 byte mask plus small
+			// strings) and is taken once, on the submitting thread.
+			//
+			// An unresolvable `target` FAILS THE SUBMISSION -- accepted=false
+			// with the same sentence a synchronous render puts in `message`,
+			// which the wire renders as status:"refused" (the same shape the
+			// no-controller refusal directly above already uses).  Nothing is
+			// queued, so there is no later result to carry the reason.
+			AgentPartSketch resolvedTarget;
+			bool haveResolvedTarget = false;
+			if( !params.target.empty() ) {
+				std::string targetError;
+				if( !ResolveTargetSketch( params.target, params.isolate, resolvedTarget, targetError ) ) {
+					out.accepted = false;
+					out.message  = targetError;
+					return out;
+				}
+				haveResolvedTarget = true;
+			}
+
 			// Submit a closure that runs the FULL render body (override
 			// capture/apply/render/restore, same as the synchronous path)
 			// via RenderCore_'s `assumeParked` mode -- it must NOT re-enter
@@ -13810,7 +14575,11 @@ namespace RISE
 			SceneEditController::RenderRefusal refusal =
 				SceneEditController::RenderRefusal::None;
 			const bool accepted = mController->SubmitAgentRenderAsync(
-				[this, params, ownJobIdCell]() {
+				// G3b fix-round (2026-08-10) FIX 1: `resolvedTarget` /
+				// `haveResolvedTarget` ride into the closure BY VALUE -- the
+				// worker consumes the submission-time copy and never reads
+				// mPartSketches.
+				[this, params, ownJobIdCell, resolvedTarget, haveResolvedTarget]() {
 					struct OutstandingGuard {
 						AgentSession&                       self;
 						std::shared_ptr<std::uint64_t>      ownJobIdCell;
@@ -13826,7 +14595,28 @@ namespace RISE
 							}
 						}
 					} outstandingGuard{ *this, ownJobIdCell };
-					AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
+					const AgentPartSketch* const targetSnapshot =
+						haveResolvedTarget ? &resolvedTarget : nullptr;
+					AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true,
+					                                   /*forcedJobId=*/0, targetSnapshot );
+					// G3b (2026-08-10): the async path measures a `target`
+					// comparison exactly as the synchronous Render() does --
+					// same helper, same one-extra-identity-render mechanism --
+					// with assumeParked=true, because this closure is STILL
+					// inside the worker's park and a nested re-park would
+					// self-deadlock on the controller's non-recursive mMutex
+					// (the same reason RenderCore_ itself takes the flag).
+					// Placed BEFORE the mLastAsyncRenderResult store below so
+					// the cached result a later render_wait echoes carries the
+					// target block, not a copy taken before the measurement.
+					// A no-op unless `target` was requested AND `r.ok`.
+					// G3b fix-round (2026-08-10) FIX 1: measured against the
+					// SUBMISSION-TIME snapshot -- the same copy RenderCore_
+					// above framed the vantage from -- so a FilePartPlan that
+					// lands while this render is in flight can neither race
+					// this read nor silently re-point the comparison at a
+					// different sketch.
+					ApplyTargetComparison_( params, r, /*assumeParked=*/true, targetSnapshot );
 					// Model-B F2 slice S2b: cache the FULL result (the whole
 					// point of RenderCore_ having computed it) so a caller
 					// that drove this render via render{"async":true} ->

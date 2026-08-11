@@ -1162,6 +1162,79 @@ int main()
 					planProblems.push_back( std::string( fname ) + ": does not describe the optional "
 						"`view` field -- a model reading this surface cannot declare a side or top "
 						"sketch, and every outline is then read as a front elevation" );
+				// G3b (2026-08-10): SIX MORE facts (NINE, with the three the
+				// fix round adds at the end of this block), on the CONSUMING side of
+				// the same artifact -- `render {isolate, target}`.  Same test,
+				// same list, because the sketch and the comparison are one
+				// mechanism: a surface that describes the filing but not the
+				// consultation leaves the target filed and never used, which
+				// is a named stop-rule condition in the design doc (sec 11).
+				// Each entry below is a fact a model CANNOT recover by
+				// experiment without burning a call, or one whose absence
+				// makes it misread what it is looking at.
+				if( src.find( "REQUIRES `isolate`" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that `target` "
+						"REQUIRES `isolate` -- the pairing is a -32602, so a surface that omits it "
+						"costs a round trip on the very first comparison" );
+				if( src.find( "looking along -Z" ) == std::string::npos ||
+				    src.find( "looking along -X" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state the AXIS-ALIGNED "
+						"vantages front/side/top resolve to -- a silhouette is uninterpretable "
+						"without knowing which direction produced it" );
+				if( src.find( "measures SHAPE ONLY, not position and not size" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the IoU is "
+						"bbox-normalized and measures SHAPE only -- a model that reads it as a "
+						"placement score will move objects to chase a number that cannot move" );
+				if( src.find( "REPLACES the rendered frame" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the "
+						"comparison composite REPLACES the rendered frame as the call's image -- a "
+						"model expecting its beauty frame back would misread the strip it gets" );
+				if( src.find( "sketch-only" ) == std::string::npos ||
+				    src.find( "silhouette-only" ) == std::string::npos ||
+				    src.find( "RED" ) == std::string::npos || src.find( "CYAN" ) == std::string::npos ||
+				    src.find( "WHITE" ) == std::string::npos || src.find( "BLACK" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not give the overlay tile's "
+						"colour legend (sketch-only RED / silhouette-only CYAN / overlap WHITE / "
+						"neither BLACK) -- the third tile is unreadable without it, and the composite "
+						"is the whole point of the call" );
+				if( src.find( "not scores: nothing is gated on them" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that nothing is "
+						"gated on the comparison numbers -- a surface that leaves that open invites "
+						"the model to optimize the metric, which is exactly the Goodhart failure the "
+						"design forbids (sec 5.4/sec 8)" );
+				// G3b fix-round (2026-08-10) FIX 2: THREE MORE, and they exist
+				// because the drift ALREADY HAPPENED -- these three caveats
+				// shipped in the MCP text and were missing from the chat
+				// codec, the SECOND slice running in which the codec surface
+				// lost caveats the MCP text carried (G1's bboxCoverage
+				// upper-bound disclosure was the first).  Pinned on BOTH
+				// surfaces so this particular drift cannot recur for these
+				// facts.  Each is a MISREAD, not merely a gap:
+				//   (7) the two area fractions are OF THE SHARED 256x256
+				//       CANVAS while the neighbouring `isolate.bboxCoverage`
+				//       is OF THE FRAME -- a model that conflates them reads
+				//       a shape statistic as a framing statistic and reframes
+				//       to chase it.
+				//   (8)/(9) `silhouetteAspect` and `thinnestAxisRatio` are
+				//       CONDITIONAL keys.  A surface that lists them as if
+				//       always present teaches a model to expect a key that
+				//       is legitimately absent, which reads as a broken
+				//       result rather than as the documented "not measurable
+				//       here" it actually is.
+				if( src.find( "filled fraction OF THAT SHARED CANVAS" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"sketchAreaFraction/silhouetteAreaFraction are fractions of the SHARED 256x256 "
+						"CANVAS rather than of the frame -- the neighbouring isolate.bboxCoverage IS a "
+						"frame fraction, so an unqualified 'area fraction' here is actively misleading" );
+				if( src.find( "OMITTED when no pixel of the object landed in the frame" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"`silhouetteAspect` is OMITTED when no pixel of the object landed in the frame "
+						"-- it is a conditional key, and a surface that presents it as always-present "
+						"makes a legitimate omission look like a broken result" );
+				if( src.find( "is OMITTED when the bounding box is unusable" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"`thinnestAxisRatio` is OMITTED when the bounding box is unusable -- same "
+						"conditional-key contract, same misread if it is presented as always-present" );
 			}
 			// G3a: the parts cap is a real dispatcher rejection, and the chat
 			// codec cannot derive it (its schemas are raw string literals), so
@@ -1200,9 +1273,73 @@ int main()
 			for( const std::string& p : planProblems )
 				std::cout << "  G2 PART-PLAN SURFACE DRIFT: " << p << std::endl;
 			Check( planProblems.empty(),
-			       "G2/G3a: both hand-authored tool-description surfaces state the SAME construction "
-			       "enum, the SAME non-binding / capped-refusal contract, and the SAME required-outline "
-			       "/ optional-view schema" );
+			       "G2/G3a/G3b: both hand-authored tool-description surfaces state the SAME construction "
+			       "enum, the SAME non-binding / capped-refusal contract, the SAME required-outline "
+			       "/ optional-view schema, and the SAME render{target} comparison contract "
+			       "(isolate pairing, named vantages, shape-only IoU, composite-replaces-frame, "
+			       "overlay legend, nothing-is-gated, canvas-not-frame area fractions, and both "
+			       "omitted-field conditions)" );
+
+			// G3b (2026-08-10): THE FILL-FRACTION AND FIT PINS.
+			//
+			// The comparison's whole validity rests on one invariant: the
+			// sketch mask and the rendered silhouette are normalized by the
+			// SAME transform.  If the two diverge the IoU stops being a
+			// shape match and becomes a comparison of two framings -- a
+			// plausible number, systematically wrong, with nothing failing.
+			// TWO independent pins, because the invariant has two halves:
+			//
+			//  (1) NUMERIC -- AgentSession.h's kPartSketchFillFraction and
+			//      AgentSession.cpp's kIsolateFrameFill are the same
+			//      literal.  These are deliberately separate constants (one
+			//      frames a 3D camera, one fits a 2D polygon) that MUST hold
+			//      the same value; G3a's comments on both say "change one,
+			//      change both", and this is what makes that enforceable.
+			//  (2) STRUCTURAL -- both mask producers go through the one
+			//      SketchFitTransform_ helper.  A shared constant alone is
+			//      not enough: the centering, the letterbox and the
+			//      aspect-preserving max() all have to agree too, and a
+			//      re-inlined formula on one side would pass pin (1) while
+			//      silently breaking the metric.
+			{
+				const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+				const std::string headerSrc  = slurp( agentDir / "AgentSession.h" );
+				const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+				auto literalAfter = []( const std::string& src, const std::string& anchor ) {
+					const size_t at = src.find( anchor );
+					if( at == std::string::npos ) return std::string();
+					size_t q = at + anchor.size();
+					std::string v;
+					while( q < src.size() &&
+					       ( std::isdigit( static_cast<unsigned char>( src[q] ) ) || src[q] == '.' ) )
+						v += src[q++];
+					return v;
+				};
+				const std::string sketchFill  = literalAfter( headerSrc,  "kPartSketchFillFraction = " );
+				const std::string isolateFill = literalAfter( sessionSrc, "kIsolateFrameFill = " );
+				Check( !sketchFill.empty() && !isolateFill.empty(),
+				       "G3b parity: parsed both fill-fraction literals" );
+				Check( sketchFill == isolateFill,
+				       "G3b: kPartSketchFillFraction (" + sketchFill + ") and kIsolateFrameFill (" +
+				       isolateFill + ") MUST be the same literal -- the sketch mask and the isolate "
+				       "render's silhouette are compared by IoU, and a divergence here biases every "
+				       "comparison silently" );
+
+				// Both call sites of the shared fit, plus the definition:
+				// three occurrences minimum (RasterizePartOutline_,
+				// NormalizeSilhouetteToCanvas_, and the function itself).
+				std::size_t fitUses = 0;
+				for( size_t at = sessionSrc.find( "SketchFitTransform_" );
+				     at != std::string::npos;
+				     at = sessionSrc.find( "SketchFitTransform_", at + 1 ) )
+					++fitUses;
+				Check( fitUses >= 3,
+				       "G3b: BOTH mask producers still call the shared SketchFitTransform_ (found " +
+				       std::to_string( fitUses ) + " references; the definition plus the sketch "
+				       "rasterizer plus the silhouette normalizer is 3).  A re-inlined fit on either "
+				       "side would keep the fill fraction equal and still break the IoU." );
+			}
 		}
 
 		// ---- render{imageMaxEdge} through the drivers' async detour -------

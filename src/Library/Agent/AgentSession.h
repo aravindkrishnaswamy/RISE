@@ -732,6 +732,39 @@ namespace RISE
 			//! written to the document, the GUI viewport, or the user's
 			//! camera.
 			std::string          isolate;
+			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a
+			//! part in the CURRENTLY FILED part plan (see FilePartPlan /
+			//! PartSketches).  "" (default) = no comparison, the render
+			//! behaves exactly as G1 shipped it.
+			//!
+			//! REQUIRES `isolate` -- a comparison measures ONE object's
+			//! silhouette against ONE sketch, and the plan-to-object join is
+			//! made BY THE CALLER here, at comparison time, rather than by
+			//! any naming convention or authoring-time field (design doc
+			//! docs/agentic-redesign/77-imagination-target-design.md §5.1).
+			//! `target` without `isolate` FAILS the render (res.ok=false)
+			//! stating the requirement; a name that is not in the filed plan
+			//! FAILS listing the filed part names; no plan filed at all FAILS
+			//! saying so -- the same fail-loud contract `view`/`light`/
+			//! `isolate` already use, never a silent skip.
+			//!
+			//! VANTAGE: when `target` resolves and the caller supplied NO
+			//! camera/view, the auto-framing uses the AXIS-ALIGNED vantage
+			//! matching the sketch's declared `view` (front/side/top -- see
+			//! AgentSession.cpp's IsolateVantageOffset) instead of G1's fixed
+			//! three-quarter one, because an axis-aligned silhouette is what
+			//! a human sketch actually is.  Everything else about the framing
+			//! (the exact 8-corner fit at kIsolateFrameFill) is unchanged.  A
+			//! caller-supplied camera still WINS, and the result then reports
+			//! vantage "caller-camera".
+			//!
+			//! The comparison itself costs ONE EXTRA internal render -- an
+			//! ephemeral objectmap identity pass at the same pose and dims,
+			//! so the compared mask is exact and mode-independent (it is
+			//! never read out of the beauty pixels).  On success the result
+			//! carries the `target*` fields below plus the
+			//! [sketch | silhouette | overlay] composite PNG.
+			std::string          target;
 			//! Opt-in for direct C++ callers.  The JSON-RPC/MCP render verb
 			//! defaults this to true for production beauty renders, requesting
 			//! albedo+normal+depth sidecars without changing beauty pixels.
@@ -1108,6 +1141,81 @@ namespace RISE
 			double                     isolateLongestEdge = 0.0;
 			bool                       isolateAutoFramed = false;
 			double                     isolateBBoxCoverage = -1.0;
+			//! G3b (2026-08-10): the measured facts of a `target` comparison
+			//! -- the isolated object's rendered silhouette against the
+			//! part's filed sketch.  ALL default to the "no comparison
+			//! happened" values.
+			//!
+			//! `targetApplied` is true ONLY when the render SUCCEEDED and the
+			//! comparison actually produced a measurement.  It gates the
+			//! whole block on the wire (AgentRpc.cpp), for exactly the reason
+			//! G1's fix-round gated the isolate block on `ok`: facts about an
+			//! image that never happened are the one defect this payload
+			//! cannot afford, since this project has measured that models ACT
+			//! on result facts.  A failed render, a failed internal identity
+			//! pass, or an unresolvable `target` all leave every field here
+			//! at its default and emit NO block.
+			//!
+			//! `targetPart` echoes the resolved part name; `targetView` is
+			//! the sketch's declared view (front/side/top); `targetVantage`
+			//! is what the comparison render ACTUALLY looked from --
+			//! "front"/"side"/"top" when this call auto-framed, or
+			//! "caller-camera" when the caller's own camera/view won (in
+			//! which case the silhouette is NOT the axis-aligned one the
+			//! sketch describes, and the number says so by naming the
+			//! vantage rather than by any adjective).
+			//!
+			//! `targetIou` and `targetMirroredIou` are intersection-over-
+			//! union in [0,1] of two 0/1 masks on the SHARED 256x256
+			//! normalized canvas: the filed sketch, and the rendered
+			//! silhouette cropped to its own pixel bounding box and fitted by
+			//! the SAME transform (kPartSketchFillFraction, aspect preserved,
+			//! centered -- see AgentSession.cpp's SketchFitTransform_, the
+			//! ONE definition both sites call).  The metric is therefore
+			//! translation- and scale-invariant BY CONSTRUCTION: it measures
+			//! SHAPE, not placement.  `targetMirroredIou` is the same number
+			//! with the silhouette flipped in X.  Both are pure integer pixel
+			//! counts over deterministic masks.
+			//!
+			//! `targetSketchAreaFraction` / `targetSilhouetteAreaFraction`
+			//! are each mask's filled-pixel fraction OF THAT SHARED CANVAS
+			//! (not of the render frame -- `isolateBBoxCoverage` is the frame
+			//! measurement), so the two are directly comparable to each
+			//! other.  `targetSketchAspect` is the AUTHORED outline bbox's
+			//! width/height; `targetSilhouetteAspect` is the rendered
+			//! silhouette's PIXEL bounding box width/height, or -1.0 when the
+			//! silhouette is empty (nothing rendered inside the frame) and an
+			//! aspect is undefined -- omitted on the wire in that case.
+			//!
+			//! `targetThinnestAxisRatio` is the isolated object's SMALLEST 3D
+			//! bounding-box extent over its largest, in [0,1] -- 1.0 for a
+			//! cube, near 0 for a plane or a billboard.  -1.0 means "not
+			//! computed" (the bbox was not usable -- see isolateBBoxUsable),
+			//! omitted on the wire, same sentinel convention as
+			//! `isolateBBoxCoverage`.
+			//!
+			//! `targetCompositePng` is the [sketch | silhouette | overlay]
+			//! strip: three kPartSketchCanvas-square tiles side by side.  It
+			//! is a REQUIREMENT of this slice, not a convenience -- the
+			//! transport keeps only the most recent tool-result image live,
+			//! so this composite is HOW the filed sketch re-enters the
+			//! model's context at the moment of consultation (design doc
+			//! §4.3 "Retention interaction").  Empty when !targetApplied or
+			//! when the encode failed.
+			bool                       targetApplied = false;
+			std::string                targetPart;
+			std::string                targetView;
+			std::string                targetVantage;
+			double                     targetIou = 0.0;
+			double                     targetMirroredIou = 0.0;
+			double                     targetSketchAreaFraction = 0.0;
+			double                     targetSilhouetteAreaFraction = 0.0;
+			double                     targetSketchAspect = 0.0;
+			double                     targetSilhouetteAspect = -1.0;
+			double                     targetThinnestAxisRatio = -1.0;
+			std::vector<unsigned char> targetCompositePng;
+			unsigned int               targetCompositeWidth = 0;
+			unsigned int               targetCompositeHeight = 0;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -1484,6 +1592,16 @@ namespace RISE
 		//!     (typically the RPC dispatcher's serving thread), same as the
 		//!     original slice-0a contract -- no mutex protects them, and
 		//!     none is added by this fix.
+		//!     G3b fix-round (2026-08-10): the PART-PLAN state
+		//!     (mPartPlan / mPartSketches -- written by FilePartPlan, read
+		//!     by FindPartSketch / ResolveTargetSketch) lives in THIS
+		//!     bucket, and the async render path honours that by SNAPSHOT
+		//!     rather than by a new lock: RenderAsync resolves
+		//!     `params.target` on the SUBMITTING thread and threads the
+		//!     resolved AgentPartSketch COPY into the worker closure, so
+		//!     nothing running on the controller's render worker ever
+		//!     touches mPartSketches.  See the `resolvedTarget` parameters
+		//!     on RenderCore_ / ApplyTargetComparison_.
 		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
 		//!     The Job behind mJob is SHARED: with a controller attached the
 		//!     GUI main thread commits to the same head while this session
@@ -3044,6 +3162,52 @@ namespace RISE
 			//! reads this, and nothing writes it but FilePartPlan.
 			const std::vector<AgentPartSketch>& PartSketches() const { return mPartSketches; }
 
+			//! G3b (2026-08-10): the filed sketch whose `part` is EXACTLY
+			//! `part`, or nullptr when no plan is filed or no entry matches.
+			//! Exact-name match, no normalization -- the part name is
+			//! free text the model authored, and a fuzzy match here would
+			//! silently compare against a sketch the caller did not name.
+			//! The pointer is into mPartSketches and is invalidated by the
+			//! next FilePartPlan; callers copy what they need.
+			const AgentPartSketch* FindPartSketch( const std::string& part ) const;
+
+			//! G3b: the filed part names, quoted and comma-separated, in
+			//! filing order -- the ONE rendering used by every `target`
+			//! failure message, so the list a caller is shown can never
+			//! disagree with the set FindPartSketch actually searches.
+			//! Empty string when no plan is filed.
+			std::string PartSketchNameList() const;
+
+			//! G3b: resolve a render's `target`/`isolate` pair against the
+			//! filed plan.  Returns false with a complete, factual
+			//! `outError` (already a whole sentence, ready to be a render's
+			//! `message`) for the three refusals: `target` without
+			//! `isolate`; no plan filed; a name that is not in the plan.
+			//! Returns true and fills `out` otherwise.  The ONE definition,
+			//! shared by RenderCore_ (which fails the render) and by the
+			//! wire layer's own pre-check, so the two cannot drift.
+			//! `target` empty is a programming error -- callers test that
+			//! first; this function then returns false with a generic error.
+			//!
+			//! G3b fix-round (2026-08-10) FIX 1: this reads mPartSketches, so
+			//! it is SINGLE-THREADED-CALLER like the rest of the part-plan
+			//! state -- call it only from the thread that owns this session
+			//! (the RPC dispatcher / GUI serving thread), NEVER from the
+			//! controller's render worker.  The async render path calls it
+			//! ONCE, at submission, and carries the resolved copy into the
+			//! worker; see RenderAsync.
+			bool ResolveTargetSketch( const std::string& target, const std::string& isolate,
+			                          AgentPartSketch& out, std::string& outError ) const;
+
+			//! G3b: the ONE sentence stating that `target` requires
+			//! `isolate`, with `target`'s value interpolated.  Shared by the
+			//! wire layer (which answers the missing pairing with a -32602 --
+			//! it is a pure param-SHAPE defect, checkable with no live scene)
+			//! and by ResolveTargetSketch (which answers it with a failed
+			//! render for a direct C++ caller that bypassed the wire), so a
+			//! caller cannot be told the requirement two different ways.
+			static std::string TargetRequiresIsolateMessage( const std::string& target );
+
 			//! Has the gate refused at least one call in this session?
 			//! Observation only.  True from the FIRST refusal onward, whether
 			//! the session is still being refused (count 1 or 2), about to
@@ -4177,9 +4341,78 @@ namespace RISE
 			//! (equivalent to the headless branch) and reports the
 			//! `forcedJobId` the caller already minted, rather than minting
 			//! or routing its own.
+			//! G3b fix-round (2026-08-10) FIX 1: `resolvedTarget` is the
+			//! CALLER-THREAD SNAPSHOT of `params.target`'s filed sketch --
+			//! nullptr whenever `params.target` is empty, and REQUIRED
+			//! (non-null) whenever it is not.  This function NEVER resolves a
+			//! target by name any more, because it runs on the controller's
+			//! render worker thread on the async path and `mPartSketches` is
+			//! single-threaded-caller state (see the class contract above).
+			//! A non-empty `target` with a null snapshot is a programming
+			//! error in a private caller and fails the render loudly rather
+			//! than silently skipping the comparison.
 			AgentRenderResult RenderCore_( const AgentRenderParams& params,
 			                                bool assumeParked = false,
-			                                std::uint64_t forcedJobId = 0 );
+			                                std::uint64_t forcedJobId = 0,
+			                                const AgentPartSketch* resolvedTarget = nullptr );
+
+			//! G3b (2026-08-10): measure the just-completed isolate render's
+			//! silhouette against `params.target`'s filed sketch and fill
+			//! `rr`'s `target*` fields.  A NO-OP unless `params.target` is
+			//! non-empty AND `rr.ok` -- the ok gate is the whole point (see
+			//! AgentRenderResult::targetApplied).
+			//!
+			//! Runs ONE extra internal render: an ephemeral
+			//! AgentRenderTarget::ObjectMap pass with the SAME `isolate`,
+			//! `target`, `camera`/`view`, width/height and
+			//! `fromAgentSurface` flag, so it resolves to bit-identical
+			//! framing and dims by construction rather than by a copied
+			//! constant.  The identity pass is used INSTEAD of the beauty
+			//! pixels because it is exact (one ray per pixel, flat identity
+			//! colours, background is the reserved #000000) and works under
+			//! every mode and quality -- a beauty silhouette would depend on
+			//! lighting, materials and tone mapping.  Wrapped in
+			//! EphemeralRenderCacheGuard so the segmentation frame never
+			//! displaces the caller's own last render in the image cache,
+			//! exactly like QueryObjectAt's identity pass.
+			//!
+			//! `assumeParked` is forwarded verbatim to the nested
+			//! RenderCore_: false from the synchronous Render() (its park has
+			//! already released by the time RenderCore_ returned), true from
+			//! RenderAsync's worker closure (still inside the worker's park,
+			//! where re-parking would self-deadlock) -- the SAME reasoning
+			//! RenderCore_'s own `assumeParked` doc gives.
+			//!
+			//! Never throws out; a failed identity pass leaves every
+			//! `target*` field at its default, emits no block, and appends a
+			//! factual note to `rr.message`.
+			//!
+			//! G3b fix-round (2026-08-10) FIX 1 -- THE SNAPSHOT.  `sketch` is
+			//! the resolved AgentPartSketch COPY the CALLER took, on the
+			//! CALLER's thread, at SUBMISSION time; this function no longer
+			//! calls ResolveTargetSketch/FindPartSketch at all.  Three
+			//! reasons, in order of weight:
+			//!   (a) THREAD SAFETY.  On the async path this runs on the
+			//!       controller's render worker while the dispatcher thread
+			//!       may be inside FilePartPlan reassigning `mPartSketches`
+			//!       -- an unsynchronized read of a std::vector being
+			//!       reallocated (UB, use-after-free).  A snapshot closes it
+			//!       without inventing a lock convention this state has never
+			//!       had, and without rejecting the (legal) async wire shape.
+			//!   (b) SEMANTICS, independent of the race: an async comparison
+			//!       must describe the plan AS IT WAS WHEN THE CALLER
+			//!       SUBMITTED, not whichever plan happens to be filed when
+			//!       the worker gets around to finishing.
+			//!   (c) it removes the redundant double-resolve -- RenderCore_
+			//!       and this function each used to resolve the same name.
+			//! Passed as a pointer purely so the no-target case (the common
+			//! one) needs no dummy object; null with a non-empty
+			//! `params.target` is a programming error and is reported in
+			//! `rr.message` rather than measured around.
+			void ApplyTargetComparison_( const AgentRenderParams& params,
+			                              AgentRenderResult& rr,
+			                              bool assumeParked,
+			                              const AgentPartSketch* resolvedTarget );
 
 			//! Resolve the effective BEAUTY display transform (exposure EV +
 			//! tone-curve enum) the agent's in-memory PNG encode must apply so

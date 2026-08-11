@@ -1408,7 +1408,24 @@ namespace RISE
 					std::string line = std::to_string( w ) + "x" + std::to_string( h ) + ", luma " + lumaBuf;
 					const std::string mode = result.get( "renderMode" ).asString();
 					if( !mode.empty() && mode != "beauty" ) line += " [" + mode + "]";
-					return line;
+					// G3b (2026-08-10): a `target` comparison is the one thing
+					// about a render a human watching the transcript cannot
+					// reconstruct from dims and luma, so the line reports it --
+					// the part and the measured IoU, nothing else.  A NUMBER,
+					// never a judgement: no "close", no "poor", no arrow, no
+					// comparison against any threshold, matching the payload's
+					// own no-characterization rule.  Absent for every render
+					// that did not carry one, so the existing line shape is
+					// unchanged.
+					if( result.has( "target" ) ) {
+						const JsonValue& tgt = result.get( "target" );
+						if( tgt.isObject() && tgt.has( "iou" ) ) {
+							char iouBuf[32];
+							std::snprintf( iouBuf, sizeof( iouBuf ), "%.2f", tgt.get( "iou" ).asNumber() );
+							line += "; " + tgt.get( "part" ).asString() + " vs sketch: iou " + iouBuf;
+						}
+					}
+					return TruncateForOutcome( line, 140 );
 				}
 
 				// 7. read_image / read_viewport: both always carry

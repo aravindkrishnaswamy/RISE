@@ -6754,6 +6754,28 @@ static void TestToolOutcomeDisplay()
 			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"beauty\"}}" );
 		Check( e3.toolSummaries[0].outcomeLine == "64x64, luma 0.00",
 		       "T38g: renderMode \"beauty\" is NOT annotated (the default)" );
+
+		// G3b (2026-08-10): a `target` comparison is the one thing about a
+		// render a human reading the transcript cannot reconstruct from dims
+		// and luma, so the line carries the part and the measured IoU -- and
+		// carries ONLY that.  A word like "close" or "poor" here would be the
+		// harness grading the model's imagination, which the design forbids
+		// outright (77-imagination-target-design.md sec 5.4).
+		const ChatTranscriptEntry e4 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"objectmap\","
+			"\"target\":{\"part\":\"wing\",\"view\":\"front\",\"vantage\":\"front\","
+			"\"iou\":0.4123,\"mirroredIou\":0.39}}}" );
+		Check( e4.toolSummaries[0].outcomeLine == "96x96, luma 0.00 [objectmap]; wing vs sketch: iou 0.41",
+		       "T38g/G3b: a target comparison appends \"<part> vs sketch: iou <2dp>\" -- a NUMBER, "
+		       "with no verdict word anywhere in it" );
+
+		// And a render with no comparison is byte-identical to before.
+		const ChatTranscriptEntry e5 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0}}" );
+		Check( e5.toolSummaries[0].outcomeLine == "96x96, luma 0.00",
+		       "T38g/G3b: a render WITHOUT a target block is unchanged" );
 	}
 
 	// (h) read_image / read_viewport -> "image <w>x<h>".

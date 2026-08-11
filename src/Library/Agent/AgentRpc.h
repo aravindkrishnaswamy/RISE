@@ -376,11 +376,12 @@
 //                                            the singular verb.  `results` is one entry
 //                                            per UNIQUE target, first-occurrence order.)
 //      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
-//                    light?,isolate?,imageMaxEdge?}
+//                    light?,isolate?,target?,imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
-//                                            legend?,isolate?,png_base64?,byteLength?,imageWidth?,imageHeight?}
+//                                            legend?,isolate?,target?,png_base64?,byteLength?,
+//                                            imageWidth?,imageHeight?}
 //                                           (`imageMaxEdge` (OPTIONAL number,
 //                                            clamped [16,1024]) returns the
 //                                            rendered PNG INLINE so an ordinary
@@ -504,6 +505,51 @@
 //                                            reached via a caller-supplied camera
 //                                            omits the bbox trio; a non-pinhole
 //                                            active camera omits bboxCoverage).)
+//                                           (G3b (2026-08-10) adds `target` (OPTIONAL
+//                                            string): the name of a part in the
+//                                            CURRENTLY FILED part plan (file_part_plan),
+//                                            whose rasterized sketch this render's
+//                                            isolated object is measured against.
+//                                            REQUIRES `isolate` -- the plan-part-to-
+//                                            object join is made by the CALLER, here;
+//                                            the missing pairing (and a non-string
+//                                            value) is a clean -32602, while an
+//                                            unknown part name or an unfiled plan
+//                                            FAILS the render with the filed part
+//                                            names in `message`, matching
+//                                            `view`/`light`/`isolate`.  With no
+//                                            caller camera the auto-frame uses the
+//                                            AXIS-ALIGNED vantage the sketch declared
+//                                            (front/side/top) rather than G1's
+//                                            three-quarter one; a caller camera still
+//                                            wins and `target.vantage` then reads
+//                                            "caller-camera".  Costs ONE extra
+//                                            internal objectmap identity render at the
+//                                            same pose and effective dims, so the
+//                                            compared silhouette is exact and
+//                                            independent of mode/quality/lighting; it
+//                                            is cache-guarded and never displaces the
+//                                            caller's own last render.  A SUCCESSFUL
+//                                            comparison (rr.ok) adds a nested `target`
+//                                            result object {part,view,vantage,iou,
+//                                            mirroredIou,sketchAreaFraction,
+//                                            silhouetteAreaFraction,sketchAspect,
+//                                            silhouetteAspect?,thinnestAxisRatio?,
+//                                            compositeWidth,compositeHeight} -- see
+//                                            AgentSession::AgentRenderResult's target*
+//                                            fields for what each measures and for the
+//                                            two -1.0-means-omitted sentinels.  It
+//                                            ALSO returns the
+//                                            [sketch|silhouette|overlay] composite
+//                                            under `png_base64` WITHOUT `imageMaxEdge`,
+//                                            REPLACING the rendered frame when
+//                                            `imageMaxEdge` is supplied -- the
+//                                            composite is how the filed sketch
+//                                            re-enters the model's context at
+//                                            consultation time (design doc
+//                                            docs/agentic-redesign/
+//                                            77-imagination-target-design.md sec 4.3).
+//                                            NOTHING is gated on any of the numbers.)
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.

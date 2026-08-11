@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:}, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -351,6 +351,48 @@ an object with a degenerate/unbounded bounding box FAILS the render
 (`ok:false`) with the available names in `message`, the same contract
 `view` and `light` use. Nothing is written to the document, the
 viewport, or the user's camera.
+
+## The `target` param: the isolated look, measured against your sketch
+
+`target` is an optional string param on `render` naming a part in the
+part plan filed with `file_part_plan`. It requires `isolate` -- the
+join between a plan part and a scene object is made in this call, by
+you. With no `camera`/`view` of your own the render uses the
+axis-aligned vantage the sketch declared (front looks along -Z, side
+along -X, top straight down); your own camera still wins, and the
+result's `target.vantage` then reads `caller-camera`.
+
+```json
+{"method": "render", "params": {"isolate": "dragon_wing", "target": "wing"}}
+```
+
+The comparison runs one extra internal identity render at the same
+pose and dims, so the silhouette it measures is exact and does not
+depend on `mode`, `quality`, lighting, or materials. The result gains
+a `target` object: `part`, `view`, `vantage`, `iou`, `mirroredIou`,
+`sketchAreaFraction`, `silhouetteAreaFraction`, `sketchAspect`,
+`silhouetteAspect`, `thinnestAxisRatio`, and the composite's dims.
+`iou` is intersection-over-union of the two silhouettes after both are
+cropped to their own bounding box and fitted onto the same 256x256
+canvas, so it measures shape alone -- not position, not size;
+`mirroredIou` is the same number with the render flipped left-to-right.
+`sketchAreaFraction` and `silhouetteAreaFraction` are each mask's
+filled fraction **of that shared 256x256 canvas**, not of the frame --
+`isolate.bboxCoverage`, sitting right next to them in the same result,
+is the frame measurement, and the two are not comparable.
+`thinnestAxisRatio` is the object's smallest 3D bounding-box extent
+over its largest. Two of these keys are conditional and are OMITTED
+rather than sent as a measured-looking zero: `silhouetteAspect` when
+no pixel of the object landed in the frame, and `thinnestAxisRatio`
+when the object's bounding box is unusable. Nothing is gated on any of
+these numbers.
+
+The image returned with the call is a `[sketch | silhouette | overlay]`
+strip: your sketch, the rendered silhouette, and both together with
+sketch-only red, silhouette-only cyan, overlap white, and neither
+black. It replaces the rendered frame as this call's image, with or
+without `imageMaxEdge`. An unknown part name, or no filed plan, FAILS
+the render (`ok:false`) with the filed part names in `message`.
 
 ## Escalation ladder (cost, cheapest first)
 

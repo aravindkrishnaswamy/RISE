@@ -6632,6 +6632,243 @@ static void RunAgentSurfaceRenderCapTest()
 	std::printf( "=== R1b agent-surface render caps: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// G3b fix-round (2026-08-10) FIX 1: the ASYNC `target` comparison runs
+// off a SUBMISSION-TIME SNAPSHOT of the filed sketch.
+//
+// THE DEFECT THIS PINS.  G3b's `render{isolate,target}` shipped with
+// its sketch lookup done BY NAME inside RenderCore_ and again inside
+// ApplyTargetComparison_.  On the async path both of those run on the
+// controller's dedicated render worker thread, and both read
+// AgentSession::mPartSketches -- which FilePartPlan REASSIGNS on the
+// dispatcher thread with no lock.  Concurrent read/write of a
+// std::vector being reallocated is UB (use-after-free on the mask
+// bytes), and it is reachable from the ordinary wire: the raw JSON-RPC
+// `render` verb accepts {"async":true,"isolate":X,"target":Y} (the
+// target parse block never consults `async`), and RenderAsync is public
+// C++ besides.
+//
+// THE FIX, and therefore what this test asserts.  Resolution now
+// happens EXACTLY ONCE, on the SUBMITTING thread, and the resolved
+// AgentPartSketch COPY is threaded into the worker closure; the worker
+// never touches session part-plan state.  That is also the correct
+// SEMANTICS independently of the race -- an async comparison must
+// describe the plan as it was when the caller submitted.  So the pin is
+// a semantic one: file plan A, submit, IMMEDIATELY re-file a
+// deliberately different plan B under the SAME part name, and require
+// the completed render's echoed facts to describe A.
+//
+// WHICH ASSERTION GOES RED ON A REGRESSION.  (FIX1-b1) and (FIX1-b2).
+// Restore name-resolution on the worker thread and
+// ApplyTargetComparison_ re-resolves AFTER the (deliberately slow)
+// render, by which time plan B has long since landed -- the echo then
+// reports view "top" and sketchAspect 4.0 instead of "front" and 1.0.
+// The 400ms render is what makes that ordering deterministic rather
+// than a coin flip; the underlying data race has no reliable
+// observable, so the semantics are the practical pin.
+//////////////////////////////////////////////////////////////////////
+static std::vector<AgentSession::AgentPartPlanEntry> AsyncTargetPlan( const char* outline,
+                                                                      const char* view )
+{
+	AgentSession::AgentPartPlanEntry e;
+	e.part         = "ball";
+	e.construction = "primitive";
+	e.outline      = outline;
+	e.view         = view;
+	return std::vector<AgentSession::AgentPartPlanEntry>( 1, e );
+}
+
+static void RunAsyncTargetSnapshotTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (G3b FIX 1) async target comparison snapshots the plan at submission ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_target.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the async-target scene to a temp file" );
+
+	// ---- (a) end-to-end through the REAL wire, and (b) THE RACE PIN,
+	//      in one flight.
+	{
+		SlowRasterizeJob* pJob = new SlowRasterizeJob();
+		// 400ms per Rasterize() -- long enough that the re-file below (a
+		// handful of microseconds after the submit returns) is GUARANTEED
+		// to land before the worker reaches the comparison, which is what
+		// makes the regression deterministic rather than a coin flip.
+		pJob->SetSleepMs( 400 );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "SlowRasterizeJob loads the async-target scene via the CST path" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "AgentSession::WrapJob wraps the async-target Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+			AgentRpcDispatcher rpc( std::move( owned ) );
+
+			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			       "plan A files: a unit-SQUARE `ball` sketch (bbox aspect 1.0) declared FRONT" );
+
+			JsonValue submitEnv; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true,"
+				"\"isolate\":\"obj_sph\",\"target\":\"ball\"}}" ), submitEnv, err ),
+				"the async target submit response parses" );
+			Check( submitEnv.get( "result" ).get( "status" ).asString() == "submitted",
+			       "MONEY ASSERTION (FIX1-a1): the RAW WIRE really accepts "
+			       "{async:true, isolate, target} -- the shape the P1 called reachable is a "
+			       "supported submission, not a rejected one" );
+			const double jobIdD = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+			Check( jobIdD > 0.0 && ( static_cast<std::uint64_t>( jobIdD ) % 2 ) == 0,
+			       "and it mints a real, EVEN (coordinator-tracked) job id" );
+
+			// ---- THE RACE.  Replace the plan, under the SAME part name,
+			// with one whose every reported fact differs, while the worker
+			// is still inside the render.  Pre-fix this is an unsynchronized
+			// write against two live reads on the worker thread; post-fix
+			// the worker holds its own copy and this is simply invisible to
+			// the in-flight comparison.
+			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 4 0; 4 1; 0 1", "top" ) ).ok,
+			       "plan B re-files WHILE the async render is in flight: same part name `ball`, "
+			       "bbox aspect 4.0, declared TOP" );
+
+			JsonValue waitEnv;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+				std::to_string( static_cast<unsigned long long>( jobIdD ) ) +
+				",\"timeoutMs\":30000}}" ), waitEnv, err ),
+				"the render_wait response parses" );
+			const JsonValue& waitResult = waitEnv.get( "result" );
+			Check( waitResult.get( "completed" ).asBool(), "the async target render completed" );
+			Check( waitResult.has( "result" ),
+			       "and render_wait echoes the full cached render result" );
+			const JsonValue& rr = waitResult.get( "result" );
+			Check( rr.get( "ok" ).asBool(),
+			       std::string( "the async target render succeeded: " ) + rr.get( "message" ).asString() );
+			Check( rr.has( "target" ),
+			       "MONEY ASSERTION (FIX1-a2): the render_wait echo carries the nested `target` "
+			       "facts -- the async path measures the comparison exactly as the sync path does "
+			       "(this also closes review P2-3: the echo was previously untested)" );
+			const JsonValue& tgt = rr.get( "target" );
+			Check( tgt.get( "part" ).asString() == "ball", "the echoed part name is the one submitted" );
+
+			Check( tgt.get( "view" ).asString() == "front",
+			       "MONEY ASSERTION (FIX1-b1): the echoed sketch VIEW is \"front\" -- plan A, the "
+			       "plan AS IT WAS AT SUBMISSION -- and NOT plan B's \"top\".  Goes RED the moment "
+			       "anyone restores name-resolution on the worker thread." );
+			Check( tgt.get( "vantage" ).asString() == "front",
+			       "and the vantage the render actually framed from agrees with it -- one snapshot "
+			       "feeds BOTH the framing and the measurement, so they cannot disagree" );
+			const double echoedAspect = tgt.get( "sketchAspect" ).asNumber( -1.0 );
+			std::printf( "  echoed sketchAspect %.4f (plan A square = 1.0; plan B = 4.0)\n", echoedAspect );
+			Check( echoedAspect > 0.9 && echoedAspect < 1.1,
+			       "MONEY ASSERTION (FIX1-b2): the echoed sketchAspect is plan A's 1.0, NOT plan "
+			       "B's 4.0 -- the second red-prove of the same snapshot, on a number rather than "
+			       "a name, so a partial revert cannot slip through" );
+			Check( tgt.get( "compositeWidth" ).asNumber( 0.0 ) == 768.0 &&
+			       tgt.get( "compositeHeight" ).asNumber( 0.0 ) == 256.0,
+			       "the echoed composite DIMS are the [sketch|silhouette|overlay] strip's" );
+			Check( !rr.has( "png_base64" ) && !rr.has( "byteLength" ),
+			       "MONEY ASSERTION (FIX1-a3): the render_wait echo carries the target FACTS and "
+			       "NEVER image bytes -- RenderResultJson has no image branch, so an async caller "
+			       "that wants the composite reads it back deliberately rather than being billed "
+			       "for it on every poll" );
+
+			// The session's own state is plan B now -- the snapshot is a
+			// copy taken for the render, never a rollback of the session.
+			Check( session->PartSketches().size() == 1 &&
+			       session->PartSketches()[0].view == "top",
+			       "and the SESSION's live plan is still plan B -- the snapshot pinned the render, "
+			       "not the session" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	// ---- (c) an unresolvable `target` FAILS THE SUBMISSION.
+	//      Nothing is queued, so there is no later result to carry the
+	//      reason -- the refusal has to be the submit's own answer, in
+	//      the same shape (and the same sentences) the sync render uses.
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "a plain Job loads the async-target scene for the refusal cases" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "WrapJob wraps the refusal-case Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+
+			AgentRenderParams p;
+			p.isolate = "obj_sph";
+			p.target  = "ball";
+			const AgentSession::AgentRenderAsyncResult noPlan = session->RenderAsync( p );
+			Check( !noPlan.accepted,
+			       "MONEY ASSERTION (FIX1-c1): with NO plan filed, the async submission is REFUSED "
+			       "at submit time -- the resolution now happens on this thread, before anything "
+			       "is queued" );
+			Check( noPlan.renderJobId == 0, "and no job id is minted: nothing was queued" );
+			Check( noPlan.message.find( "no part plan has been filed" ) != std::string::npos,
+			       "with the SAME sentence a synchronous render puts in `message`" );
+
+			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			       "the plan files" );
+
+			p.target = "wing";
+			const AgentSession::AgentRenderAsyncResult unknown = session->RenderAsync( p );
+			Check( !unknown.accepted,
+			       "MONEY ASSERTION (FIX1-c2): an UNKNOWN part name fails the SUBMISSION" );
+			Check( unknown.message.find( "unknown target part \"wing\"" ) != std::string::npos &&
+			       unknown.message.find( "\"ball\"" ) != std::string::npos,
+			       "and the refusal names the part AND lists the filed names, exactly as the sync "
+			       "render's failure does" );
+
+			AgentRenderParams unpairedParams;
+			unpairedParams.target = "ball";
+			const AgentSession::AgentRenderAsyncResult unpaired = session->RenderAsync( unpairedParams );
+			Check( !unpaired.accepted &&
+			       unpaired.message.find( "requires `isolate`" ) != std::string::npos,
+			       "MONEY ASSERTION (FIX1-c3): `target` without `isolate` fails the async "
+			       "submission too -- a direct C++ caller that bypassed the wire's -32602 still "
+			       "cannot get an unpaired comparison queued" );
+
+			// And the wire renders a refused submission the way it renders
+			// every other one: status "refused", job id 0, reason in message.
+			AgentRpcDispatcher rpc( std::move( owned ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true,"
+				"\"isolate\":\"obj_sph\",\"target\":\"wing\"}}" ), env, err ),
+				"the unknown-part async submit response parses" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "status" ).asString() == "refused",
+			       "MONEY ASSERTION (FIX1-c4): the wire reports status:\"refused\" for an "
+			       "unresolvable async target -- the SAME refusal shape the no-controller case "
+			       "already uses, so no new wire contract is invented" );
+			Check( res.get( "renderJobId" ).asNumber( 1.0 ) == 0.0, "with renderJobId 0" );
+			Check( res.get( "message" ).asString().find( "unknown target part" ) != std::string::npos,
+			       "and the reason on the wire" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+	std::printf( "=== (G3b FIX 1) async target snapshot: %d passed, %d failed (cumulative) ===\n",
+		g_pass, g_fail );
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -6688,6 +6925,7 @@ int main()
 	RunRefusalCauseAttributionTest();
 	RunPinnedFieldNotStaleAfterCompletionTest();
 	RunAgentSurfaceRenderCapTest();
+	RunAsyncTargetSnapshotTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -470,6 +470,19 @@ int main()
 			            .asString().find( "at least 3" ) != std::string::npos,
 			       "G3a: and the outline description states the 3-point minimum the dispatcher enforces" );
 		}
+		// G3b (2026-08-10): the CONSUMING half of the same artifact -- an MCP
+		// client that is told how to file a sketch and not how to consult it
+		// has the target filed and never used, a named stop-rule condition in
+		// the design doc (sec 11).  SourceHygieneTest pins the description's
+		// six load-bearing facts against the chat codec's; this pins that the
+		// property EXISTS on the generated schema at all.
+		{
+			JsonValue tool = FindTool( "render" );
+			const JsonValue& props = tool.get( "inputSchema" ).get( "properties" );
+			Check( props.has( "target" ), "G3b: the MCP render schema declares the `target` property" );
+			Check( props.get( "target" ).get( "type" ).asString() == "string",
+			       "G3b: and types it as a string" );
+		}
 	}
 
 	//----------------------------------------------------------------------
@@ -581,6 +594,66 @@ int main()
 		Check( foundImage,
 		       "G3a MONEY ASSERTION: tools/call(file_part_plan) content includes a {type:\"image\"} "
 		       "block -- the model SEES its own sketch on the MCP transport too" );
+	}
+
+	//----------------------------------------------------------------------
+	// G3b (2026-08-10): tools/call(render {isolate, target}) -- the
+	// [sketch | silhouette | overlay] composite must ALSO arrive as a real
+	// MCP image content block, for exactly the reason the sketch does: the
+	// composite is how the filed sketch re-enters the model's context at
+	// consultation time (design doc sec 4.3), and a base64 field buried in a
+	// text block is not something a client is required to recognize as a
+	// picture.  Relies on the file_part_plan call above having filed "wing".
+	//
+	// The SCOPE half matters as much as the presence half: a plain `render`
+	// (no target) must STILL get no image block -- that pre-existing gap is
+	// its own spun-off follow-up, and widening it here would change the
+	// response shape of the most-called verb on this transport as a side
+	// effect of shipping the comparison.  Both halves are asserted.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] G3b render{isolate,target} -> MCP image content block (the comparison composite)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "isolate", JsonValue::MakeString( "obj_sph" ) );
+		args.set( "target",  JsonValue::MakeString( "wing" ) );
+		args.set( "mode",    JsonValue::MakeString( "objectmap" ) );
+
+		const std::string resp = mcp.HandleLine( ReqToolCall( 24, "render", args ) );
+		JsonValue env = ParseResponse( resp, 24 );
+		Check( !env.has( "error" ), "tools/call(render{target}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{target}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			foundImage = true;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "G3b: the comparison composite decodes to the \\x89PNG signature" );
+		}
+		Check( foundImage,
+		       "G3b MONEY ASSERTION: tools/call(render{isolate,target}) content includes a "
+		       "{type:\"image\"} block -- the composite is the point of the call, so it cannot "
+		       "arrive as text only" );
+	}
+	std::printf( "[tools/call] G3b a PLAIN render still returns text only (the spun-off gap stays open)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 32 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 25, "render", args ) );
+		JsonValue env = ParseResponse( resp, 25 );
+		const JsonValue& content = env.get( "result" ).get( "content" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i )
+			if( content.at( i ).get( "type" ).asString() == "image" ) foundImage = true;
+		Check( !foundImage,
+		       "G3b SCOPE ASSERTION: a render WITHOUT `target` still returns no image content block "
+		       "even with imageMaxEdge -- the pre-existing render/MCP gap is a separate follow-up and "
+		       "was deliberately NOT widened here.  Goes RED (and should be deleted) the day that "
+		       "follow-up lands." );
 	}
 
 	//----------------------------------------------------------------------

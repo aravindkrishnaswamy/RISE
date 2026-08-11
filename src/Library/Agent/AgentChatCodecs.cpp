@@ -653,7 +653,11 @@ namespace RISE
 					"part that is only a few pixels (or in shadow, or behind something) in the "
 					"full scene becomes large enough to actually evaluate. mode:\"normals\" or "
 					"mode:\"facets\" read form best there -- surface direction and tessellation, "
-					"with no material or lighting in the way. For the CHEAPEST possible orientation check (is the "
+					"with no material or lighting in the way. Add `target` with the name of a part "
+					"you filed in file_part_plan and the same call also measures that object's "
+					"silhouette against the sketch you drew for it: it returns iou/mirroredIou plus a "
+					"[sketch | silhouette | overlay] image, rendered from the axis-aligned vantage your "
+					"sketch declared. For the CHEAPEST possible orientation check (is the "
 					"geometry/camera roughly right, nothing else), set quality:\"draft\" -- "
 					"it renders through a fixed studio-preview shader that IGNORES the "
 					"scene's authored materials and lighting entirely, capped at 4 samples. "
@@ -695,7 +699,21 @@ namespace RISE
 						"\"Optional name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with every mode above. If both view and camera are supplied, view wins. PINHOLE-ONLY: the override carries pose+FOV and cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (ok:false) naming the unsupported type rather than silently using the active camera's optics. An unresolvable name likewise FAILS with the available-name list in message.\"},"
 						"\"isolate\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of ONE standard_object to render BY ITSELF, with the camera automatically framed on it (a three-quarter view filling the frame). Every other object is hidden for this one render -- it is hit by no camera, bounce, or shadow ray -- and the document is untouched. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full scene: a 20-pixel wing in a wide night shot tells you nothing about its shape. mode:\\\"normals\\\" or mode:\\\"facets\\\" read FORM best here (surface direction / tessellation, no material or lighting to confuse the read); mode:\\\"beauty\\\" still works but note that a hidden emissive object also stops lighting the scene, so a scene lit ONLY by other objects' emissive materials isolates dark -- explicit lights and the environment are unaffected. If you also pass camera or view, YOURS wins and no auto-framing happens (the result says which). On success (ok:true) the result carries an `isolate` object with the resolved name, world bbox/longest edge (omitted if the bbox turned out degenerate/unbounded), autoFramed, and bboxCoverage: the fraction of the frame covered by the object's PROJECTED BOUNDING BOX -- an UPPER BOUND on its silhouette, not a pixel count, so it can OVERSTATE a thin or diagonal silhouette by a large factor (e.g. a wing seen edge-on); for an EXACT per-pixel count use mode:\\\"objectmap\\\" and read the legend's pixelCount instead. bboxCoverage is OMITTED (not approximated) whenever the active camera is not a pinhole, since the projected-bbox formula assumes pinhole projection; message says so when that happens. An unknown name, a generator name that covers several instances (pass one instance's full name), a CSG operand (message names the composite that consumes it), or an object with a degenerate/unbounded bbox and no camera/view of your own FAILS the render (ok:false) with the available names in message.\"},"
-						"\"light\":{\"type\":\"string\",\"description\":"
+						// G3b fix-round (2026-08-10) FIX 2.  THIS text is the CANONICAL
+						// statement of the `target` contract; AgentMcpAdapter.cpp's `target`
+						// StringProp MIRRORS it, sentence for sentence, with the wording kept
+						// literally identical wherever the two surfaces' differing escape
+						// conventions allow -- so SourceHygieneTest's fact pins can be ONE
+						// substring per fact, checked against BOTH files.  This is the SECOND
+						// slice running in which the codec surface silently dropped caveats the
+						// MCP text carried (G1's bboxCoverage upper-bound disclosure was the
+						// first); three were missing here -- the canvas-vs-frame distinction for
+						// the two area fractions, and the two omitted-field conditions.  A caveat
+						// added to only ONE of these surfaces is a caveat added to NEITHER: every
+						// provider reads this one, and the MCP hosts read the other.
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of a part in the part plan you filed with file_part_plan -- compares that part's SKETCH against what the isolated object actually renders as. REQUIRES `isolate` (you make the plan-part-to-object join yourself, here); target without isolate is rejected. When you supply no camera or view, the render uses the AXIS-ALIGNED vantage your sketch declared: front = looking along -Z (world +X right, +Y up), side = looking along -X (world -Z right, +Y up), top = looking straight down (world +X right, -Z up in frame). Your own camera or view still wins, and the result's target.vantage then reads \\\"caller-camera\\\" instead of the view name. The comparison runs one extra internal identity render at the same pose and dims, so the silhouette it measures is exact and does not depend on mode, quality, lighting or materials. On success the result carries a `target` object: {part, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. iou is intersection-over-union in [0,1] of the two silhouettes after BOTH are cropped to their own bounding box and fitted to the same 256x256 canvas -- so it measures SHAPE ONLY, not position and not size; mirroredIou is the same number with the render flipped left-right. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. The image returned with this call is a [sketch | silhouette | overlay] strip -- three 256x256 tiles: your sketch, the rendered silhouette, and both together with sketch-only in RED, silhouette-only in CYAN, overlap in WHITE and neither in BLACK. That composite REPLACES the rendered frame as this call's image (imageMaxEdge is not needed and is not used when target is given); re-render without target, or call read_image, if you want the frame itself. An unknown part name, or no filed plan at all, FAILS the render (ok:false) with the filed part names in message.\"},"
+					"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"},"
@@ -1274,7 +1292,10 @@ namespace RISE
 			//! True + the base64 payload iff this call is one of the
 			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
 			//! non-empty png_base64 string.  compare_to_reference (visual:true),
-			//! render (imageMaxEdge:N) and read_viewport all reuse read_image's
+			//! render (imageMaxEdge:N, OR -- G3b, 2026-08-10 -- a `target`
+			//! comparison, which returns its [sketch | silhouette | overlay]
+			//! composite with or without imageMaxEdge and in place of the
+			//! rendered frame) and read_viewport all reuse read_image's
 			//! "png_base64" field name deliberately, so this ONE predicate --
 			//! and every retention/elision policy built on it -- covers all
 			//! four without a second code path.  The field test is what makes

@@ -948,6 +948,13 @@ namespace RISE
 						"OPTIONAL name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with EVERY `mode` above. Equivalent to transferring the full shared pose (location, lookat, up, Euler orientation, target orientation) plus a pinhole FOV, by name instead of raw numbers -- if both are supplied, `view` wins. PINHOLE-ONLY: the override cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (`ok:false`) naming the unsupported type rather than silently rendering with the active camera's optics. An ONB-style active camera that cannot round-trip this pose also fails loudly. An unresolvable name likewise FAILS with the available-name list in `message`. Use this to compare the SAME render mode from several saved angles without re-deriving camera math each time." ) );
 					props.set( "isolate", StringProp(
 						"OPTIONAL name of ONE standard_object to render BY ITSELF, with the camera AUTO-FRAMED on that object's bounding box (a fixed three-quarter vantage at the distance that fills ~85% of the frame). Every OTHER object is transiently hidden for this one render -- hit by no camera, secondary, or shadow ray -- and nothing is written to the document, the viewport, or the user's camera. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full frame: a 20-pixel wing in a wide night shot tells you nothing about its shape, and a form you never evaluated is a form you cannot fix. mode:\"normals\" and mode:\"facets\" read FORM best here (surface direction / raw tessellation, with no material or lighting confounding the read); mode:\"beauty\" composes too, but a hidden emissive OBJECT also stops acting as a light, so a scene lit ONLY by other objects' emissive materials isolates DARK -- explicit light chunks and the environment are unaffected. Composes with EVERY `mode` and with quality:\"draft\" (object visibility is Scene state, not rasterizer state), so unlike `light` it is never silently ignored. If `camera` or `view` is ALSO supplied, THAT camera wins and no auto-framing happens -- the result's `isolate.autoFramed` says which. A successful isolate render (ok:true) adds an `isolate` object to the result: {object, bboxMin[3]?, bboxMax[3]?, longestEdge?, autoFramed, bboxCoverage?} -- bboxMin/bboxMax/longestEdge are OMITTED if the object's bounding box turned out degenerate/unbounded (only reachable when you also supplied `camera`/`view`, since that case otherwise fails the render outright). `bboxCoverage` is the fraction of the frame covered by the object's PROJECTED BOUNDING BOX (an upper bound on its silhouette, exact and identical across modes -- it can OVERSTATE a thin or diagonal silhouette by a large factor, e.g. a wing seen edge-on; for an EXACT per-pixel count use mode:\"objectmap\" and read the legend's pixelCount). `bboxCoverage` is OMITTED (not an approximation) whenever the ACTIVE camera is not a pinhole -- the projected-bbox formula assumes a pinhole's tan(fov/2) projection, which does not apply to thin-lens/fisheye/orthographic; `message` says so when it happens. An unknown name, a GENERATOR name covering several instances (isolate one instance's full name instead), a CSG operand (isolate the composite the message names), or an object whose bounding box is degenerate/unbounded with NO caller-supplied camera FAILS the render (ok:false) with the available object names in `message`." ) );
+					// G3b fix-round (2026-08-10) FIX 2: this text MIRRORS AgentChatCodecs.cpp's
+					// `target` description, which is the CANONICAL one -- change that first, then
+					// mirror here, keeping the sentences literally identical.  SourceHygieneTest
+					// pins the load-bearing sentences on BOTH files, so a caveat added to only one
+					// of them fails the build.
+					props.set( "target", StringProp(
+						"OPTIONAL name of a part in the part plan filed with file_part_plan -- compares that part's SKETCH against the silhouette the isolated object actually renders as. REQUIRES `isolate` (the plan-part-to-object join is made HERE, by you, at comparison time); `target` without `isolate` is a clean -32602 stating the requirement. VANTAGE: with no `camera`/`view` of your own, the render uses the AXIS-ALIGNED vantage the sketch declared -- front = looking along -Z (world +X right, world +Y up), side = looking along -X (world -Z right, world +Y up), top = looking straight down (world +X right, world -Z up in frame) -- instead of the three-quarter one `isolate` uses alone. A caller-supplied `camera`/`view` still WINS, and `target.vantage` then reads \"caller-camera\" rather than a view name. The comparison costs ONE extra internal identity render at the same pose and dims, so the measured silhouette is exact and independent of `mode`, `quality`, lighting and materials. On success (ok:true) the result gains a `target` object: {part, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. `iou` is intersection-over-union in [0,1] of the two masks after BOTH are cropped to their own bounding box and fitted onto the same 256x256 canvas by the same transform -- so it measures SHAPE ONLY, not position and not size (it is invariant to where the part sits and how big it is); `mirroredIou` is the same measurement with the rendered silhouette flipped in X. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. IMAGE: the result carries a [sketch | silhouette | overlay] composite -- three 256x256 tiles: the filed sketch, the rendered silhouette, and both together with sketch-only RED, silhouette-only CYAN, overlap WHITE, neither BLACK (each tile carries its own black background, so the strip reads the same on a light or a dark page). That composite rides back as this call's image WITHOUT `imageMaxEdge`, and REPLACES the rendered frame when `imageMaxEdge` is also supplied -- re-render without `target`, or call read_image, to get the frame itself. An unknown part name, or no filed part plan at all, FAILS the render (ok:false) with the filed part names in `message`." ) );
 					props.set( "light", StringProp(
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					props.set( "perception", BoolProp(
@@ -959,7 +966,8 @@ namespace RISE
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
 						"per-object `legend` when mode:\"objectmap\", an `isolate` object when "
-						"`isolate` was applied, and an `agentRenderCap` object "
+						"`isolate` was applied, a `target` object with the measured sketch "
+						"comparison when `target` was applied, and an `agentRenderCap` object "
 						"when the agent-surface cap described next actually reduced this render). "
 						"AGENT RENDERS ARE CAPPED at 256px on the long edge and 16 samples/pixel -- "
 						"omitted width/height/samples still render, just at or under those caps "
@@ -1550,8 +1558,33 @@ namespace RISE
 					// on this transport means a real image content block.  A
 					// filing whose encode produced nothing still returns its
 					// text block, via the same `!b64.empty()` guard.
+					//
+					// G3b (2026-08-10): a `render` that carries a TARGET
+					// COMPARISON joins the set too -- and ONLY that render.
+					// The comparison's whole mechanism is that the
+					// [sketch | silhouette | overlay] composite puts the filed
+					// sketch back in front of the model at the moment of
+					// consultation (design doc
+					// docs/agentic-redesign/77-imagination-target-design.md
+					// sec 4.3), which on this transport means a real image
+					// content block, not a base64 string a client has to know
+					// to decode.  The presence of the `target` object is the
+					// discriminator -- it is set only when the comparison
+					// actually produced a measurement.
+					//
+					// SCOPE, deliberately narrow: a plain `render` with
+					// `imageMaxEdge` STILL returns its PNG as base64 text
+					// only.  That gap is pre-existing, was spun off as its own
+					// follow-up during the G3a review, and is NOT closed here
+					// -- widening this branch to every render would change the
+					// response shape of the most-called verb on this
+					// transport, which is a separate decision from shipping
+					// the comparison.
+					const bool renderCarriesTargetComposite =
+						( toolName == "render" && innerResult.isObject() && innerResult.has( "target" ) );
 					if( toolName == "read_image" || toolName == "read_viewport" ||
-					    toolName == "compare_to_reference" || toolName == "file_part_plan" )
+					    toolName == "compare_to_reference" || toolName == "file_part_plan" ||
+					    renderCarriesTargetComposite )
 					{
 						JsonValue content = JsonValue::MakeArray();
 						const std::string b64 = innerResult.get( "png_base64" ).asString();

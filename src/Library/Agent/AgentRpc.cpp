@@ -641,6 +641,47 @@ namespace RISE
 						iso.set( "bboxCoverage", JsonValue::MakeNumber( rr.isolateBBoxCoverage ) );
 					result.set( "isolate", iso );
 				}
+				// G3b (2026-08-10) `render{target:}`: the measured shape match
+				// against the part's filed sketch, under ONE nested key.
+				// CONDITIONAL, same omit-when-absent convention as `isolate`
+				// above -- and gated on `rr.ok` from the START rather than
+				// after a review round, because this is EXACTLY the shape of
+				// G1's fix-round P1: facts describing an image that never
+				// happened.  `targetApplied` is itself only ever set on a
+				// successful render whose internal identity pass also
+				// succeeded, so the `rr.ok` term is belt-and-braces against a
+				// later stage flipping ok after the fact.
+				//
+				// EVERY NUMBER HERE IS REPORTED, NEVER CHARACTERIZED -- no
+				// threshold, no verdict, no advice anywhere in this block or
+				// in the message it accompanies (design doc
+				// docs/agentic-redesign/77-imagination-target-design.md sec 5.4).
+				if( rr.ok && rr.targetApplied ) {
+					JsonValue tgt = JsonValue::MakeObject();
+					tgt.set( "part",    JsonValue::MakeString( rr.targetPart ) );
+					tgt.set( "view",    JsonValue::MakeString( rr.targetView ) );
+					tgt.set( "vantage", JsonValue::MakeString( rr.targetVantage ) );
+					tgt.set( "iou",         JsonValue::MakeNumber( rr.targetIou ) );
+					tgt.set( "mirroredIou", JsonValue::MakeNumber( rr.targetMirroredIou ) );
+					tgt.set( "sketchAreaFraction",
+						JsonValue::MakeNumber( rr.targetSketchAreaFraction ) );
+					tgt.set( "silhouetteAreaFraction",
+						JsonValue::MakeNumber( rr.targetSilhouetteAreaFraction ) );
+					tgt.set( "sketchAspect", JsonValue::MakeNumber( rr.targetSketchAspect ) );
+					// Both of these carry the -1.0 "not computed" sentinel and
+					// are OMITTED rather than serialized as a measured-looking
+					// number -- the same convention `bboxCoverage` and
+					// `bboxMin`/`bboxMax` already follow in the isolate block.
+					if( rr.targetSilhouetteAspect >= 0.0 )
+						tgt.set( "silhouetteAspect", JsonValue::MakeNumber( rr.targetSilhouetteAspect ) );
+					if( rr.targetThinnestAxisRatio >= 0.0 )
+						tgt.set( "thinnestAxisRatio", JsonValue::MakeNumber( rr.targetThinnestAxisRatio ) );
+					tgt.set( "compositeWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeWidth ) ) );
+					tgt.set( "compositeHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
+					result.set( "target", tgt );
+				}
 				return result;
 			}
 
@@ -2879,6 +2920,35 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'isolate' must be a string" );
 					}
 
+					// G3b (2026-08-10) `render{target:}` ADDITIVE param:
+					// {"target":"<part name from the filed part plan>"} ->
+					// AgentRenderParams::target.  Two DIFFERENT rejection
+					// classes, deliberately:
+					//   * a non-string value, or `target` WITHOUT `isolate`,
+					//     is a param-SHAPE defect -- decidable with no live
+					//     scene and no filed plan -- so it is a clean -32602
+					//     here, and the missing-pairing sentence comes from
+					//     AgentSession::TargetRequiresIsolateMessage so the
+					//     wire and the session state the requirement
+					//     identically (the G3a shared-validator discipline).
+					//   * a name that is not in the filed plan, or no plan
+					//     filed at all, needs LIVE session state, so it is NOT
+					//     rejected here: AgentSession::RenderCore_ fails the
+					//     render itself (ok:false) with the filed part names
+					//     in `message` -- the same contract an unresolvable
+					//     `view`/`light`/`isolate` already has.
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) {
+							rparams.target = tv->asString();
+						}
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					if( !rparams.target.empty() && rparams.isolate.empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: " + AgentSession::TargetRequiresIsolateMessage( rparams.target ) );
+					}
+
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
 					// ADDITIVE param: {"xray":false} -> AgentRenderParams::xray.
 					// DEFAULT FALSE -- absent means the transmissive surface is
@@ -2978,7 +3048,7 @@ namespace RISE
 					// code path.  Attached only on a SUCCESSFUL render: on a
 					// failure the cache still holds the PREVIOUS render, and
 					// returning those pixels as this call's image would be a lie.
-					if( imePresent == 1 && rr.ok ) {
+					if( imePresent == 1 && rr.ok && !rr.targetApplied ) {
 						unsigned int imgW = 0, imgH = 0;
 						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
 						if( !png.empty() ) {
@@ -2988,6 +3058,41 @@ namespace RISE
 							renderResult.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 							renderResult.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
 						}
+					}
+					// G3b (2026-08-10): on a `target` comparison the inline
+					// image is the [sketch | silhouette | overlay] COMPOSITE,
+					// and it rides UNCONDITIONALLY -- `imageMaxEdge` is not
+					// required, and when it IS supplied the composite REPLACES
+					// the rendered frame (hence the `!rr.targetApplied` term on
+					// the branch above: exactly one image, never two
+					// `png_base64` writes).
+					//
+					// WHY the composite wins.  The composite IS the call: the
+					// transport keeps only the most recent tool-result image
+					// live (one global slot), so this strip is the ONE moment
+					// the filed sketch re-enters the model's context, which is
+					// the mechanism the design doc's sec 4.3 "Retention
+					// interaction" decision rests on -- if the beauty frame
+					// won, the sketch would never be seen again and the whole
+					// comparison would degrade to numbers.  A caller that wants
+					// the rendered frame of the same isolate render can re-issue
+					// without `target`, or call read_image (the comparison's own
+					// internal identity pass is cache-guarded, so read_image
+					// still serves THIS render's beauty pixels).  Both tool
+					// surfaces state this outright.
+					//
+					// Same "png_base64" field name every image-bearing verb
+					// uses, so AgentChatCodecs' IsImageResult -- which already
+					// lists `render` -- covers it with no second code path.
+					if( rr.ok && rr.targetApplied && !rr.targetCompositePng.empty() ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.targetCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
 					}
 					return MakeSuccess( idValue, renderResult );
 				}

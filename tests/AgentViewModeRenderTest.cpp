@@ -4751,6 +4751,929 @@ static void RunIsolateRpcSurfaceTest()
 	}
 }
 
+//======================================================================
+// G3b (2026-08-10) `render{isolate:, target:}` -- "the sketch comparison".
+//
+// ONE fixture serves every case below: `isolate` hides all the other
+// objects anyway, so a single scene holding five well-separated,
+// deliberately-shaped objects costs one parse instead of five.
+//
+//   box_obj   2 x 2 x 1.5   -- a FULL RECTANGLE from every axis; the
+//                              positive control for a square sketch.
+//   sph_obj   r = 1         -- a CIRCLE from every axis; the
+//                              object-side mismatch (pi/4 of the square
+//                              it is normalized into, by construction).
+//   flat_obj  2 x 2 x 0.02  -- the billboard, for thinnestAxisRatio.
+//   cube_obj  1.4 cubed     -- its opposite, ratio exactly 1.
+//   l_obj     a CSG union of a 2x1x0.5 bar and a 1x1x1.5 column --
+//                              the ASYMMETRIC one.  Deliberately
+//                              asymmetric on ALL THREE axes, because
+//                              anything box-shaped projects to a
+//                              rectangle from every direction and the
+//                              IoU here is BBOX-NORMALIZED: two
+//                              rectangles of any proportions normalize
+//                              to the SAME mask and score ~1.0.  (That
+//                              is why the mismatch cases below are a
+//                              circle and a sliver, not a cylinder.
+//                              G3b fix-round (2026-08-10) FIX 6 -- the
+//                              earlier wording here said a cylinder
+//                              "scores ~1.0 against a square sketch",
+//                              which is FALSE in general and
+//                              misdescribes the metric.  For two FILLED
+//                              rectangles the IoU reduces to
+//                              min(r1,r2)/max(r1,r2) on their bbox
+//                              ASPECTS, so a tall-thin cylinder scores
+//                              LOW against a square sketch and only a
+//                              near-square "drum" scores ~1.0.  The
+//                              real blind spot, stated precisely: any
+//                              two filled shapes with the SAME bbox
+//                              aspect are indistinguishable here -- a
+//                              die-shaped box and a drum-proportioned
+//                              cylinder BOTH score ~1.0 against a
+//                              square sketch.  Corners are invisible to
+//                              this metric; proportions are not.)
+//                              Its world bbox is
+//                              2 x 2 x 1.5, so its three axis-aligned
+//                              silhouettes have PREDICTABLE and
+//                              PAIRWISE-DIFFERENT pixel-bbox aspects:
+//                              front (X right, Y up) 2/2 = 1.0; side
+//                              (-Z right, Y up) 1.5/2 = 0.75; top
+//                              (X right, -Z up) 2/1.5 = 1.333.  That
+//                              triple is what proves each named vantage
+//                              really rendered a different projection.
+//
+// Pixel aspect is exactly 1 for a pinhole at any frame aspect (the
+// horizontal scale is tan(fov/2)*A per W/2 pixels and A == W/H, so both
+// axes resolve to H/(2*tan*d) pixels per world unit), which is what
+// makes those three predicted aspects exact rather than approximate.
+//======================================================================
+static const char* const kSceneTargetShapes =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 96\n\theight 96\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname box_geo\n\twidth 2\n\theight 2\n\tdepth 1.5\n}\n\n"
+	"standard_object\n{\n\tname box_obj\n\tgeometry box_geo\n\tmaterial mat\n\tposition -6 0 0\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_geo\n\tradius 1\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"box_geometry\n{\n\tname flat_geo\n\twidth 2\n\theight 2\n\tdepth 0.02\n}\n\n"
+	"standard_object\n{\n\tname flat_obj\n\tgeometry flat_geo\n\tmaterial mat\n\tposition 6 0 0\n}\n\n"
+	"box_geometry\n{\n\tname cube_geo\n\twidth 1.4\n\theight 1.4\n\tdepth 1.4\n}\n\n"
+	"standard_object\n{\n\tname cube_obj\n\tgeometry cube_geo\n\tmaterial mat\n\tposition 12 0 0\n}\n\n"
+	"box_geometry\n{\n\tname lbar_geo\n\twidth 2\n\theight 1\n\tdepth 0.5\n}\n\n"
+	"standard_object\n{\n\tname l_bar\n\tgeometry lbar_geo\n\tmaterial mat\n\tposition 0 -0.5 -20\n}\n\n"
+	"box_geometry\n{\n\tname lcol_geo\n\twidth 1\n\theight 1\n\tdepth 1.5\n}\n\n"
+	"standard_object\n{\n\tname l_col\n\tgeometry lcol_geo\n\tmaterial mat\n\tposition 0.5 0.5 -20\n}\n\n"
+	"csg_object\n{\n\tname l_obj\n\tobja l_bar\n\tobjb l_col\n\toperation union\n\tmaterial mat\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 12.0\n\tcolor 1 1 1\n\tposition 0 4 8\n}\n";
+
+//! The one plan every G3b test files.  Six sketches, each chosen so its
+//! expected IoU against a named object is derivable ON PAPER (the
+//! per-part comments say from what), never read back off a first run.
+static std::vector<AgentSession::AgentPartPlanEntry> TargetTestPlan()
+{
+	auto mk = []( const char* part, const char* outline, const char* view ) {
+		AgentSession::AgentPartPlanEntry e;
+		e.part = part;
+		e.construction = "primitive";
+		e.outline = outline;
+		e.view = view;
+		return e;
+	};
+	std::vector<AgentSession::AgentPartPlanEntry> parts;
+	// A unit square: fills its own bbox exactly, so any object whose
+	// silhouette also fills its bbox (every box, from every axis) scores
+	// ~1.0 against it.
+	parts.push_back( mk( "sq", "0 0; 1 0; 1 1; 0 1", "front" ) );
+	// A thin diagonal parallelogram: horizontal width 0.15 out of a
+	// 1.15-wide bbox, so it covers 0.15/1.15 = 13.0% of its own bbox.
+	// Against a silhouette that fills its bbox (box_obj) the union is
+	// the full canvas fit and the intersection is the sliver, so the IoU
+	// is ~0.13 -- the SKETCH-side mismatch, unreachable by any framing
+	// difference.
+	parts.push_back( mk( "sliver", "0 0; 1 1; 0.85 1; -0.15 0", "front" ) );
+	// The L with its notch at top-RIGHT.  l_obj's front silhouette has
+	// the notch at top-LEFT, so this sketch is l_obj's MIRROR: the
+	// intersection is the shared bottom bar (2 of 4 bbox units) and the
+	// union is 4, giving iou ~0.5, while mirroredIou ~1.0.
+	parts.push_back( mk( "l_mirror", "0 0; 2 0; 2 1; 1 1; 1 2; 0 2", "front" ) );
+	// The SAME L with the notch at top-LEFT -- l_obj's actual front
+	// silhouette.  Filed three times under three views so one outline
+	// exercises all three named vantages with no other variable moving.
+	parts.push_back( mk( "l_true", "0 0; 2 0; 2 2; 1 2; 1 1; 0 1", "front" ) );
+	parts.push_back( mk( "l_side", "0 0; 2 0; 2 2; 1 2; 1 1; 0 1", "side" ) );
+	parts.push_back( mk( "l_top",  "0 0; 2 0; 2 2; 1 2; 1 1; 0 1", "top" ) );
+	return parts;
+}
+
+//! Build a session on kSceneTargetShapes with the plan already filed.
+//! Returns the session; `outJob` receives the Job the caller must
+//! release.
+static std::unique_ptr<AgentSession> MakeTargetSession( Job*& outJob, const char* tmpName )
+{
+	const std::string scenePath = WriteTemp( tmpName, kSceneTargetShapes );
+	outJob = new Job();
+	if( !outJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) return nullptr;
+	std::unique_ptr<AgentSession> s = AgentSession::WrapJob( outJob );
+	if( !s ) return nullptr;
+	const AgentSession::AgentPartPlanResult pr = s->FilePartPlan( TargetTestPlan() );
+	if( !pr.ok ) return nullptr;
+	return s;
+}
+
+//! One comparison render, always through the objectmap target so the
+//! test stays fast (the comparison's own identity pass is what the
+//! measurement reads either way -- see (G3b-f), which proves a BEAUTY
+//! render measures identically).
+static AgentRenderResult TargetRender( AgentSession& s, const char* isolate, const char* target,
+                                       AgentRenderTarget mode = AgentRenderTarget::ObjectMap )
+{
+	AgentRenderParams p;
+	p.renderTarget = mode;
+	p.width  = 96;
+	p.height = 96;
+	p.isolate = isolate;
+	p.target  = target;
+	return s.Render( p );
+}
+
+//----------------------------------------------------------------------
+// (G3b-a) THE METRIC.  A matching sketch scores high, a mismatched one
+// low, and the two mismatch directions (object-side and sketch-side)
+// are both covered.
+//----------------------------------------------------------------------
+static void RunTargetIouTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-a) target IoU -- match high, mismatch low ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_iou.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "target-IoU session wraps and files its plan" ); return; }
+
+	const AgentRenderResult boxR = TargetRender( *session, "box_obj", "sq" );
+	Check( boxR.ok, std::string( "box vs square-sketch renders: " ) + boxR.message );
+	Check( boxR.targetApplied, "the comparison was actually performed" );
+	Check( boxR.targetPart == "sq" && boxR.targetView == "front", "part/view echo the filed sketch" );
+	Check( boxR.targetVantage == "front", "an auto-framed front sketch renders from the front vantage" );
+	std::printf( "  box vs sq: iou %.3f  mirrored %.3f  sketchArea %.3f  silArea %.3f  aspects %.3f/%.3f\n",
+		boxR.targetIou, boxR.targetMirroredIou, boxR.targetSketchAreaFraction,
+		boxR.targetSilhouetteAreaFraction, boxR.targetSketchAspect, boxR.targetSilhouetteAspect );
+	// FLOOR, not an exact value.  Both masks are a filled rectangle
+	// fitted by the same transform, so the ONLY residual is integer
+	// pixel quantization at the two mask edges (a 218px-wide fit inside a
+	// 256px canvas: at most a 1-2px rim, i.e. under 2% of area).  0.8 is
+	// four times that slack -- generous enough that no rounding change
+	// can trip it, tight enough that a broken fit (a different fill
+	// fraction on one side, a missing crop, a transposed axis) cannot
+	// pass.
+	Check( boxR.targetIou > 0.8,
+	       "MONEY ASSERTION (G3b-a1): a rectangle silhouette against a square sketch scores a HIGH "
+	       "IoU -- both are bbox-normalized by the same transform, so anything below this means the "
+	       "two fits disagree" );
+
+	// SKETCH-side mismatch: the sliver covers 13% of its own bbox and the
+	// box fills 100% of its own, so the IoU is ~0.13 by area alone.  A
+	// floor of 0.5 is a factor of ~4 above the predicted value.
+	const AgentRenderResult sliverR = TargetRender( *session, "box_obj", "sliver" );
+	Check( sliverR.ok && sliverR.targetApplied, "box vs sliver-sketch comparison runs" );
+	std::printf( "  box vs sliver: iou %.3f (sketch area %.3f)\n",
+		sliverR.targetIou, sliverR.targetSketchAreaFraction );
+	Check( sliverR.targetIou < 0.5,
+	       "MONEY ASSERTION (G3b-a2): a thin diagonal sketch against a full-rectangle silhouette "
+	       "scores a LOW IoU.  Red-proofable by swapping the sketch for `sq`." );
+	Check( sliverR.targetIou < boxR.targetIou - 0.3,
+	       "the two sketches against the SAME object separate by a wide margin -- the metric is "
+	       "reading the shape, not the object" );
+
+	// OBJECT-side mismatch: a circle inscribed in the square it
+	// normalizes into covers pi/4 = 0.785 of it.
+	const AgentRenderResult sphR = TargetRender( *session, "sph_obj", "sq" );
+	Check( sphR.ok && sphR.targetApplied, "sphere vs square-sketch comparison runs" );
+	std::printf( "  sphere vs sq: iou %.3f (pi/4 = %.3f expected)\n",
+		sphR.targetIou, 3.14159265358979323846 / 4.0 );
+	Check( std::fabs( sphR.targetIou - 3.14159265358979323846 / 4.0 ) < 0.05,
+	       "MONEY ASSERTION (G3b-a3): a CIRCLE against a SQUARE sketch scores pi/4 -- the analytic "
+	       "value, which pins the whole crop/fit/count chain to a number derived on paper rather "
+	       "than read off a run" );
+	Check( sphR.targetIou < boxR.targetIou,
+	       "the round object scores lower against the square sketch than the rectangular one does" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-b) mirroredIou: an asymmetric sketch against its MIRRORED
+// geometry scores higher mirrored than straight.
+//----------------------------------------------------------------------
+static void RunTargetMirroredIouTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-b) mirroredIou beats iou on mirrored geometry ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_mirror.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "mirror session wraps and files its plan" ); return; }
+
+	const AgentRenderResult r = TargetRender( *session, "l_obj", "l_mirror" );
+	Check( r.ok && r.targetApplied, std::string( "L vs mirrored-L sketch comparison runs: " ) + r.message );
+	std::printf( "  L vs mirrored-L sketch: iou %.3f  mirroredIou %.3f\n",
+		r.targetIou, r.targetMirroredIou );
+	// Predicted on paper: intersection = the shared bottom bar (2 of the
+	// 4 bbox units), union = 4 -> iou 0.5; mirrored, the two coincide ->
+	// ~1.0.  Assert the ORDERING with a real margin rather than the two
+	// values, so the test stays about the mirror and not about
+	// quantization.
+	Check( r.targetMirroredIou > r.targetIou + 0.2,
+	       "MONEY ASSERTION (G3b-b): the mirrored IoU is decisively higher -- the X-flip is applied "
+	       "to the silhouette WITHIN its own bbox, so it measures the mirror shape rather than a "
+	       "translated copy.  Goes RED if the flip is dropped (the two become equal)." );
+
+	// The same object against the sketch that is NOT mirrored: the
+	// ordering reverses, which is what proves (G3b-b) is not just
+	// measuring "mirroredIou is always bigger".
+	const AgentRenderResult t = TargetRender( *session, "l_obj", "l_true" );
+	Check( t.ok && t.targetApplied, "L vs true-L sketch comparison runs" );
+	std::printf( "  L vs true-L sketch:     iou %.3f  mirroredIou %.3f\n",
+		t.targetIou, t.targetMirroredIou );
+	Check( t.targetIou > t.targetMirroredIou + 0.2,
+	       "MONEY ASSERTION (G3b-b2): against the CORRECTLY-handed sketch the ordering reverses -- "
+	       "mirroredIou is not simply the larger number" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-c) VANTAGE: front/side/top render three DIFFERENT projections of
+// the same object, and a plain isolate (no target) still gets G1's
+// three-quarter one.
+//----------------------------------------------------------------------
+static void RunTargetVantageTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-c) front/side/top are three different projections ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_vantage.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "vantage session wraps and files its plan" ); return; }
+
+	const AgentRenderResult f = TargetRender( *session, "l_obj", "l_true" );
+	const AgentRenderResult s = TargetRender( *session, "l_obj", "l_side" );
+	const AgentRenderResult t = TargetRender( *session, "l_obj", "l_top" );
+	Check( f.ok && s.ok && t.ok, "all three vantage comparisons render" );
+	Check( f.targetVantage == "front" && s.targetVantage == "side" && t.targetVantage == "top",
+	       "each result names the vantage its sketch declared" );
+	std::printf( "  front: iou %.3f aspect %.3f area %.3f\n", f.targetIou, f.targetSilhouetteAspect, f.targetSilhouetteAreaFraction );
+	std::printf( "  side : iou %.3f aspect %.3f area %.3f\n", s.targetIou, s.targetSilhouetteAspect, s.targetSilhouetteAreaFraction );
+	std::printf( "  top  : iou %.3f aspect %.3f area %.3f\n", t.targetIou, t.targetSilhouetteAspect, t.targetSilhouetteAreaFraction );
+
+	// l_obj's world bbox is 2 (X) x 2 (Y) x 1.5 (Z) and the pixel aspect
+	// is exactly 1 (see the fixture comment), so the ORTHOGRAPHIC
+	// silhouette aspects would be front 2/2 = 1.0, side 1.5/2 = 0.75,
+	// top 2/1.5 = 1.333.  The render is a PINHOLE, though, and the L is
+	// deep relative to the auto-framed distance, so each measured aspect
+	// is pulled toward whichever extent belongs to the NEARER half:
+	//   * front -- the two extents sit at similar depths, so it lands on
+	//     the orthographic 1.0.
+	//   * side  -- the tall (Y) extent spans both halves, so it also
+	//     lands near the orthographic 0.75.
+	//   * top   -- the 2-unit X extent belongs to the FAR bar and the
+	//     1.5-unit Z extent to the NEAR column, so the ratio is
+	//     compressed well below 1.333 (measured ~1.15).
+	// The assertions are therefore stated as the ORDERING plus a
+	// generous band, not as three exact numbers: the ordering is what
+	// the vantage table decides, and the exact magnitude is a
+	// perspective detail no reader should have to re-derive if the
+	// fixture's depths ever move.
+	Check( std::fabs( f.targetSilhouetteAspect - 1.0 ) < 0.08,
+	       "front silhouette aspect is the object's X/Y extent ratio (2/2), where perspective "
+	       "barely bites" );
+	Check( s.targetSilhouetteAspect < f.targetSilhouetteAspect - 0.15,
+	       "side is decisively NARROWER than front (its horizontal extent is the 1.5-unit Z, not "
+	       "the 2-unit X)" );
+	Check( t.targetSilhouetteAspect > f.targetSilhouetteAspect + 0.10,
+	       "MONEY ASSERTION (G3b-c1): front, side and top produce three PAIRWISE-DIFFERENT "
+	       "projections, each in the direction its axis predicts (side narrower, top wider).  A "
+	       "vantage table that ignored `view`, or aliased two of the three, cannot produce this "
+	       "ordering -- all three would report the same aspect." );
+	Check( std::fabs( f.targetSilhouetteAreaFraction - s.targetSilhouetteAreaFraction ) > 0.05 &&
+	       std::fabs( f.targetSilhouetteAreaFraction - t.targetSilhouetteAreaFraction ) > 0.05 &&
+	       std::fabs( s.targetSilhouetteAreaFraction - t.targetSilhouetteAreaFraction ) > 0.05,
+	       "and the three normalized silhouettes cover three different canvas fractions -- a second, "
+	       "independent witness that three different projections were rendered" );
+	Check( f.targetIou > s.targetIou + 0.05 && f.targetIou > t.targetIou + 0.05,
+	       "MONEY ASSERTION (G3b-c2): the SAME outline scores highest from the view it was declared "
+	       "for -- the IoUs differ across vantages, which is only possible if the vantage moved" );
+
+	// The top vantage is the one that would silently fall back to a
+	// guessed distance if the up hint were left at world +Y (parallel to
+	// the view direction makes IsolateFitDistance's basis degenerate).
+	// A real fit puts the silhouette at the framing fill; a fallback
+	// `diag * 2.0` distance does not.
+	Check( t.targetSilhouetteAreaFraction > 0.1,
+	       "MONEY ASSERTION (G3b-c3): the TOP vantage really auto-frames -- its up hint is (0,0,-1), "
+	       "not world +Y, so the fit basis is non-degenerate.  A degenerate basis falls back to a "
+	       "guessed distance and the silhouette shrinks." );
+
+	// A plain isolate (NO target) is byte-for-byte G1's three-quarter
+	// vantage: it reports no target block at all and its message still
+	// says three-quarter.
+	AgentRenderParams plain;
+	plain.renderTarget = AgentRenderTarget::ObjectMap;
+	plain.width = 96; plain.height = 96;
+	plain.isolate = "l_obj";
+	const AgentRenderResult p = session->Render( plain );
+	Check( p.ok && p.isolateApplied && p.isolateAutoFramed, "the plain isolate render still works" );
+	Check( !p.targetApplied && p.targetPart.empty(),
+	       "a render with no `target` carries no comparison at all" );
+	Check( p.message.find( "auto-framed three-quarter view" ) != std::string::npos,
+	       "MONEY ASSERTION (G3b-c4): with no `target` the vantage word is still \"three-quarter\" -- "
+	       "the named-vantage generalization did not move G1's default" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-d) thinnestAxisRatio -- the billboard fact.
+//----------------------------------------------------------------------
+static void RunTargetThinnestAxisTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-d) thinnestAxisRatio, plane vs cube ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_thin.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "thin-axis session wraps and files its plan" ); return; }
+
+	const AgentRenderResult flat = TargetRender( *session, "flat_obj", "sq" );
+	const AgentRenderResult cube = TargetRender( *session, "cube_obj", "sq" );
+	Check( flat.ok && flat.targetApplied && cube.ok && cube.targetApplied,
+	       "both thinnest-axis comparisons run" );
+	std::printf( "  flat_obj (2 x 2 x 0.02): %.4f   cube_obj (1.4 cubed): %.4f\n",
+		flat.targetThinnestAxisRatio, cube.targetThinnestAxisRatio );
+	// Exact by construction: 0.02/2 and 1.4/1.4.
+	Check( std::fabs( flat.targetThinnestAxisRatio - 0.01 ) < 1e-6,
+	       "MONEY ASSERTION (G3b-d1): the flat plate reports 0.02/2 = 0.01 -- the billboard is a "
+	       "FACT in the payload, with no adjective attached to it anywhere" );
+	Check( std::fabs( cube.targetThinnestAxisRatio - 1.0 ) < 1e-6,
+	       "MONEY ASSERTION (G3b-d2): the cube reports exactly 1.0" );
+	// And both score the SAME high IoU against the square sketch, which
+	// is the point of reporting the 3D ratio separately: a billboard is
+	// invisible to a silhouette comparison.
+	Check( flat.targetIou > 0.8 && cube.targetIou > 0.8,
+	       "both score high against the square sketch -- exactly why the thinness has to be a "
+	       "separate 3D fact rather than something the IoU could reveal" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-e) THE COMPOSITE: present on success with the right dims, absent
+// on failure, and BYTE-IDENTICAL across two independent sessions.
+//----------------------------------------------------------------------
+static void RunTargetCompositeDeterminismTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-e) composite present/absent + cross-session determinism ===\n" );
+	Job* jobA = nullptr;
+	Job* jobB = nullptr;
+	std::unique_ptr<AgentSession> a = MakeTargetSession( jobA, "rise_target_detA.RISEscene" );
+	std::unique_ptr<AgentSession> b = MakeTargetSession( jobB, "rise_target_detB.RISEscene" );
+	if( !a || !b ) {
+		if( jobA ) jobA->release();
+		if( jobB ) jobB->release();
+		Check( false, "both determinism sessions wrap and file their plans" );
+		return;
+	}
+
+	const AgentRenderResult ra = TargetRender( *a, "l_obj", "l_true" );
+	const AgentRenderResult rb = TargetRender( *b, "l_obj", "l_true" );
+	Check( ra.ok && ra.targetApplied && rb.ok && rb.targetApplied, "both comparisons run" );
+	Check( !ra.targetCompositePng.empty(), "a successful comparison returns a composite PNG" );
+	Check( ra.targetCompositeWidth == 768 && ra.targetCompositeHeight == 256,
+	       "MONEY ASSERTION (G3b-e1): the composite is exactly THREE 256x256 tiles side by side "
+	       "(768x256) -- [sketch | silhouette | overlay]" );
+	Check( ra.targetCompositePng == rb.targetCompositePng,
+	       "MONEY ASSERTION (G3b-e2): the composite is BYTE-IDENTICAL across two independent "
+	       "sessions of the same scene and outline -- the whole mask/fit/encode chain is "
+	       "deterministic (no RNG, no time, no thread-order dependence)" );
+	Check( ra.targetIou == rb.targetIou && ra.targetMirroredIou == rb.targetMirroredIou,
+	       "the IoUs are bit-equal across sessions too (pure integer pixel counts)" );
+
+	// The composite's colouring, asserted on real pixels across ALL THREE
+	// tiles.  Both tool surfaces state the legend literally, so a stray
+	// fifth byte anywhere in the strip makes them untrue.
+	//   * tiles 1 (sketch) and 2 (silhouette) are documented as filled
+	//     WHITE on BLACK -- nothing else.
+	//   * tile 3 (overlay) is documented as sketch-only RED /
+	//     silhouette-only CYAN / overlap WHITE / neither BLACK.  The
+	//     l_true sketch and l_obj's front silhouette very nearly coincide,
+	//     so this tile is dominated by WHITE with a thin red/cyan rim.
+	// G3b fix-round (2026-08-10) FIX 5: the pre-fix scan covered tile 3
+	// ONLY, so a two-colour drift in the sketch or silhouette tile (an
+	// anti-aliased edge, a grey fill, a swapped background) was invisible
+	// to the suite while the tool text kept promising white-on-black.
+	// The one-pixel grey frame at each tile's border is excluded from
+	// every tile the same way (interior pixels only) -- it is documented
+	// separately and is deliberately NOT one of the legend colours.
+	Decoded dec;
+	Check( DecodePng( ra.targetCompositePng, dec ), "the composite PNG decodes" );
+	Check( dec.w == 768 && dec.h == 256, "decoded composite dims match the reported ones" );
+	if( dec.w == 768 && dec.h == 256 ) {
+		const char* const kTileName[3] = { "sketch", "silhouette", "overlay" };
+		bool tileLegal[3] = { true, true, true };
+		std::size_t tileWhite[3] = { 0, 0, 0 }, tileBlack[3] = { 0, 0, 0 };
+		std::size_t red = 0, cyan = 0;
+		for( unsigned int t = 0; t < 3; ++t ) {
+			const unsigned int x0 = t * 256;
+			for( unsigned int y = 1; y + 1 < dec.h; ++y ) {
+				for( unsigned int x = x0 + 1; x + 1 < x0 + 256; ++x ) {
+					const Px& q = dec.px[ (std::size_t)y * dec.w + x ];
+					if     ( q[0] == 255 && q[1] == 255 && q[2] == 255 ) ++tileWhite[t];
+					else if( q[0] == 0   && q[1] == 0   && q[2] == 0   ) ++tileBlack[t];
+					else if( t == 2 && q[0] == 255 && q[1] == 0   && q[2] == 0 ) ++red;
+					else if( t == 2 && q[0] == 0   && q[1] == 255 && q[2] == 255 ) ++cyan;
+					else tileLegal[t] = false;
+				}
+			}
+			std::printf( "  tile %u (%s): white %zu, black %zu\n",
+				t + 1, kTileName[t], tileWhite[t], tileBlack[t] );
+		}
+		std::printf( "  overlay extras: red %zu, cyan %zu\n", red, cyan );
+		Check( tileLegal[0] && tileLegal[1],
+		       "MONEY ASSERTION (G3b-e3a): every interior pixel of the SKETCH and SILHOUETTE tiles "
+		       "is EXACTLY white or black -- the two-colour rendering both tool surfaces promise, "
+		       "with no anti-aliased or grey intermediate byte." );
+		Check( tileWhite[0] > 0 && tileBlack[0] > 0 && tileWhite[1] > 0 && tileBlack[1] > 0,
+		       "and both of those tiles really carry a filled region AND a background" );
+		Check( tileLegal[2],
+		       "MONEY ASSERTION (G3b-e3): every interior overlay pixel is EXACTLY one of the four "
+		       "documented bytes -- white/red/cyan/black.  Both tool surfaces state that legend, so "
+		       "a fifth colour would make them untrue." );
+		Check( tileWhite[2] > 0 && tileBlack[2] > 0,
+		       "the overlay actually carries both an overlap and a background" );
+	}
+
+	// FAILURE leaves NO composite and NO block -- the G1 fix-round P1
+	// shape, checked at the C++ level here and at the wire in
+	// (G3b-g).
+	const AgentRenderResult bad = TargetRender( *a, "no_such_object", "l_true" );
+	Check( !bad.ok, "an unresolvable isolate still fails the render" );
+	Check( !bad.targetApplied && bad.targetCompositePng.empty(),
+	       "MONEY ASSERTION (G3b-e4): a FAILED render carries no composite and no comparison -- "
+	       "facts (and pixels) for an image that never happened" );
+
+	jobA->release();
+	jobB->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-f) MODE INDEPENDENCE: the measurement comes from the internal
+// identity pass, so a BEAUTY comparison and an OBJECTMAP comparison of
+// the same part report the SAME numbers -- and a beauty render that is
+// nearly black (no light reaches this object) still measures.
+//----------------------------------------------------------------------
+static void RunTargetModeIndependenceTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-f) beauty and objectmap comparisons measure identically ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_modes.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "mode-independence session wraps" ); return; }
+
+	const AgentRenderResult om = TargetRender( *session, "l_obj", "l_true", AgentRenderTarget::ObjectMap );
+	const AgentRenderResult be = TargetRender( *session, "l_obj", "l_true", AgentRenderTarget::Beauty );
+	Check( om.ok && be.ok && om.targetApplied && be.targetApplied, "both mode comparisons run" );
+	std::printf( "  objectmap iou %.6f  beauty iou %.6f (beauty luma %.4f)\n",
+		om.targetIou, be.targetIou, ( be.meanR + be.meanG + be.meanB ) / 3.0 );
+	Check( om.targetIou == be.targetIou && om.targetMirroredIou == be.targetMirroredIou,
+	       "MONEY ASSERTION (G3b-f): the IoU is BIT-EQUAL under beauty and objectmap -- the compared "
+	       "mask comes from the internal identity pass, never from beauty pixels, so lighting, "
+	       "materials and the tone curve cannot move it" );
+	Check( om.targetCompositePng == be.targetCompositePng,
+	       "the composite is identical under both modes too" );
+
+	// A beauty comparison must ALSO leave the image cache holding the
+	// caller's own beauty frame, not the internal segmentation pass --
+	// the ephemeral cache guard's job.
+	unsigned int cw = 0, ch = 0;
+	const std::vector<unsigned char> cached = session->ReadImage( 0, cw, ch );
+	Check( !cached.empty() && cw == 96 && ch == 96,
+	       "MONEY ASSERTION (G3b-f2): read_image after a comparison still serves the CALLER's own "
+	       "96x96 render -- the internal identity pass is cache-guarded and never displaces it" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-g) THE THREE REFUSALS, and the -32602 at the wire.
+//----------------------------------------------------------------------
+static void RunTargetRefusalTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-g) target refusals ===\n" );
+
+	// No plan filed at all.
+	{
+		const std::string scenePath = WriteTemp( "rise_target_noplan.RISEscene", kSceneTargetShapes );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "no-plan scene loads" );
+		std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
+		if( !s ) { pJob->release(); Check( false, "no-plan session wraps" ); return; }
+		const AgentRenderResult r = TargetRender( *s, "box_obj", "sq" );
+		Check( !r.ok, "a target with no filed plan FAILS the render" );
+		Check( r.message.find( "no part plan has been filed" ) != std::string::npos,
+		       "the failure says so factually" );
+		Check( !r.targetApplied, "and carries no comparison block" );
+		pJob->release();
+	}
+
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_refuse.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "refusal session wraps" ); return; }
+
+	// Unknown part -> ok:false LISTING the filed names.
+	{
+		const AgentRenderResult r = TargetRender( *session, "box_obj", "wing" );
+		Check( !r.ok, "an unknown target part FAILS the render" );
+		Check( r.message.find( "unknown target part \"wing\"" ) != std::string::npos,
+		       "the failure names the part that did not resolve" );
+		Check( r.message.find( "\"sq\"" ) != std::string::npos &&
+		       r.message.find( "\"l_top\"" ) != std::string::npos,
+		       "MONEY ASSERTION (G3b-g1): the failure LISTS the filed part names -- the same "
+		       "available-name contract an unresolvable view/light/isolate already has" );
+		Check( !r.targetApplied, "and carries no comparison block" );
+	}
+
+	// target WITHOUT isolate, at the C++ level.
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.width = 64; p.height = 64;
+		p.target = "sq";
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "target without isolate FAILS at the C++ level too" );
+		Check( r.message.find( "requires `isolate`" ) != std::string::npos,
+		       "and states the requirement" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (G3b-h) THE WIRE: -32602 for target-without-isolate, the nested
+// `target` result object, the composite riding as png_base64 WITHOUT
+// imageMaxEdge, and NO target object on a failed render.
+//----------------------------------------------------------------------
+static void RunTargetRpcSurfaceTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-h) target at the RPC wire ===\n" );
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_rpc.RISEscene" );
+	if( !session ) { if( pJob ) pJob->release(); Check( false, "rpc session wraps" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	// target without isolate -> a CLEAN -32602 (not a failed render).
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"target\":\"sq\"}}" ),
+			env, perr ), "target-without-isolate response parses" );
+		Check( env.has( "error" ), "MONEY ASSERTION (G3b-h1): it is an ERROR envelope, not a render" );
+		Check( (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "and the code is -32602 (invalid params)" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "requires `isolate`" ) != std::string::npos,
+		       "whose message states the requirement" );
+	}
+
+	// A non-string target is also -32602.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\",\"target\":7}}" ),
+			env, perr ), "non-string target response parses" );
+		Check( env.has( "error" ) && (int)env.get( "error" ).get( "code" ).asNumber() == -32602,
+		       "a non-string `target` is a clean -32602" );
+	}
+
+	// The success shape, with NO imageMaxEdge.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
+			"\"target\":\"sq\",\"width\":96,\"height\":96,\"mode\":\"objectmap\"}}" ),
+			env, perr ), "target comparison response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), std::string( "the comparison render succeeds: " ) +
+			result.get( "message" ).asString() );
+		Check( result.has( "target" ), "the result carries the nested `target` object" );
+		const JsonValue& tgt = result.get( "target" );
+		Check( tgt.get( "part" ).asString() == "sq", "target.part echoes the name" );
+		Check( tgt.get( "view" ).asString() == "front", "target.view echoes the sketch's view" );
+		Check( tgt.get( "vantage" ).asString() == "front", "target.vantage names what actually rendered" );
+		Check( tgt.has( "iou" ) && tgt.has( "mirroredIou" ) && tgt.has( "sketchAreaFraction" ) &&
+		       tgt.has( "silhouetteAreaFraction" ) && tgt.has( "sketchAspect" ) &&
+		       tgt.has( "silhouetteAspect" ) && tgt.has( "thinnestAxisRatio" ) &&
+		       tgt.has( "compositeWidth" ) && tgt.has( "compositeHeight" ),
+		       "every documented target field is present" );
+		Check( result.has( "png_base64" ) && !result.get( "png_base64" ).asString().empty(),
+		       "MONEY ASSERTION (G3b-h2): the composite rides back as png_base64 WITHOUT "
+		       "imageMaxEdge -- the composite IS the call, so it is not opt-in" );
+		Check( (unsigned int)result.get( "imageWidth" ).asNumber() == 768 &&
+		       (unsigned int)result.get( "imageHeight" ).asNumber() == 256,
+		       "and the reported image dims are the COMPOSITE's, not the render's" );
+		Check( (long long)result.get( "width" ).asNumber() == 96,
+		       "while `width`/`height` still describe the RENDER" );
+	}
+
+	// A FAILED render (unknown part) carries no `target` object at all.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
+			"\"target\":\"wing\"}}" ), env, perr ), "unknown-part response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "ok" ).asBool(), "an unknown part FAILS the render (not a -32602)" );
+		Check( !result.has( "target" ) && !result.has( "png_base64" ),
+		       "MONEY ASSERTION (G3b-h3): ok:false carries NEITHER the target facts NOR the "
+		       "composite." );
+	}
+
+	// The DISCRIMINATING failure for the ok-gate: a target that RESOLVES
+	// (so the part/view fields are already populated on the result) and a
+	// render that then fails for an unrelated reason.  The unknown-part
+	// case above cannot catch a broken gate -- it fails BEFORE anything is
+	// populated -- so without this case a gate keyed on
+	// "targetPart is set" instead of `rr.ok` would pass every test.  This
+	// is the exact shape of G1's fix-round P1: facts describing an image
+	// that never existed.
+	{
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{\"isolate\":\"no_such_object\","
+			"\"target\":\"sq\"}}" ), env, perr ), "resolved-target/failed-isolate response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "ok" ).asBool(), "the render fails on the unresolvable isolate" );
+		Check( result.get( "message" ).asString().find( "no_such_object" ) != std::string::npos,
+		       "and names the object that did not resolve" );
+		Check( !result.has( "target" ),
+		       "MONEY ASSERTION (G3b-h4): a render whose `target` RESOLVED but which then FAILED "
+		       "carries no `target` object.  Goes RED if the RpcJson gate loses its `rr.ok &&` term "
+		       "-- the G1 fix-round P1 shape, pinned here from the start." );
+		Check( !result.has( "png_base64" ),
+		       "and no composite either -- there are no pixels to describe" );
+	}
+
+	// G3b fix-round (2026-08-10) FIX 3: `target` AND `imageMaxEdge` in the
+	// SAME call -- the one combination in which TWO different code paths
+	// both want to write `png_base64`.
+	//
+	// AgentRpc.cpp's frame-image branch and its composite branch are
+	// mutually exclusive BY CONSTRUCTION (the frame branch carries a
+	// `!rr.targetApplied` term), but nothing structural enforces it:
+	// JsonValue::set is a plain emplace_back with NO dedupe (Json.h), so a
+	// weakened guard would emit TWO `png_base64` members in one object and
+	// every JSON parser in the pipeline would quietly keep one of them --
+	// the caller would be billed for both images and shown one, with
+	// nothing failing.  The count is therefore taken on the RAW response
+	// LINE, the only place a duplicate key is still visible; a parsed
+	// object cannot see it at all.
+	{
+		const std::string raw = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
+			"\"target\":\"sq\",\"width\":96,\"height\":96,\"imageMaxEdge\":64}}" );
+		std::size_t pngKeys = 0;
+		for( std::size_t at = raw.find( "\"png_base64\"" ); at != std::string::npos;
+		     at = raw.find( "\"png_base64\"", at + 12 ) ) ++pngKeys;
+		Check( pngKeys == 1,
+		       "MONEY ASSERTION (G3b-h5): `target` + `imageMaxEdge` puts EXACTLY ONE png_base64 "
+		       "member on the wire.  Goes RED at 2 if the frame branch ever loses its "
+		       "`!rr.targetApplied` term -- JsonValue::set does not dedupe, so the duplicate "
+		       "would otherwise be invisible to every parsed-object assertion." );
+		JsonValue env; std::string perr;
+		Check( JsonParse( raw, env, perr ), "the target+imageMaxEdge response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), std::string( "the target+imageMaxEdge render succeeds: " ) +
+			result.get( "message" ).asString() );
+		Check( result.has( "target" ), "and still carries the comparison block" );
+		Check( (unsigned int)result.get( "imageWidth" ).asNumber() == 768 &&
+		       (unsigned int)result.get( "imageHeight" ).asNumber() == 256,
+		       "MONEY ASSERTION (G3b-h6): the ONE image is the 768x256 COMPOSITE, not the 64px "
+		       "frame -- `imageMaxEdge` is honoured by being deliberately overridden, exactly as "
+		       "both tool surfaces state (\"REPLACES the rendered frame\")" );
+		Check( result.get( "byteLength" ).asNumber() > 0.0,
+		       "and byteLength describes that same composite" );
+	}
+}
+
+//----------------------------------------------------------------------
+// (G3b-j) G3b fix-round (2026-08-10) FIX 4: THE EMPTY-SILHOUETTE PATH,
+// built for real rather than reasoned about.
+//
+// The shipped code has three distinct behaviours for "no pixel of the
+// object landed in the frame" -- the -1.0 sentinel aspect, the
+// `silhouetteAspect` key OMITTED from the wire, and the explicit
+// message clause -- and G3b landed with none of them exercised: every
+// other case in this file frames the object on purpose.  The case is
+// reachable the moment a caller supplies their own camera (which WINS
+// over auto-framing, by design), so it is a real user state, not a
+// contrived one.  Built here with a camera at the auto-framing
+// distance pointed the OTHER WAY.
+//
+// Asserted on BOTH surfaces, because they express the same fact
+// differently: the C++ result carries the -1.0 sentinel and the
+// composite pixels; the wire OMITS the key entirely.
+//----------------------------------------------------------------------
+static void RunTargetEmptySilhouetteTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-j) empty silhouette -- caller camera points away ===\n" );
+
+	// ---- the C++ half: sentinel, message clause, and the composite's pixels.
+	{
+		Job* pJob = nullptr;
+		std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_empty.RISEscene" );
+		if( !session ) { if( pJob ) pJob->release(); Check( false, "empty-silhouette session wraps" ); return; }
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ObjectMap;
+		p.width  = 96;
+		p.height = 96;
+		p.isolate = "box_obj";
+		p.target  = "sq";
+		// box_obj sits at x = -6; this looks from the origin straight down
+		// +Z, i.e. 180 degrees away from it.  A caller-supplied camera
+		// suppresses auto-framing (documented on `isolate`), so the frame
+		// really is empty.
+		p.camera.hasLocation = true;  p.camera.location = "0 0 9";
+		p.camera.hasLookAt   = true;  p.camera.lookAt   = "0 0 100";
+		const AgentRenderResult r = session->Render( p );
+
+		Check( r.ok, std::string( "a render whose frame is empty is still a SUCCESSFUL render: " ) + r.message );
+		Check( r.targetApplied,
+		       "MONEY ASSERTION (G3b-j1): the comparison still RUNS on an empty frame -- an empty "
+		       "silhouette is a measurement (\"none of it is there\"), not a failure" );
+		Check( r.targetIou == 0.0 && r.targetMirroredIou == 0.0,
+		       "MONEY ASSERTION (G3b-j2): iou and mirroredIou are exactly 0.0 -- MaskIoU_'s empty "
+		       "union returns 0.0 and NOT the mathematically conventional 1.0, so \"nothing matched "
+		       "nothing\" can never read as a perfect match in a payload a model acts on" );
+		Check( r.targetSilhouetteAreaFraction == 0.0, "the silhouette's area fraction is 0.0" );
+		Check( r.targetSilhouetteAspect < 0.0,
+		       "MONEY ASSERTION (G3b-j3): silhouetteAspect carries the -1.0 not-measured sentinel "
+		       "rather than an aspect computed from an empty box" );
+		Check( r.targetSketchAreaFraction > 0.0 && r.targetSketchAspect > 0.0,
+		       "while the SKETCH-side facts are unaffected -- they never depended on the render" );
+		Check( r.targetThinnestAxisRatio >= 0.0,
+		       "and the 3D bbox fact is unaffected too: it comes from geometry, not from framing" );
+		Check( r.message.find( "no pixel of the object landed in the frame" ) != std::string::npos,
+		       "MONEY ASSERTION (G3b-j4): the message says WHY the aspect is missing, in the exact "
+		       "words both tool surfaces use for the omission condition" );
+
+		// The composite is STILL delivered -- an empty silhouette is
+		// precisely the case a model most needs to SEE, and a missing
+		// strip would read as a broken call.
+		Check( !r.targetCompositePng.empty() &&
+		       r.targetCompositeWidth == 768 && r.targetCompositeHeight == 256,
+		       "MONEY ASSERTION (G3b-j5): the 768x256 composite is still returned on an empty "
+		       "silhouette" );
+		Decoded dec;
+		Check( DecodePng( r.targetCompositePng, dec ), "the empty-silhouette composite decodes" );
+		if( dec.w == 768 && dec.h == 256 ) {
+			std::size_t sketchWhite = 0, silNonBlack = 0;
+			for( unsigned int y = 1; y + 1 < dec.h; ++y ) {
+				for( unsigned int x = 1; x + 1 < 256; ++x ) {
+					const Px& q = dec.px[ (std::size_t)y * dec.w + x ];
+					if( q[0] == 255 && q[1] == 255 && q[2] == 255 ) ++sketchWhite;
+				}
+				for( unsigned int x = 256 + 1; x + 1 < 512; ++x ) {
+					const Px& q = dec.px[ (std::size_t)y * dec.w + x ];
+					if( q[0] != 0 || q[1] != 0 || q[2] != 0 ) ++silNonBlack;
+				}
+			}
+			std::printf( "  sketch tile white %zu, silhouette tile non-black %zu\n",
+				sketchWhite, silNonBlack );
+			Check( sketchWhite > 0,
+			       "MONEY ASSERTION (G3b-j6): tile 1 still shows the FILED SKETCH -- the one thing "
+			       "worth looking at when the render found nothing" );
+			Check( silNonBlack == 0,
+			       "MONEY ASSERTION (G3b-j7): tile 2 is entirely black -- the silhouette really is "
+			       "empty, so the strip is not quietly showing a stale or partial mask" );
+		}
+
+		pJob->release();
+	}
+
+	// ---- the wire half: the key is OMITTED, not sent as a sentinel.
+	{
+		Job* pJob = nullptr;
+		std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_empty_rpc.RISEscene" );
+		if( !session ) { if( pJob ) pJob->release(); Check( false, "empty-silhouette rpc session wraps" ); return; }
+		AgentRpcDispatcher rpc( std::move( session ) );
+
+		JsonValue env; std::string perr;
+		Check( JsonParse( rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"isolate\":\"box_obj\","
+			"\"target\":\"sq\",\"width\":96,\"height\":96,\"mode\":\"objectmap\","
+			"\"camera\":{\"location\":\"0 0 9\",\"lookat\":\"0 0 100\"}}}" ),
+			env, perr ), "the pointed-away response parses" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "ok" ).asBool(), std::string( "the pointed-away render succeeds: " ) +
+			result.get( "message" ).asString() );
+		Check( result.has( "target" ), "and carries the comparison block" );
+		const JsonValue& tgt = result.get( "target" );
+		Check( tgt.get( "iou" ).asNumber() == 0.0, "wire iou is 0.0" );
+		Check( !tgt.has( "silhouetteAspect" ),
+		       "MONEY ASSERTION (G3b-j8): `silhouetteAspect` is ABSENT from the wire JSON -- the "
+		       "-1.0 sentinel is never serialized as a measured-looking number, the same "
+		       "sentinel-then-omit convention bboxCoverage/bboxMin/bboxMax already follow" );
+		Check( tgt.has( "thinnestAxisRatio" ),
+		       "while thinnestAxisRatio -- whose own omission condition is unrelated -- is still "
+		       "there, so (G3b-j8) is not just an empty target object" );
+		Check( result.get( "message" ).asString().find(
+		           "no pixel of the object landed in the frame" ) != std::string::npos,
+		       "and the message carries the omission clause" );
+		Check( result.has( "png_base64" ) &&
+		       (unsigned int)result.get( "imageWidth" ).asNumber() == 768,
+		       "and the composite still rides back" );
+
+		pJob->release();
+	}
+}
+
+//----------------------------------------------------------------------
+// (G3b-i) The shipped mechanisms a comparison composes with: the R1b
+// agent caps still bind, the scene is byte-identical afterwards, and
+// the G2 part-plan state is untouched.
+//----------------------------------------------------------------------
+static void RunTargetComposesWithShippedGatesTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G3b-i) R1b caps / scene restore / G2 state ===\n" );
+
+	// R1b: an agent-surface comparison on an oversize film still renders
+	// at or under the 256px cap, and so does its internal identity pass
+	// (they resolve dims through the SAME code with the same flag).
+	{
+		const std::string scenePath = WriteTemp( "rise_target_caps.RISEscene", kSceneIsolateOversize );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "oversize target scene loads" );
+		std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
+		if( !s ) { pJob->release(); Check( false, "oversize session wraps" ); return; }
+		AgentSession::AgentPartPlanEntry e;
+		e.part = "ball"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1"; e.view = "front";
+		Check( s->FilePartPlan( { e } ).ok, "the oversize session files its plan" );
+
+		AgentRenderParams p;
+		p.fromAgentSurface = true;
+		p.isolate = "sph_obj";
+		p.target  = "ball";
+		const AgentRenderResult r = s->Render( p );
+		Check( r.ok && r.targetApplied, std::string( "capped comparison runs: " ) + r.message );
+		Check( r.width <= 256 && r.height <= 256,
+		       "MONEY ASSERTION (G3b-i1): the R1b 256px cap still binds a comparison render" );
+		Check( r.agentResolutionCapped, "and the cap is honestly reported" );
+		pJob->release();
+	}
+
+	// Scene restore + G2 state, on the shared fixture.
+	{
+		Job* pJob = nullptr;
+		std::unique_ptr<AgentSession> session = MakeTargetSession( pJob, "rise_target_restore.RISEscene" );
+		if( !session ) { if( pJob ) pJob->release(); Check( false, "restore session wraps" ); return; }
+
+		const std::string before = session->ReadDocument();
+		const IScenePriv* scenePriv = pJob->GetScene();
+		const IFilm* film = scenePriv ? scenePriv->GetFilm() : nullptr;
+		Check( film != nullptr, "the fixture has a Film" );
+		const unsigned int fw = film ? film->GetWidth() : 0;
+		const unsigned int fh = film ? film->GetHeight() : 0;
+		const std::size_t sketchesBefore = session->PartSketches().size();
+
+		const AgentRenderResult r = TargetRender( *session, "l_obj", "l_true" );
+		Check( r.ok && r.targetApplied, "the comparison runs" );
+
+		Check( session->ReadDocument() == before,
+		       "MONEY ASSERTION (G3b-i2): the DOCUMENT is byte-identical after a comparison -- "
+		       "TWO renders and an object solo happened, and none of them wrote anything" );
+		const IFilm* filmAfter = pJob->GetScene() ? pJob->GetScene()->GetFilm() : nullptr;
+		Check( filmAfter && filmAfter->GetWidth() == fw && filmAfter->GetHeight() == fh,
+		       "the Film dims are restored after BOTH renders" );
+
+		// Every object is visible again -- the second (internal) render's
+		// own solo guard has to unwind as cleanly as the first's.  Proved
+		// by a plain whole-scene objectmap listing every renderable
+		// object, exactly the way (G1) proves restoration.
+		AgentRenderParams full;
+		full.renderTarget = AgentRenderTarget::ObjectMap;
+		full.width = 64; full.height = 64;
+		const AgentRenderResult fullR = session->Render( full );
+		Check( fullR.ok, "a whole-scene objectmap render follows the comparison" );
+		Check( fullR.legend.size() == 5,
+		       "MONEY ASSERTION (G3b-i3): all five renderable objects are visible again after the "
+		       "comparison's TWO nested solo applications (box/sph/flat/cube/l_obj; the two CSG "
+		       "operands are never independently renderable)" );
+
+		Check( session->PartPlanFiled(), "the part plan is still filed" );
+		Check( session->PartSketches().size() == sketchesBefore,
+		       "the sketch set is untouched by a comparison" );
+		Check( session->PartPlanGateRefusalCount() == 0 && !session->PartPlanGateGaveUp(),
+		       "MONEY ASSERTION (G3b-i4): a comparison creates nothing, so it passes no creation "
+		       "gate and never moves the G2 refusal counter" );
+
+		pJob->release();
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
@@ -4802,6 +5725,17 @@ int main()
 	RunIsolateRespectsAgentCapsTest();
 	RunIsolateSchemaParityTest();
 	RunIsolateRpcSurfaceTest();
+	// G3b (2026-08-10) `render{isolate:, target:}`
+	RunTargetIouTest();
+	RunTargetMirroredIouTest();
+	RunTargetVantageTest();
+	RunTargetThinnestAxisTest();
+	RunTargetCompositeDeterminismTest();
+	RunTargetModeIndependenceTest();
+	RunTargetRefusalTest();
+	RunTargetRpcSurfaceTest();
+	RunTargetEmptySilhouetteTest();
+	RunTargetComposesWithShippedGatesTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
