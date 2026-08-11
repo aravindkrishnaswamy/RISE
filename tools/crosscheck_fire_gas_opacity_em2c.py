@@ -13,7 +13,8 @@ import math
 from pathlib import Path
 
 from fire_gas_opacity import (
-    C2_CM_K, multilinear_value, planck_weight_wavenumber, sha256_file,
+    finite_path_emissivity_refinement_certificate, homogeneous_emissivity,
+    multilinear_value, sha256_file,
 )
 from generate_fire_gas_opacity_record import validate_opacity_table
 
@@ -47,20 +48,6 @@ def spectrum_at_temperature(table: dict, species: dict, temperature_k: float,
             [self_axis, temperatures], values,
             [self_mole_fraction, temperature_k]))
     return result
-
-
-def homogeneous_emissivity(grid: list[float], kappa: list[float],
-                           temperature_k: float, path_length_m: float) -> float:
-    weights = [planck_weight_wavenumber(value, temperature_k) for value in grid]
-    step = grid[1] - grid[0]
-    if (step <= 0.0 or any(not math.isclose(grid[index + 1] - grid[index], step,
-                                           rel_tol=0.0, abs_tol=1.0e-12 * step)
-                          for index in range(len(grid) - 1))):
-        raise ValueError("opacity table does not use uniform spectral bins")
-    numerator = step * sum(-math.expm1(-value * path_length_m) * weight
-                           for value, weight in zip(kappa, weights))
-    full_blackbody_weight = (math.pi ** 4 / 15.0) * (temperature_k / C2_CM_K) ** 4
-    return numerator / full_blackbody_weight
 
 
 def parse_em2c(path: Path, verify_digest: bool = True) -> list[tuple[float, float, float]]:
@@ -123,6 +110,25 @@ def validate_relative_tolerance(value: float) -> float:
     return value
 
 
+def validate_contraction_limit(value: float) -> float:
+    if not math.isfinite(value) or value <= 0.0 or value >= 1.0:
+        raise ValueError("EM2C grid-contraction limit must be finite in (0,1)")
+    return value
+
+
+def validate_emissivity_grid_state(
+        grid: list[float], kappa: list[float], temperature_k: float,
+        path_length_m: float, relative_tolerance: float,
+        contraction_limit: float) -> dict:
+    certificate = finite_path_emissivity_refinement_certificate(
+        grid, [[kappa]], [temperature_k], [path_length_m],
+        validate_relative_tolerance(relative_tolerance),
+        validate_contraction_limit(contraction_limit))
+    if not certificate["qualified"]:
+        raise ValueError("EM2C state fails nonlinear h/2h/4h emissivity convergence")
+    return certificate
+
+
 def validate_case_ratio(requested: float, path: Path) -> None:
     filename_ratio = ratio_from_em2c_filename(path)
     if ((math.isinf(requested) or math.isinf(filename_ratio)) and
@@ -139,11 +145,19 @@ def main() -> None:
                         help="H2O:CO2 ratio and EM2C file as RATIO=PATH")
     parser.add_argument("--relative-tolerance", type=float, default=0.05,
                         help="provisional gate; reset from the first real comparison")
+    parser.add_argument("--emissivity-grid-relative-tolerance", type=float, default=0.05,
+                        help="maximum Richardson-estimated nonlinear grid remainder")
+    parser.add_argument("--emissivity-grid-contraction-limit", type=float, default=0.8,
+                        help="required h/2h versus 2h/4h error contraction")
     parser.add_argument("--expected-table-sha256", required=True,
                         help="external pin for the exact production table bytes")
     parser.add_argument("table", type=Path)
     args = parser.parse_args()
     tolerance = validate_relative_tolerance(args.relative_tolerance)
+    emissivity_grid_tolerance = validate_relative_tolerance(
+        args.emissivity_grid_relative_tolerance)
+    emissivity_grid_contraction = validate_contraction_limit(
+        args.emissivity_grid_contraction_limit)
     if (len(args.expected_table_sha256) != 64 or
             sha256_file(args.table) != args.expected_table_sha256.lower()):
         raise ValueError("opacity table does not match the external SHA-256 pin")
@@ -173,6 +187,9 @@ def main() -> None:
                 cached[temperature] = [x_h2o * a + x_co2 * b for a, b in zip(h2o, co2)]
             predicted = homogeneous_emissivity(
                 grid, cached[temperature], temperature, pressure_path_atm_m)
+            validate_emissivity_grid_state(
+                grid, cached[temperature], temperature, pressure_path_atm_m,
+                emissivity_grid_tolerance, emissivity_grid_contraction)
             relative = abs(predicted - reference) / max(abs(reference), 1.0e-12)
             label = f"R={ratio_text}, T={temperature:g} K, pL={pressure_path_atm_m:g} atm.m"
             if relative > worst[0]:

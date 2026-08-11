@@ -22,12 +22,14 @@ FIXTURE = REPO / "tests/fixtures/fire_gas_opacity"
 sys.path.insert(0, str(TOOLS))
 
 from fire_gas_opacity import (  # noqa: E402
-    C2_CM_K, PartitionSums, conservative_voigt_bin_weights,
-    iter_hitran_lines, line_intensity,
+    C2_CM_K, C_LIGHT, K_BOLTZMANN, N_AVOGADRO, HitranLine, PartitionSums,
+    conservative_voigt_bin_weights, finite_path_emissivity_refinement_certificate,
+    iter_hitran_lines, line_area_temperature_interval_upper, line_intensity,
     parse_hitran160, planck_weight_wavenumber, species_spectra_batch,
     spectral_grid, tensor_linear_derivative_certificate,
     voigt_interval_probability, voigt_profile_cm,
     voigt_profile_interval_upper,
+    voigt_profile_state_cell_upper,
 )
 from generate_fire_gas_opacity_record import (  # noqa: E402
     evaluate_mixture_planck_mean, evaluate_species_kappa_bin,
@@ -36,9 +38,11 @@ from generate_fire_gas_opacity_record import (  # noqa: E402
 )
 from build_fire_gas_opacity_native import build as build_native  # noqa: E402
 from fire_gas_opacity_native import species_spectra_batch_native  # noqa: E402
+from fetch_verify_hitemp_inputs import verify_and_generate  # noqa: E402
 from crosscheck_fire_gas_opacity_em2c import (  # noqa: E402
     homogeneous_emissivity, parse_em2c, ratio_from_em2c_filename,
-    validate_case_ratio, validate_relative_tolerance,
+    validate_case_ratio, validate_contraction_limit,
+    validate_emissivity_grid_state, validate_relative_tolerance,
 )
 
 
@@ -114,6 +118,56 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         actual_tail = 1.0 - voigt_interval_probability(-2.0, 2.0, 1.0, 1.0)
         self.assertGreaterEqual(tail_bound, actual_tail)
 
+    def test_visible_bound_covers_interior_temperature_peak(self) -> None:
+        line = HitranLine(1, 1, 20000.0, 1.0e-25, 1.0, 0.0, 0.0,
+                          2000.0, 0.0, 0.0)
+        partition = PartitionSums({
+            (1, 1): [(296.0, 296.0), (300.0, 300.0),
+                     (1151.0, 1151.0), (3000.0, 3000.0)]})
+        molar_mass = 0.018010565
+        molecular_mass = molar_mass / N_AVOGADRO
+        bound = line_area_temperature_interval_upper(
+            line, 300.0, 3000.0, 101325.0, partition) * (
+                voigt_profile_state_cell_upper(
+                    0.0, line.center_cm1, molecular_mass, line,
+                    300.0, 3000.0, 0.0, 1.0, 101325.0))
+        interior_temperature = 1151.0
+        sigma = line.center_cm1 * math.sqrt(
+            K_BOLTZMANN * interior_temperature /
+            (molecular_mass * C_LIGHT * C_LIGHT))
+        actual = (line_intensity(line, interior_temperature, partition) *
+                  101325.0 / (K_BOLTZMANN * interior_temperature) / 1.0e6 *
+                  100.0 * voigt_profile_cm(0.0, sigma, 0.0))
+        knot_values = []
+        for temperature in (300.0, 3000.0):
+            knot_sigma = line.center_cm1 * math.sqrt(
+                K_BOLTZMANN * temperature /
+                (molecular_mass * C_LIGHT * C_LIGHT))
+            knot_values.append(
+                line_intensity(line, temperature, partition) *
+                101325.0 / (K_BOLTZMANN * temperature) / 1.0e6 * 100.0 *
+                voigt_profile_cm(0.0, knot_sigma, 0.0))
+        self.assertGreater(actual, max(knot_values))
+        self.assertGreaterEqual(bound, actual)
+
+    def test_finite_path_emissivity_requires_nonlinear_grid_convergence(self) -> None:
+        coarse_grid = [100.0 + 50.0 * index for index in range(8)]
+        saturated_line = [[[0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0]]]
+        rejected = finite_path_emissivity_refinement_certificate(
+            coarse_grid, saturated_line, [900.0], [50.0], 0.05, 0.8)
+        self.assertFalse(rejected["qualified"])
+        with self.assertRaisesRegex(ValueError, "nonlinear h/2h/4h"):
+            validate_emissivity_grid_state(
+                coarse_grid, saturated_line[0][0], 900.0, 50.0, 0.05, 0.8)
+
+        fine_grid = [100.0 + 0.2 * index for index in range(400)]
+        smooth = [[[0.7 for _ in fine_grid]]]
+        qualified = finite_path_emissivity_refinement_certificate(
+            fine_grid, smooth, [900.0], [0.01, 50.0], 0.05, 0.8)
+        self.assertTrue(qualified["qualified"])
+        validate_emissivity_grid_state(
+            fine_grid, smooth[0][0], 900.0, 50.0, 0.05, 0.8)
+
     def test_bzip2_uses_the_same_hitran_parser(self) -> None:
         source = FIXTURE / "CO2-HITEMP2024.synthetic-hitran160.txt"
         with tempfile.TemporaryDirectory() as directory:
@@ -142,7 +196,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 path.write_text("200 100\n296 120\n3000 700\n", encoding="ascii")
                 q_entries.append((2, isotopologue, path))
             partition = PartitionSums.from_hitran_q_files(q_entries)
-            _, counts, _, _, _ = species_spectra_batch(
+            _, counts, _, _, _, _ = species_spectra_batch(
                 decoded, 2, {10: 0.044, 11: 0.045, 12: 0.046}, partition,
                 spectral_grid(50.0, 3000.0, 50.0), [300.0], 101325.0,
                 [0.0], [50.0])
@@ -167,7 +221,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
 
         one_shot = OneShot(lines)
         grid = spectral_grid(50.0, 3000.0, 50.0)
-        spectra, counts, _, _, _ = species_spectra_batch(
+        spectra, counts, _, _, _, _ = species_spectra_batch(
             one_shot, 1, {1: 0.018010565}, partition, grid,
             [300.0, 1000.0], 101325.0, [0.0, 1.0], [25.0, 50.0], [300.0])
         self.assertEqual(one_shot.passes, 1)
@@ -178,11 +232,11 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 areas = [sum(row) * step for row in self_rows]
                 self.assertTrue(all(value > 0.0 for value in areas))
 
-        aligned, _, _, _, _ = species_spectra_batch(
+        aligned, _, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, grid,
             [300.0], 101325.0, [0.0], [25.0])
         shifted_grid = spectral_grid(75.0, 3025.0, 50.0)
-        half_cell, _, _, _, _ = species_spectra_batch(
+        half_cell, _, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, shifted_grid,
             [300.0], 101325.0, [0.0], [25.0])
         self.assertAlmostEqual(sum(aligned[0][0][0]) * step,
@@ -213,6 +267,10 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         self.assertNotEqual(
             h2o["kappa_bin_average_per_m_per_unit_species_mole_fraction"][0],
             h2o["kappa_bin_average_per_m_per_unit_species_mole_fraction"][1])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "verified-generated.json"
+            verify_and_generate(manifest, FIXTURE, output, None)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), generated)
 
     def test_native_accumulator_matches_reference_and_has_production_throughput(self) -> None:
         manifest = FIXTURE / "synthetic_manifest.json"
@@ -228,6 +286,13 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 self.assertEqual(expected_species["species"], actual_species["species"])
                 self.assertEqual(expected_species["line_counts_used"],
                                  actual_species["line_counts_used"])
+                self.assertAlmostEqual(
+                    expected_species[
+                        "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction"],
+                    actual_species[
+                        "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction"],
+                    delta=1.0e-12 * max(1.0, expected_species[
+                        "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction"]))
                 expected = expected_species[
                     "planck_mean_per_m_per_unit_species_mole_fraction"]
                 actual = actual_species[
@@ -367,6 +432,9 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         for invalid in (math.nan, math.inf, -math.inf, 0.0, -0.1, 1.1):
             with self.assertRaisesRegex(ValueError, "finite"):
                 validate_relative_tolerance(invalid)
+        for invalid in (math.nan, math.inf, -math.inf, 0.0, -0.1, 1.0):
+            with self.assertRaisesRegex(ValueError, "finite"):
+                validate_contraction_limit(invalid)
 
     def test_wrong_hash_and_owner_pending_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())
@@ -399,6 +467,32 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             first.write_bytes(b"a")
             second.write_bytes(b"bc")
             self.assertNotEqual(original, generator_identity([first, second]))
+
+    def test_pressure_and_partition_sum_provenance_fail_closed(self) -> None:
+        manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.json"
+            manifest["pressure_Pa"] = 202650.0
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "exactly 101325"):
+                generate(path, FIXTURE)
+
+            manifest["pressure_Pa"] = 101325.0
+            manifest["sources"][0]["partition_sums"]["citation"] = ""
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "partition-sum citation"):
+                load_verified_manifest(path, FIXTURE)
+
+            manifest["status"] = "production_pinned"
+            manifest["synthetic"] = False
+            manifest["hitemp_citations"] = [
+                "HITEMP 2024 release, https://hitran.org/hitemp/"]
+            manifest["original_source_citations"] = [
+                "Rothman et al. 2010, DOI 10.1016/j.jqsrt.2010.05.001"]
+            manifest["sources"][0]["partition_sums"]["citation"] = "PENDING"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "partition-sum citation"):
+                load_verified_manifest(path, FIXTURE)
 
     def test_empty_or_foreign_line_archives_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())

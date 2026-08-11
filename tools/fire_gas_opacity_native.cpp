@@ -151,22 +151,85 @@ double VoigtIntervalUpper(double distance, double sigma, double gamma)
                      tail * lorentzPeak + nearLorentz});
 }
 
+double GaussianDensityIntervalUpper(double distance, double sigmaMinimum,
+                                    double sigmaMaximum)
+{
+    const double candidate = std::min(sigmaMaximum,
+        std::max(sigmaMinimum, distance));
+    return std::exp(-0.5 * (distance / candidate) * (distance / candidate)) /
+        (candidate * std::sqrt(2.0 * kPi));
+}
+
+double VoigtStateCellUpper(double distance, double shiftedCenter,
+    double molecularMass, double temperatureMinimum, double temperatureMaximum,
+    double selfMinimum, double selfMaximum, double gammaAir, double gammaSelf,
+    double exponent, double pressure)
+{
+    const double sigmaMinimum = shiftedCenter * std::sqrt(kBoltzmann *
+        temperatureMinimum / (molecularMass * kLight * kLight));
+    const double sigmaMaximum = shiftedCenter * std::sqrt(kBoltzmann *
+        temperatureMaximum / (molecularMass * kLight * kLight));
+    const auto referenceWidth = [&](double selfFraction) {
+        return (1.0 - selfFraction) * gammaAir + selfFraction * gammaSelf;
+    };
+    const double widthMinimum = std::min(referenceWidth(selfMinimum),
+                                          referenceWidth(selfMaximum));
+    const double widthMaximum = std::max(referenceWidth(selfMinimum),
+                                          referenceWidth(selfMaximum));
+    const double factorMinimum = std::min(
+        std::pow(kReferenceTemperature / temperatureMinimum, exponent),
+        std::pow(kReferenceTemperature / temperatureMaximum, exponent));
+    const double temperatureFactorMaximum = std::max(
+        std::pow(kReferenceTemperature / temperatureMinimum, exponent),
+        std::pow(kReferenceTemperature / temperatureMaximum, exponent));
+    const double gammaMinimum = widthMinimum * pressure / kReferencePressure *
+        factorMinimum;
+    const double gammaMaximum = widthMaximum * pressure / kReferencePressure *
+        temperatureFactorMaximum;
+    const double gaussianPeak = 1.0 / (sigmaMinimum * std::sqrt(2.0 * kPi));
+    if (distance == 0.0) return gaussianPeak;
+    const double radius = 0.5 * distance;
+    const double cauchyTail = gammaMaximum == 0.0 ? 0.0 :
+        1.0 - 2.0 / kPi * std::atan(radius / gammaMaximum);
+    double result = std::min(gaussianPeak, cauchyTail * gaussianPeak +
+        GaussianDensityIntervalUpper(distance - radius,
+                                     sigmaMinimum, sigmaMaximum));
+    if (gammaMinimum > 0.0) {
+        result = std::min(result, 1.0 / (kPi * gammaMinimum));
+        const double gaussianRadius = std::min(radius, 8.0 * sigmaMaximum);
+        const double gaussianTail = std::erfc(gaussianRadius /
+            (std::sqrt(2.0) * sigmaMaximum));
+        const double nearDistance = distance - gaussianRadius;
+        const double candidateGamma = std::min(gammaMaximum,
+            std::max(gammaMinimum, nearDistance));
+        const double nearLorentz = candidateGamma /
+            (kPi * (nearDistance * nearDistance + candidateGamma * candidateGamma));
+        result = std::min(result,
+            gaussianTail / (kPi * gammaMinimum) + nearLorentz);
+    }
+    return result;
+}
+
 } // namespace
 
 extern "C" int RiseFireGasOpacityAccumulate(
     const char* bytes, std::size_t byteCount, int molecule,
     const double* masses, const double* qReference, const double* qAtTemperature,
+    const double* qMinimumInTemperatureCell,
     int isotopeCapacity, const double* temperatures, int temperatureCount,
     double pressure, const double* selfFractions, int selfCount,
     const double* cutoffs, int cutoffCount, double gridMinimum, double gridStep,
     int gridCount, const double* radiationTemperatures, int radiationCount,
     double visibleMinimum, double visibleMaximum, double* spectra,
     std::uint64_t* counts, double* tailBounds, double* centerNumerators,
-    double* visibleBounds, char* error, std::size_t errorCapacity)
+    double* visibleBounds, double* visibleCellBounds,
+    char* error, std::size_t errorCapacity)
 {
-    if (!bytes || !masses || !qReference || !qAtTemperature || !temperatures ||
+    if (!bytes || !masses || !qReference || !qAtTemperature ||
+        !qMinimumInTemperatureCell || !temperatures ||
         !selfFractions || !cutoffs || !radiationTemperatures || !spectra ||
         !counts || !tailBounds || !centerNumerators || !visibleBounds ||
+        !visibleCellBounds ||
         molecule <= 0 || isotopeCapacity <= 1 || temperatureCount <= 0 ||
         selfCount <= 0 || cutoffCount <= 0 || gridCount <= 1 ||
         radiationCount <= 0 || pressure <= 0.0 || gridMinimum <= 0.0 ||
@@ -226,11 +289,55 @@ extern "C" int RiseFireGasOpacityAccumulate(
         cursor = end + (end < byteCount ? 1 : 0);
         if (intensity == 0.0) continue;
         const double shiftedCenter = center + shift * pressureAtmospheres;
+        if (shiftedCenter <= 0.0) {
+            SetError(error, errorCapacity,
+                     "native pressure-shifted line center is non-positive");
+            return 3;
+        }
         const double largestCutoff = cutoffs[cutoffCount - 1];
         const bool contributesToSpectralTable = !(
             shiftedCenter + largestCutoff < gridMinimum ||
             shiftedCenter - largestCutoff > gridMinimum + gridStep * (gridCount - 1));
         const double molecularMass = masses[isotope] / kAvogadro;
+        const double visibleDistance = shiftedCenter < visibleMinimum ?
+            visibleMinimum - shiftedCenter :
+            (shiftedCenter > visibleMaximum ? shiftedCenter - visibleMaximum : 0.0);
+        const int temperatureCellCount = std::max(1, temperatureCount - 1);
+        const int selfCellCount = std::max(1, selfCount - 1);
+        for (int sCell = 0; sCell < selfCellCount; ++sCell) {
+            const double selfMinimum = selfFractions[sCell];
+            const double selfMaximum = selfCount > 1 ?
+                selfFractions[sCell + 1] : selfMinimum;
+            for (int tCell = 0; tCell < temperatureCellCount; ++tCell) {
+                const double temperatureMinimum = temperatures[tCell];
+                const double temperatureMaximum = temperatureCount > 1 ?
+                    temperatures[tCell + 1] : temperatureMinimum;
+                const double qMinimum = qMinimumInTemperatureCell[
+                    tCell * isotopeCapacity + isotope];
+                if (qMinimum <= 0.0) {
+                    SetError(error, errorCapacity,
+                             "native partition-sum cell bound is unavailable");
+                    return 4;
+                }
+                const double boltzmannUpper = std::exp(-kC2 * lowerEnergy *
+                    (1.0 / temperatureMaximum - 1.0 / kReferenceTemperature));
+                const double stimulatedUpper =
+                    -std::expm1(-kC2 * center / temperatureMinimum);
+                const double stimulatedReference =
+                    -std::expm1(-kC2 * center / kReferenceTemperature);
+                const double strengthUpper = intensity * qReference[isotope] /
+                    qMinimum * boltzmannUpper * stimulatedUpper / stimulatedReference;
+                const double numberDensityUpper = pressure /
+                    (kBoltzmann * temperatureMinimum) / 1.0e6;
+                const double lineAreaUpper = strengthUpper * numberDensityUpper * 100.0;
+                visibleCellBounds[sCell * temperatureCellCount + tCell] +=
+                    lineAreaUpper * VoigtStateCellUpper(
+                        visibleDistance, shiftedCenter, molecularMass,
+                        temperatureMinimum, temperatureMaximum,
+                        selfMinimum, selfMaximum, gammaAir, gammaSelf,
+                        exponent, pressure);
+            }
+        }
         for (int t = 0; t < temperatureCount; ++t) {
             const double temperature = temperatures[t];
             const double qT = qAtTemperature[t * isotopeCapacity + isotope];
@@ -264,9 +371,6 @@ extern "C" int RiseFireGasOpacityAccumulate(
                     SetError(error, errorCapacity, "native line width is zero");
                     return 5;
                 }
-                const double visibleDistance = shiftedCenter < visibleMinimum ?
-                    visibleMinimum - shiftedCenter :
-                    (shiftedCenter > visibleMaximum ? shiftedCenter - visibleMaximum : 0.0);
                 visibleBounds[s * temperatureCount + t] +=
                     lineArea * VoigtIntervalUpper(visibleDistance, sigma, gamma);
                 if (!contributesToSpectralTable) continue;

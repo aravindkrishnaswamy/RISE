@@ -52,13 +52,14 @@ def species_spectra_batch_native(
     double_pointer = ctypes.POINTER(ctypes.c_double)
     function.argtypes = [
         ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int,
-        double_pointer, double_pointer, double_pointer,
+        double_pointer, double_pointer, double_pointer, double_pointer,
         ctypes.c_int, double_pointer, ctypes.c_int, ctypes.c_double,
         double_pointer, ctypes.c_int, double_pointer, ctypes.c_int,
         ctypes.c_double, ctypes.c_double, ctypes.c_int,
         double_pointer, ctypes.c_int, ctypes.c_double, ctypes.c_double,
         double_pointer, ctypes.POINTER(ctypes.c_uint64), double_pointer,
-        double_pointer, double_pointer, ctypes.c_char_p, ctypes.c_size_t,
+        double_pointer, double_pointer, double_pointer,
+        ctypes.c_char_p, ctypes.c_size_t,
     ]
     molecule = int(source["molecule_number"])
     isotopologues = sorted(molar_masses_kg_per_mol)
@@ -70,12 +71,20 @@ def species_spectra_batch_native(
     masses = [0.0] * capacity
     q_reference = [0.0] * capacity
     q_at_temperature = [0.0] * (len(temperatures_k) * capacity)
+    q_minimum_in_temperature_cell = [0.0] * (
+        max(1, len(temperatures_k) - 1) * capacity)
     for isotope in isotopologues:
         masses[isotope] = molar_masses_kg_per_mol[isotope]
         q_reference[isotope] = partition_sums.evaluate(molecule, isotope, 296.0)
         for temperature_index, temperature in enumerate(temperatures_k):
             q_at_temperature[temperature_index * capacity + isotope] = (
                 partition_sums.evaluate(molecule, isotope, temperature))
+        for cell in range(max(1, len(temperatures_k) - 1)):
+            minimum = temperatures_k[cell]
+            maximum = (temperatures_k[cell + 1]
+                       if len(temperatures_k) > 1 else minimum)
+            q_minimum_in_temperature_cell[cell * capacity + isotope] = (
+                partition_sums.minimum(molecule, isotope, minimum, maximum))
     temperatures = doubles(temperatures_k)
     self_fractions = doubles(self_mole_fractions)
     cutoffs = doubles(wing_cutoffs_cm1)
@@ -83,6 +92,7 @@ def species_spectra_batch_native(
     masses_array = doubles(masses)
     q_reference_array = doubles(q_reference)
     q_temperature_array = doubles(q_at_temperature)
+    q_minimum_cell_array = doubles(q_minimum_in_temperature_cell)
     state_count = (len(wing_cutoffs_cm1) * len(self_mole_fractions) *
                    len(temperatures_k))
     spectrum_count = state_count * len(grid_cm1)
@@ -93,6 +103,9 @@ def species_spectra_batch_native(
         len(temperatures_k) * len(radiation_temperatures_k)))()
     visible_bounds = (ctypes.c_double * (
         len(self_mole_fractions) * len(temperatures_k)))()
+    visible_cell_bounds = (ctypes.c_double * (
+        max(1, len(self_mole_fractions) - 1) *
+        max(1, len(temperatures_k) - 1)))()
     error = ctypes.create_string_buffer(512)
     for item in source["files"]:
         path = Path(item["path"])
@@ -100,13 +113,15 @@ def species_spectra_batch_native(
         for block in iter_line_blocks(local, item["compression"]):
             result = function(
                 block, len(block), molecule, masses_array, q_reference_array,
-                q_temperature_array, capacity, temperatures, len(temperatures_k),
+                q_temperature_array, q_minimum_cell_array, capacity,
+                temperatures, len(temperatures_k),
                 pressure_pa, self_fractions, len(self_mole_fractions), cutoffs,
                 len(wing_cutoffs_cm1), grid_cm1[0], grid_cm1[1] - grid_cm1[0],
                 len(grid_cm1), radiation, len(radiation_temperatures_k),
                 visible_wavenumber_interval_cm1[0],
                 visible_wavenumber_interval_cm1[1], spectra, counts, tails,
-                center_numerators, visible_bounds, error, len(error))
+                center_numerators, visible_bounds, visible_cell_bounds,
+                error, len(error))
             if result:
                 raise ValueError(error.value.decode("utf-8") or
                                  f"native opacity accumulator failed ({result})")
@@ -127,4 +142,7 @@ def species_spectra_batch_native(
                               len(temperatures_k)]),
         _nested(center_means, [len(temperatures_k), len(radiation_temperatures_k)]),
         _nested(list(visible_bounds), [len(self_mole_fractions), len(temperatures_k)]),
+        _nested(list(visible_cell_bounds),
+                [max(1, len(self_mole_fractions) - 1),
+                 max(1, len(temperatures_k) - 1)]),
     )

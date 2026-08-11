@@ -186,6 +186,23 @@ class PartitionSums:
                 return q0 + fraction * (q1 - q0)
         return samples[-1][1]
 
+    def minimum(self, molecule: int, isotopologue: int,
+                minimum_temperature_k: float, maximum_temperature_k: float) -> float:
+        """Exact minimum of the piecewise-linear Q table on a closed interval."""
+        if (not math.isfinite(minimum_temperature_k) or
+                not math.isfinite(maximum_temperature_k) or
+                minimum_temperature_k > maximum_temperature_k):
+            raise ValueError("partition-sum interval is invalid")
+        samples = self._rows.get((molecule, isotopologue))
+        if (not samples or minimum_temperature_k < samples[0][0] or
+                maximum_temperature_k > samples[-1][0]):
+            raise ValueError("partition-sum interval is out of domain")
+        candidates = [self.evaluate(molecule, isotopologue, minimum_temperature_k),
+                      self.evaluate(molecule, isotopologue, maximum_temperature_k)]
+        candidates.extend(q for temperature, q in samples
+                          if minimum_temperature_k < temperature < maximum_temperature_k)
+        return min(candidates)
+
 
 def line_intensity(line: HitranLine, temperature_k: float,
                    partition_sums: PartitionSums) -> float:
@@ -202,6 +219,37 @@ def line_intensity(line: HitranLine, temperature_k: float,
     if not math.isfinite(value) or value < 0.0:
         raise ValueError("temperature-scaled line intensity is invalid")
     return value
+
+
+def line_area_temperature_interval_upper(
+        line: HitranLine, minimum_temperature_k: float,
+        maximum_temperature_k: float, pressure_pa: float,
+        partition_sums: PartitionSums) -> float:
+    """Conservative line-area upper bound for every T in a closed interval."""
+    if (minimum_temperature_k <= 0.0 or
+            minimum_temperature_k > maximum_temperature_k or pressure_pa <= 0.0):
+        raise ValueError("line-area interval state is inadmissible")
+    q_reference = partition_sums.evaluate(
+        line.molecule, line.isotopologue, REFERENCE_TEMPERATURE_K)
+    q_minimum = partition_sums.minimum(
+        line.molecule, line.isotopologue,
+        minimum_temperature_k, maximum_temperature_k)
+    boltzmann_upper = math.exp(
+        -C2_CM_K * line.lower_energy_cm1 *
+        (1.0 / maximum_temperature_k - 1.0 / REFERENCE_TEMPERATURE_K))
+    stimulated_upper = -math.expm1(
+        -C2_CM_K * line.center_cm1 / minimum_temperature_k)
+    stimulated_reference = -math.expm1(
+        -C2_CM_K * line.center_cm1 / REFERENCE_TEMPERATURE_K)
+    strength_upper = (line.intensity_296_cm_per_molecule *
+                      q_reference / q_minimum * boltzmann_upper *
+                      stimulated_upper / stimulated_reference)
+    number_density_upper = pressure_pa / (
+        K_BOLTZMANN * minimum_temperature_k) / 1.0e6
+    result = strength_upper * number_density_upper * 100.0
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("line-area interval upper bound is invalid")
+    return result
 
 
 def _humlicek_w4_real(x: float, y: float) -> float:
@@ -271,6 +319,82 @@ def voigt_profile_interval_upper(distance_cm1: float, sigma_cm1: float,
                gaussian_tail * lorentz_peak + near_lorentz)
 
 
+def voigt_profile_state_cell_upper(
+        distance_cm1: float, shifted_center_cm1: float,
+        molecular_mass_kg: float, line: HitranLine,
+        minimum_temperature_k: float, maximum_temperature_k: float,
+        minimum_self_fraction: float, maximum_self_fraction: float,
+        pressure_pa: float) -> float:
+    """Upper-bound a visible-band Voigt profile throughout one T/x cell.
+
+    The bound uses the Gaussian-convolution representation.  A Cauchy shift
+    is split at half the distance to the band; its far probability is bounded
+    with the largest Lorentz width in the cell, and its near contribution by
+    the largest Gaussian density allowed by the Doppler-width interval.
+    """
+    if (not all(math.isfinite(value) for value in (
+            distance_cm1, shifted_center_cm1, molecular_mass_kg,
+            minimum_temperature_k, maximum_temperature_k,
+            minimum_self_fraction, maximum_self_fraction, pressure_pa)) or
+            distance_cm1 < 0.0 or shifted_center_cm1 <= 0.0 or
+            molecular_mass_kg <= 0.0 or minimum_temperature_k <= 0.0 or
+            minimum_temperature_k > maximum_temperature_k or
+            minimum_self_fraction < 0.0 or
+            minimum_self_fraction > maximum_self_fraction or
+            maximum_self_fraction > 1.0 or pressure_pa <= 0.0):
+        raise ValueError("Voigt state-cell upper-bound arguments are inadmissible")
+    sigma_minimum = shifted_center_cm1 * math.sqrt(
+        K_BOLTZMANN * minimum_temperature_k /
+        (molecular_mass_kg * C_LIGHT * C_LIGHT))
+    sigma_maximum = shifted_center_cm1 * math.sqrt(
+        K_BOLTZMANN * maximum_temperature_k /
+        (molecular_mass_kg * C_LIGHT * C_LIGHT))
+    reference_widths = [
+        (1.0 - fraction) * line.gamma_air_cm1_atm +
+        fraction * line.gamma_self_cm1_atm
+        for fraction in (minimum_self_fraction, maximum_self_fraction)]
+    temperature_factors = [
+        (REFERENCE_TEMPERATURE_K / temperature) ** line.n_air
+        for temperature in (minimum_temperature_k, maximum_temperature_k)]
+    reference_width_maximum = max(reference_widths)
+    temperature_factor_maximum = max(temperature_factors)
+    gamma_maximum = (reference_width_maximum *
+                     pressure_pa / REFERENCE_PRESSURE_PA *
+                     temperature_factor_maximum)
+    gamma_minimum = (min(reference_widths) *
+                     pressure_pa / REFERENCE_PRESSURE_PA *
+                     min(temperature_factors))
+    gaussian_peak = 1.0 / (sigma_minimum * math.sqrt(2.0 * math.pi))
+    if distance_cm1 == 0.0:
+        return gaussian_peak
+    radius = 0.5 * distance_cm1
+    cauchy_tail = (0.0 if gamma_maximum == 0.0 else
+                   1.0 - 2.0 / math.pi * math.atan(radius / gamma_maximum))
+    near_distance = distance_cm1 - radius
+    candidate_sigma = min(sigma_maximum, max(sigma_minimum, near_distance))
+    near_gaussian = (math.exp(-0.5 * (near_distance / candidate_sigma) ** 2) /
+                     (candidate_sigma * math.sqrt(2.0 * math.pi)))
+    candidates = [gaussian_peak,
+                  cauchy_tail * gaussian_peak + near_gaussian]
+    if gamma_minimum > 0.0:
+        candidates.append(1.0 / (math.pi * gamma_minimum))
+        gaussian_radius = min(radius, 8.0 * sigma_maximum)
+        gaussian_tail = math.erfc(
+            gaussian_radius / (math.sqrt(2.0) * sigma_maximum))
+        near_distance = distance_cm1 - gaussian_radius
+        candidate_gamma = min(gamma_maximum,
+                              max(gamma_minimum, near_distance))
+        near_lorentz = candidate_gamma / (
+            math.pi * (near_distance * near_distance +
+                       candidate_gamma * candidate_gamma))
+        candidates.append(
+            gaussian_tail / (math.pi * gamma_minimum) + near_lorentz)
+    result = min(candidates)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("Voigt state-cell upper bound is invalid")
+    return result
+
+
 def planck_weight_wavenumber(wavenumber_cm1: float, temperature_k: float) -> float:
     if wavenumber_cm1 <= 0.0 or temperature_k <= 0.0:
         return 0.0
@@ -315,6 +439,119 @@ def planck_mean_wavenumber(xs_cm1: list[float], kappa_m1: list[float],
     if not math.isfinite(result) or result < 0.0:
         raise ValueError("Planck mean is invalid")
     return result
+
+
+def homogeneous_emissivity(grid_cm1: Sequence[float], kappa_m1: Sequence[float],
+                           temperature_k: float, path_length_m: float) -> float:
+    if (len(grid_cm1) != len(kappa_m1) or len(grid_cm1) < 2 or
+            temperature_k <= 0.0 or path_length_m <= 0.0):
+        raise ValueError("homogeneous-emissivity inputs are invalid")
+    step = grid_cm1[1] - grid_cm1[0]
+    spacing_tolerance = max(
+        1.0e-12 * step,
+        16.0 * math.ulp(max(abs(grid_cm1[0]), abs(grid_cm1[-1]))))
+    if (step <= 0.0 or any(not math.isclose(
+            grid_cm1[index + 1] - grid_cm1[index], step,
+            rel_tol=0.0, abs_tol=spacing_tolerance)
+            for index in range(len(grid_cm1) - 1))):
+        raise ValueError("opacity table does not use uniform spectral bins")
+    numerator = step * sum(
+        -math.expm1(-value * path_length_m) *
+        planck_weight_wavenumber(wavenumber, temperature_k)
+        for wavenumber, value in zip(grid_cm1, kappa_m1))
+    full_blackbody_weight = ((math.pi ** 4 / 15.0) *
+                             (temperature_k / C2_CM_K) ** 4)
+    result = numerator / full_blackbody_weight
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("homogeneous emissivity is invalid")
+    return result
+
+
+def _coarsen_finite_volume_spectrum(
+        grid_cm1: Sequence[float], kappa_m1: Sequence[float],
+        factor: int) -> tuple[list[float], list[float]]:
+    if factor <= 0 or len(grid_cm1) % factor != 0:
+        raise ValueError("spectral grid cannot be coarsened by the requested factor")
+    coarse_grid = []
+    coarse_kappa = []
+    for first in range(0, len(grid_cm1), factor):
+        coarse_grid.append(sum(grid_cm1[first:first + factor]) / factor)
+        coarse_kappa.append(sum(kappa_m1[first:first + factor]) / factor)
+    return coarse_grid, coarse_kappa
+
+
+def finite_path_emissivity_refinement_certificate(
+        grid_cm1: Sequence[float], spectra: Sequence[Sequence[Sequence[float]]],
+        gas_temperatures_k: Sequence[float], path_lengths_m: Sequence[float],
+        maximum_estimated_remaining_relative: float,
+        maximum_contraction_ratio: float) -> dict:
+    """Qualify nonlinear emissivity using h/2h/4h finite-volume grids."""
+    if (len(grid_cm1) < 8 or len(grid_cm1) % 4 != 0 or
+            not path_lengths_m or
+            any(not math.isfinite(value) or value <= 0.0
+                for value in path_lengths_m) or
+            not math.isfinite(maximum_estimated_remaining_relative) or
+            maximum_estimated_remaining_relative <= 0.0 or
+            not math.isfinite(maximum_contraction_ratio) or
+            maximum_contraction_ratio <= 0.0 or maximum_contraction_ratio >= 1.0):
+        raise ValueError("finite-path emissivity qualification configuration is invalid")
+    worst_adjacent_relative = 0.0
+    worst_contraction = 0.0
+    worst_remaining_relative = 0.0
+    converged = True
+    sample_count = 0
+    for self_rows in spectra:
+        if len(self_rows) != len(gas_temperatures_k):
+            raise ValueError("emissivity qualification spectrum shape is invalid")
+        for temperature_k, spectrum in zip(gas_temperatures_k, self_rows):
+            if len(spectrum) != len(grid_cm1):
+                raise ValueError("emissivity qualification spectrum shape is invalid")
+            medium_grid, medium_spectrum = _coarsen_finite_volume_spectrum(
+                grid_cm1, spectrum, 2)
+            coarse_grid, coarse_spectrum = _coarsen_finite_volume_spectrum(
+                grid_cm1, spectrum, 4)
+            for path_length_m in path_lengths_m:
+                fine = homogeneous_emissivity(
+                    grid_cm1, spectrum, temperature_k, path_length_m)
+                medium = homogeneous_emissivity(
+                    medium_grid, medium_spectrum, temperature_k, path_length_m)
+                coarse = homogeneous_emissivity(
+                    coarse_grid, coarse_spectrum, temperature_k, path_length_m)
+                fine_difference = abs(fine - medium)
+                coarse_difference = abs(medium - coarse)
+                scale = max(abs(fine), 1.0e-12)
+                adjacent_relative = fine_difference / scale
+                if coarse_difference == 0.0:
+                    contraction = 0.0 if fine_difference == 0.0 else math.inf
+                else:
+                    contraction = fine_difference / coarse_difference
+                remaining_relative = (0.0 if fine_difference == 0.0 else
+                    (fine_difference * contraction / (1.0 - contraction) / scale
+                     if contraction < 1.0 else math.inf))
+                worst_adjacent_relative = max(
+                    worst_adjacent_relative, adjacent_relative)
+                worst_contraction = max(worst_contraction, contraction)
+                worst_remaining_relative = max(
+                    worst_remaining_relative, remaining_relative)
+                converged = converged and (
+                    contraction <= maximum_contraction_ratio and
+                    remaining_relative <= maximum_estimated_remaining_relative)
+                sample_count += 1
+    return {
+        "kind": "finite_volume_h_2h_4h_nonlinear_emissivity_v1",
+        "path_lengths_m": list(path_lengths_m),
+        "sample_count": sample_count,
+        "maximum_adjacent_h_2h_relative_difference": worst_adjacent_relative,
+        "maximum_contraction_ratio": (
+            worst_contraction if math.isfinite(worst_contraction) else None),
+        "maximum_allowed_contraction_ratio": maximum_contraction_ratio,
+        "maximum_estimated_remaining_relative_error": (
+            worst_remaining_relative
+            if math.isfinite(worst_remaining_relative) else None),
+        "maximum_allowed_estimated_remaining_relative_error":
+            maximum_estimated_remaining_relative,
+        "qualified": bool(converged),
+    }
 
 
 def spectral_grid(minimum: float, maximum: float, step: float) -> list[float]:
@@ -470,7 +707,8 @@ def species_spectra_batch(
         radiation_temperatures_k: Sequence[float] = (),
         visible_wavenumber_interval_cm1: Sequence[float] = (),
 ) -> tuple[list[list[list[list[float]]]], list[list[list[int]]],
-           list[list[list[float]]], list[list[float]], list[list[float]]]:
+           list[list[list[float]]], list[list[float]], list[list[float]],
+           list[list[float]]]:
     """Accumulate every requested state in one archive pass.
 
     Returned axes are cutoff, self mole fraction, gas temperature, and
@@ -505,6 +743,8 @@ def species_spectra_batch(
                          for _ in temperatures_k]
     visible_upper_bounds = [[0.0 for _ in temperatures_k]
                             for _ in self_mole_fractions]
+    visible_cell_upper_bounds = [[0.0 for _ in range(max(1, len(temperatures_k) - 1))]
+                                 for _ in range(max(1, len(self_mole_fractions) - 1))]
     step = grid_cm1[1] - grid_cm1[0]
     pressure_atm = pressure_pa / REFERENCE_PRESSURE_PA
     for line in lines:
@@ -516,10 +756,33 @@ def species_spectra_batch(
         if not molar_mass or molar_mass <= 0.0:
             raise ValueError("line isotopologue has no positive molar mass")
         center = line.center_cm1 + line.pressure_shift_cm1_atm * pressure_atm
+        if center <= 0.0:
+            raise ValueError("pressure-shifted line center is non-positive")
         contributes_to_spectral_table = not (
             center + wing_cutoffs_cm1[-1] < grid_cm1[0] or
             center - wing_cutoffs_cm1[-1] > grid_cm1[-1])
         molecular_mass_kg = molar_mass / N_AVOGADRO
+        if visible_wavenumber_interval_cm1:
+            visible_lo, visible_hi = visible_wavenumber_interval_cm1
+            distance = (visible_lo - center if center < visible_lo else
+                        center - visible_hi if center > visible_hi else 0.0)
+            for self_cell in range(max(1, len(self_mole_fractions) - 1)):
+                self_minimum = self_mole_fractions[self_cell]
+                self_maximum = (self_mole_fractions[self_cell + 1]
+                                if len(self_mole_fractions) > 1 else self_minimum)
+                for temperature_cell in range(max(1, len(temperatures_k) - 1)):
+                    temperature_minimum = temperatures_k[temperature_cell]
+                    temperature_maximum = (temperatures_k[temperature_cell + 1]
+                                           if len(temperatures_k) > 1
+                                           else temperature_minimum)
+                    visible_cell_upper_bounds[self_cell][temperature_cell] += (
+                        line_area_temperature_interval_upper(
+                            line, temperature_minimum, temperature_maximum,
+                            pressure_pa, partition_sums) *
+                        voigt_profile_state_cell_upper(
+                            distance, center, molecular_mass_kg, line,
+                            temperature_minimum, temperature_maximum,
+                            self_minimum, self_maximum, pressure_pa))
         for temperature_index, temperature_k in enumerate(temperatures_k):
             strength = line_intensity(line, temperature_k, partition_sums)
             number_density_cm3 = pressure_pa / (K_BOLTZMANN * temperature_k) / 1.0e6
@@ -567,7 +830,8 @@ def species_spectra_batch(
             denominator = ((math.pi ** 4 / 15.0) *
                            (radiation_temperature / C2_CM_K) ** 4)
             line_center_means[temperature_index][radiation_index] /= denominator
-    return spectra, counts, tail_bounds, line_center_means, visible_upper_bounds
+    return (spectra, counts, tail_bounds, line_center_means,
+            visible_upper_bounds, visible_cell_upper_bounds)
 
 
 def species_spectrum(lines: Iterable[HitranLine], molecule: int,
@@ -578,7 +842,7 @@ def species_spectrum(lines: Iterable[HitranLine], molecule: int,
                      self_mole_fraction: float = 0.0) -> tuple[list[float], int, float]:
     if pressure_pa <= 0.0 or wing_cutoff_cm1 <= 0.0:
         raise ValueError("pressure and line-wing cutoff must be positive")
-    spectra, counts, tails, _, _ = species_spectra_batch(
+    spectra, counts, tails, _, _, _ = species_spectra_batch(
         lines, molecule, molar_masses_kg_per_mol, partition_sums, grid_cm1,
         [temperature_k], pressure_pa, [self_mole_fraction], [wing_cutoff_cm1])
     return spectra[0][0][0], counts[0][0][0], tails[0][0][0]

@@ -15,8 +15,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from fire_gas_opacity import sha256_file
-from generate_fire_gas_opacity_record import load_verified_manifest
+from fire_gas_opacity import canonical_json_bytes, sha256_file
+from generate_fire_gas_opacity_record import generate, load_verified_manifest
 
 
 def fetch_public_partition_sums(manifest_path: Path, input_root: Path) -> None:
@@ -46,20 +46,31 @@ def fetch_public_partition_sums(manifest_path: Path, input_root: Path) -> None:
                     temporary.unlink()
 
 
+def verify_and_generate(manifest_path: Path, input_root: Path,
+                        output: Path, native_library: Path | None) -> None:
+    manifest, _ = load_verified_manifest(manifest_path, input_root)
+    file_count = sum(len(source["files"]) for source in manifest["sources"])
+    q_count = sum(len(source["partition_sums"]["files"])
+                  for source in manifest["sources"])
+    output.write_bytes(canonical_json_bytes(generate(
+        manifest_path, input_root, native_library)))
+    print(f"verified {file_count} hash-pinned line archive(s) and "
+          f"{q_count} partition-sum input(s); generated {output}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-root", required=True, type=Path)
     parser.add_argument("--fetch-public-partition-sums", action="store_true")
+    parser.add_argument("--native-library", type=Path,
+                        help="compiled accumulator required for production generation")
     parser.add_argument("manifest", type=Path)
+    parser.add_argument("output", type=Path)
     args = parser.parse_args()
     if args.fetch_public_partition_sums:
         fetch_public_partition_sums(args.manifest, args.input_root)
-    manifest, _ = load_verified_manifest(args.manifest, args.input_root)
-    file_count = sum(len(source["files"]) for source in manifest["sources"])
-    q_count = sum(len(source["partition_sums"]["files"])
-                  for source in manifest["sources"])
-    print(f"verified {file_count} hash-pinned line archive(s) and "
-          f"{q_count} partition-sum input(s)")
+    verify_and_generate(
+        args.manifest, args.input_root, args.output, args.native_library)
 
 
 if __name__ == "__main__":

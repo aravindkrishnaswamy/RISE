@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Sequence
 
 from fire_gas_opacity import (
-    PartitionSums, canonical_json_bytes, iter_hitran_lines,
-    multilinear_value, planck_mean_wavenumber, sha256_file,
+    REFERENCE_PRESSURE_PA, PartitionSums, canonical_json_bytes, iter_hitran_lines,
+    finite_path_emissivity_refinement_certificate, multilinear_value,
+    planck_mean_wavenumber, sha256_file,
     species_spectra_batch, spectral_grid, tensor_linear_derivative_certificate,
 )
 
@@ -139,7 +140,8 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
         raise ValueError("opacity self-broadening axis does not span its domain")
     pressure = table.get("pressure_Pa")
     edges = table.get("spectral_bin_edge_domain_cm-1")
-    if (not isinstance(pressure, (int, float)) or not math.isfinite(pressure) or pressure <= 0.0 or
+    if (not isinstance(pressure, (int, float)) or not math.isfinite(pressure) or
+            pressure != REFERENCE_PRESSURE_PA or
             not isinstance(edges, list) or len(edges) != 2 or
             not all(isinstance(value, (int, float)) and math.isfinite(value)
                     for value in edges) or edges[0] <= 0.0 or edges[0] >= edges[1]):
@@ -175,12 +177,41 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
                 [self_axis, gas_axis, radiation_axis], means) != species.get(
                     "planck_mean_interpolation"):
             raise ValueError("opacity interpolation certificate does not bind the table")
+        emissivity_certificate = species.get("finite_path_emissivity_grid_qualification")
+        if not isinstance(emissivity_certificate, dict):
+            raise ValueError("opacity finite-path emissivity qualification is missing")
+        expected_emissivity_certificate = finite_path_emissivity_refinement_certificate(
+            grid,
+            species["kappa_bin_average_per_m_per_unit_species_mole_fraction"],
+            gas_axis, emissivity_certificate.get("path_lengths_m", []),
+            emissivity_certificate.get(
+                "maximum_allowed_estimated_remaining_relative_error", math.nan),
+            emissivity_certificate.get(
+                "maximum_allowed_contraction_ratio", math.nan))
+        if (emissivity_certificate != expected_emissivity_certificate or
+                (not synthetic and emissivity_certificate.get("qualified") is not True)):
+            raise ValueError("opacity finite-path emissivity qualification is invalid")
+        visible_upper = species.get(
+            "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction")
+        visible_allowed = species.get(
+            "visible_380_780nm_maximum_allowed_m-1_per_unit_species_mole_fraction")
+        if (not isinstance(visible_upper, (int, float)) or
+                not isinstance(visible_allowed, (int, float)) or
+                not math.isfinite(visible_upper) or not math.isfinite(visible_allowed) or
+                visible_upper < 0.0 or visible_allowed <= 0.0 or
+                visible_upper > visible_allowed or
+                species.get("visible_upper_bound_domain") !=
+                "continuous_self_fraction_and_gas_temperature_cells_v1"):
+            raise ValueError("opacity visible-band certificate is invalid")
         files = species.get("input_files")
         q_files = species.get("partition_sums", {}).get("files")
+        q_citation = species.get("partition_sums", {}).get("citation")
         if (not isinstance(files, list) or not files or
                 any(not _is_digest(item.get("sha256")) for item in files) or
                 not isinstance(q_files, list) or not q_files or
-                any(not _is_digest(item.get("sha256")) for item in q_files)):
+                any(not _is_digest(item.get("sha256")) for item in q_files) or
+                not isinstance(q_citation, str) or not q_citation.strip() or
+                (not synthetic and not _concrete_citation(q_citation))):
             raise ValueError("opacity species source inventory is invalid")
 
 
@@ -227,6 +258,12 @@ def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, P
         partition = source.get("partition_sums", {})
         if partition.get("format") != "hitran_q_temperature_value_columns":
             raise ValueError(f"{species} partition-sum format is unsupported")
+        partition_citation = partition.get("citation")
+        if (not isinstance(partition_citation, str) or
+                not partition_citation.strip() or
+                (status == "production_pinned" and
+                 not _concrete_citation(partition_citation))):
+            raise ValueError(f"{species} partition-sum citation is missing or non-concrete")
         q_files = partition.get("files")
         if not isinstance(q_files, list) or not q_files:
             raise ValueError(f"{species} partition-sum inventory is empty")
@@ -386,6 +423,8 @@ def generate(manifest_path: Path, input_root: Path | None,
                 for index in range(len(self_fractions) - 1))):
         raise ValueError("temperature grids must contain increasing closed intervals")
     pressure_pa = float(manifest["pressure_Pa"])
+    if not math.isfinite(pressure_pa) or pressure_pa != REFERENCE_PRESSURE_PA:
+        raise ValueError("opacity table pressure must be exactly 101325 Pa (1 atm)")
     grid_step = grid[1] - grid[0]
     spectral_bin_edges = [grid[0] - 0.5 * grid_step,
                           grid[-1] + 0.5 * grid_step]
@@ -397,6 +436,13 @@ def generate(manifest_path: Path, input_root: Path | None,
     maximum_wing_relative = float(manifest["maximum_planck_mean_wing_relative_error"])
     maximum_visible_upper = float(
         manifest["maximum_visible_gas_absorption_m-1_per_unit_species_mole_fraction"])
+    emissivity_config = manifest.get("finite_path_emissivity_grid_qualification", {})
+    emissivity_paths = [float(value) for value in
+                        emissivity_config.get("path_lengths_m", [])]
+    emissivity_remaining_limit = float(
+        emissivity_config.get("maximum_estimated_remaining_relative_error", math.nan))
+    emissivity_contraction_limit = float(
+        emissivity_config.get("maximum_contraction_ratio", math.nan))
     if (convergence_factor <= 1.0 or maximum_grid_relative <= 0.0 or
             maximum_wing_relative <= 0.0 or maximum_visible_upper <= 0.0):
         raise ValueError("line-wing convergence factor must exceed one")
@@ -420,8 +466,8 @@ def generate(manifest_path: Path, input_root: Path | None,
                 gas_temperatures, pressure_pa, self_fractions,
                 [cutoff, cutoff * convergence_factor], radiation_temperatures,
                 visible_interval)
-        all_spectra, all_counts, tail_bounds, center_means, visible_bounds = (
-            accumulator_result)
+        (all_spectra, all_counts, tail_bounds, center_means,
+         _visible_knot_bounds, visible_cell_bounds) = accumulator_result
         spectra = all_spectra[0]
         expanded = all_spectra[1]
         line_counts = all_counts[0]
@@ -473,9 +519,15 @@ def generate(manifest_path: Path, input_root: Path | None,
             raise ValueError(f"{source['species']} spectral grid fails its Planck-mean gate")
         if maximum_wing_mean_rel > maximum_wing_relative:
             raise ValueError(f"{source['species']} line-wing comparison fails its Planck-mean gate")
-        visible_maximum = max(value for row in visible_bounds for value in row)
+        visible_maximum = max(value for row in visible_cell_bounds for value in row)
         if visible_maximum > maximum_visible_upper:
             raise ValueError(f"{source['species']} fails the visible-gas upper-bound gate")
+        emissivity_certificate = finite_path_emissivity_refinement_certificate(
+            grid, spectra, gas_temperatures, emissivity_paths,
+            emissivity_remaining_limit, emissivity_contraction_limit)
+        if not manifest["synthetic"] and not emissivity_certificate["qualified"]:
+            raise ValueError(
+                f"{source['species']} spectral grid fails the finite-path emissivity gate")
         species_tables.append({
             "species": source["species"],
             "release": source["release"],
@@ -485,8 +537,11 @@ def generate(manifest_path: Path, input_root: Path | None,
             "planck_mean_per_m_per_unit_species_mole_fraction": means,
             "planck_mean_interpolation": tensor_linear_derivative_certificate(
                 [self_fractions, gas_temperatures, radiation_temperatures], means),
+            "finite_path_emissivity_grid_qualification": emissivity_certificate,
             "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction": visible_maximum,
             "visible_380_780nm_maximum_allowed_m-1_per_unit_species_mole_fraction": maximum_visible_upper,
+            "visible_upper_bound_domain":
+                "continuous_self_fraction_and_gas_temperature_cells_v1",
             "spectral_grid_discretization": {
                 "reference": "line-area-weighted Planck function evaluated at shifted line centers",
                 "maximum_absolute_planck_mean_m-1_per_unit_species_mole_fraction": maximum_grid_abs,

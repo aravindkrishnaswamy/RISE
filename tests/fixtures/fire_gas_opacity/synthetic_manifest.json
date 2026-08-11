@@ -12,7 +12,12 @@
   "line_wing_convergence_factor": 2.0,
   "maximum_planck_mean_grid_relative_error": 0.05,
   "maximum_planck_mean_wing_relative_error": 0.05,
-  "maximum_visible_gas_absorption_m-1_per_unit_species_mole_fraction": 0.00001,
+  "finite_path_emissivity_grid_qualification": {
+    "path_lengths_m": [0.01, 1.0, 50.0],
+    "maximum_estimated_remaining_relative_error": 0.05,
+    "maximum_contraction_ratio": 0.8
+  },
+  "maximum_visible_gas_absorption_m-1_per_unit_species_mole_fraction": 0.001,
   "hitemp_citations": [
     "HITEMP2010/2024 format exercised only; fixture values are synthetic"
   ],
