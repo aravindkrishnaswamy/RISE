@@ -967,17 +967,17 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        // L5a round-5 — two durable EDR renderers, one per role.
-        // Each binds to its respective bridge HDR-block slot once
-        // for the renderer's lifetime; both attach to their own
-        // CAMetalLayer (stacked production-bottom / interactive-
-        // top) when ViewportNSView lays them out.  nil if Metal
-        // is unavailable; in that case `edrAvailable` stays false
-        // and the toggle is disabled.
+        // The two durable role renderers share one presentation epoch because
+        // ViewportNSView attaches both to one CAMetalLayer. Ownership changes
+        // invalidate delayed work from the other role before it can present.
+        let edrPresentationCoordinator = MetalEDRPresentationCoordinator()
         self.productionEDRRenderer  = MetalEDRRenderer(bridge: bridge,
-                                                       role: .production)
+                                                       role: .production,
+                                                       presentationCoordinator: edrPresentationCoordinator)
         self.interactiveEDRRenderer = MetalEDRRenderer(bridge: bridge,
-                                                       role: .interactive)
+                                                       role: .interactive,
+                                                       presentationCoordinator: edrPresentationCoordinator)
+        self.interactiveEDRRenderer?.claimPresentationOwnership()
 
         // L5a — initial EDR availability probe + subscribe to
         // screen-config changes so the toggle dims/lights as the
@@ -1455,6 +1455,7 @@ final class RenderViewModel: ObservableObject {
         // executor checks all passing — and execute tool calls
         // against Scene state the production workers read off-main.
         chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
         viewportBridge?.stop()
 
         // Capture the canonical scrubbed time now, but advance the scene
@@ -1632,10 +1633,6 @@ final class RenderViewModel: ObservableObject {
                 // emit.
                 self.progressivePollTimer?.invalidate()
                 self.progressivePollTimer = nil
-                let bridgeRefFinal = self.bridge
-                self.pollQueue.async {
-                    bridgeRefFinal.pollProductionVFS()
-                }
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
@@ -1679,7 +1676,7 @@ final class RenderViewModel: ObservableObject {
                 // old sink-level frame-drop did not (the EDR frame reaches
                 // the layer through the FrameStore observer, bypassing the
                 // sink entirely).
-                self.viewportBridge?.startSuppressingInitialRender()
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
@@ -1694,6 +1691,7 @@ final class RenderViewModel: ObservableObject {
         // B2 review round 1: cancel any in-flight chat turn before
         // production kicks (see startRender).
         chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
         viewportBridge?.stop()
 
         isRegionProductionRender = false
@@ -1826,10 +1824,6 @@ final class RenderViewModel: ObservableObject {
                 // emit.
                 self.progressivePollTimer?.invalidate()
                 self.progressivePollTimer = nil
-                let bridgeRefFinal = self.bridge
-                self.pollQueue.async {
-                    bridgeRefFinal.pollProductionVFS()
-                }
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
@@ -1853,7 +1847,7 @@ final class RenderViewModel: ObservableObject {
                 // without its initial render pass so the finished
                 // animation's last frame stays on screen until the user
                 // interacts.
-                self.viewportBridge?.startSuppressingInitialRender()
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
@@ -2212,7 +2206,32 @@ final class RenderViewModel: ObservableObject {
     func restartRefinement() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.stop()
+        claimEDRPresentationOwnership(.interactive)
         vb.start()
+    }
+
+    private func claimEDRPresentationOwnership(_ role: MetalEDRRendererRole) {
+        switch role {
+        case .production:
+            productionEDRRenderer?.claimPresentationOwnership()
+            interactiveEDRRenderer?.drainCommittedPresentations()
+        case .interactive:
+            productionEDRRenderer?.present()
+            productionEDRRenderer?.drainCommittedPresentations()
+            interactiveEDRRenderer?.claimPresentationOwnership()
+        }
+    }
+
+    private func restartInteractiveAfterFinalProductionPoll() {
+        let bridgeRef = bridge
+        pollQueue.async { [weak self] in
+            bridgeRef.pollProductionVFS()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.claimEDRPresentationOwnership(.interactive)
+                self.viewportBridge?.startSuppressingInitialRender()
+            }
+        }
     }
 
     // MARK: - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)

@@ -219,7 +219,7 @@ uint64_t RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback,
         }
     }
     if (readyWidth != 0u && readyHeight != 0u) {
-        notifySceneReady(readyWidth,readyHeight);
+        notifySceneReady(env,kotlinCallback,readyWidth,readyHeight);
     }
     return owner;
 }
@@ -457,13 +457,19 @@ void RiseBridge::notifySceneReady(unsigned w, unsigned h) {
         ScopedLocalFrame frame(env, 8);
         jobject callback = snapshotKotlinCallback(env);
         if (callback) {
-            env->CallVoidMethod(callback, g_cb.onSceneReady,
-                                static_cast<jint>(w), static_cast<jint>(h));
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
-            }
+            notifySceneReady(env,callback,w,h);
         }
+    }
+}
+
+void RiseBridge::notifySceneReady(JNIEnv* env, jobject callback,
+                                  unsigned w, unsigned h) {
+    if (!env || !callback) return;
+    env->CallVoidMethod(callback, g_cb.onSceneReady,
+                        static_cast<jint>(w), static_cast<jint>(h));
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
     }
 }
 

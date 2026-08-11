@@ -911,9 +911,8 @@ private struct ViewportCanvas: NSViewRepresentable {
         v.toolCursor    = cursor
         v.surfaceDimensionsProvider = surfaceDimensionsProvider
         v.onSurfacePixelSizeChanged = onSurfacePixelSizeChanged
-        // Order matters: setting production first adds its sublayer
-        // BENEATH the interactive sublayer (CALayer.addSublayer
-        // appends to the end of `sublayers`, painting on top).
+        // Both renderers attach to one shared layer; their coordinator, not
+        // attachment order, owns source changes and delayed presentation.
         v.productionEDRRenderer  = productionEDRRenderer
         v.interactiveEDRRenderer = interactiveEDRRenderer
         return v

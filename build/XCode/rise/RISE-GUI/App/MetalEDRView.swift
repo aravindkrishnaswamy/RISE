@@ -40,16 +40,45 @@ import SwiftUI
 
 /// L5a round-5 — distinguishes which bridge slot a renderer
 /// drives (and what default clear-alpha its CAMetalLayer uses).
-enum MetalEDRRendererRole {
+enum MetalEDRRendererRole: UInt8 {
     /// Drives `setHDRImageOutputBlock:` — fires per-tile + per-frame
     /// from the production rasterizer.  Layer is opaque base.
     case production
     /// Drives `setInteractiveHDRImageOutputBlock:` — fires only on
-    /// frame-complete from the interactive rasterizer.  Layer
-    /// composites over production with transparent background, so
-    /// regions the interactive renderer hasn't touched fall through
-    /// to whatever production drew underneath.
+    /// frame-complete from the interactive rasterizer. Both roles share one
+    /// opaque CAMetalLayer; the presentation coordinator makes source changes
+    /// epoch-ordered so delayed work from the old role cannot overwrite it.
     case interactive
+}
+
+final class MetalEDRPresentationCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var owner: MetalEDRRendererRole? = nil
+
+    func claim(_ role: MetalEDRRendererRole) -> UInt64 {
+        lock.lock()
+        generation &+= 1
+        if generation == 0 { generation = 1 }
+        owner = role
+        let ticket = generation
+        lock.unlock()
+        return ticket
+    }
+
+    func ticket(for role: MetalEDRRendererRole) -> UInt64? {
+        lock.lock()
+        let ticket = owner?.rawValue == role.rawValue ? generation : nil
+        lock.unlock()
+        return ticket
+    }
+
+    func accepts(_ role: MetalEDRRendererRole, ticket: UInt64) -> Bool {
+        lock.lock()
+        let accepted = owner?.rawValue == role.rawValue && generation == ticket
+        lock.unlock()
+        return accepted
+    }
 }
 
 /// L5a — durable holder of Metal state + bridge HDR-block binding.
@@ -73,6 +102,7 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
     private let bridge: RISEBridge
+    private let presentationCoordinator: MetalEDRPresentationCoordinator
 
     private let stagingLock = NSLock()
     private var stagingBuffer: [UInt16] = []
@@ -100,13 +130,15 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
     private let presentScheduled = NSLock()
     private var presentInFlight = false
 
-    init?(bridge: RISEBridge, role: MetalEDRRendererRole) {
+    init?(bridge: RISEBridge, role: MetalEDRRendererRole,
+          presentationCoordinator: MetalEDRPresentationCoordinator) {
         guard let dev = MTLCreateSystemDefaultDevice(),
               let queue = dev.makeCommandQueue() else {
             return nil
         }
         self.bridge = bridge
         self.role   = role
+        self.presentationCoordinator = presentationCoordinator
         self.device = dev
         self.commandQueue = queue
         guard let pipeline = MetalEDRRenderer.buildPipeline(device: dev) else {
@@ -149,6 +181,18 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         }
     }
 
+    func claimPresentationOwnership() {
+        _ = presentationCoordinator.claim(role)
+        presentScheduled.lock()
+        presentInFlight = false
+        presentScheduled.unlock()
+    }
+
+    func drainCommittedPresentations() {
+        inflightSem.wait()
+        inflightSem.signal()
+    }
+
     // MARK: - Layer attach / detach (called from SwiftUI lifecycle)
 
     /// Configure `layer` for EDR composition and start using it as
@@ -181,7 +225,7 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         attachedLayer = layer
         // Push the latest staging-buffer state immediately so the
         // first frame after attach isn't blank.
-        present()
+        present(expectedTicket: presentationCoordinator.ticket(for: role))
     }
 
     /// Stop driving the previously-attached layer.  Call from main
@@ -238,6 +282,9 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         // worker uploads never wait on a main-thread texture replacement;
         // the generation poll or final full-frame callback catches skipped
         // regions.
+        guard let presentationTicket = presentationCoordinator.ticket(for: role) else {
+            return
+        }
         presentScheduled.lock()
         let needSchedule = !presentInFlight
         presentInFlight = true
@@ -245,7 +292,7 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         if needSchedule {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0) {
                 [weak self] in
-                self?.present()
+                self?.present(expectedTicket: presentationTicket)
             }
         }
     }
@@ -255,14 +302,16 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
     /// Push the latest staging-buffer state to the attached layer
     /// via a fragment-shader-driven aspect-fit blit.  Call from
     /// main thread.  Safe to call without an attached layer (no-op).
-    func present() {
+    func present(expectedTicket: UInt64? = nil) {
         // Clear the coalesce flag at the very start.  Subsequent
         // uploads will re-dispatch.
         presentScheduled.lock()
         presentInFlight = false
         presentScheduled.unlock()
 
-        guard let layer = attachedLayer else { return }
+        guard let ticket = expectedTicket ?? presentationCoordinator.ticket(for: role),
+              presentationCoordinator.accepts(role,ticket: ticket),
+              let layer = attachedLayer else { return }
 
         // L5a round-2 P2-B: gate concurrent draws on the
         // semaphore; cmd completion handler signals.
@@ -347,6 +396,11 @@ final class MetalEDRRenderer: NSObject, @unchecked Sendable {
         enc.setFragmentTexture(src, index: 0)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         enc.endEncoding()
+
+        guard presentationCoordinator.accepts(role,ticket: ticket) else {
+            inflightSem.signal()
+            return
+        }
 
         cmd.addCompletedHandler { [inflightSem] _ in
             inflightSem.signal()

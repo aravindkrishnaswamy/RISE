@@ -260,8 +260,7 @@ namespace RISE
 		// deliberately appended at the absolute vtable tail so existing medium
 		// implementations keep their historical slots.
 
-		/// True only for the fire/smoke medium whose RGB preview is unavailable
-		/// until the ordered Phase-A Pel increment lands.
+		/// True only for a fire/smoke medium requiring optical-record preflight.
 		virtual bool IsFireMedium() const { return false; }
 
 		/// Kirchhoff source epsilon_lambda = sigma_a(lambda) B_lambda(T), in

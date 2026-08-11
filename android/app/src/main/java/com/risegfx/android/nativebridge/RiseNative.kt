@@ -76,6 +76,8 @@ object RiseNative {
      * on the native side. Returns a nonzero ownership token. Replacement
      * stops the prior owner's viewport and can block until its load/render
      * call has returned, so callers must invoke this off the main thread.
+     * When a framebuffer already exists, the accepted callback receives its
+     * readiness notification synchronously before this function returns.
      * [requestGeneration] must increase with ViewModel creation order; a
      * delayed request older than the latest accepted generation returns zero.
      */

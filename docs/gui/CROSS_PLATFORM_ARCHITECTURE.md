@@ -124,7 +124,7 @@ Each platform binds exactly as today: macOS through the Obj-C++ `.mm` (the only 
 
 ### 3.4 What legitimately stays different across the three bridges
 Consolidation does **not** mean byte-identical bridge files. These differences are real and must remain:
-- **Threading/lifetime guards.** Android holds a JNI global-ref `std::mutex` because Kotlin may call `setCallback(null)` while worker threads fire callbacks (`RiseBridge.cpp:176–196`). macOS/Windows have no JNI and don't need it.
+- **Threading/lifetime guards.** Android uses generation-ordered `nativeSetCallback` ownership tokens plus owner-checked `nativeClearCallback` while worker threads can hold local callback references. macOS/Windows have no JNI and don't need that handoff protocol.
 - **Frame delivery.** macOS/Windows keep a *persistent* `ViewportPreviewSink`; Android *reconstructs* the sink on every start. Android threads `suppressFirstFrame` into `startViewport()` so controller construction can choose the source-level `StartSuppressingInitialRender` admission before its render loop begins; the sink itself never drops a frame (`RiseBridge.cpp:1058–1086`). This is an OS-lifecycle difference, not a logic fork.
 - **Pixel hand-off.** See §5 — the present surface differs by construction.
 

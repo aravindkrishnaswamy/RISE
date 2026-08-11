@@ -132,6 +132,8 @@ public:
     // framebuffer as needed and notifies Kotlin via onSceneReady. Thread-safe.
     void ensureFramebuffer(unsigned w, unsigned h);
     void notifySceneReady(unsigned w, unsigned h);
+    void notifySceneReady(JNIEnv* env, jobject callback,
+                          unsigned w, unsigned h);
 
     // Internal: legacy interactive-fallback blit. Copies one dirty region
     // from RGBA16 into the RGBA8 framebuffer and notifies Kotlin.
