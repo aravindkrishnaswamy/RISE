@@ -1142,7 +1142,7 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (twenty tools, three providers) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (twenty-two tools, three providers) + SetSkillIndex...\n" );
 
 	// The count below is asserted, not narrated: every provider's request
 	// body must carry the SAME kToolDefs table, so a tool added to one codec
@@ -1159,7 +1159,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 20, "anthropic body carries twenty tools" );
+		Check( tools.isArray() && tools.size() == 22, "anthropic body carries twenty-two tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -1188,7 +1188,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 20, "gemini body carries twenty functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 22, "gemini body carries twenty-two functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
@@ -1202,7 +1202,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 20, "openai body carries twenty tools" );
+		Check( tools.isArray() && tools.size() == 22, "openai body carries twenty-two tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "type" ).asString() == "function" &&
@@ -1318,13 +1318,13 @@ static void TestToolRound( AgentRpcDispatcher& rpc )
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentSkillsTest (Facet 5 slice S1: read_skill + seed skills + snippet contract) ===\n" );
 
 	// Pin the skills root to the deterministic ./skills/agent fallback:

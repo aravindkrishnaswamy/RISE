@@ -1058,9 +1058,9 @@ int main()
 			       "allowlist AgentSession.cpp enforces" );
 		}
 
-		// ---- G2: part-plan gate, surface parity --------------------------
+		// ---- G2: build-plan gate, surface parity --------------------------
 		// GROUND TRUTH IS THE CODE.  The closed `construction` enum lives in
-		// AgentSession.cpp's kPartPlanConstructionValues, and three facts about
+		// AgentSession.cpp's kBuildPlanConstructionValues, and three facts about
 		// the gate are RESTATED, in prose, on the two hand-authored surfaces a
 		// model actually reads: the shared chat tool defs (AgentChatCodecs.cpp
 		// `kToolDefs` -- the text sent with EVERY API call) and the MCP
@@ -1089,7 +1089,7 @@ int main()
 
 			std::vector<std::string> enumValues;
 			{
-				const std::string anchorDecl = "kPartPlanConstructionValues[6] =";
+				const std::string anchorDecl = "kBuildPlanConstructionValues[6] =";
 				const size_t at = sessionSrc.find( anchorDecl );
 				const size_t end = at == std::string::npos ? std::string::npos
 				                                           : sessionSrc.find( "};", at );
@@ -1111,28 +1111,28 @@ int main()
 			std::vector<std::string> planProblems;
 			for( const char* fname : kPlanSurfaces ) {
 				const std::string src = slurp( agentDir / fname );
-				if( src.find( "file_part_plan" ) == std::string::npos ) {
-					planProblems.push_back( std::string( fname ) + ": never mentions file_part_plan at all" );
+				if( src.find( "file_build_plan" ) == std::string::npos ) {
+					planProblems.push_back( std::string( fname ) + ": never mentions file_build_plan at all" );
 					continue;
 				}
 				// A surface satisfies the ENUM half either MECHANICALLY (it
-				// builds the list from kPartPlanConstructionValues, so it
+				// builds the list from kBuildPlanConstructionValues, so it
 				// cannot drift) or by naming every value verbatim.  The MCP
 				// adapter takes the first route and the chat codec -- whose
 				// schemas are raw string literals, so it cannot -- takes the
 				// second, with each value spelled inside an ESCAPED JSON
 				// string (\"primitive\") in the C++ source.
-				const bool derivesEnum = src.find( "kPartPlanConstructionValues" ) != std::string::npos;
+				const bool derivesEnum = src.find( "kBuildPlanConstructionValues" ) != std::string::npos;
 				if( !derivesEnum ) {
 					for( const std::string& v : enumValues )
 						if( src.find( "\\\"" + v + "\\\"" ) == std::string::npos )
 							planProblems.push_back( std::string( fname ) + ": never names the construction "
 								"value `" + v + "` (and does not derive the list from "
-								"kPartPlanConstructionValues) -- a model reading this surface will not know "
+								"kBuildPlanConstructionValues) -- a model reading this surface will not know "
 								"it is legal, and any other value is a -32602" );
 				}
 				if( src.find( "NOT binding" ) == std::string::npos )
-					planProblems.push_back( std::string( fname ) + ": does not state that the part plan "
+					planProblems.push_back( std::string( fname ) + ": does not state that the build plan "
 						"is NOT binding -- a model that believes otherwise will under-declare or refuse "
 						"to deviate, corrupting the measurement" );
 				if( src.find( "up to 3 refusals" ) == std::string::npos )
@@ -1149,9 +1149,9 @@ int main()
 				// trip discovering it.  (6) `view` EXISTS and says what it
 				// means -- it is optional, so a surface that never mentions it
 				// leaves a model unable to declare a side or top sketch at all.
-				if( src.find( "`outline` is REQUIRED per part" ) == std::string::npos )
+				if( src.find( "`outline` is REQUIRED per element" ) == std::string::npos )
 					planProblems.push_back( std::string( fname ) + ": does not state that `outline` is "
-						"REQUIRED per part -- the required-ness IS the G3a mechanism (design decision 2: "
+						"REQUIRED per element -- the required-ness IS the G3a mechanism (design decision 2: "
 						"strictly required, no opt-out value), so a surface that presents it as optional "
 						"disables the slice for every model reading that surface" );
 				if( src.find( "at least 3" ) == std::string::npos )
@@ -1239,13 +1239,13 @@ int main()
 			// G3a: the parts cap is a real dispatcher rejection, and the chat
 			// codec cannot derive it (its schemas are raw string literals), so
 			// it spells the number.  Pin the literal against the header's
-			// kPartPlanMaxParts the same way the enum above is pinned against
-			// kPartPlanConstructionValues -- a bump on one side that silently
+			// kBuildPlanMaxElements the same way the enum above is pinned against
+			// kBuildPlanConstructionValues -- a bump on one side that silently
 			// left the other behind would advertise a limit the dispatcher
 			// does not enforce, or hide one it does.
 			{
 				const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
-				const std::string anchor = "kPartPlanMaxParts = ";
+				const std::string anchor = "kBuildPlanMaxElements = ";
 				const size_t at = headerSrc.find( anchor );
 				std::string maxParts;
 				if( at != std::string::npos ) {
@@ -1254,20 +1254,20 @@ int main()
 						maxParts += headerSrc[q++];
 				}
 				Check( !maxParts.empty(),
-				       "G3a parity: parsed kPartPlanMaxParts out of AgentSession.h" );
+				       "G3a parity: parsed kBuildPlanMaxElements out of AgentSession.h" );
 				if( !maxParts.empty() ) {
 					const std::string codecSrc = slurp( agentDir / "AgentChatCodecs.cpp" );
 					if( codecSrc.find( "\\\"maxItems\\\":" + maxParts ) == std::string::npos )
-						planProblems.push_back( "AgentChatCodecs.cpp: its file_part_plan `parts` schema "
+						planProblems.push_back( "AgentChatCodecs.cpp: its file_build_plan `elements` schema "
 							"does not declare maxItems:" + maxParts + " -- the dispatcher rejects a longer "
 							"list with -32602, so this surface would advertise a contract it does not have" );
 					// The MCP adapter DERIVES the number from the constant, so
 					// it cannot drift -- assert that it still does, rather
 					// than grepping for a literal it deliberately lacks.
 					const std::string mcpSrc = slurp( agentDir / "AgentMcpAdapter.cpp" );
-					if( mcpSrc.find( "kPartPlanMaxParts" ) == std::string::npos )
+					if( mcpSrc.find( "kBuildPlanMaxElements" ) == std::string::npos )
 						planProblems.push_back( "AgentMcpAdapter.cpp: no longer derives its `parts` maxItems "
-							"from kPartPlanMaxParts" );
+							"from kBuildPlanMaxElements" );
 				}
 			}
 			// ---- Arc 77 Phase 2 (2026-08-11): the IMAGINE-SCENE surface pins.
@@ -1368,6 +1368,60 @@ int main()
 					  "image unconditionally turns that honest answer into an apparent failure" }
 				};
 
+				// ---- S1 (2026-08-11): the STAGED BUILD PROTOCOL surface pins.
+				//
+				// Same test, same problem list, same reason: the protocol is ONE
+				// mechanism described by TWO hand-authored surfaces, and a rule
+				// that lands on only one of them silently changes what the model
+				// on the other transport believes it may do.  These are the
+				// clauses a model cannot work the protocol without -- what
+				// filing starts, what is refused, what is NOT refused, and both
+				// escapes.  Over-refusal is this design's stated failure mode,
+				// so the "editable in every phase" clause is as load-bearing as
+				// the refusal itself.
+				{
+					struct S1Pin { const char* text; const char* why; };
+					static const S1Pin kS1Pins[] = {
+						{ "finish_element",
+						  "never mentions finish_element -- the verb that advances the protocol; a "
+						  "model that cannot name it cannot leave the first element" },
+						{ "reopen_element",
+						  "never mentions reopen_element -- the ONLY escape from the compose "
+						  "phase's creation refusal; omitting it strands the session" },
+						{ "An edit aimed at a chunk recorded against a DIFFERENT element is refused",
+						  "does not state the cross-element refusal -- a model that meets it "
+						  "without having been told reads it as a bug, not a sequence" },
+						// S1 fix-round (2026-08-11): the exempt set gained
+						// Material and Painter (two elements sharing a skin
+						// material or a fabric painter is ordinary authoring),
+						// and the prose now also names rasterizer-output,
+						// which the code always exempted but neither surface
+						// mentioned.  The pin is the FULL list on purpose: a
+						// surface that names half of it tells the model half
+						// the truth about what it may touch.
+						{ "and light, camera, film, rasterizer, rasterizer-output, material and "
+						  "painter chunks, are editable in every phase",
+						  "does not state what is NOT refused -- over-refusal is the failure mode "
+						  "this design fears (sec 2.3); a model that believes lights are locked "
+						  "cannot light its own isolated element, and one that believes materials "
+						  "are locked cannot put the same skin on a head and a pair of hands" },
+						{ "no piece has to become a chunk",
+						  "does not state that the piece list is declarative -- a model that "
+						  "believes pieces are gated will either under-declare defensively or "
+						  "chase a chunk per piece, both of which corrupt the measurement" },
+						{ "says nothing about what was built or how well",
+						  "does not state that finish_element's piece report is a NAME check -- "
+						  "presented as a verdict it becomes a score, which this arc forbids" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kS1Pins ) / sizeof( kS1Pins[0] ); ++k ) {
+							if( joined.find( kS1Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kS1Pins[k].why );
+						}
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {
@@ -1406,7 +1460,7 @@ int main()
 			// plausible number, systematically wrong, with nothing failing.
 			// TWO independent pins, because the invariant has two halves:
 			//
-			//  (1) NUMERIC -- AgentSession.h's kPartSketchFillFraction and
+			//  (1) NUMERIC -- AgentSession.h's kElementSketchFillFraction and
 			//      AgentSession.cpp's kIsolateFrameFill are the same
 			//      literal.  These are deliberately separate constants (one
 			//      frames a 3D camera, one fits a 2D polygon) that MUST hold
@@ -1433,18 +1487,18 @@ int main()
 						v += src[q++];
 					return v;
 				};
-				const std::string sketchFill  = literalAfter( headerSrc,  "kPartSketchFillFraction = " );
+				const std::string sketchFill  = literalAfter( headerSrc,  "kElementSketchFillFraction = " );
 				const std::string isolateFill = literalAfter( sessionSrc, "kIsolateFrameFill = " );
 				Check( !sketchFill.empty() && !isolateFill.empty(),
 				       "G3b parity: parsed both fill-fraction literals" );
 				Check( sketchFill == isolateFill,
-				       "G3b: kPartSketchFillFraction (" + sketchFill + ") and kIsolateFrameFill (" +
+				       "G3b: kElementSketchFillFraction (" + sketchFill + ") and kIsolateFrameFill (" +
 				       isolateFill + ") MUST be the same literal -- the sketch mask and the isolate "
 				       "render's silhouette are compared by IoU, and a divergence here biases every "
 				       "comparison silently" );
 
 				// Both call sites of the shared fit, plus the definition:
-				// three occurrences minimum (RasterizePartOutline_,
+				// three occurrences minimum (RasterizeElementOutline_,
 				// NormalizeSilhouetteToCanvas_, and the function itself).
 				std::size_t fitUses = 0;
 				for( size_t at = sessionSrc.find( "SketchFitTransform_" );
@@ -1493,9 +1547,13 @@ int main()
 			// -- it is image-bearing (IsImageResult lists it) and the adapter
 			// must reach it through the shared predicate, exactly like the
 			// other four.
+			// S1 (2026-08-11): `finish_element` joins the ban list -- its
+			// result carries the element's isolate render (IsImageResult
+			// lists it), so the adapter must reach it through the shared
+			// predicate exactly like the other five.
 			static const char* const kImageVerbLiterals[] = {
-				"read_image", "read_viewport", "compare_to_reference", "file_part_plan",
-				"imagine_scene" };
+				"read_image", "read_viewport", "compare_to_reference", "file_build_plan",
+				"finish_element", "imagine_scene" };
 			for( std::size_t v = 0; v < sizeof( kImageVerbLiterals ) / sizeof( kImageVerbLiterals[0] ); ++v ) {
 				const std::string verb = kImageVerbLiterals[v];
 				Check( mcpSrc.find( "toolName == \"" + verb + "\"" ) == std::string::npos &&

@@ -784,7 +784,7 @@ namespace RISE
 			//! can resolve later -- so the same value can become
 			//! geometry-introducing while the proposal sits on the queue.
 			//! ResolveProposal therefore re-runs the stateless delta
-			//! (RISE::Agent::DescribePartPlanGeometryDeltaForPatch) against the
+			//! (RISE::Agent::DescribeBuildPlanGeometryDeltaForPatch) against the
 			//! CURRENT head and refuses, exactly as it already does for E1 and
 			//! R1c.  FALSE for every proposal staged with the gate disarmed --
 			//! including every pre-G2 proposal shape and every default-
@@ -794,7 +794,7 @@ namespace RISE
 			//! be conservatively STALE (armed at stage, plan filed before
 			//! resolve); the refusal names reissue as the remedy and the
 			//! reissued patch stages cleanly.
-			bool                partPlanGateArmedAtStage = false;
+			bool                buildPlanGateArmedAtStage = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};

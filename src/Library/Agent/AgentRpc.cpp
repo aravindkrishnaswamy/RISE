@@ -138,26 +138,41 @@ namespace RISE
 				       // reference image; available under every autonomy
 				       // posture, including Read.
 				       method == "compare_to_reference" ||
-				       // G2 (2026-08-10): file_part_plan records a per-session
-				       // DECLARATION (a list of part names and their declared
-				       // construction) and touches the retained Document not
+				       // S1 (2026-08-11): the two staged-build-protocol verbs are
+				       // read-safe on exactly the test file_build_plan passes --
+				       // both touch per-session state ONLY (which element is
+				       // active, which chunks were recorded against it) and the
+				       // retained Document not at all: no chunk, no param, no
+				       // head bump, no staging, no authority branch.
+				       // finish_element additionally RENDERS, which is itself
+				       // read-safe (render is on this list two entries up).  And
+				       // both must be reachable under every posture for the
+				       // load-bearing reason file_build_plan's own entry gives:
+				       // reopen_element is the escape the compose-phase refusal
+				       // names, so an autonomy layer that refused it would strand
+				       // exactly the session that needs it.
+				       method == "finish_element" ||
+				       method == "reopen_element" ||
+				       // G2 (2026-08-10): file_build_plan records a per-session
+				       // DECLARATION (the elements, their pieces and their
+				       // declared construction) and touches the retained Document not
 				       // at all -- no chunk, no param, no head bump -- so it is
 				       // read-safe on the same test render/read_viewport pass.
 				       // It must ALSO be reachable under every posture for a
 				       // second, load-bearing reason: it is the ONLY way to
-				       // disarm the part-plan gate, and under Propose the gate
+				       // disarm the build-plan gate, and under Propose the gate
 				       // can genuinely fire (insert_chunk reaches the session
 				       // there).  A gate whose unblock is refused by the
 				       // autonomy layer would be an un-unlockable session.
-				       method == "file_part_plan" ||
+				       method == "file_build_plan" ||
 				       // Arc 77 Phase 2 (2026-08-11): imagine_scene records a
 				       // per-session IMAGE TARGET (the model's own description,
 				       // rendered by the provider) and touches the retained
 				       // Document not at all -- read-safe on the same test
-				       // file_part_plan passes.  And it must be reachable under
+				       // file_build_plan passes.  And it must be reachable under
 				       // every posture for the same second, load-bearing
 				       // reason: on a capable provider it is one of the TWO
-				       // ways to disarm the part-plan gate, and a gate whose
+				       // ways to disarm the build-plan gate, and a gate whose
 				       // unblock the autonomy layer refuses would be an
 				       // un-unlockable session.
 				       method == "imagine_scene";
@@ -516,7 +531,23 @@ namespace RISE
 			//! Model-B F5 slice S2: serialize an AgentChunkResult (insert_chunk /
 			//! remove_chunk share the shape: the propose_patch result fields plus
 			//! the affected chunk's name/kind echo).
-			JsonValue ChunkResultJson( const AgentChunkResult& cr )
+			//!
+			//! S1 fix-round (2026-08-11): `element` is the build-protocol
+			//! attribution -- the element that was active when this chunk was
+			//! created.  Passed in by the CREATION verbs only (the caller holds
+			//! the session; this helper does not), and OMITTED entirely when
+			//! empty, so every existing caller's response shape is unchanged and
+			//! no existing field changes meaning.  WHY IT IS ON THE WIRE: design
+			//! sec 4 item 2 -- "are the chunks attributed to element X the ones
+			//! the wizard window was spent on" -- is the slice's central
+			//! measurement, and before this the attribution only reached a
+			//! trajectory through `finish_element`'s result.  A run that ends
+			//! mid-element (turns exhausted, model stops) never calls
+			//! finish_element, so its attributed set was stated nowhere at all.
+			//! A PLAIN FACT, never a judgement: it says which window a chunk was
+			//! made in, nothing about whether it was a good chunk.
+			JsonValue ChunkResultJson( const AgentChunkResult& cr,
+			                           const std::string& element = std::string() )
 			{
 				JsonValue result = JsonValue::MakeObject();
 				result.set( "applied",   JsonValue::MakeBool( cr.applied ) );
@@ -527,6 +558,12 @@ namespace RISE
 				result.set( "message",   JsonValue::MakeString( cr.message ) );
 				result.set( "name",      JsonValue::MakeString( cr.name ) );
 				result.set( "kind",      JsonValue::MakeString( cr.kind ) );
+				// S1 fix-round (2026-08-11): CONDITIONAL key -- absent when the
+				// chunk carries no attribution (the protocol is off, the session
+				// is not in an element window, or the caller is a verb that does
+				// not create).  Absent means "no element recorded", which is
+				// exactly the state that makes a chunk freely editable.
+				if( !element.empty() ) result.set( "element", JsonValue::MakeString( element ) );
 				// Model-B F5 slice S3, extended to remove_chunk by a later slice:
 				// actionable insert_chunk/remove_chunk diagnostics -- a non-blocking
 				// WARNING on a successful insert (a forward reference), the
@@ -669,7 +706,7 @@ namespace RISE
 				// docs/agentic-redesign/77-imagination-target-design.md sec 5.4).
 				if( rr.ok && rr.targetApplied ) {
 					JsonValue tgt = JsonValue::MakeObject();
-					tgt.set( "part",    JsonValue::MakeString( rr.targetPart ) );
+					tgt.set( "element", JsonValue::MakeString( rr.targetElement ) );
 					tgt.set( "view",    JsonValue::MakeString( rr.targetView ) );
 					tgt.set( "vantage", JsonValue::MakeString( rr.targetVantage ) );
 					tgt.set( "iou",         JsonValue::MakeNumber( rr.targetIou ) );
@@ -1715,7 +1752,9 @@ namespace RISE
 					// Secure-MCP slice 6: see propose_patch's identical
 					// queue-full check above.
 					if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_chunk" );
-					return MakeSuccess( idValue, ChunkResultJson( cr ) );
+					// S1 fix-round (2026-08-11): carry the attribution -- see
+					// ChunkResultJson's `element` doc.
+					return MakeSuccess( idValue, ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 				}
 
 				//--------------------------------------------------------------
@@ -1789,7 +1828,11 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : results ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): per ELEMENT of the batch --
+						// a batch spanning a finish_element cannot happen (one
+						// call, one window), but asking per chunk costs nothing
+						// and cannot go stale.
+						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
@@ -1825,14 +1868,15 @@ namespace RISE
 				//   per-chunk `issues` are all inherited unchanged.
 				//--------------------------------------------------------------
 				//--------------------------------------------------------------
-				// file_part_plan {parts:[{part,construction,outline,view?,note?},...]}
-				//   -> {filed:true, replacedPreviousPlan:bool, partCount:number,
-				//       parts:[{part,construction,note,outline,view,pointCount,
-				//               areaFraction,aspect},...],
+				// file_build_plan {elements:[{element,pieces,construction,outline,view?,note?},...]}
+				//   -> {filed:true, replacedPreviousPlan:bool, elementCount:number,
+				//       elements:[{element,pieces,construction,note,outline,view,
+				//                  pointCount,areaFraction,aspect},...],
+				//       phase, activeElement,
 				//       png_base64, byteLength, compositeWidth, compositeHeight,
 				//       sketchCanvas, message}
-				//   G2 (2026-08-10): the ONLY way to disarm the part-plan gate
-				//   (AgentSession.h's block above FilePartPlan).  READ-SAFE --
+				//   G2 (2026-08-10): the ONLY way to disarm the build-plan gate
+				//   (AgentSession.h's block above FileBuildPlan).  READ-SAFE --
 				//   it records a per-session declaration and touches the
 				//   Document not at all, so there is no headVersion, no
 				//   baseHeadVersion, no conflict, no staging, and no authority
@@ -1841,11 +1885,11 @@ namespace RISE
 				//   Every param error below is a clean kInvalidParams naming
 				//   the accepted enum; the plan CONTENT is never judged (a
 				//   plan of all-`primitive` is as valid as any other).
-				//   G3a (2026-08-10) SCHEMA v2: `outline` is REQUIRED per part
-				//   and `view` is optional.  Both are validated HERE, before
-				//   FilePartPlan is called, so a defect is a clean -32602
-				//   naming the part INDEX and the defect -- and, being a
-				//   schema error rather than a gate interception, it never
+				//   G3a (2026-08-10) SCHEMA v2: `outline` is REQUIRED per
+				//   element and `view` is optional.  Both are validated HERE,
+				//   before FileBuildPlan is called, so a defect is a clean
+				//   -32602 naming the element INDEX and the defect -- and, being
+				//   a schema error rather than a gate interception, it never
 				//   touches the gate's refusal counter (G2h pins that; the
 				//   G3a cases extend it).  The result gains ONE composite PNG
 				//   under the SAME `png_base64` field name read_image /
@@ -1855,44 +1899,84 @@ namespace RISE
 				//   carries only numbers and names INBOUND -- the mask bytes
 				//   are computed host-side from the model's own coordinates,
 				//   so no caller-supplied image data enters the process.
+				//   S1 (2026-08-11) SCHEMA v3: `parts` became `elements`, each
+				//   entry's `part` became `element`, and `pieces` (a REQUIRED
+				//   list of at least one name) joined them.  Filing also enters
+				//   the PIECES phase with the first element active, reported in
+				//   `phase`/`activeElement`.  Same validate-here contract: an
+				//   empty or over-long `pieces` is a -32602 that never touches
+				//   the gate's counter.
 				//--------------------------------------------------------------
-				if( m == "file_part_plan" ) {
+				if( m == "file_build_plan" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
-					const std::string enumList = AgentSession::PartPlanConstructionList();
-					const std::string viewList = AgentSession::PartPlanViewList();
-					const JsonValue* partsVal = params.find( "parts" );
-					if( !partsVal || !partsVal->isArray() || partsVal->size() == 0 ) {
+					const std::string enumList = AgentSession::BuildPlanConstructionList();
+					const std::string viewList = AgentSession::BuildPlanViewList();
+					const JsonValue* elementsVal = params.find( "elements" );
+					if( !elementsVal || !elementsVal->isArray() || elementsVal->size() == 0 ) {
 						return MakeError( idValue, kInvalidParams,
-							"Invalid params: 'parts' (non-empty array of {part, construction, outline"
-							"[, view][, note]}) is required; each element's 'construction' must be one "
+							"Invalid params: 'elements' (non-empty array of {element, pieces, construction, "
+							"outline[, view][, note]}) is required; each element's 'construction' must be one "
 							"of: " + enumList );
 					}
-					// G3a: bound the plan SIZE before doing per-element work.
+					// G3a: bound the plan SIZE before doing per-entry work.
 					// Unlike G2's fields, the plan's cost now grows with the
-					// caller's array (one 64 KB mask per part), so an
+					// caller's array (one 64 KB mask per element), so an
 					// unbounded list is an unbounded allocation reachable from
-					// the wire.  See AgentSession's kPartPlanMaxParts.
-					if( partsVal->size() > AgentSession::kPartPlanMaxParts ) {
+					// the wire.  See AgentSession's kBuildPlanMaxElements.
+					if( elementsVal->size() > AgentSession::kBuildPlanMaxElements ) {
 						return MakeError( idValue, kInvalidParams,
-							"Invalid params: 'parts' has " + std::to_string( partsVal->size() ) +
-							" entries -- at most " + std::to_string( AgentSession::kPartPlanMaxParts ) +
+							"Invalid params: 'elements' has " + std::to_string( elementsVal->size() ) +
+							" entries -- at most " + std::to_string( AgentSession::kBuildPlanMaxElements ) +
 							" are accepted" );
 					}
-					std::vector<AgentSession::AgentPartPlanEntry> entries;
-					entries.reserve( partsVal->size() );
-					for( std::size_t i = 0; i < partsVal->size(); ++i ) {
-						const JsonValue& e = partsVal->at( i );
-						char idx[32];
-						std::snprintf( idx, sizeof( idx ), "parts[%d]", static_cast<int>( i ) );
+					std::vector<AgentSession::AgentBuildPlanEntry> entries;
+					entries.reserve( elementsVal->size() );
+					for( std::size_t i = 0; i < elementsVal->size(); ++i ) {
+						const JsonValue& e = elementsVal->at( i );
+						char idx[40];
+						std::snprintf( idx, sizeof( idx ), "elements[%d]", static_cast<int>( i ) );
 						if( !e.isObject() ) {
 							return MakeError( idValue, kInvalidParams,
 								std::string( "Invalid params: " ) + idx + " must be an object "
-								"{part, construction, outline[, view][, note]}" );
+								"{element, pieces, construction, outline[, view][, note]}" );
 						}
-						const JsonValue* partVal = e.find( "part" );
-						if( !partVal || !partVal->isString() || partVal->asString().empty() ) {
+						const JsonValue* elemVal = e.find( "element" );
+						if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
 							return MakeError( idValue, kInvalidParams,
-								std::string( "Invalid params: " ) + idx + ".part (non-empty string) is required" );
+								std::string( "Invalid params: " ) + idx + ".element (non-empty string) is required" );
+						}
+						// S1: `pieces` is REQUIRED with at least one non-empty
+						// entry -- the decomposition IS the artifact this
+						// mechanism measures, so there is no default and no
+						// opt-out.  ANY names are accepted; nothing checks what
+						// they say (the same anti-Goodhart freedom `outline`
+						// has on the shape dimension).
+						const JsonValue* piecesVal = e.find( "pieces" );
+						if( !piecesVal || !piecesVal->isArray() || piecesVal->size() == 0 ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".pieces (non-empty array of "
+								"strings) is required -- the pieces this element breaks down into, in your "
+								"own words" );
+						}
+						if( piecesVal->size() > AgentSession::kBuildPlanMaxPiecesPerElement ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".pieces has " +
+								std::to_string( piecesVal->size() ) + " entries -- at most " +
+								std::to_string( AgentSession::kBuildPlanMaxPiecesPerElement ) +
+								" are accepted" );
+						}
+						std::vector<std::string> pieces;
+						pieces.reserve( piecesVal->size() );
+						for( std::size_t p = 0; p < piecesVal->size(); ++p ) {
+							const JsonValue& pv = piecesVal->at( p );
+							if( !pv.isString() || pv.asString().empty() ) {
+								char pidx[24];
+								std::snprintf( pidx, sizeof( pidx ), "[%d]", static_cast<int>( p ) );
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".pieces" + pidx +
+									" must be a non-empty string" );
+							}
+							pieces.push_back( pv.asString() );
 						}
 						const JsonValue* consVal = e.find( "construction" );
 						if( !consVal || !consVal->isString() ) {
@@ -1900,7 +1984,7 @@ namespace RISE
 								std::string( "Invalid params: " ) + idx + ".construction (string) is required "
 								"-- one of: " + enumList );
 						}
-						if( !AgentSession::IsValidPartConstruction( consVal->asString() ) ) {
+						if( !AgentSession::IsValidElementConstruction( consVal->asString() ) ) {
 							return MakeError( idValue, kInvalidParams,
 								std::string( "Invalid params: " ) + idx + ".construction is `" +
 								consVal->asString() + "` -- it must be one of: " + enumList );
@@ -1911,10 +1995,10 @@ namespace RISE
 								std::string( "Invalid params: " ) + idx + ".note must be a string when present" );
 						}
 						// G3a: `outline` is REQUIRED with NO opt-out value --
-						// the force level the design resolves to (every part
+						// the force level the design resolves to (every element
 						// gets a sketch; a blob is legal, an absence is not).
-						// The grammar check is AgentSession::ValidatePartOutline,
-						// the SAME predicate FilePartPlan itself uses, so the
+						// The grammar check is AgentSession::ValidateElementOutline,
+						// the SAME predicate FileBuildPlan itself uses, so the
 						// wire error and the session's own precondition can
 						// never disagree about what a valid outline is.
 						const JsonValue* outlineVal = e.find( "outline" );
@@ -1926,26 +2010,27 @@ namespace RISE
 						}
 						{
 							std::string oerr;
-							if( !AgentSession::ValidatePartOutline( outlineVal->asString(), oerr ) ) {
+							if( !AgentSession::ValidateElementOutline( outlineVal->asString(), oerr ) ) {
 								return MakeError( idValue, kInvalidParams,
 									std::string( "Invalid params: " ) + idx + ".outline " + oerr );
 							}
 						}
 						// G3a: `view` is OPTIONAL and defaults to
-						// AgentSession::kPartPlanDefaultView.  Present-but-
+						// AgentSession::kBuildPlanDefaultView.  Present-but-
 						// wrong is an error (a typo'd view would otherwise be
 						// silently recorded as `front` and mislead G3b's
 						// comparison vantage); absent is not.
 						const JsonValue* viewVal = e.find( "view" );
 						if( viewVal && ( !viewVal->isString() ||
-						                 !AgentSession::IsValidPartView( viewVal->asString() ) ) ) {
+						                 !AgentSession::IsValidElementView( viewVal->asString() ) ) ) {
 							return MakeError( idValue, kInvalidParams,
 								std::string( "Invalid params: " ) + idx + ".view is `" +
 								( viewVal->isString() ? viewVal->asString() : JsonSerialize( *viewVal ) ) +
 								"` -- when present it must be one of: " + viewList );
 						}
-						AgentSession::AgentPartPlanEntry entry;
-						entry.part         = partVal->asString();
+						AgentSession::AgentBuildPlanEntry entry;
+						entry.element      = elemVal->asString();
+						entry.pieces       = pieces;
 						entry.construction = consVal->asString();
 						entry.outline      = outlineVal->asString();
 						if( viewVal ) entry.view = viewVal->asString();
@@ -1953,39 +2038,49 @@ namespace RISE
 						entries.push_back( entry );
 					}
 
-					const AgentSession::AgentPartPlanResult pr = s->FilePartPlan( entries );
+					const AgentSession::AgentBuildPlanResult pr = s->FileBuildPlan( entries );
 					// G3a: every outline was validated above with the SAME
-					// predicate FilePartPlan re-checks, so !ok is unreachable
+					// predicate FileBuildPlan re-checks, so !ok is unreachable
 					// from the wire.  Surface it as kInvalidParams anyway
 					// rather than shipping filed:false with an ok-shaped
 					// envelope -- a silent disagreement between the two layers
 					// would otherwise look like a successful filing.
 					if( !pr.ok ) return MakeError( idValue, kInvalidParams, pr.message );
-					JsonValue partsArr = JsonValue::MakeArray();
-					for( std::size_t i = 0; i < pr.parts.size(); ++i ) {
-						const AgentSession::AgentPartPlanEntry& e = pr.parts[i];
+					JsonValue elementsArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < pr.elements.size(); ++i ) {
+						const AgentSession::AgentBuildPlanEntry& e = pr.elements[i];
 						JsonValue o = JsonValue::MakeObject();
-						o.set( "part",         JsonValue::MakeString( e.part ) );
+						o.set( "element",      JsonValue::MakeString( e.element ) );
+						JsonValue piecesArr = JsonValue::MakeArray();
+						for( std::size_t p = 0; p < e.pieces.size(); ++p )
+							piecesArr.push_back( JsonValue::MakeString( e.pieces[p] ) );
+						o.set( "pieces",       piecesArr );
 						o.set( "construction", JsonValue::MakeString( e.construction ) );
 						o.set( "note",         JsonValue::MakeString( e.note ) );
-						// The per-part sketch FACTS, index-parallel to
-						// pr.parts by construction (FilePartPlan builds one
+						// The per-element sketch FACTS, index-parallel to
+						// pr.elements by construction (FileBuildPlan builds one
 						// sketch per entry, in order).
 						if( i < pr.sketches.size() ) {
-							const AgentSession::AgentPartSketch& sk = pr.sketches[i];
+							const AgentSession::AgentElementSketch& sk = pr.sketches[i];
 							o.set( "outline",      JsonValue::MakeString( sk.outline ) );
 							o.set( "view",         JsonValue::MakeString( sk.view ) );
 							o.set( "pointCount",   JsonValue::MakeNumber( static_cast<double>( sk.pointCount ) ) );
 							o.set( "areaFraction", JsonValue::MakeNumber( sk.areaFraction ) );
 							o.set( "aspect",       JsonValue::MakeNumber( sk.aspect ) );
 						}
-						partsArr.push_back( o );
+						elementsArr.push_back( o );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "filed",                JsonValue::MakeBool( pr.ok ) );
 					result.set( "replacedPreviousPlan", JsonValue::MakeBool( pr.replacedPreviousPlan ) );
-					result.set( "partCount",            JsonValue::MakeNumber( static_cast<double>( pr.parts.size() ) ) );
-					result.set( "parts",                partsArr );
+					result.set( "elementCount",         JsonValue::MakeNumber( static_cast<double>( pr.elements.size() ) ) );
+					result.set( "elements",             elementsArr );
+					// S1: the phase facts, so a driver (and a census) can read
+					// the state transition without parsing prose.
+					result.set( "phase",                JsonValue::MakeString(
+						AgentSession::BuildPhaseName( s->BuildPhase() ) ) );
+					if( !s->ActiveElement().empty() )
+						result.set( "activeElement",    JsonValue::MakeString( s->ActiveElement() ) );
 					// G3a: the ONE composite sketch PNG, under the SAME
 					// `png_base64` field name every other image-bearing verb
 					// uses (see this handler's header comment).
@@ -1994,9 +2089,111 @@ namespace RISE
 						result.set( "byteLength",      JsonValue::MakeNumber( static_cast<double>( pr.compositePng.size() ) ) );
 						result.set( "compositeWidth",  JsonValue::MakeNumber( static_cast<double>( pr.compositeWidth ) ) );
 						result.set( "compositeHeight", JsonValue::MakeNumber( static_cast<double>( pr.compositeHeight ) ) );
-						result.set( "sketchCanvas",    JsonValue::MakeNumber( static_cast<double>( AgentSession::kPartSketchCanvas ) ) );
+						result.set( "sketchCanvas",    JsonValue::MakeNumber( static_cast<double>( AgentSession::kElementSketchCanvas ) ) );
 					}
 					result.set( "message",              JsonValue::MakeString( pr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// finish_element {}
+				//   -> {ok, element, phase, nextElement?, chunks:[...],
+				//       piecesNamed:[...], piecesNotNamed:[...], isolate?,
+				//       isolateCandidates?, rendered,
+				//       png_base64?, byteLength?, imageWidth?, imageHeight?,
+				//       message}
+				//   S1 (2026-08-11).  Takes NO params: it closes whichever
+				//   element is active, which is session state, not something a
+				//   caller names -- naming it would invite a mismatch the model
+				//   would then have to resolve.  READ-SAFE: it changes the
+				//   session's phase and nothing in the Document.  It RENDERS
+				//   (the isolate look of the element just closed), which is
+				//   read-safe for exactly the reason the `render` verb is.
+				//   ok:false is not an error envelope -- it means the call did
+				//   nothing (no plan filed, already in the compose phase, or the
+				//   protocol is off) and `message` says which.
+				//--------------------------------------------------------------
+				if( m == "finish_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const AgentSession::AgentFinishElementResult fr = s->FinishElement();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",    JsonValue::MakeBool( fr.ok ) );
+					result.set( "phase", JsonValue::MakeString( fr.phase ) );
+					if( !fr.element.empty() )     result.set( "element",     JsonValue::MakeString( fr.element ) );
+					if( !fr.nextElement.empty() ) result.set( "nextElement", JsonValue::MakeString( fr.nextElement ) );
+					if( fr.ok ) {
+						JsonValue chunksArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.chunks.size(); ++i )
+							chunksArr.push_back( JsonValue::MakeString( fr.chunks[i] ) );
+						result.set( "chunks", chunksArr );
+						JsonValue namedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.piecesNamed.size(); ++i )
+							namedArr.push_back( JsonValue::MakeString( fr.piecesNamed[i] ) );
+						result.set( "piecesNamed", namedArr );
+						JsonValue notNamedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.piecesNotNamed.size(); ++i )
+							notNamedArr.push_back( JsonValue::MakeString( fr.piecesNotNamed[i] ) );
+						result.set( "piecesNotNamed", notNamedArr );
+						result.set( "rendered", JsonValue::MakeBool( fr.rendered ) );
+						if( !fr.isolateObject.empty() ) {
+							result.set( "isolate", JsonValue::MakeString( fr.isolateObject ) );
+							result.set( "isolateCandidates",
+								JsonValue::MakeNumber( static_cast<double>( fr.isolateCandidates ) ) );
+						}
+						// The isolate look rides under the SAME `png_base64`
+						// field name every image-bearing verb uses, so every
+						// image-retention and surfacing policy covers it with no
+						// second code path.
+						if( !fr.png.empty() ) {
+							result.set( "png_base64",  JsonValue::MakeString( Base64Encode( fr.png ) ) );
+							result.set( "byteLength",  JsonValue::MakeNumber( static_cast<double>( fr.png.size() ) ) );
+							result.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( fr.width ) ) );
+							result.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( fr.height ) ) );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( fr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// reopen_element {element}
+				//   -> {ok, element, phase, previousPhase, chunks:[...],
+				//       unfinished:[...], message}
+				//   S1 (2026-08-11).  READ-SAFE and NEVER GATED: it is the
+				//   escape the compose-phase creation refusal names, so refusing
+				//   it -- at the autonomy layer, by a phase rule, or by any cap
+				//   -- would strand exactly the session that needs it.  The only
+				//   -32602 is a missing/empty/non-string `element`; an element
+				//   that is not in the filed plan comes back ok:false listing the
+				//   filed names, because that is a STATE mismatch (which names
+				//   exist depends on the session), not a param-SHAPE defect.
+				//--------------------------------------------------------------
+				if( m == "reopen_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of an "
+							"element in the filed build plan" );
+					}
+					const AgentSession::AgentReopenElementResult rr2 =
+						s->ReopenElement( elemVal->asString() );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",            JsonValue::MakeBool( rr2.ok ) );
+					result.set( "phase",         JsonValue::MakeString( rr2.phase ) );
+					result.set( "previousPhase", JsonValue::MakeString( rr2.previousPhase ) );
+					if( !rr2.element.empty() ) result.set( "element", JsonValue::MakeString( rr2.element ) );
+					if( rr2.ok ) {
+						JsonValue chunksArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr2.chunks.size(); ++i )
+							chunksArr.push_back( JsonValue::MakeString( rr2.chunks[i] ) );
+						result.set( "chunks", chunksArr );
+						JsonValue unfinishedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr2.unfinished.size(); ++i )
+							unfinishedArr.push_back( JsonValue::MakeString( rr2.unfinished[i] ) );
+						result.set( "unfinished", unfinishedArr );
+					}
+					result.set( "message", JsonValue::MakeString( rr2.message ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -2008,7 +2205,7 @@ namespace RISE
 				//   Arc 77 Phase 2 (2026-08-11).  READ-SAFE -- it records a
 				//   per-session IMAGE TARGET and touches the Document not at
 				//   all, so there is no headVersion, no conflict, no staging
-				//   and no authority branch, exactly like file_part_plan.
+				//   and no authority branch, exactly like file_build_plan.
 				//
 				//   THE ONLY SCHEMA ERROR is a missing/empty/non-string
 				//   `description`, and it is a clean -32602.  That distinction
@@ -2044,7 +2241,7 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",      JsonValue::MakeBool( ir.ok ) );
 					// `imagined` is the same bool under the name a reader of
-					// the verb expects, mirroring file_part_plan's `filed`.
+					// the verb expects, mirroring file_build_plan's `filed`.
 					result.set( "imagined", JsonValue::MakeBool( ir.ok ) );
 					result.set( "replacedPreviousTarget", JsonValue::MakeBool( ir.replacedPreviousTarget ) );
 					if( !ir.providerName.empty() )
@@ -2116,7 +2313,9 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : sr.chunkResults ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.
+						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue material = JsonValue::MakeObject();
 					material.set( "name", JsonValue::MakeString( sr.materialName ) );
@@ -2284,7 +2483,9 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : sr.chunkResults ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.
+						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue geometry = JsonValue::MakeObject();
 					geometry.set( "name", JsonValue::MakeString( sr.geometryName ) );
@@ -2482,7 +2683,12 @@ namespace RISE
 					JsonValue resultsArrR2 = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : sr.chunkResults ) {
 						if( cr.applied ) ++appliedCountR2;
-						resultsArrR2.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.  The chunk this verb ERASED (the
+						// previous geometry) is reported under `previousGeometry`
+						// and carries no attribution any more -- by the same fix
+						// round that dropped it (AgentSession.cpp).
+						resultsArrR2.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue geometryR2 = JsonValue::MakeObject();
 					geometryR2.set( "name", JsonValue::MakeString( sr.geometryName ) );
@@ -3042,7 +3248,7 @@ namespace RISE
 					}
 
 					// G3b (2026-08-10) `render{target:}` ADDITIVE param:
-					// {"target":"<part name from the filed part plan>"} ->
+					// {"target":"<part name from the filed build plan>"} ->
 					// AgentRenderParams::target.  Two DIFFERENT rejection
 					// classes, deliberately:
 					//   * a non-string value, or `target` WITHOUT `isolate`,

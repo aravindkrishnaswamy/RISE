@@ -2388,21 +2388,22 @@ static void RunLastRenderCompletionSitesTest()
 //======================================================================
 
 //! Mint a real, decodable PNG of a known size without adding a PNG encoder
-//! to this test: the part-plan sketch composite is exactly 256x256 per
+//! to this test: the build-plan sketch composite is exactly 256x256 per
 //! tile, so one part gives a 256x256 image and two give 512x256.
 static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
 {
 	std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
 	if( !s ) return std::vector<unsigned char>();
-	std::vector<AgentSession::AgentPartPlanEntry> parts;
+	std::vector<AgentSession::AgentBuildPlanEntry> parts;
 	for( int i = 0; i < partCount; ++i ) {
-		AgentSession::AgentPartPlanEntry e;
-		e.part         = "canned" + std::to_string( i );
+		AgentSession::AgentBuildPlanEntry e;
+		e.element         = "canned" + std::to_string( i );
+		e.pieces.push_back( "piece" );
 		e.construction = "primitive";
 		e.outline      = "0 0; 1 0; 1 1; 0 1";
 		parts.push_back( e );
 	}
-	return s->FilePartPlan( parts ).compositePng;
+	return s->FileBuildPlan( parts ).compositePng;
 }
 
 static AgentSession::AgentImageGenerator MakeFakeImageGen( const std::vector<unsigned char>& png )
@@ -2592,13 +2593,13 @@ static void RunSceneTargetTests()
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunCoreTests();
 	RunCameraOverrideTests();
 	RunRestoreOnThrowTest();

@@ -7505,7 +7505,7 @@ static void TestReplaceGeometryScaffoldWireShape()
 // G2 (2026-08-10, refuse-until-filed cap 2026-08-10 supervisor overrule):
 // the PART-PLAN GATE.
 //
-// See AgentSession.h's block above FilePartPlan for the mechanism and the
+// See AgentSession.h's block above FileBuildPlan for the mechanism and the
 // anti-Goodhart properties.  What these tests pin, in order:
 //   G2a  the gate REFUSES on the 1st, 2nd and 3rd geometry-creating
 //        insert_chunk on a session that has not filed a plan -- document
@@ -7516,7 +7516,7 @@ static void TestReplaceGeometryScaffoldWireShape()
 //        bare retry without filing would yield zero plans to measure,
 //        which is why the original once-per-session design was overruled;
 //        the cap exists so a session that genuinely cannot form
-//        file_part_plan is not stranded forever
+//        file_build_plan is not stranded forever
 //   G2b  a plan filed FIRST means no interception at all, ever
 //   G2c  every triggering verb fires it, each on its own fresh session
 //   G2d  non-geometry chunks (painter/material/light) do NOT trigger it
@@ -7531,20 +7531,20 @@ static void TestReplaceGeometryScaffoldWireShape()
 //        the document byte-identical
 //----------------------------------------------------------------------
 
-//! Build a session with the part-plan gate ARMED.  main() turns the process
+//! Build a session with the build-plan gate ARMED.  main() turns the process
 //! default OFF for this whole binary (see its comment), so the gate's own
 //! tests turn it back on for exactly the width of the construction call --
 //! the session SNAPSHOTS it, so restoring immediately after keeps every
 //! other test's opt-out in force and leaves no global set behind.
 static std::unique_ptr<Agent::AgentSession> WrapJobGateArmed( Job* pJob )
 {
-	Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
 	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
-	Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	return s;
 }
 
-//! The two-part plan every "a plan is filed" test uses.  Deliberately NOT
+//! The two-build plan every "a plan is filed" test uses.  Deliberately NOT
 //! all-primitive (G2e covers that separately) and deliberately declaring a
 //! construction the test then does not use (G2f).
 //! G3a (2026-08-10): every entry now carries the REQUIRED `outline`.  These
@@ -7552,15 +7552,17 @@ static std::unique_ptr<Agent::AgentSession> WrapJobGateArmed( Job* pJob )
 //! through this helper exercises the rasterizer on more than one shape, and
 //! one entry leaves `view` empty to keep the default path covered wherever
 //! this helper is used.
-static std::vector<Agent::AgentSession::AgentPartPlanEntry> SamplePlan()
+static std::vector<Agent::AgentSession::AgentBuildPlanEntry> SamplePlan()
 {
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> p;
-	Agent::AgentSession::AgentPartPlanEntry a;
-	a.part = "body";  a.construction = "sweep";
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p;
+	Agent::AgentSession::AgentBuildPlanEntry a;
+	a.element = "body";  a.construction = "sweep";
+	a.pieces.push_back( "piece" );
 	a.outline = "0 0; 2 0.5; 2.4 2; 1 3; -0.4 1.8";
 	p.push_back( a );
-	Agent::AgentSession::AgentPartPlanEntry b;
-	b.part = "base";  b.construction = "csg";    b.note = "two boxes";
+	Agent::AgentSession::AgentBuildPlanEntry b;
+	b.element = "base";  b.construction = "csg";    b.note = "two boxes";
+	b.pieces.push_back( "piece" );
 	b.outline = "0 0; 3 0; 3 1; 0 1";
 	b.view = "side";
 	p.push_back( b );
@@ -7576,20 +7578,20 @@ static const char* const kG2GeometryChunk =
 //! document byte-identical and refusal accurate on every one of them -- then
 //! GIVES UP on the 4th, which applies and carries the give-up fact in its own
 //! result.  What would go red for each assertion is called out inline.
-static void TestPartPlanGateRefusesUntilFiledCapped()
+static void TestBuildPlanGateRefusesUntilFiledCapped()
 {
-	std::printf( "G2a: the part-plan gate refuses up to 3 times, then gives up on the 4th...\n" );
+	std::printf( "G2a: the build-plan gate refuses up to 3 times, then gives up on the 4th...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2a.RISEscene" );
 	Job* pJob = LoadScene( kScene, tmp );
 	Check( pJob != nullptr, "G2a fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 
-	Check( sess->PartPlanGateEnabled(),   "G2a the session is constructed with the gate ARMED" );
-	Check( !sess->PartPlanFiled(),        "G2a no plan is filed yet" );
-	Check( !sess->PartPlanGateHasFired(), "G2a the gate has not fired yet" );
-	Check( sess->PartPlanGateRefusalCount() == 0, "G2a the refusal counter starts at 0" );
-	Check( !sess->PartPlanGateGaveUp(),    "G2a the gate has not given up yet" );
+	Check( sess->BuildPlanGateEnabled(),   "G2a the session is constructed with the gate ARMED" );
+	Check( !sess->BuildPlanFiled(),        "G2a no plan is filed yet" );
+	Check( !sess->BuildPlanGateHasFired(), "G2a the gate has not fired yet" );
+	Check( sess->BuildPlanGateRefusalCount() == 0, "G2a the refusal counter starts at 0" );
+	Check( !sess->BuildPlanGateGaveUp(),    "G2a the gate has not given up yet" );
 
 	const std::string docBefore = sess->ReadDocument();
 	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
@@ -7598,7 +7600,7 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 	// every time, remaining-refusal count accurate on each.  Would go red if
 	// the gate disarmed after the first refusal (the old once-per-session
 	// behaviour), if any refusal mutated the document, or if the
-	// remaining-attempts wording drifted from what CheckPartPlanGate_
+	// remaining-attempts wording drifted from what CheckBuildPlanGate_
 	// actually does.
 	static const char* const kExpectRemaining[3] =
 	{
@@ -7617,12 +7619,18 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 		       "client-side auto-retry signal (ChatViewModel.swift / ChatPanel.cpp re-dispatch up to "
 		       "5 times without showing the model anything), which under the capped semantics would "
 		       "burn ALL 3 refusals before the model ever saw one" );
-		Check( r.message.find( "file_part_plan" ) != std::string::npos,
+		Check( r.message.find( "file_build_plan" ) != std::string::npos,
 		       p + "the refusal NAMES the tool to call" );
 		Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
 		       p + "the refusal lists the CLOSED construction enum" );
-		Check( r.message.find( "`primitive` for every part is a complete plan" ) != std::string::npos,
+		Check( r.message.find( "`primitive` for every element is a complete plan" ) != std::string::npos,
 		       p + "the refusal states that ANY value is accepted (anti-Goodhart)" );
+		// S1 (2026-08-11): the refusal describes schema v3, so it must name
+		// `pieces` -- a model that follows this sentence and omits them would
+		// get a -32602 for a field the refusal never mentioned.
+		Check( r.message.find( "`pieces`" ) != std::string::npos &&
+		       r.message.find( "at least one name" ) != std::string::npos,
+		       p + "the refusal names the REQUIRED piece list and its minimum" );
 		Check( r.message.find( "does not constrain" ) != std::string::npos,
 		       p + "the refusal states that the plan is NON-BINDING" );
 		Check( r.message.find( kExpectRemaining[attempt - 1] ) != std::string::npos,
@@ -7633,11 +7641,11 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 		Check( sess->ReadDocument() == docBefore,
 		       p + "MONEY ASSERTION: the document is COMPLETELY untouched by the refusal" );
 		Check( sess->HeadVersion() == vBefore, p + "the head version did not move" );
-		Check( sess->PartPlanGateHasFired(),   p + "the gate is marked as having fired" );
-		Check( sess->PartPlanGateRefusalCount() == attempt,
+		Check( sess->BuildPlanGateHasFired(),   p + "the gate is marked as having fired" );
+		Check( sess->BuildPlanGateRefusalCount() == attempt,
 		       p + "the refusal counter incremented exactly once per refusal" );
-		Check( !sess->PartPlanGateGaveUp(), p + "the gate has not given up yet" );
-		Check( !sess->PartPlanFiled(),      p + "a refusal does NOT count as a filed plan" );
+		Check( !sess->BuildPlanGateGaveUp(), p + "the gate has not given up yet" );
+		Check( !sess->BuildPlanFiled(),      p + "a refusal does NOT count as a filed plan" );
 	}
 
 	// The 4th call: the gate GIVES UP.  Would go red if the 4th call were
@@ -7649,10 +7657,10 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 	       "G2a MONEY ASSERTION: the 4th call SUCCEEDS -- the gate gives up rather than refuse a "
 	       "4th time" );
 	Check( sess->ReadDocument() != docBefore, "G2a the 4th call really did land the chunk" );
-	Check( sess->PartPlanGateGaveUp(),  "G2a the gate is now marked as having given up" );
-	Check( sess->PartPlanGateRefusalCount() == 3,
+	Check( sess->BuildPlanGateGaveUp(),  "G2a the gate is now marked as having given up" );
+	Check( sess->BuildPlanGateRefusalCount() == 3,
 	       "G2a the refusal counter stays at 3 -- the give-up is not itself a 4th refusal" );
-	Check( r4.message.find( "part-plan gate" ) != std::string::npos &&
+	Check( r4.message.find( "build-plan gate" ) != std::string::npos &&
 	       r4.message.find( "3 refusals" ) != std::string::npos &&
 	       r4.message.find( "disarmed for this session" ) != std::string::npos,
 	       "G2a MONEY ASSERTION: the successful 4th call's OWN result carries the factual give-up "
@@ -7664,7 +7672,7 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 	const Agent::AgentSession::AgentGeometryScaffoldResult gs =
 		sess->InsertGeometryScaffold( "sdf_column", "g2a", 1.0, 0.5, 1.0 );
 	Check( gs.ok, "G2a a LATER geometry-scaffold call in the same session is not intercepted" );
-	Check( gs.message.find( "part-plan gate" ) == std::string::npos,
+	Check( gs.message.find( "build-plan gate" ) == std::string::npos,
 	       "G2a the give-up notice is reported EXACTLY ONCE -- on the call that tripped it, not on "
 	       "every later geometry call" );
 
@@ -7673,7 +7681,7 @@ static void TestPartPlanGateRefusesUntilFiledCapped()
 	std::remove( tmp.c_str() );
 }
 
-static void TestPartPlanFiledFirstNeverIntercepts()
+static void TestBuildPlanFiledFirstNeverIntercepts()
 {
 	std::printf( "G2b: a plan filed FIRST means no interception at all...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2b.RISEscene" );
@@ -7683,34 +7691,35 @@ static void TestPartPlanFiledFirstNeverIntercepts()
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 
 	const std::string docBefore = sess->ReadDocument();
-	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( SamplePlan() );
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( SamplePlan() );
 	Check( pr.ok,                       "G2b the plan is accepted" );
 	Check( !pr.replacedPreviousPlan,    "G2b the first filing replaced nothing" );
-	Check( pr.parts.size() == 2,        "G2b the result echoes both parts" );
-	Check( pr.parts[0].part == "body" && pr.parts[0].construction == "sweep",
+	Check( pr.elements.size() == 2,        "G2b the result echoes both parts" );
+	Check( pr.elements[0].element == "body" && pr.elements[0].construction == "sweep",
 	       "G2b the echo is FACTUAL: part name and declared construction, in order" );
-	Check( pr.parts[1].note == "two boxes", "G2b the optional per-part note round-trips" );
+	Check( pr.elements[1].note == "two boxes", "G2b the optional per-part note round-trips" );
 	Check( pr.message.find( "body: sweep" ) != std::string::npos &&
 	       pr.message.find( "base: csg" ) != std::string::npos,
 	       "G2b the message echoes each part and its declared construction" );
 	Check( sess->ReadDocument() == docBefore,
 	       "G2b filing a plan does NOT touch the document" );
-	Check( sess->PartPlanFiled(), "G2b the session now reports a filed plan" );
+	Check( sess->BuildPlanFiled(), "G2b the session now reports a filed plan" );
 
 	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
 	       "G2b MONEY ASSERTION: with a plan on file the FIRST geometry insert applies -- no "
 	       "interception at all" );
-	Check( !sess->PartPlanGateHasFired(), "G2b the gate never fired" );
+	Check( !sess->BuildPlanGateHasFired(), "G2b the gate never fired" );
 
 	// Re-filing REPLACES and is never refused (an over-refusal on a call that
 	// costs the document nothing is the E1 review's P1).
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> p2;
-	Agent::AgentSession::AgentPartPlanEntry e; e.part = "everything"; e.construction = "mesh";
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p2;
+	Agent::AgentSession::AgentBuildPlanEntry e; e.element = "everything"; e.construction = "mesh";
+	e.pieces.push_back( "piece" );      // S1: `pieces` is required, >= 1
 	e.outline = "0 0; 1 0; 1 1; 0 1";   // G3a: `outline` is required
 	p2.push_back( e );
-	const Agent::AgentSession::AgentPartPlanResult pr2 = sess->FilePartPlan( p2 );
+	const Agent::AgentSession::AgentBuildPlanResult pr2 = sess->FileBuildPlan( p2 );
 	Check( pr2.ok && pr2.replacedPreviousPlan, "G2b re-filing is accepted and reports the replacement" );
-	Check( sess->PartPlan().size() == 1 && sess->PartPlan()[0].part == "everything",
+	Check( sess->BuildPlan().size() == 1 && sess->BuildPlan()[0].element == "everything",
 	       "G2b the re-filed plan REPLACED the previous one" );
 
 	sess.reset();
@@ -7721,9 +7730,9 @@ static void TestPartPlanFiledFirstNeverIntercepts()
 //! G2a3 (2026-08-10 refuse-until-filed cap): filing at ANY point -- after 0
 //! (covered by G2b above), 1 or 2 refusals -- clears the gate IMMEDIATELY
 //! and PERMANENTLY, exactly like filing before ever being refused.  Would go
-//! red if a refusal count > 0 changed FilePartPlan's disarming behaviour, or
+//! red if a refusal count > 0 changed FileBuildPlan's disarming behaviour, or
 //! if the gate kept intercepting after a plan filed mid-refusal-sequence.
-static void TestPartPlanFiledMidRefusalSequenceClearsGate()
+static void TestBuildPlanFiledMidRefusalSequenceClearsGate()
 {
 	std::printf( "G2a3: filing after 1 or 2 refusals clears the gate immediately and permanently...\n" );
 
@@ -7735,14 +7744,14 @@ static void TestPartPlanFiledMidRefusalSequenceClearsGate()
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/1 the 1st call is refused" );
-			Check( sess->PartPlanGateRefusalCount() == 1, "G2a3/1 refusal count is 1" );
-			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2a3/1 filing after 1 refusal is accepted" );
-			Check( !sess->PartPlanGateGaveUp(), "G2a3/1 filing is NOT the give-up path" );
+			Check( sess->BuildPlanGateRefusalCount() == 1, "G2a3/1 refusal count is 1" );
+			Check( sess->FileBuildPlan( SamplePlan() ).ok, "G2a3/1 filing after 1 refusal is accepted" );
+			Check( !sess->BuildPlanGateGaveUp(), "G2a3/1 filing is NOT the give-up path" );
 			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
 			Check( r.applied,
 			       "G2a3/1 MONEY ASSERTION: the very next call APPLIES -- filing mid-sequence disarms "
 			       "the gate immediately, it does not need to reach the cap first" );
-			Check( r.message.find( "part-plan gate" ) == std::string::npos,
+			Check( r.message.find( "build-plan gate" ) == std::string::npos,
 			       "G2a3/1 no give-up notice: the gate cleared by FILING, not by exhausting the cap" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
@@ -7757,21 +7766,21 @@ static void TestPartPlanFiledMidRefusalSequenceClearsGate()
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/2 the 1st call is refused" );
 			Check( !sess->InsertChunk( kG2GeometryChunk ).applied, "G2a3/2 the 2nd call is refused" );
-			Check( sess->PartPlanGateRefusalCount() == 2, "G2a3/2 refusal count is 2" );
-			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2a3/2 filing after 2 refusals is accepted" );
-			Check( !sess->PartPlanGateGaveUp(), "G2a3/2 filing is NOT the give-up path" );
+			Check( sess->BuildPlanGateRefusalCount() == 2, "G2a3/2 refusal count is 2" );
+			Check( sess->FileBuildPlan( SamplePlan() ).ok, "G2a3/2 filing after 2 refusals is accepted" );
+			Check( !sess->BuildPlanGateGaveUp(), "G2a3/2 filing is NOT the give-up path" );
 			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
 			Check( r.applied,
 			       "G2a3/2 MONEY ASSERTION: the very next call APPLIES -- filing mid-sequence disarms "
 			       "the gate PERMANENTLY, one refusal short of the cap" );
-			Check( r.message.find( "part-plan gate" ) == std::string::npos,
+			Check( r.message.find( "build-plan gate" ) == std::string::npos,
 			       "G2a3/2 no give-up notice: the gate cleared by FILING, not by exhausting the cap" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
 	}
 }
 
-static void TestPartPlanGateEveryTriggeringVerb()
+static void TestBuildPlanGateEveryTriggeringVerb()
 {
 	std::printf( "G2c: every triggering verb fires the gate, each on its own fresh session...\n" );
 
@@ -7799,7 +7808,7 @@ static void TestPartPlanGateEveryTriggeringVerb()
 			bool allRefused = !rs.empty();
 			for( const Agent::AgentChunkResult& e : rs )
 				allRefused = allRefused && !e.applied && e.status == "rejected" &&
-				             e.message.find( "file_part_plan" ) != std::string::npos;
+				             e.message.find( "file_build_plan" ) != std::string::npos;
 			Check( allRefused,
 			       "G2c/insert_chunks MONEY ASSERTION: ONE geometry element refuses the WHOLE batch, "
 			       "every element carrying the same verdict (a policy refusal is not an authoring "
@@ -7821,7 +7830,7 @@ static void TestPartPlanGateEveryTriggeringVerb()
 			const Agent::AgentSession::AgentGeometryScaffoldResult gs =
 				sess->InsertGeometryScaffold( "sdf_column", "g2c2", 1.0, 0.5, 1.0 );
 			Check( !gs.ok, "G2c/insert_geometry_scaffold is REFUSED" );
-			Check( gs.message.find( "file_part_plan" ) != std::string::npos,
+			Check( gs.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2c/insert_geometry_scaffold the refusal names the tool" );
 			Check( gs.chunkResults.empty(),
 			       "G2c/insert_geometry_scaffold nothing was submitted through InsertChunks" );
@@ -7832,10 +7841,10 @@ static void TestPartPlanGateEveryTriggeringVerb()
 			// behaviour).
 			const Agent::AgentSession::AgentGeometryScaffoldResult retry =
 				sess->InsertGeometryScaffold( "sdf_column", "g2c2", 1.0, 0.5, 1.0 );
-			Check( !retry.ok && retry.message.find( "file_part_plan" ) != std::string::npos,
+			Check( !retry.ok && retry.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2c/insert_geometry_scaffold RED-PROVE: the retry without filing is refused again "
 			       "(refusal 2 of 3), not silently let through" );
-			Check( sess->PartPlanGateRefusalCount() == 2,
+			Check( sess->BuildPlanGateRefusalCount() == 2,
 			       "G2c/insert_geometry_scaffold the counter reflects both refusals" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
@@ -7852,7 +7861,7 @@ static void TestPartPlanGateEveryTriggeringVerb()
 			const Agent::AgentSession::AgentGeometryScaffoldResult rs =
 				sess->ReplaceGeometryScaffold( "obj_sph", "sdf_column", "g2c3", 1.0, 0.5, 1.0 );
 			Check( !rs.ok, "G2c/replace_geometry_scaffold is REFUSED" );
-			Check( rs.message.find( "file_part_plan" ) != std::string::npos,
+			Check( rs.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2c/replace_geometry_scaffold the refusal names the tool" );
 			Check( sess->ReadDocument() == docBefore, "G2c/replace_geometry_scaffold document untouched" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
@@ -7860,7 +7869,7 @@ static void TestPartPlanGateEveryTriggeringVerb()
 	}
 }
 
-static void TestPartPlanGateIgnoresNonGeometry()
+static void TestBuildPlanGateIgnoresNonGeometry()
 {
 	std::printf( "G2d: non-geometry inserts do NOT trigger the gate...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2d.RISEscene" );
@@ -7879,14 +7888,14 @@ static void TestPartPlanGateIgnoresNonGeometry()
 	// it must not burn the gate either.
 	Check( sess->InsertMaterialScaffold( "rough_stone", "g2d", "0.5 0.5 0.5", 0.5, 1.0 ).ok,
 	       "G2d insert_material_scaffold (painters + material, no geometry) is NOT intercepted" );
-	Check( !sess->PartPlanGateHasFired(),
+	Check( !sess->BuildPlanGateHasFired(),
 	       "G2d MONEY ASSERTION: after four non-geometry authoring calls the gate is still ARMED -- "
 	       "it triggers on GEOMETRY, not on editing" );
 
 	// ...and the very next geometry insert DOES fire it, proving the negative
 	// assertions above are not vacuous.
 	const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
-	Check( !r.applied && r.message.find( "file_part_plan" ) != std::string::npos,
+	Check( !r.applied && r.message.find( "file_build_plan" ) != std::string::npos,
 	       "G2d RED-PROVE: the next GEOMETRY insert on the same session does fire the gate" );
 
 	sess.reset();
@@ -7894,7 +7903,7 @@ static void TestPartPlanGateIgnoresNonGeometry()
 	std::remove( tmp.c_str() );
 }
 
-static void TestPartPlanAnyPlanAcceptedAndNonBinding()
+static void TestBuildPlanAnyPlanAcceptedAndNonBinding()
 {
 	std::printf( "G2e/G2f: all-`primitive` is a complete plan; the plan is NON-BINDING...\n" );
 
@@ -7907,17 +7916,18 @@ static void TestPartPlanAnyPlanAcceptedAndNonBinding()
 		Check( pJob != nullptr, "G2e fixture loads" );
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 			for( int i = 0; i < 4; ++i ) {
-				Agent::AgentSession::AgentPartPlanEntry e;
-				e.part = "part" + std::to_string( i );
+				Agent::AgentSession::AgentBuildPlanEntry e;
+				e.element = "part" + std::to_string( i );
+				e.pieces.push_back( "piece" );
 				e.construction = "primitive";
 				// G3a: `outline` is required; a distinct triangle per part so
 				// the four sketches are not four copies of one shape.
 				e.outline = "0 0; " + std::to_string( i + 1 ) + " 0; 0.5 1";
 				plan.push_back( e );
 			}
-			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
 			Check( pr.ok, "G2e MONEY ASSERTION: a plan of `primitive` for EVERY part is accepted" );
 			Check( pr.message.find( "part0: primitive" ) != std::string::npos,
 			       "G2e the echo reports it back factually, with no grading of any kind" );
@@ -7937,17 +7947,18 @@ static void TestPartPlanAnyPlanAcceptedAndNonBinding()
 		Check( pJob != nullptr, "G2f fixture loads" );
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
-			Agent::AgentSession::AgentPartPlanEntry e; e.part = "body"; e.construction = "sweep";
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+			Agent::AgentSession::AgentBuildPlanEntry e; e.element = "body"; e.construction = "sweep";
+			e.pieces.push_back( "piece" );      // S1: `pieces` is required, >= 1
 			e.outline = "0 0; 1 0; 1 2; 0 2";   // G3a: `outline` is required
 			plan.push_back( e );
-			Check( sess->FilePartPlan( plan ).ok, "G2f the sweep plan is filed" );
+			Check( sess->FileBuildPlan( plan ).ok, "G2f the sweep plan is filed" );
 			const Agent::AgentChunkResult r = sess->InsertChunk( kG2GeometryChunk );
 			Check( r.applied,
 			       "G2f MONEY ASSERTION: `sweep` was declared and a box_geometry was inserted -- and it "
 			       "APPLIES.  The declaration is NON-BINDING by design; refusing here would suppress the "
 			       "exact signal (declare-rich, author-plain) this slice exists to measure" );
-			Check( r.message.find( "file_part_plan" ) == std::string::npos &&
+			Check( r.message.find( "file_build_plan" ) == std::string::npos &&
 			       r.message.find( "sweep" ) == std::string::npos,
 			       "G2f nothing anywhere in the result mentions the mismatch -- no nag, no advice" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
@@ -7955,7 +7966,7 @@ static void TestPartPlanAnyPlanAcceptedAndNonBinding()
 	}
 }
 
-static void TestPartPlanGateDisableSwitch()
+static void TestBuildPlanGateDisableSwitch()
 {
 	std::printf( "G2g: the launch-time disable switch turns the gate off completely...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2g.RISEscene" );
@@ -7966,26 +7977,26 @@ static void TestPartPlanGateDisableSwitch()
 	// The process default is already false for this binary (main()'s opt-out
 	// is the SAME call `--agent-part-plan-gate=off` makes), so this session
 	// snapshots a DISARMED gate -- exactly the gate-off measurement arm.
-	Check( !Agent::AgentSession::PartPlanGateDefaultEnabled(),
+	Check( !Agent::AgentSession::BuildPlanGateDefaultEnabled(),
 	       "G2g the process default is off (what --agent-part-plan-gate=off sets)" );
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
-	Check( !sess->PartPlanGateEnabled(), "G2g the session snapshotted the disabled default" );
+	Check( !sess->BuildPlanGateEnabled(), "G2g the session snapshotted the disabled default" );
 
 	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
 	       "G2g MONEY ASSERTION: with the gate off, the first geometry insert applies -- no "
 	       "interception, no plan needed" );
 	Check( sess->InsertGeometryScaffold( "sdf_column", "g2g", 1.0, 0.5, 1.0 ).ok,
 	       "G2g insert_geometry_scaffold is not intercepted either" );
-	Check( !sess->PartPlanGateHasFired(), "G2g the gate never fired" );
+	Check( !sess->BuildPlanGateHasFired(), "G2g the gate never fired" );
 
 	// A session's posture is snapshotted at CONSTRUCTION -- flipping the
 	// process default mid-session must not re-arm a running session.
-	Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
-	Check( !sess->PartPlanGateEnabled(),
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
+	Check( !sess->BuildPlanGateEnabled(),
 	       "G2g a mid-session change of the process default does NOT re-arm this session" );
 	Check( sess->InsertChunk( "box_geometry\n{\n\tname g2g_box2\n\twidth 1\n\theight 1\n\tdepth 1\n}" ).applied,
 	       "G2g and it really is still off in behaviour, not just in the accessor" );
-	Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 
 	sess.reset();
 	pJob->release();
@@ -7995,7 +8006,7 @@ static void TestPartPlanGateDisableSwitch()
 //----------------------------------------------------------------------
 // G2 fix-round (2026-08-10): the PATCH arm.
 //
-// Before this round the part-plan gate had exactly FOUR call sites, all
+// Before this round the build-plan gate had exactly FOUR call sites, all
 // INSERT verbs, and propose_patch / propose_patches had none -- while a
 // param VALUE is spliced into the document as TEXT, so a value carrying
 // `}` + a whole `box_geometry { ... }` block + a trailing `#` lands a REAL
@@ -8068,14 +8079,14 @@ static Agent::AgentSetPatch MakePatch( const char* target, const char* kind,
 	return p;
 }
 
-static void TestPartPlanGatePatchArm()
+static void TestBuildPlanGatePatchArm()
 {
-	std::printf( "G2j-G2n: the part-plan gate's PATCH arm (value-splice bypass)...\n" );
+	std::printf( "G2j-G2n: the build-plan gate's PATCH arm (value-splice bypass)...\n" );
 
 	// -- G2j RED-PROOF ------------------------------------------------
 	// Pre-fix this assertion set goes RED at the very first Check: the
 	// patch APPLIES, a real box_geometry lands, the document changes, the
-	// head bumps and PartPlanGateRefusalCount() stays 0.
+	// head bumps and BuildPlanGateRefusalCount() stays 0.
 	{
 		const std::string tmp = TempPath( "agentcrud_g2j.RISEscene" );
 		Job* pJob = LoadScene( kScene, tmp );
@@ -8090,7 +8101,7 @@ static void TestPartPlanGatePatchArm()
 
 			Check( !r.applied,
 			       "G2j MONEY ASSERTION: a propose_patch whose VALUE splices a whole box_geometry "
-			       "chunk into the document is REFUSED by the part-plan gate -- this is the bypass "
+			       "chunk into the document is REFUSED by the build-plan gate -- this is the bypass "
 			       "the four insert-verb call sites left wide open" );
 			Check( r.status == "rejected", "G2j the refusal reports status `rejected`" );
 			Check( !r.retriable,
@@ -8098,7 +8109,7 @@ static void TestPartPlanGatePatchArm()
 			       "refusal up to 5 times, which would burn all 3 refusals before the model saw one" );
 			Check( r.message.find( "propose_patch refused" ) != std::string::npos,
 			       "G2j the refusal names the VERB that was refused" );
-			Check( r.message.find( "file_part_plan" ) != std::string::npos,
+			Check( r.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2j the refusal names the tool to call -- the SAME text the insert verbs emit" );
 			Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
 			       "G2j the refusal lists the CLOSED construction enum" );
@@ -8115,18 +8126,18 @@ static void TestPartPlanGatePatchArm()
 			Check( sess->HeadVersion() == vBefore, "G2j the head version did not move" );
 			Check( sess->ReadDocument().find( "sneaky" ) == std::string::npos,
 			       "G2j RED-PROVE (direct): the spliced chunk's name appears nowhere in the document" );
-			Check( sess->PartPlanGateRefusalCount() == 1,
+			Check( sess->BuildPlanGateRefusalCount() == 1,
 			       "G2j MONEY ASSERTION: the SHARED refusal counter incremented -- before the fix it "
 			       "stayed at 0 and the instrument measured nothing" );
-			Check( !sess->PartPlanFiled(), "G2j a refusal does not count as a filed plan" );
+			Check( !sess->BuildPlanFiled(), "G2j a refusal does not count as a filed plan" );
 
 			// ...and after filing, the very same patch goes through: the gate
 			// is a SEQUENCING check, not a content ban.
-			Check( sess->FilePartPlan( SamplePlan() ).ok, "G2j the plan is filed" );
+			Check( sess->FileBuildPlan( SamplePlan() ).ok, "G2j the plan is filed" );
 			const Agent::AgentPatchResult r2 = sess->ProposePatch(
 				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
 			Check( r2.applied,
-			       "G2j MONEY ASSERTION: after file_part_plan the SAME patch applies -- the gate "
+			       "G2j MONEY ASSERTION: after file_build_plan the SAME patch applies -- the gate "
 			       "sequences, it does not forbid" );
 			Check( sess->ReadDocument().find( "box_geometry" ) != std::string::npos &&
 			       sess->ReadDocument().find( "sneaky" ) != std::string::npos,
@@ -8157,7 +8168,7 @@ static void TestPartPlanGatePatchArm()
 				}
 				Check( sawBox,
 				       "G2j MONEY ASSERTION (canonical parse): the committed bytes carry a REAL "
-				       "top-level box_geometry chunk -- exactly what the part-plan gate exists to "
+				       "top-level box_geometry chunk -- exactly what the build-plan gate exists to "
 				       "intercept, and exactly what the gate's delta detector sees" );
 			}
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
@@ -8177,23 +8188,23 @@ static void TestPartPlanGatePatchArm()
 			       "G2k MONEY ASSERTION: editing an EXISTING geometry chunk's param is NOT a creation "
 			       "-- the geometry-keyword multiset is unchanged, so the gate must not fire (delta, "
 			       "not state: the E1 lesson)" );
-			Check( !sess->PartPlanGateHasFired(), "G2k the gate did not fire" );
-			Check( sess->PartPlanGateRefusalCount() == 0, "G2k no refusal was burned" );
+			Check( !sess->BuildPlanGateHasFired(), "G2k the gate did not fire" );
+			Check( sess->BuildPlanGateRefusalCount() == 0, "G2k no refusal was burned" );
 			// A RENAME of an existing geometry chunk is not a creation either.
 			const Agent::AgentPatchResult rn = sess->ProposePatch(
 				MakePatch( "sph", "sphere_geometry", "name", "sph_renamed" ) );
-			Check( !sess->PartPlanGateHasFired(),
+			Check( !sess->BuildPlanGateHasFired(),
 			       "G2k renaming an existing geometry chunk is not a creation either (the keyword "
 			       "multiset is unchanged), whatever the derive layer then makes of the dangling "
 			       "reference" );
 			(void)rn;
-			Check( sess->PartPlanGateRefusalCount() == 0,
+			Check( sess->BuildPlanGateRefusalCount() == 0,
 			       "G2k MONEY ASSERTION: after two edits that TOUCH geometry the counter is still 0" );
 			// ...and the next genuine creation still fires, so the negatives
 			// above are not vacuous.
 			const Agent::AgentPatchResult rc = sess->ProposePatch(
 				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
-			Check( !rc.applied && rc.message.find( "file_part_plan" ) != std::string::npos,
+			Check( !rc.applied && rc.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2k RED-PROVE: a genuine creation on the same session DOES fire" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
@@ -8213,7 +8224,7 @@ static void TestPartPlanGatePatchArm()
 			       "gate's business -- G2 triggers on ChunkCategory::Geometry, not on chunk creation" );
 			Check( sess->ReadDocument().find( "g2_sneaky_p" ) != std::string::npos,
 			       "G2l the painter really was created, so the positive above is not vacuous" );
-			Check( !sess->PartPlanGateHasFired(),
+			Check( !sess->BuildPlanGateHasFired(),
 			       "G2l the gate is still ARMED after a non-geometry splice" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
@@ -8242,7 +8253,7 @@ static void TestPartPlanGatePatchArm()
 			Check( rs.size() == 3, "G2m one result per element" );
 			if( rs.size() == 3 ) {
 				Check( rs[0].applied, "G2m element 0 (an innocent geometry param edit) APPLIES" );
-				Check( !rs[1].applied && rs[1].message.find( "file_part_plan" ) != std::string::npos,
+				Check( !rs[1].applied && rs[1].message.find( "file_build_plan" ) != std::string::npos,
 				       "G2m MONEY ASSERTION: only the geometry-introducing element is refused" );
 				Check( rs[2].applied,
 				       "G2m element 2 still APPLIES -- per-element, exactly as E1/R1c refusals behave "
@@ -8250,7 +8261,7 @@ static void TestPartPlanGatePatchArm()
 			}
 			Check( sess->ReadDocument().find( "sneaky" ) == std::string::npos,
 			       "G2m the refused element landed nothing" );
-			Check( sess->PartPlanGateRefusalCount() == 1,
+			Check( sess->BuildPlanGateRefusalCount() == 1,
 			       "G2m the batch burned exactly ONE refusal -- one geometry-introducing element" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 		}
@@ -8267,13 +8278,13 @@ static void TestPartPlanGatePatchArm()
 			// refusal 1 -- through the PATCH arm
 			const Agent::AgentPatchResult p1 = sess->ProposePatch(
 				MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
-			Check( !p1.applied && sess->PartPlanGateRefusalCount() == 1, "G2n patch refusal is #1" );
+			Check( !p1.applied && sess->BuildPlanGateRefusalCount() == 1, "G2n patch refusal is #1" );
 			Check( p1.message.find( "2 more calls will be refused" ) != std::string::npos,
 			       "G2n the patch refusal reports 2 remaining" );
 
 			// refusal 2 -- through insert_chunk
 			const Agent::AgentChunkResult i2 = sess->InsertChunk( kG2GeometryChunk );
-			Check( !i2.applied && sess->PartPlanGateRefusalCount() == 2,
+			Check( !i2.applied && sess->BuildPlanGateRefusalCount() == 2,
 			       "G2n MONEY ASSERTION: an INSERT refusal draws on the SAME counter the patch "
 			       "refusal incremented -- one session-wide budget, not two" );
 			Check( i2.message.find( "1 more call will be refused" ) != std::string::npos,
@@ -8282,8 +8293,8 @@ static void TestPartPlanGatePatchArm()
 			// refusal 3 -- through insert_geometry_scaffold
 			const Agent::AgentSession::AgentGeometryScaffoldResult g3 =
 				sess->InsertGeometryScaffold( "sdf_column", "g2n", 1.0, 0.5, 1.0 );
-			Check( !g3.ok && sess->PartPlanGateRefusalCount() == 3, "G2n scaffold refusal is #3" );
-			Check( !sess->PartPlanGateGaveUp(), "G2n the gate has not given up yet" );
+			Check( !g3.ok && sess->BuildPlanGateRefusalCount() == 3, "G2n scaffold refusal is #3" );
+			Check( !sess->BuildPlanGateGaveUp(), "G2n the gate has not given up yet" );
 
 			// the 4th -- back through the PATCH arm -- is the GIVE-UP
 			const Agent::AgentPatchResult p4 = sess->ProposePatch(
@@ -8291,9 +8302,9 @@ static void TestPartPlanGatePatchArm()
 			Check( p4.applied,
 			       "G2n MONEY ASSERTION: the 4th interception -- arriving through the PATCH arm -- is "
 			       "the shared give-up, not a 4th refusal" );
-			Check( sess->PartPlanGateGaveUp(), "G2n the gate is now permanently disarmed" );
-			Check( sess->PartPlanGateRefusalCount() == 3, "G2n the counter stays at 3" );
-			Check( p4.message.find( "part-plan gate" ) != std::string::npos &&
+			Check( sess->BuildPlanGateGaveUp(), "G2n the gate is now permanently disarmed" );
+			Check( sess->BuildPlanGateRefusalCount() == 3, "G2n the counter stays at 3" );
+			Check( p4.message.find( "build-plan gate" ) != std::string::npos &&
 			       p4.message.find( "3 refusals" ) != std::string::npos &&
 			       p4.message.find( "disarmed for this session" ) != std::string::npos,
 			       "G2n MONEY ASSERTION: the give-up notice is folded into the PATCH result too -- "
@@ -8314,9 +8325,9 @@ static void TestPartPlanGatePatchArm()
 //! time (so the delta sees nothing to refuse) can become geometry-
 //! introducing once someone creates that target, and the Owner then
 //! approves it.  ResolveProposal re-runs the same stateless delta.
-static void TestPartPlanGateStagedResolve()
+static void TestBuildPlanGateStagedResolve()
 {
-	std::printf( "G2o: the part-plan gate's staged/resolve re-check...\n" );
+	std::printf( "G2o: the build-plan gate's staged/resolve re-check...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2o.RISEscene" );
 	Job* pJob = LoadScene( kScene, tmp );
 	Check( pJob != nullptr, "G2o fixture loads" );
@@ -8334,18 +8345,18 @@ static void TestPartPlanGateStagedResolve()
 	{
 		// WrapJobGateArmed wraps as Owner, so arm the default by hand for
 		// exactly the width of this External construction (same idiom).
-		Agent::AgentSession::SetPartPlanGateDefaultEnabled( true );
+		Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
 		std::unique_ptr<Agent::AgentSession> ext =
 			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
-		Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+		Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 		ext->AttachController( &c );
 		const Agent::AgentPatchResult r = ext->ProposePatch(
 			MakePatch( G2_SPLICE_TARGET, kG2SpliceGeometryValue ) );
 		Check( !r.applied && r.status == "rejected",
 		       "G2o(o1) MONEY ASSERTION: an External geometry-introducing patch is refused BEFORE "
 		       "staging -- the G2 arm sits ahead of the authority branch" );
-		Check( r.message.find( "file_part_plan" ) != std::string::npos,
-		       "G2o(o1) the refusal is the part-plan gate's, not the staging refusal" );
+		Check( r.message.find( "file_build_plan" ) != std::string::npos,
+		       "G2o(o1) the refusal is the build-plan gate's, not the staging refusal" );
 		Check( owner->ListProposals().empty(), "G2o(o1) and NOTHING was enqueued" );
 	}
 
@@ -8361,7 +8372,7 @@ static void TestPartPlanGateStagedResolve()
 		p.param      = String( "name" );
 		p.value      = String( kG2SpliceGeometryValue );
 		p.hasExplicitBaseVersion   = false;
-		p.partPlanGateArmedAtStage = true;
+		p.buildPlanGateArmedAtStage = true;
 		RISE::Cst::CstHeadVersion stagedHead{};
 		const std::uint64_t id = c.StageProposal( p, &stagedHead );
 		Check( id != 0, "G2o(o2) the innocent-at-stage proposal reaches the queue" );
@@ -8374,7 +8385,7 @@ static void TestPartPlanGateStagedResolve()
 		       "geometry is REFUSED at resolve time" );
 		Check( rr.message.find( "resolve refused" ) != std::string::npos,
 		       "G2o(o2) the message carries the resolve-refusal marker" );
-		Check( rr.message.find( "file_part_plan" ) != std::string::npos &&
+		Check( rr.message.find( "file_build_plan" ) != std::string::npos &&
 		       rr.message.find( "`box_geometry`" ) != std::string::npos,
 		       "G2o(o2) the refusal names the remedy and the chunk it would have introduced" );
 		Check( owner->ReadDocument() == headBefore,
@@ -8393,7 +8404,7 @@ static void TestPartPlanGateStagedResolve()
 		p.param      = String( "name" );
 		p.value      = String( kG2SpliceGeometryValue );
 		p.hasExplicitBaseVersion   = false;
-		p.partPlanGateArmedAtStage = false;
+		p.buildPlanGateArmedAtStage = false;
 		RISE::Cst::CstHeadVersion stagedHead{};
 		const std::uint64_t id = c.StageProposal( p, &stagedHead );
 		Check( id != 0, "G2o(o3) the disarmed-at-stage proposal reaches the queue" );
@@ -8411,9 +8422,9 @@ static void TestPartPlanGateStagedResolve()
 	std::remove( tmp.c_str() );
 }
 
-static void TestPartPlanWireShape()
+static void TestBuildPlanWireShape()
 {
-	std::printf( "G2h: file_part_plan wire shape + param validation through the LIVE dispatcher...\n" );
+	std::printf( "G2h: file_build_plan wire shape + param validation through the LIVE dispatcher...\n" );
 	const std::string tmp = TempPath( "agentcrud_g2h.RISEscene" );
 	Job* pJob = LoadScene( kScene, tmp );
 	Check( pJob != nullptr, "G2h fixture loads" );
@@ -8424,35 +8435,35 @@ static void TestPartPlanWireShape()
 	// -32602, naming the enum, for every malformed shape.
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_part_plan\",\"params\":{}}" );
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_build_plan\",\"params\":{}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a missing 'parts' is -32602" );
 		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
 		       "G2h that error NAMES the accepted enum" );
 	}
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_part_plan\",\"params\":{\"parts\":[]}}" );
-		Check( resp.find( "-32602" ) != std::string::npos, "G2h an EMPTY 'parts' array is -32602" );
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_build_plan\",\"params\":{\"elements\":[]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "G2h an EMPTY 'elements' array is -32602" );
 	}
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\",\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}" );
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"wing\",\"pieces\":[\"p\"],\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a MISSING 'construction' is -32602" );
-		Check( resp.find( "parts[0].construction" ) != std::string::npos,
+		Check( resp.find( "elements[0].construction" ) != std::string::npos,
 		       "G2h that error names the offending INDEX and field" );
 		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
 		       "G2h and the accepted enum" );
 	}
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\","
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"wing\",\"pieces\":[\"p\"],\"construction\":\"sweep\","
 			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
-			"{\"part\":\"tail\",\"construction\":\"lathe\","
+			"{\"element\":\"tail\",\"pieces\":[\"p\"],\"construction\":\"lathe\","
 			"\"outline\":\"0 0; 1 0; 0.5 1\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a construction OUTSIDE the enum is -32602" );
-		Check( resp.find( "parts[1].construction" ) != std::string::npos &&
+		Check( resp.find( "elements[1].construction" ) != std::string::npos &&
 		       resp.find( "`lathe`" ) != std::string::npos,
 		       "G2h that error names the index AND echoes the rejected value" );
 		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
@@ -8460,10 +8471,10 @@ static void TestPartPlanWireShape()
 	}
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"\",\"construction\":\"mesh\"}]}}" );
-		Check( resp.find( "-32602" ) != std::string::npos && resp.find( "parts[0].part" ) != std::string::npos,
-		       "G2h an EMPTY part name is -32602 naming the field" );
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"\",\"construction\":\"mesh\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos && resp.find( "elements[0].element" ) != std::string::npos,
+		       "G2h an EMPTY element name is -32602 naming the field" );
 	}
 
 	// A refused plan must NOT have disarmed the gate: the intercepted insert
@@ -8473,31 +8484,31 @@ static void TestPartPlanWireShape()
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g2h_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
-		Check( resp.find( "file_part_plan" ) != std::string::npos,
+		Check( resp.find( "file_build_plan" ) != std::string::npos,
 		       "G2h RED-PROVE: after five REFUSED filings the gate is still armed and fires" );
 	}
 
 	// The success envelope.
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"membrane\","
+			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"wing\",\"pieces\":[\"p\"],\"construction\":\"sweep\",\"note\":\"membrane\","
 			"\"outline\":\"0 0; 4 1; 3 2; -1 1.4\",\"view\":\"top\"},"
-			"{\"part\":\"body\",\"construction\":\"primitive\","
+			"{\"element\":\"body\",\"pieces\":[\"p\"],\"construction\":\"primitive\","
 			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}" );
 		Agent::JsonValue result;
-		Check( JsonResultObj( resp, result ), "G2h file_part_plan returns a JSON-RPC result object" );
+		Check( JsonResultObj( resp, result ), "G2h file_build_plan returns a JSON-RPC result object" );
 		Check( result.get( "filed" ).isBool() && result.get( "filed" ).asBool(), "G2h `filed` is true" );
 		Check( !result.get( "replacedPreviousPlan" ).asBool( true ),
 		       "G2h `replacedPreviousPlan` is false on the first filing" );
-		Check( result.get( "partCount" ).asNumber( -1 ) == 2.0, "G2h `partCount` is 2" );
-		Check( result.get( "parts" ).isArray() && result.get( "parts" ).size() == 2,
-		       "G2h `parts` echoes one entry per declared part" );
-		Check( result.get( "parts" ).at( 0 ).get( "part" ).asString() == "wing" &&
-		       result.get( "parts" ).at( 0 ).get( "construction" ).asString() == "sweep" &&
-		       result.get( "parts" ).at( 0 ).get( "note" ).asString() == "membrane",
-		       "G2h each entry carries {part,construction,note}, in the order declared" );
-		Check( result.get( "parts" ).at( 1 ).get( "note" ).asString().empty(),
+		Check( result.get( "elementCount" ).asNumber( -1 ) == 2.0, "G2h `elementCount` is 2" );
+		Check( result.get( "elements" ).isArray() && result.get( "elements" ).size() == 2,
+		       "G2h `elements` echoes one entry per declared element" );
+		Check( result.get( "elements" ).at( 0 ).get( "element" ).asString() == "wing" &&
+		       result.get( "elements" ).at( 0 ).get( "construction" ).asString() == "sweep" &&
+		       result.get( "elements" ).at( 0 ).get( "note" ).asString() == "membrane",
+		       "G2h each entry carries {element,pieces,construction,note}, in the order declared" );
+		Check( result.get( "elements" ).at( 1 ).get( "note" ).asString().empty(),
 		       "G2h an omitted note echoes as an empty string, never absent" );
 		Check( result.get( "message" ).asString().find( "wing: sweep" ) != std::string::npos,
 		       "G2h `message` is a factual echo of the plan" );
@@ -8513,7 +8524,7 @@ static void TestPartPlanWireShape()
 		Agent::JsonValue result;
 		Check( JsonResultObj( resp, result ), "G2h the post-plan insert returns a result" );
 		Check( result.get( "applied" ).asBool(),
-		       "G2h MONEY ASSERTION (wire): after file_part_plan the SAME insert applies" );
+		       "G2h MONEY ASSERTION (wire): after file_build_plan the SAME insert applies" );
 	}
 
 	pJob->release();
@@ -8521,7 +8532,7 @@ static void TestPartPlanWireShape()
 }
 
 //----------------------------------------------------------------------
-// G3a (2026-08-10): the SKETCH ARTIFACT -- part-plan schema v2.
+// G3a (2026-08-10): the SKETCH ARTIFACT -- build-plan schema v2.
 //
 // What these pin, in order:
 //   G3a-a  a valid filing rasterizes one target per part: point count, area
@@ -8549,10 +8560,10 @@ static void TestPartPlanWireShape()
 //! A filed sketch's mask bbox, in pixels (empty mask -> w==h==0).
 struct SketchMaskBBox { int x0 = 0, y0 = 0, x1 = -1, y1 = -1; int w = 0, h = 0; };
 
-static SketchMaskBBox MaskBBox( const RISE::Agent::AgentSession::AgentPartSketch& s )
+static SketchMaskBBox MaskBBox( const RISE::Agent::AgentSession::AgentElementSketch& s )
 {
 	SketchMaskBBox b;
-	const int N = RISE::Agent::AgentSession::kPartSketchCanvas;
+	const int N = RISE::Agent::AgentSession::kElementSketchCanvas;
 	bool any = false;
 	for( int y = 0; y < N; ++y ) {
 		for( int x = 0; x < N; ++x ) {
@@ -8569,26 +8580,27 @@ static SketchMaskBBox MaskBBox( const RISE::Agent::AgentSession::AgentPartSketch
 }
 
 //! Filled pixel count on one mask row.
-static int MaskRowFilled( const RISE::Agent::AgentSession::AgentPartSketch& s, int row )
+static int MaskRowFilled( const RISE::Agent::AgentSession::AgentElementSketch& s, int row )
 {
-	const int N = RISE::Agent::AgentSession::kPartSketchCanvas;
+	const int N = RISE::Agent::AgentSession::kElementSketchCanvas;
 	int n = 0;
 	for( int x = 0; x < N; ++x )
 		if( s.mask[ static_cast<std::size_t>( row ) * N + x ] ) ++n;
 	return n;
 }
 
-static Agent::AgentSession::AgentPartPlanEntry PlanEntry( const char* part, const char* cons,
+static Agent::AgentSession::AgentBuildPlanEntry PlanEntry( const char* part, const char* cons,
                                                           const char* outline, const char* view = "" )
 {
-	Agent::AgentSession::AgentPartPlanEntry e;
-	e.part = part; e.construction = cons; e.outline = outline; e.view = view;
+	Agent::AgentSession::AgentBuildPlanEntry e;
+	e.element = part; e.construction = cons; e.outline = outline; e.view = view;
+	e.pieces.push_back( "piece" );
 	return e;
 }
 
 //! G3a-a / G3a-d / G3a-e: the rasterizer's numbers, on shapes whose answers
 //! are known in closed form.
-static void TestPartSketchRasterizer()
+static void TestElementSketchRasterizer()
 {
 	std::printf( "G3a-a: the sketch rasterizer -- area/aspect/point facts, composite PNG, even-odd fill...\n" );
 	const std::string tmp = TempPath( "agentcrud_g3a_a.RISEscene" );
@@ -8597,9 +8609,9 @@ static void TestPartSketchRasterizer()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 	// 0: a unit SQUARE -- fills the fitted box entirely, so its area fraction
-	//    must be kPartSketchFillFraction^2 (0.7225) to within pixel
+	//    must be kElementSketchFillFraction^2 (0.7225) to within pixel
 	//    quantization.  This is the single most load-bearing number in the
 	//    whole rasterizer: it pins the FIT, the CENTERING and the fill rule at
 	//    once, and it is the constant G3b's comparison is calibrated against.
@@ -8612,24 +8624,24 @@ static void TestPartSketchRasterizer()
 	// 3: a 4:1 WIDE rectangle -- letterboxed, aspect preserved.
 	plan.push_back( PlanEntry( "wide", "sweep", "0 0; 4 0; 4 1; 0 1", "top" ) );
 
-	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
-	Check( pr.ok, "G3a-a the four-part plan with outlines is accepted" );
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
+	Check( pr.ok, "G3a-a the four-build plan with outlines is accepted" );
 	Check( pr.sketches.size() == 4, "G3a-a one target per part" );
-	Check( sess->PartSketches().size() == 4,
+	Check( sess->ElementSketches().size() == 4,
 	       "G3a-a and the session HOLDS them as session-lifetime state" );
 	if( pr.sketches.size() != 4 ) { sess.reset(); pJob->release(); std::remove( tmp.c_str() ); return; }
 
-	const double fill2 = Agent::AgentSession::kPartSketchFillFraction *
-	                     Agent::AgentSession::kPartSketchFillFraction;
+	const double fill2 = Agent::AgentSession::kElementSketchFillFraction *
+	                     Agent::AgentSession::kElementSketchFillFraction;
 
 	// --- 0: square -------------------------------------------------------
 	{
-		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[0];
-		Check( s.part == "square" && s.pointCount == 4, "G3a-a square: 4 points" );
+		const Agent::AgentSession::AgentElementSketch& s = pr.sketches[0];
+		Check( s.element == "square" && s.pointCount == 4, "G3a-a square: 4 points" );
 		Check( s.view == "front",
 		       "G3a-a MONEY ASSERTION: an omitted `view` resolves to front, never to empty" );
 		Check( std::fabs( s.areaFraction - fill2 ) < 0.01,
-		       "G3a-a MONEY ASSERTION: a square outline fills kPartSketchFillFraction^2 (~0.7225) of "
+		       "G3a-a MONEY ASSERTION: a square outline fills kElementSketchFillFraction^2 (~0.7225) of "
 		       "the canvas -- pins the fit, the centering and the fill rule at once (got " +
 		       std::to_string( s.areaFraction ) + ")" );
 		Check( std::fabs( s.aspect - 1.0 ) < 1e-9, "G3a-a square: aspect 1.0" );
@@ -8638,7 +8650,7 @@ static void TestPartSketchRasterizer()
 	}
 	// --- 1: triangle -----------------------------------------------------
 	{
-		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[1];
+		const Agent::AgentSession::AgentElementSketch& s = pr.sketches[1];
 		Check( s.pointCount == 3, "G3a-a triangle: 3 points" );
 		Check( s.view == "side", "G3a-a triangle: an explicit `view` is recorded verbatim" );
 		Check( std::fabs( s.areaFraction - fill2 * 0.5 ) < 0.01,
@@ -8648,7 +8660,7 @@ static void TestPartSketchRasterizer()
 	}
 	// --- 2: bowtie (G3a-d) -----------------------------------------------
 	{
-		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[2];
+		const Agent::AgentSession::AgentElementSketch& s = pr.sketches[2];
 		Check( s.pointCount == 4, "G3a-d bowtie: accepted, 4 points -- self-intersection is NOT an error" );
 		// Two triangles of half-height each: total area is half the bbox,
 		// i.e. the same fraction as the triangle above.
@@ -8668,26 +8680,26 @@ static void TestPartSketchRasterizer()
 	}
 	// --- 3: wide (G3a-e) -------------------------------------------------
 	{
-		const Agent::AgentSession::AgentPartSketch& s = pr.sketches[3];
+		const Agent::AgentSession::AgentElementSketch& s = pr.sketches[3];
 		Check( std::fabs( s.aspect - 4.0 ) < 1e-9, "G3a-e wide: the reported aspect is the authored 4.0" );
 		Check( s.view == "top", "G3a-e wide: view top" );
 		const SketchMaskBBox b = MaskBBox( s );
-		const double edge   = static_cast<double>( Agent::AgentSession::kPartSketchCanvas );
-		const double fitted = Agent::AgentSession::kPartSketchFillFraction * edge;   // 217.6
+		const double edge   = static_cast<double>( Agent::AgentSession::kElementSketchCanvas );
+		const double fitted = Agent::AgentSession::kElementSketchFillFraction * edge;   // 217.6
 		Check( std::fabs( static_cast<double>( b.w ) - fitted ) <= 1.0,
-		       "G3a-e wide: the LONG axis is fitted to kPartSketchFillFraction of the canvas" );
+		       "G3a-e wide: the LONG axis is fitted to kElementSketchFillFraction of the canvas" );
 		Check( std::fabs( static_cast<double>( b.h ) - fitted / 4.0 ) <= 1.0,
 		       "G3a-e MONEY ASSERTION: the short axis is LETTERBOXED to the authored 4:1 aspect, to "
 		       "within a pixel -- a stretch-to-fit would have made it square (got h=" +
 		       std::to_string( b.h ) + ")" );
-		Check( b.y0 > 1 && b.y1 < Agent::AgentSession::kPartSketchCanvas - 2,
+		Check( b.y0 > 1 && b.y1 < Agent::AgentSession::kElementSketchCanvas - 2,
 		       "G3a-e wide: and it is CENTERED -- margin above and below" );
 	}
 
 	// --- the composite PNG -----------------------------------------------
 	Check( !pr.compositePng.empty(), "G3a-a the filing returns a composite PNG" );
-	Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
-	       pr.compositeHeight == static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+	Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ) &&
+	       pr.compositeHeight == static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ),
 	       "G3a-a four sketches tile into ONE row of four (1024x256)" );
 	{
 		DecodedLuma d;
@@ -8719,7 +8731,7 @@ static void TestPartSketchRasterizer()
 }
 
 //! G3a-b: byte-level determinism across independent sessions.
-static void TestPartSketchDeterminism()
+static void TestElementSketchDeterminism()
 {
 	std::printf( "G3a-b: the same outline rasterizes byte-identically in two fresh sessions...\n" );
 	const char* const kOutline = "0.13 -2.5; 3.7 0.25; 2.05 4.9; -1.4 3.33; -2.2 0.1";
@@ -8733,9 +8745,9 @@ static void TestPartSketchDeterminism()
 		Check( pJob != nullptr, "G3a-b fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+		std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 		plan.push_back( PlanEntry( "blob", "displaced", kOutline ) );
-		const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+		const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
 		Check( pr.ok && pr.sketches.size() == 1, "G3a-b the filing succeeds" );
 		if( pr.sketches.size() == 1 ) { mask[trial] = pr.sketches[0].mask; png[trial] = pr.compositePng; }
 		sess.reset();
@@ -8751,7 +8763,7 @@ static void TestPartSketchDeterminism()
 
 //! G3a-c: every outline/view defect is a clean -32602 naming the index, and
 //! NONE of them burns a gate refusal.
-static void TestPartSketchWireRejections()
+static void TestElementSketchWireRejections()
 {
 	std::printf( "G3a-c: outline/view -32602 shapes, and the gate counter stays untouched...\n" );
 	const std::string tmp = TempPath( "agentcrud_g3a_c.RISEscene" );
@@ -8764,62 +8776,62 @@ static void TestPartSketchWireRejections()
 
 	struct Case { const char* params; const char* mustSay; const char* what; };
 	static const Case kCases[] = {
-		{ "{\"parts\":[{\"part\":\"wing\",\"construction\":\"sweep\"}]}",
-		  "parts[0].outline", "a MISSING outline" },
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
-		  "{\"part\":\"b\",\"construction\":\"csg\",\"outline\":\"0 0; 1 1\"}]}",
-		  "parts[1].outline", "an outline with only 2 points" },
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; nan 1; 1 1\"}]}",
-		  "parts[0].outline", "a NON-FINITE coordinate" },
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 2 0; 3 0\"}]}",
+		{ "{\"elements\":[{\"element\":\"wing\",\"pieces\":[\"p\"],\"construction\":\"sweep\"}]}",
+		  "elements[0].outline", "a MISSING outline" },
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
+		  "{\"element\":\"b\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1 1\"}]}",
+		  "elements[1].outline", "an outline with only 2 points" },
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; nan 1; 1 1\"}]}",
+		  "elements[0].outline", "a NON-FINITE coordinate" },
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 2 0; 3 0\"}]}",
 		  // G3a fix-round (2026-08-10): this is AXIS-DEGENERATE (every point
 		  // shares y=0), not "collinear" -- a diagonal line of points (e.g.
 		  // "0 0; 1 1; 2 2") is also collinear but has extent on both axes,
-		  // so ParsePartOutlinePoints_ deliberately ACCEPTS it and it
+		  // so ParseElementOutlinePoints_ deliberately ACCEPTS it and it
 		  // degrades gracefully to a near-empty mask.
-		  "parts[0].outline", "an AXIS-DEGENERATE outline (zero-area bounding box)" },
+		  "elements[0].outline", "an AXIS-DEGENERATE outline (zero-area bounding box)" },
 		// G3a fix-round (2026-08-10) FIX 1: a bbox extent that is POSITIVE
 		// (passes the zero-area check above) but SUBNORMAL overflows
-		// RasterizePartOutline_'s fit scale to +inf, turning every device
+		// RasterizeElementOutline_'s fit scale to +inf, turning every device
 		// coordinate to NaN and the mask silently empty -- reported as an
 		// honest-looking areaFraction 0.00 if it were ever let through.
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1e-320 0; 0 1e-320\"}]}",
-		  "parts[0].outline", "a SUBNORMAL-extent outline (bbox extent overflows the fit scale)" },
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1; 1 1\"}]}",
-		  "parts[0].outline", "a point that is not two numbers" },
-		{ "{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1\","
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1e-320 0; 0 1e-320\"}]}",
+		  "elements[0].outline", "a SUBNORMAL-extent outline (bbox extent overflows the fit scale)" },
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1; 1 1\"}]}",
+		  "elements[0].outline", "a point that is not two numbers" },
+		{ "{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1\","
 		  "\"view\":\"isometric\"}]}",
-		  "parts[0].view", "a `view` outside the closed enum" },
+		  "elements[0].view", "a `view` outside the closed enum" },
 	};
 	int id = 100;
 	for( const Case& c : kCases ) {
 		const std::string resp = rpc.HandleLine(
 			std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id++ ) +
-			",\"method\":\"file_part_plan\",\"params\":" + c.params + "}" );
+			",\"method\":\"file_build_plan\",\"params\":" + c.params + "}" );
 		const std::string p = std::string( "G3a-c " ) + c.what + ": ";
 		Check( resp.find( "-32602" ) != std::string::npos, p + "is a clean -32602" );
 		Check( resp.find( c.mustSay ) != std::string::npos,
 		       p + "and the error names the offending part INDEX and field (" + c.mustSay + ")" );
-		Check( !sess->PartPlanFiled(), p + "no plan was recorded" );
-		Check( sess->PartSketches().empty(), p + "and no target was recorded" );
+		Check( !sess->BuildPlanFiled(), p + "no plan was recorded" );
+		Check( sess->ElementSketches().empty(), p + "and no target was recorded" );
 	}
 	// The two RESOURCE BOUNDS, both wire-reachable and both -32602.  Unlike
 	// every G2 field these grow with what the caller sends (one 64 KB mask
 	// per part; a scanline fill per edge), so without them one call is an
 	// unbounded allocation.  No honest plan comes near either.
 	{
-		std::string many = "{\"parts\":[";
+		std::string many = "{\"elements\":[";
 		for( int i = 0; i < 65; ++i ) {
 			if( i ) many += ",";
-			many += "{\"part\":\"p" + std::to_string( i ) +
-				"\",\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1\"}";
+			many += "{\"element\":\"p" + std::to_string( i ) +
+				"\",\"pieces\":[\"p\"],\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1\"}";
 		}
 		many += "]}";
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"file_part_plan\",\"params\":" + many + "}" );
+			"{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"file_build_plan\",\"params\":" + many + "}" );
 		Check( resp.find( "-32602" ) != std::string::npos && resp.find( "at most 64" ) != std::string::npos,
-		       "G3a-c a 65-part plan is a -32602 naming the 64-part cap" );
-		Check( !sess->PartPlanFiled(), "G3a-c and nothing was recorded" );
+		       "G3a-c a 65-build plan is a -32602 naming the 64-part cap" );
+		Check( !sess->BuildPlanFiled(), "G3a-c and nothing was recorded" );
 	}
 	{
 		std::string pts;
@@ -8828,16 +8840,16 @@ static void TestPartSketchWireRejections()
 			pts += std::to_string( i ) + " " + std::to_string( ( i * 7 ) % 13 );
 		}
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":151,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"a\",\"construction\":\"csg\",\"outline\":\"" + pts + "\"}]}}" );
+			"{\"jsonrpc\":\"2.0\",\"id\":151,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"a\",\"pieces\":[\"p\"],\"construction\":\"csg\",\"outline\":\"" + pts + "\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos &&
-		       resp.find( "parts[0].outline" ) != std::string::npos &&
+		       resp.find( "elements[0].outline" ) != std::string::npos &&
 		       resp.find( "at most 512" ) != std::string::npos,
 		       "G3a-c a 513-point outline is a -32602 naming the 512-point cap" );
-		Check( !sess->PartPlanFiled(), "G3a-c and nothing was recorded" );
+		Check( !sess->BuildPlanFiled(), "G3a-c and nothing was recorded" );
 	}
 
-	Check( sess->PartPlanGateRefusalCount() == 0 && !sess->PartPlanGateHasFired(),
+	Check( sess->BuildPlanGateRefusalCount() == 0 && !sess->BuildPlanGateHasFired(),
 	       "G3a-c MONEY ASSERTION: nine rejected filings burned ZERO gate refusals -- a schema error "
 	       "is not a gate interception, and the design's bounded-escape argument depends on it (G2h "
 	       "pins the same property for the G2 fields)" );
@@ -8847,32 +8859,32 @@ static void TestPartSketchWireRejections()
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g3ac_box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
-		Check( resp.find( "file_part_plan" ) != std::string::npos,
+		Check( resp.find( "file_build_plan" ) != std::string::npos,
 		       "G3a-c RED-PROVE: after nine REFUSED filings the gate is still armed and fires" );
-		Check( sess->PartPlanGateRefusalCount() == 1,
+		Check( sess->BuildPlanGateRefusalCount() == 1,
 		       "G3a-c and THAT interception is refusal #1 -- the counter starts here, not at 10" );
 	}
 
 	// A well-formed filing on the same session clears it, and carries an image.
 	{
 		const std::string resp = rpc.HandleLine(
-			"{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"file_part_plan\",\"params\":"
-			"{\"parts\":[{\"part\":\"body\",\"construction\":\"primitive\","
+			"{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"body\",\"pieces\":[\"p\"],\"construction\":\"primitive\","
 			"\"outline\":\"0 0; 2 0; 2 1; 0 1\"}]}}" );
 		Agent::JsonValue result;
 		Check( JsonResultObj( resp, result ), "G3a-c the corrected filing returns a result object" );
 		Check( result.get( "filed" ).asBool( false ), "G3a-c and it files" );
-		Check( result.get( "parts" ).at( 0 ).get( "view" ).asString() == "front",
+		Check( result.get( "elements" ).at( 0 ).get( "view" ).asString() == "front",
 		       "G3a-c the echoed `view` defaults to front on the wire too" );
-		Check( result.get( "parts" ).at( 0 ).get( "pointCount" ).asNumber( -1 ) == 4.0,
+		Check( result.get( "elements" ).at( 0 ).get( "pointCount" ).asNumber( -1 ) == 4.0,
 		       "G3a-c the echoed pointCount is the parsed vertex count" );
-		Check( result.get( "parts" ).at( 0 ).get( "outline" ).asString() == "0 0; 2 0; 2 1; 0 1",
+		Check( result.get( "elements" ).at( 0 ).get( "outline" ).asString() == "0 0; 2 0; 2 1; 0 1",
 		       "G3a-c and the outline comes back VERBATIM as authored" );
-		Check( std::fabs( result.get( "parts" ).at( 0 ).get( "aspect" ).asNumber( -1 ) - 2.0 ) < 1e-9,
+		Check( std::fabs( result.get( "elements" ).at( 0 ).get( "aspect" ).asNumber( -1 ) - 2.0 ) < 1e-9,
 		       "G3a-c and the aspect fact is the authored 2:1" );
 		Check( !result.get( "png_base64" ).asString().empty() &&
 		       result.get( "compositeWidth" ).asNumber( -1 ) ==
-		           static_cast<double>( Agent::AgentSession::kPartSketchCanvas ),
+		           static_cast<double>( Agent::AgentSession::kElementSketchCanvas ),
 		       "G3a-c the composite rides the wire under the SAME png_base64 field name every other "
 		       "image-bearing verb uses" );
 		Check( result.get( "byteLength" ).asNumber( -1 ) > 0.0, "G3a-c with its byte length" );
@@ -8897,7 +8909,7 @@ static void TestPartSketchWireRejections()
 //! floor up carelessly (e.g. to "fix" this by rejecting anything under 1),
 //! this goes red before any legitimately small, honestly-authored
 //! silhouette does.
-static void TestPartSketchSmallButSaneExtentStillRasterizes()
+static void TestElementSketchSmallButSaneExtentStillRasterizes()
 {
 	std::printf( "G3a fix-round: a small-but-sane 0.001 extent still rasterizes normally...\n" );
 	const std::string tmp = TempPath( "agentcrud_g3a_fix1.RISEscene" );
@@ -8906,18 +8918,18 @@ static void TestPartSketchSmallButSaneExtentStillRasterizes()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 	plan.push_back( PlanEntry( "tiny", "primitive", "0 0; 0.001 0; 0.001 0.001; 0 0.001" ) );
-	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
 	Check( pr.ok, "fix1 a 0.001-unit square outline is ACCEPTED (extent is 1e6 times the 1e-9 floor)" );
 	if( !pr.ok || pr.sketches.empty() ) { sess.reset(); pJob->release(); std::remove( tmp.c_str() ); return; }
 
-	const Agent::AgentSession::AgentPartSketch& s = pr.sketches[0];
-	const double fill2 = Agent::AgentSession::kPartSketchFillFraction *
-	                     Agent::AgentSession::kPartSketchFillFraction;
+	const Agent::AgentSession::AgentElementSketch& s = pr.sketches[0];
+	const double fill2 = Agent::AgentSession::kElementSketchFillFraction *
+	                     Agent::AgentSession::kElementSketchFillFraction;
 	Check( std::fabs( s.areaFraction - fill2 ) < 0.01,
 	       "fix1 MONEY ASSERTION: it rasterizes to the SAME ~0.7225 fill fraction as the unit square in "
-	       "TestPartSketchRasterizer -- the fit is scale-invariant, so a small outline is not a degraded "
+	       "TestElementSketchRasterizer -- the fit is scale-invariant, so a small outline is not a degraded "
 	       "outline (got " + std::to_string( s.areaFraction ) + ")" );
 	Check( std::isfinite( s.aspect ) && std::fabs( s.aspect - 1.0 ) < 1e-6,
 	       "fix1 and the aspect fact is finite and correct (1.0), not NaN/inf from an overflowed scale" );
@@ -8933,9 +8945,9 @@ static void TestPartSketchSmallButSaneExtentStillRasterizes()
 //! G3a fix-round (2026-08-10) FIX 3: composite tiling paths past the
 //! previously-tested <= 4 sketches (single row), plus the ACCEPT side of
 //! the two resource-cap fences whose REJECT side (65 parts, 513 points) is
-//! already covered in TestPartSketchWireRejections.  Every fixture here is
+//! already covered in TestElementSketchWireRejections.  Every fixture here is
 //! built programmatically -- no pasted kilobyte outline lists.
-static void TestPartSketchCompositeTilingAndAcceptBoundaries()
+static void TestElementSketchCompositeTilingAndAcceptBoundaries()
 {
 	std::printf( "G3a fix-round: composite multi-row tiling, truncation, and 64-part/512-point "
 	             "accept boundaries...\n" );
@@ -8947,14 +8959,14 @@ static void TestPartSketchCompositeTilingAndAcceptBoundaries()
 		Check( pJob != nullptr, "fix3-6 fixture loads" );
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 			for( int i = 0; i < 6; ++i )
 				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
 				                           "0 0; 1 0; 0.5 1" ) );
-			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
-			Check( pr.ok, "fix3-6 the six-part plan is accepted" );
-			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
-			       pr.compositeHeight == 2u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+			const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
+			Check( pr.ok, "fix3-6 the six-build plan is accepted" );
+			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ) &&
+			       pr.compositeHeight == 2u * static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ),
 			       "fix3-6 MONEY ASSERTION: six sketches wrap to TWO rows of four -- 1024x512, not "
 			       "1536x256 (a single wide row) or 1024x1024 (four rows)" );
 			Check( pr.message.find( "Sketches, in order: p0, p1, p2, p3, p4, p5" ) != std::string::npos,
@@ -8972,19 +8984,19 @@ static void TestPartSketchCompositeTilingAndAcceptBoundaries()
 		Check( pJob != nullptr, "fix3-17 fixture loads" );
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 			for( int i = 0; i < 17; ++i )
 				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
 				                           "0 0; 1 0; 0.5 1" ) );
-			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
-			Check( pr.ok, "fix3-17 the seventeen-part plan is accepted" );
-			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ) &&
-			       pr.compositeHeight == 4u * static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+			const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
+			Check( pr.ok, "fix3-17 the seventeen-build plan is accepted" );
+			Check( pr.compositeWidth == 4u * static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ) &&
+			       pr.compositeHeight == 4u * static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ),
 			       "fix3-17 MONEY ASSERTION: exactly 16 tiles are drawn (four full rows of four) -- "
 			       "1024x1024, not a 17th partial row" );
 			Check( pr.message.find( "first 16 of 17 sketches" ) != std::string::npos,
 			       "fix3-17 the message carries the factual truncation note with correct arithmetic" );
-			Check( sess->PartSketches().size() == 17,
+			Check( sess->ElementSketches().size() == 17,
 			       "fix3-17 MONEY ASSERTION: ALL 17 targets are still stored -- the composite's tile "
 			       "cap bounds only the IMAGE, never what is recorded" );
 			bool allFacts = true;
@@ -9006,14 +9018,14 @@ static void TestPartSketchCompositeTilingAndAcceptBoundaries()
 		Check( pJob != nullptr, "fix3-64 fixture loads" );
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
-			for( std::size_t i = 0; i < Agent::AgentSession::kPartPlanMaxParts; ++i )
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+			for( std::size_t i = 0; i < Agent::AgentSession::kBuildPlanMaxElements; ++i )
 				plan.push_back( PlanEntry( ( "p" + std::to_string( i ) ).c_str(), "primitive",
 				                           "0 0; 1 0; 0.5 1" ) );
-			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
-			Check( pr.ok && pr.sketches.size() == Agent::AgentSession::kPartPlanMaxParts,
+			const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
+			Check( pr.ok && pr.sketches.size() == Agent::AgentSession::kBuildPlanMaxElements,
 			       "fix3-64 MONEY ASSERTION: EXACTLY 64 parts is accepted (the cap itself, not past "
-			       "it -- 65 is already covered as a rejection in TestPartSketchWireRejections)" );
+			       "it -- 65 is already covered as a rejection in TestElementSketchWireRejections)" );
 			sess.reset();
 			pJob->release();
 		}
@@ -9028,17 +9040,17 @@ static void TestPartSketchCompositeTilingAndAcceptBoundaries()
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 			std::string pts;
-			for( std::size_t i = 0; i < Agent::AgentSession::kPartOutlineMaxPoints; ++i ) {
+			for( std::size_t i = 0; i < Agent::AgentSession::kElementOutlineMaxPoints; ++i ) {
 				if( i ) pts += "; ";
 				pts += std::to_string( i ) + " " + std::to_string( ( i * 7 ) % 13 );
 			}
-			std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 			plan.push_back( PlanEntry( "many", "csg", pts.c_str() ) );
-			const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+			const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
 			Check( pr.ok && pr.sketches.size() == 1 &&
-			       pr.sketches[0].pointCount == Agent::AgentSession::kPartOutlineMaxPoints,
+			       pr.sketches[0].pointCount == Agent::AgentSession::kElementOutlineMaxPoints,
 			       "fix3-512 MONEY ASSERTION: EXACTLY 512 points is accepted (the cap itself, not "
-			       "past it -- 513 is already covered as a rejection in TestPartSketchWireRejections)" );
+			       "past it -- 513 is already covered as a rejection in TestElementSketchWireRejections)" );
 			sess.reset();
 			pJob->release();
 		}
@@ -9047,7 +9059,7 @@ static void TestPartSketchCompositeTilingAndAcceptBoundaries()
 }
 
 //! G3a-f: re-filing REPLACES the whole target set.
-static void TestPartSketchReplaceSemantics()
+static void TestElementSketchReplaceSemantics()
 {
 	std::printf( "G3a-f: re-filing replaces the target set completely...\n" );
 	const std::string tmp = TempPath( "agentcrud_g3a_f.RISEscene" );
@@ -9056,35 +9068,35 @@ static void TestPartSketchReplaceSemantics()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> first;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> first;
 	first.push_back( PlanEntry( "wing", "sweep",  "0 0; 3 1; 2 2; -1 1" ) );
 	first.push_back( PlanEntry( "tail", "chain",  "0 0; 1 0; 0.5 2" ) );
-	Check( sess->FilePartPlan( first ).ok, "G3a-f the first plan files" );
-	Check( sess->PartSketches().size() == 2, "G3a-f two targets" );
+	Check( sess->FileBuildPlan( first ).ok, "G3a-f the first plan files" );
+	Check( sess->ElementSketches().size() == 2, "G3a-f two targets" );
 
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> second;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> second;
 	second.push_back( PlanEntry( "hull", "csg", "0 0; 5 0; 5 2; 0 2" ) );
-	const Agent::AgentSession::AgentPartPlanResult pr2 = sess->FilePartPlan( second );
+	const Agent::AgentSession::AgentBuildPlanResult pr2 = sess->FileBuildPlan( second );
 	Check( pr2.ok && pr2.replacedPreviousPlan, "G3a-f the re-filing is accepted and reports the replace" );
-	Check( sess->PartSketches().size() == 1 && sess->PartSketches()[0].part == "hull",
+	Check( sess->ElementSketches().size() == 1 && sess->ElementSketches()[0].element == "hull",
 	       "G3a-f MONEY ASSERTION: the target set is REPLACED wholesale -- `wing` and `tail` are gone, "
 	       "so a part dropped from the plan can never leave a stale sketch behind for G3b to compare "
 	       "against" );
-	Check( pr2.compositeWidth == static_cast<unsigned int>( Agent::AgentSession::kPartSketchCanvas ),
+	Check( pr2.compositeWidth == static_cast<unsigned int>( Agent::AgentSession::kElementSketchCanvas ),
 	       "G3a-f and the composite is re-tiled for the NEW set (one tile, not three)" );
 	Check( pr2.message.find( "every sketch filed with it" ) != std::string::npos,
 	       "G3a-f the echo states the replacement covered the sketches, not only the plan" );
 
 	// A rejected re-filing changes NOTHING -- all-or-nothing, and it must not
 	// be a back door to clearing targets.
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> bad;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> bad;
 	bad.push_back( PlanEntry( "ok",  "primitive", "0 0; 1 0; 1 1" ) );
 	bad.push_back( PlanEntry( "bad", "primitive", "0 0; 1 0" ) );
-	const Agent::AgentSession::AgentPartPlanResult pr3 = sess->FilePartPlan( bad );
-	Check( !pr3.ok && pr3.message.find( "parts[1].outline" ) != std::string::npos,
+	const Agent::AgentSession::AgentBuildPlanResult pr3 = sess->FileBuildPlan( bad );
+	Check( !pr3.ok && pr3.message.find( "elements[1].outline" ) != std::string::npos,
 	       "G3a-f a defect in part 1 rejects the WHOLE filing, naming the index" );
-	Check( sess->PartSketches().size() == 1 && sess->PartSketches()[0].part == "hull" &&
-	       sess->PartPlan().size() == 1,
+	Check( sess->ElementSketches().size() == 1 && sess->ElementSketches()[0].element == "hull" &&
+	       sess->BuildPlan().size() == 1,
 	       "G3a-f MONEY ASSERTION: the rejected filing left the previous plan AND targets untouched -- "
 	       "no half-applied plan, no cleared targets" );
 
@@ -9098,7 +9110,7 @@ static void TestPartSketchReplaceSemantics()
 //! the point: a refusal that told a model to do something the dispatcher then
 //! -32602s is a P1 in this repo, so the test does not merely grep for words --
 //! it FILES the exact example the refusal prints.
-static void TestPartSketchRefusalText()
+static void TestElementSketchRefusalText()
 {
 	std::printf( "G3a-g: the refusal names the outline/view schema and every claim in it is true...\n" );
 	const std::string tmp = TempPath( "agentcrud_g3a_g.RISEscene" );
@@ -9121,7 +9133,7 @@ static void TestPartSketchRefusalText()
 	       r.message.find( "default front" ) != std::string::npos,
 	       "G3a-g and describes the optional `view` with its default" );
 	Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos &&
-	       r.message.find( "`primitive` for every part is a complete plan" ) != std::string::npos &&
+	       r.message.find( "`primitive` for every element is a complete plan" ) != std::string::npos &&
 	       r.message.find( "does not constrain" ) != std::string::npos,
 	       "G3a-g the G2 claims all survive the rewrite" );
 	Check( r.message.find( "2 more calls will be refused" ) != std::string::npos,
@@ -9131,9 +9143,9 @@ static void TestPartSketchRefusalText()
 	// example outline, no `view` (it said view is optional) -- and it must be
 	// accepted.  This is the assertion that catches a refusal drifting away
 	// from the dispatcher's real schema.
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> plan;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
 	plan.push_back( PlanEntry( "body", "primitive", "0 0; 1 0; 1 2; 0 2" ) );
-	const Agent::AgentSession::AgentPartPlanResult pr = sess->FilePartPlan( plan );
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
 	Check( pr.ok,
 	       "G3a-g MONEY ASSERTION: a plan built by following the refusal LITERALLY -- its own example "
 	       "outline, `primitive`, no view -- is accepted" );
@@ -9175,22 +9187,23 @@ static void TestPartSketchRefusalText()
 
 //! Mint a real, decodable PNG of a known size without adding a PNG encoder
 //! to this test: file a `parts`-entry plan and take its composite sketch
-//! echo, which is exactly kPartSketchCanvas x kPartSketchCanvas per tile.
+//! echo, which is exactly kElementSketchCanvas x kElementSketchCanvas per tile.
 //! One part -> 256x256, two parts -> 512x256, so a test can tell two canned
 //! images apart by their dimensions alone.
 static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
 {
 	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
 	if( !s ) return std::vector<unsigned char>();
-	std::vector<Agent::AgentSession::AgentPartPlanEntry> parts;
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> parts;
 	for( int i = 0; i < partCount; ++i ) {
-		Agent::AgentSession::AgentPartPlanEntry e;
-		e.part         = "canned" + std::to_string( i );
+		Agent::AgentSession::AgentBuildPlanEntry e;
+		e.element         = "canned" + std::to_string( i );
+		e.pieces.push_back( "piece" );
 		e.construction = "primitive";
 		e.outline      = "0 0; 1 0; 1 1; 0 1";
 		parts.push_back( e );
 	}
-	return s->FilePartPlan( parts ).compositePng;
+	return s->FileBuildPlan( parts ).compositePng;
 }
 
 //! A fake, host-installed generator -- the same seam AgentEvalRunner fills
@@ -9269,12 +9282,12 @@ static void TestImagineCapabilityRefusal()
 		// The gate is the shipped plan-only gate, word for word.
 		const Agent::AgentChunkResult r1 = sess->InsertChunk( kG2GeometryChunk );
 		Check( !r1.applied, "IM-a the geometry insert is still refused (the plan half)" );
-		Check( r1.message.find( "no part plan has been filed for this session." ) != std::string::npos,
+		Check( r1.message.find( "no build plan has been filed for this session." ) != std::string::npos,
 		       "IM-a MONEY ASSERTION: the refusal is the plan-only sentence -- an incapable provider "
 		       "sees byte-identical behaviour to before this slice" );
 		Check( r1.message.find( "imagine_scene" ) == std::string::npos,
 		       "IM-a and it does NOT name imagine_scene, which cannot help here" );
-		Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-a the plan files" );
+		Check( sess->FileBuildPlan( SamplePlan() ).ok, "IM-a the plan files" );
 		Check( sess->InsertChunk( kG2GeometryChunk ).applied,
 		       "IM-a MONEY ASSERTION: the plan ALONE clears the gate on an incapable provider" );
 	}
@@ -9388,7 +9401,7 @@ static void TestImagineProviderFailureDisarms()
 	Check( !refused.applied, "IM-c the plan half still gates" );
 	Check( refused.message.find( "imagine_scene" ) == std::string::npos,
 	       "IM-c and the refusal no longer names imagine_scene -- the requirement is gone" );
-	Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-c the plan files" );
+	Check( sess->FileBuildPlan( SamplePlan() ).ok, "IM-c the plan files" );
 	Check( sess->InsertChunk( kG2GeometryChunk ).applied,
 	       "IM-c MONEY ASSERTION: with the requirement disarmed the gate clears on the plan alone" );
 
@@ -9458,7 +9471,7 @@ static void TestImagineTwoConditionGate()
 
 		const Agent::AgentChunkResult r1 = sess->InsertChunk( kG2GeometryChunk );
 		Check( !r1.applied, "IM-d the first geometry insert is refused" );
-		Check( r1.message.find( "file_part_plan" ) != std::string::npos &&
+		Check( r1.message.find( "file_build_plan" ) != std::string::npos &&
 		       r1.message.find( "imagine_scene" ) != std::string::npos,
 		       "IM-d MONEY ASSERTION: on a CAPABLE provider the refusal names BOTH tools" );
 		Check( r1.message.find( "a plan is filed AND a scene target exists" ) != std::string::npos,
@@ -9469,16 +9482,16 @@ static void TestImagineTwoConditionGate()
 		       "IM-d the shared counter is unchanged -- one counter, one cap, both halves" );
 		Check( sess->ReadDocument() == docBefore, "IM-d the document is untouched" );
 
-		Check( sess->FilePartPlan( SamplePlan() ).ok, "IM-d the plan files" );
+		Check( sess->FileBuildPlan( SamplePlan() ).ok, "IM-d the plan files" );
 		const Agent::AgentChunkResult r2 = sess->InsertChunk( kG2GeometryChunk );
 		Check( !r2.applied,
 		       "IM-d MONEY ASSERTION: the plan ALONE does not clear the gate on a capable provider" );
 		Check( r2.message.find( "no imagined scene target has been created for this session." )
 		       != std::string::npos,
 		       "IM-d and the refusal now names ONLY what is still missing" );
-		Check( r2.message.find( "no part plan has been filed" ) == std::string::npos,
+		Check( r2.message.find( "no build plan has been filed" ) == std::string::npos,
 		       "IM-d -- it does not repeat a requirement already met" );
-		Check( sess->PartPlanGateRefusalCount() == 2,
+		Check( sess->BuildPlanGateRefusalCount() == 2,
 		       "IM-d both refusals came out of the SAME counter" );
 
 		Check( sess->ImagineScene( "a lit courtyard at dusk" ).ok, "IM-d the imagine succeeds" );
@@ -9500,9 +9513,9 @@ static void TestImagineTwoConditionGate()
 		Check( r4.applied,
 		       "IM-e MONEY ASSERTION: still exactly 3 refusals then a give-up -- two conditions did "
 		       "NOT double the cap, and no second counter was introduced" );
-		Check( sess->PartPlanGateGaveUp() && sess->PartPlanGateRefusalCount() == 3,
+		Check( sess->BuildPlanGateGaveUp() && sess->BuildPlanGateRefusalCount() == 3,
 		       "IM-e the give-up state is the shipped one" );
-		Check( r4.message.find( "part-plan gate: not satisfied after 3 refusals" ) != std::string::npos,
+		Check( r4.message.find( "build-plan gate: not satisfied after 3 refusals" ) != std::string::npos,
 		       "IM-e the census anchor for the give-up event is unchanged" );
 		Check( r4.message.find( "a filed plan or an imagined scene target" ) != std::string::npos,
 		       "IM-e MONEY ASSERTION: and the notice names what was ACTUALLY missing rather than "
@@ -9511,7 +9524,7 @@ static void TestImagineTwoConditionGate()
 
 	// (3) The launch switch governs BOTH halves -- there is no second flag.
 	{
-		Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+		Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 		sess->SetImageGenerator( MakeFakeImageGen( png ) );
 		Check( sess->ImagineCapable(), "IM-e the generator is still installed with the gate off" );
@@ -9556,7 +9569,7 @@ static void TestImagineSchemaErrorDisarmsNothing()
 		       "IM-f MONEY ASSERTION: a SCHEMA error does not disarm the imagine requirement -- only "
 		       "a PROVIDER failure does, so a mis-shaped call is not a way to switch the mechanism "
 		       "off" );
-		Check( rpc.Session()->PartPlanGateRefusalCount() == 0,
+		Check( rpc.Session()->BuildPlanGateRefusalCount() == 0,
 		       "IM-f and it does not burn a gate refusal either" );
 		Check( !rpc.Session()->HasSceneTarget(), "IM-f and no target was created" );
 	}
@@ -9581,15 +9594,597 @@ static void TestImagineSchemaErrorDisarmsNothing()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// S1 (2026-08-11): the STAGED BUILD PROTOCOL -- phases, attribution, the
+// cross-element refusal, finish/reopen, and the compose-phase creation
+// refusal.  Design: docs/agentic-redesign/78-staged-build-protocol.md.
+//
+// Every assertion below is about a MECHANISM, not a message: what the
+// phase is, what is attributed to which element, which call is refused
+// and whether the document moved.  The one text assertion (the refusal
+// names the active element and the escape verb) is there because a
+// refusal that does not say how to proceed is the over-refusal this
+// design's sec 2.3 exists to prevent.
+//----------------------------------------------------------------------
+
+//! A two-element plan with named pieces -- the shape the wizard probe
+//! produced, minus the wizard's eleven parts.
+static std::vector<Agent::AgentSession::AgentBuildPlanEntry> TwoElementPlan()
+{
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p;
+	Agent::AgentSession::AgentBuildPlanEntry a;
+	a.element = "wizard";
+	a.pieces.push_back( "robe" );
+	a.pieces.push_back( "hat" );
+	a.construction = "csg";
+	a.outline = "0 0; 2 0; 1.2 4; 0.8 4";
+	p.push_back( a );
+	Agent::AgentSession::AgentBuildPlanEntry b;
+	b.element = "terrain";
+	b.pieces.push_back( "ground" );
+	b.construction = "displaced";
+	b.outline = "0 0; 8 0; 8 1; 0 1";
+	p.push_back( b );
+	return p;
+}
+
+static std::string S1Box( const char* name )
+{
+	return std::string( "box_geometry\n{\n\tname " ) + name +
+		"\n\twidth 1.0\n\theight 1.0\n\tdepth 1.0\n}";
+}
+
+static void TestBuildProtocolPhasesAndAttribution()
+{
+	std::printf( "S1a: plan -> pieces -> compose, with everything created attributed to the active element...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	Check( sess->BuildProtocolActive(), "S1a the protocol is active on a gate-armed session" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Plan,
+	       "S1a a fresh session is in the PLAN phase" );
+	Check( sess->ActiveElement().empty(), "S1a and has no active element" );
+
+	// Filing enters PIECES with the FIRST element active.
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( TwoElementPlan() );
+	Check( pr.ok, "S1a the two-element plan files" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+	       "S1a filing enters the PIECES phase" );
+	Check( sess->ActiveElement() == "wizard", "S1a with the FIRST element active" );
+	Check( pr.message.find( "pieces phase" ) != std::string::npos &&
+	       pr.message.find( "\"wizard\" is the active element" ) != std::string::npos,
+	       "S1a and the filing echo states both facts" );
+
+	// A chunk created in the window is attributed to it.
+	Check( sess->InsertChunk( S1Box( "wizard_robe" ) ).applied, "S1a a geometry insert applies" );
+	Check( sess->ChunkElement( "wizard_robe" ) == "wizard",
+	       "S1a and is attributed to the ACTIVE element -- no naming convention, no volunteered field" );
+	Check( sess->ChunkElement( "sph" ).empty(),
+	       "S1a RED-PROVE: a PRE-EXISTING scene chunk carries no attribution" );
+
+	// finish_element: the facts, the piece NAMING check, and the advance.
+	const Agent::AgentSession::AgentFinishElementResult f1 = sess->FinishElement();
+	Check( f1.ok && f1.element == "wizard", "S1a finish_element closes the active element" );
+	Check( f1.chunks.size() == 1 && f1.chunks[0] == "wizard_robe",
+	       "S1a and reports exactly what was attributed to it" );
+	Check( f1.piecesNamed.size() == 1 && f1.piecesNamed[0] == "robe",
+	       "S1a the piece whose name appears in a chunk NAME is reported as named" );
+	Check( f1.piecesNotNamed.size() == 1 && f1.piecesNotNamed[0] == "hat",
+	       "S1a and the one that does not is reported as not named" );
+	Check( f1.message.find( "says nothing about what was built" ) != std::string::npos,
+	       "S1a MEASUREMENT HYGIENE: the result states outright that the piece check is a NAME check, "
+	       "never a judgement of the work" );
+	Check( f1.nextElement == "terrain" && f1.phase == std::string( "pieces" ),
+	       "S1a and the next element becomes active" );
+	Check( sess->ActiveElement() == "terrain", "S1a (observable through the session too)" );
+	Check( !f1.rendered && f1.isolateObject.empty(),
+	       "S1a with no OBJECT attributed there is no isolate render, and the result says so" );
+	Check( f1.message.find( "No renderable object" ) != std::string::npos,
+	       "S1a -- stated, never silently absent" );
+
+	// THE CROSS-ELEMENT REFUSAL.  An edit aimed at the wizard's chunk while
+	// terrain is active is refused, the document is byte-identical, and the
+	// refusal names both the active element and the way back.
+	const std::string docBefore = sess->ReadDocument();
+	Agent::AgentSetPatch patch;
+	patch.target = "wizard_robe";
+	patch.param  = "width";
+	patch.value  = "2.0";
+	const Agent::AgentPatchResult p1 = sess->ProposePatch( patch );
+	Check( !p1.applied && p1.status == "rejected", "S1a a patch into ANOTHER element's chunk is refused" );
+	Check( p1.message.find( "wizard" ) != std::string::npos &&
+	       p1.message.find( "terrain" ) != std::string::npos &&
+	       p1.message.find( "finish_element" ) != std::string::npos &&
+	       p1.message.find( "reopen_element" ) != std::string::npos,
+	       "S1a and the refusal names the owning element, the active element and BOTH escapes" );
+	Check( sess->ReadDocument() == docBefore, "S1a RED-PROVE: the document is byte-identical" );
+	Check( sess->BuildPhaseRefusalCount() == 1, "S1a one phase refusal is counted" );
+
+	const Agent::AgentChunkResult rm = sess->RemoveChunk( "wizard_robe" );
+	Check( !rm.applied, "S1a a REMOVE of another element's chunk is refused too (strictly more destructive)" );
+	Check( sess->ReadDocument() == docBefore, "S1a RED-PROVE: still byte-identical" );
+	Check( sess->BuildPhaseRefusalCount() == 2,
+	       "S1a and the remove counted against the SAME shared budget the patch does" );
+
+	// An UNATTRIBUTED chunk is editable from any window -- never refuse on
+	// a chunk no element created.
+	Agent::AgentSetPatch prePatch;
+	prePatch.target = "sph";
+	prePatch.param  = "radius";
+	prePatch.value  = "0.9";
+	Check( sess->ProposePatch( prePatch ).applied,
+	       "S1a an UNATTRIBUTED (pre-existing) chunk is freely editable inside a window" );
+
+	// reopen_element re-enters the wizard's window; the same patch now lands.
+	const Agent::AgentSession::AgentReopenElementResult ro = sess->ReopenElement( "wizard" );
+	Check( ro.ok && ro.element == "wizard" && ro.phase == std::string( "pieces" ),
+	       "S1a reopen_element re-enters the element's window" );
+	Check( ro.chunks.size() == 1 && ro.chunks[0] == "wizard_robe",
+	       "S1a and reports what is already attributed to it" );
+	Check( sess->ProposePatch( patch ).applied,
+	       "S1a MONEY ASSERTION: the identical patch APPLIES once its element is active again" );
+	Check( sess->BuildPhaseRefusalCount() == 2,
+	       "S1a and reopening cost no refusal budget (the count is still the two spent above)" );
+
+	// Finish both elements -> COMPOSE.
+	Check( sess->FinishElement().ok, "S1a the reopened element finishes again" );
+	Check( sess->ActiveElement() == "terrain", "S1a advancing lands on the still-unfinished element" );
+	const Agent::AgentSession::AgentFinishElementResult f3 = sess->FinishElement();
+	Check( f3.ok && f3.nextElement.empty() && f3.phase == std::string( "compose" ),
+	       "S1a finishing the LAST element enters the compose phase" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "S1a (observable through the session too)" );
+
+	// COMPOSE: creating geometry is refused and names the escape; editing
+	// any element's chunks, and creating a LIGHT, are allowed.
+	const std::string docCompose = sess->ReadDocument();
+	const Agent::AgentChunkResult composeInsert = sess->InsertChunk( S1Box( "late_box" ) );
+	Check( !composeInsert.applied, "S1a creating geometry in the compose phase is refused" );
+	Check( composeInsert.message.find( "compose phase" ) != std::string::npos &&
+	       composeInsert.message.find( "reopen_element" ) != std::string::npos,
+	       "S1a and the refusal states what compose is for and names reopen_element" );
+	Check( sess->ReadDocument() == docCompose, "S1a RED-PROVE: the document is byte-identical" );
+	Check( sess->ProposePatch( patch ).applied,
+	       "S1a but editing ANY element's chunk is allowed in compose (composition adjusts parts)" );
+	Check( sess->InsertChunk( "omni_light\n{\n\tname s1_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
+	       "S1a and a LIGHT can still be created there -- lighting is compose's stated job" );
+
+	// The escape really works.
+	Check( sess->ReopenElement( "terrain" ).ok, "S1a reopen_element is legal FROM compose" );
+	Check( sess->InsertChunk( S1Box( "terrain_ground" ) ).applied,
+	       "S1a MONEY ASSERTION: geometry creation is allowed again inside the reopened window" );
+	Check( sess->ChunkElement( "terrain_ground" ) == "terrain",
+	       "S1a and the new chunk is attributed to the reopened element" );
+}
+
+static void TestBuildProtocolExemptionsAndGiveUp()
+{
+	std::printf( "S1b: light/camera edits are never refused, and the phase refusals give up after 3...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1b fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1b the plan files" );
+
+	// A light created inside the wizard's window IS attributed to it...
+	Check( sess->InsertChunk( "omni_light\n{\n\tname s1b_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
+	       "S1b a light created in the wizard's window applies" );
+	Check( sess->ChunkElement( "s1b_key" ) == "wizard", "S1b and is attributed to it" );
+	Check( sess->InsertChunk( S1Box( "wizard_robe" ) ).applied, "S1b so does a geometry chunk" );
+	Check( sess->FinishElement().ok, "S1b the wizard finishes; terrain becomes active" );
+
+	// ...but editing it from ANOTHER element's window is NOT refused: the
+	// registry category (Light) is exempt in every phase.  Over-refusal is
+	// the failure mode this design fears, and a model that cannot light its
+	// own isolated element cannot see it.
+	Agent::AgentSetPatch lightPatch;
+	lightPatch.target = "s1b_key";
+	lightPatch.param  = "power";
+	lightPatch.value  = "60";
+	Check( sess->ProposePatch( lightPatch ).applied,
+	       "S1b MONEY ASSERTION: a LIGHT attributed to another element is still editable -- "
+	       "the category exemption, not an accident of attribution" );
+	Check( sess->BuildPhaseRefusalCount() == 0, "S1b and it cost no refusal" );
+
+	// The GIVE-UP: three cross-element refusals, then the fourth proceeds
+	// with a factual notice and nothing is refused for this reason again.
+	Agent::AgentSetPatch patch;
+	patch.target = "wizard_robe";
+	patch.param  = "width";
+	patch.value  = "2.0";
+	for( int i = 1; i <= 3; ++i ) {
+		const Agent::AgentPatchResult r = sess->ProposePatch( patch );
+		Check( !r.applied, "S1b cross-element refusal " + std::to_string( i ) );
+		Check( sess->BuildPhaseRefusalCount() == i, "S1b and the counter is exactly " + std::to_string( i ) );
+		Check( !sess->BuildPhaseGaveUp(), "S1b and the phase rules have not given up yet" );
+	}
+	const Agent::AgentPatchResult gaveUp = sess->ProposePatch( patch );
+	Check( gaveUp.applied, "S1b the FOURTH call is let through rather than refused a fourth time" );
+	Check( sess->BuildPhaseGaveUp(), "S1b and the phase rules have given up for this session" );
+	Check( gaveUp.message.find( "build phase: not satisfied after 3 refusals" ) != std::string::npos,
+	       "S1b the give-up is VISIBLE in the payload a trajectory census reads, not only in a log" );
+	Check( sess->BuildPhaseRefusalCount() == 3,
+	       "S1b the give-up is not counted as a fourth refusal" );
+	Check( sess->ProposePatch( patch ).applied, "S1b and nothing is refused for this reason afterwards" );
+	// Attribution and the transitions keep working after a give-up: the
+	// give-up stops the REFUSING, not the measuring.
+	Check( sess->InsertChunk( S1Box( "terrain_rock" ) ).applied, "S1b inserts still apply" );
+	Check( sess->ChunkElement( "terrain_rock" ) == "terrain",
+	       "S1b and are still attributed -- a give-up disarms the refusals, not the census" );
+	Check( sess->FinishElement().ok, "S1b finish_element still advances after a give-up" );
+}
+
+static void TestBuildProtocolIsolateRenderAndSwitchOff()
+{
+	std::printf( "S1c: finish_element returns the element's isolate render; --agent-build-protocol=off is total...\n" );
+	{
+		const std::string tmp = TempPath( "agentcrud_s1c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S1c fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1c the plan files" );
+
+		// A whole object -- geometry plus the standard_object that makes it
+		// renderable -- so the payload-fact render has something to isolate.
+		std::vector<std::string> chunks;
+		chunks.push_back( S1Box( "wizard_robe" ) );
+		chunks.push_back( "standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_robe\n\tmaterial mat_diffuse\n}" );
+		const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+		Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1c both chunks land" );
+		Check( sess->ChunkElement( "wizard_obj" ) == "wizard",
+		       "S1c a BATCH insert attributes every chunk it lands, not just the first" );
+
+		const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+		Check( f.ok, "S1c finish_element succeeds" );
+		Check( f.isolateObject == "wizard_obj",
+		       "S1c and picks the OBJECT attributed to the element (the geometry chunk is not one)" );
+		Check( f.rendered && !f.png.empty() && f.width > 0 && f.height > 0,
+		       "S1c MONEY ASSERTION: the result carries a real isolate render -- a look the model "
+		       "did not have to ask for" );
+		Check( f.width <= Agent::kAgentSurfaceMaxRenderEdge &&
+		       f.height <= Agent::kAgentSurfaceMaxRenderEdge,
+		       "S1c sized by the agent-surface cap, exactly like a model-issued render" );
+	}
+	// The switch: with the protocol off, filing changes no phase, nothing is
+	// attributed, and no phase refusal can fire -- the session behaves
+	// exactly as it did before this slice.
+	{
+		const std::string tmp = TempPath( "agentcrud_s1d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S1c/off fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+
+		Check( !sess->BuildProtocolActive(), "S1c/off the protocol is inactive for this session" );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1c/off the plan still files (the gate still clears)" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Plan,
+		       "S1c/off but no phase transition happens" );
+		Check( sess->InsertChunk( S1Box( "off_box" ) ).applied, "S1c/off a geometry insert applies" );
+		Check( sess->ChunkElement( "off_box" ).empty(), "S1c/off and nothing is attributed" );
+		const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+		Check( !f.ok && f.message.find( "protocol is off" ) != std::string::npos,
+		       "S1c/off finish_element does nothing and says why" );
+		Check( !sess->ReopenElement( "wizard" ).ok, "S1c/off reopen_element does nothing either" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "S1c/off no phase refusal can fire" );
+	}
+	// And the OTHER switch: the plan gate's own flag turns the phases off
+	// with it, because the phases are defined by the plan it produces.
+	{
+		const std::string tmp = TempPath( "agentcrud_s1e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S1c/gate-off fixture loads" );
+		if( !pJob ) return;
+		// The binary's own default is already gate-off (see main), so a plain
+		// WrapJob is the gate-off session.
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Check( !sess->BuildProtocolActive(),
+		       "S1c/gate-off --agent-part-plan-gate=off disables the phase machinery too" );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1c/gate-off the plan files" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Plan,
+		       "S1c/gate-off and no phase transition happens" );
+	}
+}
+
+//----------------------------------------------------------------------
+// S1 fix-round (2026-08-11): the phase-refusal wiring at the call sites
+// the first round left unproven, plus the erased-chunk attribution drop.
+//
+// The refusals above are exercised through propose_patch, insert_chunk
+// and remove_chunk.  The other four arms -- insert_chunks, the two
+// geometry scaffolds and remove_chunks -- were wired but never asserted,
+// and each carries its own hand-written refusal shape (a per-element fan
+// out, a pre-commit `ok=false` return, an all-or-nothing batch verdict),
+// so "the shared helper works" proves nothing about them.  For each:
+// the refusal names the RIGHT verb, the document is byte-identical, and
+// the SHARED counter moved by exactly one -- once per CALL, not once per
+// chunk in the batch.
+//----------------------------------------------------------------------
+static void TestBuildProtocolRefusalCallSites()
+{
+	std::printf( "S1e: the phase refusal at insert_chunks / both scaffolds / remove_chunks...\n" );
+
+	// ---- CROSS-ELEMENT arm: replace_geometry_scaffold and remove_chunks.
+	// Two refusals in one session, under the cap of three.
+	{
+		const std::string tmp = TempPath( "agentcrud_s1e_cross.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S1e/cross fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1e/cross the plan files" );
+
+		std::vector<std::string> chunks;
+		chunks.push_back( S1Box( "wz_geo" ) );
+		chunks.push_back( "standard_object\n{\n\tname wz_obj\n\tgeometry wz_geo\n\tmaterial mat_diffuse\n}" );
+		const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+		Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1e/cross the wizard's object lands" );
+		Check( sess->FinishElement().ok, "S1e/cross the wizard finishes; terrain becomes active" );
+
+		const std::string docBefore = sess->ReadDocument();
+
+		// remove_chunks -- the BATCH remove's cross-element arm.
+		const Agent::AgentSession::AgentRemoveBatchResult rb =
+			sess->RemoveChunks( std::vector<std::string>( 1, std::string( "wz_geo" ) ) );
+		Check( !rb.applied && rb.status == "rejected",
+		       "S1e/cross remove_chunks into ANOTHER element's chunk is refused" );
+		Check( rb.message.find( "remove_chunks refused" ) != std::string::npos,
+		       "S1e/cross and the refusal names remove_chunks, not the verb whose helper it shares" );
+		Check( rb.targetResults.size() == 1 && !rb.targetResults[0].applied,
+		       "S1e/cross the per-target verdict is fanned out too" );
+		Check( sess->ReadDocument() == docBefore, "S1e/cross RED-PROVE: the document is byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "S1e/cross the SHARED counter moved by exactly one" );
+
+		// replace_geometry_scaffold -- its cross-element arm (arm (a)).
+		const Agent::AgentSession::AgentGeometryScaffoldResult rg =
+			sess->ReplaceGeometryScaffold( "wz_obj", "sdf_column", "s1ecross", 1.0, 0.5, 1.0 );
+		Check( !rg.ok, "S1e/cross replace_geometry_scaffold on ANOTHER element's object is refused" );
+		Check( rg.message.find( "replace_geometry_scaffold refused" ) != std::string::npos &&
+		       rg.message.find( "terrain" ) != std::string::npos,
+		       "S1e/cross and it names the verb and the active element" );
+		Check( sess->ReadDocument() == docBefore, "S1e/cross RED-PROVE: still byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "S1e/cross and the counter is exactly two" );
+		Check( !sess->BuildPhaseGaveUp(), "S1e/cross with the budget not yet exhausted" );
+	}
+
+	// ---- COMPOSE arm: insert_chunks and both scaffolds.  Three refusals in
+	// one session -- exactly the cap, so the give-up must NOT have fired.
+	{
+		const std::string tmp = TempPath( "agentcrud_s1e_compose.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S1e/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1e/compose the plan files" );
+		Check( sess->FinishElement().ok && sess->FinishElement().ok,
+		       "S1e/compose both elements finish" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "S1e/compose the session is in the compose phase" );
+
+		const std::string docBefore = sess->ReadDocument();
+
+		// insert_chunks -- TWO geometry chunks in ONE call.  The whole batch
+		// is refused, and it costs ONE refusal, not one per chunk.
+		std::vector<std::string> batch;
+		batch.push_back( S1Box( "s1e_cb1" ) );
+		batch.push_back( S1Box( "s1e_cb2" ) );
+		const std::vector<Agent::AgentChunkResult> res = sess->InsertChunks( batch );
+		Check( res.size() == 2 && !res[0].applied && !res[1].applied,
+		       "S1e/compose the WHOLE insert_chunks batch is refused, not half-landed" );
+		Check( res[0].message.find( "insert_chunks refused" ) != std::string::npos &&
+		       res[0].message.find( "reopen_element" ) != std::string::npos,
+		       "S1e/compose and the refusal names insert_chunks and the escape" );
+		Check( sess->ReadDocument() == docBefore, "S1e/compose RED-PROVE: the document is byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "S1e/compose MONEY ASSERTION: a two-chunk batch costs ONE refusal -- a batching caller "
+		       "spends the phase budget at the same rate a singular one does" );
+
+		// insert_geometry_scaffold -- unconditionally geometry-creating.
+		const Agent::AgentSession::AgentGeometryScaffoldResult gs =
+			sess->InsertGeometryScaffold( "sdf_column", "s1egs", 1.0, 0.5, 1.0 );
+		Check( !gs.ok, "S1e/compose insert_geometry_scaffold is refused in the compose phase" );
+		Check( gs.message.find( "insert_geometry_scaffold refused" ) != std::string::npos &&
+		       gs.message.find( "compose phase" ) != std::string::npos,
+		       "S1e/compose and the refusal names the verb and states what compose is for" );
+		Check( sess->ReadDocument() == docBefore, "S1e/compose RED-PROVE: still byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "S1e/compose the counter is exactly two" );
+
+		// replace_geometry_scaffold -- its COMPOSE arm (arm (b)).  Aimed at a
+		// PRE-EXISTING object, so the cross-element arm cannot be what fires.
+		const Agent::AgentSession::AgentGeometryScaffoldResult rg =
+			sess->ReplaceGeometryScaffold( "obj_sph", "sdf_column", "s1ergs", 1.0, 0.5, 1.0 );
+		Check( !rg.ok, "S1e/compose replace_geometry_scaffold is refused in the compose phase too" );
+		Check( rg.message.find( "replace_geometry_scaffold refused" ) != std::string::npos &&
+		       rg.message.find( "compose phase" ) != std::string::npos,
+		       "S1e/compose and it is the COMPOSE refusal, on an UNATTRIBUTED target" );
+		Check( sess->ReadDocument() == docBefore, "S1e/compose RED-PROVE: still byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 3, "S1e/compose the counter is exactly three" );
+		Check( !sess->BuildPhaseGaveUp(),
+		       "S1e/compose and three refusals is the cap, not the give-up -- the FOURTH gives up" );
+	}
+}
+
+//----------------------------------------------------------------------
+// S1 fix-round (2026-08-11, P1): replace_geometry_scaffold ERASES the
+// orphaned previous geometry chunk.  Its attribution must go with it.
+//
+// A surviving entry can do exactly one thing: CheckElementWindowForEdit_
+// is a pure attribution lookup that runs BEFORE any document read, so a
+// later edit naming the erased chunk comes back as a cross-element
+// refusal for a chunk that DOES NOT EXIST -- steering the model to
+// reopen_element on something no window can fix, and spending one of the
+// three shared refusal slots to do it.
+//----------------------------------------------------------------------
+static void TestBuildProtocolErasedGeometryAttribution()
+{
+	std::printf( "S1f: replace_geometry_scaffold drops the erased chunk's attribution...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1f fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1f the plan files" );
+
+	std::vector<std::string> chunks;
+	chunks.push_back( S1Box( "wz_geo" ) );
+	chunks.push_back( "standard_object\n{\n\tname wz_obj\n\tgeometry wz_geo\n\tmaterial mat_diffuse\n}" );
+	const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
+	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1f the wizard's object lands" );
+	Check( sess->ChunkElement( "wz_geo" ) == "wizard", "S1f and the geometry is attributed to the wizard" );
+
+	const Agent::AgentSession::AgentGeometryScaffoldResult rg =
+		sess->ReplaceGeometryScaffold( "wz_obj", "sdf_column", "s1fnew", 1.0, 0.5, 1.0 );
+	Check( rg.ok && rg.status == "applied", "S1f the form revision applies" );
+	Check( rg.previousGeometryRemoved && rg.previousGeometryName == "wz_geo",
+	       "S1f and it ERASED the now-unreferenced previous geometry" );
+	Check( sess->ChunkElement( "wz_geo" ).empty(),
+	       "S1f MONEY ASSERTION: the erased chunk's attribution went with it -- an entry naming a "
+	       "chunk that no longer exists can only refuse a later edit unfixably" );
+	Check( !sess->ChunkElement( rg.geometryName ).empty(),
+	       "S1f while the REPLACEMENT geometry is attributed to the active element" );
+
+	// The consequence, stated as behaviour: from another element's window, an
+	// edit naming the erased chunk fails on RESOLUTION (it is not there), not
+	// on attribution -- and costs no phase refusal.
+	Check( sess->FinishElement().ok, "S1f the wizard finishes; terrain becomes active" );
+	Agent::AgentSetPatch ghost;
+	ghost.target = "wz_geo";
+	ghost.param  = "width";
+	ghost.value  = "2.0";
+	const Agent::AgentPatchResult gp = sess->ProposePatch( ghost );
+	Check( !gp.applied, "S1f a patch naming the erased chunk still fails" );
+	Check( gp.message.find( "was created while the element" ) == std::string::npos,
+	       "S1f RED-PROVE: but NOT as a cross-element refusal -- the model is not sent to "
+	       "reopen_element for a chunk no window contains" );
+	Check( sess->BuildPhaseRefusalCount() == 0,
+	       "S1f and it spent none of the three shared refusal slots" );
+}
+
+static void TestBuildProtocolWireShape()
+{
+	std::printf( "S1d: finish_element / reopen_element over the wire...\n" );
+	const std::string tmp = TempPath( "agentcrud_s1wire.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S1d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"wizard\",\"pieces\":[\"robe\",\"hat\"],"
+			"\"construction\":\"csg\",\"outline\":\"0 0; 2 0; 1.2 4; 0.8 4\"},"
+			"{\"element\":\"terrain\",\"pieces\":[\"ground\"],"
+			"\"construction\":\"displaced\",\"outline\":\"0 0; 8 0; 8 1; 0 1\"}]}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d file_build_plan returns a result object" );
+		Check( result.get( "phase" ).asString() == "pieces" &&
+		       result.get( "activeElement" ).asString() == "wizard",
+		       "S1d the filing result carries the phase and the active element" );
+		Check( result.get( "elements" ).at( 0 ).get( "pieces" ).isArray() &&
+		       result.get( "elements" ).at( 0 ).get( "pieces" ).size() == 2,
+		       "S1d and echoes each element's piece list" );
+	}
+	// pieces is REQUIRED on the wire, and its absence is a -32602 -- a SCHEMA
+	// defect, which by contract never touches the gate's refusal counter.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"a\",\"construction\":\"csg\",\"outline\":\"0 0; 1 0; 1 1\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos &&
+		       resp.find( "elements[0].pieces" ) != std::string::npos,
+		       "S1d a MISSING `pieces` is -32602 naming the index and the field" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"finish_element\",\"params\":{}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d finish_element returns a result object" );
+		Check( result.get( "ok" ).asBool() && result.get( "element" ).asString() == "wizard",
+		       "S1d it closes the active element" );
+		Check( result.get( "phase" ).asString() == "pieces" &&
+		       result.get( "nextElement" ).asString() == "terrain",
+		       "S1d and reports the phase and the next element" );
+		Check( result.get( "piecesNotNamed" ).isArray() &&
+		       result.get( "piecesNotNamed" ).size() == 2,
+		       "S1d with the piece checklist reported factually (nothing was built, so neither is named)" );
+		Check( !result.has( "headVersion" ),
+		       "S1d there is NO headVersion -- the call does not touch the document" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"reopen_element\",\"params\":{\"element\":\"nope\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d an unknown element is a RESULT, not an error envelope" );
+		Check( !result.get( "ok" ).asBool() &&
+		       result.get( "message" ).asString().find( "\"wizard\"" ) != std::string::npos,
+		       "S1d ok:false, listing the filed element names -- a state mismatch, not a schema defect" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"reopen_element\",\"params\":{}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "S1d a MISSING `element` is a param-shape defect: -32602" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"reopen_element\",\"params\":{\"element\":\"wizard\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d reopen_element returns a result object" );
+		Check( result.get( "ok" ).asBool() && result.get( "phase" ).asString() == "pieces" &&
+		       result.get( "previousPhase" ).asString() == "pieces",
+		       "S1d and reports both the previous and the new phase" );
+	}
+	// S1 fix-round (2026-08-11): the CREATION verbs carry the attribution on
+	// the wire.  Before this, "which chunks belong to element X" reached a
+	// trajectory ONLY through finish_element's result -- so a run that ends
+	// mid-element stated its attributed set nowhere at all, and design sec 4
+	// item 2 ("is the wizard window actually spent on the wizard") is this
+	// slice's central measurement.  The wizard is active again after the
+	// reopen above.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
+			"\"box_geometry\\n{\\n\\tname s1d_probe\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d insert_chunk returns a result object" );
+		Check( result.get( "applied" ).asBool( false ), "S1d the insert applies inside the window" );
+		Check( result.get( "element" ).asString() == "wizard",
+		       "S1d MONEY ASSERTION: the chunk result names the element it was attributed to, so a run "
+		       "that never reaches finish_element still states its attribution on the wire" );
+	}
+	// ...and it is OMITTED, not empty, when there is no attribution: a
+	// REMOVE carries no element (the attribution is dropped with the chunk),
+	// which is exactly the state that makes a chunk freely editable.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"remove_chunk\",\"params\":"
+			"{\"target\":\"s1d_probe\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S1d remove_chunk returns a result object" );
+		Check( result.get( "applied" ).asBool( false ), "S1d the remove applies" );
+		Check( !result.has( "element" ),
+		       "S1d RED-PROVE: the `element` key is OMITTED where there is no attribution -- an existing "
+		       "caller's response shape is unchanged" );
+	}
+}
+
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk; R1a: remove_chunks) ===\n" );
 
 	TestHeadlessInsert();
@@ -9635,26 +10230,26 @@ int main()
 	TestMaterialScaffoldNameLengthCap();
 	TestMaterialScaffoldNameCollision();
 	TestMaterialScaffoldProposalMode();
-	TestPartPlanGateRefusesUntilFiledCapped();
-	TestPartPlanFiledMidRefusalSequenceClearsGate();
-	TestPartPlanFiledFirstNeverIntercepts();
-	TestPartPlanGateEveryTriggeringVerb();
-	TestPartPlanGateIgnoresNonGeometry();
-	TestPartPlanAnyPlanAcceptedAndNonBinding();
-	TestPartPlanGateDisableSwitch();
-	TestPartPlanGatePatchArm();        // G2 fix-round (2026-08-10): the value-splice bypass
-	TestPartPlanGateStagedResolve();   // G2 fix-round (2026-08-10): the staged/resolve re-check
-	TestPartPlanWireShape();
+	TestBuildPlanGateRefusesUntilFiledCapped();
+	TestBuildPlanFiledMidRefusalSequenceClearsGate();
+	TestBuildPlanFiledFirstNeverIntercepts();
+	TestBuildPlanGateEveryTriggeringVerb();
+	TestBuildPlanGateIgnoresNonGeometry();
+	TestBuildPlanAnyPlanAcceptedAndNonBinding();
+	TestBuildPlanGateDisableSwitch();
+	TestBuildPlanGatePatchArm();        // G2 fix-round (2026-08-10): the value-splice bypass
+	TestBuildPlanGateStagedResolve();   // G2 fix-round (2026-08-10): the staged/resolve re-check
+	TestBuildPlanWireShape();
 	// G3a (2026-08-10): the sketch artifact -- schema v2.
-	TestPartSketchRasterizer();
-	TestPartSketchDeterminism();
-	TestPartSketchWireRejections();
+	TestElementSketchRasterizer();
+	TestElementSketchDeterminism();
+	TestElementSketchWireRejections();
 	// G3a fix-round (2026-08-10): FIX 1 (subnormal-extent floor) and FIX 3
 	// (multi-row/truncation composite tiling + accept boundaries).
-	TestPartSketchSmallButSaneExtentStillRasterizes();
-	TestPartSketchCompositeTilingAndAcceptBoundaries();
-	TestPartSketchReplaceSemantics();
-	TestPartSketchRefusalText();
+	TestElementSketchSmallButSaneExtentStillRasterizes();
+	TestElementSketchCompositeTilingAndAcceptBoundaries();
+	TestElementSketchReplaceSemantics();
+	TestElementSketchRefusalText();
 	// Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target.
 	TestImagineCapabilityRefusal();
 	TestImagineSuccessAndReplace();
@@ -9662,6 +10257,13 @@ int main()
 	TestImagineTwoConditionGate();
 	TestImagineSchemaErrorDisarmsNothing();
 	TestImaginePerSessionSpendCap();
+	// S1 (2026-08-11): the staged build protocol.
+	TestBuildProtocolPhasesAndAttribution();
+	TestBuildProtocolExemptionsAndGiveUp();
+	TestBuildProtocolIsolateRenderAndSwitchOff();
+	TestBuildProtocolRefusalCallSites();
+	TestBuildProtocolErasedGeometryAttribution();
+	TestBuildProtocolWireShape();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();
 	TestGeometryScaffoldAspectFlow();

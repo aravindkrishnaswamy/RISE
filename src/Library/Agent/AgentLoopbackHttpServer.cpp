@@ -343,18 +343,27 @@ namespace
 			outToolName = name;
 			return true;
 		}
-		// G2 (2026-08-10): file_part_plan is DELIBERATELY not on this list.
+		// G2 (2026-08-10): file_build_plan is DELIBERATELY not on this list.
 		// It changes nothing in the document (no chunk, no param, no head
 		// bump), so it carries none of the leverage this limiter meters --
-		// and it is the ONLY way to disarm the part-plan gate, so rate-
+		// and it is the ONLY way to disarm the build-plan gate, so rate-
 		// limiting it could leave a client that hit its mutation budget
 		// unable to unblock itself.  Read-safe here, exactly as in
 		// AgentRpc.cpp's IsReadSafeVerb.
 		//
+		// S1 (2026-08-11): `finish_element` and `reopen_element` are
+		// likewise DELIBERATELY not on this list, on the same three counts.
+		// Neither changes anything in the document (they move per-session
+		// phase state; finish_element additionally RENDERS, and `render` is
+		// not metered here either); reopen_element is the ONLY escape from
+		// the compose phase's creation refusal, so metering it could strand a
+		// client that spent its mutation budget; and both are read-safe in
+		// IsReadSafeVerb for those same reasons.
+		//
 		// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
 		// DELIBERATELY not on this list, on the same three counts.  It
 		// changes nothing in the document; on a capable provider it is the
-		// OTHER way to disarm the part-plan gate, so metering it could
+		// OTHER way to disarm the build-plan gate, so metering it could
 		// strand a client that spent its mutation budget; and it is
 		// read-safe in IsReadSafeVerb for those same two reasons.  Its own
 		// cost -- one provider round trip per call -- is bounded by the

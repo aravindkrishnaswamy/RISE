@@ -319,7 +319,7 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 24 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 27 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -642,19 +642,37 @@ namespace RISE
 					tools.push_back( MakeTool( "insert_material_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
-				// file_part_plan (G2, 2026-08-10) -- READ-SAFE (no autonomy
-				// note of any kind: it is on IsReadSafeVerb, so it dispatches
-				// under Read and Propose exactly as under Commit).
+				// file_build_plan (G2, 2026-08-10; S1 schema v3, 2026-08-11) --
+				// READ-SAFE (no autonomy note of any kind: it is on
+				// IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit).
 				{
 					JsonValue entryProps = JsonValue::MakeObject();
-					entryProps.set( "part", StringProp(
-						"Required. The name of this part, in your own words (e.g. \"left wing\", \"lamp base\")." ) );
+					entryProps.set( "element", StringProp(
+						"Required. The name of this element, in your own words (e.g. \"wizard\", \"terrain\")." ) );
+					// S1 (2026-08-11): the REQUIRED piece list.  Declarative --
+					// nothing validates, gates or scores the names; finish_element
+					// reports which of them appear in a created chunk's NAME.
+					{
+						JsonValue piecesProp = JsonValue::MakeObject();
+						piecesProp.set( "type", JsonValue::MakeString( "array" ) );
+						piecesProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+						piecesProp.set( "maxItems", JsonValue::MakeNumber(
+							static_cast<double>( AgentSession::kBuildPlanMaxPiecesPerElement ) ) );
+						piecesProp.set( "items", StringProp( "" ) );
+						piecesProp.set( "description", JsonValue::MakeString(
+							"Required, at least one -- the pieces this element breaks down into, in your own "
+							"words (e.g. [\"robe\",\"hat\",\"beard\",\"staff\"]). Any names are accepted and "
+							"nothing checks what they say. They are a declaration, not a commitment: nothing "
+							"requires a chunk per piece and no piece is separately gated." ) );
+						entryProps.set( "pieces", piecesProp );
+					}
 					JsonValue construction = StringProp(
 						"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh." );
 					{
 						JsonValue enumArr = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < AgentSession::kPartPlanConstructionCount; ++i )
-							enumArr.push_back( JsonValue::MakeString( AgentSession::kPartPlanConstructionValues[i] ) );
+						for( std::size_t i = 0; i < AgentSession::kBuildPlanConstructionCount; ++i )
+							enumArr.push_back( JsonValue::MakeString( AgentSession::kBuildPlanConstructionValues[i] ) );
 						construction.set( "enum", enumArr );
 					}
 					entryProps.set( "construction", construction );
@@ -664,7 +682,7 @@ namespace RISE
 					// (AgentChatCodecs.cpp kToolDefs) -- SourceHygieneTest's
 					// G2/G3a parity scan is what pins the two together.
 					entryProps.set( "outline", StringProp(
-						"Required. A closed 2D outline of this part as semicolon-separated \"x y\" points, "
+						"Required. A closed 2D outline of this element as semicolon-separated \"x y\" points, "
 						"at least 3 of them -- e.g. \"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\". The last point "
 						"joins back to the first automatically. Units and origin are yours; the shape is "
 						"scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled "
@@ -674,58 +692,116 @@ namespace RISE
 						"Optional, default \"front\". Which axis-aligned direction this outline is drawn from." );
 					{
 						JsonValue viewEnum = JsonValue::MakeArray();
-						for( std::size_t i = 0; i < AgentSession::kPartPlanViewCount; ++i )
-							viewEnum.push_back( JsonValue::MakeString( AgentSession::kPartPlanViewValues[i] ) );
+						for( std::size_t i = 0; i < AgentSession::kBuildPlanViewCount; ++i )
+							viewEnum.push_back( JsonValue::MakeString( AgentSession::kBuildPlanViewValues[i] ) );
 						view.set( "enum", viewEnum );
 					}
 					entryProps.set( "view", view );
-					entryProps.set( "note", StringProp( "Optional free text about this part." ) );
+					entryProps.set( "note", StringProp( "Optional free text about this element." ) );
 					std::vector<std::string> entryRequired;
-					entryRequired.push_back( "part" ); entryRequired.push_back( "construction" );
-					entryRequired.push_back( "outline" );
+					entryRequired.push_back( "element" ); entryRequired.push_back( "pieces" );
+					entryRequired.push_back( "construction" ); entryRequired.push_back( "outline" );
 
-					JsonValue partsProp = JsonValue::MakeObject();
-					partsProp.set( "type", JsonValue::MakeString( "array" ) );
-					partsProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					JsonValue elementsProp = JsonValue::MakeObject();
+					elementsProp.set( "type", JsonValue::MakeString( "array" ) );
+					elementsProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
 					// G3a: the resource bound, machine-readable rather than
 					// only enforced at the dispatcher.
-					partsProp.set( "maxItems", JsonValue::MakeNumber(
-						static_cast<double>( AgentSession::kPartPlanMaxParts ) ) );
-					partsProp.set( "items", ObjectProp( "", entryProps, entryRequired ) );
-					partsProp.set( "description", JsonValue::MakeString(
-						"Required, at least one entry -- the parts of the subject you are about to build." ) );
+					elementsProp.set( "maxItems", JsonValue::MakeNumber(
+						static_cast<double>( AgentSession::kBuildPlanMaxElements ) ) );
+					elementsProp.set( "items", ObjectProp( "", entryProps, entryRequired ) );
+					elementsProp.set( "description", JsonValue::MakeString(
+						"Required, at least one entry -- the elements of the scene you are about to build." ) );
 
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "parts", partsProp );
+					props.set( "elements", elementsProp );
 					std::vector<std::string> required;
-					required.push_back( "parts" );
+					required.push_back( "elements" );
 
 					const std::string desc =
-						"File the part plan for the thing you are building: one entry per part, each naming how "
-						"that part will be constructed AND carrying a 2D outline sketch of it. On a session "
+						"File the build plan for the scene you are building: one entry per ELEMENT, each broken "
+						"into named PIECES, each naming how it will be constructed AND carrying a 2D outline "
+						"sketch of it. On a session "
 						"that has not filed one, EVERY call that "
 						"creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
 						"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
 						"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
-						"intercepting for the rest of the session. `construction` is REQUIRED per part and "
+						"intercepting for the rest of the session. `pieces` is REQUIRED per element: at least "
+						"one name, in your own words; any names are accepted and nothing checks them. "
+						"`construction` is REQUIRED per element and "
 						"must be one of exactly: \"primitive\" (a single built-in shape chunk), \"csg\" (a "
 						"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
 						"profile swept along a path), \"chain\" (several shapes blended into one form), "
 						"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
-						"chunk). `outline` is REQUIRED per part: a closed 2D polygon of at least 3 \"x y\" "
+						"chunk). `outline` is REQUIRED per element: a closed 2D polygon of at least 3 \"x y\" "
 						"points separated by semicolons, in any units you like (it is scaled to fit its own "
 						"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
 						"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
 						"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
-						"construction answer is accepted, including \"primitive\" for every part. The plan "
+						"construction answer is accepted, including \"primitive\" for every element. The plan "
 						"is NOT binding: declaring one construction and then authoring a different chunk "
-						"kind is allowed and is never refused. Filing does not change the document -- no chunk, no head "
+						"kind is allowed and is never refused, and no piece has to become a chunk. "
+						"FILING STARTS THE BUILD: the session enters the PIECES phase with the FIRST element "
+						"active, every chunk created while an element is active is recorded against it, "
+						"finish_element closes it and moves to the next, and after the last one the session "
+						"enters the COMPOSE phase. An edit aimed at a chunk recorded against a DIFFERENT "
+						"element is refused (up to 3 times, then the phase rules stop intercepting); chunks "
+						"with no element recorded against them, and light, camera, film, rasterizer, "
+						"rasterizer-output, material and painter chunks, are editable in every phase. "
+						"Filing does not change the document -- no chunk, no head "
 						"version, no undo step -- so there is no baseHeadVersion and no conflict outcome. "
-						"Returns {filed,replacedPreviousPlan,partCount,parts:[{part,construction,note,outline,"
-						"view,pointCount,areaFraction,aspect}],png_base64,compositeWidth,compositeHeight,message} "
+						"Returns {filed,replacedPreviousPlan,elementCount,elements:[{element,pieces,"
+						"construction,note,outline,view,pointCount,areaFraction,aspect}],phase,activeElement,"
+						"png_base64,compositeWidth,compositeHeight,message} "
 						"-- the composite sketch image also rides back as an MCP image content block. "
-						"Calling it again replaces the previous plan and every sketch filed with it.";
-					tools.push_back( MakeTool( "file_part_plan", desc, ObjectProp( "", props, required ) ) );
+						"Calling it again replaces the previous plan, every sketch filed with it, and every "
+						"chunk-to-element record, and makes the first element of the new plan active.";
+					tools.push_back( MakeTool( "file_build_plan", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// finish_element / reopen_element (S1, 2026-08-11) -- READ-SAFE
+				// (both on IsReadSafeVerb; no autonomy note).  THE CODEC TEXT IS
+				// CANONICAL AND THIS MIRRORS IT, for the drift-class reason
+				// recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					std::vector<std::string> required;
+					const std::string desc =
+						"Close the element you are working on and move to the next one. Takes no arguments -- "
+						"it closes whichever element is currently active. Returns the facts of that element: "
+						"the chunks recorded against it, which of its declared pieces have a chunk whose NAME "
+						"contains that piece name (a case-insensitive substring check on names only -- it says "
+						"nothing about what was built or how well), the phase the session is now in, and the "
+						"next active element. It also returns an ISOLATE RENDER of the element -- the object "
+						"recorded against it, alone in the frame and auto-framed; when several objects were "
+						"recorded, the one with the largest bounding box, and the message says so. After the "
+						"LAST element it enters the COMPOSE phase, where arrangement, lighting, camera, "
+						"materials and edits to any element's chunks are allowed and creating new geometry is "
+						"refused. Nothing is required of an element before you finish it, and nothing is "
+						"scored. It changes nothing in the document -- no chunk, no head version, no undo "
+						"step. ok:false means the call did nothing (no build plan filed, or every element is "
+						"already finished) and message says which. Returns {ok,element,phase,nextElement,"
+						"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
+						"message} -- the isolate render also rides back as an MCP image content block.";
+					tools.push_back( MakeTool( "finish_element", desc, ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of an element in the filed build plan, exactly as you filed it." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					const std::string desc =
+						"Go back to an element you already finished, or switch to a different one. The named "
+						"element becomes active, the session returns to the PIECES phase, and chunks you "
+						"create from then on are recorded against it. Legal from any phase, including "
+						"compose; it is never refused and never counts against any refusal cap. It is the "
+						"way out of the compose phase's refusal to create new geometry. It changes nothing in the "
+						"document -- no chunk, no head version, no undo step. ok:false means the call did "
+						"nothing (no build plan filed, or that name is not in it, in which case the message "
+						"lists the names that are). Returns {ok,element,phase,previousPhase,chunks,"
+						"unfinished,message}.";
+					tools.push_back( MakeTool( "reopen_element", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
@@ -735,11 +811,11 @@ namespace RISE
 				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT.  Every
 				// contract sentence below is kept semantically identical to
 				// AgentChatCodecs.cpp's kToolDefs entry for the same tool, for
-				// the drift-class reason recorded on file_part_plan above: a
+				// the drift-class reason recorded on file_build_plan above: a
 				// caveat that lives on only one of the two hand-authored
 				// surfaces silently changes the mechanism for whichever
 				// transport reads the other one.  SourceHygieneTest's
-				// part-plan/imagination parity scan pins the sentences.
+				// build-plan/imagination parity scan pins the sentences.
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "description", StringProp(
@@ -1005,7 +1081,7 @@ namespace RISE
 					// pins the load-bearing sentences on BOTH files, so a caveat added to only one
 					// of them fails the build.
 					props.set( "target", StringProp(
-						"OPTIONAL name of a part in the part plan filed with file_part_plan -- compares that part's SKETCH against the silhouette the isolated object actually renders as. REQUIRES `isolate` (the plan-part-to-object join is made HERE, by you, at comparison time); `target` without `isolate` is a clean -32602 stating the requirement. VANTAGE: with no `camera`/`view` of your own, the render uses the AXIS-ALIGNED vantage the sketch declared -- front = looking along -Z (world +X right, world +Y up), side = looking along -X (world -Z right, world +Y up), top = looking straight down (world +X right, world -Z up in frame) -- instead of the three-quarter one `isolate` uses alone. A caller-supplied `camera`/`view` still WINS, and `target.vantage` then reads \"caller-camera\" rather than a view name. The comparison costs ONE extra internal identity render at the same pose and dims, so the measured silhouette is exact and independent of `mode`, `quality`, lighting and materials. On success (ok:true) the result gains a `target` object: {part, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. `iou` is intersection-over-union in [0,1] of the two masks after BOTH are cropped to their own bounding box and fitted onto the same 256x256 canvas by the same transform -- so it measures SHAPE ONLY, not position and not size (it is invariant to where the part sits and how big it is); `mirroredIou` is the same measurement with the rendered silhouette flipped in X. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. IMAGE: the result carries a [sketch | silhouette | overlay] composite -- three 256x256 tiles: the filed sketch, the rendered silhouette, and both together with sketch-only RED, silhouette-only CYAN, overlap WHITE, neither BLACK (each tile carries its own black background, so the strip reads the same on a light or a dark page). That composite rides back as this call's image WITHOUT `imageMaxEdge`, and REPLACES the rendered frame when `imageMaxEdge` is also supplied -- re-render without `target`, or call read_image, to get the frame itself. An unknown part name, or no filed part plan at all, FAILS the render (ok:false) with the filed part names in `message`." ) );
+						"OPTIONAL name of an ELEMENT in the build plan filed with file_build_plan -- compares that element's SKETCH against the silhouette the isolated object actually renders as. REQUIRES `isolate` (the plan-element-to-object join is made HERE, by you, at comparison time); `target` without `isolate` is a clean -32602 stating the requirement. VANTAGE: with no `camera`/`view` of your own, the render uses the AXIS-ALIGNED vantage the sketch declared -- front = looking along -Z (world +X right, world +Y up), side = looking along -X (world -Z right, world +Y up), top = looking straight down (world +X right, world -Z up in frame) -- instead of the three-quarter one `isolate` uses alone. A caller-supplied `camera`/`view` still WINS, and `target.vantage` then reads \"caller-camera\" rather than a view name. The comparison costs ONE extra internal identity render at the same pose and dims, so the measured silhouette is exact and independent of `mode`, `quality`, lighting and materials. On success (ok:true) the result gains a `target` object: {element, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. `iou` is intersection-over-union in [0,1] of the two masks after BOTH are cropped to their own bounding box and fitted onto the same 256x256 canvas by the same transform -- so it measures SHAPE ONLY, not position and not size (it is invariant to where the element sits and how big it is); `mirroredIou` is the same measurement with the rendered silhouette flipped in X. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. IMAGE: the result carries a [sketch | silhouette | overlay] composite -- three 256x256 tiles: the filed sketch, the rendered silhouette, and both together with sketch-only RED, silhouette-only CYAN, overlap WHITE, neither BLACK (each tile carries its own black background, so the strip reads the same on a light or a dark page). That composite rides back as this call's image WITHOUT `imageMaxEdge`, and REPLACES the rendered frame when `imageMaxEdge` is also supplied -- re-render without `target`, or call read_image, to get the frame itself. An unknown element name, or no filed build plan at all, FAILS the render (ok:false) with the filed element names in `message`." ) );
 					props.set( "light", StringProp(
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					props.set( "perception", BoolProp(
@@ -1357,13 +1433,15 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 25 tool names this adapter recognizes --
+			//! The list of the 27 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
-					"file_part_plan",   // G2 (2026-08-10): read-safe, the part-plan gate's unblock
+					"file_build_plan",   // G2 (2026-08-10): read-safe, the build-plan gate's unblock
+					"finish_element",   // S1 (2026-08-11): read-safe, closes the active element (renders)
+					"reopen_element",   // S1 (2026-08-11): read-safe, re-enters an element's window
 					"imagine_scene",    // Arc 77 Phase 2 (2026-08-11): read-safe, the gate's OTHER unblock
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold",
@@ -1518,7 +1596,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 24 verbs as MCP tools.
+				// tools/list -> the 27 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
@@ -1588,7 +1666,7 @@ namespace RISE
 					// ChatToolResultCarriesImage (AgentChatCodecs.h) -- the
 					// ONE predicate every transport shares, so the verb set
 					// (read_image, read_viewport, compare_to_reference,
-					// file_part_plan, render) and the "png_base64 must be
+					// file_build_plan, render) and the "png_base64 must be
 					// non-empty" field test live in exactly one place and
 					// cannot drift back into a private list here.  Before
 					// this unification the adapter kept its own hardcoded
@@ -1602,7 +1680,7 @@ namespace RISE
 					// available:false and compare_to_reference's visual:false
 					// results simply have no (or an empty) png_base64 field,
 					// so the predicate's field test naturally excludes them --
-					// no special-casing needed.  G3a's file_part_plan result
+					// no special-casing needed.  G3a's file_build_plan result
 					// carries the composite SKETCH PNG under the same field
 					// name (the point of the echo is that the model SEES what
 					// it sketched); G3b's render{target} result carries the

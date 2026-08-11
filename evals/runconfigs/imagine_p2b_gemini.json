@@ -1,0 +1,15 @@
+{
+ "//": "Arc-77 Phase 2b evaluation run (user 2026-08-11): same figure subject, gemini, AFTER the three corrections -- no similarity score, render never shrinks (target stacked above at the render tile width), and a flat-shaded 3D-render style directive so the target is reachable. Comparison vs the Phase 2 run (evals/runs/imagine_p2_demo): does the emissive/exposure chasing stop, and is the picture better?",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_p2b_gemini"
+}

@@ -4833,17 +4833,18 @@ static const char* const kSceneTargetShapes =
 //! The one plan every G3b test files.  Six sketches, each chosen so its
 //! expected IoU against a named object is derivable ON PAPER (the
 //! per-part comments say from what), never read back off a first run.
-static std::vector<AgentSession::AgentPartPlanEntry> TargetTestPlan()
+static std::vector<AgentSession::AgentBuildPlanEntry> TargetTestPlan()
 {
 	auto mk = []( const char* part, const char* outline, const char* view ) {
-		AgentSession::AgentPartPlanEntry e;
-		e.part = part;
+		AgentSession::AgentBuildPlanEntry e;
+		e.element = part;
+		e.pieces.push_back( "piece" );
 		e.construction = "primitive";
 		e.outline = outline;
 		e.view = view;
 		return e;
 	};
-	std::vector<AgentSession::AgentPartPlanEntry> parts;
+	std::vector<AgentSession::AgentBuildPlanEntry> parts;
 	// A unit square: fills its own bbox exactly, so any object whose
 	// silhouette also fills its bbox (every box, from every axis) scores
 	// ~1.0 against it.
@@ -4879,7 +4880,7 @@ static std::unique_ptr<AgentSession> MakeTargetSession( Job*& outJob, const char
 	if( !outJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) return nullptr;
 	std::unique_ptr<AgentSession> s = AgentSession::WrapJob( outJob );
 	if( !s ) return nullptr;
-	const AgentSession::AgentPartPlanResult pr = s->FilePartPlan( TargetTestPlan() );
+	const AgentSession::AgentBuildPlanResult pr = s->FileBuildPlan( TargetTestPlan() );
 	if( !pr.ok ) return nullptr;
 	return s;
 }
@@ -4915,7 +4916,7 @@ static void RunTargetIouTest()
 	const AgentRenderResult boxR = TargetRender( *session, "box_obj", "sq" );
 	Check( boxR.ok, std::string( "box vs square-sketch renders: " ) + boxR.message );
 	Check( boxR.targetApplied, "the comparison was actually performed" );
-	Check( boxR.targetPart == "sq" && boxR.targetView == "front", "part/view echo the filed sketch" );
+	Check( boxR.targetElement == "sq" && boxR.targetView == "front", "part/view echo the filed sketch" );
 	Check( boxR.targetVantage == "front", "an auto-framed front sketch renders from the front vantage" );
 	std::printf( "  box vs sq: iou %.3f  mirrored %.3f  sketchArea %.3f  silArea %.3f  aspects %.3f/%.3f\n",
 		boxR.targetIou, boxR.targetMirroredIou, boxR.targetSketchAreaFraction,
@@ -5081,7 +5082,7 @@ static void RunTargetVantageTest()
 	plain.isolate = "l_obj";
 	const AgentRenderResult p = session->Render( plain );
 	Check( p.ok && p.isolateApplied && p.isolateAutoFramed, "the plain isolate render still works" );
-	Check( !p.targetApplied && p.targetPart.empty(),
+	Check( !p.targetApplied && p.targetElement.empty(),
 	       "a render with no `target` carries no comparison at all" );
 	Check( p.message.find( "auto-framed three-quarter view" ) != std::string::npos,
 	       "MONEY ASSERTION (G3b-c4): with no `target` the vantage word is still \"three-quarter\" -- "
@@ -5274,7 +5275,7 @@ static void RunTargetRefusalTest()
 		if( !s ) { pJob->release(); Check( false, "no-plan session wraps" ); return; }
 		const AgentRenderResult r = TargetRender( *s, "box_obj", "sq" );
 		Check( !r.ok, "a target with no filed plan FAILS the render" );
-		Check( r.message.find( "no part plan has been filed" ) != std::string::npos,
+		Check( r.message.find( "no build plan has been filed" ) != std::string::npos,
 		       "the failure says so factually" );
 		Check( !r.targetApplied, "and carries no comparison block" );
 		pJob->release();
@@ -5287,9 +5288,9 @@ static void RunTargetRefusalTest()
 	// Unknown part -> ok:false LISTING the filed names.
 	{
 		const AgentRenderResult r = TargetRender( *session, "box_obj", "wing" );
-		Check( !r.ok, "an unknown target part FAILS the render" );
-		Check( r.message.find( "unknown target part \"wing\"" ) != std::string::npos,
-		       "the failure names the part that did not resolve" );
+		Check( !r.ok, "an unknown target element FAILS the render" );
+		Check( r.message.find( "unknown target element \"wing\"" ) != std::string::npos,
+		       "the failure names the element that did not resolve" );
 		Check( r.message.find( "\"sq\"" ) != std::string::npos &&
 		       r.message.find( "\"l_top\"" ) != std::string::npos,
 		       "MONEY ASSERTION (G3b-g1): the failure LISTS the filed part names -- the same "
@@ -5360,7 +5361,7 @@ static void RunTargetRpcSurfaceTest()
 			result.get( "message" ).asString() );
 		Check( result.has( "target" ), "the result carries the nested `target` object" );
 		const JsonValue& tgt = result.get( "target" );
-		Check( tgt.get( "part" ).asString() == "sq", "target.part echoes the name" );
+		Check( tgt.get( "element" ).asString() == "sq", "target.element echoes the name" );
 		Check( tgt.get( "view" ).asString() == "front", "target.view echoes the sketch's view" );
 		Check( tgt.get( "vantage" ).asString() == "front", "target.vantage names what actually rendered" );
 		Check( tgt.has( "iou" ) && tgt.has( "mirroredIou" ) && tgt.has( "sketchAreaFraction" ) &&
@@ -5396,7 +5397,7 @@ static void RunTargetRpcSurfaceTest()
 	// render that then fails for an unrelated reason.  The unknown-part
 	// case above cannot catch a broken gate -- it fails BEFORE anything is
 	// populated -- so without this case a gate keyed on
-	// "targetPart is set" instead of `rr.ok` would pass every test.  This
+	// "targetElement is set" instead of `rr.ok` would pass every test.  This
 	// is the exact shape of G1's fix-round P1: facts describing an image
 	// that never existed.
 	{
@@ -5594,7 +5595,7 @@ static void RunTargetEmptySilhouetteTest()
 //----------------------------------------------------------------------
 // (G3b-i) The shipped mechanisms a comparison composes with: the R1b
 // agent caps still bind, the scene is byte-identical afterwards, and
-// the G2 part-plan state is untouched.
+// the G2 build-plan state is untouched.
 //----------------------------------------------------------------------
 static void RunTargetComposesWithShippedGatesTest()
 {
@@ -5609,9 +5610,10 @@ static void RunTargetComposesWithShippedGatesTest()
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "oversize target scene loads" );
 		std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
 		if( !s ) { pJob->release(); Check( false, "oversize session wraps" ); return; }
-		AgentSession::AgentPartPlanEntry e;
-		e.part = "ball"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1"; e.view = "front";
-		Check( s->FilePartPlan( { e } ).ok, "the oversize session files its plan" );
+		AgentSession::AgentBuildPlanEntry e;
+		e.element = "ball"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1"; e.view = "front";
+		e.pieces.push_back( "piece" );
+		Check( s->FileBuildPlan( { e } ).ok, "the oversize session files its plan" );
 
 		AgentRenderParams p;
 		p.fromAgentSurface = true;
@@ -5637,7 +5639,7 @@ static void RunTargetComposesWithShippedGatesTest()
 		Check( film != nullptr, "the fixture has a Film" );
 		const unsigned int fw = film ? film->GetWidth() : 0;
 		const unsigned int fh = film ? film->GetHeight() : 0;
-		const std::size_t sketchesBefore = session->PartSketches().size();
+		const std::size_t sketchesBefore = session->ElementSketches().size();
 
 		const AgentRenderResult r = TargetRender( *session, "l_obj", "l_true" );
 		Check( r.ok && r.targetApplied, "the comparison runs" );
@@ -5663,10 +5665,10 @@ static void RunTargetComposesWithShippedGatesTest()
 		       "comparison's TWO nested solo applications (box/sph/flat/cube/l_obj; the two CSG "
 		       "operands are never independently renderable)" );
 
-		Check( session->PartPlanFiled(), "the part plan is still filed" );
-		Check( session->PartSketches().size() == sketchesBefore,
+		Check( session->BuildPlanFiled(), "the build plan is still filed" );
+		Check( session->ElementSketches().size() == sketchesBefore,
 		       "the sketch set is untouched by a comparison" );
-		Check( session->PartPlanGateRefusalCount() == 0 && !session->PartPlanGateGaveUp(),
+		Check( session->BuildPlanGateRefusalCount() == 0 && !session->BuildPlanGateGaveUp(),
 		       "MONEY ASSERTION (G3b-i4): a comparison creates nothing, so it passes no creation "
 		       "gate and never moves the G2 refusal counter" );
 
@@ -5676,13 +5678,13 @@ static void RunTargetComposesWithShippedGatesTest()
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();

@@ -6072,9 +6072,9 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 					: RISE::Agent::CheckRasterizerAllowlistGateForInsert(
 						std::string( snapshot.chunkText.c_str() ) );
 			}
-			// G2 fix-round (2026-08-10, part-plan gate): the THIRD re-check,
+			// G2 fix-round (2026-08-10, build-plan gate): the THIRD re-check,
 			// and the only CONDITIONAL one -- see
-			// AgentProposal::partPlanGateArmedAtStage for why it has to be
+			// AgentProposal::buildPlanGateArmedAtStage for why it has to be
 			// (the gate is SESSION state; this controller has no handle on
 			// the session that staged the proposal, so the armed-ness is
 			// carried on the proposal itself while the DELTA stays stateless).
@@ -6094,21 +6094,21 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 			// anything from the controller would be a SECOND budget, which is
 			// the bug this fix-round exists to avoid.  This is a stale-proposal
 			// rejection, not a gate refusal.
-			if( clause.empty() && snapshot.partPlanGateArmedAtStage &&
+			if( clause.empty() && snapshot.buildPlanGateArmedAtStage &&
 			    snapshot.kind == AgentProposalKind::ParamEdit )
 			{
 				std::string introducedName;
-				const std::string introducedKind = RISE::Agent::DescribePartPlanGeometryDeltaForPatch(
+				const std::string introducedKind = RISE::Agent::DescribeBuildPlanGeometryDeltaForPatch(
 					headText, std::string( snapshot.target.c_str() ),
 					std::string( snapshot.entityKind.c_str() ),
 					std::string( snapshot.param.c_str() ),
 					std::string( snapshot.value.c_str() ), &introducedName );
 				if( !introducedKind.empty() )
-					clause = "this proposal was staged before any part plan was filed, and applying it to "
+					clause = "this proposal was staged before any build plan was filed, and applying it to "
 					         "the head as it stands now would introduce a `" + introducedKind + "` chunk" +
 					         ( introducedName.empty() ? std::string() : ( " named `" + introducedName + "`" ) ) +
 					         " -- it did not when it was staged. Nothing in the document was changed. The "
-					         "proposing session must call file_part_plan and reissue the patch.";
+					         "proposing session must call file_build_plan and reissue the patch.";
 			}
 			if( !clause.empty() )
 			{

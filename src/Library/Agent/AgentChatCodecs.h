@@ -718,7 +718,7 @@ namespace RISE
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
 		//! a LIVE image block/part -- i.e. a success result from one of the
 		//! image-capable verbs (read_image, compare_to_reference,
-		//! read_viewport, file_part_plan's G3a sketch composite,
+		//! read_viewport, file_build_plan's G3a sketch composite,
 		//! imagine_scene's generated scene target, or a render called with
 		//! imageMaxEdge -- or, since Arc 77 Phase 2, a render carrying either
 		//! comparison composite, which rides the SAME png_base64 field on the

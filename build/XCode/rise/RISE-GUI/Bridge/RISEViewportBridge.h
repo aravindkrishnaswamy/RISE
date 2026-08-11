@@ -1192,7 +1192,7 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// AgentSession::SetImageGenerator's doc for why this is host-installed-
 /// only: no wire verb can reach it). Before this method existed, none of
 /// the three ever got a generator, so in-app `imagine_scene` honestly
-/// reported no capability and the part-plan gate's imagine half never
+/// reported no capability and the build-plan gate's imagine half never
 /// armed -- this is the fix.
 ///
 /// `providerName` is the SAME lowercase spelling ChatViewModel's

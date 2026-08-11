@@ -657,7 +657,7 @@ namespace RISE
 					"full scene becomes large enough to actually evaluate. mode:\"normals\" or "
 					"mode:\"facets\" read form best there -- surface direction and tessellation, "
 					"with no material or lighting in the way. Add `target` with the name of a part "
-					"you filed in file_part_plan and the same call also measures that object's "
+					"you filed in file_build_plan (an ELEMENT name) and the same call also measures that object's "
 					"silhouette against the sketch you drew for it: it returns iou/mirroredIou plus a "
 					"[sketch | silhouette | overlay] image, rendered from the axis-aligned vantage your "
 					"sketch declared. For the CHEAPEST possible orientation check (is the "
@@ -715,7 +715,7 @@ namespace RISE
 						// added to only ONE of these surfaces is a caveat added to NEITHER: every
 						// provider reads this one, and the MCP hosts read the other.
 						"\"target\":{\"type\":\"string\",\"description\":"
-						"\"Optional name of a part in the part plan you filed with file_part_plan -- compares that part's SKETCH against what the isolated object actually renders as. REQUIRES `isolate` (you make the plan-part-to-object join yourself, here); target without isolate is rejected. When you supply no camera or view, the render uses the AXIS-ALIGNED vantage your sketch declared: front = looking along -Z (world +X right, +Y up), side = looking along -X (world -Z right, +Y up), top = looking straight down (world +X right, -Z up in frame). Your own camera or view still wins, and the result's target.vantage then reads \\\"caller-camera\\\" instead of the view name. The comparison runs one extra internal identity render at the same pose and dims, so the silhouette it measures is exact and does not depend on mode, quality, lighting or materials. On success the result carries a `target` object: {part, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. iou is intersection-over-union in [0,1] of the two silhouettes after BOTH are cropped to their own bounding box and fitted to the same 256x256 canvas -- so it measures SHAPE ONLY, not position and not size; mirroredIou is the same number with the render flipped left-right. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. The image returned with this call is a [sketch | silhouette | overlay] strip -- three 256x256 tiles: your sketch, the rendered silhouette, and both together with sketch-only in RED, silhouette-only in CYAN, overlap in WHITE and neither in BLACK. That composite REPLACES the rendered frame as this call's image (imageMaxEdge is not needed and is not used when target is given); re-render without target, or call read_image, if you want the frame itself. An unknown part name, or no filed plan at all, FAILS the render (ok:false) with the filed part names in message.\"},"
+						"\"Optional name of an ELEMENT in the build plan you filed with file_build_plan -- compares that element's SKETCH against what the isolated object actually renders as. REQUIRES `isolate` (you make the plan-element-to-object join yourself, here); target without isolate is rejected. When you supply no camera or view, the render uses the AXIS-ALIGNED vantage your sketch declared: front = looking along -Z (world +X right, +Y up), side = looking along -X (world -Z right, +Y up), top = looking straight down (world +X right, -Z up in frame). Your own camera or view still wins, and the result's target.vantage then reads \\\"caller-camera\\\" instead of the view name. The comparison runs one extra internal identity render at the same pose and dims, so the silhouette it measures is exact and does not depend on mode, quality, lighting or materials. On success the result carries a `target` object: {element, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. iou is intersection-over-union in [0,1] of the two silhouettes after BOTH are cropped to their own bounding box and fitted to the same 256x256 canvas -- so it measures SHAPE ONLY, not position and not size; mirroredIou is the same number with the render flipped left-right. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. The image returned with this call is a [sketch | silhouette | overlay] strip -- three 256x256 tiles: your sketch, the rendered silhouette, and both together with sketch-only in RED, silhouette-only in CYAN, overlap in WHITE and neither in BLACK. That composite REPLACES the rendered frame as this call's image (imageMaxEdge is not needed and is not used when target is given); re-render without target, or call read_image, if you want the frame itself. An unknown element name, or no filed plan at all, FAILS the render (ok:false) with the filed element names in message.\"},"
 					"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
@@ -864,50 +864,101 @@ namespace RISE
 					"},\"required\":[\"reference\"]}"
 				},
 				{
-					"file_part_plan",
-					"File the part plan for the thing you are building: one entry per part, each naming "
-					"how that part will be constructed AND carrying a 2D outline sketch of it. On a "
+					"file_build_plan",
+					"File the build plan for the scene you are building: one entry per ELEMENT, each broken "
+					"into named PIECES, each naming how that element will be constructed AND carrying a 2D "
+					"outline sketch of it. On a "
 					"session that has not filed one, EVERY call "
 					"that creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
 					"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
 					"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
-					"intercepting for the rest of the session. `construction` is REQUIRED per part "
+					"intercepting for the rest of the session. `pieces` is REQUIRED per element: at "
+					"least one name, in your own words; any names are accepted and nothing checks them. "
+					"`construction` is REQUIRED per element "
 					"and must be one of exactly: \"primitive\" (a single built-in shape chunk), \"csg\" (a "
 					"csg_object or an sdf_geometry combining several shapes), \"sweep\" (a sweep_geometry "
 					"profile swept along a path), \"chain\" (several shapes blended into one form), "
 					"\"displaced\" (a displaced_geometry driven by a painter), \"mesh\" (a triangle-mesh "
-					"chunk). `outline` is REQUIRED per part: a closed 2D polygon of at least 3 \"x y\" "
+					"chunk). `outline` is REQUIRED per element: a closed 2D polygon of at least 3 \"x y\" "
 					"points separated by semicolons, in any units you like (it is scaled to fit its own "
 					"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
 					"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
 					"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
-					"construction answer is accepted, including \"primitive\" for every part. The plan is "
+					"construction answer is accepted, including \"primitive\" for every element. The plan is "
 					"NOT binding: declaring one construction and then authoring a different chunk kind is "
-					"allowed and is never refused. Filing does not change the document -- no chunk, no "
-					"head version, no undo step. Returns {filed,replacedPreviousPlan,partCount,parts:"
-					"[{part,construction,note,outline,view,pointCount,areaFraction,aspect}],png_base64,"
-					"compositeWidth,compositeHeight,message}. Calling it again replaces the previous plan "
-					"and every sketch filed with it.",
+					"allowed and is never refused, and no piece has to become a chunk. "
+					"FILING STARTS THE BUILD: the session enters the PIECES phase with the FIRST element "
+					"active, every chunk you create while an element is active is recorded against it, "
+					"finish_element closes it (reporting what was recorded and returning an isolate render "
+					"of it) and makes the next element active, and after the last one the session enters "
+					"the COMPOSE phase for arrangement, lighting and camera. An edit aimed at a chunk "
+					"recorded against a DIFFERENT element is refused (up to 3 times, then the phase rules "
+					"stop intercepting); chunks with no element recorded against them, and light, camera, "
+					"film, rasterizer, rasterizer-output, material and painter chunks, are editable in "
+					"every phase. "
+					"Filing does not change the document -- no chunk, no "
+					"head version, no undo step. Returns {filed,replacedPreviousPlan,elementCount,elements:"
+					"[{element,pieces,construction,note,outline,view,pointCount,areaFraction,aspect}],phase,"
+					"activeElement,png_base64,compositeWidth,compositeHeight,message}. Calling it again "
+					"replaces the previous plan, every sketch filed with it and every chunk-to-element "
+					"record, and makes the first element of the new plan active.",
 					"{\"type\":\"object\",\"properties\":{"
-						"\"parts\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"description\":"
-						"\"Required, at least one entry -- the parts of the subject you are about to build.\","
+						"\"elements\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"description\":"
+						"\"Required, at least one entry -- the elements of the scene you are about to build.\","
 						"\"items\":{\"type\":\"object\",\"properties\":{"
-							"\"part\":{\"type\":\"string\",\"description\":"
-							"\"Required. The name of this part, in your own words (e.g. \\\"left wing\\\", \\\"lamp base\\\").\"},"
+							"\"element\":{\"type\":\"string\",\"description\":"
+							"\"Required. The name of this element, in your own words (e.g. \\\"wizard\\\", \\\"terrain\\\").\"},"
+							"\"pieces\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":32,\"items\":{\"type\":\"string\"},\"description\":"
+							"\"Required, at least one -- the pieces this element breaks down into, in your own words (e.g. [\\\"robe\\\",\\\"hat\\\",\\\"beard\\\",\\\"staff\\\"]). Any names are accepted and nothing checks what they say. They are a declaration, not a commitment: nothing requires a chunk per piece and no piece is separately gated.\"},"
 							"\"construction\":{\"type\":\"string\","
 							"\"enum\":[\"primitive\",\"csg\",\"sweep\",\"chain\",\"displaced\",\"mesh\"],"
 							"\"description\":"
 							"\"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh.\"},"
 							"\"outline\":{\"type\":\"string\",\"description\":"
-							"\"Required. A closed 2D outline of this part as semicolon-separated \\\"x y\\\" points, at least 3 of them -- e.g. \\\"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\\\". The last point joins back to the first automatically. Units and origin are yours; the shape is scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is not two finite numbers, or all points on one horizontal or vertical line.\"},"
+							"\"Required. A closed 2D outline of this element as semicolon-separated \\\"x y\\\" points, at least 3 of them -- e.g. \\\"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\\\". The last point joins back to the first automatically. Units and origin are yours; the shape is scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is not two finite numbers, or all points on one horizontal or vertical line.\"},"
 							"\"view\":{\"type\":\"string\","
 							"\"enum\":[\"front\",\"side\",\"top\"],"
 							"\"description\":"
 							"\"Optional, default \\\"front\\\". Which axis-aligned direction this outline is drawn from.\"},"
 							"\"note\":{\"type\":\"string\",\"description\":"
-							"\"Optional free text about this part.\"}"
-						"},\"required\":[\"part\",\"construction\",\"outline\"]}}"
-					"},\"required\":[\"parts\"]}"
+							"\"Optional free text about this element.\"}"
+						"},\"required\":[\"element\",\"pieces\",\"construction\",\"outline\"]}}"
+					"},\"required\":[\"elements\"]}"
+				},
+				{
+					"finish_element",
+					"Close the element you are working on and move to the next one. Takes no arguments -- it "
+					"closes whichever element is currently active. Returns the facts of that element: the "
+					"chunks recorded against it, which of its declared pieces have a chunk whose NAME "
+					"contains that piece name (a case-insensitive substring check on names only -- it says "
+					"nothing about what was built or how well), the phase the session is now in, and the "
+					"next active element. It also returns an ISOLATE RENDER of the element -- the object "
+					"recorded against it, alone in the frame and auto-framed; when several objects were "
+					"recorded, the one with the largest bounding box, and the message says so. After the "
+					"LAST element the session enters the COMPOSE phase, where arrangement, lighting, "
+					"camera, materials and edits to any element's chunks are allowed and creating new "
+					"geometry is refused. Nothing is required of an element before you finish it, and "
+					"nothing is scored. It changes nothing in the document -- no chunk, no head version, no "
+					"undo step. ok:false means the call did nothing (no build plan filed, or every element "
+					"is already finished) and message says which. Returns {ok,element,phase,nextElement,"
+					"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
+					"message}.",
+					"{\"type\":\"object\",\"properties\":{}}"
+				},
+				{
+					"reopen_element",
+					"Go back to an element you already finished, or switch to a different one. The named "
+					"element becomes active, the session returns to the PIECES phase, and chunks you create "
+					"from then on are recorded against it. Legal from any phase, including compose; it is "
+					"never refused and never counts against any refusal cap. It is the way out of the "
+					"compose phase's refusal to create new geometry. It changes nothing in the document -- no "
+					"chunk, no head version, no undo step. ok:false means the call did nothing (no build "
+					"plan filed, or that name is not in it, in which case the message lists the names that "
+					"are). Returns {ok,element,phase,previousPhase,chunks,unfinished,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"}"
+					"},\"required\":[\"element\"]}"
 				},
 				{
 					"imagine_scene",
@@ -1343,12 +1394,12 @@ namespace RISE
 			//! into the transcript.  Listing it here is what keeps the
 			//! image-retention cap covering every PNG that can actually get in.
 			//!
-			//! G3a (2026-08-10): file_part_plan joins the set -- its result
+			//! G3a (2026-08-10): file_build_plan joins the set -- its result
 			//! carries the composite SKETCH PNG under the same field name.
 			//! This is purely about the IMAGE POLICIES (build the image block,
 			//! count it against the retention cap, elide it when superseded);
 			//! it says NOTHING about the E4 sequencing gate, where
-			//! file_part_plan remains neither a mutation nor a look.  The two
+			//! file_build_plan remains neither a mutation nor a look.  The two
 			//! classifications are independent on purpose: "carries pixels" is
 			//! a transport fact, "observed the scene" is a behavioural one, and
 			//! a sketch is the model's own drawing, not an observation.  See
@@ -1364,7 +1415,14 @@ namespace RISE
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"
 				      && call.name != "render" && call.name != "read_viewport"
-				      && call.name != "file_part_plan"
+				      && call.name != "file_build_plan"
+				      // S1 (2026-08-11): finish_element's result carries the
+				      // element's ISOLATE RENDER under the same field name.
+				      // Unlike the sketch echo and the imagined target, these
+				      // ARE scene pixels -- which is why finish_element is also
+				      // on AgentChatLoop.cpp's IsVisualObserveToolName, the one
+				      // place where the two classifications coincide.
+				      && call.name != "finish_element"
 				      // Arc 77 Phase 2 (2026-08-11): imagine_scene's result carries
 				      // the generated scene target under the same `png_base64`
 				      // field name every other image-bearing verb uses.  `render`

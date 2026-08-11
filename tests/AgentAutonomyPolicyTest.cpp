@@ -340,29 +340,35 @@ static void TestReadPosture()
 	// read_document itself (the 9th) was already exercised throughout via ReadDoc().
 	Check( !ReadDoc( rpc, 16 ).empty(), "read_document still works under Read at the end of the suite" );
 
-	// G2 (2026-08-10): file_part_plan is on the READ-SAFE allowlist and must
+	// G2 (2026-08-10): file_build_plan is on the READ-SAFE allowlist and must
 	// dispatch here.  Load-bearing, not cosmetic: it is the ONLY way to disarm
-	// the part-plan gate, and that gate CAN fire under Propose (insert_chunk
+	// the build-plan gate, and that gate CAN fire under Propose (insert_chunk
 	// reaches the session there), so an autonomy layer that refused it would
 	// produce an un-unlockable session.  Under Read the gate cannot fire at
 	// all -- but the verb is classified by what it TOUCHES (the document:
 	// nothing), so it is available here too, exactly like render.
 	{
 		JsonValue entry = JsonValue::MakeObject();
-		entry.set( "part",         JsonValue::MakeString( "body" ) );
+		entry.set( "element",      JsonValue::MakeString( "body" ) );
+		// S1 (2026-08-11): `pieces` is a REQUIRED build-plan field.
+		{
+			JsonValue piecesArr = JsonValue::MakeArray();
+			piecesArr.push_back( JsonValue::MakeString( "piece" ) );
+			entry.set( "pieces", piecesArr );
+		}
 		entry.set( "construction", JsonValue::MakeString( "primitive" ) );
-		// G3a (2026-08-10): `outline` is a REQUIRED part-plan field.
+		// G3a (2026-08-10): `outline` is a REQUIRED build-plan field.
 		entry.set( "outline",      JsonValue::MakeString( "0 0; 1 0; 1 1; 0 1" ) );
 		JsonValue arr = JsonValue::MakeArray();
 		arr.push_back( entry );
 		JsonValue params = JsonValue::MakeObject();
-		params.set( "parts", arr );
-		JsonValue env = ParseResponse( rpc.HandleLine( Req( 8801, "file_part_plan", params ) ), 8801 );
-		Check( !env.has( "error" ), "G2: file_part_plan DISPATCHES under Read (it mutates nothing)" );
+		params.set( "elements", arr );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 8801, "file_build_plan", params ) ), 8801 );
+		Check( !env.has( "error" ), "G2: file_build_plan DISPATCHES under Read (it mutates nothing)" );
 		Check( env.get( "result" ).get( "filed" ).asBool( false ), "G2: and files the plan under Read" );
 	}
 	Check( ReadDoc( rpc, 17 ) == docBefore,
-	       "G2: RED-PROVE -- the document is BYTE-IDENTICAL after file_part_plan" );
+	       "G2: RED-PROVE -- the document is BYTE-IDENTICAL after file_build_plan" );
 
 	std::remove( scenePath.c_str() );
 
@@ -698,26 +704,32 @@ static void TestProposePosture()
 		       "insert_geometry_scaffold under Commit + Owner-authority session actually applies chunks" );
 	}
 
-	// G2 (2026-08-10): file_part_plan is on the READ-SAFE allowlist and must
+	// G2 (2026-08-10): file_build_plan is on the READ-SAFE allowlist and must
 	// dispatch under this posture.  Load-bearing, not cosmetic: it is the ONLY
-	// way to disarm the part-plan gate, and the gate can fire under Propose
+	// way to disarm the build-plan gate, and the gate can fire under Propose
 	// (insert_chunk reaches the session there), so an autonomy layer that
 	// refused it would produce an un-unlockable session.  Under Read the gate
 	// cannot fire at all -- but the verb is classified by what it TOUCHES (the
 	// document: nothing), so it is available here too, exactly like render.
 	{
 		JsonValue entry = JsonValue::MakeObject();
-		entry.set( "part",         JsonValue::MakeString( "body" ) );
+		entry.set( "element",      JsonValue::MakeString( "body" ) );
+		// S1 (2026-08-11): `pieces` is a REQUIRED build-plan field.
+		{
+			JsonValue piecesArr = JsonValue::MakeArray();
+			piecesArr.push_back( JsonValue::MakeString( "piece" ) );
+			entry.set( "pieces", piecesArr );
+		}
 		entry.set( "construction", JsonValue::MakeString( "primitive" ) );
-		// G3a (2026-08-10): `outline` is a REQUIRED part-plan field.
+		// G3a (2026-08-10): `outline` is a REQUIRED build-plan field.
 		entry.set( "outline",      JsonValue::MakeString( "0 0; 1 0; 1 1; 0 1" ) );
 		JsonValue arr = JsonValue::MakeArray();
 		arr.push_back( entry );
 		JsonValue params = JsonValue::MakeObject();
-		params.set( "parts", arr );
-		const std::string resp = rpcPropose.HandleLine( Req( 8801, "file_part_plan", params ) );
+		params.set( "elements", arr );
+		const std::string resp = rpcPropose.HandleLine( Req( 8801, "file_build_plan", params ) );
 		JsonValue env = ParseResponse( resp, 8801 );
-		Check( !env.has( "error" ), "G2: file_part_plan DISPATCHES under this autonomy posture" );
+		Check( !env.has( "error" ), "G2: file_build_plan DISPATCHES under this autonomy posture" );
 		Check( env.get( "result" ).get( "filed" ).asBool( false ), "G2: and files the plan" );
 	}
 
@@ -839,8 +851,8 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 25,
-		       "tools/list under Read STILL lists all 25 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 27,
+		       "tools/list under Read STILL lists all 27 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -901,7 +913,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 25, "tools/list under Commit lists all 25 tools" );
+		Check( tools.isArray() && tools.size() == 27, "tools/list under Commit lists all 27 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -939,7 +951,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 25, "tools/list under Propose lists all 25 tools" );
+		Check( tools.isArray() && tools.size() == 27, "tools/list under Propose lists all 27 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -1260,18 +1272,18 @@ static void TestLaunchFlagParsing()
 		       "space-form failure does NOT emit a JSON-RPC frame on stdout (fails before the loop starts)" );
 	}
 
-	// --- G2 (2026-08-10): the part-plan gate END-TO-END over the real wire,
+	// --- G2 (2026-08-10): the build-plan gate END-TO-END over the real wire,
 	// plus its launch flag.  Three things this can only prove here: that the
 	// gate really is ON by default in a shipped headless process, that
-	// file_part_plan really does dispatch (it is READ-SAFE, so it must reach
+	// file_build_plan really does dispatch (it is READ-SAFE, so it must reach
 	// the session under every posture -- and it is the ONLY way to disarm the
 	// gate), and that --agent-part-plan-gate=off really turns it off. ---
 	{
 		const std::string requests =
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g2box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}\n"
-			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_part_plan\",\"params\":{\"parts\":"
-			"[{\"part\":\"body\",\"construction\":\"primitive\","
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"file_build_plan\",\"params\":{\"elements\":"
+			"[{\"element\":\"body\",\"pieces\":[\"p\"],\"construction\":\"primitive\","
 			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}\n"
 			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
 			"\"box_geometry\\n{\\n\\tname g2box\\n\\twidth 1\\n\\theight 1\\n\\tdepth 1\\n}\"}}\n";
@@ -1292,11 +1304,11 @@ static void TestLaunchFlagParsing()
 			Check( ok, "G2/wire: all three response lines parse" );
 			if( ok ) {
 				Check( !e1.get( "result" ).get( "applied" ).asBool( true ) &&
-				       e1.get( "result" ).get( "message" ).asString().find( "file_part_plan" ) != std::string::npos,
+				       e1.get( "result" ).get( "message" ).asString().find( "file_build_plan" ) != std::string::npos,
 				       "G2/wire MONEY ASSERTION: with NO flag given, a shipped headless process REFUSES the "
-				       "first geometry insert and names file_part_plan -- the gate defaults ON" );
+				       "first geometry insert and names file_build_plan -- the gate defaults ON" );
 				Check( e2.get( "result" ).get( "filed" ).asBool( false ),
-				       "G2/wire: file_part_plan dispatches and files (read-safe, reachable under every posture)" );
+				       "G2/wire: file_build_plan dispatches and files (read-safe, reachable under every posture)" );
 				Check( e3.get( "result" ).get( "applied" ).asBool( false ),
 				       "G2/wire: the SAME insert applies after the plan is filed" );
 			}
@@ -1354,6 +1366,118 @@ static void TestLaunchFlagParsing()
 		}
 	}
 
+	// --- S1 fix-round (2026-08-11): the SAME three proofs for the staged
+	// build protocol's own launch flag, `--agent-build-protocol`.  It shipped
+	// with no CLI-parse coverage at all while its sibling above had a full
+	// live-subprocess red-prove, which is precisely the asymmetry that lets a
+	// flag rot silently: a typo in the prefix, a branch that falls through to
+	// the positional scene argument, or a default that flips, all pass every
+	// in-process test in the suite.  Only a real child process can prove what
+	// a shipped binary does with these argv strings. ---
+	//
+	// The observable is `file_build_plan`'s own result: with the protocol ON,
+	// filing TRANSITIONS the session (phase "pieces", the first element
+	// active); with it OFF, filing still succeeds -- the plan gate is a
+	// separate mechanism -- but no phase transition happens at all.  That one
+	// pair distinguishes on from off with no document mutation and no render.
+	{
+		const std::string plan =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_build_plan\",\"params\":{\"elements\":"
+			"[{\"element\":\"body\",\"pieces\":[\"p\"],\"construction\":\"primitive\","
+			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"}]}}\n"
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"finish_element\",\"params\":{}}\n";
+
+		// (a) DEFAULT ON -- no flag given at all.
+		{
+			std::vector<std::string> args;
+			args.push_back( "--agent-stdio" );
+			args.push_back( "--agent-autonomy=commit" );
+			args.push_back( scenePath );
+			std::string outStdout, outStderr;
+			const int rc = RunChild( args, plan, outStdout, outStderr );
+			Check( rc == 0, "S1/wire: the protocol-ON child exits 0 on stdin EOF" );
+			std::vector<std::string> lines;
+			SplitLines( outStdout, lines );
+			Check( lines.size() >= 2, "S1/wire: child emitted 2 stdout response lines" );
+			if( lines.size() >= 2 ) {
+				JsonValue e1, e2; std::string perr;
+				const bool ok = JsonParse( lines[0], e1, perr ) && JsonParse( lines[1], e2, perr );
+				Check( ok, "S1/wire: both response lines parse" );
+				if( ok ) {
+					Check( e1.get( "result" ).get( "phase" ).asString() == "pieces" &&
+					       e1.get( "result" ).get( "activeElement" ).asString() == "body",
+					       "S1/wire MONEY ASSERTION: with NO flag given, a shipped headless process enters "
+					       "the PIECES phase on filing -- --agent-build-protocol defaults ON" );
+					Check( e2.get( "result" ).get( "ok" ).asBool( false ),
+					       "S1/wire: finish_element really advances the protocol in that process" );
+				}
+			}
+		}
+		// (b) `=off` REALLY disables it: filing still succeeds (the plan gate
+		// is a separate flag), but there is no phase and no active element,
+		// and finish_element says the protocol is off.
+		{
+			std::vector<std::string> args;
+			args.push_back( "--agent-stdio" );
+			args.push_back( "--agent-autonomy=commit" );
+			args.push_back( "--agent-build-protocol=off" );
+			args.push_back( scenePath );
+			std::string outStdout, outStderr;
+			const int rc = RunChild( args, plan, outStdout, outStderr );
+			Check( rc == 0, "S1/wire: the `--agent-build-protocol=off` child exits 0" );
+			std::vector<std::string> lines;
+			SplitLines( outStdout, lines );
+			Check( lines.size() >= 2, "S1/wire: the off-arm child emitted 2 stdout response lines" );
+			if( lines.size() >= 2 ) {
+				JsonValue e1, e2; std::string perr;
+				const bool ok = JsonParse( lines[0], e1, perr ) && JsonParse( lines[1], e2, perr );
+				Check( ok, "S1/wire: both off-arm response lines parse" );
+				if( ok ) {
+					Check( e1.get( "result" ).get( "filed" ).asBool( false ),
+					       "S1/wire: the plan STILL files with the protocol off (separate mechanism)" );
+					Check( e1.get( "result" ).get( "phase" ).asString() == "plan" &&
+					       !e1.get( "result" ).has( "activeElement" ),
+					       "S1/wire MONEY ASSERTION: `--agent-build-protocol=off` really disables the phase "
+					       "machinery -- filing transitions nothing and no element becomes active" );
+					Check( !e2.get( "result" ).get( "ok" ).asBool( true ) &&
+					       e2.get( "result" ).get( "message" ).asString().find( "protocol is off" ) !=
+					           std::string::npos,
+					       "S1/wire: and finish_element does nothing and says why" );
+				}
+			}
+		}
+	}
+	// RED-PROVE: the new flag obeys the family's "always loud, never silent"
+	// contract in the SAME three malformed shapes the gate flag is held to.
+	{
+		const char* const kBadForms[3][2] = {
+			{ "--agent-build-protocol=banana", "banana" },
+			{ "--agent-build-protocol",        nullptr  },
+			{ nullptr,                         nullptr  },   // the SPACE form, built below
+		};
+		for( int f = 0; f < 3; ++f ) {
+			std::vector<std::string> args;
+			args.push_back( "--agent-stdio" );
+			if( f == 2 ) { args.push_back( "--agent-build-protocol" ); args.push_back( "off" ); }
+			else         { args.push_back( kBadForms[f][0] ); }
+			args.push_back( scenePath );
+			std::string outStdout, outStderr;
+			const int rc = RunChild( args, std::string(), outStdout, outStderr );
+			Check( rc != 0,
+			       std::string( "RED-PROVE: malformed --agent-build-protocol form " ) +
+			       std::to_string( f ) + " exits NONZERO (never a silent default)" );
+			Check( outStderr.find( "--agent-build-protocol" ) != std::string::npos,
+			       std::string( "RED-PROVE: form " ) + std::to_string( f ) +
+			       " stderr names the offending flag" );
+			if( kBadForms[f][1] )
+				Check( outStderr.find( kBadForms[f][1] ) != std::string::npos,
+				       "RED-PROVE: stderr echoes the bad value 'banana' for --agent-build-protocol" );
+			Check( outStdout.empty() || outStdout.find( "jsonrpc" ) == std::string::npos,
+			       std::string( "RED-PROVE: form " ) + std::to_string( f ) +
+			       " fails BEFORE the loop starts (no JSON-RPC frame on stdout)" );
+		}
+	}
+
 	std::remove( scenePath.c_str() );
 }
 
@@ -1368,13 +1492,13 @@ static void TestLaunchFlagParsing()
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentAutonomyPolicyTest (Secure-MCP slice 2: headless autonomy policy) ===\n" );
 
 	TestReadPosture();

@@ -352,12 +352,25 @@ an object with a degenerate/unbounded bounding box FAILS the render
 `view` and `light` use. Nothing is written to the document, the
 viewport, or the user's camera.
 
+## `finish_element`: an isolate look you did not ask for
+
+`finish_element` closes the element you are working on and, along with
+the facts of what was recorded against it, returns an ISOLATE RENDER of
+it -- the object recorded against that element, alone in the frame and
+auto-framed, at the same agent-surface size cap as any other render.
+When several objects were recorded against the element, the one with
+the largest bounding box is rendered and the message says so; when none
+was, there is no image and the message says that instead. It is the
+same machinery `render {isolate}` uses, so the two looks are directly
+comparable. Nothing is required of an element before you finish it and
+nothing about the render is scored.
+
 ## The `target` param: the isolated look, measured against your sketch
 
-`target` is an optional string param on `render` naming a part in the
-part plan filed with `file_part_plan`. It requires `isolate` -- the
-join between a plan part and a scene object is made in this call, by
-you. With no `camera`/`view` of your own the render uses the
+`target` is an optional string param on `render` naming an ELEMENT in
+the build plan filed with `file_build_plan`. It requires `isolate` --
+the join between a plan element and a scene object is made in this
+call, by you. With no `camera`/`view` of your own the render uses the
 axis-aligned vantage the sketch declared (front looks along -Z, side
 along -X, top straight down); your own camera still wins, and the
 result's `target.vantage` then reads `caller-camera`.
@@ -369,7 +382,7 @@ result's `target.vantage` then reads `caller-camera`.
 The comparison runs one extra internal identity render at the same
 pose and dims, so the silhouette it measures is exact and does not
 depend on `mode`, `quality`, lighting, or materials. The result gains
-a `target` object: `part`, `view`, `vantage`, `iou`, `mirroredIou`,
+a `target` object: `element`, `view`, `vantage`, `iou`, `mirroredIou`,
 `sketchAreaFraction`, `silhouetteAreaFraction`, `sketchAspect`,
 `silhouetteAspect`, `thinnestAxisRatio`, and the composite's dims.
 `iou` is intersection-over-union of the two silhouettes after both are

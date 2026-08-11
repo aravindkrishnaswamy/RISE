@@ -459,11 +459,11 @@ namespace RISE
 			//! not progress toward the blind-edit failure mode this gate
 			//! guards against, so it should neither reset nor grow it.
 			//!
-			//! G2 (2026-08-10): file_part_plan is DELIBERATELY neither, for
+			//! G2 (2026-08-10): file_build_plan is DELIBERATELY neither, for
 			//! exactly ask_user's reason and by the same test.  It does not
 			//! mutate the document (no chunk, no param, no head bump), so
 			//! counting it as a mutation would refuse a model for declaring a
-			//! plan -- and the part-plan gate can force that call, so the two
+			//! plan -- and the build-plan gate can force that call, so the two
 			//! gates would fight.  It is not a LOOK either: it observes no
 			//! rendered pixels, so resetting the blind-edit streak with it
 			//! would hand every model a free, image-free streak reset and
@@ -471,7 +471,7 @@ namespace RISE
 			//! it.
 			//!
 			//! G3a (2026-08-10) RE-AFFIRMS THAT CALL, against the one fact
-			//! that looks like it should change it: file_part_plan's result
+			//! that looks like it should change it: file_build_plan's result
 			//! now CARRIES AN IMAGE (the composite sketch echo), and it is
 			//! listed in AgentChatCodecs' IsImageResult accordingly.  It is
 			//! STILL neither a mutation nor a look.  The sketch is the model's
@@ -487,9 +487,9 @@ namespace RISE
 			//! Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
 			//! NEITHER, by the same two tests and for a sharper version of
 			//! the same reason.  It mutates nothing (no chunk, no param, no
-			//! head bump) and the part-plan gate can force it, so counting it
+			//! head bump) and the build-plan gate can force it, so counting it
 			//! as a mutation would have the two gates fight -- exactly
-			//! file_part_plan's argument.  And it is not a LOOK: the image it
+			//! file_build_plan's argument.  And it is not a LOOK: the image it
 			//! returns is the model's own imagination rendered by a provider,
 			//! containing no pixel of the actual scene and identical on an
 			//! empty document, so resetting the blind-edit streak with it
@@ -498,10 +498,27 @@ namespace RISE
 			//! A RENDER that carries a `sceneTarget` comparison is of course
 			//! still a look: it is a `render`, already on the list by name,
 			//! and it really did produce scene pixels.
+			//! S1 (2026-08-11): `finish_element` IS a look, by the very test
+			//! the two paragraphs above apply -- it performs a REAL isolate
+			//! render of the live scene and returns those pixels, so it is not
+			//! the free, scene-free streak reset a sketch echo or an imagined
+			//! target would be.  Refusing it entry here would have this gate
+			//! tell a model "N edits in a row without looking" in the turn
+			//! right after it looked, which is a false claim in a model-facing
+			//! payload.  It is name-based like every other entry, so the one
+			//! case where finish_element returns NO image (an element with no
+			//! renderable object attributed to it) still resets the streak --
+			//! the same granularity a FAILED `render` already has, and the same
+			//! direction of error (under-refusing, never over-refusing).
+			//!
+			//! `reopen_element` is DELIBERATELY neither, by ask_user's test: it
+			//! mutates nothing and observes nothing, so it leaves the streak
+			//! exactly as it found it.
 			bool IsVisualObserveToolName( const std::string& v )
 			{
 				return v == "render" || v == "read_image" || v == "read_viewport" ||
-				       v == "query_object_at" || v == "compare_to_reference";
+				       v == "query_object_at" || v == "compare_to_reference" ||
+				       v == "finish_element";
 			}
 		}
 
@@ -1298,8 +1315,10 @@ namespace RISE
 			//!                                                  (+ "; <part> vs sketch: iou <2dp>" on a G3b target comparison,
 			//!                                                   + "; imagined-scene target shown|held" on an Arc-77 scene-target render -- Phase 2b: no score, the composite IS the comparison)
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
-			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ... (<k> sketch(es))" (G2; sketch count G3a)
+			//!   7b. name == "file_build_plan"                -> "<n> element(s): <element>=<construction>, ... (<p> piece(s), <k> sketch(es))" (G2; sketches G3a; elements/pieces S1)
 			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
+			//!   7d. name == "finish_element"                -> "finished <element> (<n> chunks, <k>/<m> pieces named) -> <next>|compose" (S1)
+			//!       name == "reopen_element"                -> "reopened <element> (from <phase>)" (S1)
 			//!                                                  | "no image generation on this provider" | "not imagined: <msg>" (Arc 77 Phase 2)
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
@@ -1441,7 +1460,7 @@ namespace RISE
 						if( tgt.isObject() && tgt.has( "iou" ) ) {
 							char iouBuf[32];
 							std::snprintf( iouBuf, sizeof( iouBuf ), "%.2f", tgt.get( "iou" ).asNumber() );
-							line += "; " + tgt.get( "part" ).asString() + " vs sketch: iou " + iouBuf;
+							line += "; " + tgt.get( "element" ).asString() + " vs sketch: iou " + iouBuf;
 						}
 					}
 					// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the
@@ -1480,7 +1499,7 @@ namespace RISE
 					return "ok";
 				}
 
-				// 7b. G2 (2026-08-10) file_part_plan: "ok" would throw away the
+				// 7b. G2 (2026-08-10) file_build_plan: "ok" would throw away the
 				// one fact the human watching the transcript wants -- WHAT the
 				// model declared.  The whole point of the gate is the
 				// representation choice, so the choice is what the line
@@ -1515,21 +1534,70 @@ namespace RISE
 					return TruncateForOutcome( "not imagined: " + result.get( "message" ).asString(), 140 );
 				}
 
-				if( call.name == "file_part_plan" ) {
-					const JsonValue& parts = result.get( "parts" );
-					if( !parts.isArray() || parts.size() == 0 ) return "ok";
+				if( call.name == "file_build_plan" ) {
+					const JsonValue& elements = result.get( "elements" );
+					if( !elements.isArray() || elements.size() == 0 ) return "ok";
 					std::size_t sketched = 0;
-					std::string line = std::to_string( parts.size() ) +
-						( parts.size() == 1 ? " part: " : " parts: " );
-					for( std::size_t i = 0; i < parts.size(); ++i ) {
+					std::size_t pieces = 0;
+					std::string line = std::to_string( elements.size() ) +
+						( elements.size() == 1 ? " element: " : " elements: " );
+					for( std::size_t i = 0; i < elements.size(); ++i ) {
 						if( i ) line += ", ";
-						line += parts.at( i ).get( "part" ).asString() + "=" +
-						        parts.at( i ).get( "construction" ).asString();
-						if( parts.at( i ).has( "pointCount" ) ) ++sketched;
+						line += elements.at( i ).get( "element" ).asString() + "=" +
+						        elements.at( i ).get( "construction" ).asString();
+						const JsonValue& pv = elements.at( i ).get( "pieces" );
+						if( pv.isArray() ) pieces += pv.size();
+						if( elements.at( i ).has( "pointCount" ) ) ++sketched;
 					}
-					line += " (" + std::to_string( sketched ) +
+					// S1: the PIECE count joins the line -- the decomposition
+					// depth is the first thing this arc measures, so a human
+					// watching the transcript should see it without opening the
+					// raw payload.
+					line += " (" + std::to_string( pieces ) +
+						( pieces == 1 ? " piece, " : " pieces, " ) + std::to_string( sketched ) +
 						( sketched == 1 ? " sketch)" : " sketches)" );
 					return TruncateForOutcome( line, 140 );
+				}
+
+				// 7d. S1 (2026-08-11) finish_element / reopen_element: "ok"
+				// would hide the two facts a human watching the transcript
+				// needs -- WHICH element the session just left or re-entered,
+				// and where the protocol now is.  A did-nothing call (ok:false)
+				// says so rather than reading as a successful advance.
+				if( call.name == "finish_element" ) {
+					if( !result.get( "ok" ).asBool() )
+						return TruncateForOutcome( "no element closed: " +
+							result.get( "message" ).asString(), 140 );
+					std::string line = "finished " + result.get( "element" ).asString();
+					const JsonValue& chunks = result.get( "chunks" );
+					if( chunks.isArray() )
+						line += " (" + std::to_string( chunks.size() ) +
+							( chunks.size() == 1 ? " chunk" : " chunks" );
+					// S1 fix-round (2026-08-11, P3): the "N/M pieces named"
+					// fraction below is DISPLAY-ONLY.  This function builds the
+					// human-readable transcript one-liner, which is never
+					// serialized into a provider payload, so the ratio cannot
+					// steer the model.  It is nonetheless the one score-SHAPED
+					// string this arc writes down: it must never be moved,
+					// copied or echoed into anything a provider sees (77 sec 15
+					// -- an attached number selects the axis the model moves).
+					const JsonValue& named = result.get( "piecesNamed" );
+					const JsonValue& notNamed = result.get( "piecesNotNamed" );
+					if( chunks.isArray() && named.isArray() && notNamed.isArray() )
+						line += ", " + std::to_string( named.size() ) + "/" +
+							std::to_string( named.size() + notNamed.size() ) + " pieces named)";
+					else if( chunks.isArray() )
+						line += ")";
+					const std::string next = result.get( "nextElement" ).asString();
+					line += next.empty() ? " -> compose" : ( " -> " + next );
+					return TruncateForOutcome( line, 140 );
+				}
+				if( call.name == "reopen_element" ) {
+					if( !result.get( "ok" ).asBool() )
+						return TruncateForOutcome( "not reopened: " +
+							result.get( "message" ).asString(), 140 );
+					return TruncateForOutcome( "reopened " + result.get( "element" ).asString() +
+						" (from " + result.get( "previousPhase" ).asString() + ")", 140 );
 				}
 
 				// 8. validate: the one-liner must say whether the scene is

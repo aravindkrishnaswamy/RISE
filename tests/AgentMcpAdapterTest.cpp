@@ -130,13 +130,13 @@ static JsonValue ParseResponse( const std::string& line, double expectId )
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentMcpAdapterTest (Secure-MCP slice 1: MCP envelope adapter) ===\n" );
 
 	const std::string scenePath = WriteTemp( "rise_mcp_adapter_slice1.RISEscene", kScene );
@@ -150,18 +150,19 @@ int main()
 	// same seam AgentEvalRunner fills from the live transport -- so the MCP
 	// path below drives the identical session code a real provider does, with
 	// no network and no key.  The canned image is minted as a real, decodable
-	// PNG from a throwaway session's part-plan sketch composite (256x256),
+	// PNG from a throwaway session's build-plan sketch composite (256x256),
 	// which avoids adding a PNG encoder to this test.
 	{
 		std::vector<unsigned char> cannedPng;
 		{
 			std::unique_ptr<AgentSession> minter = AgentSession::LoadFromFile( scenePath );
 			if( minter ) {
-				std::vector<AgentSession::AgentPartPlanEntry> parts;
-				AgentSession::AgentPartPlanEntry e;
-				e.part = "canned"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1";
+				std::vector<AgentSession::AgentBuildPlanEntry> parts;
+				AgentSession::AgentBuildPlanEntry e;
+				e.element = "canned"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1";
+				e.pieces.push_back( "piece" );
 				parts.push_back( e );
-				cannedPng = minter->FilePartPlan( parts ).compositePng;
+				cannedPng = minter->FileBuildPlan( parts ).compositePng;
 			}
 		}
 		Check( !cannedPng.empty(), "minted a canned target PNG for the imagine_scene MCP test" );
@@ -257,7 +258,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 25, "id:null tools/list result carries all 25 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 27, "id:null tools/list result carries all 27 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -331,9 +332,11 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 25, "tools/list returns EXACTLY the 25 agent verbs" );
+		Check( toolsList.size() == 27, "tools/list returns EXACTLY the 27 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
+			// S1 (2026-08-11): the two staged-build-protocol verbs.
+			"finish_element", "reopen_element",
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 			"insert_material_scaffold", "insert_geometry_scaffold",
@@ -481,26 +484,45 @@ int main()
 			Check( desc.find( "image content block" ) != std::string::npos,
 			       "read_image description documents the MCP image content block mapping" );
 		}
-		// G3a (2026-08-10): the part-plan schema v2 on the MCP surface.
+		// G3a (2026-08-10): the build-plan schema v2 on the MCP surface.
 		// `outline` REQUIRED with no opt-out is the mechanism itself, so an
 		// adapter that shipped it optional would turn the slice off for every
 		// MCP client while the chat codecs still enforced it.
 		{
-			JsonValue tool = FindTool( "file_part_plan" );
+			JsonValue tool = FindTool( "file_build_plan" );
 			const JsonValue& items = tool.get( "inputSchema" ).get( "properties" )
-			                             .get( "parts" ).get( "items" );
+			                             .get( "elements" ).get( "items" );
 			const JsonValue& req = items.get( "required" );
 			bool hasOutline = false, hasView = false;
 			for( std::size_t i = 0; i < req.size(); ++i ) {
 				if( req.at( i ).asString() == "outline" ) hasOutline = true;
 				if( req.at( i ).asString() == "view" )    hasView = true;
 			}
-			Check( hasOutline, "G3a: the MCP file_part_plan schema marks `outline` REQUIRED" );
+			Check( hasOutline, "G3a: the MCP file_build_plan schema marks `outline` REQUIRED" );
+			// S1 (2026-08-11): `pieces` is REQUIRED with minItems 1, on the
+			// same force-level argument -- the decomposition IS the artifact,
+			// so an adapter that shipped it optional would turn the slice off
+			// for every MCP client while the chat codecs still enforced it.
+			{
+				bool hasPieces = false;
+				for( std::size_t i = 0; i < req.size(); ++i )
+					if( req.at( i ).asString() == "pieces" ) hasPieces = true;
+				Check( hasPieces, "S1: the MCP file_build_plan schema marks `pieces` REQUIRED" );
+				const JsonValue& pp = items.get( "properties" ).get( "pieces" );
+				Check( pp.get( "type" ).asString() == "array" && pp.get( "minItems" ).asNumber( -1 ) == 1.0,
+				       "S1: `pieces` is an array with minItems 1" );
+			}
+			{
+				bool hasElement = false;
+				for( std::size_t i = 0; i < req.size(); ++i )
+					if( req.at( i ).asString() == "element" ) hasElement = true;
+				Check( hasElement, "S1: and `element` (the renamed `part`) is REQUIRED" );
+			}
 			Check( !hasView,   "G3a: and leaves `view` OPTIONAL (it defaults to front)" );
 			const JsonValue& viewEnum = items.get( "properties" ).get( "view" ).get( "enum" );
 			Check( viewEnum.isArray() && viewEnum.size() == 3 && viewEnum.at( 0 ).asString() == "front",
 			       "G3a: `view` carries the closed front|side|top enum, derived from "
-			       "kPartPlanViewValues so it cannot drift" );
+			       "kBuildPlanViewValues so it cannot drift" );
 			Check( items.get( "properties" ).get( "outline" ).get( "description" )
 			            .asString().find( "at least 3" ) != std::string::npos,
 			       "G3a: and the outline description states the 3-point minimum the dispatcher enforces" );
@@ -627,29 +649,35 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	// G3a (2026-08-10): tools/call(file_part_plan) -- the composite SKETCH
+	// G3a (2026-08-10): tools/call(file_build_plan) -- the composite SKETCH
 	// PNG must ride back as a real MCP image content block, not merely as a
 	// base64 string buried in the text block.  The whole point of the echo is
 	// that the model SEES what it sketched; on this transport "sees" means an
 	// image block, and a client is not required to know that some field of
 	// some verb's JSON happens to be a picture.
 	//----------------------------------------------------------------------
-	std::printf( "[tools/call] G3a file_part_plan -> MCP image content block (the sketch composite)\n" );
+	std::printf( "[tools/call] G3a file_build_plan -> MCP image content block (the sketch composite)\n" );
 	{
 		JsonValue entry = JsonValue::MakeObject();
-		entry.set( "part",         JsonValue::MakeString( "wing" ) );
+		entry.set( "element",      JsonValue::MakeString( "wing" ) );
+		// S1 (2026-08-11): `pieces` is a REQUIRED build-plan field.
+		{
+			JsonValue piecesArr = JsonValue::MakeArray();
+			piecesArr.push_back( JsonValue::MakeString( "piece" ) );
+			entry.set( "pieces", piecesArr );
+		}
 		entry.set( "construction", JsonValue::MakeString( "sweep" ) );
 		entry.set( "outline",      JsonValue::MakeString( "0 0; 3 1; 2 2; -1 1.4" ) );
 		JsonValue arr = JsonValue::MakeArray();
 		arr.push_back( entry );
 		JsonValue args = JsonValue::MakeObject();
-		args.set( "parts", arr );
+		args.set( "elements", arr );
 
-		const std::string resp = mcp.HandleLine( ReqToolCall( 23, "file_part_plan", args ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 23, "file_build_plan", args ) );
 		JsonValue env = ParseResponse( resp, 23 );
-		Check( !env.has( "error" ), "tools/call(file_part_plan) is a JSON-RPC success" );
+		Check( !env.has( "error" ), "tools/call(file_build_plan) is a JSON-RPC success" );
 		const JsonValue& result = env.get( "result" );
-		Check( !result.get( "isError" ).asBool( true ), "tools/call(file_part_plan) isError == false" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(file_build_plan) isError == false" );
 		const JsonValue& content = result.get( "content" );
 		bool foundImage = false;
 		for( std::size_t i = 0; i < content.size(); ++i ) {
@@ -662,7 +690,7 @@ int main()
 			       "G3a: the sketch composite decodes to the \\x89PNG signature" );
 		}
 		Check( foundImage,
-		       "G3a MONEY ASSERTION: tools/call(file_part_plan) content includes a {type:\"image\"} "
+		       "G3a MONEY ASSERTION: tools/call(file_build_plan) content includes a {type:\"image\"} "
 		       "block -- the model SEES its own sketch on the MCP transport too" );
 	}
 
@@ -673,7 +701,7 @@ int main()
 	// composite is how the filed sketch re-enters the model's context at
 	// consultation time (design doc sec 4.3), and a base64 field buried in a
 	// text block is not something a client is required to recognize as a
-	// picture.  Relies on the file_part_plan call above having filed "wing".
+	// picture.  Relies on the file_build_plan call above having filed "wing".
 	//
 	// The presence half is asserted here; the SCOPE half -- what a plain
 	// `render` (no target) does and does not return -- is asserted just below
@@ -1061,7 +1089,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 25, "no-head tools/list still lists all 25 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 27, "no-head tools/list still lists all 27 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

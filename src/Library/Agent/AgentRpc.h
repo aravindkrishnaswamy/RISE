@@ -44,24 +44,28 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
-//      file_part_plan {parts:[{part,construction,outline,view?,note?},...]}
-//                                        -> {filed:true,replacedPreviousPlan:bool,partCount:number,
-//                                            parts:[{part,construction,note,outline,view,
+//      file_build_plan {elements:[{element,pieces,construction,outline,view?,note?},...]}
+//                                        -> {filed:true,replacedPreviousPlan:bool,elementCount:number,
+//                                            elements:[{element,pieces,construction,note,outline,view,
 //                                                    pointCount,areaFraction,aspect},...],
+//                                            phase,activeElement?,
 //                                            png_base64?,byteLength?,compositeWidth?,
 //                                            compositeHeight?,sketchCanvas?,message}
-//                                           (G2, 2026-08-10: file the session's PART PLAN --
-//                                            a list of the parts of the subject being
-//                                            built, each with a `construction` value from
-//                                            the CLOSED enum
+//                                           (G2, 2026-08-10; S1 schema v3, 2026-08-11:
+//                                            file the session's BUILD PLAN -- the elements
+//                                            of the subject being built, each broken into
+//                                            named `pieces` and carrying a `construction`
+//                                            value from the CLOSED enum
 //                                            primitive|csg|sweep|chain|displaced|mesh.
+//                                            Filing also enters the PIECES phase with the
+//                                            first element active -- see finish_element.
 //                                            READ-SAFE: it records a per-session
 //                                            declaration and touches the retained
 //                                            Document not at all -- no head bump, no
 //                                            conflict, no staging, no authority branch --
 //                                            so it is available under EVERY autonomy
 //                                            posture, which it must be: it is the only
-//                                            way to disarm the part-plan gate, and that
+//                                            way to disarm the build-plan gate, and that
 //                                            gate can fire under Propose.  ANY plan is
 //                                            accepted (all-`primitive` included); the
 //                                            declaration is NON-BINDING and constrains
@@ -70,7 +74,7 @@
 //                                            missing/empty `parts`, a missing `part`, or
 //                                            a `construction` outside the enum is a clean
 //                                            -32602 naming the accepted values.  See
-//                                            AgentSession.h's block above FilePartPlan
+//                                            AgentSession.h's block above FileBuildPlan
 //                                            for the gate itself.
 //                                            G3a, 2026-08-10 -- SCHEMA v2: each part also
 //                                            carries a REQUIRED `outline` (a closed 2D
@@ -90,6 +94,27 @@
 //                                            the gate's refusal counter.  Re-filing
 //                                            REPLACES the target set wholesale, exactly
 //                                            like the plan.)
+//      finish_element {}                 -> {ok,element?,phase,nextElement?,chunks?,
+//                                            piecesNamed?,piecesNotNamed?,isolate?,
+//                                            isolateCandidates?,rendered?,png_base64?,
+//                                            byteLength?,imageWidth?,imageHeight?,message}
+//                                           (S1, 2026-08-11: close the ACTIVE element and
+//                                            advance -- to the next element with no finish
+//                                            recorded, or to the COMPOSE phase after the
+//                                            last one.  Reports what was recorded against
+//                                            the element, which declared piece names appear
+//                                            in an attributed chunk NAME, and returns an
+//                                            ISOLATE RENDER of the element.  READ-SAFE: it
+//                                            changes session phase state and renders; the
+//                                            Document is untouched.  ok:false means the call
+//                                            did nothing and `message` says why.)
+//      reopen_element {element}          -> {ok,element?,phase,previousPhase,chunks?,
+//                                            unfinished?,message}
+//                                           (S1, 2026-08-11: re-enter an element's window
+//                                            from ANY phase, including compose.  Never
+//                                            gated, never counted against any cap -- it is
+//                                            the escape the compose-phase creation refusal
+//                                            names.  READ-SAFE; the Document is untouched.)
 //      imagine_scene {description}       -> {ok,imagined,replacedPreviousTarget,
 //                                            provider?,model?,capabilityAvailable?,
 //                                            requirementDisarmed?,width?,height?,
@@ -103,10 +128,10 @@
 //                                            session-side as THE scene target, and returns
 //                                            it inline under the same `png_base64` field
 //                                            name every other image-bearing verb uses.
-//                                            READ-SAFE for file_part_plan's two reasons
+//                                            READ-SAFE for file_build_plan's two reasons
 //                                            (it touches the Document not at all, and on a
 //                                            capable provider it is one of the TWO ways to
-//                                            disarm the part-plan gate).  From then on
+//                                            disarm the build-plan gate).  From then on
 //                                            every FULL-FRAME PRODUCTION BEAUTY render --
 //                                            not draft, not mode:, not isolate -- gains a
 //                                            `sceneTarget` block {imagined,targetWidth,
@@ -551,16 +576,16 @@
 //                                            omits the bbox trio; a non-pinhole
 //                                            active camera omits bboxCoverage).)
 //                                           (G3b (2026-08-10) adds `target` (OPTIONAL
-//                                            string): the name of a part in the
-//                                            CURRENTLY FILED part plan (file_part_plan),
+//                                            string): the name of an ELEMENT in the
+//                                            CURRENTLY FILED build plan (file_build_plan),
 //                                            whose rasterized sketch this render's
 //                                            isolated object is measured against.
-//                                            REQUIRES `isolate` -- the plan-part-to-
+//                                            REQUIRES `isolate` -- the plan-element-to-
 //                                            object join is made by the CALLER, here;
 //                                            the missing pairing (and a non-string
 //                                            value) is a clean -32602, while an
-//                                            unknown part name or an unfiled plan
-//                                            FAILS the render with the filed part
+//                                            unknown element name or an unfiled plan
+//                                            FAILS the render with the filed element
 //                                            names in `message`, matching
 //                                            `view`/`light`/`isolate`.  With no
 //                                            caller camera the auto-frame uses the
@@ -576,7 +601,7 @@
 //                                            is cache-guarded and never displaces the
 //                                            caller's own last render.  A SUCCESSFUL
 //                                            comparison (rr.ok) adds a nested `target`
-//                                            result object {part,view,vantage,iou,
+//                                            result object {element,view,vantage,iou,
 //                                            mirroredIou,sketchAreaFraction,
 //                                            silhouetteAreaFraction,sketchAspect,
 //                                            silhouetteAspect?,thinnestAxisRatio?,
@@ -1043,7 +1068,7 @@
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
 //    list_proposals, read_viewport, query_object_at, compare_to_reference,
-//    file_part_plan, imagine_scene --
+//    file_build_plan, finish_element, reopen_element, imagine_scene --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
@@ -1166,7 +1191,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_part_plan/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
 			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but

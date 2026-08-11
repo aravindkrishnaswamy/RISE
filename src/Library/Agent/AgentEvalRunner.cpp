@@ -6850,11 +6850,11 @@ namespace RISE
 										// Omitting it would let a run that re-formed the scene
 										// before asking VACUOUSLY PASS askUserBeforeMutation.
 										"replace_geometry_scaffold",
-										// G2 (2026-08-10): file_part_plan is DELIBERATELY
+										// G2 (2026-08-10): file_build_plan is DELIBERATELY
 										// absent.  It changes nothing in the document, so
 										// listing it here would fail askUserBeforeMutation
 										// for a run that filed a plan and THEN asked -- and
-										// the part-plan gate can force that ordering, so
+										// the build-plan gate can force that ordering, so
 										// the two mechanisms would fight.  Same call it
 										// gets in AgentChatLoop.cpp's IsMutatingToolName.
 										// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is
@@ -6863,7 +6863,14 @@ namespace RISE
 										// the same gate can force it before the first
 										// geometry call, so listing it would make the gate
 										// and askUserBeforeMutation fight in exactly the way
-										// file_part_plan's exclusion prevents.
+										// file_build_plan's exclusion prevents.
+										// S1 (2026-08-11): `finish_element` and
+										// `reopen_element` are absent for the identical
+										// reason -- neither changes the document (they move
+										// per-session phase state), and finish_element is
+										// the protocol's own advance, which a run may
+										// legitimately call before ever asking the user
+										// anything.
 										"propose_patch", "propose_patches", "remove_chunk",
 										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
 										// remove -- ONE call removes N chunks, so it is very

@@ -733,8 +733,8 @@ namespace RISE
 			//! camera.
 			std::string          isolate;
 			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a
-			//! part in the CURRENTLY FILED part plan (see FilePartPlan /
-			//! PartSketches).  "" (default) = no comparison, the render
+			//! element in the CURRENTLY FILED build plan (see FileBuildPlan /
+			//! ElementSketches).  "" (default) = no comparison, the render
 			//! behaves exactly as G1 shipped it.
 			//!
 			//! REQUIRES `isolate` -- a comparison measures ONE object's
@@ -744,7 +744,7 @@ namespace RISE
 			//! docs/agentic-redesign/77-imagination-target-design.md §5.1).
 			//! `target` without `isolate` FAILS the render (res.ok=false)
 			//! stating the requirement; a name that is not in the filed plan
-			//! FAILS listing the filed part names; no plan filed at all FAILS
+			//! FAILS listing the filed element names; no plan filed at all FAILS
 			//! saying so -- the same fail-loud contract `view`/`light`/
 			//! `isolate` already use, never a silent skip.
 			//!
@@ -1159,7 +1159,7 @@ namespace RISE
 			double                     isolateBBoxCoverage = -1.0;
 			//! G3b (2026-08-10): the measured facts of a `target` comparison
 			//! -- the isolated object's rendered silhouette against the
-			//! part's filed sketch.  ALL default to the "no comparison
+			//! element's filed sketch.  ALL default to the "no comparison
 			//! happened" values.
 			//!
 			//! `targetApplied` is true ONLY when the render SUCCEEDED and the
@@ -1172,7 +1172,7 @@ namespace RISE
 			//! pass, or an unresolvable `target` all leave every field here
 			//! at its default and emit NO block.
 			//!
-			//! `targetPart` echoes the resolved part name; `targetView` is
+			//! `targetElement` echoes the resolved element name; `targetView` is
 			//! the sketch's declared view (front/side/top); `targetVantage`
 			//! is what the comparison render ACTUALLY looked from --
 			//! "front"/"side"/"top" when this call auto-framed, or
@@ -1185,7 +1185,7 @@ namespace RISE
 			//! union in [0,1] of two 0/1 masks on the SHARED 256x256
 			//! normalized canvas: the filed sketch, and the rendered
 			//! silhouette cropped to its own pixel bounding box and fitted by
-			//! the SAME transform (kPartSketchFillFraction, aspect preserved,
+			//! the SAME transform (kElementSketchFillFraction, aspect preserved,
 			//! centered -- see AgentSession.cpp's SketchFitTransform_, the
 			//! ONE definition both sites call).  The metric is therefore
 			//! translation- and scale-invariant BY CONSTRUCTION: it measures
@@ -1211,7 +1211,7 @@ namespace RISE
 			//! `isolateBBoxCoverage`.
 			//!
 			//! `targetCompositePng` is the [sketch | silhouette | overlay]
-			//! strip: three kPartSketchCanvas-square tiles side by side.  It
+			//! strip: three kElementSketchCanvas-square tiles side by side.  It
 			//! is a REQUIREMENT of this slice, not a convenience -- the
 			//! transport keeps only the most recent tool-result image live,
 			//! so this composite is HOW the filed sketch re-enters the
@@ -1219,7 +1219,7 @@ namespace RISE
 			//! §4.3 "Retention interaction").  Empty when !targetApplied or
 			//! when the encode failed.
 			bool                       targetApplied = false;
-			std::string                targetPart;
+			std::string                targetElement;
 			std::string                targetView;
 			std::string                targetVantage;
 			double                     targetIou = 0.0;
@@ -1243,7 +1243,7 @@ namespace RISE
 			//!
 			//! WHERE IT ATTACHES, and why exactly there.  ONLY on a
 			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
-			//! isolate and did NOT carry a part `target`.  The three
+			//! isolate and did NOT carry an element `target`.  The three
 			//! exclusions are not conservatism, they are honesty:
 			//!   * DRAFT ignores the scene's authored materials and lighting
 			//!     entirely, so setting it beside a coloured, lit target
@@ -1252,7 +1252,7 @@ namespace RISE
 			//!     appearance -- same objection, more starkly.
 			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
 			//!     PART, and the whole-scene target is not what it is a look
-			//!     at.  (A part look has its own criterion -- `target`.)
+			//!     at.  (An element look has its own criterion -- `target`.)
 			//! The battery that selected this mechanism measured models
 			//! visiting the full-frame render surface 64/64 times and every
 			//! per-part consultation surface 0/64, which is why the
@@ -1696,14 +1696,14 @@ namespace RISE
 		//!     original slice-0a contract -- no mutex protects them, and
 		//!     none is added by this fix.
 		//!     G3b fix-round (2026-08-10): the PART-PLAN state
-		//!     (mPartPlan / mPartSketches -- written by FilePartPlan, read
-		//!     by FindPartSketch / ResolveTargetSketch) lives in THIS
+		//!     (mBuildPlan / mElementSketches -- written by FileBuildPlan, read
+		//!     by FindElementSketch / ResolveTargetSketch) lives in THIS
 		//!     bucket, and the async render path honours that by SNAPSHOT
 		//!     rather than by a new lock: RenderAsync resolves
 		//!     `params.target` on the SUBMITTING thread and threads the
-		//!     resolved AgentPartSketch COPY into the worker closure, so
+		//!     resolved AgentElementSketch COPY into the worker closure, so
 		//!     nothing running on the controller's render worker ever
-		//!     touches mPartSketches.  See the `resolvedTarget` parameters
+		//!     touches mElementSketches.  See the `resolvedTarget` parameters
 		//!     on RenderCore_ / ApplyTargetComparison_.
 		//!     Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET state
 		//!     (mSceneTarget -- written by ImagineScene, read by the
@@ -1714,6 +1714,22 @@ namespace RISE
 		//!     copy to ApplySceneTargetComparison_, and ImagineScene publishes
 		//!     by REPLACING the pointer (never mutating a published pointee),
 		//!     so a worker holding a snapshot is reading immutable bytes.
+		//!     S1 (2026-08-11): the STAGED-BUILD-PROTOCOL state
+		//!     (mBuildPhase / mActiveElement / mElementFinished /
+		//!     mChunkAttribution / the phase-refusal counters) is in this
+		//!     bucket too, and needs NO snapshot discipline at all --
+		//!     nothing on the controller's render worker reads or writes any
+		//!     of it.  ENUMERATED rather than asserted: the writers are
+		//!     FileBuildPlan, FinishElement, ReopenElement, the attribution
+		//!     hooks inside the creating verbs and the two phase checks
+		//!     inside the editing verbs -- every one of them a
+		//!     dispatcher-thread entry point; the readers are those plus the
+		//!     four observers (BuildPhase / ActiveElement / ElementChunks /
+		//!     ChunkElement).  FinishElement's isolate render resolves its
+		//!     object and issues its render ON THE CALLING THREAD through the
+		//!     ordinary synchronous Render entry point, handing the worker
+		//!     nothing but an AgentRenderParams by value -- so the race the
+		//!     G3b fix-round closed has no surface here to reappear on.
 		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
 		//!     The Job behind mJob is SHARED: with a controller attached the
 		//!     GUI main thread commits to the same head while this session
@@ -1950,7 +1966,7 @@ namespace RISE
 		//! block (and a trailing `#` to comment out the orphaned brace) becomes
 		//! a REAL new geometry chunk the moment the document is serialized.
 		//! That is the identical VALUE-SPLICE mechanism R1c's arm (b) was built
-		//! to close for rasterizer chunks; before this fix the part-plan gate
+		//! to close for rasterizer chunks; before this fix the build-plan gate
 		//! -- which guards the four INSERT verbs -- had no equivalent, so
 		//! propose_patch / propose_patches could land geometry with no plan
 		//! filed and the gate's refusal counter still reading zero, i.e. the
@@ -1977,8 +1993,8 @@ namespace RISE
 		//! PURE -- it never touches the gate's counter or its disarm flags;
 		//! deciding what to DO about a positive answer is the caller's job
 		//! (AgentSession::ProposePatch routes it through the ONE shared
-		//! CheckPartPlanGate_ budget).
-		std::string DescribePartPlanGeometryDeltaForPatch( const std::string& headText,
+		//! CheckBuildPlanGate_ budget).
+		std::string DescribeBuildPlanGeometryDeltaForPatch( const std::string& headText,
 		                                                    const std::string& target,
 		                                                    const std::string& kind,
 		                                                    const std::string& param,
@@ -2991,7 +3007,7 @@ namespace RISE
 			// geometry-creating call (insert_chunk / insert_chunks carrying
 			// any Geometry-category chunk, insert_geometry_scaffold,
 			// replace_geometry_scaffold) on a session that has not filed a
-			// part plan.  The refusal names `file_part_plan` and the closed
+			// build plan.  The refusal names `file_build_plan` and the closed
 			// `construction` enum; the Document is COMPLETELY untouched.
 			//
 			// WHY.  A census of 48 GUI agent trajectories found 252 bare
@@ -3010,7 +3026,7 @@ namespace RISE
 			// is the FINDING (compliance without competence) -- enforcing
 			// would hide exactly the signal the gate exists to produce.
 			//
-			// REFUSE-UNTIL-FILED, CAPPED AT kPartPlanGateMaxRefusals (3) PER
+			// REFUSE-UNTIL-FILED, CAPPED AT kBuildPlanGateMaxRefusals (3) PER
 			// SESSION (2026-08-10 supervisor overrule of the original
 			// once-per-session design).  A gate a model can clear by simply
 			// re-issuing the SAME call without filing anything yields zero
@@ -3027,11 +3043,11 @@ namespace RISE
 			// call.  The cap bounds that failure mode while still forcing
 			// the choice on any model that can make it.  The give-up is not
 			// silent: the call that trips it carries a factual notice in its
-			// own result (see CheckPartPlanGate_'s doc) so the event is
+			// own result (see CheckBuildPlanGate_'s doc) so the event is
 			// visible in the payload a trajectory census reads.
 			//
 			// ANTI-GOODHART BY CONSTRUCTION.  ANY plan is accepted:
-			// `primitive` for every part is a complete, legal plan.  Filing
+			// `primitive` for every element is a complete, legal plan.  Filing
 			// disarms the gate PERMANENTLY and immediately, at any point --
 			// after 0, 1 or 2 refusals -- so it cannot be farmed for a
 			// compliance score, and a session that plans first is never
@@ -3040,14 +3056,14 @@ namespace RISE
 			// intercepting -- never a claim the code does not honour.
 			//
 			//----------------------------------------------------------------
-			// G3a (2026-08-10): the SKETCH ARTIFACT -- part-plan SCHEMA v2.
+			// G3a (2026-08-10): the SKETCH ARTIFACT -- build-plan SCHEMA v2.
 			//
 			// WHAT CHANGED.  Every part entry now carries a REQUIRED 2D
 			// `outline` (a closed polygon, authored as "x y; x y; ..." with
 			// >= 3 points) and an OPTIONAL `view` (front|side|top, default
 			// front).  The harness rasterizes each outline into a
 			// deterministic 256x256 silhouette mask, keeps the masks as
-			// SESSION-LIFETIME targets (AgentPartSketch / mPartSketches), and
+			// SESSION-LIFETIME targets (AgentElementSketch / mElementSketches), and
 			// echoes them back in the filing result as ONE composite PNG plus
 			// per-part facts.  Nothing else about the gate changes: same
 			// trigger set, same shared counter, same 3-refusal cap, same
@@ -3083,33 +3099,51 @@ namespace RISE
 			// persisted, gone when the session is.
 			//----------------------------------------------------------------
 
-			//! One declared part of the subject being built.  `construction`
+			//! One declared ELEMENT of the subject being built.  `construction`
 			//! is REQUIRED and comes from the closed enum
-			//! kPartPlanConstructionValues; `note` is optional free text.
-			//! G3a: `outline` is REQUIRED (see ValidatePartOutline for the
+			//! kBuildPlanConstructionValues; `note` is optional free text.
+			//! G3a: `outline` is REQUIRED (see ValidateElementOutline for the
 			//! accepted grammar) and `view` is optional, defaulting to
-			//! kPartPlanDefaultView when left empty.
-			struct AgentPartPlanEntry
+			//! kBuildPlanDefaultView when left empty.
+			//!
+			//! S1 (2026-08-11, the staged build protocol): `part` became
+			//! `element` and `pieces` joined it as a REQUIRED, >= 1 entry list.
+			//! The ELEMENT is the unit of the build window (see the
+			//! AgentBuildPhase block below); the PIECES are the element's own
+			//! declared breakdown -- a CHECKLIST that finish_element reports
+			//! against by NAME, never a gated sub-unit and never scored.  A
+			//! piece-level window would forbid exactly the whole-figure
+			//! construction the wizard probe measured as the good one (one
+			//! sdf_geometry carrying eleven parts), which is why the window is
+			//! the element and the pieces are declarative.
+			struct AgentBuildPlanEntry
 			{
-				std::string part;           //!< free-string part name
-				std::string construction;   //!< one of kPartPlanConstructionValues
+				std::string element;        //!< free-string element name
+				//! S1: REQUIRED, at least one entry -- this element's own
+				//! breakdown, in the model's words.  Declarative: nothing
+				//! validates, gates or scores them; finish_element reports
+				//! which piece names appear inside an attributed chunk name.
+				std::vector<std::string> pieces;
+				std::string construction;   //!< one of kBuildPlanConstructionValues
 				std::string note;           //!< optional, may be empty
 				//! G3a: REQUIRED closed polygon, "x y; x y; x y[; ...]",
 				//! >= 3 points, stored verbatim as the model authored it.
 				std::string outline;
-				//! G3a: one of kPartPlanViewValues, or empty for the
-				//! kPartPlanDefaultView default.  Recorded with the target
+				//! G3a: one of kBuildPlanViewValues, or empty for the
+				//! kBuildPlanDefaultView default.  Recorded with the target
 				//! for G3b's comparison vantage; G3a only echoes it.
 				std::string view;
 			};
 
 			//! G3a: one rasterized imagination TARGET -- the session-lifetime
-			//! artifact produced from one AgentPartPlanEntry's `outline`.
-			//! `mask` is exactly kPartSketchCanvas*kPartSketchCanvas bytes,
+			//! artifact produced from one AgentBuildPlanEntry's `outline`.
+			//! `mask` is exactly kElementSketchCanvas*kElementSketchCanvas bytes,
 			//! each 0 (outside) or 1 (inside), row-major from the TOP row.
-			struct AgentPartSketch
+			struct AgentElementSketch
 			{
-				std::string                part;          //!< the entry's part name
+				//! S1 (2026-08-11): the entry's ELEMENT name -- the key every
+				//! sketch lookup (FindElementSketch, a render's `target`) uses.
+				std::string                element;
 				std::string                view;          //!< RESOLVED view (never empty)
 				std::string                outline;       //!< the raw authored outline string
 				std::size_t                pointCount = 0;//!< parsed polygon vertices
@@ -3118,10 +3152,10 @@ namespace RISE
 				std::vector<unsigned char> mask;          //!< 0/1 per pixel, row-major
 			};
 
-			//! The structured result of FilePartPlan.  `ok` is true whenever
+			//! The structured result of FileBuildPlan.  `ok` is true whenever
 			//! the plan was recorded.  G3a adds ONE rejection path reachable
 			//! from the C++ API: an `outline` this class cannot rasterize
-			//! (see ValidatePartOutline).  That is NOT schema policing -- it
+			//! (see ValidateElementOutline).  That is NOT schema policing -- it
 			//! is a PRECONDITION of the artifact, because the whole point of
 			//! the call is to produce a target and a plan whose outline does
 			//! not parse has no target to produce.  A rejected filing changes
@@ -3131,16 +3165,16 @@ namespace RISE
 			//! outline first and answers a defect with -32602 naming the part
 			//! index (which, being a schema error, likewise never touches the
 			//! counter).
-			struct AgentPartPlanResult
+			struct AgentBuildPlanResult
 			{
 				bool                            ok = false;
 				bool                            replacedPreviousPlan = false;
-				std::vector<AgentPartPlanEntry> parts;
+				std::vector<AgentBuildPlanEntry> elements;
 				std::string                     message;
-				//! G3a: one entry per part, in filing order (empty when !ok).
-				std::vector<AgentPartSketch>    sketches;
+				//! G3a: one entry per element, in filing order (empty when !ok).
+				std::vector<AgentElementSketch>    sketches;
 				//! G3a: the ONE composite PNG tiling every mask left-to-right,
-				//! wrapping every kPartSketchTilesPerRow tiles.  ONE image, not
+				//! wrapping every kElementSketchTilesPerRow tiles.  ONE image, not
 				//! N -- N inline images is N times the vision-token cost for a
 				//! model that can see them and N times the waste for one that
 				//! cannot.  Empty when !ok or when the encode failed.
@@ -3154,39 +3188,39 @@ namespace RISE
 			//! picks one per part.  Order is the order they are listed to the
 			//! model everywhere (refusal text, tool schemas), so it is part of
 			//! the contract, not an implementation detail.
-			static const char* const kPartPlanConstructionValues[6];
-			static const std::size_t kPartPlanConstructionCount = 6;
+			static const char* const kBuildPlanConstructionValues[6];
+			static const std::size_t kBuildPlanConstructionCount = 6;
 
-			//! True iff `v` is exactly one of kPartPlanConstructionValues.
-			static bool IsValidPartConstruction( const std::string& v );
+			//! True iff `v` is exactly one of kBuildPlanConstructionValues.
+			static bool IsValidElementConstruction( const std::string& v );
 
 			//! "primitive, csg, sweep, chain, displaced, mesh" -- the ONE
 			//! rendering of the enum every message that names it uses, so the
 			//! refusal, the -32602 and both tool schemas cannot drift apart.
-			static std::string PartPlanConstructionList();
+			static std::string BuildPlanConstructionList();
 
 			//! G3a: the CLOSED `view` enum, in declaration order -- which
 			//! axis-aligned direction the part's `outline` was drawn from.
 			//! G3a only RECORDS it (and echoes it back); G3b turns it into
 			//! the comparison render's vantage.
-			static const char* const kPartPlanViewValues[3];
-			static const std::size_t kPartPlanViewCount = 3;
+			static const char* const kBuildPlanViewValues[3];
+			static const std::size_t kBuildPlanViewCount = 3;
 			//! The value an omitted `view` resolves to.  A default rather
 			//! than a required field because a front elevation is what a
 			//! human sketches unless they say otherwise, and forcing the
 			//! choice would add a second decision to a call that already
 			//! carries the one being measured.
-			static const char* const kPartPlanDefaultView;
-			//! True iff `v` is exactly one of kPartPlanViewValues.
-			static bool IsValidPartView( const std::string& v );
+			static const char* const kBuildPlanDefaultView;
+			//! True iff `v` is exactly one of kBuildPlanViewValues.
+			static bool IsValidElementView( const std::string& v );
 			//! "front, side, top" -- the ONE rendering of the view enum, same
-			//! anti-drift reason as PartPlanConstructionList.
-			static std::string PartPlanViewList();
+			//! anti-drift reason as BuildPlanConstructionList.
+			static std::string BuildPlanViewList();
 
 			//! G3a: the sketch canvas edge, in pixels.  256 matches R1b's
 			//! agent render cap (kAgentSurfaceMaxRenderEdge), so a target and
 			//! an agent-surface render are the same size by construction.
-			static constexpr int kPartSketchCanvas = 256;
+			static constexpr int kElementSketchCanvas = 256;
 			//! G3a: the fraction of the canvas the outline's own bbox is fit
 			//! into, aspect preserved and letterboxed.  Deliberately the SAME
 			//! 0.85 as G1's auto-framing kIsolateFrameFill (AgentSession.cpp)
@@ -3194,11 +3228,11 @@ namespace RISE
 			//! silhouette, and the two are directly comparable only if both
 			//! were framed at the same fill.  Changing one without the other
 			//! silently biases every comparison.
-			static constexpr double kPartSketchFillFraction = 0.85;
+			static constexpr double kElementSketchFillFraction = 0.85;
 			//! G3a: how many sketch tiles the composite PNG puts in one row
-			//! before wrapping.  4 keeps an 8-part plan at 1024x512 -- inside
+			//! before wrapping.  4 keeps an 8-build plan at 1024x512 -- inside
 			//! every provider's inline-image budget and readable at a glance.
-			static constexpr int kPartSketchTilesPerRow = 4;
+			static constexpr int kElementSketchTilesPerRow = 4;
 
 			//----------------------------------------------------------------
 			// G3a RESOURCE BOUNDS.  Three caps, because the plan's SIZE is
@@ -3210,27 +3244,33 @@ namespace RISE
 			// an unbounded allocation, not a design limit anyone will meet.
 			//----------------------------------------------------------------
 
-			//! Most parts one plan may declare.  64 masks is ~4 MB of
+			//! Most elements one plan may declare.  64 masks is ~4 MB of
 			//! session-lifetime state; without the cap a single call can ask
 			//! for arbitrarily many.
-			static constexpr std::size_t kPartPlanMaxParts = 64;
+			static constexpr std::size_t kBuildPlanMaxElements = 64;
+			//! S1 (2026-08-11): most `pieces` one element may declare.  Same
+			//! kind of guard as the element cap and reachable only from the
+			//! wire: the piece list is stored verbatim and echoed back, so an
+			//! unbounded list is an unbounded allocation.  32 is far past the
+			//! richest observed decomposition (the wizard probe named seven).
+			static constexpr std::size_t kBuildPlanMaxPiecesPerElement = 32;
 			//! Most vertices one outline may carry.  The scanline fill is
 			//! O(canvas rows x edges), so an unbounded point list is a CPU
 			//! cost multiplied by the part count -- 512 keeps the worst case
 			//! at ~8M edge tests for a whole maximal plan, i.e. milliseconds.
-			static constexpr std::size_t kPartOutlineMaxPoints = 512;
+			static constexpr std::size_t kElementOutlineMaxPoints = 512;
 			//! Most tiles the composite PNG draws.  Every target is still
 			//! STORED (they are cheap and G3b needs them) -- this bounds only
 			//! the image, whose pixel buffer grows with the tile count.  16
 			//! tiles is a 1024x1024 composite, which covers any realistic
 			//! plan whole; past that the filing says, factually, how many
 			//! were drawn.
-			static constexpr std::size_t kPartSketchMaxCompositeTiles = 16;
+			static constexpr std::size_t kElementSketchMaxCompositeTiles = 16;
 
 			//! G3a: is `outline` a rasterizable closed polygon?  The ONE
 			//! definition of outline validity, shared by the wire layer (which
 			//! turns a false into a -32602 naming the part index) and by
-			//! FilePartPlan (which will not record a target it cannot draw),
+			//! FileBuildPlan (which will not record a target it cannot draw),
 			//! so the two cannot drift.  Accepts semicolon-separated "x y"
 			//! pairs, a trailing/leading blank segment tolerated; REJECTS
 			//! fewer than 3 points, a segment that is not exactly two numbers,
@@ -3239,12 +3279,12 @@ namespace RISE
 			//! even-odd fill rule makes it well-defined, so rejecting it would
 			//! refuse a legal (if unusual) imagination.  On false, `outError`
 			//! receives a lowercase phrase naming the defect, ready to be
-			//! appended after "parts[i].outline ".
-			static bool ValidatePartOutline( const std::string& outline, std::string& outError );
+			//! appended after "elements[i].outline ".
+			static bool ValidateElementOutline( const std::string& outline, std::string& outError );
 
-			//! Record `parts` as this session's part plan and DISARM the gate
-			//! permanently.  Any non-empty list of well-formed entries is
-			//! accepted -- including `primitive` for every part.  Re-filing is
+			//! Record `elements` as this session's build plan and DISARM the
+			//! gate permanently.  Any non-empty list of well-formed entries is
+			//! accepted -- including `primitive` for every element.  Re-filing is
 			//! allowed and REPLACES the previous plan (reported in
 			//! `replacedPreviousPlan`); it is never refused, because a refusal
 			//! here would be an over-refusal on a call that costs the document
@@ -3254,41 +3294,52 @@ namespace RISE
 			//! session-lifetime target and returns the whole set, plus ONE
 			//! composite PNG, in the result.  The target set follows the
 			//! plan's REPLACE semantics exactly -- a re-filing drops every
-			//! previous target, so a part dropped from the plan leaves no
+			//! previous target, so an element dropped from the plan leaves no
 			//! stale sketch behind.  The ONLY failure mode is an
-			//! unrasterizable outline (see AgentPartPlanResult), and it is
+			//! unrasterizable outline (see AgentBuildPlanResult), and it is
 			//! all-or-nothing: on a defect NOTHING is recorded and the gate
 			//! is NOT disarmed.
-			AgentPartPlanResult FilePartPlan( const std::vector<AgentPartPlanEntry>& parts );
+			//!
+			//! S1 (2026-08-11): a successful filing also ENTERS THE PIECES
+			//! PHASE with the FIRST element active, and drops every chunk
+			//! attribution recorded under a previous plan (the plan's own
+			//! REPLACE semantics, extended to the state keyed by element name
+			//! -- a re-filing that renames or drops an element must not leave
+			//! attributions pointing at an element the plan no longer has).
+			//! Both facts are stated in the result message.  When the phase
+			//! machinery is off (see BuildProtocolEnabled) the phase stays
+			//! Plan and nothing is attributed, and this method is exactly what
+			//! G3a shipped.
+			AgentBuildPlanResult FileBuildPlan( const std::vector<AgentBuildPlanEntry>& elements );
 
-			//! Has this session filed a part plan?  Observation only -- no
+			//! Has this session filed a build plan?  Observation only -- no
 			//! gating decision reads this from outside the class.
-			bool PartPlanFiled() const { return mPartPlanFiled; }
+			bool BuildPlanFiled() const { return mBuildPlanFiled; }
 
-			//! The plan as filed (empty before the first FilePartPlan).
-			const std::vector<AgentPartPlanEntry>& PartPlan() const { return mPartPlan; }
+			//! The plan as filed (empty before the first FileBuildPlan).
+			const std::vector<AgentBuildPlanEntry>& BuildPlan() const { return mBuildPlan; }
 
-			//! G3a: the rasterized imagination targets, one per part, in
-			//! filing order (empty before the first successful FilePartPlan).
+			//! G3a: the rasterized imagination targets, one per element, in
+			//! filing order (empty before the first successful FileBuildPlan).
 			//! Session-lifetime and read-only from outside: G3b's comparison
-			//! reads this, and nothing writes it but FilePartPlan.
-			const std::vector<AgentPartSketch>& PartSketches() const { return mPartSketches; }
+			//! reads this, and nothing writes it but FileBuildPlan.
+			const std::vector<AgentElementSketch>& ElementSketches() const { return mElementSketches; }
 
-			//! G3b (2026-08-10): the filed sketch whose `part` is EXACTLY
-			//! `part`, or nullptr when no plan is filed or no entry matches.
-			//! Exact-name match, no normalization -- the part name is
+			//! G3b (2026-08-10): the filed sketch whose `element` is EXACTLY
+			//! `element`, or nullptr when no plan is filed or no entry matches.
+			//! Exact-name match, no normalization -- the element name is
 			//! free text the model authored, and a fuzzy match here would
 			//! silently compare against a sketch the caller did not name.
-			//! The pointer is into mPartSketches and is invalidated by the
-			//! next FilePartPlan; callers copy what they need.
-			const AgentPartSketch* FindPartSketch( const std::string& part ) const;
+			//! The pointer is into mElementSketches and is invalidated by the
+			//! next FileBuildPlan; callers copy what they need.
+			const AgentElementSketch* FindElementSketch( const std::string& element ) const;
 
-			//! G3b: the filed part names, quoted and comma-separated, in
+			//! G3b: the filed element names, quoted and comma-separated, in
 			//! filing order -- the ONE rendering used by every `target`
 			//! failure message, so the list a caller is shown can never
-			//! disagree with the set FindPartSketch actually searches.
+			//! disagree with the set FindElementSketch actually searches.
 			//! Empty string when no plan is filed.
-			std::string PartSketchNameList() const;
+			std::string ElementSketchNameList() const;
 
 			//! G3b: resolve a render's `target`/`isolate` pair against the
 			//! filed plan.  Returns false with a complete, factual
@@ -3301,15 +3352,15 @@ namespace RISE
 			//! `target` empty is a programming error -- callers test that
 			//! first; this function then returns false with a generic error.
 			//!
-			//! G3b fix-round (2026-08-10) FIX 1: this reads mPartSketches, so
-			//! it is SINGLE-THREADED-CALLER like the rest of the part-plan
+			//! G3b fix-round (2026-08-10) FIX 1: this reads mElementSketches, so
+			//! it is SINGLE-THREADED-CALLER like the rest of the build-plan
 			//! state -- call it only from the thread that owns this session
 			//! (the RPC dispatcher / GUI serving thread), NEVER from the
 			//! controller's render worker.  The async render path calls it
 			//! ONCE, at submission, and carries the resolved copy into the
 			//! worker; see RenderAsync.
 			bool ResolveTargetSketch( const std::string& target, const std::string& isolate,
-			                          AgentPartSketch& out, std::string& outError ) const;
+			                          AgentElementSketch& out, std::string& outError ) const;
 
 			//! G3b: the ONE sentence stating that `target` requires
 			//! `isolate`, with `target`'s value interpolated.  Shared by the
@@ -3324,25 +3375,25 @@ namespace RISE
 			//! Observation only.  True from the FIRST refusal onward, whether
 			//! the session is still being refused (count 1 or 2), about to
 			//! give up (count 3), or has already given up -- see
-			//! PartPlanGateRefusalCount / PartPlanGateGaveUp for the finer
+			//! BuildPlanGateRefusalCount / BuildPlanGateGaveUp for the finer
 			//! state.
-			bool PartPlanGateHasFired() const { return mPartPlanGateRefusalCount > 0; }
+			bool BuildPlanGateHasFired() const { return mBuildPlanGateRefusalCount > 0; }
 
 			//! How many times the gate has REFUSED a call this session, 0..
-			//! kPartPlanGateMaxRefusals.  Stops incrementing once the gate
+			//! kBuildPlanGateMaxRefusals.  Stops incrementing once the gate
 			//! gives up -- the 4th interception is a give-up, not a 4th
 			//! refusal.  Observation only.
-			int PartPlanGateRefusalCount() const { return mPartPlanGateRefusalCount; }
+			int BuildPlanGateRefusalCount() const { return mBuildPlanGateRefusalCount; }
 
 			//! Has the gate given up?  True once the
-			//! (kPartPlanGateMaxRefusals+1)'th interception let its call
+			//! (kBuildPlanGateMaxRefusals+1)'th interception let its call
 			//! through and disarmed the gate for the rest of the session.
 			//! Observation only.
-			bool PartPlanGateGaveUp() const { return mPartPlanGateGaveUp; }
+			bool BuildPlanGateGaveUp() const { return mBuildPlanGateGaveUp; }
 
 			//! Is the gate armed for THIS session (the process default
 			//! snapshotted at construction)?
-			bool PartPlanGateEnabled() const { return mPartPlanGateEnabled; }
+			bool BuildPlanGateEnabled() const { return mBuildPlanGateEnabled; }
 
 			//! The PROCESS-WIDE default every AgentSession snapshots at
 			//! construction.  Defaults to TRUE (fail-safe: a construction site
@@ -3353,12 +3404,197 @@ namespace RISE
 			//! reachable from the wire (a JSON-RPC param, an MCP tools/call, a
 			//! scene file) can reach this: it is not exposed by AgentRpc at
 			//! all.  Test binaries that are not testing the gate call
-			//! SetPartPlanGateDefaultEnabled(false) once in main().
+			//! SetBuildPlanGateDefaultEnabled(false) once in main().
 			//!
 			//! Atomic because sessions are constructed from several threads in
 			//! the GUI hosts; the value itself never changes after launch.
-			static void SetPartPlanGateDefaultEnabled( bool enabled );
-			static bool PartPlanGateDefaultEnabled();
+			static void SetBuildPlanGateDefaultEnabled( bool enabled );
+			static bool BuildPlanGateDefaultEnabled();
+
+			//----------------------------------------------------------------
+			// S1 (2026-08-11): the STAGED BUILD PROTOCOL -- three phases, one
+			// active element at a time, everything created attributed to it.
+			// Design: docs/agentic-redesign/78-staged-build-protocol.md.
+			//
+			// WHAT IT IS.
+			//   PLAN     the session starts here.  file_build_plan declares the
+			//            elements (each broken into named pieces) and enters:
+			//   PIECES   ONE element is ACTIVE, in plan order.  Every chunk
+			//            created while it is active is ATTRIBUTED to it.  An
+			//            EDIT aimed at a chunk attributed to a DIFFERENT
+			//            element is REFUSED, naming the active element and
+			//            finish_element.  finish_element advances to the next
+			//            unfinished element, or, after the last one, enters:
+			//   COMPOSE  arrangement, lighting, camera, materials and edits to
+			//            ANY element's chunks are allowed; CREATING new
+			//            geometry is refused, naming reopen_element.
+			// reopen_element re-enters an element's window from ANY phase.
+			//
+			// WHY.  The wizard probe (design doc sec 1) settled that neither
+			// conception nor expression is the gap: asked for a robed wizard
+			// alone, the model named the right construction and wrote eleven
+			// correct SDF parts first try; asked for the same wizard as one of
+			// six things in a scene, it produced a cone twelve times out of
+			// twelve.  What differs is the ATTENTION BUDGET, so this mechanism
+			// buys SERIALIZATION and nothing else -- no new information, no
+			// judgement, no score.
+			//
+			// ATTRIBUTION DISSOLVES THE JOIN PROBLEM.  G2's review established
+			// that a gate cannot know which element a chunk belongs to.  While
+			// element E is active, every chunk created belongs to E -- no
+			// naming convention, no volunteered field, no heuristic.
+			//
+			// WHAT IS DELIBERATELY NOT REFUSED.  Lights, cameras, film and
+			// rasterizer edits are allowed in EVERY phase (design sec 2.3):
+			// over-refusal was E1's review P1 and is the failure mode to fear
+			// here -- a model that cannot light its own isolated element cannot
+			// see it.  Chunks with NO attribution (pre-existing scene content,
+			// or anything created in the PLAN phase) are freely editable in
+			// every phase, always.
+			//
+			// NEVER STRANDING.  The phase refusals share ONE counter with a
+			// 3-refusal cap and the same give-up transition the build-plan gate
+			// uses: the 4th interception is let through, the phase machinery
+			// disarms permanently for the session, and the call that trips it
+			// carries a factual notice in its own result.
+			//----------------------------------------------------------------
+
+			//! Which stage of the staged build protocol this session is in.
+			enum class AgentBuildPhase
+			{
+				Plan,     //!< no build plan filed yet (the session starts here)
+				Pieces,   //!< one element is active; creations are attributed to it
+				Compose   //!< every element finished; geometry CREATION is refused
+			};
+
+			//! The ONE wire/prose rendering of a phase -- "plan", "pieces",
+			//! "compose".  Shared by every result and refusal so a caller can
+			//! never be shown two spellings of the same state.
+			static const char* BuildPhaseName( AgentBuildPhase p );
+
+			//! The session's phase.  Plan until a build plan is filed; Pieces
+			//! while an element is active; Compose after the last element is
+			//! finished.  Stays Plan forever when the phase machinery is off.
+			AgentBuildPhase BuildPhase() const { return mBuildPhase; }
+
+			//! The active element's name, or "" when the session is not in the
+			//! Pieces phase.  Observation only.
+			std::string ActiveElement() const;
+
+			//! Is the phase machinery in force for THIS session?  Requires BOTH
+			//! launch switches (see SetBuildProtocolDefaultEnabled) and stays
+			//! false once the phase refusals have given up.
+			bool BuildProtocolActive() const { return BuildProtocolActive_(); }
+
+			//! Snapshot of BuildProtocolDefaultEnabled() taken at construction.
+			bool BuildProtocolEnabled() const { return mBuildProtocolEnabled; }
+
+			//! How many phase refusals (cross-element edits + compose-phase
+			//! geometry creations) this session has issued, 0..
+			//! kBuildPhaseMaxRefusals.  Observation only.
+			int BuildPhaseRefusalCount() const { return mBuildPhaseRefusalCount; }
+
+			//! Have the phase refusals given up (the cap was reached and the
+			//! phase machinery disarmed for the session)?  Observation only.
+			bool BuildPhaseGaveUp() const { return mBuildPhaseGaveUp; }
+
+			//! The chunks attributed to `element`, in creation order.  Empty for
+			//! an unknown element, for an element nothing was created under, and
+			//! for every session with the phase machinery off.
+			std::vector<std::string> ElementChunks( const std::string& element ) const;
+
+			//! The element `chunk` is attributed to, or "" when it has none
+			//! (pre-existing scene content, anything created in the Plan phase,
+			//! or any session with the phase machinery off).  Observation only.
+			std::string ChunkElement( const std::string& chunk ) const;
+
+			//! The PROCESS-WIDE default every AgentSession snapshots at
+			//! construction, resolved at LAUNCH TIME only --
+			//! src/RISE/commandconsole.cpp's `--agent-build-protocol=on|off`,
+			//! parsed and validated exactly like `--agent-part-plan-gate`.
+			//! BOTH switches are respected: the phase machinery needs this one
+			//! AND the gate's own, so `--agent-part-plan-gate=off` turns off the
+			//! gate and the phases together and there is no combination in which
+			//! the phases run without the plan that defines them.  Nothing
+			//! reachable from the wire can reach this.  Defaults to TRUE, the
+			//! same fail-safe posture the gate's default takes.
+			static void SetBuildProtocolDefaultEnabled( bool enabled );
+			static bool BuildProtocolDefaultEnabled();
+
+			//! The structured result of FinishElement.  `ok` false means the
+			//! call did nothing at all -- no phase change, no attribution
+			//! change -- and `message` says why (no plan filed; already in the
+			//! compose phase).
+			struct AgentFinishElementResult
+			{
+				bool        ok = false;
+				std::string element;        //!< the element that was closed ("" when !ok)
+				std::string phase;          //!< the phase AFTER this call
+				std::string nextElement;    //!< the newly active element, "" when Compose
+				//! Every chunk attributed to the closed element, creation order.
+				std::vector<std::string> chunks;
+				//! The declared pieces whose name appears (case-insensitive
+				//! substring) inside at least one attributed chunk NAME, and
+				//! those that do not.  A NAMING observation about chunk names,
+				//! never a statement about what was built -- the result says so.
+				std::vector<std::string> piecesNamed;
+				std::vector<std::string> piecesNotNamed;
+				//! The object the isolate render used, "" when the element has
+				//! no renderable object attributed to it.
+				std::string  isolateObject;
+				//! How many attributed objects were candidates; > 1 means the
+				//! largest-bounding-box one was picked and the message says so.
+				unsigned int isolateCandidates = 0;
+				//! true iff an isolate render was attempted and SUCCEEDED.
+				bool         rendered = false;
+				std::vector<unsigned char> png;
+				unsigned int width = 0;
+				unsigned int height = 0;
+				std::string  message;
+			};
+
+			//! Close the active element and advance: to the next element with
+			//! no finish recorded, in plan order, or -- when none remains -- to
+			//! the COMPOSE phase.  Returns the FACTS of the element just closed
+			//! (what was attributed, which declared pieces are named by an
+			//! attributed chunk name, the new phase) AND an ISOLATE RENDER of
+			//! it, so the model gets a look it did not have to ask for.
+			//!
+			//! THE RENDER reuses G1's isolate machinery unchanged: it resolves
+			//! the element's attributed OBJECT chunks against the scene's object
+			//! manager and isolates ONE of them -- the one with the largest
+			//! world bounding box when several were attributed, stated in the
+			//! message.  With no attributed object there is no image, and the
+			//! message says exactly that.  A FAILED render never fails the call:
+			//! the advance already happened and the failure is reported as a
+			//! fact.
+			//!
+			//! Never gated, never counted against any cap.  Touches the Document
+			//! not at all.
+			AgentFinishElementResult FinishElement();
+
+			//! The structured result of ReopenElement.
+			struct AgentReopenElementResult
+			{
+				bool        ok = false;
+				std::string element;        //!< the reopened element ("" when !ok)
+				std::string previousPhase;  //!< the phase BEFORE this call
+				std::string phase;          //!< the phase AFTER this call
+				std::vector<std::string> chunks;   //!< already attributed to it
+				std::vector<std::string> unfinished; //!< elements with no finish recorded, plan order
+				std::string message;
+			};
+
+			//! Re-enter `element`'s window from ANY phase, including Compose.
+			//! The element becomes active, its finish (if any) is dropped, and
+			//! the session is in the Pieces phase.  Legal at any time, never
+			//! gated, never counted against any cap -- it is the escape the
+			//! compose-phase creation refusal names, so refusing it would strand
+			//! exactly the session that needs it.  Fails (ok:false, nothing
+			//! changed) only when no plan is filed, when the phase machinery is
+			//! off, or when `element` is not in the filed plan; the failure
+			//! lists the filed element names.  Touches the Document not at all.
+			AgentReopenElementResult ReopenElement( const std::string& element );
 
 			//----------------------------------------------------------------
 			// Arc 77 PHASE 2 (2026-08-11): the WHOLE-SCENE IMAGINED TARGET.
@@ -3373,7 +3609,7 @@ namespace RISE
 			// `sceneTarget` block (see AgentRenderResult::sceneTargetApplied)
 			// and, when that call asked for an inline image, shows the target
 			// ABOVE the render in one composite.  Re-imagining REPLACES the
-			// target, exactly as re-filing replaces the part plan.
+			// target, exactly as re-filing replaces the build plan.
 			//
 			// PHASE 2b (2026-08-11), THE REACHABILITY HALF.  The description
 			// the model writes is the SUBJECT; the host appends a fixed STYLE
@@ -3407,7 +3643,7 @@ namespace RISE
 			// REQUIREMENT DISARMS for the session with a factual note in that
 			// result: a network blip must never strand a session.  A
 			// SCHEMA-invalid call (missing `description`) is a -32602 and
-			// disarms nothing, exactly as a malformed file_part_plan does not
+			// disarms nothing, exactly as a malformed file_build_plan does not
 			// burn a refusal.
 			//
 			// WIRE DIRECTION.  Outbound the wire carries only the model's
@@ -3516,7 +3752,7 @@ namespace RISE
 			AgentImagineResult ImagineScene( const std::string& description );
 
 			//! The current scene target, or null when none has been imagined.
-			//! SINGLE-THREADED-CALLER, exactly like the part-plan state: the
+			//! SINGLE-THREADED-CALLER, exactly like the build-plan state: the
 			//! async render path COPIES this shared_ptr on the submitting
 			//! thread and carries the copy into the worker (see RenderAsync),
 			//! so nothing on the controller's render worker ever reads this
@@ -4647,7 +4883,7 @@ namespace RISE
 			//! nullptr whenever `params.target` is empty, and REQUIRED
 			//! (non-null) whenever it is not.  This function NEVER resolves a
 			//! target by name any more, because it runs on the controller's
-			//! render worker thread on the async path and `mPartSketches` is
+			//! render worker thread on the async path and `mElementSketches` is
 			//! single-threaded-caller state (see the class contract above).
 			//! A non-empty `target` with a null snapshot is a programming
 			//! error in a private caller and fails the render loudly rather
@@ -4655,7 +4891,7 @@ namespace RISE
 			AgentRenderResult RenderCore_( const AgentRenderParams& params,
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0,
-			                                const AgentPartSketch* resolvedTarget = nullptr );
+			                                const AgentElementSketch* resolvedTarget = nullptr );
 
 			//! G3b (2026-08-10): measure the just-completed isolate render's
 			//! silhouette against `params.target`'s filed sketch and fill
@@ -4689,13 +4925,13 @@ namespace RISE
 			//! factual note to `rr.message`.
 			//!
 			//! G3b fix-round (2026-08-10) FIX 1 -- THE SNAPSHOT.  `sketch` is
-			//! the resolved AgentPartSketch COPY the CALLER took, on the
+			//! the resolved AgentElementSketch COPY the CALLER took, on the
 			//! CALLER's thread, at SUBMISSION time; this function no longer
-			//! calls ResolveTargetSketch/FindPartSketch at all.  Three
+			//! calls ResolveTargetSketch/FindElementSketch at all.  Three
 			//! reasons, in order of weight:
 			//!   (a) THREAD SAFETY.  On the async path this runs on the
 			//!       controller's render worker while the dispatcher thread
-			//!       may be inside FilePartPlan reassigning `mPartSketches`
+			//!       may be inside FileBuildPlan reassigning `mElementSketches`
 			//!       -- an unsynchronized read of a std::vector being
 			//!       reallocated (UB, use-after-free).  A snapshot closes it
 			//!       without inventing a lock convention this state has never
@@ -4713,7 +4949,7 @@ namespace RISE
 			void ApplyTargetComparison_( const AgentRenderParams& params,
 			                              AgentRenderResult& rr,
 			                              bool assumeParked,
-			                              const AgentPartSketch* resolvedTarget );
+			                              const AgentElementSketch* resolvedTarget );
 
 			//! Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: attach the
 			//! WHOLE-SCENE target to a render that qualifies for it -- see
@@ -5043,59 +5279,309 @@ namespace RISE
 			std::function<void()> mEphemeralCacheGuardOpenHookForTest;
 
 			//----------------------------------------------------------------
-			// G2 (2026-08-10): the part-plan gate's per-session state.  See
-			// the public block above FilePartPlan for the mechanism.
+			// G2 (2026-08-10): the build-plan gate's per-session state.  See
+			// the public block above FileBuildPlan for the mechanism.
 			//
-			// REFUSE-UNTIL-FILED, CAPPED: mPartPlanGateRefusalCount counts
-			// refusals (0..kPartPlanGateMaxRefusals) and does NOT disarm the
+			// REFUSE-UNTIL-FILED, CAPPED: mBuildPlanGateRefusalCount counts
+			// refusals (0..kBuildPlanGateMaxRefusals) and does NOT disarm the
 			// gate by itself -- the gate stays armed and keeps refusing while
 			// the count is below the cap.  Two INDEPENDENT permanent-disarm
-			// flags: mPartPlanFiled (a plan was filed -- the intended exit)
-			// and mPartPlanGateGaveUp (the cap was reached and the gate
+			// flags: mBuildPlanFiled (a plan was filed -- the intended exit)
+			// and mBuildPlanGateGaveUp (the cap was reached and the gate
 			// stopped intercepting anyway -- the bounded-failure exit).  The
-			// gate is armed iff  mPartPlanGateEnabled && !mPartPlanFiled &&
-			// !mPartPlanGateGaveUp.
+			// gate is armed iff  mBuildPlanGateEnabled && !mBuildPlanFiled &&
+			// !mBuildPlanGateGaveUp.
 			//
 			// Single-threaded like the rest of this class's non-Render surface
 			// (see mDrainChunkMsForTest) -- an agent surface serves one call
 			// at a time.
 			//----------------------------------------------------------------
 
-			//! Snapshot of PartPlanGateDefaultEnabled() taken at construction,
+			//! Snapshot of BuildPlanGateDefaultEnabled() taken at construction,
 			//! so a mid-session change of the process default cannot alter a
 			//! running session's posture.
-			bool mPartPlanGateEnabled = true;
-			//! Set by FilePartPlan; disarms the gate permanently.
-			bool mPartPlanFiled = false;
+			bool mBuildPlanGateEnabled = true;
+			//! Set by FileBuildPlan; disarms the gate permanently.
+			bool mBuildPlanFiled = false;
 			//! How many calls the gate has refused this session, 0..
-			//! kPartPlanGateMaxRefusals.  Does NOT by itself disarm the gate --
-			//! see mPartPlanGateGaveUp for the cap's actual disarm flag.
-			int mPartPlanGateRefusalCount = 0;
+			//! kBuildPlanGateMaxRefusals.  Does NOT by itself disarm the gate --
+			//! see mBuildPlanGateGaveUp for the cap's actual disarm flag.
+			int mBuildPlanGateRefusalCount = 0;
 			//! Set once the gate GIVES UP -- the interception that would have
-			//! been the (kPartPlanGateMaxRefusals+1)'th refusal is let through
+			//! been the (kBuildPlanGateMaxRefusals+1)'th refusal is let through
 			//! instead, and this disarms the gate permanently for the rest of
-			//! the session (same permanence as mPartPlanFiled).
-			bool mPartPlanGateGaveUp = false;
-			//! The refusal cap.  See CheckPartPlanGate_'s doc for why the gate
+			//! the session (same permanence as mBuildPlanFiled).
+			bool mBuildPlanGateGaveUp = false;
+			//! The refusal cap.  See CheckBuildPlanGate_'s doc for why the gate
 			//! is capped at all (the E4-vs-G2 asymmetry: any cheap render
 			//! satisfies E4's condition, but clearing G2 requires discovering
 			//! a new tool and producing a valid schema for it) and why 3 --
 			//! enough attempts that a bare-retry model still gets refused more
 			//! than once, bounded enough that a session which genuinely cannot
-			//! form the file_part_plan call is not stranded.
-			static const int kPartPlanGateMaxRefusals = 3;
+			//! form the file_build_plan call is not stranded.
+			static const int kBuildPlanGateMaxRefusals = 3;
 			//! The plan as filed, in the order the caller listed it.
-			std::vector<AgentPartPlanEntry> mPartPlan;
-			//! G3a: the rasterized targets, index-parallel to mPartPlan.
-			//! REPLACED wholesale by every successful FilePartPlan, exactly
-			//! like mPartPlan -- the two are written together and must never
-			//! disagree about which parts exist.  Session-lifetime: never
+			std::vector<AgentBuildPlanEntry> mBuildPlan;
+			//! G3a: the rasterized targets, index-parallel to mBuildPlan.
+			//! REPLACED wholesale by every successful FileBuildPlan, exactly
+			//! like mBuildPlan -- the two are written together and must never
+			//! disagree about which elements exist.  Session-lifetime: never
 			//! serialized into the Document, never persisted anywhere.
-			std::vector<AgentPartSketch> mPartSketches;
+			std::vector<AgentElementSketch> mElementSketches;
+
+			//----------------------------------------------------------------
+			// S1 (2026-08-11): the STAGED BUILD PROTOCOL's per-session state.
+			// See the public block above FinishElement for the mechanism.
+			//
+			// SINGLE-THREADED-CALLER, exactly like the build-plan and
+			// scene-target state it sits between: every reader and writer below
+			// runs on the thread that owns this session (the RPC dispatcher /
+			// GUI serving thread).  NOTHING here is read on the controller's
+			// render worker -- FinishElement resolves its isolate object and
+			// issues its render on the CALLING thread, through the ordinary
+			// synchronous Render entry point, so the async path's snapshot
+			// discipline (RenderAsync copying resolved state into the worker
+			// closure) has nothing new to carry.
+			//----------------------------------------------------------------
+
+			//! Snapshot of BuildProtocolDefaultEnabled() taken at construction,
+			//! so a mid-session change of the process default cannot alter a
+			//! running session's posture (the gate flag's discipline exactly).
+			bool mBuildProtocolEnabled = true;
+			//! Plan until a plan is filed, then Pieces, then Compose.  Stays
+			//! Plan for the whole session when the phase machinery is off.
+			AgentBuildPhase mBuildPhase = AgentBuildPhase::Plan;
+			//! Index into mBuildPlan of the ACTIVE element.  Meaningful only in
+			//! the Pieces phase; always < mBuildPlan.size() there, because the
+			//! only writers are FileBuildPlan (0), FinishElement (the next
+			//! unfinished index) and ReopenElement (a resolved index).
+			std::size_t mActiveElement = 0;
+			//! Index-parallel to mBuildPlan: has FinishElement closed this
+			//! element?  Written together with mBuildPlan, so the two can never
+			//! disagree about which elements exist.
+			std::vector<bool> mElementFinished;
+			//! One created chunk and the element it was created under.
+			struct ChunkAttribution_
+			{
+				std::string chunk;    //!< the chunk's bare `name`
+				std::string element;  //!< the element active when it was created
+				std::string kind;     //!< the chunk keyword, for the category exemption
+			};
+			//! Every chunk created while an element was active, in creation
+			//! order.  A LINEAR vector rather than a map because it is walked
+			//! whole (finish_element lists an element's chunks in order) far
+			//! more often than it is probed, and a build's chunk count is in
+			//! the hundreds at the very most.  A chunk name created twice
+			//! (removed, then re-created under another element) keeps ONE
+			//! entry, re-pointed at the later element -- last creation wins,
+			//! because that is the window the chunk in the document came from.
+			std::vector<ChunkAttribution_> mChunkAttribution;
+			//! Phase refusals issued this session (cross-element edits +
+			//! compose-phase geometry creations share ONE counter, exactly as
+			//! the gate's two conditions share one), 0..kBuildPhaseMaxRefusals.
+			int mBuildPhaseRefusalCount = 0;
+			//! Set once the phase refusals GIVE UP -- the interception that
+			//! would have been the (kBuildPhaseMaxRefusals+1)'th is let through
+			//! and no further phase refusal fires for the rest of the session.
+			//! Attribution and the phase transitions keep running: the give-up
+			//! stops the REFUSING, not the measuring.
+			bool mBuildPhaseGaveUp = false;
+			//! The phase-refusal cap.  Same number and same reasoning as
+			//! kBuildPlanGateMaxRefusals: enough that a model which simply
+			//! re-issues gets refused more than once, bounded enough that a
+			//! model which cannot work the protocol proceeds with a factual
+			//! notice instead of being stranded.
+			static const int kBuildPhaseMaxRefusals = 3;
+
+			//! Is the phase machinery in force?  BOTH launch switches, and the
+			//! plan-gate switch is included so `--agent-part-plan-gate=off`
+			//! turns the phases off with it -- the phases are defined by the
+			//! plan, so running them without the gate that produces one has no
+			//! meaning.  Deliberately does NOT consult mBuildPhaseGaveUp: a
+			//! give-up disarms the REFUSALS (the two Check* helpers test it
+			//! themselves), while attribution, the transitions and
+			//! finish/reopen keep working, so a session that gave up still
+			//! yields the census facts the design measures.
+			bool BuildProtocolActive_() const
+			{
+				return mBuildProtocolEnabled && mBuildPlanGateEnabled;
+			}
+
+			//! Record `name` (kind `kind`) as created under the ACTIVE element.
+			//! A no-op outside the Pieces phase, with the protocol off, or on an
+			//! empty name -- so a chunk created in the PLAN phase, or by a
+			//! session with the machinery off, stays UNATTRIBUTED and therefore
+			//! freely editable forever.
+			void AttributeChunkToActiveElement_( const std::string& name, const std::string& kind );
+
+			//! The attribution entry for `chunk`, or nullptr when it has none.
+			const ChunkAttribution_* FindChunkAttribution_( const std::string& chunk ) const;
+
+			//! S1 fix-round (2026-08-11): DID THIS CALL LAND?  The ONE
+			//! predicate every attribution hook below keys off, and the reason
+			//! it exists is that `applied` is the WRONG question to ask here.
+			//!
+			//! The `diagnosed` outcome (rawCode 3) reports `applied == false`
+			//! -- deliberately, and that stays true on the wire: the full
+			//! re-derive emitted diagnostics, so a caller gating on
+			//! `applied == true` must not proceed.  But the Document WAS
+			//! mutated and the live managers WERE replaced: the chunk really
+			//! is in the head.  Keying ATTRIBUTION off `applied` therefore
+			//! (a) left a diagnosed insert unattributed -- breaking the
+			//! design's "while element E is active, every chunk created
+			//! belongs to E" invariant and hiding the chunk from
+			//! finish_element and the census -- and (b) left a diagnosed
+			//! remove's attribution behind, a stale entry that can only refuse
+			//! a LATER edit on behalf of a chunk that no longer exists.
+			//!
+			//! A TEMPLATE rather than three overloads so the five hook sites
+			//! cannot drift apart again (exactly one of the five was correct
+			//! before this round); every result type it is instantiated with
+			//! -- AgentChunkResult, AgentPatchResult, AgentRemoveBatchResult
+			//! -- carries the same {applied, status} pair with the same
+			//! contract.  This changes NOTHING about what `applied` means:
+			//! it is the attribution trigger only.
+			template< typename ResultT >
+			static bool ResultMutatedDocument_( const ResultT& r )
+			{
+				return r.applied || r.status == "diagnosed";
+			}
+
+			//! S1: attributes a chunk a creating verb actually LANDED, on
+			//! whatever return path that verb takes.  A destructor-time hook for
+			//! the same reason BuildPlanGiveUpFold_ is one -- InsertChunk has
+			//! eleven returns and two of them commit, so a hook at each is a
+			//! hook that a twelfth return will silently miss.
+			//!
+			//! ResultMutatedDocument_ is the ONLY condition (S1 fix-round
+			//! 2026-08-11: it was `applied`, which missed `diagnosed`): a
+			//! STAGED insert (External authority) has not created anything yet,
+			//! so it is not attributed here -- SceneEditController::ResolveProposal
+			//! is where a staged chunk becomes real, and it runs on the OWNER's
+			//! action, in a phase this session may no longer be in.  Attributing
+			//! at stage time would record a chunk that may never exist; the
+			//! honest reading is that an approved-later chunk carries no
+			//! element, which makes it freely editable -- the safe direction
+			//! (see the never-refuse-on-unattributed rule).
+			struct AttributeOnApply_
+			{
+				AgentSession&           session;
+				const AgentChunkResult& result;
+				~AttributeOnApply_()
+				{
+					if( ResultMutatedDocument_( result ) )
+						session.AttributeChunkToActiveElement_( result.name, result.kind );
+				}
+			};
+
+			//! S1: the same hook for the ONE editing verb that can CREATE a
+			//! chunk -- propose_patch's value splice (see
+			//! DescribeBuildPlanGeometryDeltaForPatch for the mechanism).  The
+			//! caller fills `name`/`kind` from that delta before the patch runs;
+			//! an empty `name` (the overwhelming common case: an ordinary param
+			//! edit) makes this a no-op.  Attributing the SPLICED chunk closes
+			//! the hole a patch-only builder would otherwise open -- geometry in
+			//! the document that belongs to no element and is therefore exempt
+			//! from every window rule.
+			struct AttributePatchOnApply_
+			{
+				AgentSession&           session;
+				const AgentPatchResult& result;
+				std::string             name;
+				std::string             kind;
+				~AttributePatchOnApply_()
+				{
+					// S1 fix-round (2026-08-11): the SHARED landed-predicate,
+					// not `applied` -- a diagnosed splice put the chunk in the
+					// document just as surely as a clean one did.
+					if( ResultMutatedDocument_( result ) && !name.empty() )
+						session.AttributeChunkToActiveElement_( name, kind );
+				}
+			};
+
+			//! S1: forget `chunk`'s attribution.  Called when a remove actually
+			//! LANDS: the chunk is gone, so an attribution naming it would only
+			//! be able to refuse a LATER, unrelated chunk that happens to reuse
+			//! the name -- and would refuse it on behalf of an element that
+			//! never created it.  A no-op for a chunk that has none.
+			void DropChunkAttribution_( const std::string& chunk );
+
+			//! S1: the remove-side sibling of AttributeOnApply_, on the same
+			//! destructor-time contract and for the same many-returns reason,
+			//! and (S1 fix-round 2026-08-11) on the same shared landed-predicate:
+			//! a diagnosed remove DID erase the chunk, so leaving its
+			//! attribution behind would refuse a later, unrelated edit on
+			//! behalf of an element that no longer owns anything by that name.
+			struct DropAttributionOnRemove_
+			{
+				AgentSession&           session;
+				const AgentChunkResult& result;
+				~DropAttributionOnRemove_()
+				{
+					if( ResultMutatedDocument_( result ) )
+						session.DropChunkAttribution_( result.name );
+				}
+			};
+
+			//! S1: the BATCH remove's sibling.  remove_chunks is ALL-OR-NOTHING,
+			//! so one landed-verdict covers every target it names.
+			struct DropAttributionOnRemoveBatch_
+			{
+				AgentSession&                 session;
+				const AgentRemoveBatchResult& result;
+				~DropAttributionOnRemoveBatch_()
+				{
+					if( !ResultMutatedDocument_( result ) ) return;
+					for( std::size_t i = 0; i < result.targetResults.size(); ++i )
+						session.DropChunkAttribution_( result.targetResults[i].name );
+				}
+			};
+
+			//! True for the chunk kinds whose edits are allowed in EVERY phase
+			//! regardless of attribution -- registry categories Light, Camera,
+			//! Film, Rasterizer, RasterizerOutput and (S1 fix-round 2026-08-11)
+			//! Material and Painter (design sec 2.3).  The governing rule is
+			//! ATTRIBUTE EVERYTHING, REFUSE ONLY ON FORM-BEARING CHUNKS -- see
+			//! the definition for why sharing a material or a painter across
+			//! two elements is ordinary authoring, not an edge case.  The
+			//! REGISTRY is the classifier, the same rule
+			//! ChunkTextCreatesGeometry_ follows, so a light kind added later
+			//! is exempt with no edit here.
+			static bool KindIsPhaseExemptCategory_( const std::string& kind );
+
+			//! The shared refusal/cap/give-up body for BOTH phase refusals.
+			//! `body` is the middle of the message -- the part that differs
+			//! between a cross-element edit and a compose-phase creation.
+			//! Returns "" when the phase machinery is off, when it has already
+			//! given up, or when this call IS the give-up (in which case
+			//! `*outGiveUpNotice`, when non-null, receives the factual notice
+			//! the caller folds into its own result, exactly as
+			//! CheckBuildPlanGate_ does); otherwise returns the whole refusal.
+			std::string RefuseForPhase_( const char* verb, const std::string& body,
+			                             std::string* outGiveUpNotice );
+
+			//! Would this EDIT reach into another element's window?  "" when the
+			//! edit is allowed: the protocol is off or gave up, the session is
+			//! not in the Pieces phase, `target` is empty (a kind-addressed
+			//! singleton -- film, rasterizer, the sole camera), the target chunk
+			//! has NO attribution (pre-existing content, or created in the Plan
+			//! phase), it is attributed to the ACTIVE element, or its kind is
+			//! phase-exempt.  Otherwise the refusal, naming the active element
+			//! and finish_element.
+			std::string CheckElementWindowForEdit_( const char* verb, const std::string& target,
+			                                        std::string* outGiveUpNotice );
+
+			//! Is CREATING geometry refused right now?  "" unless the session is
+			//! in the Compose phase; there, the refusal naming reopen_element.
+			//! Call it ONLY once the caller has established that this call really
+			//! does create geometry -- the same precondition CheckBuildPlanGate_
+			//! carries, for the same reason (a call refused for being malformed
+			//! must not also burn a phase refusal).
+			std::string CheckComposePhaseForCreate_( const char* verb, std::string* outGiveUpNotice );
 
 			//----------------------------------------------------------------
 			// Arc 77 Phase 2 (2026-08-11): the scene-target state.  Lives in
-			// the SAME single-threaded-caller bucket as the part-plan state
+			// the SAME single-threaded-caller bucket as the build-plan state
 			// above (see the class contract) and is honoured across the async
 			// render boundary by the SAME snapshot discipline, not by a new
 			// lock: RenderAsync copies the shared_ptr on the submitting
@@ -5131,7 +5617,7 @@ namespace RISE
 			//! disarms it.
 			bool ImagineRequirementActive_() const
 			{
-				return mPartPlanGateEnabled && !mImagineRequirementDisarmed &&
+				return mBuildPlanGateEnabled && !mImagineRequirementDisarmed &&
 				       mImageGenerator.supported && mImageGenerator.generate != nullptr;
 			}
 
@@ -5150,10 +5636,10 @@ namespace RISE
 			//! provider with no image capability ImagineRequirementActive_
 			//! is false and this reduces, term for term, to the shipped
 			//! plan-only gate.
-			bool PartPlanGateArmed_() const
+			bool BuildPlanGateArmed_() const
 			{
-				if( !mPartPlanGateEnabled || mPartPlanGateGaveUp ) return false;
-				if( !mPartPlanFiled ) return true;
+				if( !mBuildPlanGateEnabled || mBuildPlanGateGaveUp ) return false;
+				if( !mBuildPlanFiled ) return true;
 				return ImagineRequirementActive_() && !mSceneTarget;
 			}
 
@@ -5172,25 +5658,25 @@ namespace RISE
 			                                       std::string* outKind = nullptr,
 			                                       std::string* outName = nullptr );
 
-			//! The part-plan gate check for `verb`.  Call it ONLY once the
+			//! The build-plan gate check for `verb`.  Call it ONLY once the
 			//! caller has established that this call really does create
 			//! geometry.  Three outcomes:
 			//!   * gate disarmed (disabled for this session, a plan already
 			//!     filed, or it already gave up) -- returns "", touches
 			//!     nothing, `outGiveUpNotice` left UNTOUCHED.
 			//!   * gate armed and the refusal count is below
-			//!     kPartPlanGateMaxRefusals -- REFUSES: increments the count
+			//!     kBuildPlanGateMaxRefusals -- REFUSES: increments the count
 			//!     and returns the full refusal message (accurately stating
 			//!     how many more calls will still be refused).
 			//!   * gate armed and the refusal count has reached the cap --
-			//!     GIVES UP: sets mPartPlanGateGaveUp (permanently disarming
-			//!     the gate, read by PartPlanGateArmed_) and returns "" so the
+			//!     GIVES UP: sets mBuildPlanGateGaveUp (permanently disarming
+			//!     the gate, read by BuildPlanGateArmed_) and returns "" so the
 			//!     call proceeds, but first writes a factual give-up notice to
 			//!     `*outGiveUpNotice` (when non-null) for the caller to fold
 			//!     into THIS call's own result -- the whole reason for the
 			//!     out-param is that the give-up event must be visible in the
 			//!     payload a trajectory census reads, not only in a log line.
-			std::string CheckPartPlanGate_( const char* verb, std::string* outGiveUpNotice = nullptr );
+			std::string CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice = nullptr );
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

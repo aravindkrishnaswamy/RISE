@@ -6640,7 +6640,7 @@ static void RunAgentSurfaceRenderCapTest()
 // its sketch lookup done BY NAME inside RenderCore_ and again inside
 // ApplyTargetComparison_.  On the async path both of those run on the
 // controller's dedicated render worker thread, and both read
-// AgentSession::mPartSketches -- which FilePartPlan REASSIGNS on the
+// AgentSession::mElementSketches -- which FileBuildPlan REASSIGNS on the
 // dispatcher thread with no lock.  Concurrent read/write of a
 // std::vector being reallocated is UB (use-after-free on the mask
 // bytes), and it is reachable from the ordinary wire: the raw JSON-RPC
@@ -6650,8 +6650,8 @@ static void RunAgentSurfaceRenderCapTest()
 //
 // THE FIX, and therefore what this test asserts.  Resolution now
 // happens EXACTLY ONCE, on the SUBMITTING thread, and the resolved
-// AgentPartSketch COPY is threaded into the worker closure; the worker
-// never touches session part-plan state.  That is also the correct
+// AgentElementSketch COPY is threaded into the worker closure; the worker
+// never touches session build-plan state.  That is also the correct
 // SEMANTICS independently of the race -- an async comparison must
 // describe the plan as it was when the caller submitted.  So the pin is
 // a semantic one: file plan A, submit, IMMEDIATELY re-file a
@@ -6667,15 +6667,16 @@ static void RunAgentSurfaceRenderCapTest()
 // than a coin flip; the underlying data race has no reliable
 // observable, so the semantics are the practical pin.
 //////////////////////////////////////////////////////////////////////
-static std::vector<AgentSession::AgentPartPlanEntry> AsyncTargetPlan( const char* outline,
+static std::vector<AgentSession::AgentBuildPlanEntry> AsyncTargetPlan( const char* outline,
                                                                       const char* view )
 {
-	AgentSession::AgentPartPlanEntry e;
-	e.part         = "ball";
+	AgentSession::AgentBuildPlanEntry e;
+	e.element         = "ball";
+	e.pieces.push_back( "piece" );
 	e.construction = "primitive";
 	e.outline      = outline;
 	e.view         = view;
-	return std::vector<AgentSession::AgentPartPlanEntry>( 1, e );
+	return std::vector<AgentSession::AgentBuildPlanEntry>( 1, e );
 }
 
 static void RunAsyncTargetSnapshotTest()
@@ -6708,7 +6709,7 @@ static void RunAsyncTargetSnapshotTest()
 			AgentSession* session = owned.get();
 			AgentRpcDispatcher rpc( std::move( owned ) );
 
-			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
 			       "plan A files: a unit-SQUARE `ball` sketch (bbox aspect 1.0) declared FRONT" );
 
 			JsonValue submitEnv; std::string err;
@@ -6730,7 +6731,7 @@ static void RunAsyncTargetSnapshotTest()
 			// write against two live reads on the worker thread; post-fix
 			// the worker holds its own copy and this is simply invisible to
 			// the in-flight comparison.
-			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 4 0; 4 1; 0 1", "top" ) ).ok,
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 4 0; 4 1; 0 1", "top" ) ).ok,
 			       "plan B re-files WHILE the async render is in flight: same part name `ball`, "
 			       "bbox aspect 4.0, declared TOP" );
 
@@ -6752,7 +6753,7 @@ static void RunAsyncTargetSnapshotTest()
 			       "facts -- the async path measures the comparison exactly as the sync path does "
 			       "(this also closes review P2-3: the echo was previously untested)" );
 			const JsonValue& tgt = rr.get( "target" );
-			Check( tgt.get( "part" ).asString() == "ball", "the echoed part name is the one submitted" );
+			Check( tgt.get( "element" ).asString() == "ball", "the echoed part name is the one submitted" );
 
 			Check( tgt.get( "view" ).asString() == "front",
 			       "MONEY ASSERTION (FIX1-b1): the echoed sketch VIEW is \"front\" -- plan A, the "
@@ -6778,8 +6779,8 @@ static void RunAsyncTargetSnapshotTest()
 
 			// The session's own state is plan B now -- the snapshot is a
 			// copy taken for the render, never a rollback of the session.
-			Check( session->PartSketches().size() == 1 &&
-			       session->PartSketches()[0].view == "top",
+			Check( session->ElementSketches().size() == 1 &&
+			       session->ElementSketches()[0].view == "top",
 			       "and the SESSION's live plan is still plan B -- the snapshot pinned the render, "
 			       "not the session" );
 
@@ -6817,19 +6818,19 @@ static void RunAsyncTargetSnapshotTest()
 			       "at submit time -- the resolution now happens on this thread, before anything "
 			       "is queued" );
 			Check( noPlan.renderJobId == 0, "and no job id is minted: nothing was queued" );
-			Check( noPlan.message.find( "no part plan has been filed" ) != std::string::npos,
+			Check( noPlan.message.find( "no build plan has been filed" ) != std::string::npos,
 			       "with the SAME sentence a synchronous render puts in `message`" );
 
-			Check( session->FilePartPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
 			       "the plan files" );
 
 			p.target = "wing";
 			const AgentSession::AgentRenderAsyncResult unknown = session->RenderAsync( p );
 			Check( !unknown.accepted,
 			       "MONEY ASSERTION (FIX1-c2): an UNKNOWN part name fails the SUBMISSION" );
-			Check( unknown.message.find( "unknown target part \"wing\"" ) != std::string::npos &&
+			Check( unknown.message.find( "unknown target element \"wing\"" ) != std::string::npos &&
 			       unknown.message.find( "\"ball\"" ) != std::string::npos,
-			       "and the refusal names the part AND lists the filed names, exactly as the sync "
+			       "and the refusal names the element AND lists the filed names, exactly as the sync "
 			       "render's failure does" );
 
 			AgentRenderParams unpairedParams;
@@ -6855,7 +6856,7 @@ static void RunAsyncTargetSnapshotTest()
 			       "unresolvable async target -- the SAME refusal shape the no-controller case "
 			       "already uses, so no new wire contract is invented" );
 			Check( res.get( "renderJobId" ).asNumber( 1.0 ) == 0.0, "with renderJobId 0" );
-			Check( res.get( "message" ).asString().find( "unknown target part" ) != std::string::npos,
+			Check( res.get( "message" ).asString().find( "unknown target element" ) != std::string::npos,
 			       "and the reason on the wire" );
 
 			session->AttachController( nullptr );
@@ -6871,7 +6872,7 @@ static void RunAsyncTargetSnapshotTest()
 
 //======================================================================
 // Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET snapshot across the async
-// boundary -- the same defect class G3b's FIX 1 closed for the part plan,
+// boundary -- the same defect class G3b's FIX 1 closed for the build plan,
 // pinned for the whole-scene target before it can be reintroduced.
 //
 // REACHABILITY, ENUMERATED (the standing rule for a claim like "this can
@@ -6895,7 +6896,7 @@ static void RunAsyncSceneTargetSnapshotTest()
 	Check( !scenePath.empty(), "wrote the async scene-target scene to a temp file" );
 
 	// Two canned, decodable PNGs of DIFFERENT sizes, minted from a throwaway
-	// session's part-plan sketch composite (256x256 per tile) so this test
+	// session's build-plan sketch composite (256x256 per tile) so this test
 	// needs no PNG encoder of its own.
 	std::vector<unsigned char> smallPng, widePng;
 	{
@@ -6903,15 +6904,16 @@ static void RunAsyncSceneTargetSnapshotTest()
 		if( mintJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
 			for( int n = 1; n <= 2; ++n ) {
 				std::unique_ptr<AgentSession> m = AgentSession::WrapJob( mintJob );
-				std::vector<AgentSession::AgentPartPlanEntry> parts;
+				std::vector<AgentSession::AgentBuildPlanEntry> parts;
 				for( int i = 0; i < n; ++i ) {
-					AgentSession::AgentPartPlanEntry e;
-					e.part = "canned" + std::to_string( i );
+					AgentSession::AgentBuildPlanEntry e;
+					e.element = "canned" + std::to_string( i );
+					e.pieces.push_back( "piece" );
 					e.construction = "primitive";
 					e.outline = "0 0; 1 0; 1 1; 0 1";
 					parts.push_back( e );
 				}
-				const std::vector<unsigned char> png = m->FilePartPlan( parts ).compositePng;
+				const std::vector<unsigned char> png = m->FileBuildPlan( parts ).compositePng;
 				if( n == 1 ) smallPng = png; else widePng = png;
 			}
 		}
@@ -7017,13 +7019,13 @@ static void RunAsyncSceneTargetSnapshotTest()
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunAsyncReturnsQuicklyTest();
 	RunRenderOwnsSceneGuardTest();
 	RunSingleSlotRejectionTest();

@@ -652,12 +652,17 @@ namespace RISE
 			  mImageCache( sharedImageCache ? sharedImageCache
 			                                : std::make_shared<AgentImageCache>() )
 		{
-			// G2 (2026-08-10): SNAPSHOT the process-wide part-plan-gate
+			// G2 (2026-08-10): SNAPSHOT the process-wide build-plan-gate
 			// default here, once.  A session's posture is fixed for its whole
 			// life -- a mid-session change of the process default (only a test
 			// can do that; the launch flag is resolved before any session
 			// exists) must never flip a running session's gate.
-			mPartPlanGateEnabled = PartPlanGateDefaultEnabled();
+			mBuildPlanGateEnabled = BuildPlanGateDefaultEnabled();
+			// S1 (2026-08-11): the staged build protocol's own switch, snapshot
+			// at the same moment and for the same reason.  Both are consulted
+			// together (BuildProtocolActive_), so a session that snapshotted
+			// them one instant apart could not disagree with itself later.
+			mBuildProtocolEnabled = BuildProtocolDefaultEnabled();
 		}
 
 		std::uint64_t AgentSession::RetainedPerceptionBytesLocked_() const
@@ -1816,7 +1821,7 @@ namespace RISE
 		//! arms are: SceneEditController::ResolveProposal's stale-staged-
 		//! proposal re-check calls the IDENTICAL delta AgentSession::
 		//! ProposePatch's arm uses, with zero duplication.
-		std::string DescribePartPlanGeometryDeltaForPatch( const std::string& headText,
+		std::string DescribeBuildPlanGeometryDeltaForPatch( const std::string& headText,
 		                                                   const std::string& target,
 		                                                   const std::string& kind,
 		                                                   const std::string& param,
@@ -2370,10 +2375,10 @@ namespace RISE
 			                                     const std::string& target, const std::string& kind,
 			                                     const std::string& param, const std::string& value );
 
-			//! G2 (2026-08-10, refuse-until-filed cap): folds a part-plan-gate
+			//! G2 (2026-08-10, refuse-until-filed cap): folds a build-plan-gate
 			//! GIVE-UP notice into a std::string result field no matter which
 			//! `return` inside the caller actually fires.  The notice is only
-			//! known the instant CheckPartPlanGate_ decides to give up --
+			//! known the instant CheckBuildPlanGate_ decides to give up --
 			//! which happens BEFORE the rest of the caller's normal logic
 			//! runs and long before that logic picks its own exit -- so a
 			//! destructor-time append is the one place that can't be missed
@@ -2390,11 +2395,11 @@ namespace RISE
 			//! this file.  Every `namespace { ... }` block at this scope
 			//! reopens the SAME anonymous namespace, so InsertChunk's use
 			//! further down names this identical type.
-			struct PartPlanGiveUpFold_
+			struct BuildPlanGiveUpFold_
 			{
 				std::string& field;
 				std::string  notice;
-				~PartPlanGiveUpFold_()
+				~BuildPlanGiveUpFold_()
 				{
 					if( notice.empty() ) return;
 					if( !field.empty() ) field += "  ";
@@ -2406,9 +2411,15 @@ namespace RISE
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
-			PartPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+			BuildPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+			// S1 (2026-08-11): the phase machinery's own give-up fold (a second
+			// instance, never a shared field -- see InsertChunk's identical
+			// pair), and the splice-attribution hook whose name/kind the arm
+			// below fills in when a value really would introduce a chunk.
+			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
+			AttributePatchOnApply_ s1Attr{ *this, r, std::string(), std::string() };
 
-			// G2 fix-round (2026-08-10, part-plan gate -- the PATCH arm): FIRST,
+			// G2 fix-round (2026-08-10, build-plan gate -- the PATCH arm): FIRST,
 			// ahead of E1's and R1c's and ahead of the authority branching, for
 			// the same two reasons InsertChunk's G2 arm goes first.  (1) It is a
 			// pure SEQUENCING check that consults nothing about whether the
@@ -2418,7 +2429,7 @@ namespace RISE
 			// R1c polices rasterizer chunks (category Rasterizer), and this arm
 			// fires only on ChunkCategory::Geometry.
 			//
-			// WHY A PATCH ARM EXISTS AT ALL.  Until this fix the part-plan gate
+			// WHY A PATCH ARM EXISTS AT ALL.  Until this fix the build-plan gate
 			// had exactly four call sites, all INSERT verbs, while
 			// propose_patch could create geometry outright: a param value is
 			// spliced into the document as TEXT, so a value carrying `}` plus a
@@ -2428,10 +2439,10 @@ namespace RISE
 			// build an entire scene through propose_patch with no plan filed and
 			// the refusal counter still reading zero -- the instrument measuring
 			// nothing.  The delta itself lives in the shared, PURE
-			// DescribePartPlanGeometryDeltaForPatch (AgentSession.h), which
+			// DescribeBuildPlanGeometryDeltaForPatch (AgentSession.h), which
 			// SceneEditController::ResolveProposal's re-check also calls.
 			//
-			// COST.  Guarded on PartPlanGateArmed_() -- a pure bool/int test
+			// COST.  Guarded on BuildPlanGateArmed_() -- a pure bool/int test
 			// with no parse, no lock and no document access -- exactly as the
 			// insert arms are.  The gate disarms PERMANENTLY on the first filed
 			// plan or the third refusal, so for the whole rest of any session
@@ -2445,12 +2456,12 @@ namespace RISE
 			// documents (the wire flag is the GUI chat loops' SILENT client-side
 			// auto-retry signal -- it would burn all three refusals and trip the
 			// give-up before the model ever saw one).
-			if( PartPlanGateArmed_() && ( !patch.target.empty() || !patch.kind.empty() ) )
+			if( BuildPlanGateArmed_() && ( !patch.target.empty() || !patch.kind.empty() ) )
 			{
 				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
 				std::string g2Name;
 				const std::string g2Kind = snap.hasDocument
-					? DescribePartPlanGeometryDeltaForPatch( snap.document, patch.target, patch.kind,
+					? DescribeBuildPlanGeometryDeltaForPatch( snap.document, patch.target, patch.kind,
 					                                          patch.param, patch.value, &g2Name )
 					: std::string();
 				if( !g2Kind.empty() ) {
@@ -2460,7 +2471,7 @@ namespace RISE
 					// folded through g2Fold, and the same document-untouched
 					// guarantee -- this returns before E1, R1c, staging and every
 					// commit path below.
-					const std::string clause = CheckPartPlanGate_( "propose_patch", &g2Fold.notice );
+					const std::string clause = CheckBuildPlanGate_( "propose_patch", &g2Fold.notice );
 					if( !clause.empty() ) {
 						r.applied     = false;
 						r.retriable   = false;
@@ -2475,6 +2486,85 @@ namespace RISE
 					// clause.empty() here means this call IS the give-up -- the
 					// notice was written into g2Fold and its destructor folds it
 					// into r.message whichever return below fires.
+				}
+			}
+
+			// S1 (2026-08-11, the staged build protocol): TWO arms on this verb,
+			// mutually exclusive by phase.
+			//
+			// (a) THE CROSS-ELEMENT EDIT.  While an element window is open, a
+			// patch aimed at a chunk created under a DIFFERENT element is
+			// refused.  A pure lookup in this session's own attribution list --
+			// no parse, no snapshot, no document access -- and it is skipped
+			// entirely for an empty `target` (a kind-addressed singleton: film,
+			// rasterizer, the sole camera), for an UNATTRIBUTED chunk, and for
+			// the phase-exempt kinds (see KindIsPhaseExemptCategory_ -- lights,
+			// cameras, film, rasterizers, rasterizer outputs, materials and
+			// painters), which is what keeps the design's "over-refusal is the
+			// failure mode to fear" rule true here.
+			{
+				const std::string clause = CheckElementWindowForEdit_( "propose_patch", patch.target,
+				                                                        &s1Fold.notice );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;   // see the G2 arm above for why
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message     = clause;
+					return r;
+				}
+			}
+
+			// (b) THE VALUE-SPLICE CREATION, in the COMPOSE phase and as an
+			// ATTRIBUTION everywhere else.  The neighbouring gate arm exists
+			// because a param value is spliced into the document as TEXT, so a
+			// value carrying `}` plus a whole `box_geometry { ... }` block lands
+			// a real geometry chunk on serialization; that arm must stay closed,
+			// and the phase rules have exactly the same hole to close -- a
+			// compose-phase session could otherwise build new geometry through
+			// propose_patch, and a pieces-phase one could land geometry that
+			// belongs to no element and is therefore exempt from every window
+			// rule afterwards.
+			//
+			// COST.  The delta needs a snapshot plus a serialize/reparse round
+			// trip, and unlike the gate's arm (armed only at the head of a
+			// session) this one would otherwise run on EVERY patch for the whole
+			// build.  The `}` pre-filter is what bounds it: closing the current
+			// chunk is a NECESSARY step of the splice mechanism -- chunk syntax
+			// has no brace-free form -- so a value with no `}` cannot introduce
+			// a chunk, and an ordinary param value never carries one.
+			if( BuildProtocolActive_() &&
+			    ( !patch.target.empty() || !patch.kind.empty() ) &&
+			    patch.value.find( '}' ) != std::string::npos )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				std::string s1Name;
+				const std::string s1Kind = snap.hasDocument
+					? DescribeBuildPlanGeometryDeltaForPatch( snap.document, patch.target, patch.kind,
+					                                           patch.param, patch.value, &s1Name )
+					: std::string();
+				if( !s1Kind.empty() ) {
+					if( mBuildPhase == AgentBuildPhase::Compose ) {
+						const std::string clause = CheckComposePhaseForCreate_( "propose_patch",
+						                                                         &s1Fold.notice );
+						if( !clause.empty() ) {
+							r.applied     = false;
+							r.retriable   = false;
+							r.rawCode     = 0;
+							r.status      = "rejected";
+							r.headVersion = snap.headVersion;
+							r.message     = clause + " (this patch's value would have introduced a `" +
+							                s1Kind + "` chunk" +
+							                ( s1Name.empty() ? std::string()
+							                                 : ( " named `" + s1Name + "`" ) ) + ".)";
+							return r;
+						}
+					}
+					// Not refused -- so if it LANDS, the chunk it introduces is
+					// this element's, exactly like one from insert_chunk.
+					s1Attr.name = s1Name;
+					s1Attr.kind = s1Kind;
 				}
 			}
 
@@ -2580,8 +2670,8 @@ namespace RISE
 				// head as it stood a moment ago -- but a param edit's effect is
 				// head-dependent (an unresolvable target can become resolvable),
 				// so the controller re-runs the same stateless delta on approval.
-				// See AgentProposal::partPlanGateArmedAtStage.
-				p.partPlanGateArmedAtStage = PartPlanGateArmed_();
+				// See AgentProposal::buildPlanGateArmedAtStage.
+				p.buildPlanGateArmedAtStage = BuildPlanGateArmed_();
 				// Secure-MCP slice 5c: stamp this session's diagnostic label
 				// (see SetSessionLabel's doc) -- "" for every pre-5c session,
 				// byte-for-byte unchanged behaviour.
@@ -4032,9 +4122,20 @@ namespace RISE
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentChunkResult r;
-			PartPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+			BuildPlanGiveUpFold_ g2Fold{ r.message, std::string() };
+			// S1 (2026-08-11): the phase machinery's OWN give-up fold, a second
+			// instance of the same destructor-time appender rather than a reuse
+			// of g2Fold's `notice` field -- one field holding two notices would
+			// silently drop whichever was written second.  The two can only
+			// co-occur across separate calls (the gate is armed in the Plan
+			// phase, the compose refusal fires in the Compose phase), so this is
+			// belt-and-braces, and cheap.
+			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
+			// S1: attribute whatever this call LANDS to the active element, on
+			// whichever of this function's returns fires.
+			AttributeOnApply_ s1Attr{ *this, r };
 
-			// G2 (2026-08-10, part-plan gate): the InsertChunk arm, FIRST --
+			// G2 (2026-08-10, build-plan gate): the InsertChunk arm, FIRST --
 			// ahead of R1c's and E1's, because this gate is a pure SEQUENCING
 			// check that consults nothing about the document and nothing about
 			// whether the chunk would otherwise be accepted.  It only fires on
@@ -4056,12 +4157,12 @@ namespace RISE
 			// the model at all, defeating the mechanism on the exact surface
 			// it was designed for.  (2) That risk is now STRICTLY WORSE under
 			// the refuse-until-filed cap: a client that auto-retries up to 5
-			// times would burn all kPartPlanGateMaxRefusals (3) refusals AND
+			// times would burn all kBuildPlanGateMaxRefusals (3) refusals AND
 			// trip the give-up transition before the model ever saw a single
 			// one of them -- the model would never learn the gate exists.
 			std::string g2Kind, g2Name;
-			if( PartPlanGateArmed_() && ChunkTextCreatesGeometry_( chunkText, &g2Kind, &g2Name ) ) {
-				const std::string clause = CheckPartPlanGate_( "insert_chunk", &g2Fold.notice );
+			if( BuildPlanGateArmed_() && ChunkTextCreatesGeometry_( chunkText, &g2Kind, &g2Name ) ) {
+				const std::string clause = CheckBuildPlanGate_( "insert_chunk", &g2Fold.notice );
 				if( !clause.empty() ) {
 					r.applied     = false;
 					r.retriable   = false;
@@ -4082,6 +4183,38 @@ namespace RISE
 				// either way, normal InsertChunk processing continues below
 				// and g2Fold's destructor folds any notice into r.message
 				// whichever return statement this function ultimately takes.
+			}
+
+			// S1 (2026-08-11, the staged build protocol): the COMPOSE-phase
+			// creation refusal, immediately after the gate arm and on the same
+			// terms -- it fires only on a chunk text that really does create
+			// geometry (the same registry-category test), so it can never burn
+			// a phase refusal on a call that was going to be refused for being
+			// malformed, a blocked rasterizer or an unacknowledged emissive CSG.
+			// The two mechanisms cannot both fire on one call: the gate is armed
+			// only while no plan is filed (phase Plan), and this one only after
+			// every element is finished (phase Compose).
+			//
+			// `retriable` stays FALSE for the same two reasons the gate's arms
+			// document (the wire flag is the GUI chat loops' SILENT client-side
+			// auto-retry signal; a client that auto-retried would burn the whole
+			// phase budget before the model saw one refusal).
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				std::string s1Kind, s1Name;
+				if( ChunkTextCreatesGeometry_( chunkText, &s1Kind, &s1Name ) ) {
+					const std::string clause = CheckComposePhaseForCreate_( "insert_chunk", &s1Fold.notice );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.retriable   = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = ReadHeadVersion();
+						r.kind        = s1Kind;
+						r.name        = s1Name;
+						r.message     = clause;
+						return r;
+					}
+				}
 			}
 
 			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
@@ -4326,7 +4459,7 @@ namespace RISE
 
 			out.reserve( chunkTexts.size() );
 
-			// G2 (2026-08-10, part-plan gate): an UP-FRONT scan, before the
+			// G2 (2026-08-10, build-plan gate): an UP-FRONT scan, before the
 			// per-element loop and before R1c's own scan, for the SAME reason
 			// R1c deviates from the documented best-effort contract -- a
 			// POLICY refusal is not an authoring failure, so landing half a
@@ -4337,11 +4470,11 @@ namespace RISE
 			// also what makes the gate cost exactly ONE INTERCEPTION per call:
 			// a model that batches its whole build into one insert_chunks is
 			// intercepted once per call, not once per element -- so the
-			// refuse-until-filed cap (kPartPlanGateMaxRefusals) is spent at
+			// refuse-until-filed cap (kBuildPlanGateMaxRefusals) is spent at
 			// the same rate a single-chunk caller spends it, never faster.
 			//
 			// `g2GiveUpNotice` is set IFF this call is the one that trips the
-			// cap (see CheckPartPlanGate_'s doc) and is folded into EVERY
+			// cap (see CheckBuildPlanGate_'s doc) and is folded into EVERY
 			// result this call returns below -- the R1c-refused-batch return
 			// right after this block, and each per-element InsertChunk result
 			// in the SEQUENTIAL loop further down -- so the give-up is
@@ -4350,12 +4483,12 @@ namespace RISE
 			std::string g2GiveUpNotice;
 			{
 				bool createsGeometry = false;
-				if( PartPlanGateArmed_() ) {
+				if( BuildPlanGateArmed_() ) {
 					for( std::size_t i = 0; i < chunkTexts.size() && !createsGeometry; ++i )
 						createsGeometry = ChunkTextCreatesGeometry_( chunkTexts[i] );
 				}
 				if( createsGeometry ) {
-					const std::string clause = CheckPartPlanGate_( "insert_chunks", &g2GiveUpNotice );
+					const std::string clause = CheckBuildPlanGate_( "insert_chunks", &g2GiveUpNotice );
 					if( !clause.empty() ) {
 						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
 						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
@@ -4366,6 +4499,43 @@ namespace RISE
 							e.status      = "rejected";
 							e.headVersion = head;
 							e.message     = clause;
+							out.push_back( e );
+						}
+						return out;
+					}
+				}
+			}
+
+			// S1 (2026-08-11, the staged build protocol): the COMPOSE-phase
+			// creation refusal, as its OWN up-front batch scan for exactly the
+			// reason the gate's scan above is one -- landing half a batch and
+			// then refusing the rest leaves a scene the model never asked for,
+			// and one scan per CALL means the phase budget is spent at the same
+			// rate by a batching caller as by a single-chunk one.  The
+			// per-element InsertChunk below carries the identical check for the
+			// direct caller; it cannot double-fire, because this scan already
+			// refused the whole batch if any element would trip it.
+			std::string s1GiveUpNotice;
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				bool createsGeometry = false;
+				for( std::size_t i = 0; i < chunkTexts.size() && !createsGeometry; ++i )
+					createsGeometry = ChunkTextCreatesGeometry_( chunkTexts[i] );
+				if( createsGeometry ) {
+					const std::string clause = CheckComposePhaseForCreate_( "insert_chunks", &s1GiveUpNotice );
+					if( !clause.empty() ) {
+						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+							AgentChunkResult e;
+							e.applied     = false;
+							e.retriable   = false;   // see InsertChunk's arm for why
+							e.rawCode     = 0;
+							e.status      = "rejected";
+							e.headVersion = head;
+							e.message     = clause;
+							// The gate above may have tripped its OWN give-up on
+							// this same call; carry that notice too rather than
+							// lose it behind this refusal.
+							if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
 							out.push_back( e );
 						}
 						return out;
@@ -4414,6 +4584,8 @@ namespace RISE
 						// permanently, so report it here too rather than lose
 						// it.
 						if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
+						// S1: same for the phase machinery's give-up.
+						if( !s1GiveUpNotice.empty() ) e.message += "  " + s1GiveUpNotice;
 						out.push_back( e );
 					}
 					return out;
@@ -4442,6 +4614,14 @@ namespace RISE
 				if( !g2GiveUpNotice.empty() ) {
 					if( !e.message.empty() ) e.message += "  ";
 					e.message += g2GiveUpNotice;
+				}
+				// S1: the same treatment for the phase machinery's give-up --
+				// the up-front compose scan above is the only place it can be
+				// written for a batched insert (the per-element InsertChunk sees
+				// the phase rules already disarmed), so this is where it rides.
+				if( !s1GiveUpNotice.empty() ) {
+					if( !e.message.empty() ) e.message += "  ";
+					e.message += s1GiveUpNotice;
 				}
 				out.push_back( e );
 			}
@@ -6093,10 +6273,13 @@ namespace RISE
 			out.family = family;
 			// G2: folds a give-up notice into out.message no matter which of
 			// this function's several `return out;` statements fires -- see
-			// PartPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
-			PartPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+			// BuildPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
+			BuildPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+			// S1 (2026-08-11): the phase machinery's own fold, a second instance
+			// for the reason InsertChunk's identical pair documents.
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
 
-			// G2 (2026-08-10, part-plan gate): FIRST -- every geometry-scaffold
+			// G2 (2026-08-10, build-plan gate): FIRST -- every geometry-scaffold
 			// family expands to at least one Geometry-category chunk, so this
 			// verb is unconditionally geometry-creating and needs no per-family
 			// test.  Placed ahead of the family/param validation on purpose:
@@ -6107,7 +6290,23 @@ namespace RISE
 			// verb routes through sees a disarmed gate and cannot double-fire
 			// (or double-notice, for the same reason).
 			{
-				const std::string clause = CheckPartPlanGate_( "insert_geometry_scaffold", &g2Fold.notice );
+				const std::string clause = CheckBuildPlanGate_( "insert_geometry_scaffold", &g2Fold.notice );
+				if( !clause.empty() ) {
+					out.ok      = false;
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// S1 (2026-08-11, the staged build protocol): the COMPOSE-phase
+			// creation refusal, immediately after the gate and on the same
+			// terms -- this verb is unconditionally geometry-creating, so it
+			// needs no per-family test either.  The InsertChunks it routes
+			// through sees the phase rules already satisfied here and cannot
+			// double-fire, exactly as with the gate.
+			{
+				const std::string clause = CheckComposePhaseForCreate_( "insert_geometry_scaffold",
+				                                                         &s1Fold.notice );
 				if( !clause.empty() ) {
 					out.ok      = false;
 					out.message = clause;
@@ -6194,10 +6393,13 @@ namespace RISE
 			out.replacedObject = target;
 			// G2: folds a give-up notice into out.message no matter which of
 			// this function's several `return out;` statements fires -- see
-			// PartPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
-			PartPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+			// BuildPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
+			BuildPlanGiveUpFold_ g2Fold{ out.message, std::string() };
+			// S1 (2026-08-11): the phase machinery's own fold -- see
+			// InsertChunk's identical pair for why it is a second instance.
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
 
-			// G2 (2026-08-10, part-plan gate): FIRST, for the same reasons the
+			// G2 (2026-08-10, build-plan gate): FIRST, for the same reasons the
 			// insert sibling states -- this verb is unconditionally
 			// geometry-creating, and a refusal here leaves `status` empty /
 			// `ok` false, i.e. the pre-commit refusal shape every other
@@ -6205,7 +6407,32 @@ namespace RISE
 			// section-(1) note directly below: nothing is touched on ANY
 			// failure before the single commit).
 			{
-				const std::string clause = CheckPartPlanGate_( "replace_geometry_scaffold", &g2Fold.notice );
+				const std::string clause = CheckBuildPlanGate_( "replace_geometry_scaffold", &g2Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// S1 (2026-08-11, the staged build protocol): this verb is BOTH an
+			// edit of `target` and a geometry creation, so it takes BOTH arms --
+			// mutually exclusive by phase, so at most one can fire.
+			//
+			// (a) CROSS-ELEMENT: rebinding the geometry of an object created
+			// under another element reaches into that element's window exactly
+			// as a propose_patch on the same object would.
+			{
+				const std::string clause = CheckElementWindowForEdit_( "replace_geometry_scaffold",
+				                                                        target, &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+			// (b) COMPOSE: it creates new geometry, unconditionally.
+			{
+				const std::string clause = CheckComposePhaseForCreate_( "replace_geometry_scaffold",
+				                                                         &s1Fold.notice );
 				if( !clause.empty() ) {
 					out.message = clause;
 					return out;
@@ -6644,6 +6871,35 @@ namespace RISE
 				out.chunkResults.push_back( e );
 			}
 
+			// S1 (2026-08-11): attribute every chunk this ONE atomic mutation
+			// landed to the active element.  Explicit here, unlike the insert
+			// verbs, because this verb rewrites the document itself instead of
+			// routing through InsertChunk -- so nothing else would record it.
+			// `diagnosed` counts: code 3 DID mutate (see the block just below),
+			// so those chunks are in the document and must carry an element like
+			// any other -- which is exactly what ResultMutatedDocument_ says
+			// (S1 fix-round 2026-08-11: this site was the ONE of five that had
+			// the condition right, and it is now the shared predicate).
+			if( ResultMutatedDocument_( commit ) ) {
+				// S1 fix-round (2026-08-11, P1): the ERASED previous geometry
+				// must lose its attribution on the SAME condition the erase
+				// happened under.  Step (5) removed the chunk from the document
+				// when nothing referenced it any more; an attribution entry that
+				// outlives it can do exactly one thing -- make
+				// CheckElementWindowForEdit_, which is a pure attribution lookup
+				// that runs BEFORE any document read, refuse a later edit naming
+				// a chunk that does not exist.  That refusal is unfixable by the
+				// reopen_element it recommends, and it spends one of the three
+				// SHARED phase-refusal slots.  Dropped BEFORE the attribution
+				// loop so a generated chunk that reuses the erased name (only
+				// possible if the erase and the splice disagreed, which they
+				// cannot) would still end up attributed, never dropped.
+				if( out.previousGeometryRemoved )
+					DropChunkAttribution_( oldGeomName );
+				for( const GeoScaffoldChunkEntry& c : graph.chunks )
+					AttributeChunkToActiveElement_( c.name, c.kind );
+			}
+
 			// R2 fix-round (P1): every path that reaches here ATTEMPTED a commit -- `ok` reflects that (the
 			// request was well-formed and submitted), matching InsertGeometryScaffold's identical "ok is not
 			// a promise every chunk landed" hedge; `status`/`retriable`/`headVersion` carry the ACTUAL
@@ -6722,8 +6978,8 @@ namespace RISE
 		}
 
 		//--------------------------------------------------------------------
-		// G2 (2026-08-10): the part-plan gate.  See AgentSession.h's block
-		// above FilePartPlan for what it is and why; this is the whole
+		// G2 (2026-08-10): the build-plan gate.  See AgentSession.h's block
+		// above FileBuildPlan for what it is and why; this is the whole
 		// implementation, four call sites aside (InsertChunk, InsertChunks,
 		// InsertGeometryScaffold, ReplaceGeometryScaffold).
 		//
@@ -6732,24 +6988,31 @@ namespace RISE
 		// parse of the caller's own chunk text.
 		//--------------------------------------------------------------------
 
-		const char* const AgentSession::kPartPlanConstructionValues[6] =
+		const char* const AgentSession::kBuildPlanConstructionValues[6] =
 		{
 			"primitive", "csg", "sweep", "chain", "displaced", "mesh"
 		};
 
-		const char* const AgentSession::kPartPlanViewValues[3] = { "front", "side", "top" };
-		const char* const AgentSession::kPartPlanDefaultView   = "front";
+		const char* const AgentSession::kBuildPlanViewValues[3] = { "front", "side", "top" };
+		const char* const AgentSession::kBuildPlanDefaultView   = "front";
 
 		namespace
 		{
 			//! G2 (2026-08-10): the PROCESS-WIDE gate default -- see
-			//! AgentSession::SetPartPlanGateDefaultEnabled's doc.  TRUE by
+			//! AgentSession::SetBuildPlanGateDefaultEnabled's doc.  TRUE by
 			//! default, deliberately: a construction site nobody remembered to
 			//! touch gets the gate, which is the fail-safe polarity (the
 			//! inverse -- default off, enabled per host -- would make a
 			//! forgotten host silently opt out of the measurement, the exact
 			//! fail-open shape IsReadSafeVerb's doc argues against).
-			std::atomic<bool> gPartPlanGateDefaultEnabled_{ true };
+			std::atomic<bool> gBuildPlanGateDefaultEnabled_{ true };
+
+			//! S1 (2026-08-11): the PROCESS-WIDE staged-build-protocol default
+			//! -- see AgentSession::SetBuildProtocolDefaultEnabled's doc.  TRUE
+			//! for the SAME fail-safe reason the gate default is: a host nobody
+			//! remembered to touch runs the protocol rather than silently
+			//! opting out of the measurement it exists to produce.
+			std::atomic<bool> gBuildProtocolDefaultEnabled_{ true };
 
 			//----------------------------------------------------------------
 			// G3a (2026-08-10): the sketch rasterizer.
@@ -6757,7 +7020,7 @@ namespace RISE
 			// Model-authored numbers in, host-computed mask bytes out.  Pure
 			// in-memory arithmetic: no file, no scene, no Document, no lock,
 			// no rasterizer -- the same "nothing but per-session bookkeeping"
-			// property the G2 gate has, which is why file_part_plan stays
+			// property the G2 gate has, which is why file_build_plan stays
 			// READ-SAFE with an image in its result.
 			//----------------------------------------------------------------
 
@@ -6765,7 +7028,7 @@ namespace RISE
 			//! this same anonymous namespace's EncodeLinearPassthroughPng_,
 			//! DEFINED further down alongside compare_to_reference's composite
 			//! (search "compare_to_reference visual=true: encode").  Declared
-			//! here only because FilePartPlan is implemented above that point;
+			//! here only because FileBuildPlan is implemented above that point;
 			//! reusing it is the point -- the sketch composite and the
 			//! reference-diff composite must encode identically or two
 			//! "PNG bytes" in the same result set would mean two things.
@@ -6782,7 +7045,7 @@ namespace RISE
 			//! world-space spline against a point that swamps the curve.
 			//! Here every coordinate is normalized by the outline's OWN bbox,
 			//! so magnitude alone is harmless -- what is NOT harmless is
-			//! `RasterizePartOutline_`'s fit-scale arithmetic in BOTH
+			//! `RasterizeElementOutline_`'s fit-scale arithmetic in BOTH
 			//! directions: `maxX - minX` OVERFLOWING to +inf for coordinates
 			//! near the double range (1e300 - -1e300) is the direction this
 			//! cap guards; a bbox extent UNDERFLOWING toward zero (a
@@ -6798,7 +7061,7 @@ namespace RISE
 			//! (on EITHER axis) an outline may have.  1e-9 is far above any
 			//! plausible authored precision (no one is drawing a silhouette
 			//! a billionth of a canvas unit wide) and far below where
-			//! `kPartSketchFillFraction * kPartSketchCanvas / extent` can
+			//! `kElementSketchFillFraction * kElementSketchCanvas / extent` can
 			//! overflow a double -- so it rejects only the pathological case,
 			//! never a legitimate small-but-sane outline.
 			const double kSketchMinExtent_ = 1e-9;
@@ -6810,8 +7073,8 @@ namespace RISE
 			//! `;;` in the MIDDLE fails the "exactly two numbers" check
 			//! rather than being silently skipped, so a typo cannot quietly
 			//! change the point count).  `err` is a lowercase phrase that
-			//! reads correctly after "parts[i].outline ".
-			bool ParsePartOutlinePoints_( const std::string& raw,
+			//! reads correctly after "elements[i].outline ".
+			bool ParseElementOutlinePoints_( const std::string& raw,
 			                              std::vector<SketchPoint_>& out,
 			                              std::string& err )
 			{
@@ -6837,8 +7100,8 @@ namespace RISE
 						"closed implicitly) -- got " + std::to_string( segs.size() );
 					return false;
 				}
-				if( segs.size() > AgentSession::kPartOutlineMaxPoints ) {
-					err = "must have at most " + std::to_string( AgentSession::kPartOutlineMaxPoints ) +
+				if( segs.size() > AgentSession::kElementOutlineMaxPoints ) {
+					err = "must have at most " + std::to_string( AgentSession::kElementOutlineMaxPoints ) +
 						" points -- got " + std::to_string( segs.size() );
 					return false;
 				}
@@ -6884,10 +7147,10 @@ namespace RISE
 				}
 				// G3a fix-round (2026-08-10): a bbox extent that is POSITIVE but
 				// subnormal (e.g. "0 0; 1e-320 0; 0 1e-320") passes the check
-				// above yet overflows RasterizePartOutline_'s fit scale to +inf
+				// above yet overflows RasterizeElementOutline_'s fit scale to +inf
 				// -- see kSketchMinExtent_'s comment for the mechanism.  Same
 				// -32602 shape as every other rejection here, so the wire layer
-				// and FilePartPlan (both of which call this one function) name
+				// and FileBuildPlan (both of which call this one function) name
 				// the defect identically.
 				if( ( maxX - minX ) < kSketchMinExtent_ || ( maxY - minY ) < kSketchMinExtent_ ) {
 					err = "has a bounding-box extent below 1e-9 on at least one axis -- too small to "
@@ -6904,7 +7167,7 @@ namespace RISE
 			//----------------------------------------------------------------
 			//! G3b (2026-08-10): THE SHARED BBOX-NORMALIZED FIT.  ONE
 			//! definition, called by BOTH mask producers -- the sketch
-			//! rasterizer (RasterizePartOutline_, below) and the rendered
+			//! rasterizer (RasterizeElementOutline_, below) and the rendered
 			//! silhouette normalizer (NormalizeSilhouetteToCanvas_, further
 			//! down) -- because an IoU between two masks fitted by DIFFERENT
 			//! transforms is not a shape comparison at all, it is a
@@ -6915,26 +7178,26 @@ namespace RISE
 			//! have to agree, not just the 0.85.
 			//!
 			//! Maps a source bounding box of extent (`bw`, `bh`) onto the
-			//! kPartSketchCanvas square: `outScale` device units per source
+			//! kElementSketchCanvas square: `outScale` device units per source
 			//! unit, `outOffX`/`outOffY` the device-space origin of the
 			//! source box's min corner.  Aspect preserved (the LONGER axis
-			//! fills kPartSketchFillFraction of the canvas), the shorter axis
+			//! fills kElementSketchFillFraction of the canvas), the shorter axis
 			//! letterboxed and centered.  Callers guarantee bw, bh > 0.
 			void SketchFitTransform_( double bw, double bh,
 			                          double& outScale, double& outOffX, double& outOffY )
 			{
-				const double canvas = static_cast<double>( AgentSession::kPartSketchCanvas );
-				outScale = AgentSession::kPartSketchFillFraction * canvas / ( bw > bh ? bw : bh );
+				const double canvas = static_cast<double>( AgentSession::kElementSketchCanvas );
+				outScale = AgentSession::kElementSketchFillFraction * canvas / ( bw > bh ? bw : bh );
 				outOffX  = ( canvas - bw * outScale ) * 0.5;
 				outOffY  = ( canvas - bh * outScale ) * 0.5;
 			}
 
-			//! Rasterize `pts` into a kPartSketchCanvas^2 0/1 mask.
+			//! Rasterize `pts` into a kElementSketchCanvas^2 0/1 mask.
 			//!
 			//! CONVENTIONS, all of them load-bearing for determinism and for
 			//! G3b's comparison:
 			//!   * FIT: SketchFitTransform_ above -- the outline's own bbox
-			//!     scaled by kPartSketchFillFraction * canvas /
+			//!     scaled by kElementSketchFillFraction * canvas /
 			//!     max(bboxW, bboxH), aspect PRESERVED, letterboxed, centered
 			//!     on both axes.  G3b's silhouette goes through the SAME
 			//!     function; see its doc for why that has to be a function
@@ -6956,14 +7219,14 @@ namespace RISE
 			//! platform-dependent rounding mode.  The same outline string
 			//! therefore produces byte-identical bytes in any session, any
 			//! process, any run -- pinned by a test.
-			void RasterizePartOutline_( const std::vector<SketchPoint_>& pts,
+			void RasterizeElementOutline_( const std::vector<SketchPoint_>& pts,
 			                            std::vector<unsigned char>& outMask,
 			                            std::size_t& outFilled )
 			{
-				const int N = AgentSession::kPartSketchCanvas;
+				const int N = AgentSession::kElementSketchCanvas;
 				outMask.assign( static_cast<std::size_t>( N ) * static_cast<std::size_t>( N ), 0 );
 				outFilled = 0;
-				if( pts.size() < 3 ) return;   // ParsePartOutlinePoints_ already guarantees this
+				if( pts.size() < 3 ) return;   // ParseElementOutlinePoints_ already guarantees this
 
 				double minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
 				for( const SketchPoint_& p : pts ) {
@@ -7016,22 +7279,22 @@ namespace RISE
 			}
 
 			//! Tile every sketch mask into ONE composite PNG, left to right,
-			//! wrapping every AgentSession::kPartSketchTilesPerRow tiles, in
+			//! wrapping every AgentSession::kElementSketchTilesPerRow tiles, in
 			//! FILING order.  One image rather than N: on a vision-capable
 			//! model N inline images cost N times the tokens for the same
 			//! information, and on a text-only model N images are N times the
 			//! waste.  Filled = white, empty = black, plus a one-pixel grey
 			//! frame per tile so a 4-wide row reads as four sketches rather
 			//! than one wide black field.  The frame can never erase mask
-			//! content: kPartSketchFillFraction 0.85 leaves a >= 19-pixel
+			//! content: kElementSketchFillFraction 0.85 leaves a >= 19-pixel
 			//! margin on every side of a 256-pixel tile.
-			//! At most kPartSketchMaxCompositeTiles tiles are drawn (see that
+			//! At most kElementSketchMaxCompositeTiles tiles are drawn (see that
 			//! constant); `outTiled` reports how many, so the caller can state
 			//! the fact rather than silently show a partial set.
 			//! Returns empty (and leaves the dims at 0) if there is nothing to
 			//! draw or the encoder fails.
 			std::vector<unsigned char> BuildSketchCompositePng_(
-				const std::vector<AgentSession::AgentPartSketch>& sketches,
+				const std::vector<AgentSession::AgentElementSketch>& sketches,
 				unsigned int& outW, unsigned int& outH, std::size_t& outTiled )
 			{
 				outW = 0;
@@ -7039,10 +7302,10 @@ namespace RISE
 				outTiled = 0;
 				if( sketches.empty() ) return std::vector<unsigned char>();
 
-				const int tile   = AgentSession::kPartSketchCanvas;
-				const int perRow = AgentSession::kPartSketchTilesPerRow;
-				const std::size_t drawn = sketches.size() < AgentSession::kPartSketchMaxCompositeTiles
-					? sketches.size() : AgentSession::kPartSketchMaxCompositeTiles;
+				const int tile   = AgentSession::kElementSketchCanvas;
+				const int perRow = AgentSession::kElementSketchTilesPerRow;
+				const std::size_t drawn = sketches.size() < AgentSession::kElementSketchMaxCompositeTiles
+					? sketches.size() : AgentSession::kElementSketchMaxCompositeTiles;
 				const int n      = static_cast<int>( drawn );
 				const int cols   = ( n < perRow ) ? n : perRow;
 				const int rows   = ( n + perRow - 1 ) / perRow;
@@ -7162,7 +7425,7 @@ namespace RISE
 
 			//! Crop `src` (a `w` x `h` 0/1 mask, row-major from the TOP row)
 			//! to its own filled bounding box and resample it onto the shared
-			//! kPartSketchCanvas^2 canvas through SketchFitTransform_ -- the
+			//! kElementSketchCanvas^2 canvas through SketchFitTransform_ -- the
 			//! EXACT transform the sketch rasterizer used, which is what
 			//! makes the resulting IoU a shape comparison rather than a
 			//! framing comparison.
@@ -7188,7 +7451,7 @@ namespace RISE
 			                                   std::size_t& outFilled,
 			                                   unsigned int& outBBoxW, unsigned int& outBBoxH )
 			{
-				const int N = AgentSession::kPartSketchCanvas;
+				const int N = AgentSession::kElementSketchCanvas;
 				outMask.assign( static_cast<std::size_t>( N ) * static_cast<std::size_t>( N ), 0 );
 				outFilled = 0;
 				outBBoxW  = 0;
@@ -7263,7 +7526,7 @@ namespace RISE
 				return static_cast<double>( inter ) / static_cast<double>( uni );
 			}
 
-			//! The G3b comparison composite: THREE kPartSketchCanvas-square
+			//! The G3b comparison composite: THREE kElementSketchCanvas-square
 			//! tiles side by side -- [ sketch | silhouette | overlay ].
 			//!
 			//! This image is a REQUIREMENT of the slice, not decoration: the
@@ -7276,7 +7539,7 @@ namespace RISE
 			//! COLOURING, stated here and quoted verbatim in both tool
 			//! surfaces so a reader is never guessing at what a colour means:
 			//!   * tiles 1 and 2: filled WHITE on BLACK, the same rendering
-			//!     file_part_plan's own filing echo used, so the sketch tile
+			//!     file_build_plan's own filing echo used, so the sketch tile
 			//!     looks identical to what the model already saw.
 			//!   * tile 3 (overlay) is CHANNEL-ADDITIVE: the sketch drives
 			//!     the RED channel and the silhouette drives GREEN+BLUE, so
@@ -7289,7 +7552,7 @@ namespace RISE
 			//!     same whether the surrounding page is light or dark.
 			//! Each tile keeps the one-pixel grey frame BuildSketchCompositePng_
 			//! draws, for the same reason and with the same guarantee: at
-			//! kPartSketchFillFraction 0.85 both masks leave a >= 19-pixel
+			//! kElementSketchFillFraction 0.85 both masks leave a >= 19-pixel
 			//! margin, so a frame can never erase mask content.
 			//! Returns empty (dims left 0) if the encoder fails.
 			std::vector<unsigned char> BuildTargetComparisonPng_(
@@ -7299,7 +7562,7 @@ namespace RISE
 			{
 				outW = 0;
 				outH = 0;
-				const int tile = AgentSession::kPartSketchCanvas;
+				const int tile = AgentSession::kElementSketchCanvas;
 				const std::size_t tilePixels =
 					static_cast<std::size_t>( tile ) * static_cast<std::size_t>( tile );
 				if( sketchMask.size() != tilePixels || silhouetteMask.size() != tilePixels )
@@ -7360,56 +7623,66 @@ namespace RISE
 			}
 		}
 
-		void AgentSession::SetPartPlanGateDefaultEnabled( bool enabled )
+		void AgentSession::SetBuildPlanGateDefaultEnabled( bool enabled )
 		{
-			gPartPlanGateDefaultEnabled_.store( enabled, std::memory_order_relaxed );
+			gBuildPlanGateDefaultEnabled_.store( enabled, std::memory_order_relaxed );
 		}
 
-		bool AgentSession::PartPlanGateDefaultEnabled()
+		bool AgentSession::BuildPlanGateDefaultEnabled()
 		{
-			return gPartPlanGateDefaultEnabled_.load( std::memory_order_relaxed );
+			return gBuildPlanGateDefaultEnabled_.load( std::memory_order_relaxed );
 		}
 
-		bool AgentSession::IsValidPartConstruction( const std::string& v )
+		void AgentSession::SetBuildProtocolDefaultEnabled( bool enabled )
 		{
-			for( std::size_t i = 0; i < kPartPlanConstructionCount; ++i ) {
-				if( v == kPartPlanConstructionValues[i] ) return true;
+			gBuildProtocolDefaultEnabled_.store( enabled, std::memory_order_relaxed );
+		}
+
+		bool AgentSession::BuildProtocolDefaultEnabled()
+		{
+			return gBuildProtocolDefaultEnabled_.load( std::memory_order_relaxed );
+		}
+
+		bool AgentSession::IsValidElementConstruction( const std::string& v )
+		{
+			for( std::size_t i = 0; i < kBuildPlanConstructionCount; ++i ) {
+				if( v == kBuildPlanConstructionValues[i] ) return true;
 			}
 			return false;
 		}
 
-		std::string AgentSession::PartPlanConstructionList()
+		std::string AgentSession::BuildPlanConstructionList()
 		{
 			std::string s;
-			for( std::size_t i = 0; i < kPartPlanConstructionCount; ++i ) {
+			for( std::size_t i = 0; i < kBuildPlanConstructionCount; ++i ) {
 				if( i ) s += ", ";
-				s += kPartPlanConstructionValues[i];
+				s += kBuildPlanConstructionValues[i];
 			}
 			return s;
 		}
 
-		bool AgentSession::IsValidPartView( const std::string& v )
+		bool AgentSession::IsValidElementView( const std::string& v )
 		{
-			for( std::size_t i = 0; i < kPartPlanViewCount; ++i ) {
-				if( v == kPartPlanViewValues[i] ) return true;
+			for( std::size_t i = 0; i < kBuildPlanViewCount; ++i ) {
+				if( v == kBuildPlanViewValues[i] ) return true;
 			}
 			return false;
 		}
 
-		std::string AgentSession::PartPlanViewList()
+		std::string AgentSession::BuildPlanViewList()
 		{
 			std::string s;
-			for( std::size_t i = 0; i < kPartPlanViewCount; ++i ) {
+			for( std::size_t i = 0; i < kBuildPlanViewCount; ++i ) {
 				if( i ) s += ", ";
-				s += kPartPlanViewValues[i];
+				s += kBuildPlanViewValues[i];
 			}
 			return s;
 		}
 
-		bool AgentSession::ValidatePartOutline( const std::string& outline, std::string& outError )
+		bool AgentSession::ValidateElementOutline( const std::string& outline, std::string& outError )
 		{
 			std::vector<SketchPoint_> pts;
-			return ParsePartOutlinePoints_( outline, pts, outError );
+			return ParseElementOutlinePoints_( outline, pts, outError );
 		}
 
 		bool AgentSession::ChunkTextCreatesGeometry_( const std::string& chunkText,
@@ -7438,26 +7711,26 @@ namespace RISE
 			return false;
 		}
 
-		std::string AgentSession::CheckPartPlanGate_( const char* verb, std::string* outGiveUpNotice )
+		std::string AgentSession::CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice )
 		{
-			// The armed-ness test is factored into PartPlanGateArmed_ so the
+			// The armed-ness test is factored into BuildPlanGateArmed_ so the
 			// hot call sites can skip their CST parse without duplicating it.
 			// Disarmed covers three cases identically: disabled, a plan
 			// already filed, or the gate already gave up -- none of them
 			// write outGiveUpNotice, so a caller that clears its own local
 			// before calling sees "no notice" on every one of them.
-			if( !PartPlanGateArmed_() ) return std::string();
+			if( !BuildPlanGateArmed_() ) return std::string();
 
 			// Arc 77 Phase 2 (2026-08-11): WHICH of the gate's two conditions
-			// is unmet.  PartPlanGateArmed_ above already established that at
+			// is unmet.  BuildPlanGateArmed_ above already established that at
 			// least one is, so these two bools are never both false here.
 			// `needImagine` is false on every provider without image
 			// generation, which is what makes the non-capable refusal below
 			// byte-identical to the shipped plan-only one.
-			const bool needPlan    = !mPartPlanFiled;
+			const bool needPlan    = !mBuildPlanFiled;
 			const bool needImagine = ImagineRequirementActive_() && !mSceneTarget;
 
-			if( mPartPlanGateRefusalCount < kPartPlanGateMaxRefusals )
+			if( mBuildPlanGateRefusalCount < kBuildPlanGateMaxRefusals )
 			{
 				// REFUSE -- and count it, but do NOT disarm.  This is the
 				// 2026-08-10 supervisor overrule of the original once-per-
@@ -7466,8 +7739,8 @@ namespace RISE
 				// zero plans to measure, so the gate stays ARMED across the
 				// 1st, 2nd and 3rd interception and refuses every one of
 				// them, document byte-identical each time.
-				++mPartPlanGateRefusalCount;
-				const int remaining = kPartPlanGateMaxRefusals - mPartPlanGateRefusalCount;
+				++mBuildPlanGateRefusalCount;
+				const int remaining = kBuildPlanGateMaxRefusals - mBuildPlanGateRefusalCount;
 
 				// FACTS ONLY.  No "consider using", no recommendation, no
 				// richness advice -- both because this project has measured
@@ -7476,9 +7749,9 @@ namespace RISE
 				// very behaviour this gate exists to measure.  The remaining-
 				// attempts count is itself a fact this refusal MUST get right
 				// (a false claim in a model-facing payload is a P1 in this
-				// repo): it is exactly kPartPlanGateMaxRefusals minus the
+				// repo): it is exactly kBuildPlanGateMaxRefusals minus the
 				// count just incremented to, so it can never drift from what
-				// CheckPartPlanGate_ actually does on the next call.
+				// CheckBuildPlanGate_ actually does on the next call.
 				//
 				// G3a (2026-08-10): the text now names the `outline` and
 				// `view` fields too.  EVERY CLAUSE MUST STAY TRUE of the
@@ -7501,23 +7774,33 @@ namespace RISE
 				// BYTE-IDENTICAL to the shipped plan-only refusal.
 				std::string msg = std::string( verb ) + " refused: ";
 				if( needPlan && needImagine )
-					msg += "no part plan has been filed for this session, and no imagined scene target "
+					msg += "no build plan has been filed for this session, and no imagined scene target "
 					       "has been created for it. ";
 				else if( needPlan )
-					msg += "no part plan has been filed for this session. ";
+					msg += "no build plan has been filed for this session. ";
 				else
 					msg += "no imagined scene target has been created for this session. ";
 
 				if( needPlan ) {
-					msg += "Call file_part_plan first, listing the parts of the subject you are about to build; "
-						"each part needs a `construction` value from: " + PartPlanConstructionList() + ", "
+					// S1 (2026-08-11): the schema this sentence describes is
+					// schema v3 -- elements, each with pieces.  EVERY CLAUSE
+					// MUST STAY TRUE of what the dispatcher enforces: `pieces`
+					// really is required with at least one entry, `outline`
+					// really is required with no opt-out, and any names really
+					// are accepted.  A model that follows this sentence must
+					// never then get a -32602.
+					msg += "Call file_build_plan first, listing the elements of the scene you are about to "
+						"build; each element needs `pieces` -- at least one name for the pieces it breaks "
+						"down into -- a `construction` value from: " + BuildPlanConstructionList() + ", "
 						"and an `outline` -- a closed 2D polygon of at least 3 \"x y\" points separated by "
 						"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\" -- and may carry a `view` of " +
-						PartPlanViewList() + " (default " + kPartPlanDefaultView + "). "
-						"Any of those construction values is accepted -- `primitive` for every part is a "
-						"complete plan -- and any outline shape with extent on both axes is accepted, a "
-						"rough blob included. The plan "
-						"does not constrain what you author afterwards. ";
+						BuildPlanViewList() + " (default " + kBuildPlanDefaultView + "). "
+						"Any of those construction values is accepted -- `primitive` for every element is a "
+						"complete plan -- any piece names are accepted, and any outline shape with extent "
+						"on both axes is accepted, a rough blob included. The plan "
+						"does not constrain what you author afterwards. Filing it makes the first element "
+						"active: chunks you create are recorded against it, and finish_element closes it "
+						"and moves to the next. ";
 				}
 				if( needImagine ) {
 					// FACTS ONLY, same measurement hygiene as the plan half:
@@ -7545,15 +7828,15 @@ namespace RISE
 				return msg;
 			}
 
-			// GIVE UP.  This is the (kPartPlanGateMaxRefusals+1)'th
+			// GIVE UP.  This is the (kBuildPlanGateMaxRefusals+1)'th
 			// interception -- unlike the shipped E4 render-cadence gate,
 			// where any cheap render satisfies the condition, clearing THIS
 			// gate requires discovering a brand-new tool and producing a
 			// valid schema for it, so an uncapped refuse-until-filed could
 			// strand a session that genuinely cannot form that call.  Let
-			// this call through and disarm PERMANENTLY (mPartPlanGateGaveUp,
-			// read by PartPlanGateArmed_) rather than refuse a 4th time.
-			mPartPlanGateGaveUp = true;
+			// this call through and disarm PERMANENTLY (mBuildPlanGateGaveUp,
+			// read by BuildPlanGateArmed_) rather than refuse a 4th time.
+			mBuildPlanGateGaveUp = true;
 			if( outGiveUpNotice ) {
 				// FACTS ONLY, same measurement-hygiene rule as the refusal
 				// text above.  The caller is responsible for folding this
@@ -7561,7 +7844,7 @@ namespace RISE
 				// greppable in the trajectory payload a census reads.
 				// Arc 77 Phase 2: the "-- <verb> proceeded without ..." clause
 				// names the condition that was ACTUALLY still unmet.  The
-				// leading "part-plan gate: not satisfied after N refusals --"
+				// leading "build-plan gate: not satisfied after N refusals --"
 				// is unchanged and remains the census anchor for the give-up
 				// event; only the clause after it varies, so a census that
 				// greps the anchor keeps working and one that wants to know
@@ -7569,69 +7852,96 @@ namespace RISE
 				std::string unmet = "a filed plan";
 				if( needPlan && needImagine ) unmet = "a filed plan or an imagined scene target";
 				else if( !needPlan )          unmet = "an imagined scene target";
-				*outGiveUpNotice = std::string( "part-plan gate: not satisfied after " ) +
-					std::to_string( kPartPlanGateMaxRefusals ) + " refusals -- " + verb +
+				*outGiveUpNotice = std::string( "build-plan gate: not satisfied after " ) +
+					std::to_string( kBuildPlanGateMaxRefusals ) + " refusals -- " + verb +
 					" proceeded without " + unmet + " and the gate has disarmed for this session; "
 					"no further geometry-creating call will be intercepted.";
 			}
 			return std::string();
 		}
 
-		AgentSession::AgentPartPlanResult AgentSession::FilePartPlan(
-			const std::vector<AgentPartPlanEntry>& parts )
+		AgentSession::AgentBuildPlanResult AgentSession::FileBuildPlan(
+			const std::vector<AgentBuildPlanEntry>& elements )
 		{
-			AgentPartPlanResult out;
-			out.replacedPreviousPlan = mPartPlanFiled;
+			AgentBuildPlanResult out;
+			out.replacedPreviousPlan = mBuildPlanFiled;
 
 			// G3a: RASTERIZE FIRST, COMMIT AFTER.  Every outline is parsed and
 			// drawn into a local target set before ANY member is written, so a
-			// defect in part 4 cannot leave the session holding parts 1-3 of a
-			// plan it never accepted.  All-or-nothing, and on the failure path
-			// the previous plan, the previous targets, mPartPlanFiled and the
-			// gate's refusal counter are ALL exactly as they were -- a
+			// defect in element 4 cannot leave the session holding elements 1-3
+			// of a plan it never accepted.  All-or-nothing, and on the failure
+			// path the previous plan, the previous targets, mBuildPlanFiled and
+			// the gate's refusal counter are ALL exactly as they were -- a
 			// malformed filing must never be a way to disarm the gate, and it
-			// must never be a way to BURN a refusal either.
-			if( parts.size() > kPartPlanMaxParts ) {
+			// must never be a way to BURN a refusal either.  S1 extends the
+			// same rule to the phase state: a rejected filing changes no phase,
+			// drops no attribution and closes no window.
+			if( elements.size() > kBuildPlanMaxElements ) {
 				out.ok = false;
 				out.replacedPreviousPlan = false;
-				out.message = "part plan not filed: " + std::to_string( parts.size() ) +
-					" parts exceeds the " + std::to_string( kPartPlanMaxParts ) +
-					"-part maximum. Nothing was recorded; the part plan and the part-plan gate are "
+				out.message = "build plan not filed: " + std::to_string( elements.size() ) +
+					" elements exceeds the " + std::to_string( kBuildPlanMaxElements ) +
+					"-element maximum. Nothing was recorded; the build plan and the build-plan gate are "
 					"unchanged.";
 				return out;
 			}
 
-			std::vector<AgentPartSketch> sketches;
-			sketches.reserve( parts.size() );
-			for( std::size_t i = 0; i < parts.size(); ++i )
+			std::vector<AgentElementSketch> sketches;
+			sketches.reserve( elements.size() );
+			for( std::size_t i = 0; i < elements.size(); ++i )
 			{
-				const std::string idx = "parts[" + std::to_string( i ) + "]";
+				const std::string idx = "elements[" + std::to_string( i ) + "]";
 
-				std::string view = parts[i].view;
-				if( view.empty() ) view = kPartPlanDefaultView;
-				if( !IsValidPartView( view ) ) {
+				// S1 (2026-08-11): `pieces` is REQUIRED with at least one entry
+				// -- the decomposition IS the artifact this slice measures, so
+				// an element with no pieces is a plan with nothing to report
+				// against, not a plan with a default.  Checked here as a
+				// PRECONDITION (the wire pre-validates it into a -32602 that
+				// never touches the gate's counter), exactly like `outline`.
+				if( elements[i].pieces.empty() ) {
 					out.ok = false;
 					out.replacedPreviousPlan = false;
-					out.message = "part plan not filed: " + idx + ".view is `" + parts[i].view +
-						"` -- it must be one of: " + PartPlanViewList() +
-						". Nothing was recorded; the part plan and the part-plan gate are unchanged.";
+					out.message = "build plan not filed: " + idx + ".pieces is empty -- every element "
+						"needs at least one piece name. Nothing was recorded; the build plan and the "
+						"build-plan gate are unchanged.";
+					return out;
+				}
+				if( elements[i].pieces.size() > kBuildPlanMaxPiecesPerElement ) {
+					out.ok = false;
+					out.replacedPreviousPlan = false;
+					out.message = "build plan not filed: " + idx + ".pieces has " +
+						std::to_string( elements[i].pieces.size() ) + " entries -- at most " +
+						std::to_string( kBuildPlanMaxPiecesPerElement ) +
+						" are accepted. Nothing was recorded; the build plan and the build-plan gate "
+						"are unchanged.";
+					return out;
+				}
+
+				std::string view = elements[i].view;
+				if( view.empty() ) view = kBuildPlanDefaultView;
+				if( !IsValidElementView( view ) ) {
+					out.ok = false;
+					out.replacedPreviousPlan = false;
+					out.message = "build plan not filed: " + idx + ".view is `" + elements[i].view +
+						"` -- it must be one of: " + BuildPlanViewList() +
+						". Nothing was recorded; the build plan and the build-plan gate are unchanged.";
 					return out;
 				}
 
 				std::vector<SketchPoint_> pts;
 				std::string perr;
-				if( !ParsePartOutlinePoints_( parts[i].outline, pts, perr ) ) {
+				if( !ParseElementOutlinePoints_( elements[i].outline, pts, perr ) ) {
 					out.ok = false;
 					out.replacedPreviousPlan = false;
-					out.message = "part plan not filed: " + idx + ".outline " + perr +
-						". Nothing was recorded; the part plan and the part-plan gate are unchanged.";
+					out.message = "build plan not filed: " + idx + ".outline " + perr +
+						". Nothing was recorded; the build plan and the build-plan gate are unchanged.";
 					return out;
 				}
 
-				AgentPartSketch s;
-				s.part       = parts[i].part;
+				AgentElementSketch s;
+				s.element    = elements[i].element;
 				s.view       = view;
-				s.outline    = parts[i].outline;
+				s.outline    = elements[i].outline;
 				s.pointCount = pts.size();
 
 				double minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
@@ -7645,26 +7955,48 @@ namespace RISE
 				// the mask's own bbox is this same ratio quantized to whole
 				// pixels, so reporting the authored one is the more precise
 				// statement of the same fact.  Positive and finite by
-				// ParsePartOutlinePoints_'s zero-area rejection.
+				// ParseElementOutlinePoints_'s zero-area rejection.
 				s.aspect = ( maxX - minX ) / ( maxY - minY );
 
 				std::size_t filled = 0;
-				RasterizePartOutline_( pts, s.mask, filled );
+				RasterizeElementOutline_( pts, s.mask, filled );
 				s.areaFraction = static_cast<double>( filled ) /
-					( static_cast<double>( kPartSketchCanvas ) * static_cast<double>( kPartSketchCanvas ) );
+					( static_cast<double>( kElementSketchCanvas ) * static_cast<double>( kElementSketchCanvas ) );
 
 				sketches.push_back( s );
 			}
 
-			// COMMIT.  mPartPlan and mPartSketches are written together and
-			// REPLACED wholesale (never merged), so a re-filing that drops a
-			// part leaves no target for a part that is no longer planned.
-			mPartPlan      = parts;
-			mPartSketches  = sketches;
-			mPartPlanFiled = true;
+			// COMMIT.  mBuildPlan and mElementSketches are written together and
+			// REPLACED wholesale (never merged), so a re-filing that drops an
+			// element leaves no target for an element that is no longer planned.
+			mBuildPlan      = elements;
+			mElementSketches  = sketches;
+			mBuildPlanFiled = true;
+
+			// S1 (2026-08-11): ENTER THE PIECES PHASE with the FIRST element
+			// active, and drop every attribution recorded under the previous
+			// plan.  The drop is the plan's own REPLACE semantics applied to the
+			// state keyed by element NAME: after a re-filing that renames or
+			// removes an element, an attribution pointing at the old name would
+			// make CheckElementWindowForEdit_ refuse an edit on behalf of an
+			// element the plan no longer has -- an over-refusal with no escape,
+			// since reopen_element cannot reach a name that is not in the plan.
+			// The finished set is rebuilt to match the new element count for the
+			// same reason (it is index-parallel to mBuildPlan).
+			//
+			// The phase machinery being OFF leaves all of this untouched: the
+			// phase stays Plan, nothing is ever attributed, and this method
+			// behaves exactly as G3a shipped it.
+			if( BuildProtocolActive_() ) {
+				mBuildPhase = AgentBuildPhase::Pieces;
+				mActiveElement = 0;
+				mElementFinished.assign( mBuildPlan.size(), false );
+				mChunkAttribution.clear();
+			}
+
 			out.ok         = true;
-			out.parts      = mPartPlan;
-			out.sketches   = mPartSketches;
+			out.elements   = mBuildPlan;
+			out.sketches   = mElementSketches;
 			std::size_t tiled = 0;
 			out.compositePng = BuildSketchCompositePng_( out.sketches, out.compositeWidth,
 			                                             out.compositeHeight, tiled );
@@ -7679,12 +8011,18 @@ namespace RISE
 			// and never characterized, because this is a measurement surface
 			// and a word like "simple" or "detailed" here would steer the very
 			// distribution the census is about to read.
-			std::string m = "part plan filed: " + std::to_string( mPartPlan.size() ) +
-				( mPartPlan.size() == 1 ? " part" : " parts" ) + " -- ";
-			for( std::size_t i = 0; i < mPartPlan.size(); ++i ) {
+			std::string m = "build plan filed: " + std::to_string( mBuildPlan.size() ) +
+				( mBuildPlan.size() == 1 ? " element" : " elements" ) + " -- ";
+			for( std::size_t i = 0; i < mBuildPlan.size(); ++i ) {
 				if( i ) m += "; ";
-				m += mPartPlan[i].part + ": " + mPartPlan[i].construction + ", " +
-					out.sketches[i].view + " view, " +
+				m += mBuildPlan[i].element + ": " + mBuildPlan[i].construction + ", " +
+					std::to_string( mBuildPlan[i].pieces.size() ) +
+					( mBuildPlan[i].pieces.size() == 1 ? " piece (" : " pieces (" );
+				for( std::size_t p = 0; p < mBuildPlan[i].pieces.size(); ++p ) {
+					if( p ) m += ", ";
+					m += mBuildPlan[i].pieces[p];
+				}
+				m += "), " + out.sketches[i].view + " view, " +
 					std::to_string( out.sketches[i].pointCount ) + " points, area " +
 					SketchFact2dp_( out.sketches[i].areaFraction ) + ", aspect " +
 					SketchFact2dp_( out.sketches[i].aspect );
@@ -7693,14 +8031,14 @@ namespace RISE
 				m += ". Sketches, in order: ";
 				for( std::size_t i = 0; i < out.sketches.size(); ++i ) {
 					if( i ) m += ", ";
-					m += out.sketches[i].part;
+					m += out.sketches[i].element;
 				}
 			}
 			if( !out.compositePng.empty() ) {
-				m += " -- each outline rasterized to a " + std::to_string( kPartSketchCanvas ) + "x" +
-					std::to_string( kPartSketchCanvas ) + " silhouette and returned as one " +
+				m += " -- each outline rasterized to a " + std::to_string( kElementSketchCanvas ) + "x" +
+					std::to_string( kElementSketchCanvas ) + " silhouette and returned as one " +
 					std::to_string( out.compositeWidth ) + "x" + std::to_string( out.compositeHeight ) +
-					" image, tiled left to right, at most " + std::to_string( kPartSketchTilesPerRow ) +
+					" image, tiled left to right, at most " + std::to_string( kElementSketchTilesPerRow ) +
 					" per row.";
 				// Stated, never silent: a partial composite that looked
 				// complete would let a model conclude its later sketches
@@ -7713,12 +8051,35 @@ namespace RISE
 			else {
 				m += ".";
 			}
-			m += " The part-plan gate is now off for this session; it will not intercept any call. "
-			     "This declaration does not constrain what you author -- any part may be built with "
+			m += " The build-plan gate is now off for this session; it will not intercept any call. "
+			     "This declaration does not constrain what you author -- any element may be built with "
 			     "any chunk kind.";
 			if( out.replacedPreviousPlan )
 				m += " This replaced the plan previously filed in this session, and every sketch "
 				     "filed with it.";
+			// S1: the phase facts, stated in the SAME factual register as the
+			// rest of the echo -- what the session is now in, which element is
+			// active, and what the two phase verbs do.  No advice about how to
+			// spend the window: what the model does inside it is exactly what
+			// this slice measures.
+			if( BuildProtocolActive_() ) {
+				m += " The session is now in the pieces phase and \"" + mBuildPlan[0].element +
+					"\" is the active element";
+				if( mBuildPlan.size() > 1 )
+					m += " (element 1 of " + std::to_string( mBuildPlan.size() ) + ", in the order "
+					     "listed above)";
+				m += ". Every chunk created while an element is active is recorded against it. "
+				     "finish_element closes the active element, reports what was recorded against it, "
+				     "returns an isolate render of it, and makes the next element active; after the "
+				     "last one the session enters the compose phase, where creating new geometry is "
+				     "refused and reopen_element re-enters an element's window. An edit aimed at a "
+				     "chunk recorded against a DIFFERENT element is refused; chunks with no element "
+				     "recorded against them, and light, camera, film, rasterizer, rasterizer-output, "
+				     "material and painter chunks, are editable in every phase.";
+				if( out.replacedPreviousPlan )
+					m += " Re-filing also dropped every chunk-to-element record from the previous "
+					     "plan and made the first element of this one active.";
+			}
 			out.message = m;
 			return out;
 		}
@@ -7732,21 +8093,21 @@ namespace RISE
 		// -32602 and a different one by the render.
 		//----------------------------------------------------------------------
 
-		const AgentSession::AgentPartSketch* AgentSession::FindPartSketch( const std::string& part ) const
+		const AgentSession::AgentElementSketch* AgentSession::FindElementSketch( const std::string& element ) const
 		{
-			for( std::size_t i = 0; i < mPartSketches.size(); ++i ) {
-				if( mPartSketches[i].part == part ) return &mPartSketches[i];
+			for( std::size_t i = 0; i < mElementSketches.size(); ++i ) {
+				if( mElementSketches[i].element == element ) return &mElementSketches[i];
 			}
 			return nullptr;
 		}
 
-		std::string AgentSession::PartSketchNameList() const
+		std::string AgentSession::ElementSketchNameList() const
 		{
 			std::string s;
-			for( std::size_t i = 0; i < mPartSketches.size(); ++i ) {
+			for( std::size_t i = 0; i < mElementSketches.size(); ++i ) {
 				if( i ) s += ", ";
 				s += "\"";
-				s += mPartSketches[i].part;
+				s += mElementSketches[i].element;
 				s += "\"";
 			}
 			return s;
@@ -7760,7 +8121,7 @@ namespace RISE
 		}
 
 		bool AgentSession::ResolveTargetSketch( const std::string& target, const std::string& isolate,
-		                                         AgentPartSketch& out, std::string& outError ) const
+		                                         AgentElementSketch& out, std::string& outError ) const
 		{
 			if( target.empty() ) {
 				outError = "target is empty";
@@ -7768,7 +8129,7 @@ namespace RISE
 			}
 			// REQUIRES `isolate`.  A comparison measures ONE object's
 			// silhouette; with no isolate there is no single object to
-			// measure, and inferring one from the part name is exactly the
+			// measure, and inferring one from the element name is exactly the
 			// join-by-naming-convention this design rejected (design doc
 			// docs/agentic-redesign/77-imagination-target-design.md sec 5.1:
 			// the join is made BY THE CALLER, at the one moment it is
@@ -7777,18 +8138,18 @@ namespace RISE
 				outError = TargetRequiresIsolateMessage( target ) + " Nothing was rendered.";
 				return false;
 			}
-			if( mPartSketches.empty() ) {
-				outError = "target \"" + target + "\" cannot be compared: no part plan has been filed in "
-					"this session, so there is no sketch to compare against. Call file_part_plan first. "
+			if( mElementSketches.empty() ) {
+				outError = "target \"" + target + "\" cannot be compared: no build plan has been filed in "
+					"this session, so there is no sketch to compare against. Call file_build_plan first. "
 					"Nothing was rendered.";
 				return false;
 			}
-			const AgentPartSketch* found = FindPartSketch( target );
+			const AgentElementSketch* found = FindElementSketch( target );
 			if( !found ) {
 				// The available-name list, same fail-loud contract as an
 				// unresolvable `view`/`light`/`isolate`.
-				outError = "unknown target part \"" + target + "\" -- the filed part plan lists: " +
-					PartSketchNameList() + ". Nothing was rendered.";
+				outError = "unknown target element \"" + target + "\" -- the filed build plan lists: " +
+					ElementSketchNameList() + ". Nothing was rendered.";
 				return false;
 			}
 			out = *found;
@@ -7801,6 +8162,33 @@ namespace RISE
 		{
 			AgentChunkResult r;
 			r.name = target;
+			// S1 (2026-08-11): forget the removed chunk's attribution on
+			// whichever return actually landed the remove.
+			DropAttributionOnRemove_ s1Drop{ *this, r };
+
+			// S1 (2026-08-11, the staged build protocol): the CROSS-ELEMENT
+			// arm.  Removing a chunk another element created is the same reach
+			// into another window an edit is, and it is strictly more
+			// destructive.  FIRST, ahead of the authority gate, because it is a
+			// pure sequencing check that consults nothing about the document or
+			// about whether the remove would otherwise be accepted -- the same
+			// placement rule the build-plan gate's arms follow.  There is no
+			// compose arm here: removing is not creating, and the compose phase
+			// allows edits to any element's chunks.
+			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
+			{
+				const std::string clause = CheckElementWindowForEdit_( "remove_chunk", target,
+				                                                        &s1Fold.notice );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;   // see InsertChunk's G2 arm for why
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message     = clause;
+					return r;
+				}
+			}
 
 			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch /
 			// InsertChunk (see ProposePatch's doc for the full rationale).
@@ -7939,6 +8327,11 @@ namespace RISE
 		                                                                const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			AgentRemoveBatchResult r;
+			// S1 (2026-08-11): forget every removed chunk's attribution when the
+			// batch lands, and fold a phase give-up into this call's own result
+			// -- the same two hooks the singular verb takes.
+			DropAttributionOnRemoveBatch_ s1Drop{ *this, r };
+			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
 
 			// ---- Request validation (nothing touched on any failure) --------------------------------
 			if( targets.empty() ) {
@@ -8002,6 +8395,28 @@ namespace RISE
 					tr.queueFull   = r.queueFull;
 				}
 			};
+
+			// ---- S1 (2026-08-11, the staged build protocol): the CROSS-ELEMENT arm, as an UP-FRONT
+			// scan of every UNIQUE target, before anything is staged or removed.  All-or-nothing, for
+			// the reason this verb is all-or-nothing everywhere else: a policy refusal is not an
+			// authoring failure, and tearing down half a batch leaves a scene the model never asked
+			// for.  ONE interception per CALL, so a batching caller spends the phase budget at the
+			// same rate a singular caller does.  There is no compose arm -- removing is not creating.
+			{
+				std::string s1Clause;
+				for( std::size_t u = 0; u < unique.size() && s1Clause.empty(); ++u )
+					s1Clause = CheckElementWindowForEdit_( "remove_chunks", unique[u], &s1Fold.notice );
+				if( !s1Clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;   // see InsertChunk's G2 arm for why
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message     = s1Clause;
+					fanOutVerdict();
+					return r;
+				}
+			}
 
 			// ---- External authority: stage the WHOLE batch as ONE proposal ---------------------------
 			// The same authority gate RemoveChunk applies (see ProposePatch's doc for the rationale), with
@@ -9509,7 +9924,7 @@ namespace RISE
 		//! the box centre TOWARD the eye) and `outUp` (the up HINT the fit
 		//! and the camera both use).
 		//!
-		//! `view` is one of AgentSession::kPartPlanViewValues; ANY other
+		//! `view` is one of AgentSession::kBuildPlanViewValues; ANY other
 		//! string (including "") yields G1's three-quarter vantage
 		//! BYTE-FOR-BYTE, which is what keeps a plain `isolate` render
 		//! (no `target`) identical to what G1 shipped -- the three-quarter
@@ -9555,7 +9970,7 @@ namespace RISE
 		//! The fraction of each frame half-extent the object's bounding BOX is
 		//! allowed to fill -- i.e. a 15% margin on every side, so the
 		//! silhouette never touches the frame edge.
-		//! G3a (2026-08-10): AgentSession::kPartSketchFillFraction is
+		//! G3a (2026-08-10): AgentSession::kElementSketchFillFraction is
 		//! deliberately the SAME 0.85 -- G3b compares a sketch target against
 		//! an isolate render's silhouette, and the two are comparable only if
 		//! both were framed at the same fill.  Change one, change both.
@@ -9877,6 +10292,548 @@ namespace RISE
 			                                       forTestGoldenTries );
 		}
 
+		//----------------------------------------------------------------------
+		// S1 (2026-08-11): the STAGED BUILD PROTOCOL.
+		//
+		// See AgentSession.h's block above FinishElement for the mechanism and
+		// docs/agentic-redesign/78-staged-build-protocol.md for the evidence.
+		// This is the whole implementation apart from the call-site hooks in
+		// the creating and editing verbs (InsertChunk, InsertChunks,
+		// InsertGeometryScaffold, ReplaceGeometryScaffold, ProposePatch,
+		// RemoveChunk, RemoveChunks), each marked "S1 (2026-08-11)".
+		//
+		// PLACED HERE, below the isolate helpers, deliberately: FinishElement's
+		// payload-fact render reuses G1's ResolveIsolateObject and the ordinary
+		// synchronous Render entry point below it, and reusing them is the
+		// point -- an element look and an `isolate` look must be the same look.
+		//
+		// Nothing here reads or writes the Document; nothing takes a controller
+		// lock; the only expensive thing any of it does is the ONE render
+		// FinishElement issues, through the same path the `render` verb uses.
+		//----------------------------------------------------------------------
+
+		const char* AgentSession::BuildPhaseName( AgentBuildPhase p )
+		{
+			switch( p ) {
+				case AgentBuildPhase::Pieces:  return "pieces";
+				case AgentBuildPhase::Compose: return "compose";
+				case AgentBuildPhase::Plan:    break;
+			}
+			return "plan";
+		}
+
+		std::string AgentSession::ActiveElement() const
+		{
+			if( mBuildPhase != AgentBuildPhase::Pieces ) return std::string();
+			if( mActiveElement >= mBuildPlan.size() )    return std::string();
+			return mBuildPlan[ mActiveElement ].element;
+		}
+
+		std::vector<std::string> AgentSession::ElementChunks( const std::string& element ) const
+		{
+			std::vector<std::string> out;
+			if( element.empty() ) return out;
+			for( std::size_t i = 0; i < mChunkAttribution.size(); ++i ) {
+				if( mChunkAttribution[i].element == element )
+					out.push_back( mChunkAttribution[i].chunk );
+			}
+			return out;
+		}
+
+		std::string AgentSession::ChunkElement( const std::string& chunk ) const
+		{
+			const ChunkAttribution_* a = FindChunkAttribution_( chunk );
+			return a ? a->element : std::string();
+		}
+
+		const AgentSession::ChunkAttribution_* AgentSession::FindChunkAttribution_(
+			const std::string& chunk ) const
+		{
+			if( chunk.empty() ) return nullptr;
+			for( std::size_t i = 0; i < mChunkAttribution.size(); ++i ) {
+				if( mChunkAttribution[i].chunk == chunk ) return &mChunkAttribution[i];
+			}
+			return nullptr;
+		}
+
+		void AgentSession::AttributeChunkToActiveElement_( const std::string& name,
+		                                                   const std::string& kind )
+		{
+			// THE THREE NO-OP CASES, each load-bearing.  (1) The machinery is
+			// off -- nothing is ever attributed, so no edit is ever refused for
+			// belonging to an element.  (2) The session is not in the Pieces
+			// phase -- a chunk created in PLAN (before any window opened) or in
+			// COMPOSE (only non-geometry can be created there) belongs to no
+			// element and stays freely editable forever, which is exactly the
+			// design's "never refuse on unattributed chunks" rule.  (3) An
+			// UNNAMED chunk (film, rasterizer, a bare camera) has no key to
+			// record it under -- and it is a phase-exempt kind anyway.
+			if( !BuildProtocolActive_() ) return;
+			if( mBuildPhase != AgentBuildPhase::Pieces ) return;
+			if( name.empty() ) return;
+			if( mActiveElement >= mBuildPlan.size() ) return;
+
+			const std::string& element = mBuildPlan[ mActiveElement ].element;
+			for( std::size_t i = 0; i < mChunkAttribution.size(); ++i ) {
+				if( mChunkAttribution[i].chunk != name ) continue;
+				// LAST CREATION WINS.  A name can be created twice in one
+				// session only by being removed in between (there is no rename
+				// verb and an insert of a duplicate name is refused), so the
+				// chunk that exists in the document now came from THIS window.
+				mChunkAttribution[i].element = element;
+				mChunkAttribution[i].kind    = kind;
+				return;
+			}
+			ChunkAttribution_ a;
+			a.chunk   = name;
+			a.element = element;
+			a.kind    = kind;
+			mChunkAttribution.push_back( a );
+		}
+
+		void AgentSession::DropChunkAttribution_( const std::string& chunk )
+		{
+			if( chunk.empty() ) return;
+			for( std::size_t i = 0; i < mChunkAttribution.size(); ++i ) {
+				if( mChunkAttribution[i].chunk != chunk ) continue;
+				mChunkAttribution.erase( mChunkAttribution.begin() + static_cast<std::ptrdiff_t>( i ) );
+				return;
+			}
+		}
+
+		bool AgentSession::KindIsPhaseExemptCategory_( const std::string& kind )
+		{
+			if( kind.empty() ) return false;
+			const ChunkDescriptor* d = DescriptorForKeyword( String( kind.c_str() ) );
+			if( !d ) return false;
+			// THE RULE (S1 fix-round 2026-08-11, supervisor design call):
+			// ATTRIBUTE EVERYTHING (for measurement), REFUSE ONLY ON
+			// FORM-BEARING CHUNKS.  Attribution is unchanged -- every kind
+			// listed here is still recorded against the element that created
+			// it, so finish_element and the census see it.  What this predicate
+			// decides is only whether an edit to it can be REFUSED across
+			// element windows.
+			//
+			// Lights, cameras, film, rasterizers and rasterizer outputs are
+			// SCENE-WIDE, not element-owned -- a model that cannot light or
+			// re-aim at its own isolated element cannot see it.  Materials and
+			// painters join them because SHARING one across elements is
+			// ordinary authoring, not an edge case: one skin material on a head
+			// and a pair of hands, one fabric painter on a robe and a hat trim.
+			// Refusing those edits would refuse the most common legitimate
+			// cross-element reach there is, and over-refusal (E1's review P1)
+			// is the failure mode this design fears most.
+			//
+			// What is LEFT refusable is the form-bearing set: geometry chunks
+			// and the standard_object that places them -- exactly the pieces
+			// whose serialization the protocol exists to enforce, and, together
+			// with materials and painters, the whole of what a model actually
+			// creates inside an element window.  The REGISTRY is the
+			// classifier, so a light (or material, or painter) kind added later
+			// is exempt with no edit here.
+			return d->category == ChunkCategory::Light      ||
+			       d->category == ChunkCategory::Camera     ||
+			       d->category == ChunkCategory::Film       ||
+			       d->category == ChunkCategory::Rasterizer ||
+			       d->category == ChunkCategory::RasterizerOutput ||
+			       d->category == ChunkCategory::Material   ||
+			       d->category == ChunkCategory::Painter;
+		}
+
+		std::string AgentSession::RefuseForPhase_( const char* verb, const std::string& body,
+		                                            std::string* outGiveUpNotice )
+		{
+			// The SAME three-outcome shape CheckBuildPlanGate_ has, and the
+			// same reasons for it: refuse while under the cap, then GIVE UP
+			// rather than refuse a fourth time, with the give-up notice folded
+			// into the call's own result so the event is visible in the payload
+			// a trajectory census reads rather than only in a log line.  The
+			// counter is SHARED by both phase refusals (cross-element edit and
+			// compose-phase creation) because they are two faces of one
+			// mechanism: a model that cannot work the protocol should not have
+			// to exhaust two separate budgets to get out of it.
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+
+			if( mBuildPhaseRefusalCount < kBuildPhaseMaxRefusals )
+			{
+				++mBuildPhaseRefusalCount;
+				const int remaining = kBuildPhaseMaxRefusals - mBuildPhaseRefusalCount;
+				// FACTS ONLY -- no advice about what to build, no judgement of
+				// what has been built, no score.  The remaining-attempts count
+				// is a claim this message must get right: it is exactly the cap
+				// minus the count just incremented to, so it cannot drift from
+				// what the next call actually does.
+				std::string msg = std::string( verb ) + " refused: " + body +
+					" Nothing in the document was changed by this call. " +
+					std::to_string( remaining ) +
+					( remaining == 1 ? " more call will be refused"
+					                 : " more calls will be refused" ) +
+					" for this reason before the phase rules stop intercepting.";
+				return msg;
+			}
+
+			mBuildPhaseGaveUp = true;
+			if( outGiveUpNotice ) {
+				*outGiveUpNotice = std::string( "build phase: not satisfied after " ) +
+					std::to_string( kBuildPhaseMaxRefusals ) + " refusals -- " + verb +
+					" proceeded and the phase rules have stopped intercepting for this session; "
+					"no further call will be refused for belonging to another element or for "
+					"creating geometry in the compose phase. Elements, attribution, "
+					"finish_element and reopen_element all keep working.";
+			}
+			return std::string();
+		}
+
+		std::string AgentSession::CheckElementWindowForEdit_( const char* verb,
+		                                                       const std::string& target,
+		                                                       std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			if( mBuildPhase != AgentBuildPhase::Pieces )       return std::string();
+			if( target.empty() )                               return std::string();
+			if( mActiveElement >= mBuildPlan.size() )          return std::string();
+
+			const ChunkAttribution_* a = FindChunkAttribution_( target );
+			// NO ATTRIBUTION IS ALWAYS ALLOWED.  Pre-existing scene content and
+			// anything created before the first window opened belong to no
+			// element; refusing there would lock a model out of the scene it
+			// was handed.
+			if( !a ) return std::string();
+			const std::string& active = mBuildPlan[ mActiveElement ].element;
+			if( a->element == active ) return std::string();
+			if( KindIsPhaseExemptCategory_( a->kind ) ) return std::string();
+
+			const std::string body =
+				"\"" + target + "\" was created while the element \"" + a->element +
+				"\" was active, and the active element is now \"" + active +
+				"\". finish_element closes \"" + active + "\" and moves on; reopen_element with "
+				"element \"" + a->element + "\" re-enters that element's window from here.";
+			return RefuseForPhase_( verb, body, outGiveUpNotice );
+		}
+
+		std::string AgentSession::CheckComposePhaseForCreate_( const char* verb,
+		                                                        std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+
+			// WHAT COMPOSE IS FOR, stated as fact: what is allowed and what is
+			// not, plus the escape.  No advice about what to adjust -- whether
+			// the arrangement pass happens, and what it changes, is precisely
+			// what this slice measures.
+			const std::string body =
+				"this session is in the compose phase, which allows arrangement, lighting, camera, "
+				"materials and edits to any element's chunks, and refuses the creation of new "
+				"geometry. reopen_element with the name of an element re-enters that element's "
+				"window, where creating geometry is allowed again.";
+			return RefuseForPhase_( verb, body, outGiveUpNotice );
+		}
+
+		namespace
+		{
+			//! S1: lowercase a copy, for the piece-name NAMING check.  ASCII
+			//! only and deliberately so -- it is a report about names, never a
+			//! gate, so a non-ASCII piece name that fails to match is reported
+			//! as "not named", which is exactly what it is.
+			std::string LowerAscii_( const std::string& s )
+			{
+				std::string out = s;
+				for( std::size_t i = 0; i < out.size(); ++i ) {
+					if( out[i] >= 'A' && out[i] <= 'Z' ) out[i] = static_cast<char>( out[i] - 'A' + 'a' );
+				}
+				return out;
+			}
+		}
+
+		AgentSession::AgentFinishElementResult AgentSession::FinishElement()
+		{
+			AgentFinishElementResult out;
+			out.phase = BuildPhaseName( mBuildPhase );
+
+			// THE THREE DO-NOTHING CASES.  None of them is a phase refusal:
+			// they change no state, cost no budget, and are never counted --
+			// there is nothing here for a cap to bound.
+			if( !BuildProtocolActive_() ) {
+				out.message = "finish_element did nothing: the staged build protocol is off for this "
+				              "session, so no element window is open.";
+				return out;
+			}
+			if( mBuildPhase == AgentBuildPhase::Plan ) {
+				out.message = "finish_element did nothing: no build plan has been filed in this "
+				              "session, so no element is active. file_build_plan declares the elements "
+				              "and makes the first one active.";
+				return out;
+			}
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				out.message = "finish_element did nothing: every element in the filed plan is already "
+				              "finished and this session is in the compose phase. reopen_element with "
+				              "an element name re-enters that element's window.";
+				return out;
+			}
+			if( mActiveElement >= mBuildPlan.size() ) {
+				// Unreachable by construction (every writer of mActiveElement
+				// stores a resolved index into the CURRENT plan, and a re-filing
+				// rewrites both together) -- reported rather than asserted, so a
+				// future writer that breaks the invariant fails loudly and
+				// factually instead of indexing out of range.
+				out.message = "finish_element did nothing: the active element index does not resolve "
+				              "against the filed build plan.";
+				return out;
+			}
+
+			const AgentBuildPlanEntry entry = mBuildPlan[ mActiveElement ];
+			out.ok      = true;
+			out.element = entry.element;
+			out.chunks  = ElementChunks( entry.element );
+
+			// THE PIECE CHECK IS A NAMING OBSERVATION.  A declared piece counts
+			// as "named" when its own text appears, case-insensitively, inside
+			// the NAME of at least one chunk attributed to this element.  That
+			// is all it can honestly claim: nothing here inspects geometry, and
+			// a correctly built beard in a chunk called `wiz_sdf` reads as "not
+			// named" while an empty box called `beard` reads as "named".  The
+			// message says so outright, because a fact a model over-reads is a
+			// fact that steers behaviour it never described.
+			{
+				std::vector<std::string> lowerChunks;
+				lowerChunks.reserve( out.chunks.size() );
+				for( std::size_t i = 0; i < out.chunks.size(); ++i )
+					lowerChunks.push_back( LowerAscii_( out.chunks[i] ) );
+				for( std::size_t p = 0; p < entry.pieces.size(); ++p ) {
+					const std::string needle = LowerAscii_( entry.pieces[p] );
+					bool found = false;
+					if( !needle.empty() ) {
+						for( std::size_t c = 0; c < lowerChunks.size() && !found; ++c )
+							found = lowerChunks[c].find( needle ) != std::string::npos;
+					}
+					if( found ) out.piecesNamed.push_back( entry.pieces[p] );
+					else        out.piecesNotNamed.push_back( entry.pieces[p] );
+				}
+			}
+
+			// ADVANCE.  Mark this element finished, then take the FIRST element
+			// with no finish recorded, in plan order -- "first unfinished"
+			// rather than "the next index" because reopen_element can leave an
+			// earlier element open, and skipping it would strand it forever.
+			if( mElementFinished.size() != mBuildPlan.size() )
+				mElementFinished.resize( mBuildPlan.size(), false );
+			mElementFinished[ mActiveElement ] = true;
+			std::size_t next = mBuildPlan.size();
+			for( std::size_t i = 0; i < mBuildPlan.size(); ++i ) {
+				if( !mElementFinished[i] ) { next = i; break; }
+			}
+			if( next < mBuildPlan.size() ) {
+				mActiveElement  = next;
+				mBuildPhase     = AgentBuildPhase::Pieces;
+				out.nextElement = mBuildPlan[next].element;
+			}
+			else {
+				mBuildPhase = AgentBuildPhase::Compose;
+			}
+			out.phase = BuildPhaseName( mBuildPhase );
+
+			// THE PAYLOAD FACT: an isolate render of the element just closed --
+			// a look the model did not ask for, arriving in the result of a
+			// call it just made.  It reuses G1's machinery whole (the same
+			// ResolveIsolateObject, the same auto-framing, the same
+			// agent-surface caps), because an element look and an `isolate`
+			// look must be the same look.
+			//
+			// WHICH OBJECT.  Every chunk attributed to this element whose
+			// registry category is Object and which G1 can actually isolate --
+			// that filter drops CSG operands (world-invisible by construction)
+			// and any object the scene no longer has, for free and with G1's
+			// own definition of renderable.  With several, the one with the
+			// LARGEST world bounding-box diagonal, stated in the message so the
+			// choice is never silent.
+			std::string isolateName;
+			{
+				double bestDiag = -1.0;
+				for( std::size_t i = 0; i < out.chunks.size(); ++i ) {
+					const ChunkAttribution_* a = FindChunkAttribution_( out.chunks[i] );
+					if( !a ) continue;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( a->kind.c_str() ) );
+					if( !d || d->category != ChunkCategory::Object ) continue;
+					IObjectManager* objMgr = mJob ? mJob->GetObjects() : nullptr;
+					IObjectPriv* obj = nullptr;
+					std::string ignored;
+					if( !ResolveIsolateObject( objMgr, out.chunks[i], obj, ignored ) || !obj ) continue;
+					++out.isolateCandidates;
+					const BoundingBox bb = static_cast<const IObject*>( obj )->getBoundingBox();
+					const double dx = bb.ur.x - bb.ll.x;
+					const double dy = bb.ur.y - bb.ll.y;
+					const double dz = bb.ur.z - bb.ll.z;
+					const double diag = std::sqrt( dx*dx + dy*dy + dz*dz );
+					// A non-finite or zero-extent box loses to any real one but
+					// still beats "no object at all" (bestDiag starts at -1), so
+					// a degenerate object is rendered rather than silently
+					// dropped -- the render itself is then the honest report.
+					const double score = RISE::IsFiniteDouble( diag ) ? diag : 0.0;
+					if( score > bestDiag ) { bestDiag = score; isolateName = out.chunks[i]; }
+				}
+			}
+
+			std::string renderNote;
+			if( !isolateName.empty() ) {
+				out.isolateObject = isolateName;
+				AgentRenderParams rp;
+				rp.isolate           = isolateName;
+				// The agent-surface caps (<= 256 px long edge, <= 16 spp) apply
+				// exactly as they do to a model-issued `render`: this image is
+				// spent on the model's context, so it is sized by the same
+				// policy and never by the scene's authored Film.
+				rp.fromAgentSurface  = true;
+				const AgentRenderResult rr = Render( rp );
+				if( rr.ok ) {
+					out.png = ReadImage( kAgentSurfaceMaxRenderEdge, out.width, out.height );
+					out.rendered = !out.png.empty();
+				}
+				if( out.rendered ) {
+					renderNote = " Isolate render of \"" + isolateName + "\"";
+					if( out.isolateCandidates > 1 )
+						renderNote += " (the largest of the " + std::to_string( out.isolateCandidates ) +
+							" objects recorded against this element, by bounding-box diagonal)";
+					renderNote += ", auto-framed, with every other object hidden for this render only.";
+				}
+				else {
+					// A failed render never fails the call -- the advance
+					// already happened -- but it is never silent either: a
+					// missing image with no explanation reads as "the element
+					// renders empty".
+					renderNote = " The isolate render of \"" + isolateName +
+						"\" did not produce an image" +
+						( rr.ok || rr.message.empty() ? std::string( "." )
+						                              : ( ": " + rr.message ) );
+				}
+			}
+			else {
+				renderNote = out.chunks.empty()
+					? std::string( " No chunk was recorded against this element, so there was no object "
+					               "to render." )
+					: std::string( " No renderable object was recorded against this element, so there "
+					               "is no isolate render with this result." );
+			}
+
+			// THE MESSAGE: what was recorded, what the piece check found and
+			// what it means, where the session is now, and what was rendered.
+			// Facts in the same register as the filing echo -- nothing here
+			// characterizes the work, and nothing suggests what to do next.
+			std::string m = "element \"" + entry.element + "\" finished. Chunks recorded against it: ";
+			if( out.chunks.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.chunks.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.chunks[i];
+				}
+			}
+			m += ". Declared pieces: " + std::to_string( entry.pieces.size() ) + " -- ";
+			if( !out.piecesNamed.empty() ) {
+				m += "named by a chunk name: ";
+				for( std::size_t i = 0; i < out.piecesNamed.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.piecesNamed[i];
+				}
+				m += out.piecesNotNamed.empty() ? "" : "; ";
+			}
+			if( !out.piecesNotNamed.empty() ) {
+				m += "not named by any chunk name: ";
+				for( std::size_t i = 0; i < out.piecesNotNamed.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.piecesNotNamed[i];
+				}
+			}
+			m += ". That check is a case-insensitive substring match of each piece name against the "
+			     "NAMES of the chunks recorded against this element -- it says nothing about what "
+			     "was built or how well.";
+			m += renderNote;
+			if( !out.nextElement.empty() ) {
+				m += " The active element is now \"" + out.nextElement + "\"";
+				std::size_t remaining = 0;
+				for( std::size_t i = 0; i < mElementFinished.size(); ++i )
+					if( !mElementFinished[i] ) ++remaining;
+				m += " (" + std::to_string( remaining ) +
+					( remaining == 1 ? " element" : " elements" ) + " with no finish recorded).";
+			}
+			else {
+				m += " Every element in the plan is now finished and the session is in the compose "
+				     "phase: arrangement, lighting, camera, materials and edits to any element's "
+				     "chunks are allowed, creating new geometry is refused, and reopen_element with "
+				     "an element name re-enters that element's window.";
+			}
+			out.message = m;
+			return out;
+		}
+
+		AgentSession::AgentReopenElementResult AgentSession::ReopenElement( const std::string& element )
+		{
+			AgentReopenElementResult out;
+			out.previousPhase = BuildPhaseName( mBuildPhase );
+			out.phase         = out.previousPhase;
+
+			if( !BuildProtocolActive_() ) {
+				out.message = "reopen_element did nothing: the staged build protocol is off for this "
+				              "session, so there are no element windows to re-enter.";
+				return out;
+			}
+			if( mBuildPlan.empty() ) {
+				out.message = "reopen_element did nothing: no build plan has been filed in this "
+				              "session, so there is no element to reopen. file_build_plan declares "
+				              "the elements.";
+				return out;
+			}
+			std::size_t at = mBuildPlan.size();
+			for( std::size_t i = 0; i < mBuildPlan.size(); ++i ) {
+				// EXACT match, no normalization -- the same rule
+				// FindElementSketch follows, so `target` in a render and
+				// `element` here name elements the same way.
+				if( mBuildPlan[i].element == element ) { at = i; break; }
+			}
+			if( at == mBuildPlan.size() ) {
+				out.message = "reopen_element did nothing: \"" + element + "\" is not in the filed "
+					"build plan, which lists: " + ElementSketchNameList() + ".";
+				return out;
+			}
+
+			// NEVER GATED, NEVER COUNTED.  This verb is the escape the
+			// compose-phase refusal names; refusing it, or spending a refusal
+			// budget on it, would strand exactly the session that needs it.
+			if( mElementFinished.size() != mBuildPlan.size() )
+				mElementFinished.resize( mBuildPlan.size(), false );
+			mElementFinished[at] = false;
+			mActiveElement       = at;
+			mBuildPhase          = AgentBuildPhase::Pieces;
+
+			out.ok      = true;
+			out.element = mBuildPlan[at].element;
+			out.phase   = BuildPhaseName( mBuildPhase );
+			out.chunks  = ElementChunks( out.element );
+			for( std::size_t i = 0; i < mBuildPlan.size(); ++i )
+				if( !mElementFinished[i] ) out.unfinished.push_back( mBuildPlan[i].element );
+
+			std::string m = "element \"" + out.element + "\" reopened: it is the active element and "
+				"the session is in the pieces phase";
+			if( out.previousPhase != std::string( "pieces" ) )
+				m += " (it was in the " + out.previousPhase + " phase)";
+			m += ". Chunks already recorded against it: ";
+			if( out.chunks.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.chunks.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.chunks[i];
+				}
+			}
+			m += ". Declared pieces: ";
+			for( std::size_t p = 0; p < mBuildPlan[at].pieces.size(); ++p ) {
+				if( p ) m += ", ";
+				m += mBuildPlan[at].pieces[p];
+			}
+			m += ". Chunks created from here are recorded against \"" + out.element +
+				"\", and finish_element closes it again. Elements with no finish recorded: " +
+				std::to_string( out.unfinished.size() ) + ".";
+			out.message = m;
+			return out;
+		}
+
 		AgentRenderResult AgentSession::Render( int samplesOverride )
 		{
 			// Legacy entry point: build an all-absent AgentRenderParams so
@@ -9903,7 +10860,7 @@ namespace RISE
 			// Pre-fix, RenderCore_ resolved by name and ApplyTargetComparison_
 			// resolved the SAME name a second time; on the async path both of
 			// those ran on the controller's render worker while
-			// FilePartPlan could be reassigning mPartSketches on the
+			// FileBuildPlan could be reassigning mElementSketches on the
 			// dispatcher thread (the P1).  Unifying here also deletes the
 			// redundant double-resolve and makes the comparison describe the
 			// plan AS IT WAS at submission, which is the right semantics for
@@ -9914,8 +10871,8 @@ namespace RISE
 			// reports the target failure rather than "no head loaded".  Both
 			// are honest, the target check is the cheaper one, and a wrapped
 			// session always has a head.
-			AgentPartSketch resolvedTarget;
-			const AgentPartSketch* resolvedTargetPtr = nullptr;
+			AgentElementSketch resolvedTarget;
+			const AgentElementSketch* resolvedTargetPtr = nullptr;
 			if( !params.target.empty() ) {
 				std::string targetError;
 				if( !ResolveTargetSketch( params.target, params.isolate, resolvedTarget, targetError ) ) {
@@ -10100,7 +11057,7 @@ namespace RISE
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
 		                                              bool assumeParked,
 		                                              std::uint64_t forcedJobId,
-		                                              const AgentPartSketch* resolvedTarget )
+		                                              const AgentElementSketch* resolvedTarget )
 		{
 			AgentRenderResult res;
 
@@ -10114,16 +11071,16 @@ namespace RISE
 			// sketch, consumed before anything is rendered.
 			//
 			// G3b fix-round (2026-08-10) FIX 1: this block used to call
-			// ResolveTargetSketch itself, i.e. it read mPartSketches -- and
+			// ResolveTargetSketch itself, i.e. it read mElementSketches -- and
 			// on the async path this whole function runs on the controller's
 			// render worker thread while the dispatcher thread may be inside
-			// FilePartPlan reassigning that very vector.  Resolution now
+			// FileBuildPlan reassigning that very vector.  Resolution now
 			// happens EXACTLY ONCE, on the submitting thread, in Render() /
 			// RenderAsync, and the resolved COPY arrives here; the fail-loud
 			// refusal (which needs the filed part-name list) moved with it,
 			// so a caller sees the identical message from the identical
 			// wording, just one frame earlier.  Nothing on this code path
-			// touches session part-plan state any more.
+			// touches session build-plan state any more.
 			//
 			// The resolved sketch's `view` is what selects the render's
 			// AXIS-ALIGNED vantage in the isolate block below.  Its mask is
@@ -10135,7 +11092,7 @@ namespace RISE
 			// The nested identity pass carries the same `target` precisely so
 			// it resolves to the same vantage; ApplyTargetComparison_ passes
 			// its own snapshot straight through for that reason.
-			const AgentPartSketch* const targetSketch =
+			const AgentElementSketch* const targetSketch =
 				params.target.empty() ? nullptr : resolvedTarget;
 			if( !params.target.empty() && !targetSketch ) {
 				// A private-caller programming error, not a user-reachable
@@ -10149,7 +11106,7 @@ namespace RISE
 				return res;
 			}
 			if( targetSketch ) {
-				res.targetPart = targetSketch->part;
+				res.targetElement = targetSketch->element;
 				res.targetView = targetSketch->view;
 			}
 
@@ -13617,7 +14574,7 @@ namespace RISE
 		void AgentSession::ApplyTargetComparison_( const AgentRenderParams& params,
 		                                            AgentRenderResult& rr,
 		                                            bool assumeParked,
-		                                            const AgentPartSketch* resolvedTarget )
+		                                            const AgentElementSketch* resolvedTarget )
 		{
 			// GATED ON ok FROM THE START.  This is G1's fix-round P1 in
 			// advance: a block of measured facts attached to a render that
@@ -13630,10 +14587,10 @@ namespace RISE
 			// G3b fix-round (2026-08-10) FIX 1 -- THE SNAPSHOT, not a
 			// re-resolve.  This used to call ResolveTargetSketch a SECOND
 			// time (after RenderCore_ had already resolved the same name),
-			// which was two bugs in one: an unsynchronized mPartSketches read
+			// which was two bugs in one: an unsynchronized mElementSketches read
 			// on the controller's render worker under the async path, and a
 			// comparison that would silently describe a DIFFERENT plan from
-			// the one the caller submitted against if FilePartPlan landed in
+			// the one the caller submitted against if FileBuildPlan landed in
 			// between.  The caller now hands us the copy it resolved on its
 			// own thread; the measurement below reads nothing but that copy.
 			if( !resolvedTarget ) {
@@ -13641,12 +14598,12 @@ namespace RISE
 				              "supplied for \"" + params.target + "\" -- internal caller error)";
 				return;
 			}
-			const AgentPartSketch& sketch = *resolvedTarget;
+			const AgentElementSketch& sketch = *resolvedTarget;
 			const std::size_t canvasPixels =
-				static_cast<std::size_t>( kPartSketchCanvas ) * static_cast<std::size_t>( kPartSketchCanvas );
+				static_cast<std::size_t>( kElementSketchCanvas ) * static_cast<std::size_t>( kElementSketchCanvas );
 			if( sketch.mask.size() != canvasPixels ) {
 				rr.message += " (target comparison not performed: the filed sketch for \"" +
-					sketch.part + "\" has no rasterized mask)";
+					sketch.element + "\" has no rasterized mask)";
 				return;
 			}
 
@@ -13713,7 +14670,7 @@ namespace RISE
 				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 				// G3b fix-round (2026-08-10) FIX 1: the nested identity pass
 				// gets the SAME snapshot -- it must resolve to the SAME
-				// vantage, and it must not re-read mPartSketches either.
+				// vantage, and it must not re-read mElementSketches either.
 				omr = RenderCore_( om, assumeParked, /*forcedJobId=*/0, resolvedTarget );
 			}
 			if( !omr.ok ) {
@@ -13742,7 +14699,7 @@ namespace RISE
 			NormalizeSilhouetteToCanvas_(
 				silRaw, silW, silH, /*mirrorX=*/true, silMirrored, mirroredFilled, mirBBoxW, mirBBoxH );
 
-			rr.targetPart                    = sketch.part;
+			rr.targetElement                    = sketch.element;
 			rr.targetView                    = sketch.view;
 			rr.targetIou                     = MaskIoU_( sketch.mask, silCanvas );
 			rr.targetMirroredIou             = MaskIoU_( sketch.mask, silMirrored );
@@ -13779,7 +14736,7 @@ namespace RISE
 			// the model's imagination, which the design forbids outright
 			// (docs/agentic-redesign/77-imagination-target-design.md sec 5.4:
 			// the number is reported and never characterized).
-			std::string note = " (target \"" + rr.targetPart + "\": sketch view " + rr.targetView +
+			std::string note = " (target \"" + rr.targetElement + "\": sketch view " + rr.targetView +
 				", rendered from the " + ( rr.targetVantage.empty() ? std::string( "unrecorded" )
 				                                                    : rr.targetVantage ) +
 				" vantage; iou " + SketchFact3dp_( rr.targetIou ) +
@@ -15043,13 +16000,13 @@ namespace RISE
 			// THE BUG THIS CLOSES.  The submitted closure below runs on the
 			// controller's dedicated render worker thread.  Pre-fix it called
 			// RenderCore_ and ApplyTargetComparison_, each of which resolved
-			// `params.target` by NAME against mPartSketches -- while
-			// FilePartPlan, on the dispatcher thread, reassigns that very
+			// `params.target` by NAME against mElementSketches -- while
+			// FileBuildPlan, on the dispatcher thread, reassigns that very
 			// std::vector with no lock.  Concurrent read/write of a vector
 			// being reallocated is UB (use-after-free on the mask bytes), and
 			// it is REACHABLE: the raw JSON-RPC wire accepts
 			// {"async":true,"isolate":X,"target":Y}, and RenderAsync is public
-			// C++.  mPartSketches is single-threaded-caller state (see the
+			// C++.  mElementSketches is single-threaded-caller state (see the
 			// class contract in AgentSession.h).
 			//
 			// WHY A SNAPSHOT AND NOT A LOCK.  (a) It closes the race without
@@ -15068,7 +16025,7 @@ namespace RISE
 			// which the wire renders as status:"refused" (the same shape the
 			// no-controller refusal directly above already uses).  Nothing is
 			// queued, so there is no later result to carry the reason.
-			AgentPartSketch resolvedTarget;
+			AgentElementSketch resolvedTarget;
 			bool haveResolvedTarget = false;
 			if( !params.target.empty() ) {
 				std::string targetError;
@@ -15193,7 +16150,7 @@ namespace RISE
 				// G3b fix-round (2026-08-10) FIX 1: `resolvedTarget` /
 				// `haveResolvedTarget` ride into the closure BY VALUE -- the
 				// worker consumes the submission-time copy and never reads
-				// mPartSketches.
+				// mElementSketches.
 				[this, params, ownJobIdCell, resolvedTarget, haveResolvedTarget,
 				 sceneTargetSnapshot]() {
 					struct OutstandingGuard {
@@ -15211,7 +16168,7 @@ namespace RISE
 							}
 						}
 					} outstandingGuard{ *this, ownJobIdCell };
-					const AgentPartSketch* const targetSnapshot =
+					const AgentElementSketch* const targetSnapshot =
 						haveResolvedTarget ? &resolvedTarget : nullptr;
 					AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true,
 					                                   /*forcedJobId=*/0, targetSnapshot );
@@ -15228,7 +16185,7 @@ namespace RISE
 					// A no-op unless `target` was requested AND `r.ok`.
 					// G3b fix-round (2026-08-10) FIX 1: measured against the
 					// SUBMISSION-TIME snapshot -- the same copy RenderCore_
-					// above framed the vantage from -- so a FilePartPlan that
+					// above framed the vantage from -- so a FileBuildPlan that
 					// lands while this render is in flight can neither race
 					// this read nor silently re-point the comparison at a
 					// different sketch.

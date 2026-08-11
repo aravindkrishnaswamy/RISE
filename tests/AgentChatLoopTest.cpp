@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 20, "body carries twenty OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 22, "body carries twenty-two OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -566,8 +566,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 20,
-		       "xAI body carries the same twenty tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 22,
+		       "xAI body carries the same twenty-two tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -832,7 +832,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 20, "body carries twenty tools" );
+	Check( tools.isArray() && tools.size() == 22, "body carries twenty-two tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1772,7 +1772,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 20, "twenty functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 22, "twenty-two functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -3940,7 +3940,7 @@ static void TestSupersededReadElision()
 		       "read_viewport: an available:false result packs NO image block" );
 	}
 
-	// --- (k2) G3a fix-round (2026-08-10): file_part_plan's SKETCH composite
+	// --- (k2) G3a fix-round (2026-08-10): file_build_plan's SKETCH composite
 	//     is covered by the SAME image retention as (k)'s read_viewport PNG.
 	//
 	// This PINS an ACCEPTED-by-design behaviour, it does not fight it: the
@@ -3948,14 +3948,14 @@ static void TestSupersededReadElision()
 	// the sketch composite shares the transport's single-global-image-slot
 	// retention, because G3b's comparison composite re-surfaces the sketch
 	// at consultation time (design doc docs/agentic-redesign/77-imagination-
-	// target-design.md Section 4.3 records the decision). file_part_plan is
+	// target-design.md Section 4.3 records the decision). file_build_plan is
 	// listed in IsImageResult (AgentChatCodecs.cpp ~1307) alongside
 	// read_image/compare_to_reference/render/read_viewport for exactly this
 	// reason -- ANY later image-bearing result, not only another
-	// file_part_plan, must elide it.
+	// file_build_plan, must elide it.
 	//
 	// If someone later "fixes" the elision by PINNING the sketch (excluding
-	// file_part_plan from IsImageResult, or special-casing it in the
+	// file_build_plan from IsImageResult, or special-casing it in the
 	// elision walk), the FIRST assertion below goes red: the sketch base64
 	// would then still be present after the render, silently doubling the
 	// per-request token cost every time a plan is filed and then a render
@@ -3965,9 +3965,10 @@ static void TestSupersededReadElision()
 		const std::vector<unsigned char> renderPx( 48, 0x64 );
 		const std::string b64Sketch = Base64Encode( sketchPx );
 		const std::string b64Render = Base64Encode( renderPx );
-		const std::string envFilePartPlan =
+		const std::string envFileBuildPlan =
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,"
-			"\"replacedPreviousPlan\":false,\"partCount\":1,\"parts\":[{\"part\":\"wing\","
+			"\"replacedPreviousPlan\":false,\"elementCount\":1,\"elements\":[{\"element\":\"wing\","
+			"\"pieces\":[\"spar\"],"
 			"\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1; 0 1\",\"view\":\"front\","
 			"\"pointCount\":4,\"areaFraction\":0.72,\"aspect\":1.0}],"
 			"\"png_base64\":\"" + b64Sketch + "\",\"compositeWidth\":256,\"compositeHeight\":256,"
@@ -3979,35 +3980,35 @@ static void TestSupersededReadElision()
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "sketch the parts, then render it" );
-		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "file_part_plan" ),
-		                     Vec1( "toolu_fp" ), Vec1( envFilePartPlan ) ) ) {
-			Check( false, "file_part_plan retention: drive filing round" ); return;
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "file_build_plan" ),
+		                     Vec1( "toolu_fp" ), Vec1( envFileBuildPlan ) ) ) {
+			Check( false, "file_build_plan retention: drive filing round" ); return;
 		}
 		const std::string bodyAfterFiling = loop.BuildRequest( kApiKey ).body;
 		Check( CountOccurrences( bodyAfterFiling, b64Sketch ) == 1,
-		       "file_part_plan retention: the sketch composite's base64 rides after filing, "
+		       "file_build_plan retention: the sketch composite's base64 rides after filing, "
 		       "before anything supersedes it" );
 
 		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "render" ),
 		                     Vec1( "toolu_rd" ), Vec1( envRender ) ) ) {
-			Check( false, "file_part_plan retention: drive render round" ); return;
+			Check( false, "file_build_plan retention: drive render round" ); return;
 		}
 		const std::string body = loop.BuildRequest( kApiKey ).body;
 		Check( CountOccurrences( body, b64Sketch ) == 0,
-		       "file_part_plan retention: MONEY ASSERTION (regression tripwire) -- the sketch "
+		       "file_build_plan retention: MONEY ASSERTION (regression tripwire) -- the sketch "
 		       "composite's base64 is FULLY ABSENT once a later image-bearing render supersedes "
 		       "it, the accepted G3a/G3b contract. If this ever reads != 0, the sketch was "
 		       "silently pinned and every render-after-filing session now double-pays for it" );
 		Check( CountOccurrences( body, b64Render ) == 1,
-		       "file_part_plan retention: the NEWER render's base64 rides exactly once" );
+		       "file_build_plan retention: the NEWER render's base64 rides exactly once" );
 		Check( body.find( "image elided" ) != std::string::npos,
-		       "file_part_plan retention: the elided sketch carries the image-elision note" );
+		       "file_build_plan retention: the elided sketch carries the image-elision note" );
 		Check( body.find( "4 points" ) != std::string::npos &&
 		       body.find( "0.72" ) != std::string::npos,
-		       "file_part_plan retention: the sketch's TEXTUAL facts (pointCount/areaFraction) "
+		       "file_build_plan retention: the sketch's TEXTUAL facts (pointCount/areaFraction) "
 		       "SURVIVE the elision -- the pixels don't, the facts do, that is the pinned contract" );
 		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
-		       "file_part_plan retention: every recorded call is still answered after elision" );
+		       "file_build_plan retention: every recorded call is still answered after elision" );
 	}
 
 	// --- (g) DETERMINISM: two loops fed identical scripts agree byte for byte ---
@@ -6764,7 +6765,7 @@ static void TestToolOutcomeDisplay()
 		const ChatTranscriptEntry e4 = oneCallFlush( "render",
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
 			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"objectmap\","
-			"\"target\":{\"part\":\"wing\",\"view\":\"front\",\"vantage\":\"front\","
+			"\"target\":{\"element\":\"wing\",\"view\":\"front\",\"vantage\":\"front\","
 			"\"iou\":0.4123,\"mirroredIou\":0.39}}}" );
 		Check( e4.toolSummaries[0].outcomeLine == "96x96, luma 0.00 [objectmap]; wing vs sketch: iou 0.41",
 		       "T38g/G3b: a target comparison appends \"<part> vs sketch: iou <2dp>\" -- a NUMBER, "
@@ -9484,7 +9485,7 @@ static void TestDriverNoteSmoke()
 }
 
 //----------------------------------------------------------------------
-// T47 (G2, 2026-08-10): file_part_plan on the shared tool table, and its
+// T47 (G2, 2026-08-10): file_build_plan on the shared tool table, and its
 // E4 SEQUENCING-GATE classification.
 //
 // (a) The tool is present on every provider codec with the CLOSED
@@ -9498,9 +9499,9 @@ static void TestDriverNoteSmoke()
 //     fighting), and counted as a LOOK it would hand every model a free
 //     image-free streak reset and silently defeat E4.
 //----------------------------------------------------------------------
-static void TestFilePartPlanToolAndGateClassification()
+static void TestFileBuildPlanToolAndGateClassification()
 {
-	std::printf( "T47: file_part_plan tool table + E4 streak classification (neither mutation nor look)...\n" );
+	std::printf( "T47: file_build_plan tool table + E4 streak classification (neither mutation nor look)...\n" );
 
 	// (a) present on every provider codec, carrying the enum.
 	{
@@ -9511,22 +9512,33 @@ static void TestFilePartPlanToolAndGateClassification()
 		const JsonValue& tools = root.get( "tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
-			if( tools.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			if( tools.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
 			saw = true;
 			const JsonValue& items = tools.at( i ).get( "input_schema" ).get( "properties" )
-			                              .get( "parts" ).get( "items" );
+			                              .get( "elements" ).get( "items" );
 			const JsonValue& en = items.get( "properties" ).get( "construction" ).get( "enum" );
 			Check( en.isArray() && en.size() == 6, "T47a: anthropic `construction` carries a 6-value enum" );
 			Check( en.at( 0 ).asString() == "primitive" && en.at( 5 ).asString() == "mesh",
 			       "T47a: the enum is primitive..mesh in the documented order" );
 			const JsonValue& req = items.get( "required" );
-			bool hasPart = false, hasCons = false, hasOutline = false;
+			bool hasPart = false, hasCons = false, hasOutline = false, hasPieces = false;
 			for( std::size_t k = 0; k < req.size(); ++k ) {
-				if( req.at( k ).asString() == "part" ) hasPart = true;
+				if( req.at( k ).asString() == "element" ) hasPart = true;
+				if( req.at( k ).asString() == "pieces" ) hasPieces = true;
 				if( req.at( k ).asString() == "construction" ) hasCons = true;
 				if( req.at( k ).asString() == "outline" ) hasOutline = true;
 			}
-			Check( hasPart && hasCons, "T47a: both `part` and `construction` are REQUIRED per entry" );
+			Check( hasPart && hasCons, "T47a: both `element` and `construction` are REQUIRED per entry" );
+			// S1 (2026-08-11): the piece list is REQUIRED with at least one
+			// entry -- the decomposition IS the artifact, so a codec that
+			// shipped it optional would silently turn the slice off for that
+			// provider (the identical force-level argument G3a's `outline`
+			// check below makes).
+			Check( hasPieces, "T47a/S1: `pieces` is REQUIRED per entry too" );
+			const JsonValue& piecesProp = items.get( "properties" ).get( "pieces" );
+			Check( piecesProp.get( "type" ).asString() == "array" &&
+			       piecesProp.get( "minItems" ).asNumber( -1 ) == 1.0,
+			       "T47a/S1: `pieces` is an array with minItems 1" );
 			// G3a (2026-08-10): `outline` is REQUIRED with NO opt-out value --
 			// that force level IS the mechanism (the design's resolved
 			// decision 2), so a codec that shipped it as optional would
@@ -9556,7 +9568,7 @@ static void TestFilePartPlanToolAndGateClassification()
 			       desc.find( "try to" ) == std::string::npos,
 			       "T47a: MEASUREMENT HYGIENE -- the description carries no exhortation, only facts" );
 		}
-		Check( saw, "T47a: the Anthropic tool table includes file_part_plan" );
+		Check( saw, "T47a: the Anthropic tool table includes file_build_plan" );
 	}
 	{
 		AgentChatLoop loop;
@@ -9566,14 +9578,14 @@ static void TestFilePartPlanToolAndGateClassification()
 		const JsonValue& tools = root.get( "tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
-			if( tools.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			if( tools.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
 			saw = true;
 			const JsonValue& en = tools.at( i ).get( "parameters" ).get( "properties" )
-			                           .get( "parts" ).get( "items" )
+			                           .get( "elements" ).get( "items" )
 			                           .get( "properties" ).get( "construction" ).get( "enum" );
 			Check( en.isArray() && en.size() == 6, "T47a: openai `construction` carries the 6-value enum" );
 		}
-		Check( saw, "T47a: the OpenAI tool table includes file_part_plan" );
+		Check( saw, "T47a: the OpenAI tool table includes file_build_plan" );
 	}
 	{
 		AgentChatLoop loop;
@@ -9583,14 +9595,14 @@ static void TestFilePartPlanToolAndGateClassification()
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
-			if( decls.at( i ).get( "name" ).asString() != "file_part_plan" ) continue;
+			if( decls.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
 			saw = true;
 			const JsonValue& en = decls.at( i ).get( "parameters" ).get( "properties" )
-			                           .get( "parts" ).get( "items" )
+			                           .get( "elements" ).get( "items" )
 			                           .get( "properties" ).get( "construction" ).get( "enum" );
 			Check( en.isArray() && en.size() == 6, "T47a: gemini `construction` carries the 6-value enum" );
 		}
-		Check( saw, "T47a: the Gemini declarations include file_part_plan" );
+		Check( saw, "T47a: the Gemini declarations include file_build_plan" );
 	}
 
 	// (b) E4 classification.
@@ -9601,17 +9613,17 @@ static void TestFilePartPlanToolAndGateClassification()
 	// would make that assertion vacuous.
 	const std::string kPlanResult =
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"replacedPreviousPlan\":false,"
-		"\"partCount\":2,\"parts\":["
-		"{\"part\":\"wing\",\"construction\":\"sweep\",\"note\":\"\",\"outline\":\"0 0; 2 1; 0 2\","
+		"\"elementCount\":2,\"elements\":["
+		"{\"element\":\"wing\",\"pieces\":[\"spar\",\"membrane\"],\"construction\":\"sweep\",\"note\":\"\",\"outline\":\"0 0; 2 1; 0 2\","
 		"\"view\":\"front\",\"pointCount\":3,\"areaFraction\":0.36,\"aspect\":1.0},"
-		"{\"part\":\"body\",\"construction\":\"primitive\",\"note\":\"\",\"outline\":\"0 0; 1 0; 1 1; 0 1\","
+		"{\"element\":\"body\",\"pieces\":[\"hull\"],\"construction\":\"primitive\",\"note\":\"\",\"outline\":\"0 0; 1 0; 1 1; 0 1\","
 		"\"view\":\"front\",\"pointCount\":4,\"areaFraction\":0.73,\"aspect\":1.0}],"
 		"\"png_base64\":\"aVZCT1J3\",\"byteLength\":6,\"compositeWidth\":512,\"compositeHeight\":256,"
-		"\"message\":\"part plan filed\"}}";
+		"\"message\":\"build plan filed\"}}";
 	const std::string kInsertResult =
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\"}}";
 
-	// NOT A MUTATION: three inserts (threshold 3) with a file_part_plan
+	// NOT A MUTATION: three inserts (threshold 3) with a file_build_plan
 	// interleaved must still refuse on the fourth INSERT and never on the
 	// plan itself.  If the plan counted as a mutation, the third insert would
 	// already be refused.
@@ -9632,11 +9644,11 @@ static void TestFilePartPlanToolAndGateClassification()
 			loop.AddToolResult( call, result );
 			return false;
 		};
-		Check( !step( "file_part_plan", kPlanResult ),
-		       "T47b: file_part_plan is never itself gated" );
+		Check( !step( "file_build_plan", kPlanResult ),
+		       "T47b: file_build_plan is never itself gated" );
 		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1 -- not refused" );
-		Check( !step( "file_part_plan", kPlanResult ),
-		       "T47b: a file_part_plan between edits is never itself gated" );
+		Check( !step( "file_build_plan", kPlanResult ),
+		       "T47b: a file_build_plan between edits is never itself gated" );
 		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2 -- not refused" );
 		Check( !step( "insert_chunk", kInsertResult ),
 		       "T47b: insert 3 -- not refused (streak 2->3; if the two plan calls had counted as "
@@ -9645,7 +9657,7 @@ static void TestFilePartPlanToolAndGateClassification()
 		       "T47b: insert 4 -- REFUSED; the streak counted exactly the three inserts" );
 	}
 
-	// NOT A LOOK: after the gate has armed, a file_part_plan must NOT clear
+	// NOT A LOOK: after the gate has armed, a file_build_plan must NOT clear
 	// it -- only a real visual observation may.  RED-PROVE against the
 	// tempting "it is a read, so it resets" mis-wiring.
 	{
@@ -9668,7 +9680,7 @@ static void TestFilePartPlanToolAndGateClassification()
 		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1/3" );
 		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2/3" );
 		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 3/3 (gate now armed)" );
-		Check( !step( "file_part_plan", kPlanResult ),
+		Check( !step( "file_build_plan", kPlanResult ),
 		       "T47b: the plan call itself passes the gate (it is not a mutation)" );
 		Check( step( "insert_chunk", kInsertResult ),
 		       "T47b: MONEY ASSERTION -- the next insert is STILL refused: filing a plan is not a "
@@ -9678,14 +9690,19 @@ static void TestFilePartPlanToolAndGateClassification()
 	// The transcript one-liner reports WHAT was declared, not "ok".
 	{
 		ChatToolCall call;
-		call.name = "file_part_plan";
+		call.name = "file_build_plan";
 		const std::string line = AgentChatLoop::ToolOutcomeLineForDisplay( call, kPlanResult );
 		Check( line.find( "wing=sweep" ) != std::string::npos &&
 		       line.find( "body=primitive" ) != std::string::npos,
-		       "T47c: the outcome line echoes each part and its declared construction" );
-		Check( line.find( "(2 sketches)" ) != std::string::npos,
+		       "T47c: the outcome line echoes each element and its declared construction" );
+		Check( line.find( "2 sketches)" ) != std::string::npos,
 		       "T47c/G3a: and how many sketches the filing produced -- a filing that rasterized "
-		       "fewer sketches than it declared parts must be visible, not silent" );
+		       "fewer sketches than it declared elements must be visible, not silent" );
+		// S1 (2026-08-11): the DECOMPOSITION DEPTH joins the line -- it is the
+		// first thing this arc measures, so a human reading the transcript
+		// should see it without opening the raw payload.
+		Check( line.find( "3 pieces" ) != std::string::npos,
+		       "T47c/S1: and the total piece count across the declared elements" );
 	}
 
 	// G3a (2026-08-10): the plan result IS an image result for TRANSPORT
@@ -9696,14 +9713,14 @@ static void TestFilePartPlanToolAndGateClassification()
 	// so surely it is a look".
 	{
 		ChatToolCall call;
-		call.name = "file_part_plan";
+		call.name = "file_build_plan";
 		Check( ChatToolResultCarriesImage( call, kPlanResult ),
 		       "T47d/G3a: a filing WITH a composite PNG is an image-bearing result (so it gets a "
 		       "real image block and is metered by the image-retention cap)" );
 		const std::string kPlanNoImage =
-			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"partCount\":1,"
-			"\"parts\":[{\"part\":\"body\",\"construction\":\"primitive\",\"pointCount\":4}],"
-			"\"message\":\"part plan filed\"}}";
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"elementCount\":1,"
+			"\"elements\":[{\"element\":\"body\",\"pieces\":[\"hull\"],\"construction\":\"primitive\",\"pointCount\":4}],"
+			"\"message\":\"build plan filed\"}}";
 		Check( !ChatToolResultCarriesImage( call, kPlanNoImage ),
 		       "T47d/G3a: RED-PROVE -- the predicate keys on the png_base64 FIELD, not the verb name, "
 		       "so a filing that produced no image is correctly not an image result" );
@@ -9980,13 +9997,13 @@ static void TestImageGenerationWireShapes()
 
 int main()
 {
-	// G2 (2026-08-10): the part-plan gate is ON by default in production (a
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
 	// geometry directly, so opt OUT once here rather than at every session.
 	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
 	// re-enables it explicitly per session.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( false );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
 
 	// ONE live dispatcher over the inline scene, shared by the tests that
@@ -10057,7 +10074,7 @@ int main()
 	TestReasoningSurvivalMatrix();
 	TestDegenerateTurnRetryParity();
 	TestSequencingGateAcrossProvidersAndByteIdentity();
-	TestFilePartPlanToolAndGateClassification();
+	TestFileBuildPlanToolAndGateClassification();
 	TestDriverNoteSmoke();
 
 	std::remove( scenePath.c_str() );

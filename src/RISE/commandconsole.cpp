@@ -702,10 +702,10 @@ int main( int argc, char** argv )
 	//                           stdin (a request parameter, a scene file) can
 	//                           change it.
 	//   --agent-part-plan-gate=on|off
-	//                           (G2, 2026-08-10) the part-plan gate: on a
-	//                           session that has not filed a part plan, EVERY
+	//                           (G2, 2026-08-10) the build-plan gate: on a
+	//                           session that has not filed a build plan, EVERY
 	//                           geometry-creating call is refused and told to
-	//                           call file_part_plan -- up to 3 refusals, after
+	//                           call file_build_plan -- up to 3 refusals, after
 	//                           which the gate GIVES UP (the 4th such call is
 	//                           let through, carrying a factual give-up notice
 	//                           in its result, and the gate disarms for that
@@ -732,6 +732,28 @@ int main( int argc, char** argv )
 	//                           imagine requirement along with the plan one. A
 	//                           provider without image generation sees exactly
 	//                           the plan-only gate described above.
+	//   --agent-build-protocol=on|off
+	//                           (S1, 2026-08-11) the STAGED BUILD PROTOCOL:
+	//                           filing a build plan enters the PIECES phase with
+	//                           the first element active; every chunk created
+	//                           while an element is active is recorded against
+	//                           it; an edit aimed at a chunk recorded against a
+	//                           DIFFERENT element is refused (up to 3 refusals,
+	//                           then the phase rules give up for that session,
+	//                           carrying a factual notice in the result of the
+	//                           call that tripped it); finish_element advances
+	//                           and, after the last element, enters the COMPOSE
+	//                           phase, where creating new geometry is refused and
+	//                           reopen_element re-enters an element's window.
+	//                           DEFAULT (flag omitted) is `on`.  Same contract as
+	//                           --agent-part-plan-gate in every respect:
+	//                           LAUNCH-TIME ONLY, and any value but exactly
+	//                           "on"/"off" (including a missing `=value`) is a
+	//                           loud failure.  BOTH switches are respected: the
+	//                           phase machinery needs this one AND
+	//                           --agent-part-plan-gate, so turning the gate off
+	//                           turns the phases off with it (the phases are
+	//                           defined by the plan the gate produces).
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -778,7 +800,7 @@ int main( int argc, char** argv )
 	const char* kAutonomyFlagPrefix = "--agent-autonomy=";
 	const std::size_t kAutonomyFlagPrefixLen = strlen( kAutonomyFlagPrefix );
 	// G2 (2026-08-10): `--agent-part-plan-gate=on|off` -- the OFF-RAMP for
-	// the part-plan gate (AgentSession.h's block above FilePartPlan).  ON by
+	// the build-plan gate (AgentSession.h's block above FileBuildPlan).  ON by
 	// default, matching AgentSession's own process default; `off` disables it
 	// completely for every session this process creates, which is both the
 	// misfire escape hatch and the gate-off arm of the behavioural
@@ -791,12 +813,26 @@ int main( int argc, char** argv )
 	// never a silent default, matching this flag family's contract.
 	// Arc 77 Phase 2 (2026-08-11): this remains the ONLY switch -- the
 	// imagine half of the gate is gated on the same
-	// SetPartPlanGateDefaultEnabled value (see AgentSession.h's
+	// SetBuildPlanGateDefaultEnabled value (see AgentSession.h's
 	// ImagineRequirementActive_), so `off` turns off both halves and no
 	// second flag was added.
-	bool cliPartPlanGate = true;
-	const char* kPartPlanGateFlagPrefix = "--agent-part-plan-gate=";
-	const std::size_t kPartPlanGateFlagPrefixLen = strlen( kPartPlanGateFlagPrefix );
+	bool cliBuildPlanGate = true;
+	const char* kBuildPlanGateFlagPrefix = "--agent-part-plan-gate=";
+	const std::size_t kBuildPlanGateFlagPrefixLen = strlen( kBuildPlanGateFlagPrefix );
+	// S1 (2026-08-11): `--agent-build-protocol=on|off` -- the OFF-RAMP for the
+	// staged build protocol (AgentSession.h's block above FinishElement).  ON
+	// by default, matching AgentSession's own process default; `off` disables
+	// the phase machinery for every session this process creates, which is both
+	// the misfire escape hatch and the protocol-off arm of the behavioural
+	// measurement.  Parsed, VALIDATED and applied EXACTLY like the gate flag
+	// above -- same `=value`-only form, same loud-never-silent contract, same
+	// LAUNCH-TIME-ONLY reach (nothing on the wire touches it).  Deliberately a
+	// SECOND flag rather than a widening of the first: the gate and the phases
+	// are separately measurable arms, and the design needs the plan-gate-on /
+	// phases-off cell.
+	bool cliBuildProtocol = true;
+	const char* kBuildProtocolFlagPrefix = "--agent-build-protocol=";
+	const std::size_t kBuildProtocolFlagPrefixLen = strlen( kBuildProtocolFlagPrefix );
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
@@ -883,16 +919,34 @@ int main( int argc, char** argv )
 				std::cerr << "ERROR: --agent-autonomy requires 'read', 'propose', or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
-		} else if( strncmp( a, kPartPlanGateFlagPrefix, kPartPlanGateFlagPrefixLen ) == 0 ) {
-			const std::string val = a + kPartPlanGateFlagPrefixLen;
+		} else if( strncmp( a, kBuildPlanGateFlagPrefix, kBuildPlanGateFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kBuildPlanGateFlagPrefixLen;
 			if( val == "on" ) {
-				cliPartPlanGate = true;
+				cliBuildPlanGate = true;
 			} else if( val == "off" ) {
-				cliPartPlanGate = false;
+				cliBuildPlanGate = false;
 			} else {
 				std::cerr << "ERROR: --agent-part-plan-gate requires 'on' or 'off'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
+		} else if( strncmp( a, kBuildProtocolFlagPrefix, kBuildProtocolFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kBuildProtocolFlagPrefixLen;
+			if( val == "on" ) {
+				cliBuildProtocol = true;
+			} else if( val == "off" ) {
+				cliBuildProtocol = false;
+			} else {
+				std::cerr << "ERROR: --agent-build-protocol requires 'on' or 'off'; got `" << val << "`.\n";
+				cliArgError = true;
+			}
+		} else if( strcmp( a, "--agent-build-protocol" ) == 0 ) {
+			// The bare token with no `=value`: loud, for exactly the reason the
+			// gate flag's own bare-token branch below is loud -- the SPACE form
+			// would otherwise have its value silently swallowed as the
+			// positional scene argument.  Exact strcmp, same reasoning.
+			std::cerr << "ERROR: --agent-build-protocol requires the form "
+			             "`--agent-build-protocol=on` or `--agent-build-protocol=off`; got `" << a << "`.\n";
+			cliArgError = true;
 		} else if( strcmp( a, "--agent-part-plan-gate" ) == 0 ) {
 			// The bare token with no `=value`: loud, for exactly the reason
 			// --agent-autonomy's own bare-token branch below is loud -- the
@@ -946,12 +1000,17 @@ int main( int argc, char** argv )
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
 	}
-	// G2 (2026-08-10): apply the part-plan-gate posture ONCE, here -- after
+	// G2 (2026-08-10): apply the build-plan-gate posture ONCE, here -- after
 	// the whole command line has been validated (so a malformed flag has
 	// already exited above) and BEFORE any transport dispatch below
 	// constructs an AgentSession.  Every session snapshots this at
 	// construction; nothing changes it afterwards.
-	RISE::Agent::AgentSession::SetPartPlanGateDefaultEnabled( cliPartPlanGate );
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( cliBuildPlanGate );
+	// S1 (2026-08-11): the staged build protocol's posture, applied at the same
+	// moment and on the same terms.  Both are snapshotted together by every
+	// session's constructor, so applying them one line apart here cannot
+	// produce a session that saw one and not the other.
+	RISE::Agent::AgentSession::SetBuildProtocolDefaultEnabled( cliBuildProtocol );
 	// Eval-harness slice E4: `--agent-eval` is a batch runner, not a live
 	// transport -- reject it combined with either live transport LOUDLY and
 	// BEFORE the transport dispatch below (otherwise the stdio/http branch
