@@ -392,9 +392,17 @@ namespace RISE
 					segment.temperatureMinK+span*static_cast<double>(interval+1)/
 					static_cast<double>(intervalCount);
 				const double midpoint = 0.5*(lower+upper);
-				const double bound = CpOverR(segment.coefficients,midpoint)-
-					CpDerivativeBound(segment.coefficients,lower,upper)*0.5*(upper-lower);
-				minimum = std::min(minimum,bound*kUniversalGasConstantJPerKMolK/molecularWeight);
+				const double cpOverR = CpOverR(segment.coefficients,midpoint);
+				const double derivativeBound = CpDerivativeBound(
+					segment.coefficients,lower,upper);
+				if( !std::isfinite(cpOverR) || !std::isfinite(derivativeBound) ) {
+					return std::numeric_limits<double>::quiet_NaN();
+				}
+				const double bound = cpOverR-
+					derivativeBound*0.5*(upper-lower);
+				const double scaled = bound*kUniversalGasConstantJPerKMolK/molecularWeight;
+				if( !std::isfinite(scaled) ) return std::numeric_limits<double>::quiet_NaN();
+				minimum = std::min(minimum,scaled);
 			}
 			return std::nextafter(minimum,-std::numeric_limits<double>::infinity());
 		}
@@ -604,6 +612,9 @@ namespace RISE
 			!ReadBlockers(record,m_predictiveBlockers,error) ) {
 			return false;
 		}
+		if( version != "1.0.0-preview.1" ) {
+			return Fail(error,"fire-simulation thermochemistry version is unsupported");
+		}
 		if( m_referenceTemperatureK < m_temperatureMinK ||
 			m_referenceTemperatureK > m_temperatureMaxK ) {
 			return Fail(error,"fire-simulation reference temperature is outside the common domain");
@@ -678,7 +689,8 @@ namespace RISE
 				const double verifiedLower = CertifiedCpLower(segment,species.molecularWeightKGPerKMol);
 				const double tolerance = 128.0*std::numeric_limits<double>::epsilon()*
 					std::max(1.0,std::fabs(verifiedLower));
-				if( segment.certifiedCpLowerJPerKGK > verifiedLower+tolerance ) {
+				if( !std::isfinite(verifiedLower) ||
+					segment.certifiedCpLowerJPerKGK > verifiedLower+tolerance ) {
 					return Fail(error,"fire-simulation cp lower-bound certificate is false");
 				}
 				species.segments.push_back(segment);
@@ -699,7 +711,8 @@ namespace RISE
 					left.sensibleEnthalpyOffsetJPerKG;
 				const double hRight = scale*CpAntiderivativeOverR(right.coefficients,temperature)+
 					right.sensibleEnthalpyOffsetJPerKG;
-				if( std::fabs(hLeft-hRight) > 1.0e-8*std::max(1.0,std::fabs(hLeft)) ) {
+				if( !std::isfinite(hLeft) || !std::isfinite(hRight) ||
+					std::fabs(hLeft-hRight) > 1.0e-8*std::max(1.0,std::fabs(hLeft)) ) {
 					return Fail(error,"fire-simulation sensible enthalpy is discontinuous");
 				}
 			}
@@ -709,7 +722,7 @@ namespace RISE
 			const double referenceH = kUniversalGasConstantJPerKMolK/species.molecularWeightKGPerKMol*
 				CpAntiderivativeOverR(referenceSegment->coefficients,m_referenceTemperatureK)+
 				referenceSegment->sensibleEnthalpyOffsetJPerKG;
-			if( std::fabs(referenceH) > 1.0e-8 ) {
+			if( !std::isfinite(referenceH) || std::fabs(referenceH) > 1.0e-8 ) {
 				return Fail(error,"fire-simulation h_s(T_ref) is not zero");
 			}
 			m_species.push_back(species);
@@ -892,6 +905,9 @@ namespace RISE
 				filterWidths != "directional_mac_cell_widths" ||
 			!ReadDomain(record,"common_temperature_domain_K",m_temperatureMinK,m_temperatureMaxK,error) ||
 			!ReadBlockers(record,m_predictiveBlockers,error) ) return false;
+		if( version != "1.0.0-preview.1" ) {
+			return Fail(error,"fire-simulation transport version is unsupported");
+		}
 		if( !ReadEnvelope(record,"turbulent_prandtl",m_turbulentPrandtl,error) ||
 			!ReadEnvelope(record,"turbulent_schmidt",m_turbulentSchmidt,error) ||
 			!ReadEnvelope(record,"vreman_Cv",m_vremanCv,error) ||

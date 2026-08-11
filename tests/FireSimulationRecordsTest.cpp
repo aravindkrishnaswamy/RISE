@@ -299,6 +299,14 @@ int main()
 	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceFirstThermoSegmentMember(
 		thermoValue,"hs_offset_J_per_kg",RISECBOR64::Value::Float(1.0))),
 		"thermochemistry rejects a broken h_s reference/continuity constraint");
+	RISECBOR64::Value::Values overflowingCoefficients = thermoValue.Find("species")->
+		GetArray()[0].Find("cp_hs_model")->Find("segments")->GetArray()[0].Find(
+			"coefficients")->GetArray();
+	overflowingCoefficients[6] = RISECBOR64::Value::Float(
+		std::numeric_limits<double>::max());
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceFirstThermoSegmentMember(
+		thermoValue,"coefficients",RISECBOR64::Value::ArrayValue(overflowingCoefficients))),
+		"thermochemistry rejects finite coefficients with non-finite evaluated properties");
 	Check(Rejects<FireSimulationTransportRecord>(ReplaceFirstTransportPolicy(
 		transportValue,"clamp")),"transport rejects a non-reject out-of-domain policy");
 	Check(Rejects<FireSimulationTransportRecord>(UnderstateFirstDerivativeEnclosure(
@@ -329,6 +337,12 @@ int main()
 		"transport rejects an invalid thermochemistry dependency");
 	Check(Rejects<FireSimulationThermochemistryRecord>(RemoveMember(thermoValue,"version")),
 		"thermochemistry requires an aggregate record version");
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,"version",
+		RISECBOR64::Value::String("2.0.0"))),
+		"thermochemistry rejects an unsupported aggregate record version");
+	Check(Rejects<FireSimulationTransportRecord>(ReplaceMember(transportValue,"version",
+		RISECBOR64::Value::String("2.0.0"))),
+		"transport rejects an unsupported aggregate record version");
 	RISECBOR64::Value referenceTemperature = *thermoValue.Find("reference_temperature_K");
 	RISECBOR64::Value referenceUncertainty = *referenceTemperature.Find("uncertainty");
 	referenceUncertainty = ReplaceMember(referenceUncertainty,"magnitude",
