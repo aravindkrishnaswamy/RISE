@@ -27,7 +27,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +39,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -71,6 +74,30 @@ namespace
 {
 	int gFailCount = 0;
 	int gPassCount = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		ProcessWatchdog() : completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed]() {
+				std::this_thread::sleep_for(std::chrono::seconds(30));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fputs("FAIL: FileRasterizerOutputShimTest exceeded 30-second watchdog\n",stderr);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 
 	void Check( bool cond, const std::string& label )
 	{
@@ -2998,6 +3025,7 @@ namespace
 
 int main()
 {
+	ProcessWatchdog watchdog;
 	// This test hands FileRasterizerOutput ABSOLUTE temp paths (see
 	// MakeTempPathWithoutExt's comment).  FileRasterizerOutput's
 	// constructor unconditionally prepends RISE_MEDIA_PATH onto its
