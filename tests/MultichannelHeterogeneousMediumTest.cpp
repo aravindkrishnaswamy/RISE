@@ -2807,6 +2807,70 @@ namespace
 		std::filesystem::remove( path );
 	}
 
+	void TestBetweenRenderFireMutationRebuildsDerivedStructures()
+	{
+		std::cout << "TestBetweenRenderFireMutationRebuildsDerivedStructures" << std::endl;
+		const std::filesystem::path path = std::filesystem::temp_directory_path() /
+			("rise_fire_mutation_"+std::to_string(::getpid())+".RISEscene");
+		{
+			std::ofstream output(path);
+			output <<
+				"RISE ASCII SCENE 7\n"
+				"scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n"
+				"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+				"pathtracing_spectral_rasterizer\n{\nsamples 1\nnmbegin 380\nnmend 780\n"
+				"num_wavelengths 4\nspectral_samples 1\nhwss false\noidn_denoise false\n}\n"
+				"film\n{\nwidth 1\nheight 1\n}\n"
+				"pinhole_camera\n{\nname camera\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n}\n"
+				"scalar_painter\n{\nname carbon_low\nvalue 0.25\n}\n"
+				"scalar_painter\n{\nname carbon_high\nvalue 2\n}\n"
+				"scalar_painter\n{\nname temperature\nvalue 800\n}\n"
+				"multichannel_heterogeneous_medium\n{\nname fire\n"
+				"channel_carbon painter carbon_low\nchannel_temperature painter temperature\n"
+				"chem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\n"
+				"bbox_max 1 1 1\noptical_record fire_optics_v1\n}\n"
+				"global_medium\n{\nmedium fire\n}\n";
+		}
+
+		IJobPriv* job = nullptr;
+		RISE_CreateJobPriv(&job);
+		const bool loaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( loaded, "between-render fire mutation fixture loads" );
+		const MultichannelHeterogeneousMedium* oldFire = loaded ?
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(job->GetMedium("fire")) : nullptr;
+		if( oldFire ) oldFire->addref();
+		const Point3 center(0,0,0);
+		const Scalar oldImportance = oldFire ? oldFire->GetThermalEmissionImportance() : 0.0;
+		const Scalar oldMajorant = oldFire ? oldFire->TrackingMajorantAtNM(center,500.0) : 0.0;
+		const int editResult = loaded ? job->ApplyCstParamEdit(
+			"fire","multichannel_heterogeneous_medium","channel_carbon",0,
+			"painter carbon_high") : 0;
+		const MultichannelHeterogeneousMedium* newFire = editResult == 2 ?
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(job->GetMedium("fire")) : nullptr;
+		Check( editResult == 2 && oldFire && newFire && oldFire != newFire,
+			"API/scene-edit fire parameter mutation takes the validated full re-derive path" );
+		Check( oldFire && !oldFire->FireDerivedStructuresCurrent(),
+			"the replaced fire medium is invalidated before its authored binding is discarded" );
+		Check( newFire && newFire->FireDerivedStructuresCurrent() &&
+			newFire->GetThermalEmissionImportance() > oldImportance &&
+			newFire->TrackingMajorantAtNM(center,500.0) > oldMajorant,
+			"the replacement CDF and majorant consume the freshly authored carbon binding" );
+		Job* concreteJob = dynamic_cast<Job*>(job);
+		const bool invalidated = concreteJob && concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
+			"fire",MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation);
+		Check( invalidated && newFire && !newFire->FireDerivedStructuresCurrent(),
+			"an in-place extinction mutation invalidates both derived structures" );
+		const bool rendered = invalidated && job->Rasterize();
+		Check( rendered && newFire && newFire->FireDerivedStructuresCurrent() &&
+			newFire->GetThermalEmissionImportance() > oldImportance &&
+			newFire->TrackingMajorantAtNM(center,500.0) > oldMajorant,
+			"render preflight rebuilds stale fire structures and retains the fresh mutation values" );
+
+		if( oldFire ) oldFire->release();
+		safe_release(job);
+		std::filesystem::remove(path);
+	}
+
 	void TestProductionFireFidelityPreflight()
 	{
 		std::cout << "TestProductionFireFidelityPreflight" << std::endl;
@@ -4429,6 +4493,7 @@ int main()
 	TestNonFiniteRejection();
 	TestDescriptorAndRequiredness();
 	TestSceneLanguageAndSceneUnitPropagation();
+	TestBetweenRenderFireMutationRebuildsDerivedStructures();
 	TestProductionFireFidelityPreflight();
 
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;

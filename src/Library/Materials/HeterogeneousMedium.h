@@ -282,6 +282,12 @@ namespace RISE
 			const Ray& ray,
 			const Scalar dist
 			) const override;
+		RISEPel ForTest_EvalTransmittanceWithFixedRandom(
+			const Ray& ray,
+			const Scalar dist,
+			const Scalar fixedRandom,
+			unsigned long long& candidateSteps
+			) const;
 
 		RISEPel EvalDeterministicTransmittancePel(
 			const Ray& ray,
@@ -293,6 +299,14 @@ namespace RISE
 			const Scalar dist,
 			const Scalar nm
 			) const override;
+
+		Scalar ForTest_EvalTransmittanceNMWithFixedRandom(
+			const Ray& ray,
+			const Scalar dist,
+			const Scalar nm,
+			const Scalar fixedRandom,
+			unsigned long long& candidateSteps
+			) const;
 
 		bool IsHomogeneous() const override;
 
@@ -412,6 +426,7 @@ namespace RISE
 		Vector3 m_emissionBinSize;
 		Scalar m_thermalEmissionImportance;
 		Scalar m_minPositiveThermalEmissionPdf;
+		bool m_fireDerivedStructuresCurrent;
 		bool m_valid;
 
 		virtual ~MultichannelHeterogeneousMedium();
@@ -590,6 +605,15 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
+		void InvalidateFireDerivedStructures() override
+		{
+			m_fireDerivedStructuresCurrent = false;
+		}
+		bool FireDerivedStructuresCurrent() const override
+		{
+			return m_fireDerivedStructuresCurrent;
+		}
+		bool RebuildFireDerivedStructuresForRender() override;
 		bool BuildBakedChannelRecord( std::vector<unsigned char>& record ) const;
 		// Test-only controlled ablation; set before Rasterize launches workers.
 		bool ForTest_SetEffectiveAbsorptionAblation(

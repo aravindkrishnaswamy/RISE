@@ -402,6 +402,12 @@ namespace RISE
 			const Scalar /*minimumNM*/,
 			const Scalar /*maximumNM*/ ) const { return false; }
 
+		/// Phase-B between-render derived-data contract. Ordinary media have
+		/// no fire emission CDF or fire majorant to maintain.
+		virtual void InvalidateFireDerivedStructures() {}
+		virtual bool FireDerivedStructuresCurrent() const { return true; }
+		virtual bool RebuildFireDerivedStructuresForRender() { return true; }
+
 	};
 }
 

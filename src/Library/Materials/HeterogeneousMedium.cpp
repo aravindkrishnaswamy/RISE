@@ -34,6 +34,26 @@ using namespace RISE;
 
 namespace
 {
+	struct RatioTrackingTestState
+	{
+		bool active = false;
+		Scalar fixedRandom = 0.5;
+		unsigned long long* candidateSteps = 0;
+	};
+
+	thread_local RatioTrackingTestState g_ratioTrackingTestState;
+
+	static Scalar RatioTrackingRandom( RandomNumberGenerator& rng )
+	{
+		if( g_ratioTrackingTestState.active ) {
+			if( g_ratioTrackingTestState.candidateSteps ) {
+				++*g_ratioTrackingTestState.candidateSteps;
+			}
+			return g_ratioTrackingTestState.fixedRandom;
+		}
+		return rng.CanonicalRandom();
+	}
+
 	static Scalar EvaluateCubic(
 		const Scalar (&coeff)[4],
 		const Scalar x
@@ -1267,7 +1287,7 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 
 			for( ;; )
 			{
-				Scalar xi = pRng->CanonicalRandom();
+				Scalar xi = RatioTrackingRandom( *pRng );
 				if( xi <= 0.0 ) {
 					// The continuous exponential law has no atom at zero.  Retry
 					// the discrete RNG endpoint instead of creating a zero step.
@@ -1307,7 +1327,7 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 				if( wMax < 0.1 )
 				{
 					const Scalar pSurvive = fmax( wMax, 1e-6 );
-					if( pRng->CanonicalRandom() >= pSurvive )
+					if( RatioTrackingRandom( *pRng ) >= pSurvive )
 					{
 						*pW = RISEPel( 0, 0, 0 );
 						return false;
@@ -1386,7 +1406,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 
 			for( ;; )
 			{
-				Scalar xi = pRng->CanonicalRandom();
+				Scalar xi = RatioTrackingRandom( *pRng );
 				if( xi <= 0.0 ) {
 					continue;
 				}
@@ -1414,7 +1434,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 				if( *pW < 0.1 )
 				{
 					const Scalar pSurvive = fmax( *pW, 1e-6 );
-					if( pRng->CanonicalRandom() >= pSurvive )
+					if( RatioTrackingRandom( *pRng ) >= pSurvive )
 					{
 						*pW = 0;
 						return false;
@@ -2050,6 +2070,7 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	  m_emissionBinSize( 0, 0, 0 ),
 	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
+	  m_fireDerivedStructuresCurrent( false ),
   m_valid( false )
 {
 	const IScalarPainter* chemPainters[3] = {
@@ -2217,6 +2238,8 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		m_valid = false;
 		GlobalLog()->PrintEasyError(
 			"MultichannelHeterogeneousMedium:: failed to build finite thermal-emission importance" );
+	} else {
+		m_fireDerivedStructuresCurrent = true;
 	}
 }
 
@@ -2239,6 +2262,73 @@ bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(
 		return false;
 	}
 	m_effectiveAbsorptionAblation = ablation;
+	InvalidateFireDerivedStructures();
+	return true;
+}
+
+Scalar HeterogeneousMedium::ForTest_EvalTransmittanceNMWithFixedRandom(
+	const Ray& ray,
+	const Scalar dist,
+	const Scalar nm,
+	const Scalar fixedRandom,
+	unsigned long long& candidateSteps
+	) const
+{
+	if( !RISE::IsFiniteDouble(fixedRandom) || fixedRandom <= 0.0 || fixedRandom >= 1.0 ) {
+		return -1.0;
+	}
+	struct Restore
+	{
+		RatioTrackingTestState saved;
+		Restore() : saved(g_ratioTrackingTestState) {}
+		~Restore() { g_ratioTrackingTestState = saved; }
+	} restore;
+	candidateSteps = 0;
+	g_ratioTrackingTestState.active = true;
+	g_ratioTrackingTestState.fixedRandom = fixedRandom;
+	g_ratioTrackingTestState.candidateSteps = &candidateSteps;
+	return EvalTransmittanceNM(ray,dist,nm);
+}
+
+RISEPel HeterogeneousMedium::ForTest_EvalTransmittanceWithFixedRandom(
+	const Ray& ray,
+	const Scalar dist,
+	const Scalar fixedRandom,
+	unsigned long long& candidateSteps
+	) const
+{
+	if( !RISE::IsFiniteDouble(fixedRandom) || fixedRandom <= 0.0 || fixedRandom >= 1.0 ) {
+		return RISEPel(-1.0,-1.0,-1.0);
+	}
+	struct Restore
+	{
+		RatioTrackingTestState saved;
+		Restore() : saved(g_ratioTrackingTestState) {}
+		~Restore() { g_ratioTrackingTestState = saved; }
+	} restore;
+	candidateSteps = 0;
+	g_ratioTrackingTestState.active = true;
+	g_ratioTrackingTestState.fixedRandom = fixedRandom;
+	g_ratioTrackingTestState.candidateSteps = &candidateSteps;
+	return EvalTransmittance(ray,dist);
+}
+
+bool MultichannelHeterogeneousMedium::RebuildFireDerivedStructuresForRender()
+{
+	m_fireDerivedStructuresCurrent = false;
+	if( !m_valid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
+	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
+		*m_pCarbonAccessor, *m_pTemperatureAccessor, m_pCondensedAccessor,
+		m_hotExtinctionMass633, m_coolExtinctionMass633,
+		m_condExtinctionMass633, m_optics.HotFractionMinK(),
+		m_optics.HotFractionMaxK() );
+	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
+		*m_pCarbonAccessor, m_pCondensedAccessor );
+	InitializeTrackingAccessor(*trackingAccessor,*majorantAccessor);
+	safe_release(trackingAccessor);
+	safe_release(majorantAccessor);
+	if( !BuildThermalEmissionImportance() ) return false;
+	m_fireDerivedStructuresCurrent = true;
 	return true;
 }
 

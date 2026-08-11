@@ -637,6 +637,61 @@ namespace
 		~HalfDensityAccessor() override = default;
 	};
 
+	class ConstantDensityAccessor :
+		public virtual IVolumeAccessor,
+		public virtual Reference
+	{
+		const Scalar value_;
+	public:
+		explicit ConstantDensityAccessor( const Scalar value ) : value_(value) {}
+		Scalar GetValue( Scalar, Scalar, Scalar ) const override { return value_; }
+		Scalar GetValue( int, int, int ) const override { return value_; }
+		void BindVolume( const IVolume* ) override {}
+	protected:
+		~ConstantDensityAccessor() override = default;
+	};
+
+	class ForcedStepMedium : public HeterogeneousMedium
+	{
+	public:
+		explicit ForcedStepMedium( const IPhaseFunction& phase ) :
+			HeterogeneousMedium( Scalar(2048.0), phase, 2, 2, 2,
+				Point3(-1,-1,0), Point3(1,1,1) )
+		{
+			ConstantDensityAccessor* exact = new ConstantDensityAccessor(0.0);
+			ConstantDensityAccessor* majorant = new ConstantDensityAccessor(1.0);
+			InitializeTrackingAccessor(*exact,*majorant);
+			safe_release(exact);
+			safe_release(majorant);
+		}
+		~ForcedStepMedium() override = default;
+	};
+
+	void TestRatioTrackingHasNo1024StepCap()
+	{
+		std::cout << "TestRatioTrackingHasNo1024StepCap" << std::endl;
+		IPhaseFunction* phase = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction(&phase);
+		ForcedStepMedium* medium = phase ? new ForcedStepMedium(*phase) : nullptr;
+		Check( medium != nullptr, "forced-step ratio-tracking fixture constructs" );
+		if( medium ) {
+			const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+			const Scalar fixedRandom = Scalar(1.0) - std::exp(Scalar(-1.0));
+			unsigned long long rgbSteps = 0;
+			unsigned long long nmSteps = 0;
+			const RISEPel rgb = medium->ForTest_EvalTransmittanceWithFixedRandom(
+				ray,1.0,fixedRandom,rgbSteps);
+			const Scalar nm = medium->ForTest_EvalTransmittanceNMWithFixedRandom(
+				ray,1.0,500.0,fixedRandom,nmSteps);
+			Check( rgbSteps > 1024u && nmSteps > 1024u,
+				"RGB and NM production ratio trackers consume every forced candidate past step 1024" );
+			Check( rgb.r == 1.0 && rgb.g == 1.0 && rgb.b == 1.0 && nm == 1.0,
+				"the uncapped forced walk reaches the segment end without changing vacuum transmittance" );
+		}
+		safe_release(medium);
+		safe_release(phase);
+	}
+
 	void TestUnrepresentableRatioStepFailsExplicitly()
 	{
 		std::cout << "TestUnrepresentableRatioStepFailsExplicitly" << std::endl;
@@ -689,6 +744,7 @@ int main()
 	TestMediumlessInnerStackEntryRestoresOuterMedium();
 	TestEnteringMediumlessCavityUsesWorldThenRestoresOuter();
 	TestSmallNonzeroTransmittanceIsNotHardZeroed();
+	TestRatioTrackingHasNo1024StepCap();
 	TestUnrepresentableRatioStepFailsExplicitly();
 	std::cout << passed << " passed, " << failed << " failed" << std::endl;
 	return failed == 0 ? 0 : 1;

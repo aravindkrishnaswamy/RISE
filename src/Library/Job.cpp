@@ -11527,6 +11527,23 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	std::vector<FrameStoreOutput::ActiveFireMedium> fireMediaMetadata;
 	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
 		medium != activeMedia.end(); ++medium ) {
+		if( !(*medium)->IsFireMedium() || (*medium)->FireDerivedStructuresCurrent() ) continue;
+		IMedium* managedMedium = 0;
+		for( MediumMap::iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
+			if( named->second == *medium ) {
+				managedMedium = named->second;
+				break;
+			}
+		}
+		if( !managedMedium || !managedMedium->RebuildFireDerivedStructuresForRender() ||
+			!managedMedium->FireDerivedStructuresCurrent() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: fire render rejected before workers launch: stale emission CDF or majorant could not be rebuilt" );
+			return false;
+		}
+	}
+	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
+		medium != activeMedia.end(); ++medium ) {
 		if( !(*medium)->IsFireMedium() ) {
 			continue;
 		}
@@ -12424,6 +12441,11 @@ bool Job::RemoveRasterizerOutputs(
 bool Job::ClearAll(
 	)
 {
+	for( MediumMap::iterator medium=mediaMap.begin(); medium!=mediaMap.end(); ++medium ) {
+		if( medium->second && medium->second->IsFireMedium() ) {
+			medium->second->InvalidateFireDerivedStructures();
+		}
+	}
 	// A deliberate ClearAll is a FULL scene reset -- it must include the retained canonical CST Document so a
 	// subsequent reopen (the GUIs reuse ONE persistent Job: clearAll() THEN load) starts fresh.  Without this,
 	// LoadAsciiSceneViaCst's load-once guard (a non-null pCstDocument) would falsely refuse the second native-v7
