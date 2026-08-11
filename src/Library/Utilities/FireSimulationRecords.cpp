@@ -19,6 +19,8 @@ namespace RISE
 #include "FireSimulationRecordData.inc"
 
 		const double kUniversalGasConstantJPerKMolK = 8314.46261815324;
+		const char* kPentacosaneSpeciesSHA256 =
+			"0cdb2a537e18c2db27994c2a8889badf32dae32cf352f973de35c68c2bff7ded";
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -810,6 +812,7 @@ namespace RISE
 		m_species.clear();
 		std::set<std::string> ids;
 		std::size_t certificateWork = 0;
+		bool foundPentacosane = false;
 		for( const RISECBOR64::Value& encoded : encodedSpecies->GetArray() ) {
 			FireThermochemistrySpecies species;
 			std::string phase;
@@ -851,10 +854,13 @@ namespace RISE
 				!ValidateTableMetadata(*model,error) ) return false;
 			const RISECBOR64::Value* modelMetadata = model->Find("table_metadata");
 			if( species.id == "C25H52,n-pentacosane" ) {
+				RISECBOR64::Bytes canonicalSpecies;
 				double carbon = 0.0, hydrogen = 0.0;
 				const RISECBOR64::Value* carbonValue = formula->Find("C");
 				const RISECBOR64::Value* hydrogenValue = formula->Find("H");
-				if( phase != "gas" || modelMinimum != 200.0 || modelMaximum != 5000.0 ||
+				if( !RISECBOR64::Encode(encoded,canonicalSpecies,error) ||
+					RISECBOR64::SHA256Hex(canonicalSpecies) != kPentacosaneSpeciesSHA256 ||
+					phase != "gas" || modelMinimum != 200.0 || modelMaximum != 5000.0 ||
 					formula->GetMap().size() != 2 || !carbonValue || !hydrogenValue ||
 					!ReadNumber(*carbonValue,carbon,error) || carbon != 25.0 ||
 					!ReadNumber(*hydrogenValue,hydrogen,error) || hydrogen != 52.0 ||
@@ -864,6 +870,7 @@ namespace RISE
 					!ValidatePentacosaneCertificate(encoded,error) ) {
 					return Fail(error,"fire-simulation pentacosane assumption record is invalid");
 				}
+				foundPentacosane = true;
 			} else if( encoded.Find("assumption_bound_certificate") ) {
 				return Fail(error,"fire-simulation assumption certificate is attached to the wrong species");
 			}
@@ -931,6 +938,9 @@ namespace RISE
 				return Fail(error,"fire-simulation h_s(T_ref) is not zero");
 			}
 			m_species.push_back(species);
+		}
+		if( !foundPentacosane ) {
+			return Fail(error,"fire-simulation pentacosane assumption record is missing");
 		}
 		return true;
 	}

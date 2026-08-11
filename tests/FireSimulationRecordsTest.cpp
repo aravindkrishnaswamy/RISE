@@ -408,6 +408,70 @@ int main()
 			mutatedCertificate)),
 			"pentacosane requires the corroboration-only audit marker");
 	}
+	const RISECBOR64::Value pentacosaneMW = *encodedPentacosane.Find(
+		"molecular_weight_kg_per_kmol");
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","molecular_weight_kg_per_kmol",
+		ReplaceMember(pentacosaneMW,"value",RISECBOR64::Value::Float(352.0)))),
+		"pentacosane operational molecular weight is bound to its derivation");
+	RISECBOR64::Value pentacosaneMWUncertainty = *pentacosaneMW.Find("uncertainty");
+	pentacosaneMWUncertainty = ReplaceMember(pentacosaneMWUncertainty,"magnitude",
+		RISECBOR64::Value::Float(0.0));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","molecular_weight_kg_per_kmol",
+		ReplaceMember(pentacosaneMW,"uncertainty",pentacosaneMWUncertainty))),
+		"pentacosane rejects a zeroed operational uncertainty magnitude");
+	pentacosaneMWUncertainty = ReplaceMember(*pentacosaneMW.Find("uncertainty"),"basis",
+		RISECBOR64::Value::String("mutated basis"));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","molecular_weight_kg_per_kmol",
+		ReplaceMember(pentacosaneMW,"uncertainty",pentacosaneMWUncertainty))),
+		"pentacosane binds its operational uncertainty basis");
+	RISECBOR64::Value pentacosaneMWProvenance = *pentacosaneMW.Find("provenance");
+	pentacosaneMWProvenance = ReplaceMember(pentacosaneMWProvenance,"citation",
+		RISECBOR64::Value::String("mutated citation"));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","molecular_weight_kg_per_kmol",
+		ReplaceMember(pentacosaneMW,"provenance",pentacosaneMWProvenance))),
+		"pentacosane binds its operational CEA provenance");
+	const RISECBOR64::Value pentacosaneFormation = *encodedPentacosane.Find(
+		"formation_enthalpy_J_per_kmol_298p15K");
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","formation_enthalpy_J_per_kmol_298p15K",
+		ReplaceMember(pentacosaneFormation,"value",RISECBOR64::Value::Float(-1.0)))),
+		"pentacosane formation enthalpy is bound to its derivation");
+	RISECBOR64::Value pentacosaneModel = *encodedPentacosane.Find("cp_hs_model");
+	RISECBOR64::Value pentacosaneMetadata = *pentacosaneModel.Find("table_metadata");
+	RISECBOR64::Value pentacosaneModelUncertainty = *pentacosaneMetadata.Find("uncertainty");
+	pentacosaneModelUncertainty = ReplaceMember(pentacosaneModelUncertainty,"magnitude",
+		RISECBOR64::Value::Float(0.0));
+	pentacosaneMetadata = ReplaceMember(pentacosaneMetadata,"uncertainty",
+		pentacosaneModelUncertainty);
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","cp_hs_model",
+		ReplaceMember(pentacosaneModel,"table_metadata",pentacosaneMetadata))),
+		"pentacosane cp model rejects a zeroed residual uncertainty");
+	RISECBOR64::Value::Values pentacosaneSegments = pentacosaneModel.Find(
+		"segments")->GetArray();
+	RISECBOR64::Value::Values unusedNasaCoefficients = pentacosaneSegments[0].Find(
+		"coefficients")->GetArray();
+	unusedNasaCoefficients[8] = RISECBOR64::Value::Float(0.0);
+	pentacosaneSegments[0] = ReplaceMember(pentacosaneSegments[0],"coefficients",
+		RISECBOR64::Value::ArrayValue(unusedNasaCoefficients));
+	pentacosaneModel = ReplaceMember(pentacosaneModel,"segments",
+		RISECBOR64::Value::ArrayValue(pentacosaneSegments));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+		thermoValue,"C25H52,n-pentacosane","cp_hs_model",pentacosaneModel)),
+		"pentacosane binds even non-operational NASA-9 provenance coefficients");
+	RISECBOR64::Value::Values withoutPentacosane;
+	for( const auto& species : thermoValue.Find("species")->GetArray() ) {
+		if( species.Find("species_id")->GetText() != "C25H52,n-pentacosane" ) {
+			withoutPentacosane.push_back(species);
+		}
+	}
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"species",RISECBOR64::Value::ArrayValue(withoutPentacosane))),
+		"the approved pentacosane species is mandatory in this record version");
 	RISECBOR64::Value::Values missingStubs = thermoValue.Find(
 		"missing_required_records")->GetArray();
 	RISECBOR64::Value::Members placeholderStub = missingStubs[0].GetMap();
@@ -417,6 +481,23 @@ int main()
 	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
 		"missing_required_records",RISECBOR64::Value::ArrayValue(missingStubs))),
 		"owner-gated species stub rejects placeholder physical values");
+	missingStubs = thermoValue.Find("missing_required_records")->GetArray();
+	std::reverse(missingStubs.begin(),missingStubs.end());
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"missing_required_records",RISECBOR64::Value::ArrayValue(missingStubs))),
+		"owner-gated missing-record stubs have a frozen role order");
+	missingStubs = thermoValue.Find("missing_required_records")->GetArray();
+	missingStubs[1] = ReplaceMember(missingStubs[1],"status",
+		RISECBOR64::Value::String("available"));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"missing_required_records",RISECBOR64::Value::ArrayValue(missingStubs))),
+		"owner-gated condensed stub cannot claim availability");
+	missingStubs = thermoValue.Find("missing_required_records")->GetArray();
+	missingStubs[0] = ReplaceMember(missingStubs[0],"failure_policy",
+		RISECBOR64::Value::String("use_placeholder"));
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"missing_required_records",RISECBOR64::Value::ArrayValue(missingStubs))),
+		"owner-gated vapor stub cannot weaken fail-closed policy");
 	const char* closureRelationshipFields[] = {
 		"molecular_diffusivity_relationship",
 		"sgs_diffusivity_relationship",
